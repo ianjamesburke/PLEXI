@@ -147,6 +147,37 @@ This applies whenever the diff includes host UI rendering — not only when the
 task is explicitly "visual." A logic-only PR that happens to touch `render.rs`
 still gets this pass before push.
 
+## Editor Release Gate
+
+Any diff touching `src/editor/` or `src/app/text_editor_app.rs` runs the editor
+release gate before push, in this order:
+
+1. **Core matrix + fuzz** — `cargo test --bin plexi editor::gate`. Runs the
+   table-driven command matrix (`gate_cases` in `src/editor/gate.rs`), a long
+   deterministic stress sequence with full undo/redo round trips, and seeded
+   randomized command fuzzing with per-command invariant checks (grapheme-valid
+   selections, semantic/text agreement, history consistency, monotonic
+   revisions).
+2. **Harness layer** — `cargo test --bin plexi editor_gate`. Drives a
+   representative subset of the same matrix through the installed-host input
+   paths (`SendToPane`/`KeyPane`/click/drop against a real builtin Notes pane)
+   plus host-only surfaces: pointer caret placement, Live Preview toggling,
+   save success/failure reporting, and drop accept/reject.
+3. **Scenes headless** — the `editor-gate-*.toml` and `notes-*.toml` scenes run
+   in `scene_suite`; iterate on one with `just scene tests/scenes/<file>`.
+4. **Installed host** — `just editor-gate pr-<N>` re-runs the core
+   qualification, then runs every editor scene against the installed PR
+   channel and collects everything into `/tmp/plexi-editor-gate/pr-<N>/`:
+   per-scene SceneReports and failure bundles (live runs are semantic-only;
+   pixel evidence comes from the headless suite's shot steps), the core
+   qualification artifact (`editor-gate-core.json`: per-case
+   pass/duration/final semantic state, per-seed randomized results, totals),
+   a channel `log-tail.txt`, and `summary.json`.
+
+Randomized failures are replayable: the panic names a seed and writes a
+minimized replay bundle to `$TMPDIR/plexi-editor-gate-failure-<seed>.json`;
+rerun exactly that seed with `PLEXI_EDITOR_GATE_SEED=<seed>`.
+
 ## Conventions
 
 - `cargo test --bin plexi` must be green before any push; the justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.

@@ -2676,3 +2676,353 @@ fn focused_text_input_receives_typing_and_enter_submits() {
     frame_with_events(&mut h, vec![pressed_key(egui::Key::Z)]);
     wait_for_text_label(&mut h, pane_id, "keys:", "keys:2");
 }
+
+// ─── Editor release gate: host-driven layer (stint 0479) ─────────────────────
+
+/// One host-level input step for the notes pane: either raw text through
+/// `SendToPane` or a key combo through `KeyPane`.
+enum GateHostInput {
+    Text(String),
+    Key(String),
+}
+
+fn gate_movement_key(
+    movement: crate::editor::commands::Movement,
+    extend: bool,
+) -> Option<String> {
+    use crate::editor::commands::Movement;
+    let base = match movement {
+        Movement::Left => "left",
+        Movement::Right => "right",
+        Movement::Up => "up",
+        Movement::Down => "down",
+        Movement::WordLeft => "alt+left",
+        Movement::WordRight => "alt+right",
+        Movement::LineStart => "cmd+left",
+        Movement::LineEnd => "cmd+right",
+        Movement::DocStart => "cmd+up",
+        Movement::DocEnd => "cmd+down",
+        Movement::PageUp(_) | Movement::PageDown(_) => return None,
+    };
+    Some(if extend {
+        format!("shift+{base}")
+    } else {
+        base.to_string()
+    })
+}
+
+/// Maps a pure editor command onto the equivalent installed-host inputs, or
+/// `None` when the host keyboard surface cannot express it (IME, page
+/// movement, non-collapsed pointer placements). `SetCursor` expands into an
+/// arrow-key walk, valid for the ASCII documents the whitelist uses.
+fn gate_host_inputs_for(command: &crate::editor::EditorCommand) -> Option<Vec<GateHostInput>> {
+    use crate::editor::EditorCommand;
+    let key = |k: &str| Some(vec![GateHostInput::Key(k.to_string())]);
+    match command {
+        EditorCommand::InsertText(text) => Some(vec![GateHostInput::Text(text.clone())]),
+        EditorCommand::InsertNewline | EditorCommand::MarkdownNewline => key("enter"),
+        EditorCommand::Backspace | EditorCommand::MarkdownBackspace => key("backspace"),
+        EditorCommand::DeleteForward => key("delete"),
+        EditorCommand::MarkdownIndent => key("tab"),
+        EditorCommand::MarkdownOutdent => key("shift+tab"),
+        EditorCommand::Undo => key("cmd+z"),
+        EditorCommand::Redo => key("cmd+shift+z"),
+        EditorCommand::SelectAll => key("cmd+a"),
+        EditorCommand::Move { movement, extend } => {
+            gate_movement_key(*movement, *extend).map(|k| vec![GateHostInput::Key(k)])
+        }
+        EditorCommand::SetCursor(cursor) => {
+            let mut keys = vec![GateHostInput::Key("cmd+up".to_string())];
+            keys.extend((0..cursor.line).map(|_| GateHostInput::Key("down".to_string())));
+            keys.push(GateHostInput::Key("cmd+left".to_string()));
+            keys.extend((0..cursor.column).map(|_| GateHostInput::Key("right".to_string())));
+            Some(keys)
+        }
+        _ => None,
+    }
+}
+
+/// Gate cases the host keyboard surface can replay faithfully in a Markdown
+/// note: every command maps, and the plain command matches what the widget's
+/// Markdown key bindings dispatch (Enter → MarkdownNewline etc. degrade to
+/// the same plain behavior on these inputs).
+const GATE_HARNESS_CASES: &[&str] = &[
+    "plain_typing",
+    "typing_after_move_two_groups",
+    "unicode_accented_typing",
+    "grapheme_combining_backspace",
+    "zwj_emoji_backspace",
+    "flag_emoji_typing",
+    "combining_mark_left_navigation",
+    "nav_word_left",
+    "nav_word_right",
+    "nav_vertical_goal_clamp",
+    "home_end_equivalents",
+    "doc_start_end_movements",
+    "select_all_replace",
+    "shift_word_select",
+    "delete_forward_at_end_noop",
+    "backspace_join_lines",
+    "undo_coalesced_group",
+    "redo_after_undo",
+    "redo_invalidated_by_new_edit",
+    "markdown_newline_unordered",
+    "markdown_newline_task",
+    "markdown_newline_quote",
+    "markdown_empty_continuation_exits",
+    "markdown_backspace_empty_marker",
+    "markdown_backspace_plain_content",
+    "smart_backspace_indent_level",
+    "newline_carries_auto_indent",
+];
+
+fn open_gate_note(h: &mut HostHarness, dir: &std::path::Path, initial: &str) -> PaneId {
+    let note = dir.join("gate-note.md");
+    std::fs::write(&note, initial).expect("seed gate note");
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = *h.state().open_panes.last().expect("notes pane opened");
+    h.run_frames(2);
+    pane_id
+}
+
+fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
+    h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.semantic_details())
+        .expect("notes semantic details")
+}
+
+/// Char offset of `cursor` within `text` (the notes semantic `caret` unit).
+fn gate_char_offset(text: &str, cursor: crate::editor::Cursor) -> usize {
+    let mut offset = 0;
+    for (index, line) in text.split('\n').enumerate() {
+        if index == cursor.line {
+            return offset + cursor.column;
+        }
+        offset += line.chars().count() + 1;
+    }
+    offset + cursor.column
+}
+
+/// Drives a representative subset of the editor gate matrix through the real
+/// installed-host input paths (`SendToPane` text + `KeyPane` combos against a
+/// production builtin Notes pane) and asserts the pane's semantic JSON agrees
+/// with the pure-model expectations after every step.
+#[test]
+fn editor_gate_harness_matrix() {
+    let cases = crate::editor::gate::gate_cases();
+    for name in GATE_HARNESS_CASES {
+        let case = cases
+            .iter()
+            .find(|case| case.name == *name)
+            .unwrap_or_else(|| panic!("gate case {name:?} missing from gate_cases()"));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let pane_id = open_gate_note(&mut h, tmp.path(), case.initial);
+
+        for (index, command) in case.commands.iter().enumerate() {
+            let inputs = gate_host_inputs_for(command).unwrap_or_else(|| {
+                panic!("case {name:?} command[{index}] {command:?} is not host-expressible")
+            });
+            for (sub, input) in inputs.into_iter().enumerate() {
+                let response = temp_response(tmp.path(), &format!("gate-{name}-{index}-{sub}"));
+                match input {
+                    GateHostInput::Text(text) => h.inject_ipc(AppRequest::SendToPane {
+                        pane_id,
+                        text,
+                        response_file: Some(response.clone()),
+                    }),
+                    GateHostInput::Key(key) => h.inject_ipc(AppRequest::KeyPane {
+                        pane_id,
+                        key,
+                        response_file: Some(response.clone()),
+                    }),
+                };
+                h.run_frames(2);
+                assert_eq!(
+                    read_json_response(&response)["ok"],
+                    true,
+                    "case {name:?} command[{index}] host input failed"
+                );
+            }
+        }
+
+        let state = gate_note_semantics(&h, pane_id);
+        assert_eq!(
+            state["source_text"].as_str(),
+            Some(case.expect.text),
+            "case {name:?}: host-driven text diverged from the gate expectation; state={state}"
+        );
+        if let Some(cursor) = case.expect.cursor {
+            assert_eq!(
+                state["caret"].as_u64(),
+                Some(gate_char_offset(case.expect.text, cursor) as u64),
+                "case {name:?}: caret mismatch; state={state}"
+            );
+        }
+        if let Some(depth) = case.expect.undo_depth {
+            assert_eq!(
+                state["undo_available"].as_bool(),
+                Some(depth > 0),
+                "case {name:?}: undo_available mismatch; state={state}"
+            );
+        }
+        if let Some(can_redo) = case.expect.can_redo {
+            assert_eq!(
+                state["redo_available"].as_bool(),
+                Some(can_redo),
+                "case {name:?}: redo_available mismatch; state={state}"
+            );
+        }
+    }
+}
+
+/// Host-only editor gate surfaces the pure matrix cannot cover: pointer caret
+/// placement, Live Preview toggling, save success and failure reporting, and
+/// drop accept/reject — all through production dispatch paths.
+#[test]
+fn editor_gate_host_surfaces() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let body: String = (0..30).map(|i| format!("gate line {i}\n")).collect();
+    let pane_id = open_gate_note(&mut h, tmp.path(), &body);
+
+    // Pointer caret placement through the production click path.
+    let response = temp_response(tmp.path(), "gate-click");
+    h.inject_click(pane_id, 60.0, 120.0, "left", Some(response.clone()));
+    h.run_frames(3);
+    assert_eq!(read_json_response(&response)["ok"], true);
+    let state = gate_note_semantics(&h, pane_id);
+    assert!(
+        state["caret"].as_u64().expect("caret") > 0,
+        "click must move the caret off offset 0; state={state}"
+    );
+
+    // Live Preview toggle through the app's real key handler.
+    assert_eq!(state["preview_mode"].as_str(), Some("live_preview"));
+    let response = temp_response(tmp.path(), "gate-toggle");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "cmd+g".to_string(),
+        response_file: Some(response.clone()),
+    });
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
+    let state = gate_note_semantics(&h, pane_id);
+    assert_eq!(state["preview_mode"].as_str(), Some("source"));
+
+    // Cmd+S saves and reports ok.
+    let response = temp_response(tmp.path(), "gate-save");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "cmd+s".to_string(),
+        response_file: Some(response.clone()),
+    });
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
+    let state = gate_note_semantics(&h, pane_id);
+    assert_eq!(state["last_save_result"].as_str(), Some("ok"));
+
+    // Drop accept: a real decodable image lands as an assets/ reference.
+    let png = tmp.path().join("pic.png");
+    image::RgbaImage::new(2, 2)
+        .save(&png)
+        .expect("write fixture png");
+    let response = temp_response(tmp.path(), "gate-drop-accept");
+    h.inject_ipc(AppRequest::DropFile {
+        pane_id,
+        path_or_url: png.to_string_lossy().into_owned(),
+        response_file: response.clone(),
+    });
+    h.run_frames(2);
+    let drop_response = read_json_response(&response);
+    assert!(
+        drop_response.get("error").is_none(),
+        "image drop must be accepted: {drop_response:?}"
+    );
+    let state = gate_note_semantics(&h, pane_id);
+    assert_eq!(state["last_drop_result"]["result"].as_str(), Some("accepted"));
+    assert!(
+        state["source_text"]
+            .as_str()
+            .is_some_and(|text| text.contains("![](assets/")),
+        "accepted drop must insert an assets/ reference; state={state}"
+    );
+
+    // Drop reject: undecodable content reports a semantic rejection.
+    let junk = tmp.path().join("junk.png");
+    std::fs::write(&junk, b"not an image").expect("write junk");
+    let response = temp_response(tmp.path(), "gate-drop-reject");
+    h.inject_ipc(AppRequest::DropFile {
+        pane_id,
+        path_or_url: junk.to_string_lossy().into_owned(),
+        response_file: response.clone(),
+    });
+    h.run_frames(2);
+    assert!(read_json_response(&response)["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("not a decodable image")));
+    let state = gate_note_semantics(&h, pane_id);
+    assert_eq!(state["last_drop_result"]["result"].as_str(), Some("rejected"));
+}
+
+/// Save failure must surface through the host path: Cmd+S against a note
+/// whose parent is blocked by a plain file reports `last_save_result` as an
+/// error while the buffer stays dirty.
+#[test]
+fn editor_gate_save_failure_reports_error_semantically() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let note_dir = tmp.path().join("note-dir");
+    std::fs::create_dir_all(&note_dir).expect("create note dir");
+    let mut h = HostHarness::new();
+    let pane_id = open_gate_note(&mut h, &note_dir, "seed ");
+
+    let response = temp_response(tmp.path(), "gate-save-fail-text");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id,
+        text: "unsaveable".to_string(),
+        response_file: Some(response.clone()),
+    });
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
+
+    // Make the note's directory unwritable so the atomic save (temp file in
+    // the same directory) fails.
+    std::fs::set_permissions(&note_dir, std::fs::Permissions::from_mode(0o555))
+        .expect("make note dir read-only");
+    let response = temp_response(tmp.path(), "gate-save-fail-key");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "cmd+s".to_string(),
+        response_file: Some(response.clone()),
+    });
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
+    let state = gate_note_semantics(&h, pane_id);
+    assert!(
+        state["last_save_result"]
+            .as_str()
+            .is_some_and(|result| result.starts_with("error:")),
+        "failed save must report an error result; state={state}"
+    );
+    assert_eq!(
+        state["dirty"].as_bool(),
+        Some(true),
+        "failed save must stay dirty for retry; state={state}"
+    );
+
+    // Restore write access so the pane's Drop-flush retry succeeds at
+    // teardown (and the tempdir can be cleaned up).
+    std::fs::set_permissions(&note_dir, std::fs::Permissions::from_mode(0o755))
+        .expect("restore note dir permissions");
+}

@@ -1,0 +1,40 @@
+# Editor release gate (stint 0479): Cmd+S persists the note through the real
+# save path and a fresh pane on the same file reopens the saved content.
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-editor-gate-persistence.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "persisted gate content" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "persisted gate content", undo_available = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+s" }
+
+[[steps]]
+expect = { target = "notes", save_result = "ok", timeout_s = 5.0 }
+
+[[steps]]
+close = "notes"
+
+# A brand-new pane on the same path must load the saved bytes.
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["/tmp/plexi-editor-gate-persistence.md"] }
+
+[[steps]]
+expect = { target = "reopened", source_text_contains = "persisted gate content", focused = true, timeout_s = 5.0 }
+
+[[steps]]
+close = "reopened"

@@ -1,0 +1,57 @@
+# Editor release gate (stint 0479): the find bar (Cmd+F) selects matches and
+# Enter walks between them (Shift+Enter goes backward, Escape closes).
+# NOT covered here: the Replace / Replace All buttons — they are pointer-only
+# (no keyboard chord), so the scene key DSL cannot invoke them. The underlying
+# select-match-and-insert primitive they call is gated by the pure-model
+# matrix ("select_all_replace" etc.); the button wiring itself is unguarded.
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-editor-gate-find.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "alpha beta alpha" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "alpha beta alpha", caret = 16 }
+
+# Cmd+F opens the find bar and focuses its query input; typing lands there
+# and the first match is selected as the query updates.
+[[steps]]
+key = { target = "notes", value = "cmd+f" }
+
+[[steps]]
+text = { target = "notes", value = "alpha" }
+
+# Enter advances to the second match.
+[[steps]]
+key = { target = "notes", value = "enter" }
+
+[[steps]]
+expect = { target = "notes", selection = [11, 16] }
+
+# Shift+Enter walks back to the first match.
+[[steps]]
+key = { target = "notes", value = "shift+enter" }
+
+[[steps]]
+expect = { target = "notes", selection = [0, 5] }
+
+# Escape closes the bar; the match selection stays where find left it.
+[[steps]]
+key = { target = "notes", value = "escape" }
+
+[[steps]]
+expect = { target = "notes", selection = [0, 5], source_text_contains = "alpha beta alpha" }
+
+[[steps]]
+close = "notes"

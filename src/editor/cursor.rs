@@ -4,7 +4,9 @@
 //! @ 3ba085c561670342d72c560efbf6b0b92b5c0b46, MIT.
 
 /// Caret position: zero-indexed (line, char column).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct Cursor {
     pub line: usize,
     pub column: usize,
@@ -31,7 +33,9 @@ impl Ord for Cursor {
 
 /// Selection between an `anchor` (fixed) and `head` (moving caret).
 /// Anchor and head may be in either document order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct Selection {
     pub anchor: Cursor,
     pub head: Cursor,

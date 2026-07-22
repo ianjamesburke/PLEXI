@@ -1,0 +1,56 @@
+# Editor release gate (stint 0479): selection replacement + undo/redo through
+# real key events. Clipboard chords (cmd+c/x/v) are not representable in the
+# scene key DSL on either backend — egui-winit translates them to
+# Cut/Copy/Paste events before widgets see them — so this scene covers the
+# select-all + replace + undo/redo semantics the clipboard flows sit on. The
+# widget-level Paste/Cut event handling is gated by the editor widget unit
+# tests (`paste_event_inserts_text` and friends in src/editor/widget.rs);
+# the OS clipboard bridge itself is not part of this gate.
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-editor-gate-clipboard.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "alpha beta" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "alpha beta", caret = 10, undo_available = true }
+
+# Select-all then replacement typing: one atomic transaction.
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+expect = { target = "notes", selection = [0, 10] }
+
+[[steps]]
+text = { target = "notes", value = "gamma" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "gamma", caret = 5 }
+
+# Undo restores the replaced text; redo re-applies it and clears the redo stack.
+[[steps]]
+key = { target = "notes", value = "cmd+z" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "alpha beta", redo_available = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+shift+z" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "gamma", undo_available = true, redo_available = false }
+
+[[steps]]
+close = "notes"

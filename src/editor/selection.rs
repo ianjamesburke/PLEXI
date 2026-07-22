@@ -5,6 +5,7 @@
 
 use super::buffer::TextBuffer;
 use super::cursor::{Cursor, Selection};
+use super::grapheme::{next_grapheme_boundary, snap_to_boundary};
 use super::movement::{doc_end, line_len, line_text};
 
 /// Selection spanning the whole document.
@@ -47,6 +48,16 @@ pub fn word_boundaries(buffer: &TextBuffer, cursor: Cursor) -> Selection {
     while end < chars.len() && class(chars[end]) == target {
         end += 1;
     }
+    // The char-class scan can stop inside a grapheme cluster (e.g. between a
+    // base char and its combining mark, which classify differently). Snap
+    // outward so both endpoints land on cluster boundaries.
+    let text: String = chars.iter().collect();
+    let start = snap_to_boundary(&text, start);
+    let end = if snap_to_boundary(&text, end) == end {
+        end
+    } else {
+        next_grapheme_boundary(&text, end)
+    };
     Selection::new(
         Cursor::new(cursor.line, start),
         Cursor::new(cursor.line, end),
