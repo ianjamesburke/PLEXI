@@ -22,9 +22,13 @@ pub mod buffer;
 pub mod commands;
 pub mod cursor;
 pub mod grapheme;
+pub mod highlight;
 pub mod history;
 pub mod ime;
+pub mod markdown;
+pub mod mode;
 pub mod movement;
+pub mod preview;
 pub mod selection;
 pub mod transaction;
 pub mod view;
@@ -32,6 +36,8 @@ pub mod widget;
 
 pub use commands::{Document, EditorCommand};
 pub use cursor::{Cursor, Selection};
+pub use highlight::SyntaxHighlighter;
+pub use mode::EditorMode;
 pub use view::ViewState;
 
 /// Snapshot of the editor's semantic state, for host inspection and tests.

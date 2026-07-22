@@ -39,6 +39,9 @@ egui_tiles = { version = "0.15.0", features = ["serde"] }
 egui_term = { path = "deps/egui_term" }
 # Shared editor core (stint 0317): rope buffer + grapheme-aware caret movement.
 ropey = "1.6"
+# Code-mode syntax highlighting (stint 0318). Pure-Rust regex backend
+# (`default-fancy`) — the plain `default` feature pulls the C onig library.
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 unicode-segmentation = "1.11"
 dirs = "6"
 fern = "0.7"
@@ -77,6 +80,7 @@ rodio = "0.22"
 # nested dirs). default-features disabled to avoid pulling crossbeam-channel.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 egui_commonmark = "0.23.0"
+pulldown-cmark = { version = "0.13", default-features = false }
 # Native file picker dialog (#514). Uses NSOpenPanel on macOS.
 rfd = "0.17"
 # Headless app render (#850). Already transitive via eframe; declared directly for explicit use.

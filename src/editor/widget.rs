@@ -7,13 +7,115 @@
 //! editing logic. Focus arbitration is the caller's job (`src/ui/AGENTS.md`
 //! forbids direct `request_focus`).
 
-use egui::text::CCursor;
-use egui::{Event, ImeEvent, Key, Modifiers, Rect, Sense, Ui, Vec2};
+use egui::text::{CCursor, LayoutJob, TextFormat};
+use egui::{Color32, Event, ImeEvent, Key, Modifiers, Rect, Sense, Ui, Vec2};
 
 use super::commands::{Document, EditorCommand, Movement};
 use super::cursor::Cursor;
+use super::highlight::{SpanProvider, TokenKind};
+use super::mode::EditorMode;
 use super::movement::line_text;
+use super::preview::{MarkdownLayoutCache, MdStyle};
 use super::view::ViewState;
+
+/// Horizontal padding on each side of the gutter's line numbers.
+const GUTTER_PAD: f32 = 6.0;
+
+/// Theme colors for code-mode chrome and syntax token kinds. Callers build
+/// this from host design tokens (`src/ui/theme.rs`); the editor core never
+/// picks concrete colors itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CodeTheme {
+    pub gutter_text: Color32,
+    pub current_line_bg: Color32,
+    pub keyword: Color32,
+    pub string: Color32,
+    pub comment: Color32,
+    pub number: Color32,
+    pub ty: Color32,
+    pub function: Color32,
+    pub punctuation: Color32,
+}
+
+impl CodeTheme {
+    /// Fallback derived from egui visuals, for callers without host tokens
+    /// (tests): plain chrome, no token coloring beyond text/weak.
+    fn from_visuals(visuals: &egui::Visuals) -> Self {
+        let text = visuals.text_color();
+        let weak = visuals.weak_text_color();
+        Self {
+            gutter_text: weak,
+            current_line_bg: visuals.faint_bg_color,
+            keyword: text,
+            string: text,
+            comment: weak,
+            number: text,
+            ty: text,
+            function: text,
+            punctuation: weak,
+        }
+    }
+
+    fn color_for(&self, kind: TokenKind, plain: Color32) -> Color32 {
+        match kind {
+            TokenKind::Plain => plain,
+            TokenKind::Keyword => self.keyword,
+            TokenKind::String => self.string,
+            TokenKind::Comment => self.comment,
+            TokenKind::Number => self.number,
+            TokenKind::Type => self.ty,
+            TokenKind::Function => self.function,
+            TokenKind::Punctuation => self.punctuation,
+        }
+    }
+}
+
+/// Theme colors for Markdown Live Preview styling. Callers build this from
+/// host design tokens; the editor core never picks concrete colors. Styling
+/// is color/italic only — it must never change glyph metrics (see
+/// `super::preview` for the source↔layout mapping contract).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkdownTheme {
+    /// Structural syntax markers (`#`, `-`, `>`, `**`, fences): dimmed.
+    pub marker: Color32,
+    pub heading: Color32,
+    pub strong: Color32,
+    pub emphasis: Color32,
+    pub code: Color32,
+    pub quote: Color32,
+    pub rule: Color32,
+}
+
+impl MarkdownTheme {
+    /// Fallback derived from egui visuals, for callers without host tokens.
+    fn from_visuals(visuals: &egui::Visuals) -> Self {
+        let text = visuals.text_color();
+        let weak = visuals.weak_text_color();
+        Self {
+            marker: weak,
+            heading: visuals.strong_text_color(),
+            strong: visuals.strong_text_color(),
+            emphasis: text,
+            code: text,
+            quote: weak,
+            rule: weak,
+        }
+    }
+
+    /// Color and italic flag for one style class.
+    fn format_for(&self, style: MdStyle, plain: Color32) -> (Color32, bool) {
+        match style {
+            MdStyle::Marker => (self.marker, false),
+            MdStyle::Heading(_) => (self.heading, false),
+            MdStyle::Strong => (self.strong, false),
+            MdStyle::Emphasis => (self.emphasis, true),
+            MdStyle::Code => (self.code, false),
+            MdStyle::Quote => (self.quote, true),
+            MdStyle::Rule => (self.rule, false),
+            MdStyle::Plain => (plain, false),
+        }
+    }
+}
 
 /// Renders a [`Document`] and translates egui input into [`EditorCommand`]s.
 ///
@@ -31,6 +133,19 @@ pub struct EditorWidget<'a> {
     active: bool,
     /// Monospace font size override; defaults to the style's monospace size.
     font_size: Option<f32>,
+    /// Presentation/input mode: plain, Markdown structure commands, or code
+    /// chrome (gutter, current-line highlight, syntax spans).
+    mode: EditorMode,
+    /// Syntax-highlight span source for code mode. `None` paints plain text
+    /// (the fallback for unknown languages).
+    span_provider: Option<&'a mut dyn SpanProvider>,
+    /// Code-mode chrome/token colors; derived from egui visuals when unset.
+    code_theme: Option<CodeTheme>,
+    /// Cached Markdown block/inline layout for Live Preview. `None` renders
+    /// Markdown mode as plain source.
+    md_cache: Option<&'a mut MarkdownLayoutCache>,
+    /// Live Preview colors; derived from egui visuals when unset.
+    md_theme: Option<MarkdownTheme>,
     /// Char ranges to paint with a background (find matches), plus the index
     /// of the "current" range and the two fill colors (normal, current).
     highlights: Vec<(usize, usize)>,
@@ -47,6 +162,11 @@ impl<'a> EditorWidget<'a> {
             id: None,
             active: true,
             font_size: None,
+            mode: EditorMode::PlainText,
+            span_provider: None,
+            code_theme: None,
+            md_cache: None,
+            md_theme: None,
             highlights: Vec::new(),
             current_highlight: None,
             highlight_bg: egui::Color32::TRANSPARENT,
@@ -73,6 +193,42 @@ impl<'a> EditorWidget<'a> {
     }
 
     #[must_use]
+    pub fn mode(mut self, mode: EditorMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Syntax-highlight span source for code mode. Ignored outside
+    /// [`EditorMode::Code`].
+    #[must_use]
+    pub fn span_provider(mut self, provider: &'a mut dyn SpanProvider) -> Self {
+        self.span_provider = Some(provider);
+        self
+    }
+
+    /// Code-mode chrome/token colors (host theme tokens).
+    #[must_use]
+    pub fn code_theme(mut self, theme: CodeTheme) -> Self {
+        self.code_theme = Some(theme);
+        self
+    }
+
+    /// Markdown block/inline layout cache for Live Preview. Ignored unless
+    /// the mode is [`EditorMode::Markdown`] with `live_preview: true`.
+    #[must_use]
+    pub fn markdown_preview(mut self, cache: &'a mut MarkdownLayoutCache) -> Self {
+        self.md_cache = Some(cache);
+        self
+    }
+
+    /// Live Preview colors (host theme tokens).
+    #[must_use]
+    pub fn markdown_theme(mut self, theme: MarkdownTheme) -> Self {
+        self.md_theme = Some(theme);
+        self
+    }
+
+    #[must_use]
     pub fn highlights(
         mut self,
         ranges: Vec<(usize, usize)>,
@@ -87,7 +243,7 @@ impl<'a> EditorWidget<'a> {
         self
     }
 
-    pub fn show(self, ui: &mut Ui) -> egui::Response {
+    pub fn show(mut self, ui: &mut Ui) -> egui::Response {
         let font_id = match self.font_size {
             Some(size) => egui::FontId::monospace(size),
             None => egui::TextStyle::Monospace.resolve(ui.style()),
@@ -97,9 +253,10 @@ impl<'a> EditorWidget<'a> {
         let id = self.id.unwrap_or(auto_id);
         let response = ui.interact(rect, id, Sense::click_and_drag());
 
+        let gutter_width = self.gutter_width(ui, &font_id, self.doc.buffer().line_count());
         self.view.line_height = line_height;
         self.view.viewport_height = rect.height();
-        self.view.viewport_width = rect.width();
+        self.view.viewport_width = rect.width() - gutter_width;
         let page_rows = ((rect.height() / line_height).floor().max(1.0)) as usize;
 
         let mut commands: Vec<EditorCommand> = Vec::new();
@@ -133,7 +290,7 @@ impl<'a> EditorWidget<'a> {
                         modifiers,
                         ..
                     } => {
-                        if let Some(cmd) = translate_key(*key, *modifiers, page_rows) {
+                        if let Some(cmd) = translate_key(*key, *modifiers, page_rows, &self.mode) {
                             commands.push(cmd);
                         }
                     }
@@ -164,7 +321,7 @@ impl<'a> EditorWidget<'a> {
 
         // Pointer: click to place, shift-click / drag to extend, double-click
         // word, triple-click line.
-        let hit = |pos: egui::Pos2| self.hit_test(ui, &font_id, rect, pos);
+        let hit = |pos: egui::Pos2| self.hit_test(ui, &font_id, rect, gutter_width, pos);
         if let Some(pos) = response.interact_pointer_pos() {
             let cursor = hit(pos);
             if response.triple_clicked() {
@@ -211,47 +368,181 @@ impl<'a> EditorWidget<'a> {
             self.view.scroll_to_x(caret_x);
         }
 
-        self.paint(ui, &font_id, rect);
+        self.paint(ui, &font_id, rect, gutter_width);
         response
+    }
+
+    /// Width of the line-number gutter in code mode; zero otherwise.
+    fn gutter_width(&self, ui: &Ui, font_id: &egui::FontId, line_count: usize) -> f32 {
+        if !self.mode.is_code() {
+            return 0.0;
+        }
+        let digits = (line_count.max(1).ilog10() as usize + 1).max(2);
+        let char_width = ui.fonts_mut(|f| f.glyph_width(font_id, '0'));
+        digits as f32 * char_width + 2.0 * GUTTER_PAD
     }
 
     /// Maps a pointer position to a document cursor via per-line galley
     /// hit-testing.
-    fn hit_test(&self, ui: &Ui, font_id: &egui::FontId, rect: Rect, pos: egui::Pos2) -> Cursor {
+    fn hit_test(
+        &self,
+        ui: &Ui,
+        font_id: &egui::FontId,
+        rect: Rect,
+        gutter_width: f32,
+        pos: egui::Pos2,
+    ) -> Cursor {
         let line_count = self.doc.buffer().line_count();
         let y = pos.y - rect.top() + self.view.scroll_y;
         let line = ((y / self.view.line_height).floor().max(0.0) as usize)
             .min(line_count.saturating_sub(1));
         let text = line_text(self.doc.buffer(), line);
         let galley = ui.fonts_mut(|f| f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE));
-        let ccursor =
-            galley.cursor_from_pos(Vec2::new(pos.x - rect.left() + self.view.scroll_x, 0.0));
+        let ccursor = galley.cursor_from_pos(Vec2::new(
+            pos.x - rect.left() - gutter_width + self.view.scroll_x,
+            0.0,
+        ));
         Cursor::new(line, ccursor.index)
     }
 
-    fn paint(&self, ui: &Ui, font_id: &egui::FontId, rect: Rect) {
-        let painter = ui.painter_at(rect);
+    /// Lays out one line's galley: syntax-colored via the span provider in
+    /// code mode, single-color otherwise (and as the unknown-language
+    /// fallback).
+    fn line_galley(
+        &mut self,
+        ui: &Ui,
+        font_id: &egui::FontId,
+        line: usize,
+        text: &str,
+        text_color: Color32,
+        theme: &CodeTheme,
+        md_active: Option<&std::ops::Range<usize>>,
+    ) -> std::sync::Arc<egui::Galley> {
+        // Markdown Live Preview: inactive blocks render styled per-line
+        // LayoutJobs; the active block (and everything in source mode) shows
+        // raw source. Same font everywhere, so galley metrics — and with them
+        // hit-testing and caret geometry — are identical to plain rendering.
+        if self.mode.is_live_preview() && !text.is_empty() {
+            let active = md_active.is_some_and(|r| r.contains(&line));
+            if let (false, Some(cache)) = (active, self.md_cache.as_deref_mut()) {
+                let md_theme = self
+                    .md_theme
+                    .unwrap_or_else(|| MarkdownTheme::from_visuals(ui.visuals()));
+                let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
+                let spans = layout.line_style_spans(line, text);
+                if !spans.is_empty() {
+                    let mut job = LayoutJob::default();
+                    job.wrap.max_width = f32::INFINITY;
+                    for span in &spans {
+                        let (color, italics) = md_theme.format_for(span.style, text_color);
+                        let mut format = TextFormat::simple(font_id.clone(), color);
+                        format.italics = italics;
+                        job.append(&text[span.range.clone()], 0.0, format);
+                    }
+                    return ui.fonts_mut(|f| f.layout_job(job));
+                }
+            }
+        }
+        let spans = match (self.mode.is_code(), self.span_provider.as_deref_mut()) {
+            (true, Some(provider)) => {
+                provider.line_spans(self.doc.buffer(), line, self.doc.revision())
+            }
+            _ => &[],
+        };
+        if spans.is_empty() {
+            return ui
+                .fonts_mut(|f| f.layout_no_wrap(text.to_string(), font_id.clone(), text_color));
+        }
+        let mut job = LayoutJob::default();
+        job.wrap.max_width = f32::INFINITY;
+        for span in spans {
+            let (start, end) = (span.start.min(text.len()), span.end.min(text.len()));
+            if start >= end {
+                continue;
+            }
+            job.append(
+                &text[start..end],
+                0.0,
+                TextFormat::simple(font_id.clone(), theme.color_for(span.kind, text_color)),
+            );
+        }
+        ui.fonts_mut(|f| f.layout_job(job))
+    }
+
+    fn paint(&mut self, ui: &Ui, font_id: &egui::FontId, rect: Rect, gutter_width: f32) {
         let visuals = ui.visuals();
         let text_color = visuals.text_color();
+        let code_theme = self
+            .code_theme
+            .unwrap_or_else(|| CodeTheme::from_visuals(visuals));
+        // Text clips at the gutter edge so horizontal scroll never paints
+        // under the line numbers.
+        let text_rect = Rect::from_min_max(
+            egui::pos2(rect.left() + gutter_width, rect.top()),
+            rect.max,
+        );
+        let painter = ui.painter_at(text_rect);
         let selection_color = visuals.selection.bg_fill.linear_multiply(0.5);
         let caret_color = visuals.selection.stroke.color;
-        let buffer = self.doc.buffer();
-        let line_count = buffer.line_count();
+        let line_count = self.doc.buffer().line_count();
         let selection = self.doc.selection();
         let (sel_start, sel_end) = selection.ordered();
         let caret = self.doc.cursor();
         let mut caret_rect: Option<Rect> = None;
+        let gutter_painter = ui.painter_at(rect);
+        let show_code_chrome = self.mode.is_code();
+
+        // Live Preview: the blocks intersecting the selection reveal raw
+        // source; everything else renders styled.
+        let md_active: Option<std::ops::Range<usize>> =
+            if self.mode.is_live_preview() && self.active {
+                self.md_cache.as_deref_mut().map(|cache| {
+                    let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
+                    layout.active_lines(sel_start.line, sel_end.line)
+                })
+            } else {
+                None
+            };
 
         for line in self.view.visible_lines(line_count) {
             let top = rect.top() + self.view.line_top(line) - self.view.scroll_y;
-            let text = line_text(buffer, line);
-            let galley =
-                ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font_id.clone(), text_color));
-            let origin = egui::pos2(rect.left() - self.view.scroll_x, top);
+            let text = line_text(self.doc.buffer(), line);
+            let galley = self.line_galley(
+                ui,
+                font_id,
+                line,
+                &text,
+                text_color,
+                &code_theme,
+                md_active.as_ref(),
+            );
+            let origin = egui::pos2(rect.left() + gutter_width - self.view.scroll_x, top);
+
+            if show_code_chrome {
+                // Current-line highlight under everything else.
+                if line == caret.line {
+                    painter.rect_filled(
+                        Rect::from_min_max(
+                            egui::pos2(text_rect.left(), top),
+                            egui::pos2(rect.right(), top + self.view.line_height),
+                        ),
+                        0.0,
+                        code_theme.current_line_bg,
+                    );
+                }
+                // Right-aligned 1-based line number in the gutter.
+                gutter_painter.text(
+                    egui::pos2(rect.left() + gutter_width - GUTTER_PAD, top),
+                    egui::Align2::RIGHT_TOP,
+                    (line + 1).to_string(),
+                    font_id.clone(),
+                    code_theme.gutter_text,
+                );
+            }
 
             // Find-match highlight fills under the text and selection.
             if !self.highlights.is_empty() {
-                let line_start = buffer.line_to_char(line);
+                let line_start = self.doc.buffer().line_to_char(line);
                 let char_count = text.chars().count();
                 let line_end_char = line_start + char_count;
                 for (i, &(hs, he)) in self.highlights.iter().enumerate() {
@@ -357,12 +648,30 @@ impl<'a> EditorWidget<'a> {
 
 /// Maps a key press (with modifiers) to an editor command. Returns `None`
 /// for keys the editor does not handle. `page_rows` is the viewport height in
-/// lines, used by PageUp/PageDown.
-fn translate_key(key: Key, modifiers: Modifiers, page_rows: usize) -> Option<EditorCommand> {
+/// lines, used by PageUp/PageDown. [`EditorMode::Markdown`] routes
+/// Tab/Enter/Backspace to the Markdown-aware commands; plain and code modes
+/// share the plain map (Tab/Shift-Tab already indent/outdent there).
+fn translate_key(
+    key: Key,
+    modifiers: Modifiers,
+    page_rows: usize,
+    mode: &EditorMode,
+) -> Option<EditorCommand> {
     let extend = modifiers.shift;
     let word = modifiers.alt;
     let line = modifiers.command;
     let mv = |movement: Movement| Some(EditorCommand::Move { movement, extend });
+    if mode.is_markdown() {
+        match key {
+            Key::Tab if modifiers.shift => return Some(EditorCommand::MarkdownOutdent),
+            Key::Tab if modifiers.is_none() => return Some(EditorCommand::MarkdownIndent),
+            Key::Enter if modifiers.is_none() => return Some(EditorCommand::MarkdownNewline),
+            Key::Backspace if modifiers.is_none() => {
+                return Some(EditorCommand::MarkdownBackspace)
+            }
+            _ => {}
+        }
+    }
     match key {
         Key::Tab if modifiers.shift => Some(EditorCommand::Outdent),
         Key::Tab if modifiers.is_none() => Some(EditorCommand::Indent),
@@ -512,6 +821,194 @@ mod tests {
         h.key_press(Key::Backspace);
         h.step();
         assert_eq!(semantic(&h).text, "keep");
+    }
+
+    struct ModeState {
+        doc: Document,
+        view: ViewState,
+        mode: EditorMode,
+        highlighter: Option<crate::editor::SyntaxHighlighter>,
+    }
+
+    fn mode_harness(text: &str, mode: EditorMode) -> egui_kittest::Harness<'static, ModeState> {
+        let highlighter = mode
+            .language()
+            .and_then(crate::editor::SyntaxHighlighter::new);
+        let state = ModeState {
+            doc: Document::new(text),
+            view: ViewState::default(),
+            mode,
+            highlighter,
+        };
+        egui_kittest::Harness::new_ui_state(
+            |ui, state: &mut ModeState| {
+                let mut widget = EditorWidget::new(&mut state.doc, &mut state.view)
+                    .mode(state.mode.clone());
+                if let Some(h) = &mut state.highlighter {
+                    widget = widget.span_provider(h);
+                }
+                widget.show(ui);
+            },
+            state,
+        )
+    }
+
+    #[test]
+    fn code_mode_tab_indents_and_shift_tab_outdents() {
+        let mut h = mode_harness(
+            "fn main() {}",
+            EditorMode::Code {
+                language: "rs".into(),
+            },
+        );
+        // Tab with a collapsed caret inserts one indent step at the caret.
+        h.key_press(Key::Tab);
+        h.step();
+        assert_eq!(h.state().doc.text(), "    fn main() {}");
+        // Shift-Tab outdents the line.
+        h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+        h.step();
+        assert_eq!(h.state().doc.text(), "fn main() {}");
+        // Undo through the shared history works identically in code mode.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.step();
+        assert_eq!(h.state().doc.text(), "    fn main() {}");
+    }
+
+    #[test]
+    fn mode_change_never_alters_document_state() {
+        // Build up text, selection, history, and IME preedit in code mode…
+        let mut h = mode_harness(
+            "",
+            EditorMode::Code {
+                language: "rs".into(),
+            },
+        );
+        h.event(Event::Text("héllo 😀".into()));
+        h.step();
+        h.key_press(Key::Enter);
+        h.step();
+        h.event(Event::Text("wörld".into()));
+        h.step();
+        h.key_press_modifiers(Modifiers::SHIFT | Modifiers::ALT, Key::ArrowLeft);
+        h.step();
+        h.event(Event::Ime(ImeEvent::Preedit("かん".into())));
+        h.step();
+        let before = h.state().doc.semantic_state(0.0);
+
+        // …then flip through every mode without any input events: nothing in
+        // the document (text, selection, undo history, IME) may change.
+        for mode in [
+            EditorMode::PlainText,
+            EditorMode::Markdown { live_preview: false },
+            EditorMode::Markdown { live_preview: true },
+            EditorMode::Code {
+                language: "py".into(),
+            },
+        ] {
+            h.state_mut().mode = mode.clone();
+            h.state_mut().highlighter = mode
+                .language()
+                .and_then(crate::editor::SyntaxHighlighter::new);
+            h.step();
+            let after = h.state().doc.semantic_state(0.0);
+            assert_eq!(after, before, "mode {mode:?} altered document state");
+        }
+
+        // Undo still walks the same history after the mode flips.
+        h.event(Event::Ime(ImeEvent::Disabled));
+        h.step();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.step();
+        assert_eq!(h.state().doc.text(), "héllo 😀\n");
+    }
+
+    #[test]
+    fn unknown_code_language_falls_back_to_plain_spans() {
+        let mode = EditorMode::Code {
+            language: "not-a-language".into(),
+        };
+        assert!(mode.language().and_then(crate::editor::SyntaxHighlighter::new).is_none());
+        // The widget still renders and edits without a provider.
+        let mut h = mode_harness("some text", mode);
+        h.event(Event::Text("!".into()));
+        h.step();
+        assert_eq!(h.state().doc.text(), "!some text");
+    }
+
+    struct PreviewState {
+        doc: Document,
+        view: ViewState,
+        cache: MarkdownLayoutCache,
+        live: bool,
+    }
+
+    fn preview_harness(text: &str) -> egui_kittest::Harness<'static, PreviewState> {
+        let state = PreviewState {
+            doc: Document::new(text),
+            view: ViewState::default(),
+            cache: MarkdownLayoutCache::default(),
+            live: true,
+        };
+        egui_kittest::Harness::new_ui_state(
+            |ui, state: &mut PreviewState| {
+                EditorWidget::new(&mut state.doc, &mut state.view)
+                    .mode(EditorMode::Markdown {
+                        live_preview: state.live,
+                    })
+                    .markdown_preview(&mut state.cache)
+                    .show(ui);
+            },
+            state,
+        )
+    }
+
+    #[test]
+    fn live_preview_editing_selection_and_undo_stay_coherent() {
+        let mut h = preview_harness("# Title\n\npara **bold** text\n\n- item");
+        // Move across blocks, then type into the paragraph.
+        h.key_press(Key::ArrowDown);
+        h.key_press(Key::ArrowDown);
+        h.step();
+        h.event(Event::Text("X".into()));
+        h.step();
+        assert_eq!(
+            h.state().doc.text(),
+            "# Title\n\nXpara **bold** text\n\n- item"
+        );
+        // Undo through the shared history, unchanged by preview rendering.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.step();
+        assert_eq!(h.state().doc.text(), "# Title\n\npara **bold** text\n\n- item");
+        // Cross-block select-all + copy path still sees the full source.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.step();
+        assert_eq!(
+            h.state().doc.selected_text(),
+            "# Title\n\npara **bold** text\n\n- item"
+        );
+        // Flipping to source mode and back never alters document state.
+        let before = h.state().doc.semantic_state(0.0);
+        h.state_mut().live = false;
+        h.step();
+        h.state_mut().live = true;
+        h.step();
+        assert_eq!(h.state().doc.semantic_state(0.0), before);
+    }
+
+    #[test]
+    fn live_preview_caret_movement_across_styled_blocks_hits_real_positions() {
+        let mut h = preview_harness("# Head\ntext\n- one\n- two");
+        // Walk the caret through every line end-to-end; every position is a
+        // real source position (movement never skips styled markers).
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown); // DocEnd
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(3, 5));
+        for _ in 0..(6 + 1 + 4 + 1 + 5 + 1 + 5) {
+            h.key_press(Key::ArrowLeft);
+        }
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, 0));
     }
 
     #[test]
