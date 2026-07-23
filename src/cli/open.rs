@@ -127,7 +127,12 @@ pub fn pane_new_cli(
         return wait_for_response(&response_file);
     }
 
-    // Fallback: spawn-queue (outside a Plexi pane)
+    // Fallback: spawn-queue (outside a Plexi pane). Only queue when a host is
+    // actually servicing this channel — never park a spawn into the void
+    // (stint 0532).
+    if let Err(code) = crate::cli::require_spawn_servicing_host("pane new") {
+        return code;
+    }
     if from_pane_id.is_some() {
         log::warn!(
             "pane_new:cli: --from requires PLEXI_SOCKET (run inside a Plexi pane); ignoring"
@@ -146,6 +151,8 @@ pub fn pane_new_cli(
     let mut queue_payload = serde_json::json!({
         "type_id": type_id,
         "args": args,
+        "origin": "pane new",
+        "queued_at_ms": crate::cli::spawn_queued_at_ms(),
     });
     if let Some(l) = layout {
         queue_payload["layout"] = serde_json::Value::String(l.to_string());
@@ -569,6 +576,12 @@ fn open_app_by_path(
         return wait_for_response(&response_file);
     }
 
+    // Fallback: spawn-queue (outside a Plexi pane). Only queue when a host is
+    // actually servicing this channel — never park a spawn into the void
+    // (stint 0532).
+    if let Err(code) = crate::cli::require_spawn_servicing_host("open") {
+        return code;
+    }
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         eprintln!("error: could not create spawn queue: {e}");
@@ -578,7 +591,7 @@ fn open_app_by_path(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let queue_payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
+    let mut queue_payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
         log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
         serde_json::json!({
             "type_id": "",
@@ -587,6 +600,8 @@ fn open_app_by_path(
             "layout": layout,
         })
     });
+    queue_payload["origin"] = serde_json::Value::String("open".to_string());
+    queue_payload["queued_at_ms"] = crate::cli::spawn_queued_at_ms().into();
     let file = queue_dir.join(format!("{ts}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
         eprintln!("error: could not write spawn request: {e}");

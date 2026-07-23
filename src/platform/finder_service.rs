@@ -4,6 +4,7 @@
 //! Finder shows "Open in Plexi". Paths received from the pasteboard are
 //! queued and drained each frame by `PlexiApp::update()`.
 
+use crate::app::ui_mailbox::UiWake;
 use objc2::declare::ClassBuilder;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, Sel};
@@ -11,15 +12,15 @@ use objc2::{sel, ClassType};
 use objc2_app_kit::NSApplication;
 use objc2_foundation::{MainThreadMarker, NSString};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 static PATH_QUEUE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// egui context used to wake the UI thread after queueing paths. A fully
+/// Wake seam used to produce a servicing frame after queueing paths. A fully
 /// idle Plexi produces zero frames and `PATH_QUEUE` is only drained during
-/// a frame, so without a repaint request a Finder "Open in Plexi" against
-/// an idle instance sits queued until the user touches the window.
-static EGUI_CTX: OnceLock<egui::Context> = OnceLock::new();
+/// a frame, so without a wake a Finder "Open in Plexi" against an idle
+/// instance sits queued until the user touches the window.
+static UI_WAKE: OnceLock<Arc<dyn UiWake>> = OnceLock::new();
 
 fn register_provider_class() -> &'static objc2::runtime::AnyClass {
     static CLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
@@ -65,11 +66,8 @@ fn register_provider_class() -> &'static objc2::runtime::AnyClass {
             if let Ok(mut queue) = PATH_QUEUE.lock() {
                 queue.extend(paths);
             }
-            if let Some(ctx) = EGUI_CTX.get() {
-                log::debug!(
-                    "finder_service: paths queued — requesting repaint to wake idle UI thread"
-                );
-                ctx.request_repaint();
+            if let Some(wake) = UI_WAKE.get() {
+                wake.wake("finder_service");
             }
         }
 
@@ -85,10 +83,10 @@ fn register_provider_class() -> &'static objc2::runtime::AnyClass {
 }
 
 /// Register the Finder services provider with NSApp. Call once from
-/// `PlexiApp::new()` on the main thread. `egui_ctx` is used to wake the
+/// `PlexiApp::new()` on the main thread. `wake` is used to wake the
 /// (possibly zero-frame idle) UI thread whenever the service queues paths.
-pub fn register(egui_ctx: egui::Context) {
-    let _ = EGUI_CTX.set(egui_ctx);
+pub fn register(wake: Arc<dyn UiWake>) {
+    let _ = UI_WAKE.set(wake);
     let Some(mtm) = MainThreadMarker::new() else {
         log::warn!("finder_service: not on main thread, cannot register");
         return;

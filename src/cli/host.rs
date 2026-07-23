@@ -348,6 +348,8 @@ fn seed_pane(queue_dir: &Path, index: usize, spec: &PaneSpec) -> Result<PathBuf,
         "args": args,
         "layout": layout,
         "cwd": spec.cwd,
+        "origin": "host start",
+        "queued_at_ms": crate::cli::spawn_queued_at_ms(),
     });
     let id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

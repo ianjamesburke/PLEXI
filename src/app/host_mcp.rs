@@ -26,11 +26,11 @@
 //! (set by this trusted transport, never from a tool argument), so an MCP client
 //! cannot spoof another subscriber.
 
+use crate::app::ui_mailbox::UiMailbox;
 use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
 use crate::mcp_http::{read_json_rpc_request, write_http_response, RequestOutcome};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -109,13 +109,12 @@ fn save_identity(config_dir: &Path, port: u16, token: &str) {
 }
 
 /// Start the host MCP server. `subscribe_tx` routes subscribe requests to the
-/// UI thread (which owns the grant store); `egui_ctx` is woken so the UI drains
-/// the subscribe channel promptly even while idle. `config_dir` is the profile
-/// dir where the `(port, token)` identity is persisted across restarts.
+/// UI thread (which owns the grant store); the mailbox wakes the UI so it
+/// drains the subscribe channel promptly even while idle. `config_dir` is the
+/// profile dir where the `(port, token)` identity is persisted across restarts.
 /// Idempotent at the discovery level — the first successful bind wins.
 pub fn start_host_mcp_server(
-    subscribe_tx: Sender<HostSubscribeRequest>,
-    egui_ctx: egui::Context,
+    subscribe_tx: UiMailbox<HostSubscribeRequest>,
     config_dir: &Path,
 ) -> std::io::Result<(u16, String)> {
     let persisted = load_identity(config_dir);
@@ -153,13 +152,10 @@ pub fn start_host_mcp_server(
                     Ok(stream) => {
                         let token = std::sync::Arc::clone(&token_arc);
                         let subscribe_tx = subscribe_tx.clone();
-                        let egui_ctx = egui_ctx.clone();
                         std::thread::Builder::new()
                             .name("host-mcp-conn".to_string())
                             .spawn(move || {
-                                if let Err(e) =
-                                    handle_connection(stream, &token, &subscribe_tx, &egui_ctx)
-                                {
+                                if let Err(e) = handle_connection(stream, &token, &subscribe_tx) {
                                     log::warn!("host_mcp: connection error: {e}");
                                 }
                             })
@@ -207,8 +203,7 @@ fn tool_defs() -> serde_json::Value {
 fn handle_connection(
     stream: std::net::TcpStream,
     token: &str,
-    subscribe_tx: &Sender<HostSubscribeRequest>,
-    egui_ctx: &egui::Context,
+    subscribe_tx: &UiMailbox<HostSubscribeRequest>,
 ) -> std::io::Result<()> {
     let peer = stream
         .peer_addr()
@@ -249,7 +244,7 @@ fn handle_connection(
             log::info!("host_mcp: tool_call tool={tool_name} peer={peer}");
             let result = match tool_name {
                 "list_event_streams" => tool_list_event_streams(),
-                "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx, egui_ctx),
+                "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx),
                 other => Err(format!("unknown tool: {other}")),
             };
             match result {
@@ -291,8 +286,7 @@ fn tool_list_event_streams() -> Result<String, String> {
 /// return it, then clear the subscription.
 fn tool_subscribe_and_wait(
     args: &serde_json::Value,
-    subscribe_tx: &Sender<HostSubscribeRequest>,
-    egui_ctx: &egui::Context,
+    subscribe_tx: &UiMailbox<HostSubscribeRequest>,
 ) -> Result<String, String> {
     let app_id = args
         .get("app_id")
@@ -344,7 +338,6 @@ fn tool_subscribe_and_wait(
     subscribe_tx
         .send(req)
         .map_err(|_| "host not accepting subscriptions".to_string())?;
-    crate::app::wake_ui_for_external_request(&egui_ctx, "host_mcp_subscribe");
 
     // A first-time MCP subscribe under default `Ask` posture blocks here until
     // the user answers the host consent modal. Kept short enough that the
@@ -445,7 +438,10 @@ mod tests {
             ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource,
             ResourceScope, TargetType,
         };
-        let (tx, rx) = std::sync::mpsc::channel::<HostSubscribeRequest>();
+        let (tx, rx) = UiMailbox::<HostSubscribeRequest>::channel(
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
+            "host_mcp_test",
+        );
         let mut store = crate::broker::GrantStore::default();
         if let Some(target) = grant_target {
             store.record(GrantRecord {
@@ -479,7 +475,7 @@ mod tests {
         // Each test server gets an isolated profile dir so its persisted
         // identity never collides with a sibling test's port/token.
         let dir = tempfile::tempdir().unwrap();
-        start_host_mcp_server(tx, egui::Context::default(), dir.path()).unwrap()
+        start_host_mcp_server(tx, dir.path()).unwrap()
     }
 
     #[test]
@@ -494,13 +490,14 @@ mod tests {
     #[test]
     fn restart_reuses_persisted_token() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = std::sync::mpsc::channel::<HostSubscribeRequest>();
-        let (port1, token1) =
-            start_host_mcp_server(tx.clone(), egui::Context::default(), dir.path()).unwrap();
+        let (tx, _rx) = UiMailbox::<HostSubscribeRequest>::channel(
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
+            "host_mcp_test",
+        );
+        let (port1, token1) = start_host_mcp_server(tx.clone(), dir.path()).unwrap();
         // A second boot against the same profile dir must reuse the token so a
         // baked `Authorization: Bearer` keeps authenticating across restarts.
-        let (_port2, token2) =
-            start_host_mcp_server(tx, egui::Context::default(), dir.path()).unwrap();
+        let (_port2, token2) = start_host_mcp_server(tx, dir.path()).unwrap();
         assert_eq!(token1, token2, "token must persist across restarts");
         assert_eq!(load_identity(dir.path()).unwrap().token, token1);
         assert!(port1 > 0);

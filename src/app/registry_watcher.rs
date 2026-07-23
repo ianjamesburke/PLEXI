@@ -6,9 +6,10 @@
 //! file) with a 500 ms debounce — scaffolding creates many files in rapid
 //! succession, so a longer window avoids redundant rescans.
 
+use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -38,15 +39,19 @@ impl Drop for AppRegistryWatcher {
 ///
 /// Returns `None` if no directories could be watched (e.g. the global apps dir
 /// has never been created). Any `Create`, `Modify`, or `Remove` event in any
-/// watched directory fires a signal on the returned `Receiver<()>`.
-pub fn start(dirs: Vec<PathBuf>) -> Option<(AppRegistryWatcher, Receiver<()>)> {
+/// watched directory fires a signal on the returned receiver, waking the UI
+/// thread via `wake` so the rescan is not stranded on an idle host.
+pub fn start(
+    dirs: Vec<PathBuf>,
+    wake: Arc<dyn UiWake>,
+) -> Option<(AppRegistryWatcher, MailboxReceiver<()>)> {
     let existing: Vec<PathBuf> = dirs.into_iter().filter(|d| d.is_dir()).collect();
     if existing.is_empty() {
         log::info!("app_registry_watcher: no existing dirs to watch; watcher not started");
         return None;
     }
 
-    let (reload_tx, reload_rx) = mpsc::channel::<()>();
+    let (reload_tx, reload_rx) = UiMailbox::channel(wake, "app_registry_watcher");
     let (raw_tx, raw_rx) = mpsc::channel::<()>();
 
     let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| match res
@@ -92,7 +97,7 @@ pub fn start(dirs: Vec<PathBuf>) -> Option<(AppRegistryWatcher, Receiver<()>)> {
     ))
 }
 
-fn debounce_loop(rx: Receiver<()>, sender: Sender<()>, cancel: Arc<Mutex<bool>>) {
+fn debounce_loop(rx: Receiver<()>, sender: UiMailbox<()>, cancel: Arc<Mutex<bool>>) {
     let mut last_event: Option<Instant> = None;
     let debounce = Duration::from_millis(DEBOUNCE_MS);
     let poll = Duration::from_millis(50);

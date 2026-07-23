@@ -2542,6 +2542,7 @@ impl PlexiApp {
     }
 
     pub(super) fn drain_spawn_queue(&mut self) {
+        const STALE_SPAWN_WARN_SECS: u64 = 60;
         let queue_dir = crate::config::config_dir().join("spawn-queue");
         let Ok(entries) = std::fs::read_dir(&queue_dir) else {
             return;
@@ -2591,8 +2592,25 @@ impl PlexiApp {
                 log::warn!("spawn-queue: invalid spawn request, skipping");
                 continue;
             };
+            let origin = val["origin"].as_str().unwrap_or("unknown");
+            let age_secs = spawn_file_age_secs(
+                val["queued_at_ms"].as_u64(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+            );
+            // A spawn file older than the queue's promised ~1 s pickup was
+            // written while this host was not servicing — surface who queued
+            // it and how long it sat, so a late-materializing pane is
+            // attributable instead of a silent surprise (stint 0532).
+            if let Some(age) = age_secs.filter(|a| *a > STALE_SPAWN_WARN_SECS) {
+                log::warn!(
+                    "spawn-queue: draining stale spawn file queued {age}s ago (origin={origin}) — request predates this host servicing the queue"
+                );
+            }
             log::info!(
-                "spawn-queue: launching target={} layout={:?} args={:?} ephemeral={} no_focus={} cwd={:?} workspace_root={:?}",
+                "spawn-queue: launching target={} origin={origin} age_secs={age_secs:?} layout={:?} args={:?} ephemeral={} no_focus={} cwd={:?} workspace_root={:?}",
                 spec.target_for_log(),
                 spec.layout,
                 spec.args,
@@ -2699,5 +2717,29 @@ impl PlexiApp {
             }
         }
         log::warn!("pane_ipc: spawn_pane: could not apply name to pane_id={pane_id} (not found or not a terminal)");
+    }
+}
+
+/// Age of a spawn-queue file in whole seconds, from its `queued_at_ms` stamp.
+/// `None` when the file predates the stamp (written by an older CLI) or the
+/// clock went backwards.
+fn spawn_file_age_secs(queued_at_ms: Option<u64>, now_ms: u64) -> Option<u64> {
+    queued_at_ms.and_then(|q| now_ms.checked_sub(q)).map(|ms| ms / 1000)
+}
+
+#[cfg(test)]
+mod spawn_queue_age_tests {
+    use super::spawn_file_age_secs;
+
+    #[test]
+    fn age_from_stamp() {
+        assert_eq!(spawn_file_age_secs(Some(1_000), 91_000), Some(90));
+        assert_eq!(spawn_file_age_secs(Some(5_000), 5_400), Some(0));
+    }
+
+    #[test]
+    fn missing_or_future_stamp_is_none() {
+        assert_eq!(spawn_file_age_secs(None, 91_000), None);
+        assert_eq!(spawn_file_age_secs(Some(91_000), 1_000), None);
     }
 }

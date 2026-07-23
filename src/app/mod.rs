@@ -30,6 +30,7 @@ pub(crate) mod screenshot;
 pub mod secrets_app;
 mod sync;
 pub mod text_editor_app;
+pub(crate) mod ui_mailbox;
 pub mod video_player_app;
 
 #[cfg(test)]
@@ -317,16 +318,16 @@ pub struct PlexiApp {
     /// `reload_pane` call which relaunches the WASM runtime inside the
     /// existing `AppPane` envelope.
     pub(crate) hot_reload: crate::host::hot_reload::HotReloadWatcher,
-    pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::host::hot_reload::ReloadRequest>,
+    pub(crate) hot_reload_rx: ui_mailbox::MailboxReceiver<crate::host::hot_reload::ReloadRequest>,
     /// Config file watcher (#1115). Watches `config.toml` for saves and fires
     /// a signal so `reload_config()` runs automatically.
     pub(crate) _config_watcher: Option<crate::config::watcher::ConfigWatcher>,
-    pub(crate) config_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
+    pub(crate) config_reload_rx: Option<ui_mailbox::MailboxReceiver<()>>,
     /// App registry filesystem watcher (#1712). Watches the global and workspace-local
     /// apps dirs; signals `registry_reload_rx` on any directory change so the registry
     /// is rescanned without a host restart.
     pub(crate) _registry_watcher: Option<crate::app::registry_watcher::AppRegistryWatcher>,
-    pub(crate) registry_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
+    pub(crate) registry_reload_rx: Option<ui_mailbox::MailboxReceiver<()>>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
@@ -355,9 +356,13 @@ pub struct PlexiApp {
     edge_pulse: Option<EdgePulse>,
     /// Exponential accent flash on focus change (#1141).
     pub(crate) click_flash: Option<ClickFlash>,
+    /// The one host-owned wake seam (stint 0507). Every off-UI-thread producer
+    /// sends through a `UiMailbox` built on this wake; watcher restarts and
+    /// periodic updater re-checks clone it to build fresh mailboxes.
+    pub(crate) ui_wake: std::sync::Arc<dyn ui_mailbox::UiWake>,
     /// Channel receiver fed by the background update-check thread. Sends the
     /// latest version string exactly once if a newer release is available.
-    update_rx: Option<std::sync::mpsc::Receiver<String>>,
+    update_rx: Option<ui_mailbox::MailboxReceiver<String>>,
     /// Last time the host scheduled an update-check thread. Used to re-check
     /// long-running sessions at the same interval as the updater cache.
     last_update_check: std::time::Instant,
@@ -373,7 +378,7 @@ pub struct PlexiApp {
     pub(crate) shutdown_requested: bool,
     /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
-    pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::AppRequest>,
+    pane_ipc_rx: ui_mailbox::MailboxReceiver<crate::app_protocol::AppRequest>,
     /// Host-owned event subscription core shared by the CLI NDJSON transport and
     /// the host MCP server. Resolves subscriber identity, runs the broker check,
     /// and records subscriptions in the global timeline.
@@ -382,12 +387,12 @@ pub struct PlexiApp {
     /// threads to the UI thread (which owns the grant store). Drained each frame
     /// in `drain_event_subscribe_channel`.
     event_subscribe_rx:
-        std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostSubscribeRequest>,
+        ui_mailbox::MailboxReceiver<crate::host::event_subscriptions::HostSubscribeRequest>,
     /// Receiver for CLI/MCP publish requests (`events declare`/`emit`) routed
     /// from socket connection threads to the UI thread. Drained each frame in
     /// `drain_event_subscribe_channel` alongside subscribe requests.
     event_publish_rx:
-        std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostPublishRequest>,
+        ui_mailbox::MailboxReceiver<crate::host::event_subscriptions::HostPublishRequest>,
     /// Subscribe or publish requests the broker answered with `Ask`, parked for an explicit
     /// user decision. The front entry is surfaced as the host event-consent
     /// modal; [`FocusKind::EventConsent`] is promoted while this is non-empty.
@@ -452,51 +457,13 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
-/// Wake the UI thread for an external request that arrived off the UI thread.
-///
-/// The repaint request is load-bearing: a fully idle Plexi produces zero
-/// frames, and the pane-IPC channel is only drained during a frame. Without
-/// the wake, a CLI request against an idle instance sits queued until the
-/// user touches the window (#s13 perf batch regression).
-///
-/// The callback delay must stay nonzero after egui advances delayed repaint
-/// requests by the predicted frame time. Add `predicted_dt` here so eframe
-/// receives a one-shot delayed repaint instead of a `RepaintNow` event whose
-/// pass-number freshness guard can reject it during startup/multipass layout.
-/// One prompt pass is all an external arrival needs; handlers that change
-/// visible state mark their own frames dirty. Keep every socket/MCP producer
-/// on this seam: a raw `request_repaint()` is vulnerable to eframe's stale-pass
-/// guard when the producer races a multipass frame.
-/// This wake only works if the process itself is wakeable — see
-/// `platform::app_nap::disable_app_nap` for the App Nap exemption that keeps
-/// macOS from deferring these cross-thread wakeups on an idle host.
-pub(crate) const IPC_WAKE_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
-
-pub(crate) fn wake_ui_for_external_request(egui_ctx: &egui::Context, source: &str) {
-    let predicted_frame_time =
-        std::time::Duration::try_from_secs_f32(egui_ctx.input(|input| input.predicted_dt))
-            .unwrap_or_default();
-    let requested_delay = predicted_frame_time.saturating_add(IPC_WAKE_DELAY);
-    log::debug!(
-        "ui_wake: source={source} predicted_dt={predicted_frame_time:?} requested_delay={requested_delay:?} has_requested_repaint={} pass_nr={}",
-        egui_ctx.has_requested_repaint(),
-        egui_ctx.cumulative_pass_nr(),
-    );
-    egui_ctx.request_repaint_after(requested_delay);
-}
-
 /// Handle one newline-delimited JSON line from the notify socket: parse the
-/// `AppRequest`, queue it on the pane-IPC channel, and wake the UI thread.
-fn handle_socket_line(
-    line: &str,
-    tx: &std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
-    egui_ctx: &egui::Context,
-) {
+/// `AppRequest` and queue it on the pane-IPC mailbox (which owns the UI wake).
+fn handle_socket_line(line: &str, mailbox: &ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>) {
     match serde_json::from_str::<crate::app_protocol::AppRequest>(line) {
         Ok(cmd) => {
-            if tx.send(cmd).is_ok() {
-                log::debug!("pane_ipc: request queued — requesting repaint to wake idle UI thread");
-                wake_ui_for_external_request(egui_ctx, "pane_ipc");
+            if mailbox.send(cmd).is_ok() {
+                log::debug!("pane_ipc: request queued — mailbox wakes idle UI thread");
             }
         }
         Err(e) => {
@@ -506,10 +473,9 @@ fn handle_socket_line(
 }
 
 fn spawn_socket_listener(
-    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
-    subscribe_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostSubscribeRequest>,
-    publish_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
-    egui_ctx: egui::Context,
+    mailbox: ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
+    subscribe_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostSubscribeRequest>,
+    publish_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
 ) {
     use std::os::unix::net::UnixListener;
 
@@ -532,12 +498,11 @@ fn spawn_socket_listener(
                     continue;
                 }
             };
-            let tx = tx.clone();
-            let subscribe_tx = subscribe_tx.clone();
-            let publish_tx = publish_tx.clone();
-            let egui_ctx = egui_ctx.clone();
+            let mailbox = mailbox.clone();
+            let subscribe_mailbox = subscribe_mailbox.clone();
+            let publish_mailbox = publish_mailbox.clone();
             std::thread::spawn(move || {
-                handle_socket_connection(stream, tx, subscribe_tx, publish_tx, egui_ctx);
+                handle_socket_connection(stream, mailbox, subscribe_mailbox, publish_mailbox);
             });
         }
     });
@@ -550,10 +515,9 @@ fn spawn_socket_listener(
 /// normal request/response-file path does not support.
 fn handle_socket_connection(
     stream: std::os::unix::net::UnixStream,
-    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
-    subscribe_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostSubscribeRequest>,
-    publish_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
-    egui_ctx: egui::Context,
+    mailbox: ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
+    subscribe_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostSubscribeRequest>,
+    publish_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
 ) {
     use std::io::{BufRead, BufReader};
     // A writable clone so a streaming handler can push NDJSON back while the
@@ -580,7 +544,7 @@ fn handle_socket_connection(
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
         match val.get("type").and_then(|t| t.as_str()) {
             Some("events_subscribe") => {
-                handle_events_subscribe(write_half, lines, val, &subscribe_tx, &egui_ctx);
+                handle_events_subscribe(write_half, lines, val, &subscribe_mailbox);
                 return;
             }
             Some("events_list") => {
@@ -588,21 +552,21 @@ fn handle_socket_connection(
                 return;
             }
             Some("events_declare") | Some("events_emit") => {
-                handle_events_publish(write_half, val, &publish_tx, &egui_ctx);
+                handle_events_publish(write_half, val, &publish_mailbox);
                 return;
             }
             _ => {}
         }
     }
     // Normal path: first line plus any remaining lines as AppRequests.
-    handle_socket_line(&first, &tx, &egui_ctx);
+    handle_socket_line(&first, &mailbox);
     for line in lines {
         let Ok(line) = line else { break };
         let line = line.trim().to_owned();
         if line.is_empty() {
             continue;
         }
-        handle_socket_line(&line, &tx, &egui_ctx);
+        handle_socket_line(&line, &mailbox);
     }
 }
 
@@ -614,8 +578,9 @@ fn handle_events_subscribe(
     mut write_half: std::os::unix::net::UnixStream,
     remaining: std::io::Lines<std::io::BufReader<std::os::unix::net::UnixStream>>,
     val: serde_json::Value,
-    subscribe_tx: &std::sync::mpsc::Sender<crate::host::event_subscriptions::HostSubscribeRequest>,
-    egui_ctx: &egui::Context,
+    subscribe_mailbox: &ui_mailbox::UiMailbox<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >,
 ) {
     use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
     use std::io::Write;
@@ -655,7 +620,7 @@ fn handle_events_subscribe(
         workspace_root_override: None,
         reply: reply_tx,
     };
-    if subscribe_tx.send(req).is_err() {
+    if subscribe_mailbox.send(req).is_err() {
         let _ = writeln!(
             write_half,
             "{}",
@@ -663,7 +628,6 @@ fn handle_events_subscribe(
         );
         return;
     }
-    wake_ui_for_external_request(egui_ctx, "events_subscribe");
 
     // Generous wait: a first-time subscribe under the broker's default `Ask`
     // posture blocks here until the user answers the host consent modal. A
@@ -804,8 +768,7 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
 fn handle_events_publish(
     mut write_half: std::os::unix::net::UnixStream,
     val: serde_json::Value,
-    publish_tx: &std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
-    egui_ctx: &egui::Context,
+    publish_mailbox: &ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
 ) {
     use crate::host::event_subscriptions::{HostPublishReply, HostPublishRequest, PublishAction};
     use std::io::Write;
@@ -886,14 +849,13 @@ fn handle_events_publish(
         subscriber_override: None,
         reply: reply_tx,
     };
-    if publish_tx.send(req).is_err() {
+    if publish_mailbox.send(req).is_err() {
         reply_err(
             write_half,
             "host not accepting publish requests".to_string(),
         );
         return;
     }
-    wake_ui_for_external_request(egui_ctx, "events_publish");
 
     // Generous wait: a first-time publish under the default `Ask` posture blocks
     // until the user answers the host consent modal; a pre-granted publish
@@ -941,10 +903,14 @@ impl PlexiApp {
             log::warn!("no wgpu render state at startup; WASM surfaces use readback fallback");
         }
 
+        // The one wake seam for every off-UI-thread producer (stint 0507).
+        let ui_wake: std::sync::Arc<dyn ui_mailbox::UiWake> =
+            std::sync::Arc::new(ui_mailbox::EguiWake::new(cc.egui_ctx.clone()));
+
         #[cfg(target_os = "macos")]
         crate::platform::macos_menu::customize_app_menu();
         #[cfg(target_os = "macos")]
-        crate::platform::finder_service::register(cc.egui_ctx.clone());
+        crate::platform::finder_service::register(std::sync::Arc::clone(&ui_wake));
 
         // Repaint-cause diagnostics (#2019): route egui_term's repaint labels
         // into the host counters; `update()` flushes a summary every 10s.
@@ -973,16 +939,20 @@ impl PlexiApp {
         // each frame and reloads the matching pane. Both branches of `new()`
         // (workspace-restore and default) use the same instance via shadow
         // names — kept on stack until consumed by `Self {..}`.
-        let (hr_watcher, hr_rx) = crate::host::hot_reload::HotReloadWatcher::new();
-        let (hr_watcher2, hr_rx2) = crate::host::hot_reload::HotReloadWatcher::new();
+        let (hr_watcher, hr_rx) =
+            crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
+        let (hr_watcher2, hr_rx2) =
+            crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
 
         // Config file watcher (#1115). Watches config.toml for saves so the
         // host can hot-reload theme/font/notification settings automatically.
-        let (mut cfg_watcher, mut cfg_reload_rx) =
-            match crate::config::watcher::start(crate::config::config_path()) {
-                Some((w, rx)) => (Some(w), Some(rx)),
-                None => (None, None),
-            };
+        let (mut cfg_watcher, mut cfg_reload_rx) = match crate::config::watcher::start(
+            crate::config::config_path(),
+            std::sync::Arc::clone(&ui_wake),
+        ) {
+            Some((w, rx)) => (Some(w), Some(rx)),
+            None => (None, None),
+        };
 
         // Resolve the active workspace (explicit `plexi <path>` arg, then
         // CWD-walk fallback) and overlay its channel-scoped config on top of
@@ -1036,6 +1006,7 @@ impl PlexiApp {
 
         let (mut reg_watcher, mut reg_reload_rx) = match crate::app::registry_watcher::start(
             crate::app::registry::registry_watch_dirs(&cwd),
+            std::sync::Arc::clone(&ui_wake),
         ) {
             Some((w, rx)) => (Some(w), Some(rx)),
             None => (None, None),
@@ -1057,26 +1028,26 @@ impl PlexiApp {
         }
 
         // Spawn background update check. Sends the latest version once if newer.
-        let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
-        crate::cli::updater::spawn_update_check(crate::config::config_dir(), update_tx);
+        let (update_mailbox, update_rx) =
+            ui_mailbox::UiMailbox::channel(std::sync::Arc::clone(&ui_wake), "update_check");
+        crate::cli::updater::spawn_update_check(crate::config::config_dir(), update_mailbox);
         let last_update_check = std::time::Instant::now();
 
-        let (pane_ipc_tx, pane_ipc_rx) =
-            std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-        let (event_subscribe_tx, event_subscribe_rx) =
-            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostSubscribeRequest>();
-        let (event_publish_tx, event_publish_rx) =
-            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostPublishRequest>();
-        // The socket wake below only reaches an idle host if macOS never naps
+        let (pane_ipc_mailbox, pane_ipc_rx) =
+            ui_mailbox::UiMailbox::channel(std::sync::Arc::clone(&ui_wake), "pane_ipc");
+        let (event_subscribe_mailbox, event_subscribe_rx) =
+            ui_mailbox::UiMailbox::channel(std::sync::Arc::clone(&ui_wake), "events_subscribe");
+        let (event_publish_mailbox, event_publish_rx) =
+            ui_mailbox::UiMailbox::channel(std::sync::Arc::clone(&ui_wake), "events_publish");
+        // The mailbox wake only reaches an idle host if macOS never naps
         // the process; an App-Napped host defers cross-thread event-loop
         // wakeups and drains queued IPC in one late burst (stint 0479).
         #[cfg(target_os = "macos")]
         crate::platform::app_nap::disable_app_nap();
         spawn_socket_listener(
-            pane_ipc_tx,
-            event_subscribe_tx.clone(),
-            event_publish_tx,
-            cc.egui_ctx.clone(),
+            pane_ipc_mailbox,
+            event_subscribe_mailbox.clone(),
+            event_publish_mailbox,
         );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
@@ -1085,8 +1056,7 @@ impl PlexiApp {
             crate::host::app_timeline::global(),
         );
         if let Err(e) = host_mcp::start_host_mcp_server(
-            event_subscribe_tx,
-            cc.egui_ctx.clone(),
+            event_subscribe_mailbox.with_source("host_mcp_subscribe"),
             &crate::config::config_dir(),
         ) {
             log::warn!("host_mcp: failed to start event MCP server: {e}");
@@ -1385,6 +1355,7 @@ impl PlexiApp {
                     pane_anims: Vec::new(),
                     edge_pulse: None,
                     click_flash: None,
+                    ui_wake: std::sync::Arc::clone(&ui_wake),
                     update_rx: Some(update_rx),
                     last_update_check,
                     display_version: read_display_version(),
@@ -1501,9 +1472,10 @@ impl PlexiApp {
         let default_cwd = std::env::current_dir().unwrap_or_default();
         let default_registry = AppRegistry::load(&default_cwd);
         let (mut default_reg_watcher, mut default_reg_reload_rx) =
-            match crate::app::registry_watcher::start(crate::app::registry::registry_watch_dirs(
-                &default_cwd,
-            )) {
+            match crate::app::registry_watcher::start(
+                crate::app::registry::registry_watch_dirs(&default_cwd),
+                std::sync::Arc::clone(&ui_wake),
+            ) {
                 Some((w, rx)) => (Some(w), Some(rx)),
                 None => (None, None),
             };
@@ -1634,6 +1606,7 @@ impl PlexiApp {
             pane_anims: Vec::new(),
             edge_pulse: None,
             click_flash: None,
+            ui_wake: std::sync::Arc::clone(&ui_wake),
             update_rx: Some(update_rx),
             last_update_check,
             display_version: read_display_version(),
@@ -1910,25 +1883,37 @@ impl PlexiApp {
         frame_tick: crate::platform::logging::FrameTick,
     ) -> (
         Self,
-        std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+        ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
     ) {
         let config = config::PlexiConfig::default();
         let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         configure_egui_ctx(&ctx, &colors);
+        let ui_wake: std::sync::Arc<dyn ui_mailbox::UiWake> =
+            std::sync::Arc::new(ui_mailbox::EguiWake::new(ctx.clone()));
         let (tx, rx) = mpsc::channel();
-        let (hr_watcher, hr_rx) = crate::host::hot_reload::HotReloadWatcher::new();
+        let (hr_watcher, hr_rx) =
+            crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
         let path =
             std::env::temp_dir().join(format!("plexi-test-workspace-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("create isolated test workspace");
         let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) =
-            std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
+            ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+                std::sync::Arc::clone(&ui_wake),
+                "pane_ipc",
+            );
         let (_event_subscribe_tx, event_subscribe_rx) =
-            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostSubscribeRequest>();
+            ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostSubscribeRequest>::channel(
+                std::sync::Arc::clone(&ui_wake),
+                "events_subscribe",
+            );
         let (_event_publish_tx, event_publish_rx) =
-            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostPublishRequest>();
+            ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostPublishRequest>::channel(
+                std::sync::Arc::clone(&ui_wake),
+                "events_publish",
+            );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
             std::env::current_dir().unwrap_or_default(),
@@ -2063,6 +2048,7 @@ impl PlexiApp {
                 show_cli_setup_prompt: false,
                 cli_setup_check_result: None,
                 show_completions_banner: false,
+                ui_wake,
                 update_rx: None,
                 last_update_check: std::time::Instant::now(),
                 display_version: read_display_version(),

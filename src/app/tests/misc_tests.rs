@@ -185,9 +185,12 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
 /// with zero-frame idle, the repaint is what gets the queued request drained.
 #[test]
 fn socket_line_queues_request_and_requests_repaint() {
-    let (tx, rx) = std::sync::mpsc::channel();
     let ctx = egui::Context::default();
-    handle_socket_line(r#"{"type":"wake"}"#, &tx, &ctx);
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+        std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
+        "pane_ipc",
+    );
+    handle_socket_line(r#"{"type":"wake"}"#, &mailbox);
     assert!(
         matches!(rx.try_recv(), Ok(crate::app_protocol::AppRequest::Wake)),
         "request must be queued on the pane-IPC channel"
@@ -201,9 +204,12 @@ fn socket_line_queues_request_and_requests_repaint() {
 /// A malformed socket line must queue nothing (and therefore wake nothing).
 #[test]
 fn socket_line_parse_error_queues_nothing() {
-    let (tx, rx) = std::sync::mpsc::channel();
     let ctx = egui::Context::default();
-    handle_socket_line("definitely not json", &tx, &ctx);
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+        std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
+        "pane_ipc",
+    );
+    handle_socket_line("definitely not json", &mailbox);
     assert!(
         rx.try_recv().is_err(),
         "parse failures must not queue anything"
@@ -742,9 +748,12 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
         delays_cb.lock().unwrap().push(info.delay);
     });
 
-    let (tx, rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+        Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
+        "pane_ipc",
+    );
     let line = r#"{"type":"log_marker","source":"test","message":"wake"}"#;
-    handle_socket_line(line, &tx, &ctx);
+    handle_socket_line(line, &mailbox);
 
     match rx.try_recv() {
         Ok(crate::app_protocol::AppRequest::LogMarker { source, .. }) => {
@@ -765,8 +774,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     );
     handle_socket_line(
         r#"{"type":"list_panes","response_file":"/tmp/second-pane-list.json"}"#,
-        &tx,
-        &ctx,
+        &mailbox,
     );
     assert!(
         matches!(
@@ -792,8 +800,11 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
         "IPC wake collapsed to RepaintNow after egui predicted_dt adjustment: {delays:?}"
     );
     assert!(
-        delays.iter().all(|delay| *delay <= IPC_WAKE_DELAY),
-        "wake delay must be prompt (requested {IPC_WAKE_DELAY:?}, got {delays:?})"
+        delays
+            .iter()
+            .all(|delay| *delay <= crate::app::ui_mailbox::IPC_WAKE_DELAY),
+        "wake delay must be prompt (requested {:?}, got {delays:?})",
+        crate::app::ui_mailbox::IPC_WAKE_DELAY
     );
 }
 
@@ -807,8 +818,11 @@ fn socket_line_parse_error_does_not_wake() {
     let woke_cb = woke.clone();
     ctx.set_request_repaint_callback(move |_| *woke_cb.lock().unwrap() += 1);
 
-    let (tx, rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-    handle_socket_line("not json", &tx, &ctx);
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+        Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
+        "pane_ipc",
+    );
+    handle_socket_line("not json", &mailbox);
 
     assert!(rx.try_recv().is_err(), "malformed line must not queue");
     assert_eq!(*woke.lock().unwrap(), 0, "malformed line must not wake");

@@ -397,6 +397,55 @@ pub(super) fn command_socket_available() -> bool {
     )
 }
 
+/// Spawn-queue writer gate (stint 0532): outside a Plexi pane, a spawn
+/// request may only be queued when this channel's host is actually accepting
+/// IPC on its notify socket. A file queued into the void fires on some later
+/// host boot as a window nothing attributes — an implicit desktop escape.
+/// Fail loudly and typed instead. `plexi host start` is exempt by design: it
+/// seeds the queue explicitly and launches the draining host itself in the
+/// same command.
+pub(super) fn require_spawn_servicing_host(intent: &str) -> Result<(), i32> {
+    let socket = crate::config::config_dir().join("notify.sock");
+    if spawn_socket_accepting(&socket) {
+        return Ok(());
+    }
+    let channel = channel_label_from(crate::config::config_dir().file_name().and_then(|n| n.to_str()).unwrap_or(""));
+    log::warn!(
+        "spawn_gate: refused '{intent}' — host not servicing pane spawns on channel {channel} (socket {socket:?})"
+    );
+    eprintln!("{}", spawn_gate_error(&channel, &socket));
+    print_tip("start a host for this channel with `plexi host start`, or run this from inside a Plexi pane");
+    Err(1)
+}
+
+fn spawn_socket_accepting(socket: &std::path::Path) -> bool {
+    std::os::unix::net::UnixStream::connect(socket).is_ok()
+}
+
+/// Human channel name from a profile dir basename: `.plexi-alpha` → `alpha`,
+/// bare `.plexi` → `default`.
+fn channel_label_from(profile_dir_basename: &str) -> String {
+    match profile_dir_basename.strip_prefix(".plexi-") {
+        Some(ch) if !ch.is_empty() => ch.to_string(),
+        _ => "default".to_string(),
+    }
+}
+
+fn spawn_gate_error(channel: &str, socket: &std::path::Path) -> String {
+    format!(
+        "error: host not servicing pane spawns on channel {channel} (no running host at {}); nothing was spawned",
+        socket.display()
+    )
+}
+
+/// Unix-epoch milliseconds stamp for spawn-queue file attribution.
+pub(super) fn spawn_queued_at_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn command_binary_channel() -> Option<String> {
     let channel = crate::config::build_channel();
     #[cfg(test)]
@@ -658,5 +707,40 @@ build = { run = "cargo build", description = "Build it" }
             perms.set_mode(0o755);
             std::fs::set_permissions(path, perms).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod spawn_gate_tests {
+    use super::{channel_label_from, spawn_gate_error, spawn_socket_accepting};
+
+    #[test]
+    fn missing_socket_is_not_servicing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!spawn_socket_accepting(&tmp.path().join("notify.sock")));
+    }
+
+    #[test]
+    fn bound_socket_is_servicing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("notify.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(spawn_socket_accepting(&path));
+    }
+
+    #[test]
+    fn gate_error_is_typed_and_names_channel_and_socket() {
+        let msg = spawn_gate_error("alpha", std::path::Path::new("/tmp/x/notify.sock"));
+        assert!(msg.contains("host not servicing pane spawns on channel alpha"));
+        assert!(msg.contains("/tmp/x/notify.sock"));
+        assert!(msg.contains("nothing was spawned"));
+    }
+
+    #[test]
+    fn channel_label_derivation() {
+        assert_eq!(channel_label_from(".plexi-alpha"), "alpha");
+        assert_eq!(channel_label_from(".plexi-pr-2470"), "pr-2470");
+        assert_eq!(channel_label_from(".plexi"), "default");
+        assert_eq!(channel_label_from(""), "default");
     }
 }

@@ -24,11 +24,12 @@
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use crate::spatial::tiling::PaneId;
 
 /// Debounce window — bursts of save events within this much of each other
@@ -77,16 +78,17 @@ impl Drop for WatcherHandle {
 pub struct HotReloadWatcher {
     /// One handle per actively-watched pane.
     watchers: HashMap<PaneId, WatcherHandle>,
-    /// Channel sender shared with every watcher's debouncer thread.
-    sender: Sender<ReloadRequest>,
+    /// Mailbox shared with every watcher's debouncer thread; each send wakes
+    /// the UI thread so a reload is never stranded on an idle host.
+    sender: UiMailbox<ReloadRequest>,
 }
 
 impl HotReloadWatcher {
     /// Construct a new watcher set + the matching receiver. The host stores
     /// the receiver and drains it each frame; one `ReloadRequest` per
     /// debounce window.
-    pub fn new() -> (Self, Receiver<ReloadRequest>) {
-        let (tx, rx) = mpsc::channel();
+    pub fn new(wake: Arc<dyn UiWake>) -> (Self, MailboxReceiver<ReloadRequest>) {
+        let (tx, rx) = UiMailbox::channel(wake, "hot_reload");
         (
             Self {
                 watchers: HashMap::new(),
@@ -189,7 +191,7 @@ impl HotReloadWatcher {
 fn debounce_loop(
     pane_id: PaneId,
     rx: Receiver<Event>,
-    sender: Sender<ReloadRequest>,
+    sender: UiMailbox<ReloadRequest>,
     cancel: Arc<Mutex<bool>>,
     app_dir: PathBuf,
 ) {
@@ -231,11 +233,15 @@ fn debounce_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ui_mailbox::RecordingWake;
     use std::fs;
     use std::time::Duration;
     use tempfile::tempdir;
 
-    fn poll_for_reload(rx: &Receiver<ReloadRequest>, timeout: Duration) -> Option<ReloadRequest> {
+    fn poll_for_reload(
+        rx: &MailboxReceiver<ReloadRequest>,
+        timeout: Duration,
+    ) -> Option<ReloadRequest> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if let Ok(req) = rx.try_recv() {
@@ -252,7 +258,8 @@ mod tests {
         let file = dir.path().join("source.py");
         fs::write(&file, "print('v1')\n").unwrap();
 
-        let (mut watcher, rx) = HotReloadWatcher::new();
+        let wake = Arc::new(RecordingWake::new());
+        let (mut watcher, rx) = HotReloadWatcher::new(wake.clone());
         watcher.watch(42, dir.path());
 
         // Give FSEvents a moment to arm before mutating.
@@ -265,6 +272,10 @@ mod tests {
             Some(ReloadRequest { pane_id: 42 }),
             "save should yield a debounced ReloadRequest within 3s"
         );
+        assert!(
+            wake.sources().contains(&"hot_reload"),
+            "debounced reload must wake the UI thread"
+        );
     }
 
     #[test]
@@ -273,7 +284,7 @@ mod tests {
         let file = dir.path().join("burst.py");
         fs::write(&file, "v0\n").unwrap();
 
-        let (mut watcher, rx) = HotReloadWatcher::new();
+        let (mut watcher, rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
         watcher.watch(7, dir.path());
         thread::sleep(Duration::from_millis(150));
 
@@ -311,7 +322,7 @@ mod tests {
         let file = dir.path().join("stop.py");
         fs::write(&file, "v0\n").unwrap();
 
-        let (mut watcher, rx) = HotReloadWatcher::new();
+        let (mut watcher, rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
         watcher.watch(11, dir.path());
         thread::sleep(Duration::from_millis(150));
 
@@ -331,7 +342,7 @@ mod tests {
 
     #[test]
     fn unwatch_is_idempotent_for_unknown_pane() {
-        let (mut watcher, _rx) = HotReloadWatcher::new();
+        let (mut watcher, _rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
         watcher.unwatch(999); // never watched
         assert_eq!(watcher.len(), 0);
     }
@@ -339,7 +350,7 @@ mod tests {
     #[test]
     fn watched_pane_ids_returns_all_watched() {
         let dir = tempdir().unwrap();
-        let (mut watcher, _rx) = HotReloadWatcher::new();
+        let (mut watcher, _rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
         watcher.watch(10, dir.path());
         watcher.watch(20, dir.path());
 
