@@ -3305,3 +3305,85 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
         .expect("a new app pane");
     assert_eq!(opened.manifest_id, "text-editor");
 }
+
+// -- Hidden-window IPC servicing (stint 0505 fix round 3) -----------------
+
+/// Regression guard for the occluded-host IPC wedge: eframe skips `App::ui`
+/// entirely while the window is hidden (minimized or fully occluded by other
+/// windows) and runs logic-only passes instead. Every external drain lived in
+/// `ui`, so a fully covered host serviced no pane IPC at all — wakes fired,
+/// passes ran, and queued commands (including `plexi host stop`'s Shutdown)
+/// sat until the window was next uncovered. External servicing must complete
+/// on hidden passes alone.
+#[test]
+fn pane_ipc_serviced_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.run_frames(1);
+
+    let list_file = temp_response(tmp.path(), "hidden-pane-list");
+    h.inject_ipc(AppRequest::ListPanes {
+        response_file: list_file.clone(),
+        context_id: None,
+    });
+    h.run_hidden_frames(1);
+
+    let list = std::fs::read_to_string(&list_file)
+        .expect("pane list must be serviced on a hidden (logic-only) pass");
+    let list: serde_json::Value = serde_json::from_str(&list).expect("valid JSON response");
+    assert!(
+        list.as_array()
+            .expect("pane list array")
+            .iter()
+            .any(|entry| entry["id"].as_u64() == Some(pane)),
+        "hidden-pass pane list must include the open pane"
+    );
+}
+
+/// Companion to `pane_ipc_serviced_while_window_hidden`: queued pane inputs
+/// must NOT be swallowed by hidden passes. A hidden pass has no widget pass to
+/// receive events, so `raw_input_hook` must leave `pending_pane_inputs` queued
+/// for the next visible frame instead of injecting them into a pass that
+/// discards them unseen.
+#[test]
+fn pending_pane_inputs_survive_hidden_passes() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    h.app.pending_pane_inputs.entry(pane).or_default().push(
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+    );
+    h.run_hidden_frames(3);
+    assert!(
+        h.app
+            .pending_pane_inputs
+            .get(&pane)
+            .is_some_and(|batches| !batches.is_empty()),
+        "queued pane input must survive hidden passes for the next visible frame"
+    );
+
+    // The visible-frame reconciler drops focus from a bare test pane, so
+    // re-assert it the way a real un-occlusion refocus would before checking
+    // that the queued input is finally delivered.
+    h.focus_pane(pane);
+    h.run_frames(1);
+    assert!(
+        h.app
+            .pending_pane_inputs
+            .get(&pane)
+            .is_none_or(|batches| batches.is_empty()),
+        "queued pane input must be delivered on the next visible frame"
+    );
+}
