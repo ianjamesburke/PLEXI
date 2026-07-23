@@ -98,81 +98,41 @@ fn resolve_pane_id(pane_id: Option<u64>) -> Result<u64, i32> {
     }
 }
 
-fn response_file(prefix: &str) -> String {
-    let id = uuid::Uuid::new_v4();
-    crate::config::config_dir()
-        .join(format!("{prefix}-{id}.json"))
-        .to_string_lossy()
-        .into_owned()
-}
-
 fn wait_for_response_bytes(response_file: &str, label: &str) -> Result<Vec<u8>, i32> {
-    let response_path = std::path::PathBuf::from(response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    return Ok(content);
-                }
-                Err(e) => {
-                    log::warn!("{label}:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return Err(1);
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
+    match crate::rpc::poll_bytes(response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
+        Ok(content) => Ok(content),
+        Err(crate::rpc::PollError::TimedOut) => {
             eprintln!("error: timed out waiting for {label} response");
-            return Err(1);
+            Err(1)
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        Err(e) => {
+            log::warn!("{label}:cli: {e}");
+            eprintln!("error: {e}");
+            Err(1)
+        }
     }
 }
 
 fn wait_for_slot_read_response(response_file: &str) -> Result<Vec<u8>, i32> {
-    let response_path = std::path::PathBuf::from(response_file);
-    let error_path = std::path::PathBuf::from(format!("{response_file}.err"));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if error_path.exists() {
-            let content = match std::fs::read(&error_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&error_path);
-                    content
-                }
-                Err(e) => {
-                    log::warn!("pane_slot_read:cli: could not read error response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return Err(1);
-                }
-            };
+    match crate::rpc::poll_slot_reply(response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
+        Ok(crate::rpc::SlotReply::Data(content)) => Ok(content),
+        Ok(crate::rpc::SlotReply::Err(content)) => {
             if let Some(err) = response_error(&content) {
                 eprintln!("error: {err}");
-                return Err(1);
+            } else {
+                eprintln!("error: invalid slot read error response");
             }
-            eprintln!("error: invalid slot read error response");
-            return Err(1);
+            Err(1)
         }
-        if response_path.exists() {
-            match std::fs::read(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    return Ok(content);
-                }
-                Err(e) => {
-                    log::warn!("pane_slot_read:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return Err(1);
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
+        Err(crate::rpc::PollError::TimedOut) => {
             eprintln!("error: timed out waiting for pane slot read response");
-            return Err(1);
+            Err(1)
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        Err(e) => {
+            log::warn!("pane_slot_read:cli: {e}");
+            eprintln!("error: {e}");
+            Err(1)
+        }
     }
 }
 
@@ -219,7 +179,7 @@ pub fn pane_slot_write_cli(
             return 1;
         }
     }
-    let response_file = response_file("pane-slot-write-response");
+    let response_file = crate::rpc::response_file("pane-slot-write-response", "json");
     log::info!(
         "pane_slot_write:cli: pane_id={resolved_pane_id} slot={name:?} bytes={} append={append} replace={replace} response_file={response_file:?}",
         bytes.len()
@@ -254,7 +214,7 @@ pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
         Ok(id) => id,
         Err(code) => return code,
     };
-    let response_file = response_file("pane-slot-read-response");
+    let response_file = crate::rpc::response_file("pane-slot-read-response", "json");
     log::info!(
         "pane_slot_read:cli: pane_id={resolved_pane_id} slot={name:?} response_file={response_file:?}"
     );
@@ -285,7 +245,7 @@ pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
         Ok(id) => id,
         Err(code) => return code,
     };
-    let response_file = response_file("pane-slot-list-response");
+    let response_file = crate::rpc::response_file("pane-slot-list-response", "json");
     log::info!("pane_slot_list:cli: pane_id={resolved_pane_id} response_file={response_file:?}");
     let code = send_to_socket(serde_json::json!({
         "type": "slot_list",
@@ -312,7 +272,7 @@ pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
         Ok(id) => id,
         Err(code) => return code,
     };
-    let response_file = response_file("pane-slot-delete-response");
+    let response_file = crate::rpc::response_file("pane-slot-delete-response", "json");
     log::info!(
         "pane_slot_delete:cli: pane_id={resolved_pane_id} slot={name:?} response_file={response_file:?}"
     );
@@ -363,11 +323,7 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
         context
     };
 
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-list-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-list-response", "json");
 
     let mut payload = serde_json::json!({
         "type": "list_panes",
@@ -388,27 +344,9 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
         return code;
     }
 
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    return print_json_output(&content);
-                }
-                Err(e) => {
-                    log::warn!("pane_list:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane list response");
-            return 1;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    match super::poll_rpc(&response_file, "pane list") {
+        Ok(content) => print_json_output(&content),
+        Err(code) => code,
     }
 }
 
@@ -452,11 +390,7 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
         }
     };
 
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-info-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-info-response", "json");
 
     let payload = if let Some(steps) = previous {
         log::info!(
@@ -501,50 +435,29 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
         return code;
     }
 
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                            eprintln!("error: {err}");
-                            return 1;
-                        }
-                        let mut obj = v;
-                        obj["socket"] =
-                            serde_json::Value::String(socket_path.to_string_lossy().into_owned());
-                        let channel =
-                            crate::config::build_channel().unwrap_or_else(|| "main".to_string());
-                        obj["channel"] = serde_json::Value::String(channel);
-                        match serde_json::to_string(&obj) {
-                            Ok(json_str) => {
-                                return print_json_output(&json_str);
-                            }
-                            Err(e) => {
-                                eprintln!("error: could not serialize response: {e}");
-                                return 1;
-                            }
-                        }
-                    } else {
-                        eprintln!("error: invalid JSON from host: {content}");
-                        return 1;
-                    }
-                }
-                Err(e) => {
-                    log::warn!("pane_info:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane info response");
+    let content = match super::poll_rpc(&response_file, "pane info") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+            eprintln!("error: {err}");
             return 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut obj = v;
+        obj["socket"] = serde_json::Value::String(socket_path.to_string_lossy().into_owned());
+        let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
+        obj["channel"] = serde_json::Value::String(channel);
+        match serde_json::to_string(&obj) {
+            Ok(json_str) => print_json_output(&json_str),
+            Err(e) => {
+                eprintln!("error: could not serialize response: {e}");
+                1
+            }
+        }
+    } else {
+        eprintln!("error: invalid JSON from host: {content}");
+        1
     }
 }
 
@@ -577,11 +490,7 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
 pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("send-to-pane-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("send-to-pane-response", "json");
     log::info!(
         "pane_send:cli: pane_id={pane_id} len={} response_file={response_file:?}",
         text.len()
@@ -595,37 +504,17 @@ pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
     if code != 0 {
         return code;
     }
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            return 0;
-                        }
-                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-                            eprintln!("error: {msg}");
-                            return 1;
-                        }
-                    }
-                    return 0;
-                }
-                Err(e) => {
-                    log::warn!("pane_send:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane send response");
+    let content = match super::poll_rpc(&response_file, "pane send") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+            eprintln!("error: {msg}");
             return 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    0
 }
 
 /// `plexi pane key <pane_id> <key>`
@@ -633,11 +522,7 @@ pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
 /// Sends `key_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
 pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-key-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-key-response", "json");
     log::info!(
         "pane_key:cli: pane_id={pane_id} key={key:?} key_chars={} response_file={response_file:?}",
         key.chars().count()
@@ -651,67 +536,44 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     if code != 0 {
         return code;
     }
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            // Native app panes report whether the app's key
-                            // handler consumed the key — surface a miss so
-                            // driving agents don't assume the key acted.
-                            if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
-                                match d {
-                                    "consumed" => {}
-                                    // Routed into the focused text surface's real
-                                    // input queue; egui applies it next frame, so
-                                    // consumption is not knowable here — but this
-                                    // is the success path, not a miss.
-                                    "text_input" | "text_input_escape" => eprintln!(
-                                        "note: key routed to the pane's focused text \
-                                         surface (applied next frame)"
-                                    ),
-                                    _ => eprintln!(
-                                        "note: key delivered but not consumed by the app \
-                                         (disposition: {d})"
-                                    ),
-                                }
-                            }
-                            return 0;
-                        }
-                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-                            eprintln!("error: {msg}");
-                            return 1;
-                        }
-                    }
-                    return 0;
-                }
-                Err(e) => {
-                    log::warn!("pane_key:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
+    let content = match super::poll_rpc(&response_file, "pane key") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // Native app panes report whether the app's key handler consumed
+            // the key — surface a miss so driving agents don't assume the
+            // key acted.
+            if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
+                match d {
+                    "consumed" => {}
+                    // Routed into the focused text surface's real input
+                    // queue; egui applies it next frame, so consumption is
+                    // not knowable here — but this is the success path, not
+                    // a miss.
+                    "text_input" | "text_input_escape" => eprintln!(
+                        "note: key routed to the pane's focused text \
+                         surface (applied next frame)"
+                    ),
+                    _ => eprintln!(
+                        "note: key delivered but not consumed by the app \
+                         (disposition: {d})"
+                    ),
                 }
             }
+            return 0;
         }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane key response");
+        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+            eprintln!("error: {msg}");
             return 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    0
 }
 
 pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
-    let response_file = std::env::temp_dir()
-        .join(format!(
-            "plexi-pane-drop-{}-{pane_id}.json",
-            std::process::id()
-        ))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-drop-response", "json");
     let code = send_to_socket(serde_json::json!({
         "type": "drop_file",
         "pane_id": pane_id,
@@ -721,65 +583,39 @@ pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
     if code != 0 {
         return code;
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if let Ok(content) = std::fs::read_to_string(&response_file) {
-            let _ = std::fs::remove_file(&response_file);
-            if serde_json::from_str::<serde_json::Value>(&content)
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
-                .is_some_and(|error| {
-                    eprintln!("error: {error}");
-                    true
-                })
-            {
-                return 1;
-            }
-            return print_json_output(&content);
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane drop response");
-            return 1;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    let content = match super::poll_rpc(&response_file, "pane drop") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+        .is_some_and(|error| {
+            eprintln!("error: {error}");
+            true
+        })
+    {
+        return 1;
     }
+    print_json_output(&content)
 }
 
 /// Poll `response_file` for a `click_pane`/`click_pane_node` response,
 /// shared by the pixel and node-targeted `plexi pane click` variants.
 /// Returns 0 on success, 1 on error.
 fn poll_click_response(response_file: &str, log_prefix: &str) -> i32 {
-    let response_path = std::path::PathBuf::from(response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            return 0;
-                        }
-                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-                            eprintln!("error: {msg}");
-                            return 1;
-                        }
-                    }
-                    return 0;
-                }
-                Err(e) => {
-                    log::warn!("{log_prefix}: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane click response");
+    let content = match super::poll_rpc(response_file, "pane click") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+            log::warn!("{log_prefix}: host reported error: {msg}");
+            eprintln!("error: {msg}");
             return 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    0
 }
 
 /// `plexi pane click <pane_id> <x> <y> [--button left]`
@@ -787,11 +623,7 @@ fn poll_click_response(response_file: &str, log_prefix: &str) -> i32 {
 /// Sends `click_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
 pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-click-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-click-response", "json");
     log::info!(
         "pane_click:cli: pane_id={pane_id} x={x} y={y} button={button} response_file={response_file:?}"
     );
@@ -814,11 +646,7 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
 /// Sends `click_pane_node` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
 pub fn pane_click_node_cli(pane_id: u64, node_id: &str, button: &str) -> i32 {
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-click-node-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-click-node-response", "json");
     log::info!(
         "pane_click_node:cli: pane_id={pane_id} node_id={node_id} button={button} response_file={response_file:?}"
     );
@@ -863,11 +691,7 @@ pub fn pane_capture_cli(
         },
     };
 
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-capture-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-capture-response", "json");
 
     log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} response_file={response_file:?}");
 
@@ -886,42 +710,22 @@ pub fn pane_capture_cli(
         return code;
     }
 
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    match serde_json::from_str::<serde_json::Value>(&content) {
-                        Ok(v) => {
-                            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                                eprintln!("error: {err}");
-                                return 1;
-                            }
-                            // Print cursor to stderr so callers can capture it without
-                            // polluting the line stream.
-                            if let Some(cursor) = v.get("cursor").and_then(|c| c.as_u64()) {
-                                eprintln!("cursor={cursor}");
-                            }
-                            return print_json_output(&content);
-                        }
-                        Err(_) => return print_json_output(&content),
-                    }
-                }
-                Err(e) => {
-                    log::warn!("pane_capture:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane capture response");
+    let content = match super::poll_rpc(&response_file, "pane capture") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+            eprintln!("error: {err}");
             return 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Print cursor to stderr so callers can capture it without
+        // polluting the line stream.
+        if let Some(cursor) = v.get("cursor").and_then(|c| c.as_u64()) {
+            eprintln!("cursor={cursor}");
+        }
     }
+    print_json_output(&content)
 }
 
 /// `plexi pane state <id>`
@@ -931,11 +735,7 @@ pub fn pane_capture_cli(
 /// Process apps also retain the compatible `frame` RenderCommand array.
 /// For terminal panes, returns a simple status object. Returns 0 on success, 1 on error.
 pub fn pane_state_cli(pane_id: u64) -> i32 {
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-state-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("pane-state-response", "json");
 
     log::info!("pane_state:cli: pane_id={pane_id} response_file={response_file:?}");
 
@@ -948,34 +748,17 @@ pub fn pane_state_cli(pane_id: u64) -> i32 {
         return code;
     }
 
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                            eprintln!("error: {err}");
-                            return 1;
-                        }
-                    }
-                    return print_json_output(&content);
-                }
-                Err(e) => {
-                    log::warn!("pane_state:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane state response");
+    let content = match super::poll_rpc(&response_file, "pane state") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+            eprintln!("error: {err}");
             return 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    print_json_output(&content)
 }
 
 /// `plexi open <type_id> [args...] [--layout=X]`
@@ -1065,11 +848,7 @@ pub(super) fn open_github_ephemeral(
     );
 
     if super::command_socket_available() {
-        let id = uuid::Uuid::new_v4();
-        let response_file = crate::config::config_dir()
-            .join(format!("spawn-pane-response-{id}.json"))
-            .to_string_lossy()
-            .into_owned();
+        let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let mut payload = serde_json::json!({
             "type": "spawn_pane",
             "type_id": "",
@@ -1091,38 +870,7 @@ pub(super) fn open_github_ephemeral(
         if code != 0 {
             return code;
         }
-        let response_path = std::path::PathBuf::from(&response_file);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if response_path.exists() {
-                match std::fs::read_to_string(&response_path) {
-                    Ok(content) => {
-                        let _ = std::fs::remove_file(&response_path);
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-                                eprintln!("error: {msg}");
-                                return 1;
-                            }
-                            if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
-                                println!("{pid}");
-                                return 0;
-                            }
-                        }
-                        print!("{content}");
-                        return 0;
-                    }
-                    Err(e) => {
-                        eprintln!("error: could not read response file: {e}");
-                        return 1;
-                    }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                eprintln!("error: timed out waiting for open response");
-                return 1;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        return super::open::wait_for_response(&response_file);
     }
 
     // Fallback: spawn-queue (outside a Plexi pane). Only queue when a host is

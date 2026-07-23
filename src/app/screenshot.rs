@@ -118,12 +118,7 @@ impl PlexiApp {
                     serde_json::json!({ "error": error })
                 }
             };
-            if let Err(error) = std::fs::write(&request.response_file, response.to_string()) {
-                log::warn!(
-                    "screenshot: could not write response file {}: {error}",
-                    request.response_file
-                );
-            }
+            crate::rpc::write_json_response(&request.response_file, response);
         }
     }
 

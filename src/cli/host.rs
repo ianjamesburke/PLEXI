@@ -258,29 +258,6 @@ fn probe_notify_socket(socket_path: &Path) -> RunningState {
     }
 }
 
-/// Poll a response file until it appears or `timeout` elapses. Distinct from
-/// (but structurally identical to) `open.rs`'s `wait_for_response`: this
-/// variant returns the raw content instead of printing it, and takes a
-/// caller-supplied timeout instead of a fixed 5s — `host start` needs a
-/// longer, configurable boot timeout, and `host status`/`host stop` need the
-/// parsed pane count rather than `wait_for_response`'s stdout side effect.
-fn poll_response_file(response_file: &str, timeout: Duration) -> Result<String, String> {
-    let path = PathBuf::from(response_file);
-    let deadline = Instant::now() + timeout;
-    loop {
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| format!("could not read response file {path:?}: {e}"))?;
-            let _ = std::fs::remove_file(&path);
-            return Ok(content);
-        }
-        if Instant::now() >= deadline {
-            return Err(format!("timed out after {timeout:?} waiting for {path:?}"));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 /// One-shot readiness/pane-count query: connect to `notify.sock`, send
 /// `AppRequest::ListPanes`, and wait up to 5s for the JSON array response.
 /// `None` means either the socket is not reachable (host not running) or the
@@ -289,17 +266,15 @@ fn poll_response_file(response_file: &str, timeout: Duration) -> Result<String, 
 /// `config::config_dir()`.
 fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize> {
     let mut stream = UnixStream::connect(socket_path).ok()?;
-    let response_file = host_config_dir(channel)
-        .join(format!("host-status-{}.json", uuid::Uuid::new_v4()))
-        .to_string_lossy()
-        .into_owned();
+    let response_file =
+        crate::rpc::response_file_in(&host_config_dir(channel), "host-status", "json");
     let request = crate::app_protocol::AppRequest::ListPanes {
         response_file: response_file.clone(),
         context_id: None,
     };
     let line = serde_json::to_string(&request).ok()?;
     stream.write_all(format!("{line}\n").as_bytes()).ok()?;
-    let content = poll_response_file(&response_file, Duration::from_secs(5)).ok()?;
+    let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
     serde_json::from_str::<Vec<serde_json::Value>>(&content)
         .ok()
         .map(|v| v.len())
@@ -693,11 +668,7 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
     let channel = crate::config::build_channel();
     let profile_dir = host_config_dir(channel.as_deref());
     let socket_path = profile_dir.join("notify.sock");
-    let id = uuid::Uuid::new_v4();
-    let response_file = profile_dir
-        .join(format!("host-log-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file_in(&profile_dir, "host-log-response", "json");
     log::info!(
         "host_log:cli: channel={channel:?} source={source} message_chars={}",
         message.chars().count()
@@ -726,18 +697,16 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
         return 1;
     }
 
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            let _ = std::fs::remove_file(&response_path);
-            return 0;
-        }
-        if Instant::now() >= deadline {
+    match crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
+        Ok(_) => 0,
+        Err(crate::rpc::PollError::TimedOut) => {
             eprintln!("error: timed out waiting for host log acknowledgement");
-            return 1;
+            1
         }
-        std::thread::sleep(Duration::from_millis(50));
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
     }
 }
 
@@ -745,7 +714,6 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
 /// live host window (optionally cropped to one pane) through the real
 /// render pipeline. Prints the written PNG path on success.
 pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
-    let id = uuid::Uuid::new_v4();
     let output_path = match output {
         Some(path) => path.to_string(),
         None => {
@@ -760,10 +728,7 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
                 .into_owned()
         }
     };
-    let response_file = crate::config::config_dir()
-        .join(format!("screenshot-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("screenshot-response", "json");
     log::info!("host_screenshot:cli: pane={pane:?} output_path={output_path}");
 
     let code = super::send_to_socket(serde_json::json!({
@@ -778,46 +743,32 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
 
     // The capture round-trips through the GPU (request frame -> readback ->
     // next frame's input), so allow a little longer than plain state reads.
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if response_path.exists() {
-            let content = match std::fs::read_to_string(&response_path) {
-                Ok(content) => content,
-                Err(e) => {
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            };
-            let _ = std::fs::remove_file(&response_path);
-            match serde_json::from_str::<serde_json::Value>(&content) {
-                Ok(v) if v.get("error").is_some() => {
-                    eprintln!(
-                        "error: {}",
-                        v["error"].as_str().unwrap_or("screenshot failed")
-                    );
-                    return 1;
-                }
-                Ok(v) => {
-                    println!(
-                        "{} ({}x{})",
-                        v["path"].as_str().unwrap_or(&output_path),
-                        v["width"],
-                        v["height"]
-                    );
-                    return 0;
-                }
-                Err(e) => {
-                    eprintln!("error: malformed screenshot response: {e}");
-                    return 1;
-                }
-            }
+    let content = match super::poll_rpc_with(&response_file, "screenshot", Duration::from_secs(10))
+    {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) if v.get("error").is_some() => {
+            eprintln!(
+                "error: {}",
+                v["error"].as_str().unwrap_or("screenshot failed")
+            );
+            1
         }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for screenshot response");
-            return 1;
+        Ok(v) => {
+            println!(
+                "{} ({}x{})",
+                v["path"].as_str().unwrap_or(&output_path),
+                v["width"],
+                v["height"]
+            );
+            0
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        Err(e) => {
+            eprintln!("error: malformed screenshot response: {e}");
+            1
+        }
     }
 }
 

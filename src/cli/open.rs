@@ -4,46 +4,26 @@ use crate::app::launch_spec::PaneLaunchSpec;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-/// Poll a response file until it appears (or timeout). Shared by all spawn paths.
-///
-/// `pub(super)` so `host.rs` can reference the same convention. `host.rs`'s
-/// own readiness/status polling uses a bespoke variant (`poll_response_file`)
-/// instead — it needs the raw JSON content and a configurable timeout rather
-/// than this function's fixed 5s timeout and print-to-stdout side effect.
+/// Wait for a spawn response and print the resulting pane id (or the raw
+/// response when the host answered with something else). Shared by all spawn
+/// paths.
 pub(super) fn wait_for_response(response_file: &str) -> i32 {
-    let response_path = std::path::PathBuf::from(response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-                            eprintln!("error: {msg}");
-                            return 1;
-                        }
-                        if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
-                            println!("{pid}");
-                            return 0;
-                        }
-                    }
-                    print!("{content}");
-                    return 0;
-                }
-                Err(e) => {
-                    log::warn!("pane_new: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane response");
+    let content = match super::poll_rpc(response_file, "pane") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+            eprintln!("error: {msg}");
             return 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+            println!("{pid}");
+            return 0;
+        }
     }
+    print!("{content}");
+    0
 }
 
 /// Unified pane spawning. All CLI spawn paths funnel through here.
@@ -87,11 +67,7 @@ pub fn pane_new_cli(
 
     // Socket path — inside a Plexi pane
     if super::command_socket_available() {
-        let id = uuid::Uuid::new_v4();
-        let response_file = crate::config::config_dir()
-            .join(format!("spawn-pane-response-{id}.json"))
-            .to_string_lossy()
-            .into_owned();
+        let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let mut payload = serde_json::json!({
             "type": "spawn_pane",
             "type_id": type_id,
@@ -551,11 +527,7 @@ fn open_app_by_path(
     };
 
     if super::command_socket_available() {
-        let id = uuid::Uuid::new_v4();
-        let response_file = crate::config::config_dir()
-            .join(format!("spawn-pane-response-{id}.json"))
-            .to_string_lossy()
-            .into_owned();
+        let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let spec = spec.with_response_file(Some(response_file.clone()));
         let payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
             log::error!("open_app_by_path: failed to serialize spawn request: {e}");

@@ -491,15 +491,18 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
+        // Root the file browser in the harness's empty workspace — never the
+        // real temp_dir(), whose ~50k dev-machine entries balloon rendering.
+        let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let app_pane = AppPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
-                    std::env::temp_dir(),
+                    browser_root.clone(),
                 ))),
-                workspace_root: std::env::temp_dir(),
+                workspace_root: browser_root.clone(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "test".to_string(),
                 name: "Test App".to_string(),
@@ -747,6 +750,11 @@ mod tests {
     /// sidebar. Zoom the portal so the icon is legible in the PNG.
     #[test]
     fn screenshot_portal_text_editor_icon() {
+        // Never point the harnessed file browser at the real temp_dir(): a dev
+        // machine's temp dir can hold ~50k entries and rendering them balloons
+        // this test past 30 GB RSS. An empty scoped tempdir renders instantly.
+        let editor_root = tempfile::tempdir().expect("tempdir");
+        let editor_path = editor_root.path().to_path_buf();
         let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
         let _base = add_focused_pane(&mut h);
         h.with_app_mut(|app| {
@@ -755,7 +763,7 @@ mod tests {
             // Register the child context so the portal header shows a real name.
             app.router.push(crate::host::context::Context {
                 name: "Notes".to_string(),
-                path: std::env::temp_dir(),
+                path: editor_path.clone(),
                 root: None,
                 description: Some("Editing notes".to_string()),
                 context_id: child_ctx_id,
@@ -770,9 +778,9 @@ mod tests {
                 pip_status: Some(crate::app_protocol::PipStatus::Green),
                 id: editor_pane_id,
                 runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
-                    std::env::temp_dir(),
+                    editor_path.clone(),
                 ))),
-                workspace_root: std::env::temp_dir(),
+                workspace_root: editor_path.clone(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "note.md".to_string(),
@@ -792,7 +800,7 @@ mod tests {
             app.next_window_id += 1;
             app.windows.push(Window {
                 name: "notes window".to_string(),
-                path: std::env::temp_dir(),
+                path: editor_path.clone(),
                 tree: egui_tiles::Tree::new("notes window", child_tile, child_tiles),
                 panes: child_panes,
                 focused_pane: Some(child_tile),
@@ -1827,15 +1835,16 @@ mod tests {
     fn screenshot_command_palette_metadata_lane() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
         let first_pane_id = add_focused_pane(&mut h);
+        let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let second_pane_id = app.host.alloc_pane_id();
             let app_pane = AppPane {
                 pip_status: None,
                 id: second_pane_id,
                 runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
-                    std::env::temp_dir(),
+                    browser_root.clone(),
                 ))),
-                workspace_root: std::env::temp_dir(),
+                workspace_root: browser_root.clone(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "hidden-test".to_string(),
                 name: "Hidden Test App".to_string(),
@@ -2236,6 +2245,7 @@ mod tests {
         let mut h = PlexiUiHarness::new();
         h.step();
 
+        let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let pane_id_a = app.host.alloc_pane_id();
             let pane_id_b = app.host.alloc_pane_id();
@@ -2247,9 +2257,9 @@ mod tests {
                     pip_status: None,
                     id: pane_id,
                     runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
+                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
                     )),
-                    workspace_root: std::env::temp_dir(),
+                    workspace_root: browser_root.clone(),
                     permissions: AppPermissions::builtin(),
                     manifest_id: "test".to_string(),
                     name: name.to_string(),

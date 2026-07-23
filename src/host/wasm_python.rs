@@ -1178,6 +1178,18 @@ fn load_python_state(config: &PythonLaunchConfig) -> serde_json::Map<String, Val
 }
 
 impl LivePythonPane {
+    /// Send an event to the CPython subprocess. A failed send (broken pipe)
+    /// means the app runtime is dead — say so in the log instead of failing
+    /// silent, so a hung app is diagnosable from plexi.log.
+    fn send_to_runtime(&self, event: &Value) {
+        if let Err(error) = self.runtime.send(event) {
+            log::warn!(
+                "app::{}: send to CPython runtime failed — runtime likely dead: {error}",
+                self.app_id
+            );
+        }
+    }
+
     pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
         let app_id = config.app_id.clone();
         let persisted_state = load_python_state(&config);
@@ -1361,17 +1373,15 @@ impl LivePythonPane {
             self.perf_ui_render += render_started.elapsed();
             self.perf_canvas_render += result.canvas_time;
             for action in result.actions {
-                let _ = self
-                    .runtime
-                    .send(&json!({"type": "ui_action", "handler_id": action}));
+                self.send_to_runtime(&json!({"type": "ui_action", "handler_id": action}));
             }
             for (handler_id, value) in result.value_changes {
-                let _ = self.runtime.send(&json!({
+                self.send_to_runtime(&json!({
                     "type": "text_submitted", "id": handler_id, "value": value
                 }));
             }
             for click in result.canvas_clicks {
-                let _ = self.runtime.send(&json!({
+                self.send_to_runtime(&json!({
                     "type": "mouse",
                     "x": click.x,
                     "y": click.y,
@@ -1451,7 +1461,7 @@ impl LivePythonPane {
 
     fn drain_runtime(&mut self) {
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
-            let _ = self.runtime.send(&json!({
+            self.send_to_runtime(&json!({
                 "type": "http_response", "request_id": request_id,
                 "status": response.status, "body": response.body, "error": response.error,
                 "headers": response.response_headers,
@@ -1685,7 +1695,7 @@ impl LivePythonPane {
             Ok(content) => json!({"type": "file_read_result", "content": content}),
             Err(error) => json!({"type": "file_read_result", "error": error}),
         };
-        let _ = self.runtime.send(&response);
+        self.send_to_runtime(&response);
     }
 
     fn handle_file_write(&mut self, message: &Value) {
@@ -1710,7 +1720,7 @@ impl LivePythonPane {
             Ok(()) => json!({"type": "file_write_result"}),
             Err(error) => json!({"type": "file_write_result", "error": error}),
         };
-        let _ = self.runtime.send(&response);
+        self.send_to_runtime(&response);
     }
 
     /// Serve a capability-gated `read_host_log` request (stint 0444). The host
@@ -1756,7 +1766,7 @@ impl LivePythonPane {
             .unwrap_or_default()
             .to_string();
         if !self.has_capability("net.http") {
-            let _ = self.runtime.send(&json!({"type": "http_response", "request_id": request_id, "error": "missing capability net.http"}));
+            self.send_to_runtime(&json!({"type": "http_response", "request_id": request_id, "error": "missing capability net.http"}));
             return;
         }
         let method = message
@@ -1770,7 +1780,7 @@ impl LivePythonPane {
             .unwrap_or_default()
             .to_string();
         if !http_host_allowed(&url, &self.config.allowed_hosts) {
-            let _ = self.runtime.send(&json!({"type": "http_response", "request_id": request_id, "error": "host is not in manifest allowed_hosts"}));
+            self.send_to_runtime(&json!({"type": "http_response", "request_id": request_id, "error": "host is not in manifest allowed_hosts"}));
             return;
         }
         let headers = message
@@ -1810,7 +1820,7 @@ impl LivePythonPane {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let granted = self.has_capability(capability);
-        let _ = self.runtime.send(
+        self.send_to_runtime(
             &json!({"type": "capability_decision", "capability": capability, "granted": granted}),
         );
     }
