@@ -18,6 +18,13 @@
 //      file-read effect (binary I/O from 0509), gated by fs:read
 //      capability requests; `demo:` sources are synthesized in-guest so the
 //      POC is audible with zero grants.
+//   5. Projects are portable bundles (stint 0518): a picked directory holding
+//      `project.json` (deterministic model serialization from plexi-daw-bundle)
+//      beside `media/<contenthash>.wav` assets referenced relatively.
+//      Save/save-as/open and audio import run through the 0508 file picker
+//      (its grant covers the whole bundle subtree, read+write); edits autosave
+//      to the open bundle on a debounce; export writes the offline mixdown to
+//      a picked `.wav` — the same render path as playback and the tool.
 //
 // The UI (stint 0516) is keyboard-complete: every operation — transport,
 // track/clip selection, clip move/trim/split, add track, and the whole mixer
@@ -40,11 +47,15 @@ use plexi::platform::host_log;
 use plexi::platform::types::{
     Alignment, BadgeColor, BadgeNode, ButtonNode, ButtonStyle, CanvasCommand, CanvasLine,
     CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, DeclareToolsEffect, Effect,
-    FileReadEffect, FileWriteEffect, FooterKeyEntry, FooterKeysNode, IndexedNode, InputEvent,
-    KeyEvent, MouseButton, MouseEvent, PaddingNode, RowNode, StateSnapshot, TextNode,
-    ToolCallEvent, ToolDecl, ToolResultEffect, UiActionEvent, UiNodeData, UiTree,
+    FilePickedEvent, FilePickerMode, FileReadEffect, FileWriteEffect, FooterKeyEntry,
+    FooterKeysNode, IndexedNode, InputEvent, KeyEvent, MouseButton, MouseEvent,
+    OpenFilePickerEffect, PaddingNode, RowNode, StateSnapshot, TextNode, TimerEffect, ToolCallEvent,
+    ToolDecl, ToolResultEffect, UiActionEvent, UiNodeData, UiTree,
 };
 
+use plexi_daw_bundle::{
+    content_hash, media_refs, media_relpath, source_with_ref, BundleDoc, PROJECT_FILE,
+};
 use plexi_daw_engine::{midi, pcm_hash, wav, Engine, EngineConfig, Note, SourceData};
 use plexi_daw_model::{
     ApplyOutcome, Clip, ClipId, DawCommand, DawModel, SourceId, TrackId, TrackKind, TICKS_PER_BEAT,
@@ -58,6 +69,15 @@ const BUFFER_FRAMES: u32 = 512;
 
 const TOOL_MIXDOWN: &str = "daw_mixdown";
 const TOOL_COMMAND: &str = "daw_command";
+
+/// Timer id for the autosave debounce; a fresh edit resets it (SetTimer with an
+/// existing id restarts the deadline).
+const AUTOSAVE_TIMER_ID: u32 = 1;
+/// Debounce window before an edit flushes `project.json` to the open bundle,
+/// mirroring the notes editor's 2-second write coalescing.
+const AUTOSAVE_DEBOUNCE_MS: u32 = 2_000;
+/// Picker filter for `.wav` import and export.
+const WAV_EXT: &str = "wav";
 
 // ── Timeline layout (canvas-logical units) ───────────────────────────────────
 
@@ -95,6 +115,31 @@ enum LoadState {
     Failed(String),
 }
 
+/// A pending single-flight `FileRead`. The result event carries no request id,
+/// so the head of the read queue owns the next `FileReadResult` and this tag
+/// says how to interpret it.
+enum Read {
+    /// Media bytes for a model source (bundle-relative under the open bundle,
+    /// or a legacy absolute path granted through fs:read).
+    Source(SourceId),
+    /// `project.json` of a bundle being opened; the string is the bundle dir.
+    Project(String),
+    /// A picked external `.wav` being imported; the string is its absolute path.
+    Import(String),
+}
+
+/// What a resolved file-picker request should do with the picked path(s).
+enum PendingPick {
+    /// Adopt the picked folder as the bundle dir and write a full bundle.
+    SaveAs,
+    /// Open the bundle rooted at the picked folder.
+    Open,
+    /// Import the picked `.wav` into the open (or next-saved) bundle.
+    Import,
+    /// Write the offline mixdown to the picked destination file.
+    Export,
+}
+
 /// What a live pointer drag is doing to `clip`. The preview geometry lives on
 /// the drag until release, when exactly one command commits it — so a drag is
 /// a single undo entry, not one per moved frame.
@@ -129,8 +174,8 @@ struct App {
     stream: Option<u32>,
     /// File reads are single-flight: the result event carries no request id,
     /// so the head of this queue owns the next FileReadResult.
-    read_queue: VecDeque<SourceId>,
-    inflight: Option<SourceId>,
+    read_queue: VecDeque<Read>,
+    inflight: Option<Read>,
     /// Parent dirs already requested via fs:read capability.
     requested_roots: Vec<String>,
     /// Parent dirs the host has granted fs:read for; reads only issue for
@@ -141,6 +186,21 @@ struct App {
     pending_write: Option<PendingWrite>,
     last_status: String,
     node_id: u32,
+
+    // ── Project bundle (stint 0518) ──────────────────────────────────────────
+    /// Open project bundle directory (absolute, picker-granted). None until the
+    /// project is first saved to or opened from a bundle.
+    bundle_dir: Option<String>,
+    /// Raw `.wav` bytes of bundle media, keyed by bundle-relative ref
+    /// (`media/<hash>.wav`) — the content-addressed asset store that save
+    /// writes into the bundle and save-as copies to a new location.
+    media_bytes: BTreeMap<String, Vec<u8>>,
+    /// In-flight file-picker requests, keyed by request id, tagged with intent.
+    pending_picks: BTreeMap<String, PendingPick>,
+    /// Monotonic source of picker request ids.
+    next_request: u32,
+    /// An applied edit is awaiting its debounced autosave flush.
+    dirty: bool,
 
     // ── UI state (stint 0516) ────────────────────────────────────────────────
     /// Selected track lane, clamped to the track list on read.
@@ -208,7 +268,7 @@ fn seed_demo_project(model: &mut DawModel) {
     for cmd in cmds {
         let outcome = model.apply(cmd.clone());
         if !matches!(outcome, ApplyOutcome::Applied) {
-            host_log::error(&format!("daw-engine-poc: demo seed {cmd:?} -> {outcome:?}"));
+            log_error(&format!("daw-engine-poc: demo seed {cmd:?} -> {outcome:?}"));
         }
     }
 }
@@ -231,6 +291,53 @@ fn parent_root(path: &str) -> Option<String> {
     }
 }
 
+/// Joins a directory and a relative path with a single separator.
+fn join_path(dir: &str, rel: &str) -> String {
+    format!("{}/{}", dir.trim_end_matches('/'), rel)
+}
+
+/// Track name for an imported file: its filename without directory or `.wav`.
+fn import_name(path: &str) -> String {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    file.strip_suffix(".wav")
+        .or_else(|| file.strip_suffix(".WAV"))
+        .unwrap_or(file)
+        .to_string()
+}
+
+// Logging shims. The `host_log::*` imports trap under `unreachable!` when the
+// component runs off-host (the native unit tests), so route every trace through
+// these wrappers, which no-op under `cargo test` and forward on-host.
+fn log_info(msg: &str) {
+    if cfg!(test) {
+        return;
+    }
+    host_log::info(msg);
+}
+
+fn log_warn(msg: &str) {
+    if cfg!(test) {
+        return;
+    }
+    host_log::warn(msg);
+}
+
+fn log_error(msg: &str) {
+    if cfg!(test) {
+        return;
+    }
+    host_log::error(msg);
+}
+
+/// One rendered offline mixdown: interleaved f32 plus its shape and PCM hash.
+struct Mixdown {
+    sample_rate: u32,
+    channels: u32,
+    frames: u32,
+    hash: u64,
+    samples: Vec<f32>,
+}
+
 impl App {
     fn new(config: EngineConfig) -> Self {
         let mut model = DawModel::new();
@@ -250,6 +357,11 @@ impl App {
             pending_write: None,
             last_status: "ready".into(),
             node_id: 0,
+            bundle_dir: None,
+            media_bytes: BTreeMap::new(),
+            pending_picks: BTreeMap::new(),
+            next_request: 0,
+            dirty: false,
             sel_track: 0,
             sel_clip,
             view_start_ticks: 0,
@@ -259,8 +371,9 @@ impl App {
     }
 
     /// Queues loading for every model source without data: `demo:` paths
-    /// synthesize immediately, real paths go through fs:read capability +
-    /// file-read effects.
+    /// synthesize immediately; bundle-relative media resolves under the open
+    /// bundle dir (already picker-granted); legacy absolute paths go through
+    /// fs:read capability + file-read effects.
     fn ensure_source_data(&mut self, effects: &mut Vec<Effect>) {
         let sources: Vec<(SourceId, String)> = self
             .model
@@ -278,6 +391,22 @@ impl App {
                 self.load_states.insert(id, LoadState::Loaded);
                 continue;
             }
+            if plexi_daw_bundle::is_media_ref(&path) {
+                // Resolved under the open bundle dir; the folder pick granted
+                // read+write over the whole subtree, so no fs:read request.
+                if self.bundle_dir.is_none() {
+                    self.load_states.insert(
+                        id,
+                        LoadState::Failed(format!(
+                            "media ref {path} has no open bundle to resolve against"
+                        )),
+                    );
+                    continue;
+                }
+                self.load_states.insert(id, LoadState::Pending);
+                self.read_queue.push_back(Read::Source(id));
+                continue;
+            }
             let Some(root) = parent_root(&path) else {
                 self.load_states.insert(
                     id,
@@ -290,56 +419,106 @@ impl App {
                 effects.push(Effect::RequestCapability(format!("fs:read:{root}")));
             }
             self.load_states.insert(id, LoadState::Pending);
-            self.read_queue.push_back(id);
+            self.read_queue.push_back(Read::Source(id));
         }
         self.pump_reads(effects);
     }
 
-    /// Issues the next queued read whose parent dir has been granted; one at
-    /// a time because the result event carries no request id. Sources under
-    /// still-pending roots stay queued.
+    /// Issues the next queued read that is ready; one at a time because the
+    /// result event carries no request id. Source reads under a still-pending
+    /// grant (or an unopened bundle) stay queued; project/import reads target
+    /// picker-granted paths and are always ready.
     fn pump_reads(&mut self, effects: &mut Vec<Effect>) {
         if self.inflight.is_some() {
             return;
         }
+        // Resolve each entry's fate with immutable borrows only, then mutate.
+        enum Decide {
+            Issue(String),
+            Skip,
+            Drop(SourceId),
+        }
         let mut i = 0;
         while i < self.read_queue.len() {
-            let id = self.read_queue[i];
-            let Some(path) = self.model.project().source(id).map(|s| s.path.clone()) else {
-                // Source deleted while queued; ids never rebind, so drop it.
-                self.read_queue.remove(i);
-                self.load_states.remove(&id);
-                continue;
+            let decide = match &self.read_queue[i] {
+                Read::Project(dir) => Decide::Issue(join_path(dir, PROJECT_FILE)),
+                Read::Import(path) => Decide::Issue(path.clone()),
+                Read::Source(id) => {
+                    match self.model.project().source(*id).map(|s| s.path.clone()) {
+                        // Source deleted while queued; ids never rebind.
+                        None => Decide::Drop(*id),
+                        Some(p) if plexi_daw_bundle::is_media_ref(&p) => match &self.bundle_dir {
+                            Some(dir) => Decide::Issue(join_path(dir, &p)),
+                            None => Decide::Skip,
+                        },
+                        Some(p) => {
+                            if parent_root(&p).is_some_and(|r| self.granted_roots.contains(&r)) {
+                                Decide::Issue(p)
+                            } else {
+                                Decide::Skip
+                            }
+                        }
+                    }
+                }
             };
-            let granted = parent_root(&path)
-                .is_some_and(|root| self.granted_roots.contains(&root));
-            if !granted {
-                i += 1;
-                continue;
+            match decide {
+                Decide::Skip => i += 1,
+                Decide::Drop(id) => {
+                    self.read_queue.remove(i);
+                    self.load_states.remove(&id);
+                }
+                Decide::Issue(path) => {
+                    let read = self.read_queue.remove(i).expect("indexed read entry");
+                    log_info(&format!("daw-engine-poc: reading {path}"));
+                    self.inflight = Some(read);
+                    effects.push(Effect::FileRead(FileReadEffect { path }));
+                    return;
+                }
             }
-            self.read_queue.remove(i);
-            host_log::info(&format!("daw-engine-poc: loading source {} from {path}", id.0));
-            self.inflight = Some(id);
-            effects.push(Effect::FileRead(FileReadEffect { path }));
-            return;
         }
     }
 
     fn finish_read(&mut self, result: Result<Vec<u8>, String>, effects: &mut Vec<Effect>) {
-        let Some(id) = self.inflight.take() else {
-            host_log::warn("daw-engine-poc: file-read result with no read in flight");
+        let Some(read) = self.inflight.take() else {
+            log_warn("daw-engine-poc: file-read result with no read in flight");
             return;
         };
-        let kind = self.model.project().source(id).map(|s| s.kind);
-        let decoded = result.and_then(|bytes| match kind {
-            Some(TrackKind::Audio) => wav::decode(&bytes).map(|w| SourceData::AudioPcm {
-                sample_rate: w.sample_rate,
-                channels: w.channels,
-                samples: w.samples,
-            }),
-            Some(TrackKind::Midi) => midi::parse_smf(&bytes).map(SourceData::MidiNotes),
-            None => Err("source removed while loading".to_string()),
-        });
+        match read {
+            Read::Source(id) => self.finish_source_read(id, result),
+            Read::Project(dir) => self.finish_project_read(dir, result, effects),
+            Read::Import(path) => self.finish_import_read(path, result, effects),
+        }
+        self.pump_reads(effects);
+    }
+
+    fn finish_source_read(&mut self, id: SourceId, result: Result<Vec<u8>, String>) {
+        let Some(source) = self.model.project().source(id).cloned() else {
+            self.load_states.remove(&id);
+            return;
+        };
+        let decoded = match result {
+            Ok(bytes) => {
+                let data = match source.kind {
+                    TrackKind::Audio => wav::decode(&bytes).map(|w| SourceData::AudioPcm {
+                        sample_rate: w.sample_rate,
+                        channels: w.channels,
+                        samples: w.samples,
+                    }),
+                    TrackKind::Midi => midi::parse_smf(&bytes).map(SourceData::MidiNotes),
+                };
+                match data {
+                    Ok(d) => {
+                        // Keep bundle media bytes so save-as can copy the asset.
+                        if plexi_daw_bundle::is_media_ref(&source.path) {
+                            self.media_bytes.insert(source.path.clone(), bytes);
+                        }
+                        Ok(d)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        };
         match decoded {
             Ok(data) => {
                 self.sources.insert(id, data);
@@ -348,11 +527,152 @@ impl App {
                 self.reprepare(self.model.transport().position);
             }
             Err(e) => {
-                host_log::error(&format!("daw-engine-poc: source {} load failed: {e}", id.0));
+                log_error(&format!("daw-engine-poc: source {} load failed: {e}", id.0));
                 self.load_states.insert(id, LoadState::Failed(e));
             }
         }
-        self.pump_reads(effects);
+    }
+
+    /// Loads `<dir>/project.json` into the live model, replacing the current
+    /// project. Rejects an invalid bundle through the model's shared validation.
+    fn finish_project_read(
+        &mut self,
+        dir: String,
+        result: Result<Vec<u8>, String>,
+        effects: &mut Vec<Effect>,
+    ) {
+        let loaded = result
+            .and_then(|bytes| {
+                String::from_utf8(bytes).map_err(|e| format!("project.json is not UTF-8: {e}"))
+            })
+            .and_then(|json| BundleDoc::from_json(&json))
+            .and_then(|doc| {
+                doc.validate_portable()?;
+                doc.into_model().map_err(|e| format!("invalid bundle: {e}"))
+            });
+        match loaded {
+            Ok(model) => {
+                self.model = model;
+                self.bundle_dir = Some(dir.clone());
+                // A freshly opened bundle starts clean; drop stale in-memory
+                // media and any queued reads from the previous project, then
+                // reload sources from the bundle.
+                self.sources.clear();
+                self.load_states.clear();
+                self.media_bytes.clear();
+                self.read_queue.clear();
+                self.dirty = false;
+                self.sel_track = 0;
+                self.sel_clip = first_clip_id(&self.model);
+                self.view_start_ticks = 0;
+                self.ensure_source_data(effects);
+                self.reprepare(self.model.transport().position);
+                self.last_status = format!("opened bundle {dir}");
+                log_info(&format!("daw-engine-poc: {}", self.last_status));
+            }
+            Err(e) => {
+                self.last_status = format!("open failed: {e}");
+                log_error(&format!("daw-engine-poc: {}", self.last_status));
+            }
+        }
+    }
+
+    fn finish_import_read(
+        &mut self,
+        path: String,
+        result: Result<Vec<u8>, String>,
+        effects: &mut Vec<Effect>,
+    ) {
+        let outcome = result.and_then(|bytes| self.ingest_import(&path, bytes, effects));
+        match outcome {
+            Ok(msg) => {
+                self.last_status = msg.clone();
+                log_info(&format!("daw-engine-poc: {msg}"));
+            }
+            Err(e) => {
+                self.last_status = format!("import failed: {e}");
+                log_error(&format!("daw-engine-poc: {}", self.last_status));
+            }
+        }
+    }
+
+    /// Copies a decoded `.wav` into the bundle's content-addressed media store,
+    /// registers (or reuses, by hash) its source, and places it on a fresh
+    /// track at the playhead so the import is immediately visible and audible.
+    fn ingest_import(
+        &mut self,
+        path: &str,
+        bytes: Vec<u8>,
+        effects: &mut Vec<Effect>,
+    ) -> Result<String, String> {
+        let wav = wav::decode(&bytes)?;
+        let frames = wav.frames();
+        if frames == 0 {
+            return Err(format!("{path} decoded to zero frames"));
+        }
+        let hash = content_hash(&bytes);
+        let relpath = media_relpath(&hash);
+        let duration = self.frames_to_ticks(frames, wav.sample_rate);
+        if duration == 0 {
+            return Err(format!("{path} is too short to place at the current tempo"));
+        }
+        let data = SourceData::AudioPcm {
+            sample_rate: wav.sample_rate,
+            channels: wav.channels,
+            samples: wav.samples,
+        };
+
+        // Content-addressed dedup: a re-imported file reuses its source.
+        let source_id = match source_with_ref(self.model.project(), &relpath) {
+            Some(existing) => existing.id,
+            None => {
+                if !matches!(
+                    self.model.apply(DawCommand::AddSource {
+                        kind: TrackKind::Audio,
+                        path: relpath.clone(),
+                        duration,
+                    }),
+                    ApplyOutcome::Applied
+                ) {
+                    return Err("AddSource rejected".into());
+                }
+                SourceId(self.model.project().next_id - 1)
+            }
+        };
+        self.media_bytes.insert(relpath.clone(), bytes);
+        self.sources.insert(source_id, data);
+        self.load_states.insert(source_id, LoadState::Loaded);
+
+        // Place the import on a new track at the playhead.
+        self.model.apply(DawCommand::AddTrack {
+            kind: TrackKind::Audio,
+            name: import_name(path),
+        });
+        let track = TrackId(self.model.project().next_id - 1);
+        let position = self.model.transport().position;
+        if matches!(
+            self.model.apply(DawCommand::AddClip {
+                track,
+                source: source_id,
+                position,
+                length: duration,
+                source_offset: 0,
+            }),
+            ApplyOutcome::Applied
+        ) {
+            self.sel_track = self.tracks_len().saturating_sub(1);
+            self.sel_clip = Some(ClipId(self.model.project().next_id - 1));
+        }
+        self.reprepare(self.model.transport().position);
+
+        // Copy the media into the open bundle now; project.json follows on the
+        // autosave debounce. Without an open bundle the bytes stay in memory
+        // and land on the first save.
+        if self.bundle_dir.is_some() {
+            self.write_media(&relpath, effects);
+        }
+        self.mark_dirty(effects);
+        Ok(format!("imported {relpath}"))
     }
 
     /// Rebuilds the engine from the model — the only way edits reach the
@@ -379,7 +699,7 @@ impl App {
                 self.engine = Some(engine);
             }
             Err(e) => {
-                host_log::error(&format!("daw-engine-poc: prepare failed: {e}"));
+                log_error(&format!("daw-engine-poc: prepare failed: {e}"));
                 self.last_status = format!("prepare failed: {e}");
                 self.engine = None;
             }
@@ -392,8 +712,238 @@ impl App {
         if matches!(outcome, ApplyOutcome::Applied) {
             self.ensure_source_data(effects);
             self.reprepare(prev_tick);
+            self.mark_dirty(effects);
         }
         outcome
+    }
+
+    // ── Project bundle (stint 0518) ──────────────────────────────────────────
+
+    /// Marks the project dirty and (re)arms the autosave debounce when a bundle
+    /// is open. SetTimer with the same id restarts the deadline, so a burst of
+    /// edits flushes once, the notes editor's write-coalescing behaviour.
+    fn mark_dirty(&mut self, effects: &mut Vec<Effect>) {
+        if self.bundle_dir.is_none() {
+            return;
+        }
+        self.dirty = true;
+        effects.push(Effect::SetTimer(TimerEffect {
+            id: AUTOSAVE_TIMER_ID,
+            delay_ms: AUTOSAVE_DEBOUNCE_MS,
+            repeat: false,
+        }));
+    }
+
+    /// Absolute path of a bundle-relative ref under the open bundle dir.
+    fn bundle_path(&self, rel: &str) -> Option<String> {
+        self.bundle_dir.as_ref().map(|dir| join_path(dir, rel))
+    }
+
+    /// Writes one content-addressed media asset into the open bundle.
+    fn write_media(&mut self, rel: &str, effects: &mut Vec<Effect>) {
+        let (Some(path), Some(bytes)) = (self.bundle_path(rel), self.media_bytes.get(rel).cloned())
+        else {
+            return;
+        };
+        effects.push(Effect::FileWrite(FileWriteEffect { path, content: bytes }));
+    }
+
+    /// Writes `project.json`, clears the dirty flag, and cancels a pending
+    /// autosave — the flush shared by explicit save and the debounce timer.
+    fn write_project_json(&mut self, effects: &mut Vec<Effect>) -> Result<(), String> {
+        let Some(path) = self.bundle_path(PROJECT_FILE) else {
+            return Err("no open bundle".into());
+        };
+        let doc = BundleDoc::from_model(&self.model);
+        // Refuse to persist a non-portable project (e.g. a tool-added absolute
+        // source path) rather than write a bundle that breaks when moved.
+        doc.validate_portable()?;
+        let json = doc.to_json()?;
+        effects.push(Effect::FileWrite(FileWriteEffect {
+            path,
+            content: json.into_bytes(),
+        }));
+        self.dirty = false;
+        effects.push(Effect::CancelTimer(AUTOSAVE_TIMER_ID));
+        Ok(())
+    }
+
+    /// Full save into a (possibly new) bundle dir: copy every referenced media
+    /// asset, then write `project.json`. Fails loudly if any referenced asset
+    /// has not finished loading — writing `project.json` with a media ref whose
+    /// bytes we cannot copy would produce a bundle that cannot reload its audio.
+    fn save_bundle(&mut self, effects: &mut Vec<Effect>) -> Result<(), String> {
+        if self.bundle_dir.is_none() {
+            return Err("no open bundle".into());
+        }
+        let refs = media_refs(self.model.project());
+        let missing = refs
+            .iter()
+            .filter(|rel| !self.media_bytes.contains_key(*rel))
+            .count();
+        if missing > 0 {
+            return Err(format!("{missing} media asset(s) still loading; try again"));
+        }
+        for rel in &refs {
+            self.write_media(rel, effects);
+        }
+        self.write_project_json(effects)
+    }
+
+    fn next_req(&mut self) -> String {
+        self.next_request += 1;
+        format!("pick-{}", self.next_request)
+    }
+
+    /// Emits a file-picker request tagged with what to do once it resolves.
+    fn request_pick(
+        &mut self,
+        intent: PendingPick,
+        mode: FilePickerMode,
+        filter: Vec<String>,
+        effects: &mut Vec<Effect>,
+    ) {
+        let request_id = self.next_req();
+        self.pending_picks.insert(request_id.clone(), intent);
+        effects.push(Effect::OpenFilePicker(OpenFilePickerEffect {
+            request_id,
+            filter,
+            multiple: false,
+            mode,
+        }));
+    }
+
+    /// Save: flush `project.json` to the open bundle (its media already lives
+    /// there — import copies each asset in on the way in), or fall through to
+    /// save-as when no bundle is open yet.
+    fn op_save(&mut self, effects: &mut Vec<Effect>) {
+        if self.bundle_dir.is_some() {
+            match self.write_project_json(effects) {
+                Ok(()) => self.last_status = "saved bundle".into(),
+                Err(e) => self.last_status = format!("save failed: {e}"),
+            }
+        } else {
+            self.op_save_as(effects);
+        }
+    }
+
+    fn op_save_as(&mut self, effects: &mut Vec<Effect>) {
+        self.request_pick(PendingPick::SaveAs, FilePickerMode::Folder, vec![], effects);
+    }
+
+    fn op_open(&mut self, effects: &mut Vec<Effect>) {
+        self.request_pick(PendingPick::Open, FilePickerMode::Folder, vec![], effects);
+    }
+
+    fn op_import(&mut self, effects: &mut Vec<Effect>) {
+        self.request_pick(
+            PendingPick::Import,
+            FilePickerMode::Open,
+            vec![WAV_EXT.into()],
+            effects,
+        );
+    }
+
+    fn op_export(&mut self, effects: &mut Vec<Effect>) {
+        self.request_pick(
+            PendingPick::Export,
+            FilePickerMode::Save,
+            vec![WAV_EXT.into()],
+            effects,
+        );
+    }
+
+    /// Routes a resolved pick to its tagged intent.
+    fn on_pick(&mut self, event: FilePickedEvent, effects: &mut Vec<Effect>) {
+        let Some(intent) = self.pending_picks.remove(&event.request_id) else {
+            log_warn(&format!(
+                "daw-engine-poc: file-picked for unknown request {}",
+                event.request_id
+            ));
+            return;
+        };
+        let Some(path) = event.paths.into_iter().next() else {
+            self.last_status = "picker returned no path".into();
+            return;
+        };
+        match intent {
+            PendingPick::SaveAs => {
+                self.bundle_dir = Some(path.clone());
+                match self.save_bundle(effects) {
+                    Ok(()) => {
+                        self.last_status = format!("saved bundle to {path}");
+                        log_info(&format!("daw-engine-poc: {}", self.last_status));
+                    }
+                    Err(e) => {
+                        self.last_status = format!("save failed: {e}");
+                        log_error(&format!("daw-engine-poc: {}", self.last_status));
+                    }
+                }
+            }
+            PendingPick::Open => {
+                self.read_queue.push_back(Read::Project(path));
+                self.pump_reads(effects);
+            }
+            PendingPick::Import => {
+                self.read_queue.push_back(Read::Import(path));
+                self.pump_reads(effects);
+            }
+            PendingPick::Export => self.export_mixdown(&path, effects),
+        }
+    }
+
+    /// The autosave debounce fired: flush `project.json` if still dirty.
+    fn on_timer(&mut self, id: u32, effects: &mut Vec<Effect>) {
+        if id != AUTOSAVE_TIMER_ID || !self.dirty || self.bundle_dir.is_none() {
+            return;
+        }
+        match self.write_project_json(effects) {
+            Ok(()) => {
+                self.last_status = "autosaved".into();
+                log_info("daw-engine-poc: autosaved project.json");
+            }
+            Err(e) => log_error(&format!("daw-engine-poc: autosave failed: {e}")),
+        }
+    }
+
+    fn on_pick_cancelled(&mut self, request_id: &str) {
+        if self.pending_picks.remove(request_id).is_some() {
+            self.last_status = "picker cancelled".into();
+            log_info("daw-engine-poc: file pick cancelled");
+        }
+    }
+
+    /// Renders the offline mixdown and writes a float32 WAV to a picked path —
+    /// the same render primitive playback and the `daw_mixdown` tool use.
+    fn export_mixdown(&mut self, path: &str, effects: &mut Vec<Effect>) {
+        match self
+            .render_mixdown()
+            .and_then(|md| wav::encode_f32(md.sample_rate, md.channels, &md.samples).map(|b| (b, md.frames)))
+        {
+            Ok((bytes, frames)) => {
+                effects.push(Effect::FileWrite(FileWriteEffect {
+                    path: path.to_string(),
+                    content: bytes,
+                }));
+                self.last_status = format!("exporting {frames} frames to {path}");
+                log_info(&format!("daw-engine-poc: {}", self.last_status));
+            }
+            Err(e) => {
+                self.last_status = format!("export failed: {e}");
+                log_error(&format!("daw-engine-poc: {}", self.last_status));
+            }
+        }
+    }
+
+    /// Ticks a media file of `frames` at `sample_rate` spans at the project
+    /// tempo — the inverse of the engine's frames-per-tick mapping.
+    fn frames_to_ticks(&self, frames: u64, sample_rate: u32) -> u64 {
+        if sample_rate == 0 {
+            return 0;
+        }
+        let tempo = self.model.project().tempo_bpm;
+        (frames as f64 * tempo * TICKS_PER_BEAT as f64 / (f64::from(sample_rate) * 60.0)).round()
+            as u64
     }
 
     // ── Selection / view helpers ──────────────────────────────────────────────
@@ -749,6 +1299,14 @@ impl App {
             "r" => {
                 self.apply(DawCommand::Redo, effects);
             }
+            // Project bundle (function keys — printable chars are swallowed by
+            // the WASM key channel in scenes, so the persistence ops use keys
+            // that survive as `Event::Key`).
+            "f2" => self.op_save(effects),
+            "f3" => self.op_open(effects),
+            "f4" => self.op_import(effects),
+            "f5" => self.op_export(effects),
+            "f6" => self.op_save_as(effects),
             "q" | "escape" => effects.push(Effect::CloseSelf),
             _ => {}
         }
@@ -775,6 +1333,11 @@ impl App {
                 self.apply(DawCommand::Redo, effects);
             }
             "add-track" => self.op_add_track(TrackKind::Audio, effects),
+            "save" => self.op_save(effects),
+            "save-as" => self.op_save_as(effects),
+            "open" => self.op_open(effects),
+            "import" => self.op_import(effects),
+            "export" => self.op_export(effects),
             "split" => self.op_split_clip(effects),
             "del-clip" => self.op_delete_clip(effects),
             "mute" => {
@@ -816,7 +1379,7 @@ impl App {
                     }
                 }
             }
-            other => host_log::info(&format!("daw-engine-poc: unknown action {other}")),
+            other => log_info(&format!("daw-engine-poc: unknown action {other}")),
         }
     }
 
@@ -990,11 +1553,12 @@ impl App {
         if self.model.revision() != prev_revision {
             self.ensure_source_data(effects);
             self.reprepare(prev_tick);
+            self.mark_dirty(effects);
             self.last_status = format!("{name} applied");
         }
         match &result {
-            Ok(_) => host_log::info(&format!("daw-engine-poc: tool {name} ok")),
-            Err(e) => host_log::info(&format!("daw-engine-poc: tool {name} error: {e}")),
+            Ok(_) => log_info(&format!("daw-engine-poc: tool {name} ok")),
+            Err(e) => log_info(&format!("daw-engine-poc: tool {name} error: {e}")),
         }
         Some(result.and_then(|value| {
             serde_json::to_string(&value).map_err(|e| format!("{name} result: {e}"))
@@ -1021,12 +1585,10 @@ impl App {
         }));
     }
 
-    fn tool_mixdown(&mut self, input_json: &str, effects: &mut Vec<Effect>) -> Result<String, String> {
-        let input: serde_json::Value = if input_json.trim().is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::from_str(input_json).map_err(|e| format!("mixdown input: {e}"))?
-        };
+    /// Renders the project's offline mixdown from transport start to project
+    /// end through the engine — the single render primitive shared by the
+    /// `daw_mixdown` tool and the picker-driven WAV export.
+    fn render_mixdown(&self) -> Result<Mixdown, String> {
         let engine = self.engine.as_ref().ok_or("engine not prepared")?;
         let fpt = f64::from(self.config.sample_rate) * 60.0
             / (self.model.project().tempo_bpm * TICKS_PER_BEAT as f64);
@@ -1040,27 +1602,45 @@ impl App {
         let mix = engine.mixdown(start, end)?;
         let hash = pcm_hash(&mix.samples);
         let frames = mix.samples.len() as u32 / mix.channels;
+        Ok(Mixdown {
+            sample_rate: mix.sample_rate,
+            channels: mix.channels,
+            frames,
+            hash,
+            samples: mix.samples,
+        })
+    }
+
+    fn tool_mixdown(&mut self, input_json: &str, effects: &mut Vec<Effect>) -> Result<String, String> {
+        let input: serde_json::Value = if input_json.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(input_json).map_err(|e| format!("mixdown input: {e}"))?
+        };
+        let md = self.render_mixdown()?;
         let mut out = serde_json::json!({
-            "frames": frames,
-            "sample_rate": mix.sample_rate,
-            "channels": mix.channels,
-            "pcm_hash": format!("{hash:016x}"),
+            "frames": md.frames,
+            "sample_rate": md.sample_rate,
+            "channels": md.channels,
+            "pcm_hash": format!("{:016x}", md.hash),
         });
         if let Some(path) = input.get("out_path").and_then(|v| v.as_str()) {
             let root = parent_root(path)
                 .ok_or_else(|| format!("out_path {path} is not an absolute file path"))?;
-            let bytes = wav::encode_f32(mix.sample_rate, mix.channels, &mix.samples)?;
+            let bytes = wav::encode_f32(md.sample_rate, md.channels, &md.samples)?;
             if self.pending_write.is_some() {
-                host_log::warn("daw-engine-poc: replacing a mixdown write still awaiting its grant");
+                log_warn("daw-engine-poc: replacing a mixdown write still awaiting its grant");
             }
-            // The write waits for its fs:write grant; completion is reported
-            // by the FileWriteResult handler, never here.
+            // The tool export waits for its fs:write grant; completion is
+            // reported by the FileWriteResult handler, never here. (The
+            // interactive Export op uses the picker grant instead — see
+            // `export_mixdown`.)
             effects.push(Effect::RequestCapability(format!("fs:write:{root}")));
             self.pending_write = Some(PendingWrite { root, path: path.to_string(), bytes });
             out["write_queued"] = serde_json::Value::String(path.to_string());
         }
-        self.last_status = format!("mixdown {frames} frames hash {hash:016x}");
-        host_log::info(&format!("daw-engine-poc: {}", self.last_status));
+        self.last_status = format!("mixdown {} frames hash {:016x}", md.frames, md.hash);
+        log_info(&format!("daw-engine-poc: {}", self.last_status));
         serde_json::to_string(&out).map_err(|e| format!("mixdown result: {e}"))
     }
 
@@ -1170,6 +1750,11 @@ impl App {
                     FooterKeyEntry { keys: vec!["-".into(), "=".into()], description: "bpm".into() },
                     FooterKeyEntry { keys: vec!["\\".into()], description: "loop".into() },
                     FooterKeyEntry { keys: vec!["z".into(), "r".into()], description: "undo/redo".into() },
+                    FooterKeyEntry { keys: vec!["F2".into()], description: "save".into() },
+                    FooterKeyEntry { keys: vec!["F6".into()], description: "save as".into() },
+                    FooterKeyEntry { keys: vec!["F3".into()], description: "open".into() },
+                    FooterKeyEntry { keys: vec!["F4".into()], description: "import".into() },
+                    FooterKeyEntry { keys: vec!["F5".into()], description: "export".into() },
                 ],
             }),
         );
@@ -1252,6 +1837,23 @@ impl App {
         let add_id = add.id;
         nodes.push(add);
 
+        // Project bundle controls.
+        let save = self.button("save", "Save", "save", ButtonStyle::Secondary, false);
+        let save_id = save.id;
+        nodes.push(save);
+        let save_as = self.button("save-as", "Save As", "save-as", ButtonStyle::Ghost, false);
+        let save_as_id = save_as.id;
+        nodes.push(save_as);
+        let open = self.button("open", "Open", "open", ButtonStyle::Ghost, false);
+        let open_id = open.id;
+        nodes.push(open);
+        let import = self.button("import", "Import", "import", ButtonStyle::Ghost, false);
+        let import_id = import.id;
+        nodes.push(import);
+        let export = self.button("export", "Export", "export", ButtonStyle::Ghost, false);
+        let export_id = export.id;
+        nodes.push(export);
+
         let undo = self.button("undo", "Undo", "undo", ButtonStyle::Ghost, !self.model.can_undo());
         let undo_id = undo.id;
         nodes.push(undo);
@@ -1279,7 +1881,8 @@ impl App {
             UiNodeData::Row(RowNode {
                 children: vec![
                     title_id, play_id, stop_id, loop_id, pos_id, bpm_down_id, bpm_id, bpm_up_id,
-                    add_id, undo_id, redo_id, badge_id,
+                    add_id, save_id, save_as_id, open_id, import_id, export_id, undo_id, redo_id,
+                    badge_id,
                 ],
                 gap: 8.0,
                 align: Alignment::Center,
@@ -1646,7 +2249,7 @@ impl Guest for Component {
                         if !(1..=2).contains(&negotiated.channels) {
                             // The engine renders mono/stereo only; the RT
                             // guard below keeps such a stream silent.
-                            host_log::error(&format!(
+                            log_error(&format!(
                                 "daw-engine-poc: negotiated {} channels unsupported; output muted",
                                 negotiated.channels
                             ));
@@ -1656,11 +2259,11 @@ impl Guest for Component {
                             channels: negotiated.channels,
                         };
                     }
-                    Err(e) => host_log::error(&format!(
+                    Err(e) => log_error(&format!(
                         "daw-engine-poc: stream-config query failed ({e}); assuming requested config"
                     )),
                 }
-                host_log::info(&format!(
+                log_info(&format!(
                     "daw-engine-poc: stream {handle} opened at {} Hz / {} ch",
                     config.sample_rate, config.channels
                 ));
@@ -1668,7 +2271,7 @@ impl Guest for Component {
             }
             Err(e) => {
                 // Offline mixdown still works without a live stream.
-                host_log::error(&format!("daw-engine-poc: open_output failed: {e}"));
+                log_error(&format!("daw-engine-poc: open_output failed: {e}"));
                 None
             }
         };
@@ -1681,7 +2284,7 @@ impl Guest for Component {
         let mut effects: Vec<Effect> = Vec::new();
         app_state.ensure_source_data(&mut effects);
         app_state.reprepare(app_state.model.transport().position);
-        host_log::info(&format!(
+        log_info(&format!(
             "daw-engine-poc: init tracks={} sources={} end_frame={}",
             app_state.model.project().tracks.len(),
             app_state.model.project().sources.len(),
@@ -1691,6 +2294,9 @@ impl Guest for Component {
 
         effects.push(Effect::SetTitle("DAW Engine".to_string()));
         effects.push(Effect::DeclareTools(DeclareToolsEffect { tools: App::tool_decls() }));
+        // Request the file-picker capability up front so save/open/import/export
+        // are ready without a mid-session prompt round trip.
+        effects.push(Effect::RequestCapability("fs.pick".to_string()));
         effects
     }
 
@@ -1703,15 +2309,20 @@ impl Guest for Component {
             InputEvent::Mouse(mouse) => a.on_mouse(mouse, &mut effects),
             InputEvent::FileReadResult(result) => a.finish_read(result, &mut effects),
             InputEvent::FileWriteResult(Ok(())) => {
-                a.last_status = "mixdown WAV written".into();
-                host_log::info("daw-engine-poc: mixdown WAV written");
+                log_info("daw-engine-poc: file written");
             }
             InputEvent::FileWriteResult(Err(e)) => {
-                a.last_status = format!("mixdown WAV write failed: {e}");
-                host_log::error(&format!("daw-engine-poc: mixdown write failed: {e}"));
+                a.last_status = format!("file write failed: {e}");
+                log_error(&format!("daw-engine-poc: file write failed: {e}"));
+                // A failed write (project.json included) must not silently drop
+                // the edit: re-arm the autosave debounce so the flush retries.
+                a.mark_dirty(&mut effects);
             }
+            InputEvent::FilePicked(event) => a.on_pick(event, &mut effects),
+            InputEvent::FilePickCancelled(request_id) => a.on_pick_cancelled(&request_id),
+            InputEvent::TimerFired(id) => a.on_timer(id, &mut effects),
             InputEvent::CapabilityGranted(cap) => {
-                host_log::info(&format!("daw-engine-poc: capability granted: {cap}"));
+                log_info(&format!("daw-engine-poc: capability granted: {cap}"));
                 if let Some(root) = cap.strip_prefix("fs:read:") {
                     if !a.granted_roots.contains(&root.to_string()) {
                         a.granted_roots.push(root.to_string());
@@ -1722,7 +2333,7 @@ impl Guest for Component {
                     // it; a grant for some other directory must not.
                     if a.pending_write.as_ref().is_some_and(|w| w.root == root) {
                         let w = a.pending_write.take().expect("checked above");
-                        host_log::info(&format!("daw-engine-poc: writing mixdown WAV to {}", w.path));
+                        log_info(&format!("daw-engine-poc: writing mixdown WAV to {}", w.path));
                         effects.push(Effect::FileWrite(FileWriteEffect { path: w.path, content: w.bytes }));
                     }
                 }
@@ -1734,36 +2345,39 @@ impl Guest for Component {
                     let denied: Vec<SourceId> = a
                         .read_queue
                         .iter()
-                        .copied()
-                        .filter(|id| {
-                            a.model
+                        .filter_map(|read| match read {
+                            Read::Source(id) => a
+                                .model
                                 .project()
                                 .source(*id)
                                 .and_then(|s| parent_root(&s.path))
                                 .is_some_and(|r| r == root)
+                                .then_some(*id),
+                            _ => None,
                         })
                         .collect();
-                    a.read_queue.retain(|id| !denied.contains(id));
+                    a.read_queue
+                        .retain(|read| !matches!(read, Read::Source(id) if denied.contains(id)));
                     for id in denied {
                         a.load_states
                             .insert(id, LoadState::Failed(format!("capability denied: {cap}")));
                     }
                     a.last_status = format!("file access denied: {cap}");
-                    host_log::warn(&format!("daw-engine-poc: {}", a.last_status));
+                    log_warn(&format!("daw-engine-poc: {}", a.last_status));
                 } else if let Some(root) = cap.strip_prefix("fs:write:") {
                     if a.pending_write.as_ref().is_some_and(|w| w.root == root) {
                         a.pending_write = None;
                         a.last_status = format!("mixdown write denied: {cap}");
-                        host_log::warn(&format!("daw-engine-poc: {}", a.last_status));
+                        log_warn(&format!("daw-engine-poc: {}", a.last_status));
                     }
                 }
             }
             InputEvent::ToolCall(call) => a.handle_tool_call(call, &mut effects),
             InputEvent::DeclareToolsResult(Ok(names)) => {
-                host_log::info(&format!("daw-engine-poc: tools declared: {names:?}"));
+                log_info(&format!("daw-engine-poc: tools declared: {names:?}"));
             }
             InputEvent::DeclareToolsResult(Err(e)) => {
-                host_log::error(&format!("daw-engine-poc: declare-tools failed: {e}"));
+                log_error(&format!("daw-engine-poc: declare-tools failed: {e}"));
             }
             _ => {}
         }
@@ -1826,6 +2440,8 @@ mod tests {
         let mut app = App::new(EngineConfig { sample_rate: 48_000, channels: 2 });
         let mut fx = Vec::new();
         app.ensure_source_data(&mut fx);
+        // Mirror `init`: prepare the engine so offline mixdown/export work.
+        app.reprepare(app.model.transport().position);
         app
     }
 
@@ -2067,5 +2683,297 @@ mod tests {
         assert!(tree.nodes.iter().any(|n| matches!(&n.data, UiNodeData::Canvas(_))));
         // Transport text is a real Text node so node_changes can see it.
         assert!(tree.nodes.iter().any(|n| matches!(&n.data, UiNodeData::Text(t) if t.text.starts_with("bar "))));
+    }
+
+    // ── Project bundle (stint 0518) ──────────────────────────────────────────
+
+    /// An in-memory stand-in for the host's file + picker + timer surfaces that
+    /// drives the same effect/event loop the real host runs: it stores writes,
+    /// answers reads, resolves scripted picks, and tracks the autosave timer.
+    struct FakeHost {
+        fs: std::collections::BTreeMap<String, Vec<u8>>,
+        picks: VecDeque<Vec<String>>,
+        timer_armed: bool,
+    }
+
+    impl FakeHost {
+        fn new() -> Self {
+            Self { fs: std::collections::BTreeMap::new(), picks: VecDeque::new(), timer_armed: false }
+        }
+
+        /// Processes an effect batch, recursively delivering the result events
+        /// each effect would produce — the closed loop that lets a test drive
+        /// one gesture (a pick, a read) to completion.
+        fn pump(&mut self, app: &mut App, effects: Vec<Effect>) {
+            for effect in effects {
+                match effect {
+                    Effect::FileWrite(w) => {
+                        self.fs.insert(w.path, w.content);
+                    }
+                    Effect::FileRead(r) => {
+                        let result = self
+                            .fs
+                            .get(&r.path)
+                            .cloned()
+                            .ok_or_else(|| format!("no such file {}", r.path));
+                        let mut next = Vec::new();
+                        app.finish_read(result, &mut next);
+                        self.pump(app, next);
+                    }
+                    Effect::OpenFilePicker(p) => {
+                        let mut next = Vec::new();
+                        match self.picks.pop_front() {
+                            Some(paths) if !paths.is_empty() => app.on_pick(
+                                FilePickedEvent { request_id: p.request_id, paths },
+                                &mut next,
+                            ),
+                            _ => app.on_pick_cancelled(&p.request_id),
+                        }
+                        self.pump(app, next);
+                    }
+                    Effect::SetTimer(t) if t.id == AUTOSAVE_TIMER_ID => self.timer_armed = true,
+                    Effect::CancelTimer(id) if id == AUTOSAVE_TIMER_ID => self.timer_armed = false,
+                    _ => {}
+                }
+            }
+        }
+
+        fn fire_autosave(&mut self, app: &mut App) {
+            let mut next = Vec::new();
+            app.on_timer(AUTOSAVE_TIMER_ID, &mut next);
+            self.pump(app, next);
+        }
+    }
+
+    /// A short valid `.wav` to import/export against.
+    fn tiny_wav() -> Vec<u8> {
+        let samples: Vec<f32> = (0..4_800).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+        wav::encode_f32(48_000, 1, &samples).unwrap()
+    }
+
+    fn drive_key(host: &mut FakeHost, app: &mut App, k: &str) {
+        let mut fx = Vec::new();
+        app.on_key(k, &mut fx);
+        host.pump(app, fx);
+    }
+
+    #[test]
+    fn save_as_writes_a_project_json_at_the_picked_dir() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/proj".into()]);
+        drive_key(&mut host, &mut app, "f2"); // save -> save-as (no bundle yet)
+
+        assert_eq!(app.bundle_dir.as_deref(), Some("/proj"));
+        let json = host.fs.get("/proj/project.json").expect("project.json written");
+        // Deterministic serialization: re-serializing the model matches disk.
+        let expected = BundleDoc::from_model(&app.model).to_json().unwrap();
+        assert_eq!(json, &expected.into_bytes());
+    }
+
+    #[test]
+    fn import_copies_wav_into_media_and_registers_a_source() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/proj".into()]);
+        drive_key(&mut host, &mut app, "f2"); // save-as
+
+        host.fs.insert("/ext/loop.wav".into(), tiny_wav());
+        host.picks.push_back(vec!["/ext/loop.wav".into()]);
+        let tracks_before = app.tracks_len();
+        drive_key(&mut host, &mut app, "f4"); // import
+
+        let hash = content_hash(&tiny_wav());
+        let rel = media_relpath(&hash);
+        // Source registered with a bundle-relative ref, not the picked path.
+        assert!(source_with_ref(app.model.project(), &rel).is_some());
+        // The raw bytes were copied byte-identically into media/.
+        assert_eq!(host.fs.get(&format!("/proj/{rel}")), Some(&tiny_wav()));
+        // Import placed the audio on a fresh track.
+        assert_eq!(app.tracks_len(), tracks_before + 1);
+    }
+
+    #[test]
+    fn reimport_of_identical_bytes_dedupes_the_source() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/proj".into()]);
+        drive_key(&mut host, &mut app, "f2");
+
+        host.fs.insert("/ext/a.wav".into(), tiny_wav());
+        host.fs.insert("/ext/b.wav".into(), tiny_wav()); // identical content
+        host.picks.push_back(vec!["/ext/a.wav".into()]);
+        drive_key(&mut host, &mut app, "f4");
+        let sources_after_first = app.model.project().sources.len();
+
+        host.picks.push_back(vec!["/ext/b.wav".into()]);
+        drive_key(&mut host, &mut app, "f4");
+        // Same content hash -> the source is reused, not duplicated.
+        assert_eq!(app.model.project().sources.len(), sources_after_first);
+    }
+
+    #[test]
+    fn save_reopen_round_trips_the_model_through_the_bundle() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/proj".into()]);
+        drive_key(&mut host, &mut app, "f2"); // save-as
+
+        host.fs.insert("/ext/loop.wav".into(), tiny_wav());
+        host.picks.push_back(vec!["/ext/loop.wav".into()]);
+        drive_key(&mut host, &mut app, "f4"); // import (marks dirty)
+        drive_key(&mut host, &mut app, "f2"); // explicit save flushes project.json
+
+        let saved_project = app.model.project().clone();
+        let saved_transport = *app.model.transport();
+
+        // A fresh app opens the same bundle dir.
+        let mut reopened = App::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+        host.picks.push_back(vec!["/proj".into()]);
+        {
+            let mut fx = Vec::new();
+            reopened.op_open(&mut fx);
+            host.pump(&mut reopened, fx);
+        }
+        assert_eq!(reopened.model.project(), &saved_project);
+        assert_eq!(reopened.model.transport(), &saved_transport);
+        // The imported media loaded back from the bundle.
+        let hash = content_hash(&tiny_wav());
+        assert!(reopened.media_bytes.contains_key(&media_relpath(&hash)));
+    }
+
+    #[test]
+    fn a_moved_bundle_dir_still_opens_via_relative_refs() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/proj".into()]);
+        drive_key(&mut host, &mut app, "f2");
+        host.fs.insert("/ext/loop.wav".into(), tiny_wav());
+        host.picks.push_back(vec!["/ext/loop.wav".into()]);
+        drive_key(&mut host, &mut app, "f4");
+        drive_key(&mut host, &mut app, "f2");
+        let saved = app.model.project().clone();
+
+        // Relocate the whole bundle: /proj/* -> /moved/*.
+        let moved: Vec<(String, Vec<u8>)> = host
+            .fs
+            .iter()
+            .filter(|(k, _)| k.starts_with("/proj/"))
+            .map(|(k, v)| (k.replacen("/proj/", "/moved/", 1), v.clone()))
+            .collect();
+        for (k, v) in moved {
+            host.fs.insert(k, v);
+        }
+
+        let mut reopened = App::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+        host.picks.push_back(vec!["/moved".into()]);
+        {
+            let mut fx = Vec::new();
+            reopened.op_open(&mut fx);
+            host.pump(&mut reopened, fx);
+        }
+        assert_eq!(reopened.bundle_dir.as_deref(), Some("/moved"));
+        assert_eq!(reopened.model.project(), &saved);
+    }
+
+    #[test]
+    fn export_writes_a_decodable_wav_to_the_picked_path() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/out/mix.wav".into()]);
+        drive_key(&mut host, &mut app, "f5"); // export
+
+        let bytes = host.fs.get("/out/mix.wav").expect("export written");
+        let decoded = wav::decode(bytes).expect("export is a valid WAV");
+        assert!(decoded.frames() > 0);
+    }
+
+    #[test]
+    fn edit_after_save_arms_autosave_and_the_timer_flushes_project_json() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/proj".into()]);
+        drive_key(&mut host, &mut app, "f2"); // save-as (clears dirty, cancels timer)
+        assert!(!host.timer_armed);
+
+        drive_key(&mut host, &mut app, "="); // bump tempo -> dirty + arm timer
+        assert!(host.timer_armed);
+        assert!(app.dirty);
+
+        host.fire_autosave(&mut app);
+        assert!(!app.dirty);
+        // project.json on disk now reflects the post-edit tempo.
+        let json = String::from_utf8(host.fs.get("/proj/project.json").unwrap().clone()).unwrap();
+        let doc = BundleDoc::from_json(&json).unwrap();
+        assert_eq!(doc.project.tempo_bpm, app.model.project().tempo_bpm);
+    }
+
+    #[test]
+    fn save_as_stays_reachable_after_a_bundle_is_open_and_copies_media() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        host.picks.push_back(vec!["/proj".into()]);
+        drive_key(&mut host, &mut app, "f2"); // save-as -> /proj
+        host.fs.insert("/ext/loop.wav".into(), tiny_wav());
+        host.picks.push_back(vec!["/ext/loop.wav".into()]);
+        drive_key(&mut host, &mut app, "f4"); // import an asset
+        drive_key(&mut host, &mut app, "f2"); // flush to /proj
+
+        // F6 save-as reaches a new dir even though a bundle is already open.
+        host.picks.push_back(vec!["/copy".into()]);
+        drive_key(&mut host, &mut app, "f6");
+        assert_eq!(app.bundle_dir.as_deref(), Some("/copy"));
+
+        let rel = media_relpath(&content_hash(&tiny_wav()));
+        // The portable copy carries both the project and its media asset.
+        assert!(host.fs.contains_key("/copy/project.json"));
+        assert_eq!(host.fs.get(&format!("/copy/{rel}")), Some(&tiny_wav()));
+    }
+
+    #[test]
+    fn save_as_fails_when_referenced_media_has_not_loaded() {
+        // A bundle whose project references media whose bytes are not yet in
+        // memory (e.g. a just-opened bundle mid-async-load) must not write a
+        // project.json pointing at assets it cannot copy.
+        let mut app = seeded();
+        let rel = media_relpath(&content_hash(b"pending bytes"));
+        app.model.apply(DawCommand::AddSource {
+            kind: TrackKind::Audio,
+            path: rel,
+            duration: 960,
+        });
+        app.bundle_dir = Some("/copy".into());
+        let mut fx = Vec::new();
+        let err = app.save_bundle(&mut fx).unwrap_err();
+        assert!(err.contains("still loading"), "unexpected error: {err}");
+        assert!(fx.is_empty(), "no writes should be emitted on a guarded save");
+    }
+
+    #[test]
+    fn opening_a_bundle_with_an_absolute_source_path_is_rejected() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        let mut doc = BundleDoc::from_model(&app.model);
+        doc.project.sources[0].path = "/tmp/x.wav".into(); // non-portable
+        host.fs
+            .insert("/bad/project.json".into(), doc.to_json().unwrap().into_bytes());
+        let before = app.model.project().clone();
+
+        host.picks.push_back(vec!["/bad".into()]);
+        drive_key(&mut host, &mut app, "f3");
+        // Load rejected: no bundle adopted, model untouched.
+        assert!(app.bundle_dir.is_none());
+        assert_eq!(app.model.project(), &before);
+    }
+
+    #[test]
+    fn a_cancelled_pick_leaves_the_project_untouched() {
+        let mut app = seeded();
+        let mut host = FakeHost::new();
+        let before = app.model.project().clone();
+        host.picks.push_back(vec![]); // scripted cancel
+        drive_key(&mut host, &mut app, "f3"); // open, cancelled
+        assert!(app.bundle_dir.is_none());
+        assert_eq!(app.model.project(), &before);
     }
 }

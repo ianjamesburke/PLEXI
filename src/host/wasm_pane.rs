@@ -204,6 +204,9 @@ enum FsAccess {
 pub struct WasmAccessPolicy {
     fs_read_roots: Vec<PathBuf>,
     fs_write_roots: Vec<PathBuf>,
+    /// The subset of write roots granted as directories (folder picks). Only
+    /// these permit subdirectory creation; a save-*file* grant never does.
+    fs_write_dirs: Vec<PathBuf>,
     net_hosts: Vec<String>,
 }
 
@@ -232,11 +235,20 @@ impl WasmAccessPolicy {
     /// Register one picker-granted path (stint 0508) as both a read and a
     /// write root. Unlike manifest scopes, a save-as target may not exist
     /// yet, so a missing path resolves through its canonicalized parent.
-    /// Returns the canonical path the grant covers.
-    fn grant_picked_path(&mut self, path: impl Into<PathBuf>) -> Result<PathBuf, String> {
+    /// `is_dir` marks a folder pick, whose subtree may be created and written;
+    /// a file pick (open/save) grants only that path. Returns the canonical
+    /// path the grant covers.
+    fn grant_picked_path(
+        &mut self,
+        path: impl Into<PathBuf>,
+        is_dir: bool,
+    ) -> Result<PathBuf, String> {
         let resolved = canonicalize_scope(path.into(), false)?;
         self.fs_read_roots.push(resolved.clone());
         self.fs_write_roots.push(resolved.clone());
+        if is_dir {
+            self.fs_write_dirs.push(resolved.clone());
+        }
         Ok(resolved)
     }
 
@@ -255,6 +267,15 @@ impl WasmAccessPolicy {
         self.fs_roots(access)
             .iter()
             .any(|root| path.starts_with(root))
+    }
+
+    /// Whether `path` lies within a directory (folder-pick) grant, so it may be
+    /// created as a directory. A save-*file* grant is never a directory grant,
+    /// so its path can never be turned into a writable directory tree.
+    fn is_within_write_dir(&self, path: &Path) -> bool {
+        self.fs_write_dirs
+            .iter()
+            .any(|dir| path.starts_with(dir))
     }
 
     fn allows_host(&self, url: &str) -> Result<(), String> {
@@ -278,19 +299,42 @@ impl WasmAccessPolicy {
 }
 
 fn canonicalize_scope(path: PathBuf, require_existing: bool) -> Result<PathBuf, String> {
-    if require_existing || path.exists() {
+    if require_existing {
         return std::fs::canonicalize(&path)
             .map_err(|e| format!("resolve {}: {e}", path.display()));
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("scope has no parent: {}", path.display()))?;
-    let parent =
-        std::fs::canonicalize(parent).map_err(|e| format!("resolve {}: {e}", parent.display()))?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| format!("scope has no file name: {}", path.display()))?;
-    Ok(parent.join(name))
+    canonicalize_for_create(&path)
+}
+
+/// Resolves a path that may not exist yet by canonicalizing its deepest
+/// existing ancestor and re-appending the not-yet-created tail. Lets a guest
+/// lay down a new nested file — a project bundle's `media/<hash>.wav`, or a
+/// save-as into a folder the user just named — inside a grant whose directories
+/// do not exist on disk yet. Callers must have already rejected `..`/prefix
+/// components, so every tail segment is a plain name.
+fn canonicalize_for_create(path: &Path) -> Result<PathBuf, String> {
+    if path.exists() {
+        return std::fs::canonicalize(path)
+            .map_err(|e| format!("resolve {}: {e}", path.display()));
+    }
+    let mut node = path;
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        let parent = node
+            .parent()
+            .ok_or_else(|| format!("path has no existing ancestor: {}", path.display()))?;
+        let name = node
+            .file_name()
+            .ok_or_else(|| format!("path has no file name: {}", path.display()))?;
+        tail.push(name.to_os_string());
+        if parent.exists() {
+            let mut resolved = std::fs::canonicalize(parent)
+                .map_err(|e| format!("resolve {}: {e}", parent.display()))?;
+            resolved.extend(tail.iter().rev());
+            return Ok(resolved);
+        }
+        node = parent;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -345,8 +389,8 @@ pub struct WasmPane {
     /// File-picker backend (stint 0508); scripted in tests / under
     /// `PLEXI_PICKER_SCRIPT` so agents can drive picks without a dialog.
     picker: Arc<dyn PickerService>,
-    picker_tx: Sender<(String, FilePickOutcome)>,
-    picker_rx: Receiver<(String, FilePickOutcome)>,
+    picker_tx: Sender<(String, bool, FilePickOutcome)>,
+    picker_rx: Receiver<(String, bool, FilePickOutcome)>,
     pending_host_effects: VecDeque<WasmHostEffect>,
     external_inputs: Arc<ArrayQueue<InputEvent>>,
     /// Current display scale, set by the live pane every frame. Surfaces
@@ -1013,6 +1057,7 @@ impl WasmPane {
                 .push_back(InputEvent::FilePickCancelled(req.request_id));
             return;
         }
+        let is_folder = matches!(req.mode, WitFilePickerMode::Folder);
         let request = FilePickRequest {
             filter: req.filter,
             multiple: req.multiple,
@@ -1026,7 +1071,7 @@ impl WasmPane {
         let tx = self.picker_tx.clone();
         std::thread::spawn(move || {
             let outcome = picker.pick(&request);
-            let _ = tx.send((req.request_id, outcome));
+            let _ = tx.send((req.request_id, is_folder, outcome));
         });
     }
 
@@ -1034,12 +1079,12 @@ impl WasmPane {
     /// queue the guest-facing event. Cancellation creates no grant and leaves
     /// no request state behind.
     fn collect_picker_results(&mut self) {
-        while let Ok((request_id, outcome)) = self.picker_rx.try_recv() {
+        while let Ok((request_id, is_folder, outcome)) = self.picker_rx.try_recv() {
             match outcome {
                 FilePickOutcome::Picked(paths) => {
                     let mut granted = Vec::new();
                     for path in paths {
-                        match self.access.grant_picked_path(&path) {
+                        match self.access.grant_picked_path(&path, is_folder) {
                             Ok(resolved) => {
                                 log::info!(
                                     "wasm picker: fs grant registered for picked path {}",
@@ -1464,18 +1509,10 @@ impl WasmPane {
                 .ok_or_else(|| "no filesystem scope granted".to_string())?;
             root.join(raw)
         };
-        let resolved = if require_existing_file || full.exists() {
+        let resolved = if require_existing_file {
             std::fs::canonicalize(&full).map_err(|e| format!("resolve {}: {e}", full.display()))?
         } else {
-            let parent = full
-                .parent()
-                .ok_or_else(|| format!("path has no parent: {}", full.display()))?;
-            let parent = std::fs::canonicalize(parent)
-                .map_err(|e| format!("resolve {}: {e}", parent.display()))?;
-            let name = full
-                .file_name()
-                .ok_or_else(|| format!("path has no file name: {}", full.display()))?;
-            parent.join(name)
+            canonicalize_for_create(&full)?
         };
         if self.access.is_allowed_path(access, &resolved) {
             Ok(resolved)
@@ -1507,6 +1544,17 @@ impl WasmPane {
                 req.content.len(),
                 crate::host::MAX_FILE_IO_BYTES
             ));
+        }
+        // Create intermediate directories inside a folder grant so a guest can
+        // lay down a nested asset (e.g. a project bundle's `media/` folder)
+        // without a separate mkdir affordance. Only directories strictly below
+        // a granted write root are created: a save-*file* grant (root == the
+        // file) never has its path materialised as a directory tree.
+        if let Some(parent) = path.parent() {
+            if self.access.is_within_write_dir(parent) {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("write {}: create parent dir: {e}", path.display()))?;
+            }
         }
         std::fs::write(&path, req.content).map_err(|e| format!("write {}: {e}", path.display()))
     }
@@ -2766,6 +2814,43 @@ mod tests {
         }
         let created = root.join("nested/created.txt");
         p.exec(file_write(&created.to_string_lossy(), b"created"), 0);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::FileWriteResult(Ok(()))
+        ));
+    }
+
+    /// A save-mode (file) pick grants exactly that file — its path can never be
+    /// turned into a writable directory tree, even though directory creation is
+    /// now allowed under folder grants.
+    #[test]
+    fn save_file_grant_cannot_be_written_as_a_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("export.wav"); // does not exist yet
+
+        let mut p = pane(0.0);
+        grant_capability(&mut p, "fs.pick");
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Picked(vec![file.clone()]),
+        ]));
+        p.exec(open_picker("save-1", WitFilePickerMode::Save, false), 0);
+        collect_picker_events(&mut p, 1);
+        let granted = match pop_event(&mut p) {
+            InputEvent::FilePicked(event) => std::path::PathBuf::from(&event.paths[0]),
+            other => panic!("expected file-picked, got {other:?}"),
+        };
+
+        // Writing under the granted file must fail: the file grant is not a
+        // directory, so its path is never created as one.
+        let child = granted.join("evil.txt");
+        p.exec(file_write(&child.to_string_lossy(), b"x"), 0);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::FileWriteResult(Err(_))
+        ));
+
+        // The exact granted file still writes.
+        p.exec(file_write(&granted.to_string_lossy(), b"wav"), 0);
         assert!(matches!(
             pop_event(&mut p),
             InputEvent::FileWriteResult(Ok(()))

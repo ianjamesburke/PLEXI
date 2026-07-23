@@ -9,7 +9,7 @@ version = "0.1.0"
 description = "DAW POC. Keyboard-complete timeline / mixer / transport UI (stint 0516) over the plexi-daw-model edit model, rendered in real time and offline through one shared render path (stint 0515)."
 
 [app.capabilities]
-capabilities = ["audio.playback"]
+capabilities = ["audio.playback", "fs.pick"]
 
 [app.capabilities.wasm]
 required = ["state:read-write"]
