@@ -483,6 +483,42 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
 
+    /// Deliver a sanctioned pointer drag to an app pane: press at `from`,
+    /// `steps` intermediate `PointerMoved` positions, release at `to` —
+    /// spread across consecutive frames through the same production input
+    /// paths `ClickPane` uses (raw-input merge for builtin egui panes, the
+    /// render-pass honest hit-test for canvas/process/WASM panes), never a
+    /// parallel resolver. Sent by `plexi pane drag` and
+    /// `HostHarness::inject_drag` (stint 0510). Endpoints are addressable by
+    /// pane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or
+    /// by semantic node id (`from_node`/`to_node`, the ids `plexi pane state`
+    /// reports; the drag targets the node rect's center). Exactly one of the
+    /// pixel/node forms must be set per endpoint; the host validates node ids
+    /// against the pane's semantic tree and fails loudly when one is absent.
+    /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file`
+    /// when set.
+    DragPane {
+        pane_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<[f32; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_node: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<[f32; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_node: Option<String>,
+        /// Intermediate move positions between press and release (default 8,
+        /// max 256). Each step is one frame, so scrub/threshold logic in the
+        /// target app sees a realistic pointer trajectory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<u32>,
+        /// "left" (default), "right", or "middle".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Read the last N lines from a terminal pane's PTY scrollback buffer.
     /// Sent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.
     CapturePane {

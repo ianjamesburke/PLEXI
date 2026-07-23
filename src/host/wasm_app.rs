@@ -37,7 +37,8 @@ use bindings::plexi::platform::{audio_rt_control, gpu, host_log, host_state, pip
 
 pub use types::{
     Alignment, BadgeColor, ButtonStyle, Color, Effect, IndexedNode, InputEvent, KeyEvent,
-    Modifiers, StateSnapshot, SurfaceEvent, SystemStats, UiNodeData, UiTree,
+    Modifiers, MouseButton, MouseEvent, Point, StateSnapshot, SurfaceEvent, SystemStats,
+    UiNodeData, UiTree,
 };
 
 // ─── Capability grants ─────────────────────────────────────────────────────

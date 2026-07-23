@@ -792,6 +792,34 @@
           "type": "object"
         },
         {
+          "description": "Write one info-level marker line into the running host's channel log\n(`~/.plexi-<channel>/plexi.log`). Sent by `plexi host log` — the\nsanctioned way for automated drivers (release gates, scene runners,\nCI) to leave start/finish summaries in the installed host's own log\ninstead of only in their local output. Newlines are flattened so the\nmarker stays one greppable line.\nHost writes `{\"ok\":true}` to `response_file` when set.",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "description": "Short tool identity prefixed to the line (e.g. \"editor_gate\").",
+              "type": "string"
+            },
+            "type": {
+              "const": "log_marker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "source",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Request the host to spawn a new app pane. Requires `spawn.app` capability.\n`layout`: \"split_h\" (new pane right), \"split_v\" (default, new pane below),\n          or \"overlay\" (full pane, no split).\n`args`: argv passed to the child process (appended after the binary path).\nHost responds with `PlexiEvent::AppSpawned { pane_id }` on success.",
           "properties": {
             "args": {
@@ -1319,6 +1347,188 @@
           "type": "object"
         },
         {
+          "description": "Deliver a local path or image URL to the pane through the same\nproduction drop handler used by native host drops.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path_or_url": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "drop_file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "path_or_url",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Deliver a synthetic pointer click to an app pane, in pane-pixel\ncoordinates (origin at the pane's top-left). Sent by `plexi pane click`.\nThe host injects a real `PointerMoved`+`PointerButton` press/release\npair into the live production egui pass, so it exercises the exact\nsame `canvas_transform` inversion a physical click would — never a\nparallel resolver. Terminal panes reject this (no click semantics\ndefined yet). Host writes `{\"ok\":true}` or `{\"error\":\"...\"}` to\n`response_file` when set.",
+          "properties": {
+            "button": {
+              "description": "\"left\" (default), \"right\", or \"middle\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "click_pane",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Deliver a synthetic click to an app pane by node id, activating the\nButton/TextInput/ListView node the id names — the node-addressed\nsibling of `ClickPane` (stint 0414). Sent by\n`plexi pane click <pane_id> --node <node_id>`. `node_id` matches\n`SemanticPaneNode.id`, the id `plexi pane state` reports for every\nnode in the pane's tree, so a caller resolves it from `pane state`\noutput rather than computing pixel geometry. The host validates\n`node_id` against the pane's cached semantic tree and fails loudly\n(no queued click) when it is absent or not an interactive role;\notherwise it resolves the node's on-screen rect during the next\nrender pass and delivers the same `PendingPaneClick` honest hit-test\nthe pixel path uses. Host writes `{\"ok\":true}` or `{\"error\":\"...\"}`\nto `response_file` when set.",
+          "properties": {
+            "button": {
+              "description": "\"left\" (default), \"right\", or \"middle\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "click_pane_node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "node_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Deliver a sanctioned pointer drag to an app pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
+          "properties": {
+            "button": {
+              "description": "\"left\" (default), \"right\", or \"middle\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from": {
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "from_node": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "steps": {
+              "description": "Intermediate move positions between press and release (default 8,\nmax 256). Each step is one frame, so scrub/threshold logic in the\ntarget app sees a realistic pointer trajectory.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "to": {
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "to_node": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "drag_pane",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Read the last N lines from a terminal pane's PTY scrollback buffer.\nSent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.",
           "properties": {
             "from_cursor": {
@@ -1379,6 +1589,36 @@
           "required": [
             "type",
             "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Capture the live host window as a PNG through the real render\npipeline (`egui::ViewportCommand::Screenshot` — actual rendered\npixels, not a re-render). With `pane_id`, the image is cropped to\nthat pane's current screen rect. Sent by `plexi host screenshot`.\nHost writes the PNG to `output_path` and\n`{\"ok\":true,\"path\":...,\"width\":...,\"height\":...}` (or\n`{\"error\":\"...\"}`) to `response_file`.",
+          "properties": {
+            "output_path": {
+              "type": "string"
+            },
+            "pane_id": {
+              "default": null,
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "screenshot",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "output_path",
             "response_file"
           ],
           "type": "object"
@@ -3000,13 +3240,13 @@
           "properties": {
             "canvas_height": {
               "default": 0.0,
-              "description": "Actual rendered canvas height from the previous frame's component tree.\nZero on the first frame (no prior render). SDK exposes as sdk.canvas_height.",
+              "description": "Actual rendered canvas height from the previous frame's component tree.\nZero on the first frame (no prior render). Not SDK-exposed; apps that\nneed their own size track it themselves via `init(size)` + `Resize`.",
               "format": "float",
               "type": "number"
             },
             "canvas_width": {
               "default": 0.0,
-              "description": "Actual rendered canvas width from the previous frame's component tree.\nZero on the first frame (no prior render). SDK exposes as sdk.canvas_width.",
+              "description": "Actual rendered canvas width from the previous frame's component tree.\nZero on the first frame (no prior render). Not SDK-exposed; apps that\nneed their own size track it themselves via `init(size)` + `Resize`.",
               "format": "float",
               "type": "number"
             },

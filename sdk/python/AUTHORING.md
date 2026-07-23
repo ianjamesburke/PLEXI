@@ -97,6 +97,13 @@ use it only when a key must survive an app restart. There are no `LogInfo` /
 `LogWarn` / `LogError` effects — logging goes through the `log` module (below).
 Network fetches use `HttpFetch`, not `HttpRequest`.
 
+File I/O is binary-exact: `effects.read_bytes(path)` / `effects.write_bytes(path,
+content)` round-trip arbitrary bytes (WAV, PNG, NULs) through the workspace jail
+under the `fs.read` / `fs.write` capabilities. The reply to a read is
+`events.FileReadResult` with `content: bytes` — decode yourself for text. Both
+directions are capped at `effects.MAX_FILE_IO_BYTES` per call; oversize payloads
+fail with a named error, never a truncated write.
+
 ## App Tools
 
 Apps can expose tools to the Assistant with `ExposeTools`. Declare the full

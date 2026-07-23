@@ -1,0 +1,25 @@
+# Pointer-drag injection through the production input path (stint 0510).
+# canvas-click-probe paints the completed drag back as a `drag:` canvas text
+# line: press/release in canvas space plus the intermediate move count.
+size = [1280.0, 800.0]
+suite = true
+
+[[steps]]
+open = { kind = "process", path = "apps/dev/canvas-click-probe", as = "probe" }
+
+[[steps]]
+wait_app_frame = { target = "probe", timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 2
+
+# Pane-pixel endpoints; the probe's bare 360x440 fit="contain" canvas fills
+# the pane, so these land well inside the canvas at any pane size.
+[[steps]]
+drag = { target = "probe", from = [200.0, 200.0], to = [500.0, 380.0], steps = 6 }
+
+[[steps]]
+expect = { target = "probe", tree_contains = "drag:press:", timeout_s = 10.0 }
+
+[[steps]]
+expect = { target = "probe", tree_contains = "moves:6", timeout_s = 5.0 }

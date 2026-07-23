@@ -402,6 +402,51 @@ impl HostHarness {
         self
     }
 
+    /// Poll the recorded event bus — the global `AppTimeline`, the same store
+    /// production `EmitEvent` requests record into — until an event on
+    /// `stream` whose serialized JSON payload contains `payload_contains`
+    /// (when set) appears, pumping one harness frame per poll (stint 0511).
+    /// Returns the matched record, or a timeout error naming what was
+    /// expected. The timeline is process-global, so use a distinct stream
+    /// name (or payload marker) per test to stay isolated under parallel
+    /// test runs.
+    pub fn wait_for_app_event(
+        &mut self,
+        stream: &str,
+        payload_contains: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> Result<crate::host::app_timeline::AppEventRecord, String> {
+        let started = std::time::Instant::now();
+        loop {
+            {
+                let timeline = crate::host::app_timeline::global();
+                let timeline = timeline.lock().expect("app timeline lock");
+                let matched = timeline.events().iter().rev().find(|record| {
+                    record.event == stream
+                        && payload_contains.is_none_or(|needle| {
+                            record
+                                .payload
+                                .as_ref()
+                                .is_some_and(|payload| payload.to_string().contains(needle))
+                        })
+                });
+                if let Some(record) = matched {
+                    return Ok(record.clone());
+                }
+            }
+            if started.elapsed() > timeout {
+                let payload_note = payload_contains
+                    .map(|needle| format!(" with payload containing {needle:?}"))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "no event on stream '{stream}'{payload_note} within {timeout:?}"
+                ));
+            }
+            self.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Inject a synthetic pointer click at pane-pixel coordinates (origin at
     /// the pane's top-left), through the real `AppRequest::ClickPane`
     /// dispatch path — the same host code `plexi pane click` drives. A real
@@ -422,6 +467,62 @@ impl HostHarness {
             pane_id,
             x,
             y,
+            button: Some(button.to_string()),
+            response_file,
+        })
+    }
+
+    /// Inject a sanctioned pointer drag through the real
+    /// `AppRequest::DragPane` dispatch path — the same host code
+    /// `plexi pane drag` drives (stint 0510). `from`/`to` are pane-pixel
+    /// coordinates (origin at the pane's top-left). The host queues a
+    /// press → `steps` moves → release schedule delivered one frame at a
+    /// time through production input paths (raw-input merge for builtin
+    /// panes, per-frame render-pass samples for canvas/process/WASM panes),
+    /// so call `run_frames(steps + 2)` or more afterward to let the whole
+    /// trajectory land. `button` is `"left"`, `"right"`, or `"middle"`.
+    pub fn inject_drag(
+        &self,
+        pane_id: PaneId,
+        from: (f32, f32),
+        to: (f32, f32),
+        steps: u32,
+        button: &str,
+        response_file: Option<String>,
+    ) -> &Self {
+        self.inject_ipc(AppRequest::DragPane {
+            pane_id,
+            from: Some([from.0, from.1]),
+            from_node: None,
+            to: Some([to.0, to.1]),
+            to_node: None,
+            steps: Some(steps),
+            button: Some(button.to_string()),
+            response_file,
+        })
+    }
+
+    /// Inject a node-addressed pointer drag: each endpoint names a
+    /// `SemanticPaneNode.id` (as reported by `plexi pane state`) whose cached
+    /// bounds center becomes that endpoint. Nodes without recorded bounds
+    /// fail loudly in the response file — currently that means builtin
+    /// (accesskit) panes; canvas/WASM trees record no per-node bounds yet.
+    pub fn inject_node_drag(
+        &self,
+        pane_id: PaneId,
+        from_node: &str,
+        to_node: &str,
+        steps: u32,
+        button: &str,
+        response_file: Option<String>,
+    ) -> &Self {
+        self.inject_ipc(AppRequest::DragPane {
+            pane_id,
+            from: None,
+            from_node: Some(from_node.to_string()),
+            to: None,
+            to_node: Some(to_node.to_string()),
+            steps: Some(steps),
             button: Some(button.to_string()),
             response_file,
         })

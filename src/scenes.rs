@@ -194,6 +194,9 @@ pub enum Step {
     Key { key: KeySpec },
     /// Deliver a local file or image URL through the production pane drop path.
     DropFile { drop_file: DropFileSpec },
+    /// Drag the pointer across a pane through the production input path:
+    /// press, N moves, release — one frame each (stint 0510).
+    Drag { drag: DragSpec },
     /// Focus an opened pane through the production pane-navigation path.
     Focus { focus: String },
     /// Close an opened pane through the production pane-close path.
@@ -295,6 +298,29 @@ pub struct KeySpec {
     pub value: String,
 }
 
+/// One pointer drag: endpoints are pane-pixel coordinates (`from`/`to`) or
+/// semantic node ids (`from_node`/`to_node` — the drag targets the node's
+/// rendered bounds center). Exactly one form per endpoint.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct DragSpec {
+    pub target: String,
+    pub from: Option<[f32; 2]>,
+    pub from_node: Option<String>,
+    pub to: Option<[f32; 2]>,
+    pub to_node: Option<String>,
+    /// Intermediate pointer moves between press and release (default 8).
+    #[serde(default = "default_drag_steps")]
+    pub steps: u32,
+    /// "left" (default), "right", or "middle".
+    #[serde(default)]
+    pub button: Option<String>,
+}
+
+fn default_drag_steps() -> u32 {
+    8
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct DropFileSpec {
@@ -364,8 +390,36 @@ pub struct ExpectSpec {
     pub visible_link_target: Option<String>,
     pub visible_image_target: Option<String>,
     pub drop_result: Option<String>,
+    /// Event-bus expectation (stint 0511): a stream name (e.g. "probe.tick")
+    /// that must appear as a recorded emitted event within `timeout_s`.
+    /// Headless-only — the live backend has no sanctioned event-query seam.
+    pub event_stream: Option<String>,
+    /// Substring that must appear in the matched event's JSON payload.
+    /// Requires `event_stream`.
+    pub event_payload_contains: Option<String>,
     #[serde(default = "default_expect_timeout")]
     pub timeout_s: f32,
+}
+
+/// True when the recorded app-event expectation (if any) is satisfied: some
+/// emitted event on `event_stream` whose serialized payload contains
+/// `event_payload_contains` (when set). Reads the same global `AppTimeline`
+/// the production event bus records into.
+fn app_event_expectation_match(spec: &ExpectSpec) -> bool {
+    let Some(stream) = &spec.event_stream else {
+        return true;
+    };
+    let timeline = crate::host::app_timeline::global();
+    let timeline = timeline.lock().expect("app timeline lock");
+    timeline.events().iter().any(|record| {
+        &record.event == stream
+            && spec.event_payload_contains.as_ref().is_none_or(|needle| {
+                record
+                    .payload
+                    .as_ref()
+                    .is_some_and(|payload| payload.to_string().contains(needle))
+            })
+    })
 }
 
 fn notes_expectations_match(spec: &ExpectSpec, state: &serde_json::Value) -> bool {
@@ -1236,6 +1290,37 @@ impl LiveBackend {
                     message: format!("dropped file onto {} (pane {pane_id})", drop_file.target),
                 }))
             }
+            Step::Drag { drag } => {
+                let pane_id =
+                    resolve_live_pane_target(&self.handles, &drag.target, "pointer drag")?;
+                let mut args = vec!["pane".to_string(), "drag".to_string(), pane_id.to_string()];
+                if let Some([x, y]) = drag.from {
+                    args.extend(["--from".to_string(), format!("{x},{y}")]);
+                }
+                if let Some(node) = &drag.from_node {
+                    args.extend(["--from-node".to_string(), node.clone()]);
+                }
+                if let Some([x, y]) = drag.to {
+                    args.extend(["--to".to_string(), format!("{x},{y}")]);
+                }
+                if let Some(node) = &drag.to_node {
+                    args.extend(["--to-node".to_string(), node.clone()]);
+                }
+                args.extend(["--steps".to_string(), drag.steps.to_string()]);
+                if let Some(button) = &drag.button {
+                    args.extend(["--button".to_string(), button.clone()]);
+                }
+                self.command(&args, true)?;
+                let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
+                log::info!(
+                    "scene_live: step=drag channel={} pane_id={pane_id} steps={}",
+                    self.channel,
+                    drag.steps
+                );
+                Ok(Some(StepDetail::Message {
+                    message: format!("dragged pointer across {} (pane {pane_id})", drag.target),
+                }))
+            }
             Step::Focus { focus } => {
                 let pane_id = self.handles.resolve(focus)?;
                 self.command(&["pane".into(), "focus".into(), pane_id.to_string()], true)?;
@@ -1584,6 +1669,13 @@ impl LiveBackend {
     }
 
     fn expect(&mut self, spec: &ExpectSpec) -> Result<Option<StepDetail>, SceneError> {
+        if spec.event_stream.is_some() || spec.event_payload_contains.is_some() {
+            return Err(SceneError::new(
+                "unsupported_live_verb",
+                "event expectations are headless-only — the installed host exposes no \
+                 sanctioned event-query seam yet",
+            ));
+        }
         let pane_id = self.handles.resolve(&spec.target)?;
         let before = self.pane_state(pane_id)?;
         if let Some(key) = &spec.after_key {
@@ -1860,6 +1952,7 @@ fn step_label(step: &Step) -> String {
         ),
         Step::Key { key } => format!("key {} {}", key.target, key.value),
         Step::DropFile { drop_file } => format!("drop_file {}", drop_file.target),
+        Step::Drag { drag } => format!("drag {} ({} steps)", drag.target, drag.steps),
         Step::Focus { focus } => format!("focus {focus}"),
         Step::Close { close } => format!("close {close}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
@@ -2081,6 +2174,44 @@ impl HeadlessBackend {
                 }
                 Ok(Some(StepDetail::Message {
                     message: format!("dropped file onto {} (pane {pane_id})", drop_file.target),
+                }))
+            }
+            Step::Drag { drag } => {
+                let pane_id = self.handles.resolve(&drag.target)?;
+                let response = self
+                    .h
+                    .workspace_root()
+                    .join(format!("scene-drag-{pane_id}.json"));
+                self.h.with_app_mut(|app| {
+                    app.handle_pane_ipc_request(crate::app_protocol::AppRequest::DragPane {
+                        pane_id,
+                        from: drag.from,
+                        from_node: drag.from_node.clone(),
+                        to: drag.to,
+                        to_node: drag.to_node.clone(),
+                        steps: Some(drag.steps),
+                        button: drag.button.clone(),
+                        response_file: Some(response.to_string_lossy().into_owned()),
+                    })
+                });
+                self.h.step();
+                let bytes = std::fs::read(&response)
+                    .map_err(|e| SceneError::new("drag_delivery_failed", e.to_string()))?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|e| SceneError::new("drag_delivery_failed", e.to_string()))?;
+                if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
+                    return Err(SceneError::new("drag_rejected", error));
+                }
+                // Deliver the whole press → moves → release schedule (one
+                // frame each) plus settling frames for the guest round trip.
+                self.h.run_steps(drag.steps as usize + 4);
+                log::info!(
+                    "scene: drag target={} pane_id={pane_id} steps={}",
+                    drag.target,
+                    drag.steps
+                );
+                Ok(Some(StepDetail::Message {
+                    message: format!("dragged pointer across {} (pane {pane_id})", drag.target),
                 }))
             }
             Step::Focus { focus } => {
@@ -2401,7 +2532,11 @@ impl HeadlessBackend {
                 .tree_contains
                 .as_ref()
                 .is_none_or(|needle| state.to_string().contains(needle));
-            if changed && contains && notes_expectations_match(spec, &state) {
+            if changed
+                && contains
+                && notes_expectations_match(spec, &state)
+                && app_event_expectation_match(spec)
+            {
                 return Ok(None);
             }
             if Instant::now() >= deadline {

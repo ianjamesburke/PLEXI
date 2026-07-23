@@ -37,10 +37,10 @@ use super::wasm_app::bindings::plexi::platform::types::{
     UiActionEvent, UiValueChangeEvent, UnsubscribeEventStreamsEffect,
 };
 use super::wasm_app::{
-    Effect, InputEvent, KeyEvent, Modifiers, StateSnapshot, SurfaceEvent, SystemStats, UiNodeData,
-    UiTree, WasmApp,
+    Effect, InputEvent, KeyEvent, Modifiers, MouseButton, MouseEvent, Point, StateSnapshot,
+    SurfaceEvent, SystemStats, UiNodeData, UiTree, WasmApp,
 };
-use super::wasm_render::{render_ui_tree_with_surface, RenderResult};
+use super::wasm_render::RenderResult;
 
 /// A GPU surface the host allocated for the guest's `surface-node`.
 /// `width`/`height` are physical pixels (`logical × alloc_ppp`, stint 0527);
@@ -765,6 +765,31 @@ impl WasmPane {
                 }));
             queued = true;
         }
+        // Canvas pointer events (click and press/move/release drag samples,
+        // stint 0510), already inverted into the app's declared canvas space.
+        for click in result.canvas_clicks {
+            log::info!(
+                "wasm ui: mouse ({:.1},{:.1}) button={:?} pressed={}",
+                click.x,
+                click.y,
+                click.button,
+                click.pressed
+            );
+            self.queue.push_back(InputEvent::Mouse(MouseEvent {
+                position: Point {
+                    x: click.x,
+                    y: click.y,
+                },
+                button: click.button.map(|name| match name {
+                    "right" => MouseButton::Right,
+                    "middle" => MouseButton::Middle,
+                    _ => MouseButton::Left,
+                }),
+                pressed: click.pressed,
+                scroll_delta: None,
+            }));
+            queued = true;
+        }
         if queued {
             self.drain(now_ms)?;
         }
@@ -1343,11 +1368,28 @@ impl WasmPane {
 
     fn read_file(&self, req: FileReadEffect) -> Result<Vec<u8>, String> {
         let path = self.scoped_path(FsAccess::Read, &req.path, true)?;
-        std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))
+        let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        if bytes.len() > crate::host::MAX_FILE_IO_BYTES {
+            return Err(format!(
+                "read {}: file is {} bytes, over the {}-byte per-call file I/O limit",
+                path.display(),
+                bytes.len(),
+                crate::host::MAX_FILE_IO_BYTES
+            ));
+        }
+        Ok(bytes)
     }
 
     fn write_file(&self, req: FileWriteEffect) -> Result<(), String> {
         let path = self.scoped_path(FsAccess::Write, &req.path, false)?;
+        if req.content.len() > crate::host::MAX_FILE_IO_BYTES {
+            return Err(format!(
+                "write {}: payload is {} bytes, over the {}-byte per-call file I/O limit",
+                path.display(),
+                req.content.len(),
+                crate::host::MAX_FILE_IO_BYTES
+            ));
+        }
         std::fs::write(&path, req.content).map_err(|e| format!("write {}: {e}", path.display()))
     }
 
@@ -1776,10 +1818,6 @@ impl LiveWasmPane {
         pending_click: Option<crate::host::pane::PendingPaneClick>,
         pane_key: u64,
     ) {
-        // WASM apps don't yet consume canvas clicks (only Python process apps
-        // do, via `wasm_python.rs`); still exercise the same `canvas_transform`
-        // hit-test so a future WASM MouseEvent path has no separate resolver.
-        let _ = &pending_click;
         if let Some(err) = &self.error {
             ui.colored_label(colors.danger, err);
             return;
@@ -1897,11 +1935,13 @@ impl LiveWasmPane {
             },
             None => None,
         };
-        let result = render_ui_tree_with_surface(
+        let result = super::wasm_render::render_ui_tree_with_canvas_fits(
             ui,
             &tree,
             colors,
             surface_tid,
+            None,
+            pending_click,
             Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
         );
         match self.inner.apply_render_result(result, now) {
@@ -2560,6 +2600,55 @@ mod tests {
     }
 
     #[test]
+    fn file_write_then_read_round_trips_binary_exact() {
+        // Every byte value, including invalid UTF-8 and NULs (stint 0509).
+        let payload: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut p = pane(0.0);
+        p.grant_fs_write_root(dir.path());
+        p.grant_fs_read_root(dir.path());
+
+        p.exec(file_write("clip.bin", &payload), 0);
+        match pop_event(&mut p) {
+            InputEvent::FileWriteResult(Ok(())) => {}
+            other => panic!("expected successful file-write-result, got {other:?}"),
+        }
+
+        p.exec(file_read("clip.bin"), 0);
+        match pop_event(&mut p) {
+            InputEvent::FileReadResult(Ok(bytes)) => assert_eq!(bytes, payload),
+            other => panic!("expected successful file-read-result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_write_over_size_limit_returns_named_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut p = pane(0.0);
+        p.grant_fs_write_root(dir.path());
+        p.exec(
+            Effect::FileWrite(FileWriteEffect {
+                path: "big.bin".to_string(),
+                content: vec![0u8; crate::host::MAX_FILE_IO_BYTES + 1],
+            }),
+            0,
+        );
+        match pop_event(&mut p) {
+            InputEvent::FileWriteResult(Err(msg)) => {
+                assert!(
+                    msg.contains(&crate::host::MAX_FILE_IO_BYTES.to_string()),
+                    "error must name the limit: {msg}"
+                );
+                assert!(
+                    !dir.path().join("big.bin").exists(),
+                    "oversize write must not touch disk"
+                );
+            }
+            other => panic!("expected denied file-write-result, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn http_fetch_round_trips_via_net_service() {
         let mut p = pane(0.0);
         p.grant_net_host("api.test");
@@ -2977,7 +3066,9 @@ mod tests {
             .build_ui_state(
                 move |ui, pane| {
                     let tree = pane.view().expect("view");
-                    let result = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
+                    let result = crate::host::wasm_render::render_ui_tree_with_surface(
+                        ui, &tree, &colors, None, None,
+                    );
                     pane.apply_render_result(result, 0)
                         .expect("apply interactions");
                 },

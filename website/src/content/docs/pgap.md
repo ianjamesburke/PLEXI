@@ -210,6 +210,16 @@ Update the status text shown in the parent pane chrome.
 |-------|------|----------|
 | `text` | `string` | yes |
 
+### `log_marker`
+
+Write one info-level marker line into the running host's channel log (`~/.plexi-<channel>/plexi.log`). Sent by `plexi...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `message` | `string` | yes |
+| `response_file` | `string?` | no |
+| `source` | `string` | yes |
+
 ### `spawn_app`
 
 Request the host to spawn a new app pane. Requires `spawn.app` capability. `layout`: "split_h" (new pane right), "spl...
@@ -399,6 +409,54 @@ Deliver a synthetic key event to any pane. Sent by `plexi pane key`. For termina
 | `pane_id` | `integer` | yes |
 | `response_file` | `string?` | no |
 
+### `drop_file`
+
+Deliver a local path or image URL to the pane through the same production drop handler used by native host drops.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `path_or_url` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `click_pane`
+
+Deliver a synthetic pointer click to an app pane, in pane-pixel coordinates (origin at the pane's top-left). Sent by ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `button` | `string?` | no |
+| `pane_id` | `integer` | yes |
+| `response_file` | `string?` | no |
+| `x` | `number` | yes |
+| `y` | `number` | yes |
+
+### `click_pane_node`
+
+Deliver a synthetic click to an app pane by node id, activating the Button/TextInput/ListView node the id names — the...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `button` | `string?` | no |
+| `node_id` | `string` | yes |
+| `pane_id` | `integer` | yes |
+| `response_file` | `string?` | no |
+
+### `drag_pane`
+
+Deliver a sanctioned pointer drag to an app pane: press at `from`, `steps` intermediate `PointerMoved` positions, rel...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `button` | `string?` | no |
+| `from` | `array?` | no |
+| `from_node` | `string?` | no |
+| `pane_id` | `integer` | yes |
+| `response_file` | `string?` | no |
+| `steps` | `integer?` | no |
+| `to` | `array?` | no |
+| `to_node` | `string?` | no |
+
 ### `capture_pane`
 
 Read the last N lines from a terminal pane's PTY scrollback buffer. Sent by `plexi pane capture`. Host writes a JSON ...
@@ -418,6 +476,16 @@ Query the last-rendered UI state of a pane. Sent by `plexi pane state`. For app 
 | Field | Type | Required |
 |-------|------|----------|
 | `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+
+### `screenshot`
+
+Capture the live host window as a PNG through the real render pipeline (`egui::ViewportCommand::Screenshot` — actual ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `output_path` | `string` | yes |
+| `pane_id` | `integer?` | no |
 | `response_file` | `string` | yes |
 
 ### `send_app_action`

@@ -20,15 +20,47 @@ class SetSchedulerMode:
     fps: int | None = None
 
 
+# Hard ceiling on a single file read or write, mirrored (and enforced) host-side.
+# Larger media transfers need a streaming seam, not a bigger cap.
+MAX_FILE_IO_BYTES = 64 * 1024 * 1024
+
+
 @dataclass
 class FileRead:
+    """Read a workspace file; the reply is an `events.FileReadResult` whose
+    `content` is the file's exact bytes (binary-safe). Decode yourself for text.
+    Requires the `fs.read` capability."""
     path: str
 
 
 @dataclass
 class FileWrite:
+    """Write `content` bytes to a workspace file, binary-exact. Requires the
+    `fs.write` capability. Reply is an `events.FileWriteResult`."""
     path: str
     content: bytes
+
+
+def read_bytes(path: str) -> FileRead:
+    """Binary-exact file read. The reply's `FileReadResult.content` holds the
+    file's exact bytes — WAV, PNG, any media round-trips unchanged."""
+    return FileRead(path)
+
+
+def write_bytes(path: str, content: bytes | bytearray) -> FileWrite:
+    """Binary-exact file write. Rejects non-bytes payloads and payloads over
+    `MAX_FILE_IO_BYTES` immediately, before the host round trip."""
+    if not isinstance(content, (bytes, bytearray)):  # untyped app code guard
+        raise TypeError(
+            f"write_bytes content must be bytes, got {type(content).__name__}; "
+            "encode text with .encode() first"
+        )
+    if len(content) > MAX_FILE_IO_BYTES:
+        raise ValueError(
+            f"write_bytes payload is {len(content)} bytes, over the "
+            f"{MAX_FILE_IO_BYTES}-byte per-call file I/O limit"
+        )
+    return FileWrite(path, bytes(content))
 
 
 @dataclass

@@ -628,47 +628,78 @@ fn render_node(
             } else {
                 c.height
             };
-            let (rect, resp) =
-                ui.allocate_exact_size(egui::vec2(width, height.max(1.0)), egui::Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(
+                egui::vec2(width, height.max(1.0)),
+                egui::Sense::click_and_drag(),
+            );
             let fit = canvas_fits
                 .and_then(|fits| fits.get(&id))
                 .copied()
                 .unwrap_or_default();
             let (origin, sx, sy) = canvas_transform(rect, c.width, c.height, fit);
-            // A real click is detected by egui's own `Sense::click()` (resolved
-            // once per pass, inside `Context::begin_pass`, from that pass's
-            // actual `RawInput` — it cannot be faked by mutating `ctx.input_mut()`
-            // after the pass has started). `plexi pane click`/`HostHarness::
-            // inject_click` deliver a `PendingPaneClick` instead, matched
-            // against this frame's freshly-computed `rect` — the same
-            // honest hit-test a real click would need, just resolved
+            let to_canvas = |pos: egui::Pos2, button: Option<&'static str>, pressed: bool| {
+                CanvasClick {
+                    x: (pos.x - origin.x) / sx,
+                    y: (pos.y - origin.y) / sy,
+                    button,
+                    pressed,
+                }
+            };
+            // A real click is detected by egui's own `Sense` resolution
+            // (resolved once per pass, inside `Context::begin_pass`, from that
+            // pass's actual `RawInput` — it cannot be faked by mutating
+            // `ctx.input_mut()` after the pass has started). `plexi pane
+            // click`/`HostHarness::inject_click` deliver a `PendingPaneClick`
+            // instead, matched against this frame's freshly-computed `rect` —
+            // the same honest hit-test a real click would need, just resolved
             // explicitly rather than via egui's internal interact_widgets.
+            // Drag samples (stint 0510) arrive the same way, one per frame,
+            // and map to press/move/release mouse events in canvas space.
             let synthetic = pending_click.filter(|c| {
                 matches!(c.target, crate::host::pane::PaneClickTarget::Pos(pos) if rect.contains(pos))
             });
-            let pixel_pos = resp.interact_pointer_pos().or_else(|| {
-                synthetic.and_then(|c| match c.target {
-                    crate::host::pane::PaneClickTarget::Pos(pos) => Some(pos),
-                    crate::host::pane::PaneClickTarget::Node(_) => None,
-                })
-            });
-            if resp.clicked() || synthetic.is_some() {
-                if let Some(pixel_pos) = pixel_pos {
-                    let button = if let Some(c) = synthetic {
-                        Some(c.button)
-                    } else if resp.clicked_by(egui::PointerButton::Secondary) {
-                        Some("right")
-                    } else if resp.clicked_by(egui::PointerButton::Middle) {
-                        Some("middle")
-                    } else {
-                        Some("left")
-                    };
-                    out.canvas_clicks.push(CanvasClick {
-                        x: (pixel_pos.x - origin.x) / sx,
-                        y: (pixel_pos.y - origin.y) / sy,
-                        button,
-                        pressed: true,
+            if let Some(c) = synthetic {
+                if let crate::host::pane::PaneClickTarget::Pos(pos) = c.target {
+                    use crate::host::pane::PointerPhase;
+                    out.canvas_clicks.push(match c.phase {
+                        // `Click` keeps the pre-drag contract: one
+                        // pressed=true event, no synthetic release.
+                        PointerPhase::Click | PointerPhase::Press => {
+                            to_canvas(pos, Some(c.button), true)
+                        }
+                        PointerPhase::Move => to_canvas(pos, None, false),
+                        PointerPhase::Release => to_canvas(pos, Some(c.button), false),
                     });
+                }
+            }
+            // Real pointer interactions, through egui's own hit-testing. A
+            // plain click stays a single pressed=true event (the existing app
+            // contract); a genuine drag delivers press → move… → release so
+            // scrub/trim interactions work with a physical mouse too.
+            let real_button = [
+                (egui::PointerButton::Primary, "left"),
+                (egui::PointerButton::Secondary, "right"),
+                (egui::PointerButton::Middle, "middle"),
+            ];
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if resp.clicked() {
+                    let button = real_button
+                        .iter()
+                        .find(|(b, _)| resp.clicked_by(*b))
+                        .map_or("left", |(_, name)| *name);
+                    out.canvas_clicks.push(to_canvas(pos, Some(button), true));
+                } else if let Some((_, button)) = real_button
+                    .iter()
+                    .find(|(b, _)| resp.drag_started_by(*b))
+                {
+                    out.canvas_clicks.push(to_canvas(pos, Some(button), true));
+                } else if let Some((_, button)) = real_button
+                    .iter()
+                    .find(|(b, _)| resp.drag_stopped_by(*b))
+                {
+                    out.canvas_clicks.push(to_canvas(pos, Some(button), false));
+                } else if resp.dragged() {
+                    out.canvas_clicks.push(to_canvas(pos, None, false));
                 }
             }
             for command in &c.commands {

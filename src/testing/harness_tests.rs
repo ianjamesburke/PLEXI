@@ -1613,6 +1613,277 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
     );
 }
 
+/// Stint 0510: drag counterpart of stint 0398's click e2e above. Drives a
+/// REAL process-app pane (`apps/dev/canvas-click-probe`) through the
+/// production `AppRequest::DragPane` dispatch — the exact path
+/// `plexi pane drag` and `HostHarness::inject_drag` use. The schedule is
+/// delivered one frame at a time (press → moves → release), each sample
+/// resolved against that frame's live canvas rect, and the guest's
+/// re-rendered view must report the full trajectory: press and release in
+/// canvas space plus every intermediate move.
+#[test]
+fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/canvas-click-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch canvas-click-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching canvas-click-probe");
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "canvas-click-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.run_frames(2);
+
+    let (win_idx, tile_id) = h
+        .app
+        .find_pane_in_any_window(pane_id)
+        .expect("pane must be findable in a window");
+    let pane_rect = h.app.windows[win_idx]
+        .tree
+        .tiles
+        .rect(tile_id)
+        .expect("pane must have a known rect after rendering");
+
+    // Same hand-mirrored `fit="contain"` transform as the click e2e: the
+    // probe's bare-canvas tree makes the widget rect equal the pane rect.
+    let declared_w = 360.0_f32;
+    let declared_h = 440.0_f32;
+    let sx = pane_rect.width() / declared_w;
+    let sy = pane_rect.height() / declared_h;
+    let scale = sx.min(sy);
+    let content_w = declared_w * scale;
+    let content_h = declared_h * scale;
+    let local_origin_x = (pane_rect.width() - content_w) / 2.0;
+    let local_origin_y = (pane_rect.height() - content_h) / 2.0;
+    let to_pane = |cx: f32, cy: f32| {
+        (
+            local_origin_x + cx * scale,
+            local_origin_y + cy * scale,
+        )
+    };
+    let (from_canvas_x, from_canvas_y) = (90.0_f32, 40.0_f32);
+    let (to_canvas_x, to_canvas_y) = (270.0_f32, 220.0_f32);
+    let steps = 6u32;
+
+    let response_file = temp_response(tmp.path(), "drag-pane");
+    h.inject_drag(
+        pane_id,
+        to_pane(from_canvas_x, from_canvas_y),
+        to_pane(to_canvas_x, to_canvas_y),
+        steps,
+        "left",
+        Some(response_file.clone()),
+    );
+    h.run_frames(1);
+    let response = read_json_response(&response_file);
+    assert_eq!(response["ok"], true, "drag dispatch failed: {response:?}");
+    assert_eq!(response["frames"], steps + 2, "unexpected schedule length");
+
+    // Deliver the whole schedule, then poll the guest's re-render for the
+    // completed drag record painted back as the `drag:` canvas text.
+    let start = std::time::Instant::now();
+    let mut drag_text: Option<String> = None;
+    loop {
+        h.run_frames(1);
+        let state = h.app.windows[win_idx]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.semantic_state());
+        if let Some(state) = &state {
+            for node in &state.nodes {
+                for cmd in &node.canvas_commands {
+                    if let Some(text) = cmd.get("text").and_then(|v| v.as_str()) {
+                        if text.starts_with("drag:") {
+                            drag_text = Some(text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if drag_text.is_some() {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "app did not report a completed drag in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let drag_text = drag_text.expect("drag record observed");
+    assert!(
+        drag_text.contains(&format!("press:{from_canvas_x:.2},{from_canvas_y:.2}")),
+        "press endpoint missing/incorrect in {drag_text:?}"
+    );
+    assert!(
+        drag_text.contains(&format!("release:{to_canvas_x:.2},{to_canvas_y:.2}")),
+        "release endpoint missing/incorrect in {drag_text:?}"
+    );
+    assert!(
+        drag_text.contains(&format!("moves:{steps}")),
+        "expected every intermediate move to reach the guest in {drag_text:?}"
+    );
+}
+
+/// Stint 0510: node-addressed drag endpoints resolve from the pane's cached
+/// semantic bounds at dispatch and must fail loudly — named error, nothing
+/// queued — when the node is absent or records no bounds. Process/WASM
+/// semantic trees record no per-node bounds today, so both failure shapes
+/// are exercised against the real canvas-click-probe pane.
+#[test]
+fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/canvas-click-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch canvas-click-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching canvas-click-probe");
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "canvas-click-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.run_frames(2);
+
+    // Node exists (the canvas root, arena id "0") but has no recorded bounds.
+    let response_file = temp_response(tmp.path(), "drag-node-no-bounds");
+    h.inject_node_drag(pane_id, "0", "0", 4, "left", Some(response_file.clone()));
+    h.run_frames(1);
+    let response = read_json_response(&response_file);
+    let error = response["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("no rendered bounds"),
+        "expected a named no-bounds error, got {response:?}"
+    );
+
+    // Node absent from the current tree entirely.
+    let response_file = temp_response(tmp.path(), "drag-node-missing");
+    h.inject_node_drag(pane_id, "9999", "9999", 4, "left", Some(response_file.clone()));
+    h.run_frames(1);
+    let response = read_json_response(&response_file);
+    let error = response["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("not found"),
+        "expected a named missing-node error, got {response:?}"
+    );
+}
+
+/// Stint 0511: an emitted app event must land in the recorded event bus and
+/// be assertable through `HostHarness::wait_for_app_event`. Drives the REAL
+/// `apps/dev/event-probe` process app: `KeyPane('e')` makes the guest emit
+/// `probe.tick`, which flows guest → bridge → `AppRequest::EmitEvent` →
+/// `AppTimeline::record_event` — the exact path the scene `expect`
+/// `event_stream` predicate reads.
+#[test]
+fn emitted_app_event_is_recorded_and_awaitable() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/event-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch event-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching event-probe");
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "event-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.run_frames(2);
+
+    let response_file = temp_response(tmp.path(), "key-pane");
+    h.inject_ipc(crate::app_protocol::AppRequest::KeyPane {
+        pane_id,
+        key: "e".to_string(),
+        response_file: Some(response_file.clone()),
+    });
+    h.run_frames(2);
+    let response = read_json_response(&response_file);
+    assert_eq!(response["ok"], true, "key dispatch failed: {response:?}");
+
+    let record = h
+        .wait_for_app_event(
+            "probe.tick",
+            Some("\"count\":1"),
+            std::time::Duration::from_secs(30),
+        )
+        .expect("probe.tick event recorded on the timeline");
+    assert_eq!(record.event, "probe.tick");
+    assert_eq!(record.resource_id, "probe-session");
+    assert!(
+        record.summary.contains("Probe tick 1"),
+        "unexpected summary: {:?}",
+        record.summary
+    );
+}
+
 /// Stint 0414: node-targeted counterpart of stint 0398's
 /// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
 /// Drives a REAL process-app pane (`apps/dev/node-click-probe`, a single
@@ -2108,6 +2379,7 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
         crate::host::pane::PendingPaneClick {
             target: crate::host::pane::PaneClickTarget::Node(button_arena_id),
             button: "left",
+            phase: crate::host::pane::PointerPhase::Click,
         },
     );
 
