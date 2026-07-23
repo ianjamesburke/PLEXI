@@ -19,6 +19,7 @@ serde_json = "1"
 plexi-daw-model = { path = "../../../crates/daw-model" }
 plexi-daw-engine = { path = "../../../crates/daw-engine" }
 plexi-daw-tools = { path = "../../../crates/daw-tools" }
+plexi-daw-bundle = { path = "../../../crates/daw-bundle" }
 
 [package.metadata.component]
 package = "plexi:daw-engine-poc"

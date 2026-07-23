@@ -4080,6 +4080,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "plexi-daw-bundle"
+version = "0.1.0"
+dependencies = [
+ "plexi-daw-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plexi-daw-engine"
 version = "0.1.0"
 dependencies = [

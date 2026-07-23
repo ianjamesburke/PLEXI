@@ -1,0 +1,62 @@
+# DAW project bundle save / open / export (stint 0518). Drives the committed
+# daw-engine fixture through the live host with a scripted file picker: save the
+# seeded demo project into a bundle dir, reopen it (proving the round trip holds
+# through the real host, not just the unit harness), then export the offline
+# mixdown to a picked .wav. Every op is a function key, because the WASM key
+# channel delivers only named keys in scenes (printable chars arrive as
+# Event::Text and are swallowed); each also has a node-addressable button.
+#
+# suite = true: hermetic. The picker never opens a real dialog — `picker_script`
+# answers every OpenFilePicker in order, and `{out}` resolves to the scene's
+# output dir, so the writes/reads land in a real temp bundle.
+size = [1280.0, 800.0]
+suite = true
+
+picker_script = [
+  { paths = ["{out}/song"] },       # F2 save-as -> bundle dir
+  { paths = ["{out}/song"] },       # F3 open    -> same bundle dir
+  { paths = ["{out}/mixdown.wav"] },# F5 export  -> mixdown file
+]
+
+[[steps]]
+open = { kind = "wasm", path = "tests/wasm-fixtures/daw-engine.wasm", as = "daw" }
+
+[[steps]]
+run_steps = 3
+
+# Seeded demo project renders with both tracks and the bundle controls.
+[[steps]]
+assert = { target = "daw", pane_count = 1, lifecycle = "running", tree_contains = "DAW" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Pluck" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Save" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Export" }
+
+[[steps]]
+shot = "daw-bundle-before.png"
+
+# F2: save-as writes project.json into the picked bundle dir.
+[[steps]]
+expect = { target = "daw", after_key = "f2", tree_contains = "saved bundle to", timeout_s = 8.0 }
+
+# F3: reopen the bundle from disk — the demo project survives the round trip.
+[[steps]]
+expect = { target = "daw", after_key = "f3", tree_contains = "opened bundle", timeout_s = 8.0 }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Pluck" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Arp" }
+
+# F5: export the offline mixdown to the picked .wav destination.
+[[steps]]
+expect = { target = "daw", after_key = "f5", tree_contains = "exporting", timeout_s = 8.0 }
+
+[[steps]]
+shot = "daw-bundle-after.png"

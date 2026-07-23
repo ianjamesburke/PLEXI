@@ -2089,7 +2089,18 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
     let mut store =
         crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
-    for capability_id in grants.capability_ids() {
+    // Link-time host-interface grants (state/pipes/gpu/audio) come from the
+    // component's imports. `fs.pick` is not an import — it gates the picker
+    // effect at runtime — so preapprove it unconditionally: a scene never opens
+    // a real dialog (the scripted picker override / `PLEXI_PICKER_SCRIPT`
+    // always answers it), and the pick itself is what grants concrete fs paths.
+    // Without this, a fixture driving the file picker would stall on an
+    // unanswerable capability prompt.
+    for capability_id in grants
+        .capability_ids()
+        .into_iter()
+        .chain(std::iter::once("fs.pick".to_string()))
+    {
         store.set_wasm(
             app_id,
             &workspace_root,
