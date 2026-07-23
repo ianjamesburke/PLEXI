@@ -66,7 +66,7 @@ Every new feature must be instrumented. No new capability, command, or user-visi
 
 **Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Every coding agent follows it before push. Observable state → TOML scene. Return value or invariant → Rust `#[test]`. `cargo test --bin plexi` must be green before any push.
 
-**`just pr-install <N>` must run from the relevant feature worktree.** The recipe runs pre-install tests against the current working tree before building. Running it from alpha/root validates and installs the wrong tree.
+**`just pr-install <N>` is cwd-independent.** The recipe resolves the PR's head via `gh`, selects a worktree that provably contains it (the PR's clean feature worktree when present, else a detached canonical build tree), and runs pre-install tests and the build from that tree — never the caller's cwd. Provenance (PR, head sha, worktree) is echoed and appended to the PR profile's `install.log`.
 
 Test-first for host logic. Define done by the test, not the code. No partial merges.
 

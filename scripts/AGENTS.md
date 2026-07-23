@@ -32,7 +32,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - **Session CWD for git commands.** Sessions start inside `worktrees/alpha/`. Run git commands bare (`git`, `wtp`, `just`, `gh`) for alpha; use absolute paths for feature worktrees.
 - **Worktree dir gone after `wtp remove`.** Finish all file edits and cd away before cleanup steps.
 - **Skill file edits don't need `bump + install`.** When the only change is `.claude/skills/*.md` or non-Rust config, commit directly to alpha. `just bump && just install` is only needed when Rust code changes should be reflected in the running build.
-- **`just pr-install` must run from the feature worktree.** `scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`. Running from the repo root syncs alpha's `apps/dev/`, missing any apps that only exist on the feature branch.
+- **`scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`** — it installs whatever tree it lives in. Never call it directly for a PR build; `just pr-install <N>` resolves the PR's head into the right worktree and runs the script from there (safe from any cwd).
 - **`just merge-pr` must run from the canonical alpha checkout.** Stint state lives in ignored `.stint/` files that feature worktrees may not have. If a PR body references stint IDs, running merge closeout from a feature worktree can fail before merge with missing `.stint/tasks`; rerun from `/Users/ianburke/Documents/GitHub/PLEXI` on `alpha`.
 
 ## Child DOX Index

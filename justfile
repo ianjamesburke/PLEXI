@@ -251,43 +251,82 @@ sdk-dev:
 sdk-smoke:
     uv run --python 3.12 --project sdk/python --with pytest --with pytest-asyncio pytest sdk/python/tests/test_v3_adapter.py sdk/python/tests/test_v3_runtime_regression.py -q
 
-# Build and install the current worktree as a testable PR build.
+# Build and install a PR's actual head as a testable PR build (cwd-independent).
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
-# Run from inside the feature worktree: just pr-install 123
+# Resolves the PR head via gh and builds THAT tree — run from anywhere inside
+# the repo: just pr-install 123
 # Always cleans the previous PR build first for a fully fresh install.
-# Alias for: just channel-install pr-<number>
-pr-install number: fetch-python-runtime sdk-smoke
+pr-install number:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Preflight: confirm we're running from a valid repo worktree with Cargo.toml present.
-    if [[ ! -f "Cargo.toml" ]] || ! grep -q 'name = "plexi"' Cargo.toml 2>/dev/null; then
-      echo "Error: pr-install must be run from inside the PLEXI repo root or a worktree."
-      echo "  Current directory: $(pwd)"
-      echo "  Expected a Cargo.toml with name = \"plexi\"."
+    # pr-install must never build whatever tree the caller happens to be
+    # standing in: a wrong-tree install silently validates the wrong code
+    # (stint 0503; false-FAIL incident 2026-07-21). Resolve the PR's head,
+    # pick a worktree that provably contains it, and build from THAT.
+    _repo_root="$(git rev-parse --path-format=absolute --git-common-dir)"
+    _repo_root="${_repo_root%/.git}"
+    _head_json="$(gh pr view {{number}} --json headRefName,headRefOid 2>/dev/null || echo "")"
+    if [[ -z "$_head_json" ]]; then
+      echo "Error: could not resolve PR #{{number}} via gh (gh pr view failed)."
       exit 1
     fi
-    # Preflight: confirm cargo metadata resolves a target-dir before starting a build.
-    _target_dir="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "")"
-    if [[ -z "$_target_dir" ]]; then
-      echo "Error: could not resolve cargo target directory."
-      echo "  Make sure 'cargo metadata' runs cleanly from $(pwd) and Python 3 is available."
+    _head_ref="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefName"])' <<<"$_head_json")"
+    _head_oid="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefOid"])' <<<"$_head_json")"
+    if [[ -z "$_head_oid" ]]; then
+      echo "Error: PR #{{number}} has no resolvable head commit."
       exit 1
     fi
-    # Preflight: the working tree must actually contain the PR's head commit.
-    # pr-install builds whatever tree it runs from — run from the wrong
-    # directory (e.g. repo root on alpha) and it silently installs the wrong
-    # code under the PR channel name.
-    _pr_head="$(gh pr view {{number}} --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
-    if [[ -z "$_pr_head" ]]; then
-      echo "Warning: could not resolve PR #{{number}} head commit via gh; skipping tree check."
-    elif ! git merge-base --is-ancestor "$_pr_head" HEAD 2>/dev/null; then
-      echo "Error: this tree does not contain PR #{{number}}'s head commit ${_pr_head:0:8}."
-      echo "  Current HEAD: $(git rev-parse --short HEAD) on $(git branch --show-current)"
-      echo "  Run pr-install from the PR's feature worktree after pulling its latest push."
+    git -C "$_repo_root" fetch -q origin "refs/pull/{{number}}/head" 2>/dev/null \
+      || git -C "$_repo_root" fetch -q origin "$_head_ref" 2>/dev/null || true
+    if ! git -C "$_repo_root" cat-file -e "${_head_oid}^{commit}" 2>/dev/null; then
+      echo "Error: PR #{{number}} head ${_head_oid:0:8} not found locally after fetch."
       exit 1
     fi
-    bash scripts/pr-clean.sh {{number}}
-    bash scripts/install.sh "pr-{{number}}"
+    # Fast path: the PR branch's own worktree, when it exists, is clean, and
+    # sits EXACTLY at the PR head — reuses its warm incremental target dir.
+    # Exact-match, not ancestor: a clean worktree ahead of the head (unpushed
+    # follow-up commits) would silently validate unreviewed code.
+    _wt=""
+    _branch_wt="$(git -C "$_repo_root" worktree list --porcelain | awk -v ref="refs/heads/${_head_ref}" '/^worktree /{wt=substr($0,10)} /^branch /{if (substr($0,8)==ref) print wt}')"
+    if [[ -n "$_branch_wt" ]] && [[ "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" == "$_head_oid" ]]; then
+      git -C "$_branch_wt" update-index -q --refresh 2>/dev/null || true
+      if [[ -z "$(git -C "$_branch_wt" status --porcelain)" ]]; then
+        _wt="$_branch_wt"
+      else
+        echo "note: worktree for $_head_ref is dirty — building the PR head in the canonical pr-install tree instead."
+      fi
+    fi
+    if [[ -n "$_branch_wt" && -z "$_wt" && "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" != "$_head_oid" ]]; then
+      echo "note: worktree for $_head_ref is not at the PR head — building the PR head in the canonical pr-install tree instead."
+    fi
+    # Canonical path: a dedicated detached worktree pinned to the PR's exact
+    # head. Shared across PRs so its target dir stays warm-ish.
+    if [[ -z "$_wt" ]]; then
+      _wt="$_repo_root/worktrees/pr-install"
+      git -C "$_repo_root" worktree prune 2>/dev/null || true
+      if [[ -d "$_wt" ]]; then
+        git -C "$_wt" checkout -qf --detach "$_head_oid"
+      else
+        git -C "$_repo_root" worktree add -q --detach "$_wt" "$_head_oid"
+      fi
+    fi
+    # Backstop (PR #2463 guard, kept as defense in depth): the selected tree
+    # must contain the PR's head commit.
+    if ! git -C "$_wt" merge-base --is-ancestor "$_head_oid" HEAD 2>/dev/null; then
+      echo "Error: selected tree $_wt does not contain PR #{{number}}'s head commit ${_head_oid:0:8}."
+      exit 1
+    fi
+    echo "pr-install: PR #{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
+    # Pre-install tests and the build both run inside the resolved worktree,
+    # never the caller's cwd.
+    ( cd "$_wt" && just fetch-python-runtime sdk-smoke )
+    ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} && bash scripts/install.sh "pr-{{number}}" )
+    # Provenance trace: which head this channel is actually running. Written
+    # after install.sh (pr-clean wipes the profile dir); path matches
+    # install.sh's profile_dir for channel pr-{{number}}.
+    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
+    mkdir -p "$HOME/.plexi-pr-{{number}}"
+    echo "$_prov" | tee -a "$HOME/.plexi-pr-{{number}}/install.log"
 
 # Generic channel install. Auto-detects from branch if no channel given.
 # Errors if branch is not main/alpha/beta — pass channel name explicitly for dev builds.
