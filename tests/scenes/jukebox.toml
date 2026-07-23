@@ -1,0 +1,39 @@
+# Jukebox POC (stint 0513): opens the committed jukebox component through the
+# live host and asserts the rendered semantic tree shows the demo playlist and
+# transport chrome. The demo playlist is synthesized in-guest at init, so this
+# scene needs no file picker and no grants — fully hermetic, suite = true.
+#
+# Transport (play/pause/next/seek/volume) and the file-pick → decode → play
+# path are proven in the wasm_pane harness tests (jukebox_* in wasm_pane.rs),
+# which drive keys and tool calls directly and seed real WAV bytes — a headless
+# scene delivers bare keys as text (not to a wasm guest) and has no step to
+# seed the picker's files. This scene owns the visual-render surface.
+# Run with `just scene tests/scenes/jukebox.toml`.
+size = [900.0, 640.0]
+suite = true
+
+[[steps]]
+open = { kind = "wasm", path = "tests/wasm-fixtures/jukebox.wasm", as = "jukebox" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { target = "jukebox", pane_count = 1, lifecycle = "running", tree_contains = "Jukebox" }
+
+# Transport starts stopped on the first demo track.
+[[steps]]
+assert = { target = "jukebox", tree_contains = "STOPPED" }
+
+# The three synthesized demo tracks are listed.
+[[steps]]
+assert = { target = "jukebox", tree_contains = "Demo: Sine A4" }
+
+[[steps]]
+assert = { target = "jukebox", tree_contains = "Demo: Sine C5" }
+
+[[steps]]
+assert = { target = "jukebox", tree_contains = "Demo: Sine E5" }
+
+[[steps]]
+shot = "jukebox.png"

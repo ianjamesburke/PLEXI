@@ -3964,4 +3964,236 @@ mod tests {
         assert!(error.contains("track id 999 not found"), "{error}");
         Ok(())
     }
+
+    // ── jukebox.* transport tools + file pick (stint 0513) ───────────────
+
+    fn jukebox_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/jukebox.wasm")
+    }
+
+    fn jukebox_pane() -> WasmPane {
+        let app = WasmApp::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
+            .expect("load jukebox");
+        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    /// The now-playing transport state is a Badge node (not Text), so
+    /// `tree_text` does not see it; scan badge text directly.
+    fn tree_has_badge(tree: &UiTree, needle: &str) -> bool {
+        tree.nodes.iter().any(|n| match &n.data {
+            UiNodeData::Badge(b) => b.text.contains(needle),
+            _ => false,
+        })
+    }
+
+    /// Minimal float32 (format 3) WAV bytes — the exact shape the jukebox's
+    /// in-guest decoder accepts, so the pick path exercises a real decode.
+    fn wav_f32_bytes(samples: &[f32], rate: u32, channels: u32) -> Vec<u8> {
+        let data_len = (samples.len() * 4) as u32;
+        let byte_rate = rate * channels * 4;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_len).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&3u16.to_le_bytes()); // IEEE float
+        out.extend_from_slice(&(channels as u16).to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&byte_rate.to_le_bytes());
+        out.extend_from_slice(&((channels * 4) as u16).to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+        for s in samples {
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+        out
+    }
+
+    // The jukebox declares its connector surface at init with truthful
+    // read-only flags: exactly the two read tools may auto-grant; every
+    // transport mutation must prompt (a mislabel would bypass the prompt).
+    #[test]
+    fn jukebox_declares_namespaced_tools_with_correct_read_only_flags(
+    ) -> wasmtime::Result<()> {
+        let mut p = jukebox_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        let effects = p.take_host_effects();
+        let tools = effects
+            .iter()
+            .find_map(|e| match e {
+                WasmHostEffect::DeclareTools { tools } => Some(tools),
+                _ => None,
+            })
+            .expect("init declares tools");
+
+        let read_only: Vec<&str> = tools
+            .iter()
+            .filter(|t| t.read_only)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(read_only, vec!["jukebox.list_files", "jukebox.now_playing"]);
+        let mutating: Vec<&str> = tools
+            .iter()
+            .filter(|t| !t.read_only)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(
+            mutating,
+            vec![
+                "jukebox.play",
+                "jukebox.pause",
+                "jukebox.next",
+                "jukebox.set_volume"
+            ]
+        );
+        for tool in tools {
+            assert!(
+                tool.input_schema.is_object() && tool.output_schema.is_object(),
+                "{} schemas must be JSON objects",
+                tool.name
+            );
+        }
+        Ok(())
+    }
+
+    // The assistant drives transport end to end: each ToolCall reaches the
+    // guest, mutates the pure model, returns a chainable ToolResult, and the
+    // pane's semantic tree reflects the new transport state. The demo playlist
+    // seeded at init makes this hermetic — no grants, no files.
+    #[test]
+    fn jukebox_tool_calls_drive_transport_and_tree_reflects_it() -> wasmtime::Result<()> {
+        let mut p = jukebox_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        p.take_host_effects();
+
+        // Three demo tracks are seeded at init.
+        p.push_input(tool_call("t1", "jukebox.list_files", "{}"));
+        p.tick(16)?;
+        let out = tool_output(&p.take_host_effects(), "t1");
+        assert_eq!(out["count"], 3);
+
+        p.push_input(tool_call("t2", "jukebox.play", "{}"));
+        p.tick(32)?;
+        let out = tool_output(&p.take_host_effects(), "t2");
+        assert_eq!(out["playing"], true);
+        assert!(tree_has_badge(&p.view()?, "PLAYING"), "tree shows playing");
+
+        // "Skip to the next track" — advances the index and rewinds.
+        p.push_input(tool_call("t3", "jukebox.next", "{}"));
+        p.tick(48)?;
+        let out = tool_output(&p.take_host_effects(), "t3");
+        assert_eq!(out["index"], 1);
+
+        p.push_input(tool_call("t4", "jukebox.now_playing", "{}"));
+        p.tick(64)?;
+        let out = tool_output(&p.take_host_effects(), "t4");
+        assert_eq!(out["index"], 1);
+        assert_eq!(out["playing"], true);
+        assert_eq!(out["track_count"], 3);
+
+        // "Turn it down" — a mutating tool with an argument.
+        p.push_input(tool_call("t5", "jukebox.set_volume", r#"{"volume":0.4}"#));
+        p.tick(80)?;
+        let out = tool_output(&p.take_host_effects(), "t5");
+        assert!((out["volume"].as_f64().unwrap() - 0.4).abs() < 1e-6);
+
+        p.push_input(tool_call("t6", "jukebox.pause", "{}"));
+        p.tick(96)?;
+        let out = tool_output(&p.take_host_effects(), "t6");
+        assert_eq!(out["playing"], false);
+        assert!(tree_has_badge(&p.view()?, "STOPPED"), "tree shows stopped");
+
+        // A malformed mutating call is a clean error, never a silent no-op.
+        p.push_input(tool_call("t7", "jukebox.set_volume", "{}"));
+        p.tick(112)?;
+        let (output, error) = tool_result(&p.take_host_effects(), "t7");
+        assert_eq!(output, None);
+        assert!(error.expect("missing volume errors").contains("volume"));
+        Ok(())
+    }
+
+    // The full 0508+0509+0513 loop: `o` opens the picker, the scripted pick
+    // grants + reads a real WAV, the guest decodes it in-guest, and the picked
+    // track joins the playlist the assistant can then see and play.
+    #[test]
+    fn jukebox_pick_reads_decodes_real_wav_and_lists_it() -> wasmtime::Result<()> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let song = dir.path().join("my-song.wav");
+        // 0.1s of 220 Hz mono at 48 kHz.
+        let frames = 4_800usize;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| ((i as f32 / 48_000.0) * std::f32::consts::TAU * 220.0).sin() * 0.5)
+            .collect();
+        std::fs::write(&song, wav_f32_bytes(&samples, 48_000, 1)).expect("seed wav");
+
+        let mut p = jukebox_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        p.take_host_effects();
+
+        grant_capability(&mut p, "fs.pick");
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Picked(vec![song.clone()]),
+        ]));
+
+        // `o` requests fs.pick; the grant opens the picker; the pick grants +
+        // reads the file; the guest decodes it. The picker runs on a thread,
+        // so tick until the loaded track appears (or time out).
+        p.push_input(key("o"));
+        let mut loaded = false;
+        for i in 0..100 {
+            p.tick(100 + i * 16)?;
+            let tree = tree_text(&p.view()?);
+            if tree.contains("my-song") && !tree.contains("loading") {
+                loaded = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(loaded, "picked track loaded into the playlist tree");
+
+        // The assistant now sees the picked track loaded alongside the demos.
+        p.push_input(tool_call("j1", "jukebox.list_files", "{}"));
+        p.tick(2_000)?;
+        let out = tool_output(&p.take_host_effects(), "j1");
+        assert_eq!(out["count"], 4, "3 demo tracks + 1 picked");
+        let picked = out["tracks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "my-song")
+            .expect("picked track named by file stem");
+        assert_eq!(picked["state"], "loaded");
+        assert!(picked["duration_ms"].as_u64().unwrap() > 0, "decoded a real duration");
+        Ok(())
+    }
+
+    // A cancelled pick adds nothing and never wedges the app.
+    #[test]
+    fn jukebox_pick_cancel_adds_no_tracks() -> wasmtime::Result<()> {
+        let mut p = jukebox_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        p.take_host_effects();
+
+        grant_capability(&mut p, "fs.pick");
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Cancelled,
+        ]));
+
+        p.push_input(key("o"));
+        for i in 0..40 {
+            p.tick(100 + i * 16)?;
+            if tree_text(&p.view()?).contains("cancelled") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        p.push_input(tool_call("c1", "jukebox.list_files", "{}"));
+        p.tick(2_000)?;
+        let out = tool_output(&p.take_host_effects(), "c1");
+        assert_eq!(out["count"], 3, "still just the demo playlist");
+        Ok(())
+    }
 }
