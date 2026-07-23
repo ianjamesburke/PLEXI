@@ -63,8 +63,11 @@ impl PlexiApp {
                 let config_dir = crate::config::config_dir();
                 if !crate::cli::updater::update_cache_fresh(&config_dir) {
                     log::info!("update check: scheduling periodic re-check");
-                    let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
-                    crate::cli::updater::spawn_update_check(config_dir, update_tx);
+                    let (update_mailbox, update_rx) = crate::app::ui_mailbox::UiMailbox::channel(
+                        std::sync::Arc::clone(&self.ui_wake),
+                        "update_check",
+                    );
+                    crate::cli::updater::spawn_update_check(config_dir, update_mailbox);
                     self.update_rx = Some(update_rx);
                     self.last_update_check = now;
                 }

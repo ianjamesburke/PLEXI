@@ -891,7 +891,10 @@ impl PlexiApp {
             root.display()
         );
         self.registry = crate::app::registry::AppRegistry::load(root);
-        match crate::app::registry_watcher::start(crate::app::registry::registry_watch_dirs(root)) {
+        match crate::app::registry_watcher::start(
+            crate::app::registry::registry_watch_dirs(root),
+            std::sync::Arc::clone(&self.ui_wake),
+        ) {
             Some((watcher, rx)) => {
                 self._registry_watcher = Some(watcher);
                 self.registry_reload_rx = Some(rx);

@@ -1371,7 +1371,8 @@ impl PlexiApp {
         self.agent_host
             .reload_workspace(self.registry.loaded_workspace.clone());
         let watch_dirs = crate::app::registry::registry_watch_dirs(&root);
-        match crate::app::registry_watcher::start(watch_dirs) {
+        match crate::app::registry_watcher::start(watch_dirs, std::sync::Arc::clone(&self.ui_wake))
+        {
             Some((watcher, rx)) => {
                 self._registry_watcher = Some(watcher);
                 self.registry_reload_rx = Some(rx);

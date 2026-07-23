@@ -70,8 +70,8 @@ pub struct HostHarness {
     ctx: egui::Context,
     /// Next pane id to assign.
     next_pane_id: u64,
-    /// IPC sender for injecting AppRequests into the pane_ipc channel.
-    pub ipc_tx: std::sync::mpsc::Sender<AppRequest>,
+    /// IPC mailbox for injecting AppRequests into the pane_ipc channel.
+    pub ipc_tx: crate::app::ui_mailbox::UiMailbox<AppRequest>,
     /// Platform output from the most recently completed frame.
     /// Contains clipboard writes, open URLs, etc.
     pub last_platform_output: egui::PlatformOutput,

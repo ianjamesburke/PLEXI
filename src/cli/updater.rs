@@ -1,17 +1,19 @@
 use std::{
     path::Path,
-    sync::mpsc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::app::ui_mailbox::UiMailbox;
 use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
 
 pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
 
 /// Spawns a background thread that checks for updates, and if a newer version
-/// is found, builds and installs it silently. Only sends on `tx` when the new
-/// binary is ready - the UI badge means "restart to apply", not "downloading".
-pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String>) {
+/// is found, builds and installs it silently. Only sends on `mailbox` when the
+/// new binary is ready - the UI badge means "restart to apply", not
+/// "downloading". The mailbox wakes the UI thread so the badge appears even on
+/// an idle host.
+pub fn spawn_update_check(cache_dir: std::path::PathBuf, mailbox: UiMailbox<String>) {
     std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || {
@@ -33,7 +35,7 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
                         match background_build(&latest, &cache_dir) {
                             Ok(()) => {
                                 log::info!("update check: background build complete for {latest}");
-                                let _ = tx.send(latest.trim_start_matches('v').to_string());
+                                let _ = mailbox.send(latest.trim_start_matches('v').to_string());
                             }
                             Err(e) => {
                                 log::warn!("update check: background build failed: {e}");
