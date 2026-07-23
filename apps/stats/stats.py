@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from plexi_sdk import state
 from plexi_sdk.effects import PersistState, SetStatus, SetTimer, SetTitle
@@ -37,7 +38,7 @@ def init(size, args) -> list:
         SetTitle("Stats"),
         SetTimer(REFRESH_TIMER_ID, REFRESH_MS, repeat=True),
     ]
-    missing = {}
+    missing: dict[str, Any] = {}
     if state.get("focus_events", None) is None:
         missing["focus_events"] = []
     if state.get("day_start_hour", None) is None:

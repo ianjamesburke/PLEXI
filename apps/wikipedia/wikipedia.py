@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+from typing import Any
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTitle
@@ -24,7 +25,7 @@ from plexi_sdk.ui import (
 API = "https://en.wikipedia.org/w/api.php"
 EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 
-DEFAULT_STATE = {
+DEFAULT_STATE: dict[str, Any] = {
     "query": "",
     "results": [],
     "selected": 0,

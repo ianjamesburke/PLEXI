@@ -88,8 +88,8 @@ def test_cell_hit_outside_grid_is_none():
 
 
 def test_mouse_menu_click_starts_game_with_clicked_difficulty():
-    sudoku.sdk.canvas_width = 800.0
-    sudoku.sdk.canvas_height = 600.0
+    sudoku._canvas_width = 800.0
+    sudoku._canvas_height = 600.0
     d = sudoku._blank()
     bx, by, bw, bh = sudoku._diff_button_rects(800.0, 600.0)[1]
     effects = sudoku._mouse(d, bx + bw / 2, by + bh / 2)
@@ -100,13 +100,11 @@ def test_mouse_menu_click_starts_game_with_clicked_difficulty():
 
 
 def test_mouse_game_click_selects_cell():
-    sudoku.sdk.canvas_width = 800.0
-    sudoku.sdk.canvas_height = 600.0
-    sudoku.sdk.pane_width = 800.0
-    sudoku.sdk.pane_height = 600.0
+    sudoku._canvas_width = 800.0
+    sudoku._canvas_height = 600.0
     d = sudoku._new_game("easy")
     sidebar_w, cell = sudoku._compute_layout()
-    pane_w = sudoku.sdk.canvas_width or sudoku.sdk.pane_width or 800.0
+    pane_w = sudoku._canvas_width or 800.0
     gw = cell * 9
     pair_w = gw + 12.0 + sidebar_w
     ox = max(8.0, (pane_w - pair_w) / 2.0)

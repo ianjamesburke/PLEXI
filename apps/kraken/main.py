@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTimer, SetTitle
@@ -16,7 +17,7 @@ POLL_MS = 30_000
 DEFAULT_PAIRS = ["XBTUSD", "ETHUSD", "SOLUSD"]
 PAIR_ALIASES = {"XXBTZUSD": "XBTUSD", "XETHZUSD": "ETHUSD"}
 
-DEFAULT_STATE = {
+DEFAULT_STATE: dict[str, Any] = {
     "pairs": DEFAULT_PAIRS,
     "prices": {},
     "selected": 0,

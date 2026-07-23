@@ -4080,14 +4080,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "plexi-sdk"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "plexi-wasm-sdk"
 version = "0.1.0"
 dependencies = [

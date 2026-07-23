@@ -497,7 +497,7 @@ Use --open to launch it in a split-right pane after scaffolding.
 |---|---|---|---|
 | `<name>` | string | no |  |
 | `--wasm` | string | no | Create a Rust WASM component app with the Plexi WASM SDK |
-| `--lang` | string | no | App language/template: `python` (declarative UI), `python_agent` (agent-loop app), or `rust` (compiled native app) Default: `python`. |
+| `--lang` | string | no | App language/template: `python` (declarative UI) or `python_agent` (agent-loop app). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
 | `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
 | `--open` | flag | no | Open the app in a split-right pane after scaffolding |
 | `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |

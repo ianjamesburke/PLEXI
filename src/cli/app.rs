@@ -142,7 +142,6 @@ pub fn app_init(
     // total so a newly added language can't silently fall back to Python.
     let result = match lang {
         "wasm" => scaffold_wasm_app(&app_dir, name),
-        "rust" => scaffold_rust_app(&app_dir, name),
         "python_agent" => scaffold_agent_python_app(&app_dir, name),
         "python" => scaffold_python_app(&app_dir, name),
         other => {
@@ -154,7 +153,7 @@ pub fn app_init(
 
     match result {
         Ok(()) => {
-            if !matches!(lang, "rust" | "wasm") {
+            if lang != "wasm" {
                 match crate::app::python_env::ensure_app_venv(name, &app_dir, &[]) {
                     Ok(python) => {
                         println!("  Python venv: {}", python.display());
@@ -203,11 +202,6 @@ pub fn app_init(
                 println!("  cargo component build --release --target wasm32-wasip2");
                 println!("  {explicit_host_plexi} app open {}", app_dir.display());
                 println!("  SDK docs: {}", app_dir.join("AUTHORING.md").display());
-            } else if lang == "rust" {
-                println!("\nNext steps:");
-                println!("  cd {}", app_dir.display());
-                println!("  cargo build --release");
-                println!("  {explicit_host_plexi} app open {}", app_dir.display());
             } else {
                 if open {
                     let path_str = app_dir.to_string_lossy().to_string();
@@ -487,33 +481,6 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
         "scaffold_agent_python_app: created agent scaffold at {}",
         app_dir.display()
     );
-    Ok(())
-}
-
-fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
-    // manifest.toml
-    std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\n{mp}",
-        name = name,
-        display = to_title_case(name),
-        mp = marketplace_placeholder(),
-    ))?;
-
-    // Cargo.toml
-    std::fs::write(app_dir.join("Cargo.toml"), format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"plexi-app\"\npath = \"src/main.rs\"\n\n[dependencies]\nplexi-sdk = {{ git = \"https://github.com/ianjamesburke/plexi\", branch = \"alpha\" }}\n",
-        name = name,
-    ))?;
-
-    // src/main.rs
-    let src_dir = app_dir.join("src");
-    std::fs::create_dir_all(&src_dir)?;
-    std::fs::write(src_dir.join("main.rs"), format!(
-        "use plexi_sdk::{{App, Emitter, Modifiers, RenderContext, run}};\n\nstruct {struct_name};\n\nimpl App for {struct_name} {{\n    fn on_render(&mut self, ctx: &mut RenderContext) {{\n        // Canvas color fields accept \"theme.<token>\" so app chrome tracks the host theme.\n        ctx.rect(0.0, 0.0, ctx.width, ctx.height, \"theme.bg\");\n        ctx.text_bold(20.0, 20.0, \"{display}\", 16.0, \"theme.fg\");\n        ctx.text(20.0, 50.0, \"Edit src/main.rs to build your app.\", 13.0, \"theme.muted\");\n    }}\n\n    fn on_key(&mut self, _key: &str, _mods: &Modifiers, _emit: &mut Emitter) {{}}\n}}\n\nfn main() {{\n    run(&mut {struct_name});\n}}\n",
-        struct_name = to_struct_name(name),
-        display = to_title_case(name),
-    ))?;
-
     Ok(())
 }
 
@@ -2634,11 +2601,6 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
-    fn stable_rust_scaffold_omits_marketplace_placeholder() {
-        assert_no_placeholder(&manifest_for(scaffold_rust_app));
-    }
-
-    #[test]
     fn wasm_scaffold_has_component_workspace_manifest_and_wit_link() {
         let temp = tempfile::tempdir().unwrap();
         let app_dir = temp.path().join("my-counter");
@@ -2675,7 +2637,6 @@ mod scaffold_marketplace_tests {
         let _channel = crate::config::set_test_channel("beta");
         assert_placeholder(&manifest_for(scaffold_python_app));
         assert_placeholder(&manifest_for(scaffold_agent_python_app));
-        assert_placeholder(&manifest_for(scaffold_rust_app));
     }
 }
 

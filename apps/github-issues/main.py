@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib.parse import quote
 
 from plexi_sdk import log, state
@@ -12,6 +13,7 @@ from plexi_sdk.events import HttpResponse, KeyEvent, UiValueChange
 from plexi_sdk.ui import (
     AppBar,
     Column,
+    Component,
     FooterKeys,
     Scrollable,
     SelectList,
@@ -32,7 +34,7 @@ SORT_LABELS = {
 PRIORITY_PREFIXES = ("p0", "p1", "p2", "p3", "p4", "bug", "enhancement", "feat", "fix")
 MAX_VISIBLE_CHIPS = 3
 
-DEFAULT_STATE = {
+DEFAULT_STATE: dict[str, Any] = {
     "repo": "",
     "issues": [],
     "selected": 0,
@@ -279,6 +281,7 @@ def _list_view(data: dict):
 
 def _detail_view(data: dict):
     detail = data.get("detail")
+    body: Component
     if data["loading"]:
         body = Text("Loading issue...", size=12.0)
     elif data["error"]:

@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import RequestCapability, SetState, SetStatus, SetTitle
 from plexi_sdk.events import CapabilityDenied, CapabilityGranted, KeyEvent, UiAction
 from plexi_sdk.ui import Button, Column, FooterKeys, SelectList, Spacer, Text
 
-DEFAULT_STATE = {
+DEFAULT_STATE: dict[str, Any] = {
     "grants": [],
     "selected": 0,
     "path": "",

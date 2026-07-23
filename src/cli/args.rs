@@ -710,9 +710,9 @@ pub enum AppCmd {
         /// Create a Rust WASM component app with the Plexi WASM SDK.
         #[arg(long, value_name = "NAME", conflicts_with_all = ["name", "lang"])]
         wasm: Option<String>,
-        /// App language/template: `python` (declarative UI), `python_agent`
-        /// (agent-loop app), or `rust` (compiled native app).
-        #[arg(long, default_value = "python", value_parser = ["python", "python_agent", "rust"])]
+        /// App language/template: `python` (declarative UI) or `python_agent`
+        /// (agent-loop app). Use `--wasm <name>` for a Rust WASM component.
+        #[arg(long, default_value = "python", value_parser = ["python", "python_agent"])]
         lang: String,
         /// Scaffold into the global app registry instead of the workspace
         #[arg(long)]

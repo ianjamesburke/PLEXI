@@ -20,6 +20,7 @@ for reading.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import ReadHostLog, SetState, SetStatus, SetTimer, SetTitle
@@ -74,7 +75,7 @@ LOG_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}))\] \[(\w+)\] \[([^\]]+)\] (.*)$"
 )
 
-DEFAULT_STATE = {
+DEFAULT_STATE: dict[str, Any] = {
     "path": "",
     "lines": [],
     "filter": "ALL",

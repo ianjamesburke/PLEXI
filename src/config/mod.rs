@@ -2000,19 +2000,42 @@ mod tests {
         }
     }
 
+    /// Stint 0285 shipped the CPython-in-WASM sandbox and 0512 corrected the
+    /// docs that still described the deleted native-subprocess model. This
+    /// test used to assert the opposite — that public docs deny Python
+    /// sandboxing — which kept a false security claim pinned in place. The
+    /// invariant it guards now is the true one: no public doc may tell a
+    /// reader that Python apps run unsandboxed as native processes.
     #[test]
-    fn public_security_docs_do_not_claim_python_sandboxing() {
-        for doc in [
-            include_str!("../../README.md"),
-            include_str!("../../website/src/content/docs/apps.md"),
-            include_str!("../../website/src/content/docs/sdk.md"),
-            include_str!("../../website/src/content/docs/pgap.md"),
+    fn public_security_docs_do_not_deny_python_sandboxing() {
+        for (name, doc) in [
+            ("README.md", include_str!("../../README.md")),
+            (
+                "apps.md",
+                include_str!("../../website/src/content/docs/apps.md"),
+            ),
+            (
+                "sdk.md",
+                include_str!("../../website/src/content/docs/sdk.md"),
+            ),
+            (
+                "pgap.md",
+                include_str!("../../website/src/content/docs/pgap.md"),
+            ),
         ] {
-            assert!(doc.contains("not") && doc.contains("sandbox"));
-            assert!(
-                !doc.contains("Python apps are sandboxed")
-                    && !doc.contains("sandboxed Python apps")
-            );
+            for claim in [
+                "Python apps are native processes",
+                "Python apps are native subprocesses",
+                "not sandboxed",
+                "not a Python process sandbox",
+                "do not sandbox",
+            ] {
+                assert!(
+                    !doc.contains(claim),
+                    "{name} claims {claim:?}; Python apps run sandboxed through the \
+                     CPython-in-WASM adapter (docs/wasm-runtime.md § Security Model)"
+                );
+            }
         }
     }
 }
