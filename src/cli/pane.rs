@@ -1125,7 +1125,12 @@ pub(super) fn open_github_ephemeral(
         }
     }
 
-    // Fallback: spawn-queue (outside a Plexi pane).
+    // Fallback: spawn-queue (outside a Plexi pane). Only queue when a host is
+    // actually servicing this channel — never park a spawn into the void
+    // (stint 0532).
+    if let Err(code) = crate::cli::require_spawn_servicing_host("open github") {
+        return code;
+    }
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         eprintln!("error: could not create spawn queue: {e}");
@@ -1140,6 +1145,8 @@ pub(super) fn open_github_ephemeral(
         "type_id": "",
         "path": abs_path,
         "layout": layout,
+        "origin": "open github",
+        "queued_at_ms": crate::cli::spawn_queued_at_ms(),
     });
     if let Some(ref ws) = workspace_root {
         queue_payload["workspace_root"] = serde_json::Value::String(ws.clone());
