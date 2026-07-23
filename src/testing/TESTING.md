@@ -187,6 +187,37 @@ Randomized failures are replayable: the panic names a seed and writes a
 minimized replay bundle to `$TMPDIR/plexi-editor-gate-failure-<seed>.json`;
 rerun exactly that seed with `PLEXI_EDITOR_GATE_SEED=<seed>`.
 
+## DAW Release Gate
+
+Any diff touching `crates/daw-*` or `apps/wasm-poc/daw-engine/` runs the DAW
+release gate before push. The DAW's pure model is a sibling crate, so its gate
+(`gate_cases` in `crates/daw-model/src/gate.rs`, exposed to the host via that
+crate's `gate` feature) is reused across every tier — same shape as the editor
+gate above:
+
+1. **Core matrix + fuzz** — `cargo test --bin plexi daw_gate`. The host bridge
+   (`src/testing/daw_gate.rs`) drives the pure-model matrix, deterministic long
+   sequence, and seeded command fuzzer (per-command `validate` + revision
+   monotonicity + undo consistency, rejected/no-op no-mutation), and asserts
+   offline-mixdown determinism: fixture project → equal PCM hash, block-size
+   independence, byte-identical `.wav` export.
+2. **Harness layer** — `daw_gate_engine_matrix` replays every named case
+   through the real `plexi-daw-engine` render path; `daw_gate_pane_drive` drives
+   the committed DAW WASM fixture in-process through named-key input, asserting
+   the semantic tree reacts.
+3. **Scenes headless** — the `daw-*.toml` scenes (`daw-timeline`, `daw-bundle`)
+   run in `scene_suite`; iterate on one with `just scene tests/scenes/<file>`.
+4. **Installed host** — `just daw-gate pr-<N>` re-runs the core qualification,
+   boots one hermetic host, leaves markers via `plexi host log --source
+   daw_gate`, runs every DAW scene in attach mode, and collects everything into
+   `/tmp/plexi-daw-gate/pr-<N>/` (per-scene SceneReports, best-effort host
+   screenshots, the core qualification artifact `daw-gate-core.json`, a channel
+   `log-tail.txt`, and `summary.json`).
+
+Randomized failures are replayable: the panic names a seed and writes a
+minimized replay bundle to `$TMPDIR/plexi-daw-gate-failure-<seed>.json`; rerun
+exactly that seed with `PLEXI_DAW_GATE_SEED=<seed>`.
+
 ## Conventions
 
 - `cargo test --bin plexi` must be green before any push; the justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.

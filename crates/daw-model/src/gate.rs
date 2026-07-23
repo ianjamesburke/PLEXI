@@ -3,10 +3,12 @@
 //! the pure [`DawModel`] state machine — with per-command invariant checks
 //! and a machine-readable qualification artifact.
 //!
-//! Compiled only under `cfg(test)`: the gate is test infrastructure, never
-//! product code. Mirrors the editor gate (`src/editor/gate.rs` in the host
-//! crate) in structure, seeds, minimizer, and artifact schema shape.
-#![cfg(test)]
+//! Test infrastructure, never product code: compiled for this crate's own
+//! `cargo test` and — via the `gate` feature — into the host binary as a
+//! dev-dependency, so `cargo test --bin plexi` drives the identical fuzzer
+//! (`src/testing/daw_gate.rs`). Absent from the shipped WASM app build.
+//! Mirrors the editor gate (`src/editor/gate.rs` in the host crate) in
+//! structure, seeds, minimizer, and artifact schema shape.
 
 use std::path::Path;
 use std::time::Instant;
@@ -14,9 +16,12 @@ use std::time::Instant;
 use crate::commands::{ApplyOutcome, DawCommand};
 use crate::history::MAX_GROUPS;
 use crate::model::{
-    ClipId, DawModel, Project, SourceId, TrackId, TrackKind, Transport, ValidationError,
-    TEMPO_MIN, TICKS_PER_BEAT, VOLUME_MAX,
+    ClipId, DawModel, Project, SourceId, TrackId, TrackKind, TEMPO_MIN, TICKS_PER_BEAT, VOLUME_MAX,
 };
+// Referenced only by this module's own `#[cfg(test)]` entry points; the host's
+// `gate`-feature build reaches the drivers, not the from-parts assertions.
+#[cfg(test)]
+use crate::model::{Transport, ValidationError};
 
 /// Environment variable that pins `gate_randomized_commands` to one seed.
 pub const GATE_SEED_ENV: &str = "PLEXI_DAW_GATE_SEED";
@@ -24,7 +29,7 @@ pub const GATE_SEED_ENV: &str = "PLEXI_DAW_GATE_SEED";
 const DEFAULT_SEEDS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 /// Kept modest (vs the editor's 2000): snapshot history makes state clones
 /// the dominant cost, and a sibling agent shares this machine's memory.
-const RANDOM_COMMANDS_PER_SEED: usize = 1500;
+pub const RANDOM_COMMANDS_PER_SEED: usize = 1500;
 /// Past this many clips the fuzzer biases hard toward shrinking commands.
 const FUZZ_CLIP_SOFT_CAP: usize = 200;
 
@@ -774,7 +779,7 @@ pub struct GateFinalState {
     pub can_redo: bool,
 }
 
-fn run_case(case: &GateCase) -> Result<GateFinalState, String> {
+pub fn run_case(case: &GateCase) -> Result<GateFinalState, String> {
     let mut model = DawModel::new();
     let mut prev_revision = model.revision();
     for (index, step) in case.steps.iter().enumerate() {
@@ -1159,7 +1164,7 @@ fn frozen_state(model: &DawModel) -> Result<String, String> {
 
 /// Runs one randomized seed. On invariant failure, minimizes the failing
 /// sequence and writes a replay bundle; returns the failure message.
-fn run_random_seed(seed: u64, command_count: usize) -> Result<(), String> {
+pub fn run_random_seed(seed: u64, command_count: usize) -> Result<(), String> {
     let mut rng = SplitMix64::new(seed);
     let mut model = DawModel::new();
     let mut prev_revision = model.revision();
@@ -1241,7 +1246,7 @@ fn run_random_seed(seed: u64, command_count: usize) -> Result<(), String> {
     ))
 }
 
-fn seeds_under_test() -> Vec<u64> {
+pub fn seeds_under_test() -> Vec<u64> {
     match std::env::var(GATE_SEED_ENV) {
         Ok(raw) => {
             let seed: u64 = raw

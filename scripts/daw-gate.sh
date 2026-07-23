@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# Installed-host DAW release gate (stint 0519). The DAW analog of
+# `scripts/editor-gate.sh`, reusing the same named cases across every tier.
+#
+# Flow:
+#   1. Core qualification (matrix + long sequence + seeded fuzz over the pure
+#      model) — writes the daw-gate-core.json artifact; the gate fails outright
+#      without it.
+#   2. Boot ONE hermetic host for the channel (`host start --ephemeral`: no
+#      workspace restore, no workspace save) and leave an info-level start
+#      marker in the channel's plexi.log via `plexi host log`.
+#   3. Run every DAW scene (tests/scenes/daw-*.toml) against that host in
+#      attach mode (PLEXI_SCENE_ATTACH=1), collecting SceneReport JSONs and
+#      failure bundles per scene, plus a best-effort bounded host screenshot
+#      per scene (`plexi host screenshot` can stall — a hang or failure only
+#      logs a warning and never affects the gate result).
+#   4. Leave a finish marker with pass/fail counts in the channel log, stop
+#      the host, tail the channel's plexi.log, and write summary.json.
+#
+# Exits nonzero when the core qualification, the host boot, or any scene
+# fails. Screenshots and log markers are evidence, not gate conditions.
+#
+# Usage: daw-gate.sh <channel> [out_dir]
+set -uo pipefail
+
+channel="${1:?usage: daw-gate.sh <channel> [out_dir]}"
+out_dir="${2:-/tmp/plexi-daw-gate/$channel}"
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+scene_dir="$repo_root/tests/scenes"
+
+if [[ "$channel" == "main" ]]; then
+    plexi_bin="plexi"
+    profile_dir="$HOME/.plexi"
+else
+    plexi_bin="plexi-$channel"
+    profile_dir="$HOME/.plexi-$channel"
+fi
+
+mkdir -p "$out_dir"
+
+# Run a command with a hard wall-clock bound (portable: macOS ships no
+# `timeout`). Returns 124 on timeout, the command's exit code otherwise.
+run_bounded() {
+    local seconds="$1"
+    shift
+    "$@" &
+    local pid=$!
+    (
+        sleep "$seconds"
+        kill "$pid" 2>/dev/null
+    ) &
+    local watchdog=$!
+    local code=0
+    wait "$pid" 2>/dev/null || code=$?
+    kill "$watchdog" 2>/dev/null
+    wait "$watchdog" 2>/dev/null
+    if [[ $code -ge 128 ]]; then
+        return 124
+    fi
+    return "$code"
+}
+
+# Host log marker: the installed run's start/finish summary must reach the
+# channel's plexi.log, whose logger the host process owns. Bounded and
+# warn-only: a marker failure never changes the gate result.
+host_marker() {
+    if ! run_bounded 10 "$plexi_bin" host log --source daw_gate "$1" \
+        >> "$out_dir/host-markers.log" 2>&1; then
+        echo "daw-gate: warning: host log marker failed: $1" >&2
+    fi
+}
+
+gate_host_started=""
+cleanup_gate_host() {
+    if [[ -n "$gate_host_started" ]]; then
+        "$plexi_bin" host stop >/dev/null 2>&1 || true
+        gate_host_started=""
+    fi
+}
+trap cleanup_gate_host EXIT INT TERM HUP
+
+scenes=()
+for scene in "$scene_dir"/daw-*.toml; do
+    [[ -f "$scene" ]] && scenes+=("$scene")
+done
+if [[ ${#scenes[@]} -eq 0 ]]; then
+    echo "daw-gate: no DAW scenes found in $scene_dir" >&2
+    exit 1
+fi
+
+echo "daw-gate: started channel=$channel scenes=${#scenes[@]} out=$out_dir"
+
+# Core qualification first: run it fresh so the artifact always matches this
+# working tree, and fail the gate outright when it fails.
+core_artifact="${TMPDIR:-/tmp}/plexi-daw-gate/daw-gate-core.json"
+rm -f "$core_artifact"
+echo "daw-gate: running core qualification (cargo test daw_gate core artifact)"
+if ! (cd "$repo_root" && env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
+    -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
+    cargo test --bin plexi daw_gate::daw_gate_core_qualification_artifact \
+    > "$out_dir/core-qualification.log" 2>&1); then
+    echo "daw-gate: CORE QUALIFICATION FAILED (see $out_dir/core-qualification.log)" >&2
+    exit 1
+fi
+if [[ ! -f "$core_artifact" ]]; then
+    echo "daw-gate: core qualification did not produce $core_artifact" >&2
+    exit 1
+fi
+cp "$core_artifact" "$out_dir/daw-gate-core.json"
+echo "daw-gate: collected core artifact daw-gate-core.json"
+
+# One hermetic host for the whole gate: --ephemeral means the channel's saved
+# session is neither restored nor overwritten. The started flag is set before
+# the attempt: a host that spawns but fails readiness still exists, and the
+# EXIT trap must stop it rather than orphan it (stopping a never-started host
+# is a bounded no-op).
+gate_host_started=1
+if ! "$plexi_bin" host start --ephemeral --pane "cwd=$repo_root" \
+    > "$out_dir/host-start.log" 2>&1; then
+    echo "daw-gate: HOST START FAILED (see $out_dir/host-start.log)" >&2
+    exit 1
+fi
+host_marker "gate started channel=$channel scenes=${#scenes[@]}"
+
+failures=0
+scene_entries=""
+for scene in "${scenes[@]}"; do
+    name="$(basename "$scene" .toml)"
+    scene_out="$out_dir/scenes/$name"
+    mkdir -p "$scene_out"
+    echo "daw-gate: running scene $name"
+    if PLEXI_SCENE_ATTACH=1 bash "$repo_root/scripts/run-live-scene.sh" \
+        "$scene" "$channel" "$scene_out" > "$scene_out/run.log" 2>&1; then
+        passed=true
+    else
+        passed=false
+        failures=$((failures + 1))
+        echo "daw-gate: SCENE FAILED $name (see $scene_out/run.log)" >&2
+    fi
+    # Best-effort pixel evidence. `plexi host screenshot` can silently stall
+    # (pre-existing host bug, tracked separately) — bound it hard and never
+    # let it affect the gate result.
+    if ! run_bounded 20 "$plexi_bin" host screenshot \
+        --output "$scene_out/host-after.png" \
+        > "$scene_out/screenshot.log" 2>&1; then
+        echo "daw-gate: warning: screenshot after scene $name failed or timed out (best-effort, gate unaffected)" \
+            | tee -a "$scene_out/screenshot.log" >&2
+    fi
+    [[ -n "$scene_entries" ]] && scene_entries+=","
+    scene_entries+=$'\n    '"{\"name\": \"$name\", \"passed\": $passed, \"report\": \"scenes/$name/$name.json\"}"
+done
+
+total=${#scenes[@]}
+passed_count=$((total - failures))
+host_marker "gate finished channel=$channel passed=$passed_count failed=$failures"
+cleanup_gate_host
+
+# Channel log tail for post-mortems (includes the markers above).
+channel_log="$profile_dir/plexi.log"
+if [[ -f "$channel_log" ]]; then
+    tail -n 500 "$channel_log" > "$out_dir/log-tail.txt"
+else
+    echo "daw-gate: channel log $channel_log not found" > "$out_dir/log-tail.txt"
+fi
+
+cat > "$out_dir/summary.json" <<SUMMARY
+{
+  "channel": "$channel",
+  "scenes": [$scene_entries
+  ],
+  "totals": {"scenes": $total, "passed": $passed_count, "failed": $failures}
+}
+SUMMARY
+
+echo "daw-gate: finished channel=$channel passed=$passed_count failed=$failures summary=$out_dir/summary.json"
+if [[ $failures -gt 0 ]]; then
+    exit 1
+fi

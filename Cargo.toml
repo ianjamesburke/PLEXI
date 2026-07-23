@@ -140,6 +140,11 @@ objc2-core-foundation = { version = "0.3", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# DAW release gate (stint 0519): the host test build drives the pure-model
+# fuzzer (via the `gate` feature) and the offline render engine, so
+# `cargo test --bin plexi` covers every tier. Neither ships in the host binary.
+plexi-daw-model = { path = "crates/daw-model", features = ["gate"] }
+plexi-daw-engine = { path = "crates/daw-engine" }
 
 [patch.crates-io]
 # Vendored because accesskit_consumer 0.38 still panics when a root-change

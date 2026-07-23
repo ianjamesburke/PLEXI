@@ -12,7 +12,12 @@ pub mod commands;
 pub mod history;
 pub mod model;
 
-mod gate;
+// The release gate is test infrastructure: compiled for this crate's own
+// `cargo test`, and for the host binary via the `gate` feature (a host
+// dev-dependency), so `cargo test --bin plexi` drives the same fuzzer. It is
+// absent from the shipped WASM app build, which enables neither.
+#[cfg(any(test, feature = "gate"))]
+pub mod gate;
 
 pub use commands::{ApplyOutcome, DawCommand};
 pub use history::{CoalesceKey, SnapshotHistory, MAX_GROUPS};

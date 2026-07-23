@@ -8,3 +8,9 @@ publish = false
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+# Compiles the release gate (matrix + long sequence + seeded fuzzer) as a
+# public API so the host binary can drive it under `cargo test --bin plexi`.
+# Off in the shipped WASM app build; on only for the host's dev-dependency.
+gate = []
