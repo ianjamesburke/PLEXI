@@ -80,3 +80,5 @@ entities.json
 
 # Agent skill logs (runtime artifacts)
 .agents/**/LOG.md
+.agents/**/RUN_STATE.md
+.agents/**/HUMAN_CHECKS.md
