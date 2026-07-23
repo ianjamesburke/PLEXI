@@ -1461,6 +1461,83 @@
           "type": "object"
         },
         {
+          "description": "Deliver a sanctioned pointer drag to an app pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
+          "properties": {
+            "button": {
+              "description": "\"left\" (default), \"right\", or \"middle\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from": {
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "from_node": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "steps": {
+              "description": "Intermediate move positions between press and release (default 8,\nmax 256). Each step is one frame, so scrub/threshold logic in the\ntarget app sees a realistic pointer trajectory.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "to": {
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "to_node": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "drag_pane",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Read the last N lines from a terminal pane's PTY scrollback buffer.\nSent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.",
           "properties": {
             "from_cursor": {

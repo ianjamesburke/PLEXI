@@ -442,6 +442,21 @@ Deliver a synthetic click to an app pane by node id, activating the Button/TextI
 | `pane_id` | `integer` | yes |
 | `response_file` | `string?` | no |
 
+### `drag_pane`
+
+Deliver a sanctioned pointer drag to an app pane: press at `from`, `steps` intermediate `PointerMoved` positions, rel...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `button` | `string?` | no |
+| `from` | `array?` | no |
+| `from_node` | `string?` | no |
+| `pane_id` | `integer` | yes |
+| `response_file` | `string?` | no |
+| `steps` | `integer?` | no |
+| `to` | `array?` | no |
+| `to_node` | `string?` | no |
+
 ### `capture_pane`
 
 Read the last N lines from a terminal pane's PTY scrollback buffer. Sent by `plexi pane capture`. Host writes a JSON ...
