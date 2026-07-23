@@ -10,6 +10,7 @@ and async responses (http_response, capability_decision) arrive as events.
 """
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import sys
@@ -169,9 +170,18 @@ class V3AppRuntime:
                 error=ev.get("error"),
             ))
         elif t == "file_read_result":
+            # The host sends file bytes base64-encoded (`content_b64`) so the
+            # round trip is binary-exact; older text-only hosts sent `content`.
+            content_b64 = ev.get("content_b64")
             content = ev.get("content")
+            if isinstance(content_b64, str):
+                decoded: bytes | None = base64.b64decode(content_b64)
+            elif isinstance(content, str):
+                decoded = content.encode("utf-8")
+            else:
+                decoded = None
             self._dispatch(events.FileReadResult(
-                content=content.encode("utf-8") if isinstance(content, str) else None,
+                content=decoded,
                 error=ev.get("error"),
             ))
         elif t == "file_write_result":
@@ -461,10 +471,23 @@ class V3AppRuntime:
             elif isinstance(effect, effects.FileRead):
                 _emit({"type": "file_read", "path": effect.path})
             elif isinstance(effect, effects.FileWrite):
+                content = effect.content
+                if not isinstance(content, (bytes, bytearray)):
+                    raise TypeError(
+                        "FileWrite.content must be bytes, got "
+                        f"{type(content).__name__}; encode text with .encode()"
+                    )
+                if len(content) > effects.MAX_FILE_IO_BYTES:
+                    raise ValueError(
+                        f"FileWrite payload is {len(content)} bytes, over the "
+                        f"{effects.MAX_FILE_IO_BYTES}-byte per-call file I/O limit"
+                    )
+                # Base64 keeps arbitrary bytes intact across the JSON bridge;
+                # the host decodes `content_b64` and writes binary-exact.
                 _emit({
                     "type": "file_write",
                     "path": effect.path,
-                    "content": effect.content.decode("utf-8"),
+                    "content_b64": base64.b64encode(bytes(content)).decode("ascii"),
                 })
             elif isinstance(effect, effects.ReadHostLog):
                 _emit({"type": "read_host_log", "max_bytes": int(effect.max_bytes)})

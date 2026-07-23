@@ -15,7 +15,6 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
 
-#[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1645,36 +1644,7 @@ impl LivePythonPane {
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
-        let path = Path::new(raw);
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
-        {
-            return Err(format!("path escapes workspace: {raw}"));
-        }
-        let root = self.config.workspace_root.canonicalize().map_err(|error| {
-            format!(
-                "canonicalize workspace {}: {error}",
-                self.config.workspace_root.display()
-            )
-        })?;
-        let candidate = self.config.workspace_root.join(path);
-        let resolved = if for_write && !candidate.exists() {
-            let parent = candidate
-                .parent()
-                .ok_or_else(|| "path has no parent".to_string())?;
-            parent
-                .canonicalize()
-                .map(|parent| parent.join(candidate.file_name().unwrap_or_default()))
-        } else {
-            candidate.canonicalize()
-        }
-        .map_err(|error| format!("resolve workspace path {raw}: {error}"))?;
-        if !resolved.starts_with(&root) {
-            return Err(format!("path escapes workspace through symlink: {raw}"));
-        }
-        Ok(resolved)
+        resolve_jailed_path(&self.config.workspace_root, raw, for_write)
     }
 
     fn handle_file_read(&mut self, message: &Value) {
@@ -1687,12 +1657,34 @@ impl LivePythonPane {
                 .ok_or_else(|| "missing path".to_string())
                 .and_then(|path| self.workspace_path(path, false))
                 .and_then(|path| {
-                    std::fs::read_to_string(&path)
+                    std::fs::read(&path)
                         .map_err(|error| format!("read {}: {error}", path.display()))
+                        .and_then(|bytes| {
+                            if bytes.len() > crate::host::MAX_FILE_IO_BYTES {
+                                Err(format!(
+                                    "read {}: file is {} bytes, over the {}-byte per-call file I/O limit",
+                                    path.display(),
+                                    bytes.len(),
+                                    crate::host::MAX_FILE_IO_BYTES
+                                ))
+                            } else {
+                                Ok(bytes)
+                            }
+                        })
                 })
         };
+        // Bytes cross the JSON bridge base64-encoded so the round trip is
+        // binary-exact; the SDK runtime decodes `content_b64` back to bytes.
         let response = match result {
-            Ok(content) => json!({"type": "file_read_result", "content": content}),
+            Ok(bytes) => {
+                log::info!(
+                    "app::{}: file_read {:?} -> {} bytes",
+                    self.app_id,
+                    message.get("path").and_then(Value::as_str).unwrap_or("?"),
+                    bytes.len()
+                );
+                json!({"type": "file_read_result", "content_b64": BASE64.encode(bytes)})
+            }
             Err(error) => json!({"type": "file_read_result", "error": error}),
         };
         self.send_to_runtime(&response);
@@ -1708,12 +1700,17 @@ impl LivePythonPane {
                 .ok_or_else(|| "missing path".to_string())
                 .and_then(|path| self.workspace_path(path, true))
                 .and_then(|path| {
-                    let content = message
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    std::fs::write(&path, content)
-                        .map_err(|error| format!("write {}: {error}", path.display()))
+                    decode_file_write_content(message).and_then(|bytes| {
+                        log::info!(
+                            "app::{}: file_write {} ({} bytes, binary={})",
+                            self.app_id,
+                            path.display(),
+                            bytes.len(),
+                            message.get("content_b64").is_some()
+                        );
+                        std::fs::write(&path, bytes)
+                            .map_err(|error| format!("write {}: {error}", path.display()))
+                    })
                 })
         };
         let response = match result {
@@ -2190,6 +2187,71 @@ fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
             host == pattern || host.ends_with(&format!(".{pattern}"))
         })
     })
+}
+
+/// Resolve an app-supplied relative path inside `root`, rejecting absolute
+/// paths, `..` components, and symlink escapes. `for_write` permits a
+/// not-yet-existing final component as long as its parent resolves inside the
+/// jail. Shared by `file_read` and `file_write`; 0508's granted scopes will
+/// extend the allowed roots here once they land.
+fn resolve_jailed_path(root: &Path, raw: &str, for_write: bool) -> Result<PathBuf, String> {
+    let path = Path::new(raw);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(format!("path escapes workspace: {raw}"));
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("canonicalize workspace {}: {error}", root.display()))?;
+    let candidate = root.join(path);
+    let resolved = if for_write && !candidate.exists() {
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| "path has no parent".to_string())?;
+        parent
+            .canonicalize()
+            .map(|parent| parent.join(candidate.file_name().unwrap_or_default()))
+    } else {
+        candidate.canonicalize()
+    }
+    .map_err(|error| format!("resolve workspace path {raw}: {error}"))?;
+    if !resolved.starts_with(&canonical_root) {
+        return Err(format!("path escapes workspace through symlink: {raw}"));
+    }
+    Ok(resolved)
+}
+
+/// Extract the payload of a `file_write` message: binary via `content_b64`
+/// (base64, the binary-safe bridge encoding) or text via `content`. Exactly one
+/// must be present; both silent-empty fallbacks and oversize payloads are
+/// rejected with named errors.
+fn decode_file_write_content(message: &Value) -> Result<Vec<u8>, String> {
+    let bytes = match (
+        message.get("content_b64").and_then(Value::as_str),
+        message.get("content").and_then(Value::as_str),
+    ) {
+        (Some(_), Some(_)) => {
+            return Err("file_write carries both content and content_b64; send exactly one".into())
+        }
+        (Some(b64), None) => BASE64
+            .decode(b64)
+            .map_err(|error| format!("file_write content_b64 is not valid base64: {error}"))?,
+        (None, Some(text)) => text.as_bytes().to_vec(),
+        (None, None) => {
+            return Err("file_write missing content (text) or content_b64 (binary)".into())
+        }
+    };
+    if bytes.len() > crate::host::MAX_FILE_IO_BYTES {
+        return Err(format!(
+            "file_write payload is {} bytes, over the {}-byte per-call file I/O limit",
+            bytes.len(),
+            crate::host::MAX_FILE_IO_BYTES
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Default tail window for a `read_host_log` request: the last 256 KiB. Bounded
@@ -5018,5 +5080,104 @@ execution = "cloud"
             }
             other => panic!("expected BridgeJson error, got {other:?}"),
         }
+    }
+
+    // ─── Binary-safe file I/O (stint 0509) ───────────────────────────────────
+
+    #[test]
+    fn file_write_content_b64_round_trips_binary_exact() {
+        // Every byte value, including invalid UTF-8 sequences and NULs.
+        let payload: Vec<u8> = (0..=255u8).cycle().take(1024).collect();
+        let message = json!({
+            "type": "file_write",
+            "path": "out.bin",
+            "content_b64": BASE64.encode(&payload),
+        });
+        let decoded = decode_file_write_content(&message).expect("b64 payload decodes");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn file_write_text_content_still_writes_utf8_bytes() {
+        let message = json!({"type": "file_write", "path": "out.txt", "content": "héllo"});
+        let decoded = decode_file_write_content(&message).expect("text payload decodes");
+        assert_eq!(decoded, "héllo".as_bytes());
+    }
+
+    #[test]
+    fn file_write_rejects_missing_both_and_ambiguous_content() {
+        let neither = json!({"type": "file_write", "path": "out.bin"});
+        let err = decode_file_write_content(&neither).expect_err("no payload must fail");
+        assert!(err.contains("content"), "error names the missing field: {err}");
+
+        let both = json!({
+            "type": "file_write",
+            "path": "out.bin",
+            "content": "a",
+            "content_b64": "YQ==",
+        });
+        let err = decode_file_write_content(&both).expect_err("ambiguous payload must fail");
+        assert!(err.contains("exactly one"), "error explains the fix: {err}");
+    }
+
+    #[test]
+    fn file_write_rejects_invalid_base64_loudly() {
+        let message = json!({"type": "file_write", "path": "out.bin", "content_b64": "!!not-b64"});
+        let err = decode_file_write_content(&message).expect_err("bad base64 must fail");
+        assert!(err.contains("base64"), "error names the encoding: {err}");
+    }
+
+    #[test]
+    fn file_write_rejects_oversize_payload_with_named_limit() {
+        // An empty-ish base64 string can't be oversize, so build one just over
+        // the cap. b64 of N bytes is 4*ceil(N/3) chars; keep it cheap with a
+        // repeated 'A' payload (decodes to zero bytes).
+        let over = crate::host::MAX_FILE_IO_BYTES + 3;
+        let b64_len = over.div_ceil(3) * 4;
+        let message = json!({
+            "type": "file_write",
+            "path": "out.bin",
+            "content_b64": "A".repeat(b64_len),
+        });
+        let err = decode_file_write_content(&message).expect_err("oversize must fail");
+        assert!(
+            err.contains(&crate::host::MAX_FILE_IO_BYTES.to_string()),
+            "error names the limit: {err}"
+        );
+    }
+
+    #[test]
+    fn jailed_path_rejects_absolute_parent_and_symlink_escape() {
+        let root = tempdir().expect("tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        std::fs::write(outside.path().join("secret.txt"), b"x").expect("seed outside file");
+
+        let abs = outside.path().join("secret.txt");
+        let err = resolve_jailed_path(root.path(), abs.to_str().expect("utf8"), false)
+            .expect_err("absolute path must be jailed");
+        assert!(err.contains("escapes workspace"), "{err}");
+
+        let err = resolve_jailed_path(root.path(), "../secret.txt", false)
+            .expect_err("parent traversal must be jailed");
+        assert!(err.contains("escapes workspace"), "{err}");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), root.path().join("link"))
+                .expect("create escape symlink");
+            let err = resolve_jailed_path(root.path(), "link/secret.txt", false)
+                .expect_err("symlink escape must be jailed");
+            assert!(err.contains("escapes workspace"), "{err}");
+        }
+    }
+
+    #[test]
+    fn jailed_path_allows_new_file_in_existing_subdir_for_write() {
+        let root = tempdir().expect("tempdir");
+        std::fs::create_dir(root.path().join("media")).expect("create subdir");
+        let resolved = resolve_jailed_path(root.path(), "media/out.wav", true)
+            .expect("new file under existing subdir resolves");
+        assert!(resolved.ends_with("media/out.wav"));
+        assert!(resolved.starts_with(root.path().canonicalize().expect("canonical root")));
     }
 }

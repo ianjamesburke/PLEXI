@@ -1483,6 +1483,7 @@ impl PlexiApp {
                             crate::host::pane::PendingPaneClick {
                                 target: crate::host::pane::PaneClickTarget::Pos(abs),
                                 button: button_str,
+                                phase: crate::host::pane::PointerPhase::Click,
                             },
                         );
                     }
@@ -1545,6 +1546,7 @@ impl PlexiApp {
                         crate::host::pane::PendingPaneClick {
                             target: crate::host::pane::PaneClickTarget::Node(arena_id),
                             button: button_str,
+                            phase: crate::host::pane::PointerPhase::Click,
                         },
                     );
                     self.ctx.request_repaint();
@@ -1559,6 +1561,162 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     write_response(rf, json.as_bytes());
+                }
+            }
+            crate::app_protocol::AppRequest::DragPane {
+                pane_id,
+                from,
+                from_node,
+                to,
+                to_node,
+                steps,
+                button,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=drag_pane pane_id={pane_id} from={from:?} from_node={from_node:?} \
+                     to={to:?} to_node={to_node:?} steps={steps:?} button={button:?}"
+                );
+                let result: Result<serde_json::Value, String> = (|| {
+                    let Some((win_idx, tile_id)) = self.find_pane_in_any_window(*pane_id) else {
+                        return Err(format!("pane {pane_id} not found"));
+                    };
+                    let Some(pane_rect) = self.windows[win_idx].tree.tiles.rect(tile_id) else {
+                        return Err(format!(
+                            "pane {pane_id}: no known screen rect (pane has not rendered yet)"
+                        ));
+                    };
+                    let Some(app_pane) = self.windows[win_idx]
+                        .panes
+                        .get(pane_id)
+                        .and_then(crate::host::pane::Pane::as_app)
+                    else {
+                        return Err(format!(
+                            "pane {pane_id}: drag injection is only supported for app panes"
+                        ));
+                    };
+                    let is_builtin =
+                        matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_));
+                    // Resolve each endpoint to an absolute screen position:
+                    // pane-pixel coordinates directly, or a semantic node's
+                    // cached bounds center. Nodes without recorded bounds
+                    // fail loudly — a drag must never silently guess.
+                    let resolve = |px: &Option<[f32; 2]>,
+                                   node: &Option<String>,
+                                   which: &str|
+                     -> Result<egui::Pos2, String> {
+                        match (px, node) {
+                            (Some(_), Some(_)) => Err(format!(
+                                "drag {which}: give pixel coordinates or a node id, not both"
+                            )),
+                            (Some([x, y]), None) => Ok(pane_rect.min + egui::vec2(*x, *y)),
+                            (None, Some(node_id)) => {
+                                let state = app_pane.semantic_state();
+                                let Some(node) =
+                                    state.nodes.iter().find(|n| &n.id == node_id)
+                                else {
+                                    return Err(format!(
+                                        "drag {which}: node {node_id} not found in this pane's current tree"
+                                    ));
+                                };
+                                let Some([x0, y0, x1, y1]) = node.bounds else {
+                                    return Err(format!(
+                                        "drag {which}: node {node_id} has no rendered bounds; \
+                                         target it by pixel coordinates instead"
+                                    ));
+                                };
+                                Ok(egui::pos2(
+                                    ((x0 + x1) / 2.0) as f32,
+                                    ((y0 + y1) / 2.0) as f32,
+                                ))
+                            }
+                            (None, None) => Err(format!(
+                                "drag {which}: missing endpoint — set `{which}` = [x, y] or `{which}_node`"
+                            )),
+                        }
+                    };
+                    let from_abs = resolve(from, from_node, "from")?;
+                    let to_abs = resolve(to, to_node, "to")?;
+                    let steps = steps.unwrap_or(8).clamp(1, 256);
+                    let button_str = match button.as_deref() {
+                        Some("right") => "right",
+                        Some("middle") => "middle",
+                        _ => "left",
+                    };
+                    if !self.pane_navigate(*pane_id) {
+                        return Err(format!("pane {pane_id} could not be focused"));
+                    }
+                    let lerp = |t: f32| from_abs + (to_abs - from_abs) * t;
+                    // Press, `steps` intermediate moves, release — one entry
+                    // per frame on the plane the pane's runtime consumes.
+                    if is_builtin {
+                        let pointer_button = match button_str {
+                            "right" => egui::PointerButton::Secondary,
+                            "middle" => egui::PointerButton::Middle,
+                            _ => egui::PointerButton::Primary,
+                        };
+                        let press = |pos: egui::Pos2, pressed: bool| egui::RawInput {
+                            events: vec![
+                                egui::Event::PointerMoved(pos),
+                                egui::Event::PointerButton {
+                                    pos,
+                                    button: pointer_button,
+                                    pressed,
+                                    modifiers: egui::Modifiers::default(),
+                                },
+                            ],
+                            ..Default::default()
+                        };
+                        let mut frames = std::collections::VecDeque::new();
+                        frames.push_back(press(from_abs, true));
+                        for i in 1..=steps {
+                            frames.push_back(egui::RawInput {
+                                events: vec![egui::Event::PointerMoved(
+                                    lerp(i as f32 / (steps + 1) as f32),
+                                )],
+                                ..Default::default()
+                            });
+                        }
+                        frames.push_back(press(to_abs, false));
+                        self.pending_pane_pointer_frames.insert(*pane_id, frames);
+                    } else {
+                        use crate::host::pane::{PaneClickTarget, PendingPaneClick, PointerPhase};
+                        let sample = |pos: egui::Pos2, phase: PointerPhase| PendingPaneClick {
+                            target: PaneClickTarget::Pos(pos),
+                            button: button_str,
+                            phase,
+                        };
+                        let mut samples = std::collections::VecDeque::new();
+                        samples.push_back(sample(from_abs, PointerPhase::Press));
+                        for i in 1..=steps {
+                            samples.push_back(sample(
+                                lerp(i as f32 / (steps + 1) as f32),
+                                PointerPhase::Move,
+                            ));
+                        }
+                        samples.push_back(sample(to_abs, PointerPhase::Release));
+                        self.pending_pane_drags.insert(*pane_id, samples);
+                    }
+                    self.ctx.request_repaint();
+                    log::info!(
+                        "pane_ipc: drag_pane: pane_id={pane_id} queued {} frames \
+                         from=({:.1},{:.1}) to=({:.1},{:.1}) button={button_str}",
+                        steps + 2,
+                        from_abs.x,
+                        from_abs.y,
+                        to_abs.x,
+                        to_abs.y
+                    );
+                    Ok(serde_json::json!({"ok": true, "frames": steps + 2}))
+                })();
+                if let Some(rf) = response_file {
+                    let json = match &result {
+                        Ok(v) => v.to_string(),
+                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
+                    };
+                    if let Err(e) = std::fs::write(rf, &json) {
+                        log::error!("pane_ipc: drag_pane: could not write response file: {e}");
+                    }
                 }
             }
             crate::app_protocol::AppRequest::CapturePane {

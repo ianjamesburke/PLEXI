@@ -440,6 +440,23 @@ pub struct PlexiApp {
     /// writing directly into `Context::input_mut` from IPC dispatch can be
     /// acknowledged and then discarded before the widget sees it.
     pub(crate) pending_pane_inputs: HashMap<crate::spatial::tiling::PaneId, Vec<egui::RawInput>>,
+    /// Per-frame drag samples for canvas/process/WASM panes queued by
+    /// `AppRequest::DragPane` (stint 0510). One sample is promoted into
+    /// `pending_pane_clicks` per rendered frame so the target pane sees
+    /// press → move… → release across consecutive real frames, resolved
+    /// against each frame's live canvas rect.
+    pub(crate) pending_pane_drags: HashMap<
+        crate::spatial::tiling::PaneId,
+        std::collections::VecDeque<crate::host::pane::PendingPaneClick>,
+    >,
+    /// Per-frame pointer batches for builtin (egui-widget) panes queued by
+    /// `AppRequest::DragPane`. Unlike `pending_pane_inputs` — whose batches
+    /// all merge into one frame — exactly one batch is merged per visible
+    /// frame, so egui observes a genuine multi-frame press/move/release
+    /// trajectory and resolves real drag state on whatever widget owns the
+    /// positions.
+    pub(crate) pending_pane_pointer_frames:
+        HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
 }
 
 struct PendingAppSubscriptionReply {
@@ -1379,6 +1396,8 @@ impl PlexiApp {
                     agent_host: crate::agent::AgentHost::production(config.ai),
                     pending_pane_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
+                    pending_pane_drags: HashMap::new(),
+                    pending_pane_pointer_frames: HashMap::new(),
                 };
                 // Reconstruct depth_stack so Cmd+Escape works immediately when
                 // the workspace was saved while viewing a subcontext. The stack
@@ -1630,6 +1649,8 @@ impl PlexiApp {
             agent_host,
             pending_pane_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
+            pending_pane_drags: HashMap::new(),
+            pending_pane_pointer_frames: HashMap::new(),
         };
         // Seed the base root terminal so a fresh profile boots straight into a
         // live pane — identical in shape to a freshly created context (root pane
@@ -2072,6 +2093,8 @@ impl PlexiApp {
                 agent_host: crate::agent::AgentHost::inert(),
                 pending_pane_clicks: HashMap::new(),
                 pending_pane_inputs: HashMap::new(),
+                pending_pane_drags: HashMap::new(),
+                pending_pane_pointer_frames: HashMap::new(),
             },
             pane_ipc_tx,
         )
@@ -2408,6 +2431,20 @@ impl eframe::App for PlexiApp {
                 for batch in batches {
                     raw_input.modifiers = batch.modifiers;
                     raw_input.events.extend(batch.events);
+                }
+            }
+            // Drag pacing (stint 0510): exactly ONE pointer batch per visible
+            // frame, so egui sees press → move… → release as a genuine
+            // multi-frame trajectory instead of a same-frame click.
+            if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
+                if let Some(batch) = frames.pop_front() {
+                    raw_input.events.extend(batch.events);
+                }
+                if frames.is_empty() {
+                    self.pending_pane_pointer_frames.remove(&pane_id);
+                } else {
+                    // Keep frames coming until the schedule drains.
+                    ctx.request_repaint();
                 }
             }
         }

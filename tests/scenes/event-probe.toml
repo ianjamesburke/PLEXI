@@ -1,0 +1,18 @@
+# Event-bus assertions in scenes (stint 0511): the probe emits `probe.tick`
+# on the `e` key; the expect polls the recorded event bus for the stream and
+# payload. Headless-only expectation — the live backend reports
+# `unsupported_live_verb` for event expectations.
+size = [1280.0, 800.0]
+suite = true
+
+[[steps]]
+open = { kind = "process", path = "apps/dev/event-probe", as = "probe" }
+
+[[steps]]
+wait_app_frame = { target = "probe", timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+expect = { target = "probe", after_key = "enter", event_stream = "probe.tick", event_payload_contains = '"count":1', tree_contains = "ticks emitted: 1", timeout_s = 10.0 }

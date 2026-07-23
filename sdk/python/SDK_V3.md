@@ -146,6 +146,13 @@ class FileWrite:
     path: str
     content: bytes  # → file-write-effect { path, content: list<u8> }
 
+# Binary transport (stint 0509): over the JSON stdio bridge, FileWrite crosses
+# as {"type": "file_write", "path", "content_b64"} (base64) and the host reply
+# to FileRead is {"type": "file_read_result", "content_b64"} — binary-exact in
+# both directions. `effects.read_bytes(path)` / `effects.write_bytes(path,
+# content)` are the authoring constructors. Both directions are capped at
+# `effects.MAX_FILE_IO_BYTES` per call, enforced host-side and SDK-side.
+
 # ── Network ───────────────────────────────────────────────────────────────────
 
 @dataclass

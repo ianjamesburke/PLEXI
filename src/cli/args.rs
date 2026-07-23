@@ -1109,6 +1109,36 @@ pub enum PaneCmd {
         #[arg(long, default_value = "left")]
         button: String,
     },
+    /// Drag the pointer across an app pane through the production input path:
+    /// press, N intermediate moves, release — delivered one frame at a time.
+    ///
+    /// Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left)
+    /// or semantic node ids from `plexi pane state` (the drag targets the
+    /// node's rendered bounds center).
+    ///
+    /// Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
+    Drag {
+        /// Pane id to drag in (from `plexi pane list`)
+        pane_id: u64,
+        /// Start position "x,y" in pane pixels
+        #[arg(long, conflicts_with = "from_node")]
+        from: Option<String>,
+        /// Start node id (from `plexi pane state`)
+        #[arg(long)]
+        from_node: Option<String>,
+        /// End position "x,y" in pane pixels
+        #[arg(long, conflicts_with = "to_node")]
+        to: Option<String>,
+        /// End node id (from `plexi pane state`)
+        #[arg(long)]
+        to_node: Option<String>,
+        /// Intermediate pointer moves between press and release (max 256)
+        #[arg(long, default_value_t = 8)]
+        steps: u32,
+        /// Pointer button: "left", "right", or "middle"
+        #[arg(long, default_value = "left")]
+        button: String,
+    },
     /// Send a shell command to a terminal pane as if typed from the keyboard.
     ///
     /// Use `--enter` to append a newline so the command is submitted immediately.

@@ -663,6 +663,77 @@ pub fn pane_click_node_cli(pane_id: u64, node_id: &str, button: &str) -> i32 {
     poll_click_response(&response_file, "pane_click_node:cli")
 }
 
+/// Parse a `"x,y"` pane-pixel coordinate pair from a CLI flag value.
+fn parse_pane_coords(flag: &str, value: &str) -> Result<[f32; 2], String> {
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    let [x, y] = parts.as_slice() else {
+        return Err(format!("--{flag} must be \"x,y\" (got {value:?})"));
+    };
+    match (x.parse::<f32>(), y.parse::<f32>()) {
+        (Ok(x), Ok(y)) => Ok([x, y]),
+        _ => Err(format!("--{flag} must be numeric \"x,y\" (got {value:?})")),
+    }
+}
+
+/// `plexi pane drag <pane_id> --from x,y --to x,y [--steps N] [--button left]`
+/// (or `--from-node`/`--to-node` with semantic node ids).
+///
+/// Sends `drag_pane` to PLEXI_SOCKET; the host queues a press → moves →
+/// release schedule through the production input path and acks once queued.
+/// Returns 0 on success, 1 on error.
+pub fn pane_drag_cli(
+    pane_id: u64,
+    from: Option<&str>,
+    from_node: Option<&str>,
+    to: Option<&str>,
+    to_node: Option<&str>,
+    steps: u32,
+    button: &str,
+) -> i32 {
+    let parse = |flag: &str, value: Option<&str>| -> Result<Option<[f32; 2]>, String> {
+        value.map(|v| parse_pane_coords(flag, v)).transpose()
+    };
+    let (from, to) = match (parse("from", from), parse("to", to)) {
+        (Ok(f), Ok(t)) => (f, t),
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    if from.is_none() && from_node.is_none() {
+        eprintln!("error: pane drag requires --from x,y or --from-node <node_id>");
+        return 2;
+    }
+    if to.is_none() && to_node.is_none() {
+        eprintln!("error: pane drag requires --to x,y or --to-node <node_id>");
+        return 2;
+    }
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("pane-drag-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+    log::info!(
+        "pane_drag:cli: pane_id={pane_id} from={from:?} from_node={from_node:?} to={to:?} \
+         to_node={to_node:?} steps={steps} button={button} response_file={response_file:?}"
+    );
+    let code = send_to_socket(serde_json::json!({
+        "type": "drag_pane",
+        "pane_id": pane_id,
+        "from": from,
+        "from_node": from_node,
+        "to": to,
+        "to_node": to_node,
+        "steps": steps,
+        "button": button,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    poll_click_response(&response_file, "pane_drag:cli")
+}
+
 /// `plexi pane capture [--lines N] [pane_id]`
 ///
 /// Reads the last N lines from a pane's PTY scrollback buffer and prints a JSON array

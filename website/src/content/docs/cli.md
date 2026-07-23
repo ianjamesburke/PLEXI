@@ -654,6 +654,7 @@ Control panes — list, focus, send input, capture output, and more
 | `key` | Send a key press to a pane |
 | `drop` | Drop a local file or image URL onto a pane |
 | `click` | Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation |
+| `drag` | Drag the pointer across an app pane through the production input path: press, N intermediate moves, release — delivered one frame at a time |
 | `command` | Send a shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
 | `slot` | Manage host-managed named file slots for a pane |
@@ -807,6 +808,24 @@ Examples: plexi pane click 42 120 80 plexi pane click 42 --node 5
 | `<x>` | string | no | X offset in pane pixels from the pane's top-left corner |
 | `<y>` | string | no | Y offset in pane pixels from the pane's top-left corner |
 | `--node` | string | no | Node id to click (from `plexi pane state`), instead of pixel coordinates |
+| `--button` | string | no | Pointer button: "left", "right", or "middle" Default: `left`. |
+
+### `plexi pane drag`
+
+Drag the pointer across an app pane through the production input path: press, N intermediate moves, release — delivered one frame at a time.
+
+Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left) or semantic node ids from `plexi pane state` (the drag targets the node's rendered bounds center).
+
+Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id to drag in (from `plexi pane list`) |
+| `--from` | string | no | Start position "x,y" in pane pixels |
+| `--from-node` | string | no | Start node id (from `plexi pane state`) |
+| `--to` | string | no | End position "x,y" in pane pixels |
+| `--to-node` | string | no | End node id (from `plexi pane state`) |
+| `--steps` | string | no | Intermediate pointer moves between press and release (max 256) Default: `8`. |
 | `--button` | string | no | Pointer button: "left", "right", or "middle" Default: `left`. |
 
 ### `plexi pane command`

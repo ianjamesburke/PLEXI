@@ -431,6 +431,26 @@ impl PlexiApp {
                     .clone()
                     .or_else(|| self.fallback_workspace_root());
 
+                // Drag pacing (stint 0510): promote exactly one queued drag
+                // sample per pane into this frame's pending-click slot, so a
+                // canvas/process/WASM pane sees press → move… → release
+                // across consecutive rendered frames, each resolved against
+                // that frame's live rect. A pane's already-pending click wins
+                // the slot; the drag resumes next frame.
+                self.pending_pane_drags.retain(|pane_id, samples| {
+                    if !self.pending_pane_clicks.contains_key(pane_id) {
+                        if let Some(sample) = samples.pop_front() {
+                            self.pending_pane_clicks.insert(*pane_id, sample);
+                        }
+                    }
+                    if samples.is_empty() {
+                        false
+                    } else {
+                        self.ctx.request_repaint();
+                        true
+                    }
+                });
+
                 // Detached before `ctx` aliases `self.windows` so both the
                 // tiling behavior below and the zoomed-pane overlay branch
                 // (further down, after `ctx`'s borrow ends) can each remove

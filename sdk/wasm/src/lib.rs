@@ -128,6 +128,19 @@ pub mod effects {
             content: content.as_ref().to_vec(),
         })
     }
+    /// Binary-exact file read — the reply's `file-read-result` carries the
+    /// file's exact bytes. Cross-SDK name for [`file_read`], which is already
+    /// byte-typed in the WIT contract.
+    #[must_use]
+    pub fn read_bytes(path: impl Into<String>) -> Effect {
+        file_read(path)
+    }
+    /// Binary-exact file write. Cross-SDK name for [`file_write`], which is
+    /// already byte-typed in the WIT contract.
+    #[must_use]
+    pub fn write_bytes(path: impl Into<String>, content: impl AsRef<[u8]>) -> Effect {
+        file_write(path, content)
+    }
     #[must_use]
     pub fn http_fetch(url: impl Into<String>) -> Effect {
         Effect::HttpFetch(HttpFetchEffect {

@@ -49,11 +49,28 @@ SetSchedulerMode(mode: str, fps: int | None = None)
 FileRead(path: str)
 ```
 
+Read a workspace file; the reply is an `events.FileReadResult` whose
+`content` is the file's exact bytes (binary-safe). Decode yourself for text.
+Requires the `fs.read` capability.
+
 ### `FileWrite`
 
 ```python
 FileWrite(path: str, content: bytes)
 ```
+
+Write `content` bytes to a workspace file, binary-exact. Requires the
+`fs.write` capability. Reply is an `events.FileWriteResult`.
+
+### `read_bytes(path: str)`
+
+Binary-exact file read. The reply's `FileReadResult.content` holds the
+file's exact bytes — WAV, PNG, any media round-trips unchanged.
+
+### `write_bytes(path: str, content: bytes | bytearray)`
+
+Binary-exact file write. Rejects non-bytes payloads and payloads over
+`MAX_FILE_IO_BYTES` immediately, before the host round trip.
 
 ### `ReadHostLog`
 

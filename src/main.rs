@@ -829,6 +829,23 @@ fn main() -> eframe::Result {
                                 }
                             },
                         }),
+                        PaneCmd::Drag {
+                            pane_id,
+                            from,
+                            from_node,
+                            to,
+                            to_node,
+                            steps,
+                            button,
+                        } => std::process::exit(cli::pane_drag_cli(
+                            pane_id,
+                            from.as_deref(),
+                            from_node.as_deref(),
+                            to.as_deref(),
+                            to_node.as_deref(),
+                            steps,
+                            &button,
+                        )),
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info { previous } => {
                             std::process::exit(cli::pane_info_cli(previous))

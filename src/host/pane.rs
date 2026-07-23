@@ -682,15 +682,32 @@ pub(crate) enum PaneClickTarget {
 pub(crate) struct PendingPaneClick {
     pub target: PaneClickTarget,
     pub button: &'static str,
+    /// Which pointer transition this sample delivers. `Click` (the default,
+    /// what `ClickPane`/`ClickPaneNode` queue) is a press+release pair;
+    /// `Press`/`Move`/`Release` are the per-frame samples of an
+    /// `AppRequest::DragPane` schedule (stint 0510) — one sample per frame,
+    /// resolved against that frame's live canvas rect like any click.
+    pub phase: PointerPhase,
+}
+
+/// Pointer transition carried by one [`PendingPaneClick`] sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PointerPhase {
+    Click,
+    Press,
+    Move,
+    Release,
 }
 
 impl PendingPaneClick {
     /// True when this pending click's target identity-matches `id` — the same
     /// honest node-id equality check `node_click_matches` (wasm_render.rs)
     /// uses on the WASM/Python path, applied to a Builtin app's own `egui::Id`
-    /// instead of a WASM arena index.
+    /// instead of a WASM arena index. Drag-phase samples never activate a
+    /// node — only a real `Click` does.
     pub(crate) fn targets_id(&self, id: egui::Id) -> bool {
-        matches!(self.target, PaneClickTarget::Node(n) if n == id.value())
+        self.phase == PointerPhase::Click
+            && matches!(self.target, PaneClickTarget::Node(n) if n == id.value())
     }
 }
 
