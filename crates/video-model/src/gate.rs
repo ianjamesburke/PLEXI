@@ -14,7 +14,9 @@ use std::time::Instant;
 
 use crate::commands::{ApplyOutcome, VideoCommand};
 use crate::history::MAX_GROUPS;
-use crate::model::{ClipId, CutEntry, Fps, Project, SourceId, TrackKind, VideoModel};
+use crate::model::{
+    ClipId, CutEntry, Fps, Project, Source, SourceId, TrackKind, ValidationError, VideoModel,
+};
 
 /// Environment variable that pins `gate_randomized_commands` to one seed.
 pub const GATE_SEED_ENV: &str = "PLEXI_VIDEO_GATE_SEED";
@@ -683,80 +685,13 @@ pub fn gate_cases() -> Vec<GateCase> {
 // ─── Invariants ──────────────────────────────────────────────────────────────
 
 /// Read-only invariants that must hold after every applied command.
-/// `prev_revision` is the revision observed before the command.
+/// State validity delegates to the product's shared
+/// [`VideoModel::validate`] path (the same checks bundle loading runs);
+/// only the test-only extras — revision monotonicity and undo-depth
+/// consistency — live here. `prev_revision` is the revision observed
+/// before the command.
 pub fn check_invariants(model: &VideoModel, prev_revision: u64) -> Result<(), String> {
-    let project = model.project();
-    for source in &project.sources {
-        if source.fps.num == 0 || source.fps.den == 0 {
-            return Err(format!(
-                "source {} fps {}/{} has a zero term",
-                source.id.0, source.fps.num, source.fps.den
-            ));
-        }
-    }
-    let mut ids: Vec<u64> = project.sources.iter().map(|s| s.id.0).collect();
-    for kind in [TrackKind::Video, TrackKind::Audio] {
-        let track = project.track(kind);
-        for clip in &track.clips {
-            ids.push(clip.id.0);
-            let Some(source) = project.source(clip.source) else {
-                return Err(format!(
-                    "clip {} references missing source {}",
-                    clip.id.0, clip.source.0
-                ));
-            };
-            if clip.source_in >= clip.source_out {
-                return Err(format!(
-                    "clip {} window {}..{} is empty or inverted",
-                    clip.id.0, clip.source_in, clip.source_out
-                ));
-            }
-            if clip.source_out > source.duration {
-                return Err(format!(
-                    "clip {} window end {} exceeds source duration {}",
-                    clip.id.0, clip.source_out, source.duration
-                ));
-            }
-            if clip
-                .position
-                .checked_add(clip.source_out - clip.source_in)
-                .is_none()
-            {
-                return Err(format!("clip {} timeline end overflows u64", clip.id.0));
-            }
-        }
-        // No overlaps within a track: sort by position, check neighbors.
-        let mut spans: Vec<(u64, u64, u64)> = track
-            .clips
-            .iter()
-            .map(|c| (c.position, c.timeline_end(), c.id.0))
-            .collect();
-        spans.sort_unstable();
-        for pair in spans.windows(2) {
-            if pair[1].0 < pair[0].1 {
-                return Err(format!(
-                    "{kind:?} clips {} and {} overlap: [{}, {}) vs [{}, {})",
-                    pair[0].2, pair[1].2, pair[0].0, pair[0].1, pair[1].0, pair[1].1
-                ));
-            }
-        }
-    }
-    ids.sort_unstable();
-    if ids.windows(2).any(|w| w[0] == w[1]) {
-        return Err("duplicate entity id".to_string());
-    }
-    if ids.last().is_some_and(|&max| max >= project.next_id) {
-        return Err(format!(
-            "id {} >= next_id {}; allocator lost monotonicity",
-            ids.last().unwrap(),
-            project.next_id
-        ));
-    }
-    if let Some(selected) = model.selection() {
-        if project.find_clip(selected).is_none() {
-            return Err(format!("selection points at missing clip {}", selected.0));
-        }
-    }
+    model.validate().map_err(|e| e.to_string())?;
     if model.revision() < prev_revision {
         return Err(format!(
             "revision went backwards: {} -> {}",
@@ -883,8 +818,9 @@ fn run_long_sequence() -> Result<usize, String> {
         ));
     }
     // Settle any leftover interleaved-undo residue first so "final" is
-    // well-defined, then: full undo walks back to the default project (the
-    // id allocator alone survives); full redo restores the exact final JSON.
+    // well-defined, then: full undo walks back to the default project —
+    // except `next_id`, which is pinned monotonic across undo (see the
+    // `Project::next_id` doc) — and full redo restores the exact final JSON.
     while model.can_redo() {
         model.apply(VideoCommand::Redo);
     }
@@ -1495,7 +1431,7 @@ fn gate_serialization_round_trip() {
 fn gate_restore_from_parts() {
     // The load half of persistence: a model rebuilt from decoded project +
     // playhead/selection must carry the exact state, satisfy invariants,
-    // clear a dangling selection, and accept further edits with fresh
+    // reject a dangling selection, and accept further edits with fresh
     // history and monotonic id allocation.
     let mut model = VideoModel::new();
     for command in [
@@ -1508,7 +1444,8 @@ fn gate_restore_from_parts() {
     }
     let json = model.project().to_json().expect("serialize");
     let decoded = Project::from_json(&json).expect("deserialize");
-    let mut restored = VideoModel::from_parts(decoded.clone(), model.playhead(), model.selection());
+    let mut restored = VideoModel::from_parts(decoded.clone(), model.playhead(), model.selection())
+        .expect("valid persisted state must restore");
     assert_eq!(restored.project(), model.project());
     assert_eq!(restored.playhead(), 700);
     assert_eq!(restored.selection(), Some(ClipId(2)));
@@ -1519,7 +1456,63 @@ fn gate_restore_from_parts() {
         restored.project().find_clip(ClipId(3)).is_some(),
         "id allocation resumes past restored ids"
     );
-    // A persisted selection that no longer resolves is cleared on restore.
-    let dangling = VideoModel::from_parts(decoded, 0, Some(ClipId(99)));
-    assert_eq!(dangling.selection(), None);
+    // A persisted selection that does not resolve is invalid input: the
+    // constructor rejects instead of silently repairing it.
+    match VideoModel::from_parts(decoded, 0, Some(ClipId(99))) {
+        Err(ValidationError::DanglingSelection { clip: ClipId(99) }) => {}
+        other => panic!("expected DanglingSelection, got {other:?}"),
+    }
+}
+
+#[test]
+fn gate_from_parts_rejects_invalid_state() {
+    // Tester repro: a hand-edited bundle carrying a zero fps term must be
+    // rejected by the shared validation path, not silently accepted.
+    let corrupted = Project {
+        sources: vec![Source {
+            id: SourceId(1),
+            path: "a.mp4".to_string(),
+            duration: 1000,
+            fps: Fps { num: 0, den: 1 },
+        }],
+        next_id: 2,
+        ..Project::default()
+    };
+    match VideoModel::from_parts(corrupted, 0, None) {
+        Err(ValidationError::ZeroFpsTerm {
+            source: SourceId(1),
+            num: 0,
+            den: 1,
+        }) => {}
+        other => panic!("expected ZeroFpsTerm, got {other:?}"),
+    }
+}
+
+#[test]
+fn full_undo_preserves_monotonic_next_id() {
+    // Pinned design decision: `next_id` is NOT restored by undo. After full
+    // undo the project is semantically the initial state except the
+    // strictly advanced allocator — stale external ids stay detectable
+    // instead of silently rebinding to post-undo objects.
+    let mut model = VideoModel::new();
+    let initial_next_id = model.project().next_id;
+    for command in [source("a.mp4", 10_000), vclip(1, 0, 1000, 0), aclip(1, 0, 1000, 0)] {
+        assert_eq!(model.apply(command), ApplyOutcome::Applied);
+    }
+    while model.can_undo() {
+        model.apply(VideoCommand::Undo);
+    }
+    assert!(
+        model.project().next_id > initial_next_id,
+        "next_id must stay advanced after full undo"
+    );
+    let expected = Project {
+        next_id: model.project().next_id,
+        ..Project::default()
+    };
+    assert_eq!(
+        model.project(),
+        &expected,
+        "everything except next_id must equal the initial state"
+    );
 }

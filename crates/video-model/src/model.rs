@@ -15,6 +15,85 @@ use crate::history::SnapshotHistory;
 /// engine's concern.
 pub const TICKS_PER_SECOND: u64 = 1000;
 
+// ─── Validation ──────────────────────────────────────────────────────────────
+
+/// One state-validity violation, typed per violation class.
+///
+/// This is the single validation path for persisted or foreign state:
+/// [`VideoModel::from_parts`] (bundle loading) and the release gate's
+/// invariant checks both run [`Project::validate`] /
+/// [`VideoModel::validate`] — the same rules everywhere, never a second
+/// hand-rolled checker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationError {
+    ZeroFpsTerm { source: SourceId, num: u32, den: u32 },
+    MissingClipSource { clip: ClipId, source: SourceId },
+    EmptyClipWindow { clip: ClipId, source_in: u64, source_out: u64 },
+    ClipWindowExceedsSource { clip: ClipId, source_out: u64, duration: u64 },
+    ClipTimelineOverflow { clip: ClipId },
+    OverlappingClips { track: TrackKind, first: ClipId, second: ClipId },
+    DuplicateId { id: u64 },
+    IdNotBelowNextId { id: u64, next_id: u64 },
+    DanglingSelection { clip: ClipId },
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroFpsTerm { source, num, den } => write!(
+                f,
+                "source {} fps {num}/{den} has a zero term",
+                source.0
+            ),
+            Self::MissingClipSource { clip, source } => write!(
+                f,
+                "clip {} references missing source {}",
+                clip.0, source.0
+            ),
+            Self::EmptyClipWindow {
+                clip,
+                source_in,
+                source_out,
+            } => write!(
+                f,
+                "clip {} window {source_in}..{source_out} is empty or inverted",
+                clip.0
+            ),
+            Self::ClipWindowExceedsSource {
+                clip,
+                source_out,
+                duration,
+            } => write!(
+                f,
+                "clip {} window end {source_out} exceeds source duration {duration}",
+                clip.0
+            ),
+            Self::ClipTimelineOverflow { clip } => {
+                write!(f, "clip {} timeline end overflows u64", clip.0)
+            }
+            Self::OverlappingClips {
+                track,
+                first,
+                second,
+            } => write!(
+                f,
+                "{track:?} clips {} and {} overlap on the timeline",
+                first.0, second.0
+            ),
+            Self::DuplicateId { id } => write!(f, "duplicate entity id {id}"),
+            Self::IdNotBelowNextId { id, next_id } => write!(
+                f,
+                "id {id} >= next_id {next_id}; allocator lost monotonicity"
+            ),
+            Self::DanglingSelection { clip } => {
+                write!(f, "selection points at missing clip {}", clip.0)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
 // ─── Ids ─────────────────────────────────────────────────────────────────────
 
 /// Newtype ids allocated by [`Project::next_id`]; never reused, even across
@@ -100,8 +179,14 @@ pub struct Project {
     pub sources: Vec<Source>,
     pub video: Track,
     pub audio: Track,
-    /// Monotonic id allocator; part of serialized state, preserved across
-    /// undo/redo so ids are never reused.
+    /// Monotonic id allocator; part of serialized state, deliberately NOT
+    /// restored by undo/redo. Restoring it would let a post-undo edit mint
+    /// an id aliasing one already handed to external holders (assistant
+    /// tools, UI) from the undone branch — a stale reference would silently
+    /// rebind to a new object instead of failing as dangling. Monotonic ids
+    /// keep staleness detectable, and `next_id` stays a deterministic
+    /// function of the applied command history, so bundle serialization
+    /// stays deterministic.
     pub next_id: u64,
 }
 
@@ -197,6 +282,86 @@ impl Project {
         entries
     }
 
+    /// Full state-validity check over the project data: per-track overlap
+    /// freedom, source references, window and overflow geometry, fps
+    /// terms, id uniqueness and allocator monotonicity. The single shared
+    /// path for bundle loading ([`VideoModel::from_parts`]) and the
+    /// release gate's invariants.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        for source in &self.sources {
+            if source.fps.num == 0 || source.fps.den == 0 {
+                return Err(ValidationError::ZeroFpsTerm {
+                    source: source.id,
+                    num: source.fps.num,
+                    den: source.fps.den,
+                });
+            }
+        }
+        let mut ids: Vec<u64> = self.sources.iter().map(|s| s.id.0).collect();
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            let track = self.track(kind);
+            for clip in &track.clips {
+                ids.push(clip.id.0);
+                let Some(source) = self.source(clip.source) else {
+                    return Err(ValidationError::MissingClipSource {
+                        clip: clip.id,
+                        source: clip.source,
+                    });
+                };
+                if clip.source_in >= clip.source_out {
+                    return Err(ValidationError::EmptyClipWindow {
+                        clip: clip.id,
+                        source_in: clip.source_in,
+                        source_out: clip.source_out,
+                    });
+                }
+                if clip.source_out > source.duration {
+                    return Err(ValidationError::ClipWindowExceedsSource {
+                        clip: clip.id,
+                        source_out: clip.source_out,
+                        duration: source.duration,
+                    });
+                }
+                if clip
+                    .position
+                    .checked_add(clip.source_out - clip.source_in)
+                    .is_none()
+                {
+                    return Err(ValidationError::ClipTimelineOverflow { clip: clip.id });
+                }
+            }
+            // No overlaps within a track: sort by position, check neighbors.
+            let mut spans: Vec<(u64, u64, u64)> = track
+                .clips
+                .iter()
+                .map(|c| (c.position, c.timeline_end(), c.id.0))
+                .collect();
+            spans.sort_unstable();
+            for pair in spans.windows(2) {
+                if pair[1].0 < pair[0].1 {
+                    return Err(ValidationError::OverlappingClips {
+                        track: kind,
+                        first: ClipId(pair[0].2),
+                        second: ClipId(pair[1].2),
+                    });
+                }
+            }
+        }
+        ids.sort_unstable();
+        if let Some(pair) = ids.windows(2).find(|w| w[0] == w[1]) {
+            return Err(ValidationError::DuplicateId { id: pair[0] });
+        }
+        if let Some(&max) = ids.last() {
+            if max >= self.next_id {
+                return Err(ValidationError::IdNotBelowNextId {
+                    id: max,
+                    next_id: self.next_id,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -261,21 +426,42 @@ impl VideoModel {
 
     /// Restores a model from decoded state — the load half of persistence
     /// ([`Project::from_json`] plus the caller-persisted playhead and
-    /// selection). A selection that no longer resolves to a clip is cleared
-    /// (same rule as undo restores). History starts empty and the revision
-    /// at 0: undo never spans sessions, and the revision counts changes
-    /// within one session only.
-    #[must_use]
-    pub fn from_parts(project: Project, playhead: u64, selection: Option<ClipId>) -> Self {
-        let mut model = Self {
+    /// selection). Rejects invariant-violating state (corrupted or
+    /// hand-edited bundles) through the shared [`Project::validate`] path;
+    /// a persisted selection that does not resolve to a clip is likewise
+    /// rejected ([`ValidationError::DanglingSelection`]) — the constructor
+    /// never repairs invalid input (silent pruning is reserved for live
+    /// transitions like undo, where the model itself made the clip
+    /// disappear). History starts empty and the revision at 0: undo never
+    /// spans sessions, and the revision counts changes within one session
+    /// only.
+    pub fn from_parts(
+        project: Project,
+        playhead: u64,
+        selection: Option<ClipId>,
+    ) -> Result<Self, ValidationError> {
+        let model = Self {
             project,
             playhead,
             selection,
             revision: 0,
             history: SnapshotHistory::default(),
         };
-        model.prune_dangling_selection();
-        model
+        model.validate()?;
+        Ok(model)
+    }
+
+    /// Full state-validity check over project data plus the selection —
+    /// the same rules [`from_parts`](Self::from_parts) enforces on load
+    /// and the release gate re-checks after every command.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        self.project.validate()?;
+        if let Some(selected) = self.selection {
+            if self.project.find_clip(selected).is_none() {
+                return Err(ValidationError::DanglingSelection { clip: selected });
+            }
+        }
+        Ok(())
     }
 
     #[must_use]

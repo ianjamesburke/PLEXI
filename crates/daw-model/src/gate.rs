@@ -14,8 +14,8 @@ use std::time::Instant;
 use crate::commands::{ApplyOutcome, DawCommand};
 use crate::history::MAX_GROUPS;
 use crate::model::{
-    ClipId, DawModel, Project, SourceId, TrackId, TrackKind, PAN_MAX, PAN_MIN, TEMPO_MAX,
-    TEMPO_MIN, TICKS_PER_BEAT, VOLUME_MAX, VOLUME_MIN,
+    ClipId, DawModel, Project, SourceId, TrackId, TrackKind, Transport, ValidationError,
+    TEMPO_MIN, TICKS_PER_BEAT, VOLUME_MAX,
 };
 
 /// Environment variable that pins `gate_randomized_commands` to one seed.
@@ -720,74 +720,12 @@ pub fn gate_cases() -> Vec<GateCase> {
 // ─── Invariants ──────────────────────────────────────────────────────────────
 
 /// Read-only invariants that must hold after every applied command.
+/// State validity delegates to the product's shared [`DawModel::validate`]
+/// path (the same checks bundle loading runs); only the test-only extras —
+/// revision monotonicity and undo-depth consistency — live here.
 /// `prev_revision` is the revision observed before the command.
 pub fn check_invariants(model: &DawModel, prev_revision: u64) -> Result<(), String> {
-    let project = model.project();
-    if !project.tempo_bpm.is_finite() || !(TEMPO_MIN..=TEMPO_MAX).contains(&project.tempo_bpm) {
-        return Err(format!("tempo {} out of range", project.tempo_bpm));
-    }
-    let mut ids: Vec<u64> = Vec::new();
-    for track in &project.tracks {
-        ids.push(track.id.0);
-        let mixer = track.mixer;
-        if !mixer.volume.is_finite() || !(VOLUME_MIN..=VOLUME_MAX).contains(&mixer.volume) {
-            return Err(format!("track {} volume {} out of range", track.id.0, mixer.volume));
-        }
-        if !mixer.pan.is_finite() || !(PAN_MIN..=PAN_MAX).contains(&mixer.pan) {
-            return Err(format!("track {} pan {} out of range", track.id.0, mixer.pan));
-        }
-        for clip in &track.clips {
-            ids.push(clip.id.0);
-            let Some(source) = project.source(clip.source) else {
-                return Err(format!(
-                    "clip {} references missing source {}",
-                    clip.id.0, clip.source.0
-                ));
-            };
-            if source.kind != track.kind {
-                return Err(format!(
-                    "clip {} source kind {:?} mismatches track kind {:?}",
-                    clip.id.0, source.kind, track.kind
-                ));
-            }
-            if clip.length == 0 {
-                return Err(format!("clip {} has zero length", clip.id.0));
-            }
-            match clip.source_offset.checked_add(clip.length) {
-                Some(end) if end <= source.duration => {}
-                _ => {
-                    return Err(format!(
-                        "clip {} window {}+{} exceeds source duration {}",
-                        clip.id.0, clip.source_offset, clip.length, source.duration
-                    ));
-                }
-            }
-            if clip.position.checked_add(clip.length).is_none() {
-                return Err(format!("clip {} timeline end overflows u64", clip.id.0));
-            }
-        }
-    }
-    for source in &project.sources {
-        ids.push(source.id.0);
-    }
-    ids.sort_unstable();
-    if ids.windows(2).any(|w| w[0] == w[1]) {
-        return Err("duplicate entity id".to_string());
-    }
-    if ids.last().is_some_and(|&max| max >= project.next_id) {
-        return Err(format!(
-            "id {} >= next_id {}; allocator lost monotonicity",
-            ids.last().unwrap(),
-            project.next_id
-        ));
-    }
-    let transport = model.transport();
-    if transport.loop_enabled && transport.loop_start >= transport.loop_end {
-        return Err(format!(
-            "loop enabled with start {} >= end {}",
-            transport.loop_start, transport.loop_end
-        ));
-    }
+    model.validate().map_err(|e| e.to_string())?;
     if model.revision() < prev_revision {
         return Err(format!(
             "revision went backwards: {} -> {}",
@@ -916,8 +854,9 @@ fn run_long_sequence() -> Result<usize, String> {
         ));
     }
     // Settle any leftover interleaved-undo residue first so "final" is
-    // well-defined, then: full undo walks back to the default project (the
-    // id allocator alone survives); full redo restores the exact final JSON.
+    // well-defined, then: full undo walks back to the default project —
+    // except `next_id`, which is pinned monotonic across undo (see the
+    // `Project::next_id` doc) — and full redo restores the exact final JSON.
     while model.can_redo() {
         model.apply(DawCommand::Redo);
     }
@@ -1574,7 +1513,8 @@ fn gate_restore_from_parts() {
     let mut restored = DawModel::from_parts(
         Project::from_json(&json).expect("deserialize"),
         *model.transport(),
-    );
+    )
+    .expect("valid persisted state must restore");
     assert_eq!(restored.project(), model.project());
     assert_eq!(restored.transport(), model.transport());
     assert_eq!(restored.undo_depth(), 0, "undo never spans sessions");
@@ -1582,4 +1522,62 @@ fn gate_restore_from_parts() {
     assert_eq!(restored.apply(midi_track("Keys")), ApplyOutcome::Applied);
     let new_track = restored.project().tracks.last().expect("new track");
     assert_eq!(new_track.id, TrackId(4), "id allocation resumes past restored ids");
+}
+
+#[test]
+fn gate_from_parts_rejects_invalid_state() {
+    // Tester repro: a hand-edited bundle with an out-of-range tempo must be
+    // rejected by the shared validation path, not silently accepted.
+    let corrupted = Project {
+        tempo_bpm: 1000.0,
+        ..Project::default()
+    };
+    match DawModel::from_parts(corrupted, Transport::default()) {
+        Err(ValidationError::TempoOutOfRange { tempo_bpm }) => assert_eq!(tempo_bpm, 1000.0),
+        other => panic!("expected TempoOutOfRange, got {other:?}"),
+    }
+    // An enabled loop with inverted bounds is invalid transport state.
+    let inverted = Transport {
+        loop_enabled: true,
+        loop_start: 200,
+        loop_end: 100,
+        ..Transport::default()
+    };
+    match DawModel::from_parts(Project::default(), inverted) {
+        Err(ValidationError::LoopInverted { start: 200, end: 100 }) => {}
+        other => panic!("expected LoopInverted, got {other:?}"),
+    }
+}
+
+#[test]
+fn full_undo_preserves_monotonic_next_id() {
+    // Pinned design decision: `next_id` is NOT restored by undo. After full
+    // undo the project is semantically the initial state except the
+    // strictly advanced allocator — stale external ids stay detectable
+    // instead of silently rebinding to post-undo objects.
+    let mut model = DawModel::new();
+    let initial_next_id = model.project().next_id;
+    for command in [
+        audio_track("Drums"),
+        audio_source(4 * TICKS_PER_BEAT),
+        clip(1, 2, 0, TICKS_PER_BEAT, 0),
+    ] {
+        assert_eq!(model.apply(command), ApplyOutcome::Applied);
+    }
+    while model.can_undo() {
+        model.apply(DawCommand::Undo);
+    }
+    assert!(
+        model.project().next_id > initial_next_id,
+        "next_id must stay advanced after full undo"
+    );
+    let expected = Project {
+        next_id: model.project().next_id,
+        ..Project::default()
+    };
+    assert_eq!(
+        model.project(),
+        &expected,
+        "everything except next_id must equal the initial state"
+    );
 }

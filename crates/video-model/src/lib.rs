@@ -18,6 +18,6 @@ mod gate;
 pub use commands::{ApplyOutcome, VideoCommand};
 pub use history::{SnapshotHistory, MAX_GROUPS};
 pub use model::{
-    Clip, ClipId, CutEntry, Fps, Project, Source, SourceId, Track, TrackKind, VideoModel,
-    TICKS_PER_SECOND,
+    Clip, ClipId, CutEntry, Fps, Project, Source, SourceId, Track, TrackKind, ValidationError,
+    VideoModel, TICKS_PER_SECOND,
 };

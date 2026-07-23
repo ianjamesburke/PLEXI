@@ -22,6 +22,84 @@ pub const VOLUME_MAX: f32 = 2.0;
 pub const PAN_MIN: f32 = -1.0;
 pub const PAN_MAX: f32 = 1.0;
 
+// ─── Validation ──────────────────────────────────────────────────────────────
+
+/// One state-validity violation, typed per violation class.
+///
+/// This is the single validation path for persisted or foreign state:
+/// [`DawModel::from_parts`] (bundle loading) and the release gate's
+/// invariant checks both run [`Project::validate`] / [`Transport::validate`]
+/// — the same rules everywhere, never a second hand-rolled checker.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidationError {
+    TempoOutOfRange { tempo_bpm: f64 },
+    VolumeOutOfRange { track: TrackId, volume: f32 },
+    PanOutOfRange { track: TrackId, pan: f32 },
+    MissingClipSource { clip: ClipId, source: SourceId },
+    ClipKindMismatch { clip: ClipId, track: TrackId },
+    ZeroLengthClip { clip: ClipId },
+    ClipWindowExceedsSource { clip: ClipId, source_offset: u64, length: u64, duration: u64 },
+    ClipTimelineOverflow { clip: ClipId },
+    DuplicateId { id: u64 },
+    IdNotBelowNextId { id: u64, next_id: u64 },
+    LoopInverted { start: u64, end: u64 },
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TempoOutOfRange { tempo_bpm } => write!(
+                f,
+                "tempo {tempo_bpm} is not finite or outside {TEMPO_MIN}..={TEMPO_MAX}"
+            ),
+            Self::VolumeOutOfRange { track, volume } => write!(
+                f,
+                "track {} volume {volume} is not finite or outside {VOLUME_MIN}..={VOLUME_MAX}",
+                track.0
+            ),
+            Self::PanOutOfRange { track, pan } => write!(
+                f,
+                "track {} pan {pan} is not finite or outside {PAN_MIN}..={PAN_MAX}",
+                track.0
+            ),
+            Self::MissingClipSource { clip, source } => write!(
+                f,
+                "clip {} references missing source {}",
+                clip.0, source.0
+            ),
+            Self::ClipKindMismatch { clip, track } => write!(
+                f,
+                "clip {} source kind does not match track {} kind",
+                clip.0, track.0
+            ),
+            Self::ZeroLengthClip { clip } => write!(f, "clip {} has zero length", clip.0),
+            Self::ClipWindowExceedsSource {
+                clip,
+                source_offset,
+                length,
+                duration,
+            } => write!(
+                f,
+                "clip {} window {source_offset}+{length} exceeds source duration {duration}",
+                clip.0
+            ),
+            Self::ClipTimelineOverflow { clip } => {
+                write!(f, "clip {} timeline end overflows u64", clip.0)
+            }
+            Self::DuplicateId { id } => write!(f, "duplicate entity id {id}"),
+            Self::IdNotBelowNextId { id, next_id } => write!(
+                f,
+                "id {id} >= next_id {next_id}; allocator lost monotonicity"
+            ),
+            Self::LoopInverted { start, end } => {
+                write!(f, "loop enabled with start {start} >= end {end}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
 // ─── Ids ─────────────────────────────────────────────────────────────────────
 
 /// Newtype ids allocated by [`Project::next_id`]; never reused, even across
@@ -108,8 +186,14 @@ pub struct Project {
     pub tempo_bpm: f64,
     pub tracks: Vec<Track>,
     pub sources: Vec<Source>,
-    /// Monotonic id allocator; part of serialized state, preserved across
-    /// undo/redo so ids are never reused.
+    /// Monotonic id allocator; part of serialized state, deliberately NOT
+    /// restored by undo/redo. Restoring it would let a post-undo edit mint
+    /// an id aliasing one already handed to external holders (assistant
+    /// tools, UI) from the undone branch — a stale reference would silently
+    /// rebind to a new object instead of failing as dangling. Monotonic ids
+    /// keep staleness detectable, and `next_id` stays a deterministic
+    /// function of the applied command history, so bundle serialization
+    /// stays deterministic.
     pub next_id: u64,
 }
 
@@ -164,6 +248,84 @@ impl Project {
         self.tracks.iter().map(|t| t.clips.len()).sum()
     }
 
+    /// Full state-validity check over the project data: clip geometry,
+    /// source references and kind matches, mixer/tempo ranges and
+    /// finiteness, id uniqueness and allocator monotonicity. The single
+    /// shared path for bundle loading ([`DawModel::from_parts`]) and the
+    /// release gate's invariants.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if !self.tempo_bpm.is_finite() || !(TEMPO_MIN..=TEMPO_MAX).contains(&self.tempo_bpm) {
+            return Err(ValidationError::TempoOutOfRange {
+                tempo_bpm: self.tempo_bpm,
+            });
+        }
+        let mut ids: Vec<u64> = Vec::new();
+        for track in &self.tracks {
+            ids.push(track.id.0);
+            let mixer = track.mixer;
+            if !mixer.volume.is_finite() || !(VOLUME_MIN..=VOLUME_MAX).contains(&mixer.volume) {
+                return Err(ValidationError::VolumeOutOfRange {
+                    track: track.id,
+                    volume: mixer.volume,
+                });
+            }
+            if !mixer.pan.is_finite() || !(PAN_MIN..=PAN_MAX).contains(&mixer.pan) {
+                return Err(ValidationError::PanOutOfRange {
+                    track: track.id,
+                    pan: mixer.pan,
+                });
+            }
+            for clip in &track.clips {
+                ids.push(clip.id.0);
+                let Some(source) = self.source(clip.source) else {
+                    return Err(ValidationError::MissingClipSource {
+                        clip: clip.id,
+                        source: clip.source,
+                    });
+                };
+                if source.kind != track.kind {
+                    return Err(ValidationError::ClipKindMismatch {
+                        clip: clip.id,
+                        track: track.id,
+                    });
+                }
+                if clip.length == 0 {
+                    return Err(ValidationError::ZeroLengthClip { clip: clip.id });
+                }
+                match clip.source_offset.checked_add(clip.length) {
+                    Some(end) if end <= source.duration => {}
+                    _ => {
+                        return Err(ValidationError::ClipWindowExceedsSource {
+                            clip: clip.id,
+                            source_offset: clip.source_offset,
+                            length: clip.length,
+                            duration: source.duration,
+                        });
+                    }
+                }
+                if clip.position.checked_add(clip.length).is_none() {
+                    return Err(ValidationError::ClipTimelineOverflow { clip: clip.id });
+                }
+            }
+        }
+        for source in &self.sources {
+            ids.push(source.id.0);
+        }
+        ids.sort_unstable();
+        if let Some(pair) = ids.windows(2).find(|w| w[0] == w[1]) {
+            return Err(ValidationError::DuplicateId { id: pair[0] });
+        }
+        if let Some(&max) = ids.last() {
+            if max >= self.next_id {
+                return Err(ValidationError::IdNotBelowNextId {
+                    id: max,
+                    next_id: self.next_id,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn track_index(&self, id: TrackId) -> Option<usize> {
         self.tracks.iter().position(|t| t.id == id)
     }
@@ -190,6 +352,20 @@ pub struct Transport {
     pub loop_end: u64,
 }
 
+impl Transport {
+    /// State-validity check for transport values; part of the shared
+    /// validation path (see [`Project::validate`]).
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.loop_enabled && self.loop_start >= self.loop_end {
+            return Err(ValidationError::LoopInverted {
+                start: self.loop_start,
+                end: self.loop_end,
+            });
+        }
+        Ok(())
+    }
+}
+
 // ─── Model ───────────────────────────────────────────────────────────────────
 
 /// The DAW edit model: project data plus transport, revision, and history.
@@ -212,16 +388,27 @@ impl DawModel {
 
     /// Restores a model from decoded state — the load half of persistence
     /// ([`Project::from_json`] plus the caller-persisted [`Transport`]).
-    /// History starts empty and the revision at 0: undo never spans
-    /// sessions, and the revision counts changes within one session only.
-    #[must_use]
-    pub fn from_parts(project: Project, transport: Transport) -> Self {
-        Self {
+    /// Rejects invariant-violating state (corrupted or hand-edited
+    /// bundles) through the shared [`Project::validate`] path. History
+    /// starts empty and the revision at 0: undo never spans sessions, and
+    /// the revision counts changes within one session only.
+    pub fn from_parts(project: Project, transport: Transport) -> Result<Self, ValidationError> {
+        let model = Self {
             project,
             transport,
             revision: 0,
             history: SnapshotHistory::default(),
-        }
+        };
+        model.validate()?;
+        Ok(model)
+    }
+
+    /// Full state-validity check over project data and transport — the
+    /// same rules [`from_parts`](Self::from_parts) enforces on load and the
+    /// release gate re-checks after every command.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        self.project.validate()?;
+        self.transport.validate()
     }
 
     #[must_use]
