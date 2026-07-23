@@ -162,6 +162,13 @@ pub struct TerminalBackend {
     /// prior call's absolute count of lines the terminal has produced.
     capture_state: Mutex<(usize, String)>,
     max_scroll_limit: usize,
+    /// Diagnostic tap on the exact byte stream handed to the PTY writer.
+    /// `None` in production (zero overhead); a test calls [`Self::enable_input_tap`]
+    /// to record every byte `write` sends, so host integration tests can assert
+    /// that a keystroke (Tab → `0x09`, Escape → `0x1b`, …) actually reached the
+    /// terminal — without depending on a live child process echoing it back.
+    /// Mirrors the cross-crate observation rationale of [`crate::diag`].
+    input_tap: Mutex<Option<Vec<u8>>>,
 }
 
 impl TerminalBackend {
@@ -268,6 +275,7 @@ impl TerminalBackend {
             lines_written: AtomicU64::new(0),
             capture_state: Mutex::new((0usize, String::new())),
             max_scroll_limit: 10_000,
+            input_tap: Mutex::new(None),
         })
     }
 
@@ -840,7 +848,32 @@ impl TerminalBackend {
     }
 
     fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
-        self.notifier.notify(input);
+        let bytes: Cow<'static, [u8]> = input.into();
+        if let Ok(mut tap) = self.input_tap.lock() {
+            if let Some(buf) = tap.as_mut() {
+                buf.extend_from_slice(&bytes);
+            }
+        }
+        self.notifier.notify(bytes);
+    }
+
+    /// Start recording every byte handed to the PTY writer. Diagnostic/test
+    /// only — production never enables the tap. Idempotent; re-enabling clears
+    /// the buffer.
+    pub fn enable_input_tap(&self) {
+        if let Ok(mut tap) = self.input_tap.lock() {
+            *tap = Some(Vec::new());
+        }
+    }
+
+    /// Take and clear the bytes recorded since [`Self::enable_input_tap`].
+    /// Returns empty if the tap was never enabled.
+    pub fn take_input_tap(&self) -> Vec<u8> {
+        self.input_tap
+            .lock()
+            .ok()
+            .and_then(|mut tap| tap.as_mut().map(std::mem::take))
+            .unwrap_or_default()
     }
 
     fn scroll(&mut self, terminal: &mut Term<EventProxy>, delta_value: i32) {

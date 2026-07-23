@@ -3065,3 +3065,98 @@ fn host_log_marker_dispatches_and_acknowledges() {
     });
     assert_eq!(read_json_response(&response)["ok"], true);
 }
+
+
+// -- Stint 0505: focused-terminal keyboard ownership --------------------------
+//
+// After the s3 editor sprint (egui 0.34 upgrade + shared editor core), plain
+// Tab stopped reaching terminal panes: egui 0.34's built-in focus traversal
+// claimed Tab/arrows/Escape from the focused terminal because the terminal
+// widget carried the default `EventFilter` (nothing locked). The reconciler
+// restores egui focus at frame end, so the *final* focus state looks correct —
+// the only observable difference is whether the keystroke's bytes actually
+// reached the PTY writer. These tests assert exactly that via the backend's
+// input tap, so they fail on the regression (bytes dropped) and pass once the
+// reconciler locks the traversal keys to the focused terminal.
+
+/// Failing-first regression guard for stint 0505: a plain Tab pressed while a
+/// terminal pane is focused must reach the PTY as `\x09`. Before the fix the
+/// byte is dropped (egui steals Tab for focus traversal); after, it arrives.
+#[test]
+fn plain_tab_reaches_focused_terminal_pty() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    let wid = egui_term::terminal_widget_id(term);
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        Some(wid),
+        "terminal must hold egui focus before the Tab press"
+    );
+
+    h.terminal_backend(term).enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+
+    let written = h.terminal_backend(term).take_input_tap();
+    assert_eq!(
+        written, b"\x09",
+        "plain Tab must reach the focused terminal's PTY as 0x09, got {written:?}"
+    );
+}
+
+/// The other keys a TUI depends on must survive the same host consumer chain
+/// and reach the PTY unmodified: Escape (`\x1b`, e.g. leaving vim insert mode),
+/// Enter (`\r`), Shift+Tab (`\x1b[Z`, which already worked — a guard against
+/// regressing the backward-traversal case), and a bare arrow (`\x1b[A`).
+#[test]
+fn traversal_and_control_keys_reach_focused_terminal_pty() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+
+    let cases: &[(egui::Key, egui::Modifiers, &[u8])] = &[
+        (egui::Key::Escape, egui::Modifiers::NONE, b"\x1b"),
+        (egui::Key::Enter, egui::Modifiers::NONE, b"\r"),
+        (egui::Key::Tab, egui::Modifiers::SHIFT, b"\x1b[Z"),
+        (egui::Key::ArrowUp, egui::Modifiers::NONE, b"\x1b[A"),
+    ];
+    for (key, modifiers, expected) in cases {
+        h.terminal_backend(term).enable_input_tap();
+        h.press_key(*key, *modifiers);
+        let written = h.terminal_backend(term).take_input_tap();
+        assert_eq!(
+            written, *expected,
+            "{key:?} (mods={modifiers:?}) must reach the PTY as {expected:?}, got {written:?}"
+        );
+    }
+}
+
+/// Editor-scoped chords must not hijack a focused terminal. The editor's
+/// link-activation (Ctrl+Enter) and find (Cmd+F) live in editor/notes app
+/// panes; with a terminal focused, no editor renders, so these must leave the
+/// terminal as the input owner with egui focus intact — never surrender it to
+/// an editor surface or overlay. Guards the broader stint 0505 invariant that
+/// key scoping is focus-scoped.
+#[test]
+fn editor_chords_do_not_hijack_focused_terminal() {
+    use crate::app::input_owner::InputOwner;
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    let wid = egui_term::terminal_widget_id(term);
+
+    for (key, modifiers) in [
+        (egui::Key::Enter, egui::Modifiers::CTRL),
+        (egui::Key::F, egui::Modifiers::COMMAND),
+    ] {
+        h.press_key(key, modifiers);
+        let ctx = h.ctx.clone();
+        assert_eq!(
+            h.app.input_owner(&ctx),
+            InputOwner::Pane(term),
+            "{key:?}+{modifiers:?} must leave the terminal as input owner"
+        );
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(wid),
+            "{key:?}+{modifiers:?} must not steal egui focus from the terminal"
+        );
+    }
+}

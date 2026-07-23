@@ -174,6 +174,49 @@ impl PlexiApp {
             }
         }
 
+        // A focused terminal owns every key: egui's built-in focus traversal
+        // (Tab → next widget, arrows → spatial nav, Escape → blur) must never
+        // repurpose a keystroke the PTY is entitled to. Without this lock the
+        // default `EventFilter` lets egui claim plain Tab, the arrow keys, and
+        // Escape out from under the focused terminal (the stint 0505 regression:
+        // TUIs stopped receiving `\x09`). The lock lives here, in the single
+        // focus authority, rather than in the vendored widget — the terminal
+        // never touches egui focus itself (stint 0429). `set_focus_lock_filter`
+        // self-guards on the id actually holding focus, so this is a no-op for
+        // every unfocused terminal.
+        let mut locked_terminal = None;
+        if let InputOwner::Pane(pane_id) = owner {
+            if self.windows[self.active_window]
+                .panes
+                .get(&pane_id)
+                .is_some_and(|pane| pane.as_terminal().is_some())
+            {
+                let terminal_id = egui_term::terminal_widget_id(pane_id);
+                if ctx.memory(|m| m.focused()) == Some(terminal_id) {
+                    ctx.memory_mut(|m| {
+                        m.set_focus_lock_filter(
+                            terminal_id,
+                            egui::EventFilter {
+                                tab: true,
+                                horizontal_arrows: true,
+                                vertical_arrows: true,
+                                escape: true,
+                            },
+                        );
+                    });
+                    locked_terminal = Some(pane_id);
+                }
+            }
+        }
+        if self.terminal_traversal_lock != locked_terminal {
+            if let Some(pane_id) = locked_terminal {
+                log::info!(
+                    "input_owner: locking traversal keys (tab/arrows/escape) to focused terminal pane_id={pane_id} — egui focus traversal will not steal them"
+                );
+            }
+            self.terminal_traversal_lock = locked_terminal;
+        }
+
         store_previous_surfaces(ctx, registry);
     }
 }

@@ -405,6 +405,10 @@ pub struct PlexiApp {
     pub(crate) last_logged_focus: Option<(u64, egui_tiles::TileId)>,
     /// When the current focus session started. Reset on each FocusChanged emit.
     pub(crate) focus_started_at: Option<std::time::Instant>,
+    /// The terminal pane that currently holds egui's traversal-key focus lock
+    /// (stint 0505). Tracked only to emit one info trace per acquisition instead
+    /// of every frame the reconciler re-asserts the (idempotent) lock.
+    pub(crate) terminal_traversal_lock: Option<PaneId>,
     /// Path to the focus journal file used for crash-recovery checkpoints.
     /// Written on every heartbeat and on clean pane transitions; deleted on
     /// clean shutdown. If present at startup → emit crash_recovery event.
@@ -1383,6 +1387,7 @@ impl PlexiApp {
                     pending_raw_wasm_launches: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
+                    terminal_traversal_lock: None,
                     focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
@@ -1631,6 +1636,7 @@ impl PlexiApp {
             pending_raw_wasm_launches: std::collections::VecDeque::new(),
             last_logged_focus: None,
             focus_started_at: None,
+            terminal_traversal_lock: None,
             focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
             last_system_theme: None,
             overlay_held_cmds: Vec::new(),
@@ -2059,6 +2065,7 @@ impl PlexiApp {
                 pending_raw_wasm_launches: std::collections::VecDeque::new(),
                 last_logged_focus: None,
                 focus_started_at: None,
+                terminal_traversal_lock: None,
                 focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
                 last_system_theme: None,
                 overlay_held_cmds: Vec::new(),

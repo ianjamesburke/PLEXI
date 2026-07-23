@@ -295,6 +295,60 @@ impl HostHarness {
         self
     }
 
+    /// Split off a real terminal pane, focus it, and settle enough frames for
+    /// the reconciler to establish the terminal's egui focus *and* its stint
+    /// 0505 traversal-key lock. The lock only applies once the terminal has
+    /// held egui focus for a prior frame (`set_focus_lock_filter`'s
+    /// `had_focus_last_frame` gate), so a single frame is not enough — tests
+    /// asserting that Tab/Escape reach the PTY must start from a settled
+    /// terminal. Returns the terminal's `PaneId`.
+    pub fn add_focused_terminal(&mut self) -> PaneId {
+        let app_pane = self.add_test_pane();
+        self.focus_pane(app_pane);
+        self.run_frames(1);
+        self.app.split_focused(true, None, false, false, None);
+        let term = self.app.windows[0]
+            .panes
+            .iter()
+            .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
+            .expect("split_focused should create a terminal pane");
+        self.focus_pane(term);
+        self.run_frames(3);
+        term
+    }
+
+    /// Mutable access to a terminal pane's backend, for input-tap assertions
+    /// (`enable_input_tap` / `take_input_tap`) that prove a keystroke reached
+    /// the PTY writer.
+    pub fn terminal_backend(&mut self, pane_id: PaneId) -> &mut egui_term::TerminalBackend {
+        &mut self.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|pane| pane.as_terminal_mut())
+            .expect("pane is not a terminal")
+            .backend
+    }
+
+    /// Run one frame delivering a single key press (with modifiers) through the
+    /// production `RawInput` path — the same route a physical keystroke takes.
+    pub fn press_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
+        self.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            modifiers,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        })
+    }
+
     /// Inject a `AppRequest` directly into the pane_ipc channel.
     pub fn inject_ipc(&self, cmd: AppRequest) -> &Self {
         let _ = self.ipc_tx.send(cmd);
