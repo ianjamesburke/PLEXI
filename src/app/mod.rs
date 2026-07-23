@@ -405,6 +405,10 @@ pub struct PlexiApp {
     pub(crate) last_logged_focus: Option<(u64, egui_tiles::TileId)>,
     /// When the current focus session started. Reset on each FocusChanged emit.
     pub(crate) focus_started_at: Option<std::time::Instant>,
+    /// The terminal pane that currently holds egui's traversal-key focus lock
+    /// (stint 0505). Tracked only to emit one info trace per acquisition instead
+    /// of every frame the reconciler re-asserts the (idempotent) lock.
+    pub(crate) terminal_traversal_lock: Option<PaneId>,
     /// Path to the focus journal file used for crash-recovery checkpoints.
     /// Written on every heartbeat and on clean pane transitions; deleted on
     /// clean shutdown. If present at startup → emit crash_recovery event.
@@ -448,23 +452,37 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
-/// Wake the UI thread for a request that just arrived over the notify socket.
+/// Wake the UI thread for an external request that arrived off the UI thread.
 ///
 /// The repaint request is load-bearing: a fully idle Plexi produces zero
 /// frames, and the pane-IPC channel is only drained during a frame. Without
 /// the wake, a CLI request against an idle instance sits queued until the
 /// user touches the window (#s13 perf batch regression).
 ///
-/// The delay is nonzero because a literal zero-delay request makes egui
-/// schedule a second settling paint; one prompt pass is all an IPC arrival
-/// needs, and handlers that change visible state mark their own frames dirty.
+/// The callback delay must stay nonzero after egui advances delayed repaint
+/// requests by the predicted frame time. Add `predicted_dt` here so eframe
+/// receives a one-shot delayed repaint instead of a `RepaintNow` event whose
+/// pass-number freshness guard can reject it during startup/multipass layout.
+/// One prompt pass is all an external arrival needs; handlers that change
+/// visible state mark their own frames dirty. Keep every socket/MCP producer
+/// on this seam: a raw `request_repaint()` is vulnerable to eframe's stale-pass
+/// guard when the producer races a multipass frame.
 /// This wake only works if the process itself is wakeable — see
 /// `platform::app_nap::disable_app_nap` for the App Nap exemption that keeps
 /// macOS from deferring these cross-thread wakeups on an idle host.
 pub(crate) const IPC_WAKE_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
 
-fn wake_ui_for_ipc(egui_ctx: &egui::Context) {
-    egui_ctx.request_repaint_after(IPC_WAKE_DELAY);
+pub(crate) fn wake_ui_for_external_request(egui_ctx: &egui::Context, source: &str) {
+    let predicted_frame_time =
+        std::time::Duration::try_from_secs_f32(egui_ctx.input(|input| input.predicted_dt))
+            .unwrap_or_default();
+    let requested_delay = predicted_frame_time.saturating_add(IPC_WAKE_DELAY);
+    log::debug!(
+        "ui_wake: source={source} predicted_dt={predicted_frame_time:?} requested_delay={requested_delay:?} has_requested_repaint={} pass_nr={}",
+        egui_ctx.has_requested_repaint(),
+        egui_ctx.cumulative_pass_nr(),
+    );
+    egui_ctx.request_repaint_after(requested_delay);
 }
 
 /// Handle one newline-delimited JSON line from the notify socket: parse the
@@ -478,7 +496,7 @@ fn handle_socket_line(
         Ok(cmd) => {
             if tx.send(cmd).is_ok() {
                 log::debug!("pane_ipc: request queued — requesting repaint to wake idle UI thread");
-                wake_ui_for_ipc(egui_ctx);
+                wake_ui_for_external_request(egui_ctx, "pane_ipc");
             }
         }
         Err(e) => {
@@ -645,7 +663,7 @@ fn handle_events_subscribe(
         );
         return;
     }
-    wake_ui_for_ipc(egui_ctx);
+    wake_ui_for_external_request(egui_ctx, "events_subscribe");
 
     // Generous wait: a first-time subscribe under the broker's default `Ask`
     // posture blocks here until the user answers the host consent modal. A
@@ -875,7 +893,7 @@ fn handle_events_publish(
         );
         return;
     }
-    wake_ui_for_ipc(egui_ctx);
+    wake_ui_for_external_request(egui_ctx, "events_publish");
 
     // Generous wait: a first-time publish under the default `Ask` posture blocks
     // until the user answers the host consent modal; a pre-granted publish
@@ -1383,6 +1401,7 @@ impl PlexiApp {
                     pending_raw_wasm_launches: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
+                    terminal_traversal_lock: None,
                     focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
@@ -1631,6 +1650,7 @@ impl PlexiApp {
             pending_raw_wasm_launches: std::collections::VecDeque::new(),
             last_logged_focus: None,
             focus_started_at: None,
+            terminal_traversal_lock: None,
             focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
             last_system_theme: None,
             overlay_held_cmds: Vec::new(),
@@ -2059,6 +2079,7 @@ impl PlexiApp {
                 pending_raw_wasm_launches: std::collections::VecDeque::new(),
                 last_logged_focus: None,
                 focus_started_at: None,
+                terminal_traversal_lock: None,
                 focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
                 last_system_theme: None,
                 overlay_held_cmds: Vec::new(),
@@ -2360,6 +2381,12 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.fulfill_screenshot_events(ctx, raw_input);
+        // A hidden window (minimized/occluded) gets logic-only passes with no
+        // widget pass to receive events — leave queued pane inputs in place so
+        // the next visible frame delivers them instead of silently eating them.
+        if raw_input.viewport().visible() == Some(false) {
+            return;
+        }
         let focused_pane = self.windows.get(self.active_window).and_then(|window| {
             window
                 .focused_pane
@@ -2369,12 +2396,33 @@ impl eframe::App for PlexiApp {
                     egui_tiles::Tile::Container(_) => None,
                 })
         });
-        if let Some(batches) =
-            focused_pane.and_then(|pane_id| self.pending_pane_inputs.remove(&pane_id))
-        {
-            for batch in batches {
-                raw_input.modifiers = batch.modifiers;
-                raw_input.events.extend(batch.events);
+        if let Some(pane_id) = focused_pane {
+            let defer_text_until_focused =
+                self.pending_pane_inputs
+                    .get(&pane_id)
+                    .is_some_and(|batches| {
+                        batches.iter().any(|batch| {
+                            batch
+                                .events
+                                .iter()
+                                .any(|event| matches!(event, egui::Event::Text(_)))
+                        })
+                    })
+                    && !crate::app::input_owner::focused_pane_text_surface(ctx, pane_id);
+            if defer_text_until_focused {
+                // A pane can be created while eframe runs hidden logic-only
+                // passes. Its first visible pass has not rendered a text
+                // surface yet, so feeding queued text into that pass loses it
+                // before the post-frame reconciler grants default focus.
+                // Preserve the ordered batch until that focus exists.
+                log::info!(
+                    "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
+                );
+            } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
+                for batch in batches {
+                    raw_input.modifiers = batch.modifiers;
+                    raw_input.events.extend(batch.events);
+                }
             }
         }
     }
@@ -2384,6 +2432,27 @@ impl eframe::App for PlexiApp {
         // eframe's once-per-frame hook ensures viewport commands and returned
         // input events survive egui 0.34's UI layout passes.
         self.poll_pending_screenshots(ctx, frame.wgpu_render_state());
+
+        // Everything that services external clients — pane IPC, spawn queue,
+        // PTY events, shutdown, event-bus subscriptions, agent turns — must
+        // run here, not in `ui`. eframe skips `ui` entirely while the window
+        // is hidden (minimized or fully occluded by other windows) but still
+        // runs `logic` passes for every repaint request. With these drains in
+        // `ui`, a fully covered host serviced no pane IPC at all: wakes fired,
+        // logic-only passes ran, and queued commands sat until the window was
+        // next uncovered (stint 0505 fix round 3).
+        self.update_preamble(ctx);
+        self.drain_app_subscription_replies();
+        self.deliver_app_event_subscriptions();
+
+        // Host agent runtime (Phase C): consume queued event deliveries and
+        // finished agent turns. Cheap no-op when nothing is pending. While a
+        // turn runs on a worker thread, keep frames coming so its outcome is
+        // collected promptly even when the UI is otherwise idle.
+        self.agent_host.tick();
+        if self.agent_host.turns_in_flight() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2429,19 +2498,7 @@ impl eframe::App for PlexiApp {
                 self.frame_diag_window = Some((std::time::Instant::now(), 0));
             }
         }
-        self.update_preamble(ctx);
         self.request_pending_screenshot(ctx);
-        self.drain_app_subscription_replies();
-        self.deliver_app_event_subscriptions();
-
-        // Host agent runtime (Phase C): consume queued event deliveries and
-        // finished agent turns. Cheap no-op when nothing is pending. While a
-        // turn runs on a worker thread, keep frames coming so its outcome is
-        // collected promptly even when the UI is otherwise idle.
-        self.agent_host.tick();
-        if self.agent_host.turns_in_flight() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        }
 
         // Unified overlay dispatch: each overlay owns its complete keyboard
         // contract via a `*_handle_key` method that returns `Consumed`, preventing

@@ -234,14 +234,57 @@ impl HostHarness {
     // ── Frame pump ───────────────────────────────────────────────────────────
 
     /// Run one egui frame with the given raw input.
+    ///
+    /// Mirrors eframe's visible-window pass: `raw_input_hook`, then `logic`,
+    /// then `ui` inside one egui pass — the same order
+    /// `epi_integration::update` uses.
     pub fn frame(&mut self, mut input: RawInput) -> &mut Self {
         let app = &mut self.app;
         use eframe::App;
         app.raw_input_hook(&self.ctx, &mut input);
         let full_output = self.ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());
             app.ui(ui, &mut eframe::Frame::_new_kittest());
         });
         self.last_platform_output = full_output.platform_output;
+        self
+    }
+
+    /// Run one egui pass the way eframe runs it for a *hidden* window
+    /// (minimized, or fully occluded by other windows): `raw_input_hook` and
+    /// `App::logic` only — `App::ui` is never called. External servicing
+    /// (pane IPC, spawn queue, PTY events, shutdown) must complete on these
+    /// passes alone; anything only drained in `ui` wedges until the window is
+    /// next uncovered.
+    pub fn hidden_frame(&mut self) -> &mut Self {
+        let app = &mut self.app;
+        use eframe::App;
+        let viewport_id = egui::ViewportId::ROOT;
+        let mut input = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        input
+            .viewports
+            .entry(viewport_id)
+            .or_default()
+            .occluded = Some(true);
+        app.raw_input_hook(&self.ctx, &mut input);
+        let full_output = self.ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());
+        });
+        self.last_platform_output = full_output.platform_output;
+        self
+    }
+
+    /// Run `n` hidden-window passes. See [`Self::hidden_frame`].
+    pub fn run_hidden_frames(&mut self, n: u32) -> &mut Self {
+        for _ in 0..n {
+            self.hidden_frame();
+        }
         self
     }
 
@@ -293,6 +336,60 @@ impl HostHarness {
         });
         win.focused_pane = tile_id.copied();
         self
+    }
+
+    /// Split off a real terminal pane, focus it, and settle enough frames for
+    /// the reconciler to establish the terminal's egui focus *and* its stint
+    /// 0505 traversal-key lock. The lock only applies once the terminal has
+    /// held egui focus for a prior frame (`set_focus_lock_filter`'s
+    /// `had_focus_last_frame` gate), so a single frame is not enough — tests
+    /// asserting that Tab/Escape reach the PTY must start from a settled
+    /// terminal. Returns the terminal's `PaneId`.
+    pub fn add_focused_terminal(&mut self) -> PaneId {
+        let app_pane = self.add_test_pane();
+        self.focus_pane(app_pane);
+        self.run_frames(1);
+        self.app.split_focused(true, None, false, false, None);
+        let term = self.app.windows[0]
+            .panes
+            .iter()
+            .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
+            .expect("split_focused should create a terminal pane");
+        self.focus_pane(term);
+        self.run_frames(3);
+        term
+    }
+
+    /// Mutable access to a terminal pane's backend, for input-tap assertions
+    /// (`enable_input_tap` / `take_input_tap`) that prove a keystroke reached
+    /// the PTY writer.
+    pub fn terminal_backend(&mut self, pane_id: PaneId) -> &mut egui_term::TerminalBackend {
+        &mut self.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|pane| pane.as_terminal_mut())
+            .expect("pane is not a terminal")
+            .backend
+    }
+
+    /// Run one frame delivering a single key press (with modifiers) through the
+    /// production `RawInput` path — the same route a physical keystroke takes.
+    pub fn press_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
+        self.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            modifiers,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        })
     }
 
     /// Inject a `AppRequest` directly into the pane_ipc channel.

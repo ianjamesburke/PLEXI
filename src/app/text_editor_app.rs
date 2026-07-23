@@ -23,7 +23,6 @@ const NOTE_HEADER_FONT_SIZE: f32 = 11.0;
 const FONT_SIZE_DEFAULT: f32 = 14.0;
 const FONT_SIZE_MIN: f32 = 9.0;
 const FONT_SIZE_MAX: f32 = 32.0;
-const FIND_BAR_HEIGHT: f32 = 28.0;
 const FIND_BAR_FONT_SIZE: f32 = 13.0;
 
 struct FindBar {
@@ -126,6 +125,11 @@ pub struct TextEditorApp {
     /// Active find/replace bar, or `None` when dismissed.
     find_bar: Option<FindBar>,
     editor_focused: bool,
+    /// True after Escape released the body editor back to pane-level
+    /// navigation: the pane stays open and focused, but the editor stops
+    /// claiming the pane's text surface so host pane-nav keys are no longer
+    /// swallowed. Cleared when the user clicks back into the editor.
+    input_released: bool,
     last_save_result: Option<String>,
     last_drop_result: Option<serde_json::Value>,
     /// Result of the most recent link activation (kind, target, outcome).
@@ -172,6 +176,7 @@ impl TextEditorApp {
             font_size: FONT_SIZE_DEFAULT,
             find_bar: None,
             editor_focused: false,
+            input_released: false,
             last_save_result: None,
             last_drop_result: None,
             last_link_activation: None,
@@ -556,7 +561,10 @@ impl TextEditorApp {
         }));
     }
 
-    /// Resolves `[[name]]` against `<config_dir>/notes/**/<name>.md`.
+    /// Resolves `[[name]]` against `<config_dir>/notes/**/<name>.md`. A unique
+    /// match opens that note; multiple matches surface deterministically; a
+    /// missing target is created as a blank note under `<config_dir>/notes/`
+    /// and opened (standard wiki behavior — see [`Self::create_wiki_note`]).
     fn resolve_wiki_link(&mut self, name: &str) -> (String, Option<String>) {
         let notes_dir = crate::config::config_dir().join("notes");
         let mut matches: Vec<PathBuf> = Vec::new();
@@ -566,6 +574,13 @@ impl TextEditorApp {
                 Ok(entries) => entries,
                 Err(e) => {
                     if dir == notes_dir {
+                        // A not-yet-created notes root is an empty collection,
+                        // not an error — the first `[[link]]` should still
+                        // create and open its target (create_wiki_note makes
+                        // the root). Only a genuine read failure surfaces.
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            break;
+                        }
                         return (
                             "missing".to_string(),
                             Some(format!("notes dir unreadable: {e}")),
@@ -601,7 +616,7 @@ impl TextEditorApp {
         }
         matches.sort();
         match matches.len() {
-            0 => ("missing".to_string(), Some(format!("no note named {name:?}"))),
+            0 => self.create_wiki_note(&notes_dir, name),
             1 => {
                 self.open_note_pane(&matches[0]);
                 ("opened_note".to_string(), None)
@@ -618,6 +633,58 @@ impl TextEditorApp {
                 )),
             ),
         }
+    }
+
+    /// Creates the missing wiki target `<notes_dir>/<name>.md` as a blank note
+    /// and opens it. `name` may carry subdirectories (`[[project/idea]]`); the
+    /// parent is created as needed. The write is contained to `notes_dir` — a
+    /// target whose real parent escapes the notes collection (e.g. `../`) is
+    /// refused rather than written outside the sandbox. On any I/O failure the
+    /// operation, path, and error are logged and surfaced as `create_failed`.
+    fn create_wiki_note(&mut self, notes_dir: &Path, name: &str) -> (String, Option<String>) {
+        let target = notes_dir.join(format!("{name}.md"));
+        let Some(parent) = target.parent().map(Path::to_path_buf) else {
+            return (
+                "create_failed".to_string(),
+                Some(format!("wiki target {target:?} has no parent directory")),
+            );
+        };
+        // Containment: the new note must live inside the notes collection.
+        let normalized_parent = note_path_identity(&parent);
+        let notes_root = note_path_identity(notes_dir);
+        if !normalized_parent.starts_with(&notes_root) {
+            return (
+                "create_failed".to_string(),
+                Some(format!(
+                    "wiki target {name:?} escapes the notes directory {notes_dir:?}"
+                )),
+            );
+        }
+        // A nested target (`[[project/idea]]`) is not found by the stem-only
+        // scan even when `project/idea.md` already exists, so guard against
+        // truncating a real note: if the file is already there, open it.
+        if target.exists() {
+            log::info!("notes_editor: wiki target {target:?} already exists — opening it");
+            self.open_note_pane(&target);
+            return ("opened_note".to_string(), None);
+        }
+        if let Err(e) = std::fs::create_dir_all(&parent) {
+            log::error!("notes_editor: create_wiki_note mkdir {parent:?} failed: {e}");
+            return (
+                "create_failed".to_string(),
+                Some(format!("create dir {parent:?}: {e}")),
+            );
+        }
+        if let Err(e) = std::fs::write(&target, "") {
+            log::error!("notes_editor: create_wiki_note write {target:?} failed: {e}");
+            return (
+                "create_failed".to_string(),
+                Some(format!("write {target:?}: {e}")),
+            );
+        }
+        log::info!("notes_editor: created blank wiki note {target:?} for [[{name}]]");
+        self.open_note_pane(&target);
+        ("created_note".to_string(), None)
     }
 
     /// Resolves a relative/absolute non-URL link against this note's
@@ -660,6 +727,27 @@ impl TextEditorApp {
 /// [`EditorMode::Code`] with the extension as the language identifier;
 /// everything else is plain text. The editor core only ever receives the
 /// resulting mode/identifier — it never inspects paths.
+/// Source-code extensions the editor opens in [`EditorMode::Code`] with syntax
+/// chrome. Also part of the builtin text-editor's file-open claim
+/// ([`is_text_editable_ext`]).
+const CODE_EXTENSIONS: &[&str] = &[
+    "rs", "py", "js", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml", "sh", "bash", "zsh", "c",
+    "h", "cpp", "hpp", "cc", "go", "rb", "java", "html", "css", "xml", "lua", "swift", "sql", "php",
+];
+
+/// Plain-text/prose extensions the editor opens in Markdown or plain mode, in
+/// addition to [`CODE_EXTENSIONS`].
+const TEXT_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "text", "log", "csv", "conf", "ini"];
+
+/// Whether the builtin text-editor should own opens for `ext` (case-insensitive,
+/// no leading dot). Union of the prose and source-code sets the editor already
+/// renders. Used by the single file-open resolver so double-clicking a text
+/// file in the explorer lands in the editor instead of the OS opener.
+pub(crate) fn is_text_editable_ext(ext: &str) -> bool {
+    let ext = ext.to_ascii_lowercase();
+    TEXT_EXTENSIONS.contains(&ext.as_str()) || CODE_EXTENSIONS.contains(&ext.as_str())
+}
+
 fn detect_mode(path: &Path, is_note: bool) -> EditorMode {
     let ext = path
         .extension()
@@ -671,11 +759,6 @@ fn detect_mode(path: &Path, is_note: bool) -> EditorMode {
         // convention); Cmd+E toggles to source mode.
         return EditorMode::Markdown { live_preview: true };
     }
-    const CODE_EXTENSIONS: &[&str] = &[
-        "rs", "py", "js", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml", "sh", "bash", "zsh",
-        "c", "h", "cpp", "hpp", "cc", "go", "rb", "java", "html", "css", "xml", "lua", "swift",
-        "sql", "php",
-    ];
     match ext {
         Some(ext) if CODE_EXTENSIONS.contains(&ext) => EditorMode::Code {
             language: ext.to_string(),
@@ -934,6 +1017,22 @@ impl App for TextEditorApp {
             }
         }
 
+        // Escape with no find bar releases the body editor to pane-level
+        // navigation: the pane stays open and focused, but the editor stops
+        // owning the keyboard so host pane-nav keys work. egui surrenders the
+        // editor's egui focus on this same Escape press (its EventFilter allows
+        // escape), which flips the dispatch text-surface gate off and routes
+        // the Escape here (stint 0460 delivery) rather than to the render pass.
+        // Returning `Consumed` suppresses the AppActive CloseApp binding so the
+        // pane is not closed. A click re-enters the editor. (An L1 declarative
+        // `TextInput` is a different surface with its own Escape-to-leave-field
+        // behavior; this only fires for the focused body editor.)
+        if !self.input_released && input.key_pressed(egui::Key::Escape) {
+            log::info!("notes_editor: Escape — releasing editor to pane-level navigation");
+            self.input_released = true;
+            return KeyDisposition::Consumed;
+        }
+
         KeyDisposition::Passthrough
     }
 
@@ -1009,11 +1108,16 @@ impl App for TextEditorApp {
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
         // The editor is this pane's default text surface (stint 0429): the
         // post-frame reconciler grants it focus while the pane owns input.
-        crate::ui::focus::register_default_text_surface(
-            ui.ctx(),
-            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-            te_id,
-        );
+        // While released to pane-level navigation (Escape), it deliberately
+        // does NOT register — so the reconciler surrenders its focus and host
+        // pane-nav keys reach `poll_actions` instead of the editor.
+        if !self.input_released {
+            crate::ui::focus::register_default_text_surface(
+                ui.ctx(),
+                crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                te_id,
+            );
+        }
 
         // The memory entry is the production focus authority used by keyboard
         // dispatch and survives CLI focus while the OS window is blurred.
@@ -1088,7 +1192,7 @@ impl App for TextEditorApp {
         // When the find bar is open, reserve its height at the bottom before
         // laying out the editor so it doesn't overlap the bar.
         let find_bar_height = if self.find_bar.is_some() {
-            FIND_BAR_HEIGHT
+            crate::ui::embedded_bar::BAR_TOTAL_H
         } else {
             0.0
         };
@@ -1111,7 +1215,7 @@ impl App for TextEditorApp {
         editor_ui.visuals_mut().selection.stroke.color = colors.accent;
         let mut widget = EditorWidget::new(&mut self.doc, &mut self.view)
             .id(te_id)
-            .active(editor_focused)
+            .active(editor_focused && !self.input_released)
             .font_size(self.font_size)
             .mode(self.mode.clone())
             .highlights(
@@ -1175,14 +1279,28 @@ impl App for TextEditorApp {
             self.activate_link(&link);
         }
 
-        // Clicking the editor while the find input holds focus claims the
-        // editor surface back (the reconciler grants it post-frame).
-        if response.clicked() && !editor_focused {
-            crate::ui::focus::claim_text_surface(
-                ui.ctx(),
-                crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                te_id,
-            );
+        // Clicking the editor re-enters it: clears any Escape release and, when
+        // the find input (or nothing) holds focus, claims the editor surface
+        // back (the reconciler grants it post-frame). The claim must register
+        // this frame, so re-register the default surface too if it was skipped
+        // above while released.
+        if response.clicked() {
+            if self.input_released {
+                log::info!("notes_editor: click — re-entering editor from pane-level navigation");
+                self.input_released = false;
+                crate::ui::focus::register_default_text_surface(
+                    ui.ctx(),
+                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                    te_id,
+                );
+            }
+            if !editor_focused {
+                crate::ui::focus::claim_text_surface(
+                    ui.ctx(),
+                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                    te_id,
+                );
+            }
         }
 
         if self.doc.revision() != revision_before {
@@ -1200,101 +1318,106 @@ impl App for TextEditorApp {
 
         self.maybe_autosave();
 
-        // Render the find/replace bar below the editor.
+        // Render the find/replace bar below the editor. The embedded-bar
+        // primitive owns the band geometry and safe insets so the controls
+        // never clip against the pane's bottom edge.
         if self.find_bar.is_some() {
             let find_rect = egui::Rect::from_min_size(
                 ui.cursor().min,
-                egui::vec2(ui.available_width(), FIND_BAR_HEIGHT),
+                egui::vec2(ui.available_width(), crate::ui::embedded_bar::BAR_TOTAL_H),
             );
             ui.advance_cursor_after_rect(find_rect);
 
-            ui.painter()
-                .rect_filled(find_rect, 0.0, colors.pane_header_bg());
-
             let mut replace_one = false;
             let mut replace_every = false;
-            let mut find_ui = ui.new_child(egui::UiBuilder::new().max_rect(find_rect));
-            find_ui.horizontal_centered(|ui| {
-                let Some(bar) = &mut self.find_bar else {
-                    return;
-                };
-                ui.add_space(8.0);
+            crate::ui::embedded_bar::embedded_bottom_bar(
+                ui,
+                find_rect,
+                colors.pane_header_bg(),
+                |ui| {
+                    let Some(bar) = &mut self.find_bar else {
+                        return;
+                    };
 
-                let input_width = ((find_rect.width() - 260.0) / 2.0).max(60.0);
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut bar.query)
-                        .id(find_input_id)
-                        .desired_width(input_width)
-                        .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
-                        .hint_text("Find…")
-                        .frame(egui::Frame::NONE),
-                );
+                    let input_width = ((find_rect.width() - 260.0) / 2.0).max(60.0);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut bar.query)
+                            .id(find_input_id)
+                            .desired_width(input_width)
+                            .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
+                            .hint_text("Find…")
+                            .frame(egui::Frame::NONE),
+                    );
 
-                crate::ui::focus::register_text_surface(
-                    ui.ctx(),
-                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                    find_input_id,
-                );
-                if bar.claim_focus {
-                    crate::ui::focus::claim_text_surface(
+                    crate::ui::focus::register_text_surface(
                         ui.ctx(),
                         crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
                         find_input_id,
                     );
-                    bar.claim_focus = false;
-                }
+                    if bar.claim_focus {
+                        crate::ui::focus::claim_text_surface(
+                            ui.ctx(),
+                            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                            find_input_id,
+                        );
+                        bar.claim_focus = false;
+                    }
 
-                let query_changed = response.changed();
+                    let query_changed = response.changed();
 
-                ui.add_space(8.0);
-                let count_text = if bar.matches.is_empty() {
-                    if bar.query.is_empty() {
-                        String::new()
+                    ui.add_space(crate::ui::style::SPACE_SM);
+                    let count_text = if bar.matches.is_empty() {
+                        if bar.query.is_empty() {
+                            String::new()
+                        } else {
+                            "No results".to_string()
+                        }
                     } else {
-                        "No results".to_string()
-                    }
-                } else {
-                    format!("{} / {}", bar.current + 1, bar.matches.len())
-                };
-                ui.label(
-                    egui::RichText::new(count_text)
-                        .size(FIND_BAR_FONT_SIZE)
-                        .color(colors.text_dim),
-                );
+                        format!("{} / {}", bar.current + 1, bar.matches.len())
+                    };
+                    ui.label(
+                        egui::RichText::new(count_text)
+                            .size(FIND_BAR_FONT_SIZE)
+                            .color(colors.text_dim),
+                    );
 
-                ui.add_space(8.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut bar.replace)
-                        .id(replace_input_id)
-                        .desired_width(input_width)
-                        .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
-                        .hint_text("Replace…")
-                        .frame(egui::Frame::NONE),
-                );
-                // Registered under the pane so the post-frame focus
-                // reconciler keeps a clicked replace field focused instead of
-                // snapping focus back to the editor.
-                crate::ui::focus::register_text_surface(
-                    ui.ctx(),
-                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                    replace_input_id,
-                );
-                let has_matches = !bar.matches.is_empty();
-                replace_one = ui
-                    .add_enabled(has_matches, egui::Button::new("Replace"))
-                    .clicked();
-                replace_every = ui
-                    .add_enabled(has_matches, egui::Button::new("All"))
-                    .clicked();
+                    ui.add_space(crate::ui::style::SPACE_SM);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut bar.replace)
+                            .id(replace_input_id)
+                            .desired_width(input_width)
+                            .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
+                            .hint_text("Replace…")
+                            .frame(egui::Frame::NONE),
+                    );
+                    // Registered under the pane so the post-frame focus
+                    // reconciler keeps a clicked replace field focused instead
+                    // of snapping focus back to the editor.
+                    crate::ui::focus::register_text_surface(
+                        ui.ctx(),
+                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                        replace_input_id,
+                    );
+                    let has_matches = !bar.matches.is_empty();
+                    replace_one = ui
+                        .add_enabled(has_matches, egui::Button::new("Replace"))
+                        .clicked();
+                    replace_every = ui
+                        .add_enabled(has_matches, egui::Button::new("All"))
+                        .clicked();
 
-                if query_changed {
-                    let text = self.doc.text();
-                    if let Some(bar) = &mut self.find_bar {
-                        bar.recompute(&text);
-                        log::info!("notes_editor: find query changed — {} matches", bar.matches.len());
+                    if query_changed {
+                        let text = self.doc.text();
+                        if let Some(bar) = &mut self.find_bar {
+                            bar.recompute(&text);
+                            log::info!(
+                                "notes_editor: find query changed — {} matches",
+                                bar.matches.len()
+                            );
+                        }
                     }
-                }
-            });
+                },
+            );
             if replace_one {
                 self.replace_current();
             }
@@ -1469,6 +1592,7 @@ impl App for TextEditorApp {
             "undo_available": sem.can_undo,
             "redo_available": sem.can_redo,
             "focused": self.editor_focused,
+            "input_released": self.input_released,
             "last_drop_result": self.last_drop_result,
             "path": self.path,
         }))
@@ -2051,6 +2175,16 @@ mod tests {
     }
 
     #[test]
+    fn is_text_editable_ext_claims_prose_and_code_but_not_binary() {
+        for ext in ["md", "MD", "markdown", "txt", "rs", "py", "TOML", "json", "log", "csv"] {
+            assert!(is_text_editable_ext(ext), "{ext} should be text-editable");
+        }
+        for ext in ["png", "jpg", "mp4", "pdf", "wasm", "zip", ""] {
+            assert!(!is_text_editable_ext(ext), "{ext} should not be text-editable");
+        }
+    }
+
+    #[test]
     fn code_mode_file_saves_source_text_verbatim() {
         let dir = unique_temp_dir("code-mode-save");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2379,7 +2513,7 @@ mod tests {
     }
 
     #[test]
-    fn wiki_link_resolution_missing_and_unique_match() {
+    fn wiki_link_resolution_creates_missing_and_opens_unique_match() {
         let profile = unique_temp_dir("notes-wiki-profile");
         std::fs::create_dir_all(&profile).unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.clone());
@@ -2397,9 +2531,90 @@ mod tests {
         let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1);
 
+        // Missing wiki target: created as a blank note under the notes dir and
+        // opened (standard wiki behavior, stint 0506).
         app.activate_link(&links[1]);
-        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "missing");
-        assert!(!notes_dir.join("nowhere.md").exists());
+        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "created_note");
+        let created = notes_dir.join("nowhere.md");
+        assert!(created.exists(), "missing wiki target must be created");
+        assert_eq!(std::fs::read_to_string(&created).unwrap(), "");
+        let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
+        assert_eq!(commands.len(), 1, "creation opens the new note in a pane");
+        match &commands[0] {
+            AppCommand::SpawnPane { type_id, args, .. } => {
+                assert_eq!(type_id, "text-editor");
+                assert!(args[0].ends_with("nowhere.md"));
+            }
+            _ => panic!("expected SpawnPane command"),
+        }
+        let _ = std::fs::remove_dir_all(profile);
+    }
+
+    #[test]
+    fn wiki_link_nested_existing_target_opens_without_truncating() {
+        let profile = unique_temp_dir("notes-wiki-nested");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let notes_dir = crate::config::config_dir().join("notes");
+        std::fs::create_dir_all(notes_dir.join("project")).unwrap();
+        let nested = notes_dir.join("project").join("idea.md");
+        std::fs::write(&nested, "precious contents").unwrap();
+
+        let note_path = notes_dir.join("current.md");
+        std::fs::write(&note_path, "[[project/idea]]").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(note_path);
+
+        let links = preview::link_targets(&app.doc.text());
+        app.activate_link(&links[0]);
+        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "opened_note");
+        assert_eq!(
+            std::fs::read_to_string(&nested).unwrap(),
+            "precious contents",
+            "an existing nested target must never be truncated"
+        );
+        let _ = std::fs::remove_dir_all(profile);
+    }
+
+    #[test]
+    fn wiki_link_creates_when_notes_root_absent() {
+        let profile = unique_temp_dir("notes-wiki-fresh");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let notes_dir = crate::config::config_dir().join("notes");
+        // Deliberately do NOT create notes_dir — a fresh profile.
+        assert!(!notes_dir.exists());
+        // The source note lives elsewhere; only the wiki resolution matters.
+        let note_path = profile.join("current.md");
+        std::fs::write(&note_path, "[[first-note]]").unwrap();
+        let mut app = TextEditorApp::new(note_path);
+        // Force note-mode resolution against the (absent) notes root.
+        app.is_note = true;
+
+        let (outcome, _) = app.resolve_wiki_link("first-note");
+        assert_eq!(outcome, "created_note");
+        assert!(notes_dir.join("first-note.md").exists());
+        let _ = std::fs::remove_dir_all(profile);
+    }
+
+    #[test]
+    fn wiki_link_create_refuses_paths_escaping_notes_dir() {
+        let profile = unique_temp_dir("notes-wiki-escape");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let notes_dir = crate::config::config_dir().join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        let note_path = notes_dir.join("current.md");
+        std::fs::write(&note_path, "[[../escape]]").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(note_path);
+
+        let links = preview::link_targets(&app.doc.text());
+        app.activate_link(&links[0]);
+        assert_eq!(
+            app.last_link_activation.as_ref().unwrap()["outcome"],
+            "create_failed"
+        );
+        assert!(!notes_dir.parent().unwrap().join("escape.md").exists());
+        assert!(crate::app::app_trait::App::take_pending_commands(&mut app).is_empty());
         let _ = std::fs::remove_dir_all(profile);
     }
 

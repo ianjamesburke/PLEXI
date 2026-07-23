@@ -719,10 +719,23 @@ fn spawn_pane_seeds_root_in_empty_window() {
 /// zero delay would schedule an extra settling paint; a missing or large
 /// delay leaves the request parked until an unrelated frame — stint 0479).
 #[test]
-fn socket_line_queues_request_and_requests_prompt_repaint() {
+fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     use std::sync::{Arc, Mutex};
 
     let ctx = egui::Context::default();
+    // Match a real eframe host after its first pass. Egui advances delayed
+    // repaint deadlines by this predicted frame time before invoking the
+    // native callback; a wake shorter than `predicted_dt` silently becomes an
+    // immediate RepaintNow event instead of the intended one-shot delay.
+    for _ in 0..3 {
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                predicted_dt: 1.0 / 60.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+    }
     let delays: Arc<Mutex<Vec<std::time::Duration>>> = Arc::new(Mutex::new(Vec::new()));
     let delays_cb = delays.clone();
     ctx.set_request_repaint_callback(move |info| {
@@ -739,18 +752,48 @@ fn socket_line_queues_request_and_requests_prompt_repaint() {
         }
         other => panic!("expected queued LogMarker request, got {other:?}"),
     }
+    // Simulate the host returning to idle after the ready/startup request,
+    // then issue the same response-file style command a later `pane list`
+    // sends. Both external arrivals must cross the repaint callback with a
+    // nonzero delay; eframe rejects a raw immediate wake during a stale pass.
+    let _ = ctx.run_ui(
+        egui::RawInput {
+            predicted_dt: 1.0 / 60.0,
+            ..Default::default()
+        },
+        |_| {},
+    );
+    handle_socket_line(
+        r#"{"type":"list_panes","response_file":"/tmp/second-pane-list.json"}"#,
+        &tx,
+        &ctx,
+    );
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Ok(crate::app_protocol::AppRequest::ListPanes { .. })
+        ),
+        "post-idle pane list must queue on the pane-IPC channel"
+    );
+
     let delays = delays.lock().unwrap();
     assert_eq!(
         delays.len(),
-        1,
-        "one socket line must trigger exactly one wake callback"
+        2,
+        "each socket line, including a post-idle pane list, must trigger one wake callback"
     );
-    // egui subtracts the predicted frame time before invoking the callback,
-    // so the wire delay is at most the requested one — prompt either way.
+    // The callback delay must remain nonzero after egui subtracts
+    // `predicted_dt`. A zero callback is RepaintNow in eframe; its stale-pass
+    // rejection can strand the queued IPC request until unrelated input.
     assert!(
-        delays[0] <= IPC_WAKE_DELAY,
-        "wake delay must be prompt (requested {IPC_WAKE_DELAY:?}, got {:?})",
-        delays[0]
+        delays
+            .iter()
+            .all(|delay| *delay > std::time::Duration::ZERO),
+        "IPC wake collapsed to RepaintNow after egui predicted_dt adjustment: {delays:?}"
+    );
+    assert!(
+        delays.iter().all(|delay| *delay <= IPC_WAKE_DELAY),
+        "wake delay must be prompt (requested {IPC_WAKE_DELAY:?}, got {delays:?})"
     );
 }
 

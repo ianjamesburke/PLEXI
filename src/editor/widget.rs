@@ -24,6 +24,32 @@ use std::time::SystemTime;
 /// Horizontal padding on each side of the gutter's line numbers.
 const GUTTER_PAD: f32 = 6.0;
 
+/// Caret on/off half-period, in seconds. The caret is solid for one interval,
+/// hidden for the next, and so on — a ~500 ms phase matching the platform
+/// text-cursor cadence.
+const CARET_BLINK_INTERVAL: f64 = 0.5;
+
+/// Whether the blinking caret is in its visible half-cycle, given the time
+/// elapsed since the last caret activity (keystroke, edit, or caret move).
+/// Activity resets the phase to zero, so the caret is always solid for the
+/// first interval after any input and only then begins toggling. Pure so the
+/// phase logic is unit-testable without pixels.
+fn caret_blink_visible(elapsed_since_activity: f64, interval: f64) -> bool {
+    if elapsed_since_activity < 0.0 {
+        return true;
+    }
+    (elapsed_since_activity / interval) as u64 % 2 == 0
+}
+
+/// Wall-clock delay until the caret's next visibility flip, so the widget can
+/// schedule exactly one repaint at the boundary instead of spinning. Always
+/// positive (never a zero-delay repaint loop; see the egui repaint trap in the
+/// root AGENTS.md).
+fn caret_blink_next_toggle(elapsed_since_activity: f64, interval: f64) -> f64 {
+    let elapsed = elapsed_since_activity.max(0.0);
+    interval - (elapsed % interval)
+}
+
 /// Theme colors for code-mode chrome and syntax token kinds. Callers build
 /// this from host design tokens (`src/ui/theme.rs`); the editor core never
 /// picks concrete colors itself.
@@ -519,7 +545,46 @@ impl<'a> EditorWidget<'a> {
             self.view.scroll_to_x(caret_x);
         }
 
-        self.paint(ui, id, &font_id, rect, gutter_width, md_active, &image_rows);
+        // Blinking caret (only while this widget owns input). Any command this
+        // frame (typing, edit, caret move, selection) counts as activity and
+        // resets the blink phase so the caret is immediately solid; otherwise
+        // it toggles every `CARET_BLINK_INTERVAL`. The phase timestamp lives in
+        // egui memory keyed by the widget id, so it survives across the
+        // per-frame reconstruction of this widget.
+        let caret_visible = if self.active {
+            let now = ui.input(|i| i.time);
+            let phase_id = id.with("caret_blink_since");
+            let last_activity = ui.memory_mut(|m| match m.data.get_temp::<f64>(phase_id) {
+                Some(t) if !edited => t,
+                _ => {
+                    m.data.insert_temp(phase_id, now);
+                    now
+                }
+            });
+            let elapsed = now - last_activity;
+            // Schedule the next repaint exactly at the upcoming flip. Add the
+            // frame's predicted duration so egui's delayed-repaint advance
+            // can't collapse the deadline into an immediate repaint loop.
+            let predicted_dt = ui.input(|i| i.predicted_dt) as f64;
+            let delay = caret_blink_next_toggle(elapsed, CARET_BLINK_INTERVAL) + predicted_dt;
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(delay));
+            caret_blink_visible(elapsed, CARET_BLINK_INTERVAL)
+        } else {
+            // Inactive editors paint no caret at all; visibility is moot.
+            true
+        };
+
+        self.paint(
+            ui,
+            id,
+            &font_id,
+            rect,
+            gutter_width,
+            md_active,
+            &image_rows,
+            caret_visible,
+        );
         EditorOutput {
             response,
             link_activation,
@@ -676,6 +741,7 @@ impl<'a> EditorWidget<'a> {
         gutter_width: f32,
         md_active: Option<std::ops::Range<usize>>,
         image_rows: &[(usize, String)],
+        caret_visible: bool,
     ) {
         let visuals = ui.visuals();
         let text_color = visuals.text_color();
@@ -923,7 +989,11 @@ impl<'a> EditorWidget<'a> {
         }
 
         if let Some(caret_rect) = caret_rect {
-            painter.rect_filled(caret_rect, 0.0, caret_color);
+            // The blink hides the fill on the off half-cycle; the IME anchor
+            // below still tracks the caret so the candidate window stays put.
+            if caret_visible {
+                painter.rect_filled(caret_rect, 0.0, caret_color);
+            }
             // Position the OS IME candidate window at the caret.
             ui.ctx().output_mut(|o| {
                 o.ime = Some(egui::output::IMEOutput {
@@ -1308,5 +1378,31 @@ mod tests {
         h.event(Event::Paste("XY".into()));
         h.step();
         assert_eq!(semantic(&h).text, "aXYb");
+    }
+
+    #[test]
+    fn caret_blink_is_solid_for_the_first_interval_then_toggles() {
+        let iv = CARET_BLINK_INTERVAL;
+        // Just after activity: solid.
+        assert!(caret_blink_visible(0.0, iv));
+        assert!(caret_blink_visible(iv * 0.99, iv));
+        // First off half-cycle.
+        assert!(!caret_blink_visible(iv * 1.01, iv));
+        assert!(!caret_blink_visible(iv * 1.99, iv));
+        // Back on.
+        assert!(caret_blink_visible(iv * 2.01, iv));
+        // A negative (clock went backwards) elapsed is treated as solid.
+        assert!(caret_blink_visible(-1.0, iv));
+    }
+
+    #[test]
+    fn caret_blink_next_toggle_is_the_positive_remainder_to_the_boundary() {
+        let iv = CARET_BLINK_INTERVAL;
+        assert!((caret_blink_next_toggle(0.0, iv) - iv).abs() < 1e-9);
+        assert!((caret_blink_next_toggle(iv * 0.25, iv) - iv * 0.75).abs() < 1e-9);
+        assert!((caret_blink_next_toggle(iv * 1.5, iv) - iv * 0.5).abs() < 1e-9);
+        // Never zero (a zero-delay repaint would busy-loop the host).
+        assert!(caret_blink_next_toggle(iv, iv) > 0.0);
+        assert!(caret_blink_next_toggle(iv * 2.0, iv) > 0.0);
     }
 }

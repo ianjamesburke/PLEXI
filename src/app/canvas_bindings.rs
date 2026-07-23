@@ -343,7 +343,7 @@ impl PlexiApp {
                     // its body here with our path.
                     self.open_file_browser_at(p);
                 } else {
-                    self.open_file_in_app(&path);
+                    self.open_file_in_app(sender_pane_id, &path);
                 }
             }
             ArtifactOpenMode::RevealInFinder => shell_open(&path, true),
@@ -387,12 +387,15 @@ impl PlexiApp {
     ///   (a) user `[file_handlers]` override
     ///   (b) app manifest `file_types` association
     ///   (c) builtin media players (`MediaKind`)
-    ///   (d) OS default opener — mandatory fallback
+    ///   (d) builtin text-editor for text/source files
+    ///   (e) OS default opener — mandatory fallback
     /// Any `app:` target that is absent or fails to launch falls through to the
     /// OS opener rather than silently doing nothing — this is what makes
     /// "Enter on a video with no installed player" open in the OS player
-    /// instead of vanishing.
-    fn open_file_in_app(&mut self, path: &str) {
+    /// instead of vanishing. `sender_pane_id` is the pane that requested the
+    /// open (the explorer, or the terminal behind it); the text-editor lands as
+    /// a split to its right.
+    fn open_file_in_app(&mut self, sender_pane_id: PaneId, path: &str) {
         use crate::app::file_handlers::FileHandler;
         let ext = std::path::Path::new(path)
             .extension()
@@ -458,9 +461,57 @@ impl PlexiApp {
             log::warn!("open: media player '{id}' not installed — OS fallback for '{path}'");
         }
 
-        // (d) OS default — mandatory fallback.
+        // (d) builtin text-editor: text and source files open in a split to
+        // the right of the requesting pane. Sits below user/manifest overrides
+        // so a user-configured handler for e.g. `.md` still wins.
+        if crate::app::text_editor_app::is_text_editable_ext(&ext) {
+            log::info!("open: '{path}' → builtin text-editor (split right of pane {sender_pane_id})");
+            self.open_text_file_in_split(sender_pane_id, path);
+            return;
+        }
+
+        // (e) OS default — mandatory fallback.
         log::info!("open: '{path}' → OS default (resolver fallthrough: no Plexi handler)");
         shell_open(path, false);
+    }
+
+    /// Open `path` in the builtin text-editor as a `split_h` anchored at
+    /// `anchor_pane_id`, so the editor lands to the right of the explorer (or
+    /// terminal) that requested it. Mirrors the `SpawnPane` app-branch: it
+    /// resolves the anchor's window from its pane id (never a global-focus
+    /// read), retargets the launch to that window/tile, then restores the
+    /// original active window. The `context_id` follows implicitly from
+    /// anchoring on the pane's own window, so the split stays in the caller's
+    /// context.
+    fn open_text_file_in_split(&mut self, anchor_pane_id: PaneId, path: &str) {
+        let original_active_window = self.active_window;
+        match self.find_pane_in_any_window(anchor_pane_id) {
+            Some((win_idx, tile)) => {
+                self.active_window = win_idx;
+                self.set_window_focused_pane(win_idx, tile);
+            }
+            None => {
+                log::warn!(
+                    "open: text-editor anchor pane {anchor_pane_id} not found — using active window"
+                );
+            }
+        }
+        // Forced (bypass the app's `on_launch` dedup): opening a specific file
+        // must always load THAT file. A `focus_existing` policy would otherwise
+        // resolve to an already-open editor and drop the path, so the explorer
+        // would appear to do nothing for a different file.
+        if let Err(e) = self.launch_app_by_id_with_layout_forced(
+            "text-editor",
+            Some("split_h".to_string()),
+            &[path.to_string()],
+            None,
+        ) {
+            log::warn!("open: text-editor launch for '{path}' failed — {e}; OS fallback");
+            self.active_window = original_active_window;
+            shell_open(path, false);
+            return;
+        }
+        self.active_window = original_active_window;
     }
 
     /// Launch app `id` with `path` as its sole arg, using the app's natural

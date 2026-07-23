@@ -3065,3 +3065,386 @@ fn host_log_marker_dispatches_and_acknowledges() {
     });
     assert_eq!(read_json_response(&response)["ok"], true);
 }
+
+
+// -- Stint 0505: focused-terminal keyboard ownership --------------------------
+//
+// After the s3 editor sprint (egui 0.34 upgrade + shared editor core), plain
+// Tab stopped reaching terminal panes: egui 0.34's built-in focus traversal
+// claimed Tab/arrows/Escape from the focused terminal because the terminal
+// widget carried the default `EventFilter` (nothing locked). The reconciler
+// restores egui focus at frame end, so the *final* focus state looks correct —
+// the only observable difference is whether the keystroke's bytes actually
+// reached the PTY writer. These tests assert exactly that via the backend's
+// input tap, so they fail on the regression (bytes dropped) and pass once the
+// reconciler locks the traversal keys to the focused terminal.
+
+/// Failing-first regression guard for stint 0505: a plain Tab pressed while a
+/// terminal pane is focused must reach the PTY as `\x09`. Before the fix the
+/// byte is dropped (egui steals Tab for focus traversal); after, it arrives.
+#[test]
+fn plain_tab_reaches_focused_terminal_pty() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    let wid = egui_term::terminal_widget_id(term);
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        Some(wid),
+        "terminal must hold egui focus before the Tab press"
+    );
+
+    h.terminal_backend(term).enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+
+    let written = h.terminal_backend(term).take_input_tap();
+    assert_eq!(
+        written, b"\x09",
+        "plain Tab must reach the focused terminal's PTY as 0x09, got {written:?}"
+    );
+}
+
+/// The other keys a TUI depends on must survive the same host consumer chain
+/// and reach the PTY unmodified: Escape (`\x1b`, e.g. leaving vim insert mode),
+/// Enter (`\r`), Shift+Tab (`\x1b[Z`, which already worked — a guard against
+/// regressing the backward-traversal case), and a bare arrow (`\x1b[A`).
+#[test]
+fn traversal_and_control_keys_reach_focused_terminal_pty() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+
+    let cases: &[(egui::Key, egui::Modifiers, &[u8])] = &[
+        (egui::Key::Escape, egui::Modifiers::NONE, b"\x1b"),
+        (egui::Key::Enter, egui::Modifiers::NONE, b"\r"),
+        (egui::Key::Tab, egui::Modifiers::SHIFT, b"\x1b[Z"),
+        (egui::Key::ArrowUp, egui::Modifiers::NONE, b"\x1b[A"),
+    ];
+    for (key, modifiers, expected) in cases {
+        h.terminal_backend(term).enable_input_tap();
+        h.press_key(*key, *modifiers);
+        let written = h.terminal_backend(term).take_input_tap();
+        assert_eq!(
+            written, *expected,
+            "{key:?} (mods={modifiers:?}) must reach the PTY as {expected:?}, got {written:?}"
+        );
+    }
+}
+
+/// Editor-scoped chords must not hijack a focused terminal. The editor's
+/// link-activation (Ctrl+Enter) and find (Cmd+F) live in editor/notes app
+/// panes; with a terminal focused, no editor renders, so these must leave the
+/// terminal as the input owner with egui focus intact — never surrender it to
+/// an editor surface or overlay. Guards the broader stint 0505 invariant that
+/// key scoping is focus-scoped.
+#[test]
+fn editor_chords_do_not_hijack_focused_terminal() {
+    use crate::app::input_owner::InputOwner;
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    let wid = egui_term::terminal_widget_id(term);
+
+    for (key, modifiers) in [
+        (egui::Key::Enter, egui::Modifiers::CTRL),
+        (egui::Key::F, egui::Modifiers::COMMAND),
+    ] {
+        h.press_key(key, modifiers);
+        let ctx = h.ctx.clone();
+        assert_eq!(
+            h.app.input_owner(&ctx),
+            InputOwner::Pane(term),
+            "{key:?}+{modifiers:?} must leave the terminal as input owner"
+        );
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(wid),
+            "{key:?}+{modifiers:?} must not steal egui focus from the terminal"
+        );
+    }
+}
+
+// -- stint 0506: notes/editor UX regressions ------------------------------
+
+/// Open a focused, settled text-editor note pane holding `body`. Returns its
+/// pane id after the reconciler has granted the editor egui focus.
+fn open_focused_note(h: &mut HostHarness, dir: &std::path::Path, body: &str) -> PaneId {
+    let note = dir.join("note.md");
+    std::fs::write(&note, body).expect("seed note");
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.run_frames(3);
+    pane_id
+}
+
+fn note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
+    h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .expect("notes pane")
+        .runtime
+        .semantic_details()
+        .expect("notes semantics")
+}
+
+/// A fresh scratch editor opened while the host is occluded still owns input
+/// once it becomes visible: pane text waits for the editor's first focusable
+/// render instead of being discarded by that render's preamble.
+#[test]
+fn blank_text_editor_open_acquires_input_focus() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let open_response = temp_response(tmp.path(), "blank-editor-open");
+    h.inject_ipc(AppRequest::SpawnPane {
+        type_id: "text-editor".to_string(),
+        layout: Some("split_h".to_string()),
+        args: vec![],
+        from_pane_id: None,
+        request_id: None,
+        response_file: Some(open_response.clone()),
+        ephemeral: false,
+        cwd: Some(tmp.path().to_string_lossy().into_owned()),
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        name: None,
+    });
+    // R3 moved IPC draining into logic so the editor can be opened while eframe
+    // skips ui for an occluded window. At this point no text surface has
+    // rendered or received egui focus yet.
+    h.hidden_frame();
+    let pane_id = read_json_response(&open_response)["pane_id"]
+        .as_u64()
+        .expect("open response pane id");
+
+    let text_response = temp_response(tmp.path(), "blank-editor-text");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id,
+        text: "hello".to_string(),
+        response_file: Some(text_response.clone()),
+    });
+    h.hidden_frame();
+    h.run_frames(4);
+    assert_eq!(read_json_response(&text_response)["ok"], true);
+    let after_text = note_semantics(&h, pane_id);
+    assert_eq!(after_text["source_text"], "hello");
+    assert_eq!(
+        after_text["focused"], true,
+        "editor owns input after first visible render"
+    );
+
+    let key_response = temp_response(tmp.path(), "blank-editor-ctrl-enter");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "ctrl+enter".to_string(),
+        response_file: Some(key_response.clone()),
+    });
+    h.run_frames(1);
+    assert_ne!(
+        read_json_response(&key_response)["disposition"],
+        "passthrough",
+        "focused editor must own Ctrl+Enter rather than fall through to pane routing"
+    );
+}
+
+/// Ctrl+Enter with the caret inside a Markdown link activates it through the
+/// real key path — the target note opens in a split (stint 0506 item 3).
+#[test]
+fn ctrl_enter_activates_markdown_link_at_caret() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("target.md"), "target body").expect("seed target");
+    let mut h = HostHarness::new();
+    // Caret defaults to (0,0), inside the leading [md](target.md) link.
+    let pane_id = open_focused_note(&mut h, tmp.path(), "[md](target.md) rest");
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::CTRL);
+    h.run_frames(1);
+
+    let state = note_semantics(&h, pane_id);
+    assert_eq!(
+        state["last_link_activation"]["outcome"], "opened_note",
+        "Ctrl+Enter should activate the markdown link at caret; state={state}"
+    );
+    assert_eq!(h.pane_count(), 2, "the target note opens in a split");
+}
+
+/// Ctrl+Enter on a `[[wiki]]` link to a nonexistent note creates the note and
+/// opens it (stint 0506 items 3 + 4).
+#[test]
+fn ctrl_enter_on_missing_wiki_link_creates_and_opens_note() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let notes_dir = crate::config::config_dir().join("notes");
+    std::fs::create_dir_all(&notes_dir).expect("notes dir");
+    let pane_id = open_focused_note(&mut h, tmp.path(), "[[fresh-idea]] rest");
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::CTRL);
+    h.run_frames(1);
+
+    let state = note_semantics(&h, pane_id);
+    assert_eq!(
+        state["last_link_activation"]["outcome"], "created_note",
+        "missing wiki target should be created; state={state}"
+    );
+    assert!(notes_dir.join("fresh-idea.md").exists());
+    assert_eq!(h.pane_count(), 2, "the new note opens in a split");
+}
+
+/// Escape while the note body is focused releases the editor to pane-level
+/// navigation: the pane stays open and focused, but the editor no longer owns
+/// the keyboard (stint 0506 item 1 / stint 0496).
+#[test]
+fn escape_releases_note_editor_to_pane_navigation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = open_focused_note(&mut h, tmp.path(), "hello world");
+
+    let before = note_semantics(&h, pane_id);
+    assert_eq!(before["focused"], true, "editor owns input before Escape");
+    let panes_before = h.pane_count();
+
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+
+    let after = note_semantics(&h, pane_id);
+    assert_eq!(after["input_released"], true, "Escape releases the editor");
+    assert_eq!(after["focused"], false, "editor no longer holds egui focus");
+    assert_eq!(h.pane_count(), panes_before, "the pane stays open");
+    use crate::app::input_owner::InputOwner;
+    let ctx = h.ctx.clone();
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane_id),
+        "the pane stays focused for pane-level navigation"
+    );
+}
+
+/// Pressing Enter on a text file in the File Explorer opens it in the builtin
+/// text-editor as a split to the right of the explorer — never the OS opener
+/// (stint 0506 item 5).
+#[test]
+fn explorer_enter_opens_text_file_in_text_editor_split() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let doc = tmp.path().join("readme.md");
+    std::fs::write(&doc, "# hello").expect("seed doc");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::file_browser::FileBrowserApp::new(tmp.path().to_path_buf())),
+        crate::app::permissions::AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let explorer = h.state().open_panes[0];
+    h.focus_pane(explorer);
+    h.run_frames(2);
+    assert_eq!(h.pane_count(), 1);
+
+    // The only entry (readme.md) is selected by default; Enter activates it.
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.run_frames(2);
+
+    assert_eq!(
+        h.pane_count(),
+        2,
+        "the text file opens a second pane, not the OS opener"
+    );
+    let opened = h.app.windows[0]
+        .panes
+        .iter()
+        .find(|(id, _)| **id != explorer)
+        .map(|(_, pane)| pane)
+        .and_then(Pane::as_app)
+        .expect("a new app pane");
+    assert_eq!(opened.manifest_id, "text-editor");
+}
+
+// -- Hidden-window IPC servicing (stint 0505 fix round 3) -----------------
+
+/// Regression guard for the occluded-host IPC wedge: eframe skips `App::ui`
+/// entirely while the window is hidden (minimized or fully occluded by other
+/// windows) and runs logic-only passes instead. Every external drain lived in
+/// `ui`, so a fully covered host serviced no pane IPC at all — wakes fired,
+/// passes ran, and queued commands (including `plexi host stop`'s Shutdown)
+/// sat until the window was next uncovered. External servicing must complete
+/// on hidden passes alone.
+#[test]
+fn pane_ipc_serviced_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.run_frames(1);
+
+    let list_file = temp_response(tmp.path(), "hidden-pane-list");
+    h.inject_ipc(AppRequest::ListPanes {
+        response_file: list_file.clone(),
+        context_id: None,
+    });
+    h.run_hidden_frames(1);
+
+    let list = std::fs::read_to_string(&list_file)
+        .expect("pane list must be serviced on a hidden (logic-only) pass");
+    let list: serde_json::Value = serde_json::from_str(&list).expect("valid JSON response");
+    assert!(
+        list.as_array()
+            .expect("pane list array")
+            .iter()
+            .any(|entry| entry["id"].as_u64() == Some(pane)),
+        "hidden-pass pane list must include the open pane"
+    );
+}
+
+/// Companion to `pane_ipc_serviced_while_window_hidden`: queued pane inputs
+/// must NOT be swallowed by hidden passes. A hidden pass has no widget pass to
+/// receive events, so `raw_input_hook` must leave `pending_pane_inputs` queued
+/// for the next visible frame instead of injecting them into a pass that
+/// discards them unseen.
+#[test]
+fn pending_pane_inputs_survive_hidden_passes() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    h.app.pending_pane_inputs.entry(pane).or_default().push(
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+    );
+    h.run_hidden_frames(3);
+    assert!(
+        h.app
+            .pending_pane_inputs
+            .get(&pane)
+            .is_some_and(|batches| !batches.is_empty()),
+        "queued pane input must survive hidden passes for the next visible frame"
+    );
+
+    // The visible-frame reconciler drops focus from a bare test pane, so
+    // re-assert it the way a real un-occlusion refocus would before checking
+    // that the queued input is finally delivered.
+    h.focus_pane(pane);
+    h.run_frames(1);
+    assert!(
+        h.app
+            .pending_pane_inputs
+            .get(&pane)
+            .is_none_or(|batches| batches.is_empty()),
+        "queued pane input must be delivered on the next visible frame"
+    );
+}

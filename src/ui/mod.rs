@@ -2,6 +2,7 @@ pub mod activity;
 pub mod button;
 pub mod code_viewer;
 pub mod dialog;
+pub mod embedded_bar;
 pub mod focus;
 pub mod hints;
 pub mod labels;

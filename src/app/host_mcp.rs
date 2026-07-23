@@ -344,7 +344,7 @@ fn tool_subscribe_and_wait(
     subscribe_tx
         .send(req)
         .map_err(|_| "host not accepting subscriptions".to_string())?;
-    egui_ctx.request_repaint();
+    crate::app::wake_ui_for_external_request(&egui_ctx, "host_mcp_subscribe");
 
     // A first-time MCP subscribe under default `Ask` posture blocks here until
     // the user answers the host consent modal. Kept short enough that the
