@@ -281,36 +281,17 @@ pub fn agent_report_cli(
 /// `plexi agent status` — query agent states for all panes.
 pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
     log::info!("agent_status:cli: blocked={blocked} working={working} idle={idle}");
-    let tmp_path =
-        std::env::temp_dir().join(format!("plexi-agent-states-{}.json", uuid::Uuid::new_v4()));
-    let tmp_path_str = tmp_path.to_string_lossy().to_string();
+    let response_file = crate::rpc::response_file("plexi-agent-states", "json");
     let code = super::send_to_socket(serde_json::json!({
         "type": "get_agent_states",
-        "response_file": tmp_path_str,
+        "response_file": response_file,
     }));
     if code != 0 {
         return code;
     }
-    // Poll for response (host writes async); check before sleeping to avoid artificial latency
-    let response = (|| {
-        for _ in 0..250 {
-            if let Ok(content) = std::fs::read_to_string(&tmp_path) {
-                if !content.is_empty() {
-                    return Some(content);
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        None
-    })();
-    // Clean up temp file.
-    let _ = std::fs::remove_file(&tmp_path);
-    let content = match response {
-        Some(c) => c,
-        None => {
-            eprintln!("error: timed out waiting for agent states response");
-            return 1;
-        }
+    let content = match super::poll_rpc(&response_file, "agent states") {
+        Ok(content) => content,
+        Err(code) => return code,
     };
     let states: Vec<serde_json::Value> = match serde_json::from_str(&content) {
         Ok(v) => v,

@@ -26,6 +26,7 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 - **`cargo test --lib` silently misses host tests.** `--lib` only runs the `app_protocol` lib target (~47 tests). Host tests — app_registry, HostHarness, wasm_python, workspace_secrets — live in the binary target. Always use `cargo test --bin plexi`.
 - **`HostHarness::add_test_pane()` inserts a builtin app pane, not a Terminal.** Terminal-count assertions must not assume the initial pane is a Terminal; offset accordingly.
 - **Test constructor sync.** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Run `cargo test --bin plexi` on the base branch first to distinguish pre-existing failures from regressions.
+- **Never root a harness app at a real machine directory.** A `FileBrowserApp` (or any scanning app) pointed at `std::env::temp_dir()` renders whatever the dev machine's temp dir holds — ~50k entries drove test binaries past 30 GB RSS while CI stayed green on its clean temp. Root harness panes in the harness's own workspace tempdir (`HostHarness::_workspace_dir`, `PlexiUiHarness::workspace`) or a scoped `tempfile::tempdir()`.
 
 ## Style
 

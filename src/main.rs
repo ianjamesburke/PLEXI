@@ -31,6 +31,7 @@ mod plexi_ai;
 mod protocol;
 mod release;
 mod render;
+mod rpc;
 #[cfg(test)]
 mod scenes;
 mod secrets;
@@ -1167,6 +1168,11 @@ fn main() -> eframe::Result {
     if !cli_mode && adopted_root.is_none() {
         println!("Starting Plexi — run 'plexi --help' to see available commands.");
     }
+
+    // One-shot RPC response files this host's clients abandoned (died before
+    // the answer landed) accumulate in the profile's rpc/ dir; sweep them at
+    // boot, mirroring the log rotate-and-prune in `platform::logging::init`.
+    rpc::sweep_stale(&config::config_dir());
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("failed to load app icon");

@@ -349,6 +349,13 @@ channel-clean channel:
 channel-clean-merged:
     bash scripts/channel-clean-merged.sh
 
+# Reap ephemeral ~/.plexi-* profiles (16-hex hashes, ad-hoc test names) idle
+# for 7+ days. Never touches alpha/beta/main/pr-*/rc-*/src.
+#   just channel-clean-ephemeral --dry-run      — list what would be reaped
+#   just channel-clean-ephemeral --age-days 30  — raise the idle threshold
+channel-clean-ephemeral *args:
+    bash scripts/channel-clean-ephemeral.sh {{args}}
+
 # Remove target/ from worktrees whose branch is already merged to alpha.
 # Safe: never touches active branches.
 clean-stale-targets:

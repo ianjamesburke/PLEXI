@@ -15,8 +15,6 @@ pub fn notify_cli(
         }
     };
 
-    let id = uuid::Uuid::new_v4();
-
     let options_json: Vec<serde_json::Value> = choices
         .iter()
         .map(|(key, label, host_action)| {
@@ -34,11 +32,7 @@ pub fn notify_cli(
         "choice".to_string()
     };
     let response_file_str = if !choices.is_empty() && wait_for_response {
-        let rf = crate::config::config_dir()
-            .join(format!("notify-response-{id}.txt"))
-            .to_string_lossy()
-            .into_owned();
-        Some(rf)
+        Some(crate::rpc::response_file("notify-response", "txt"))
     } else {
         None
     };
@@ -102,38 +96,24 @@ pub fn notify_cli(
         println!("notification queued");
         return 0;
     };
-    let response_file = std::path::PathBuf::from(response_file);
-    log::info!("notify:cli: polling for response at {:?}", response_file);
+    log::info!("notify:cli: polling for response at {response_file:?}");
 
-    let deadline = if timeout_secs > 0 {
-        Some(std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs))
-    } else {
-        None
-    };
-
-    loop {
-        if response_file.exists() {
-            match std::fs::read_to_string(&response_file) {
-                Ok(key) => {
-                    log::info!("notify:cli: response received {:?}", key.trim());
-                    let _ = std::fs::remove_file(&response_file);
-                    print!("{}", key.trim());
-                    return 0;
-                }
-                Err(e) => {
-                    log::warn!("notify:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
+    let timeout = (timeout_secs > 0).then(|| std::time::Duration::from_secs(timeout_secs));
+    match crate::rpc::poll_string(&response_file, timeout) {
+        Ok(key) => {
+            log::info!("notify:cli: response received {:?}", key.trim());
+            print!("{}", key.trim());
+            0
         }
-        if let Some(dl) = deadline {
-            if std::time::Instant::now() >= dl {
-                log::info!("notify:cli: timed out after {timeout_secs}s");
-                return 2;
-            }
+        Err(crate::rpc::PollError::TimedOut) => {
+            log::info!("notify:cli: timed out after {timeout_secs}s");
+            2
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        Err(e) => {
+            log::warn!("notify:cli: {e}");
+            eprintln!("error: {e}");
+            1
+        }
     }
 }
 
@@ -207,6 +187,30 @@ mod notify_tests {
         assert_eq!(payload["options"][0]["value"], "talk");
         assert_eq!(payload["options"][0]["label"], "Talk to Claude");
         assert_eq!(payload["options"][0]["host_action"], "pane_focus:188");
+    }
+
+    /// The stint 0536 leak fix: a blocking choice that times out must exit 2
+    /// and must not leave a response file behind in the profile's rpc/ dir.
+    #[test]
+    fn notify_cli_timeout_leaves_no_response_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _channel_guard = crate::config::set_test_channel("notify-test");
+        let choices = vec![("talk".to_string(), "Talk".to_string(), None)];
+        let (code, payload) = capture_notify_payload(|| {
+            notify_cli("Ready", "Review tests", "info", &choices, true, 1, None)
+        });
+        assert_eq!(code, 2, "timeout must exit 2");
+        let rf = payload["response_file"]
+            .as_str()
+            .expect("blocking choice response_file");
+        assert!(
+            rf.contains("/rpc/"),
+            "response file must live in the rpc/ subdir: {rf}"
+        );
+        assert!(
+            !std::path::Path::new(rf).exists(),
+            "timeout must not leave a response file behind"
+        );
     }
 
     #[test]

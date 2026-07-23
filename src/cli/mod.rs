@@ -397,6 +397,32 @@ pub(super) fn command_socket_available() -> bool {
     )
 }
 
+/// Poll an RPC response file with the standard CLI error reporting: timeout
+/// and read failures print `error: ...` to stderr and yield exit code 1.
+/// `label` names the command in the timeout message.
+pub(super) fn poll_rpc(response_file: &str, label: &str) -> Result<String, i32> {
+    poll_rpc_with(response_file, label, crate::rpc::DEFAULT_TIMEOUT)
+}
+
+pub(super) fn poll_rpc_with(
+    response_file: &str,
+    label: &str,
+    timeout: std::time::Duration,
+) -> Result<String, i32> {
+    match crate::rpc::poll_string(response_file, Some(timeout)) {
+        Ok(content) => Ok(content),
+        Err(crate::rpc::PollError::TimedOut) => {
+            eprintln!("error: timed out waiting for {label} response");
+            Err(1)
+        }
+        Err(e) => {
+            log::warn!("{label}:cli: {e}");
+            eprintln!("error: {e}");
+            Err(1)
+        }
+    }
+}
+
 /// Spawn-queue writer gate (stint 0532): outside a Plexi pane, a spawn
 /// request may only be queued when this channel's host is actually accepting
 /// IPC on its notify socket. A file queued into the void fires on some later

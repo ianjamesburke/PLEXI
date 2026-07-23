@@ -1396,12 +1396,8 @@ impl PlexiApp {
                 }
                 if let Some(rf) = &response_file {
                     let content = value.as_deref().unwrap_or("");
-                    let tmp = format!("{rf}.tmp");
-                    match std::fs::write(&tmp, content).and_then(|_| std::fs::rename(&tmp, rf)) {
-                        Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
-                        Err(e) => {
-                            log::warn!("notify:action: failed to write response file {:?}: {e}", rf)
-                        }
+                    if crate::rpc::write_response(rf, content.as_bytes()) {
+                        log::info!("notify:action: wrote {:?} to {:?}", content, rf);
                     }
                 }
                 // Search all windows for the sender pane — it may not be in the

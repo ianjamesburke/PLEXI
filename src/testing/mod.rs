@@ -122,13 +122,17 @@ impl HostHarness {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
+        // Root the file browser in the harness's empty workspace dir — NEVER
+        // the real temp_dir(), which on a dev machine can hold ~50k entries
+        // and balloons any test that renders the pane by gigabytes.
+        let browser_root = self._workspace_dir.path().to_path_buf();
         let app_pane = AppPane {
             pip_status: None,
             id: pane_id,
             runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
-                std::env::temp_dir(),
+                browser_root.clone(),
             ))),
-            workspace_root: std::env::temp_dir(),
+            workspace_root: browser_root,
             permissions,
             manifest_id: "test".to_string(),
             name: "Test App".to_string(),

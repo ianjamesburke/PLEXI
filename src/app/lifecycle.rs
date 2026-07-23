@@ -7,18 +7,7 @@ use super::PlexiApp;
 
 const MAX_SLOT_CONTENT_SIZE: usize = 10 * 1024 * 1024;
 
-fn write_json_response(response_file: &str, value: serde_json::Value) {
-    match serde_json::to_string(&value) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(response_file, json) {
-                log::error!("pane_ipc: could not write response file {response_file:?}: {e}");
-            }
-        }
-        Err(e) => {
-            log::error!("pane_ipc: could not serialize response for {response_file:?}: {e}");
-        }
-    }
-}
+use crate::rpc::{write_json_response, write_response};
 
 fn slot_error(response_file: &str, message: impl Into<String>) {
     write_json_response(
@@ -38,16 +27,6 @@ fn slot_read_error(response_file: &str, message: impl Into<String>) {
             "error": message.into(),
         }),
     );
-}
-
-fn write_bytes_response_atomic(response_file: &str, bytes: &[u8]) {
-    let temp_file = format!("{response_file}.tmp");
-    if let Err(e) = std::fs::write(&temp_file, bytes) {
-        log::error!("pane_ipc: could not write temp response file {temp_file:?}: {e}");
-    } else if let Err(e) = std::fs::rename(&temp_file, response_file) {
-        log::error!("pane_ipc: could not rename temp response file to {response_file:?}: {e}");
-        let _ = std::fs::remove_file(&temp_file);
-    }
 }
 
 fn validate_slot_name(slot_name: &str) -> Result<(), String> {
@@ -296,9 +275,7 @@ impl PlexiApp {
                     }
                 }
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
-                if let Err(e) = std::fs::write(response_file, &json_str) {
-                    log::error!("pane_ipc: list_panes: could not write response file {response_file:?}: {e}");
-                }
+                write_response(response_file, json_str.as_bytes());
             }
             crate::app_protocol::AppRequest::ListContexts { response_file } => {
                 log::info!(
@@ -323,13 +300,7 @@ impl PlexiApp {
                     })
                     .collect();
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
-                let temp_file = format!("{}.tmp", response_file);
-                if let Err(e) = std::fs::write(&temp_file, &json_str) {
-                    log::error!("pane_ipc: list_contexts: could not write temp response file {temp_file:?}: {e}");
-                } else if let Err(e) = std::fs::rename(&temp_file, &response_file) {
-                    log::error!("pane_ipc: list_contexts: could not rename temp response file to {response_file:?}: {e}");
-                    let _ = std::fs::remove_file(&temp_file);
-                }
+                write_response(response_file, json_str.as_bytes());
             }
             crate::app_protocol::AppRequest::GetPaneInfo {
                 pane_id,
@@ -396,12 +367,7 @@ impl PlexiApp {
                         };
                         let json_str =
                             serde_json::to_string(&info).unwrap_or_else(|_| "{}".to_string());
-                        if let Err(e) = std::fs::write(response_file, &json_str) {
-                            log::error!(
-                                "pane_ipc: get_pane_info: could not write response file {:?}: {e}",
-                                response_file
-                            );
-                        }
+                        write_response(response_file, json_str.as_bytes());
                         found = true;
                         break 'outer;
                     }
@@ -409,9 +375,7 @@ impl PlexiApp {
                 if !found {
                     log::warn!("pane_ipc: get_pane_info: pane_id={pane_id} not found");
                     let json_str = format!("{{\"error\":\"pane {pane_id} not found\"}}");
-                    if let Err(e) = std::fs::write(response_file, &json_str) {
-                        log::error!("pane_ipc: get_pane_info: could not write error response: {e}");
-                    }
+                    write_response(response_file, json_str.as_bytes());
                 }
             }
             crate::app_protocol::AppRequest::GetPreviousPaneInfo {
@@ -490,13 +454,7 @@ impl PlexiApp {
                         format!("{{\"error\":\"not enough pane history (requested step {steps}, found {hits} valid entries)\"}}")
                     }
                 };
-                let temp_file = format!("{}.tmp", response_file);
-                if let Err(e) = std::fs::write(&temp_file, &json_str) {
-                    log::error!("pane_ipc: get_previous_pane_info: could not write temp response file {temp_file:?}: {e}");
-                } else if let Err(e) = std::fs::rename(&temp_file, &response_file) {
-                    log::error!("pane_ipc: get_previous_pane_info: could not rename temp response file to {:?}: {e}", response_file);
-                    let _ = std::fs::remove_file(&temp_file);
-                }
+                write_response(response_file, json_str.as_bytes());
             }
             crate::app_protocol::AppRequest::SlotWrite {
                 pane_id,
@@ -653,7 +611,9 @@ impl PlexiApp {
                     return;
                 };
                 match std::fs::read(&path) {
-                    Ok(bytes) => write_bytes_response_atomic(response_file, &bytes),
+                    Ok(bytes) => {
+                        write_response(response_file, &bytes);
+                    }
                     Err(e) => {
                         slot_read_error(
                             response_file,
@@ -1002,9 +962,7 @@ impl PlexiApp {
                                                     )
                                                 }
                                             };
-                                            if let Err(e) = std::fs::write(rf, &json) {
-                                                log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
-                                            }
+                                            write_response(rf, json.as_bytes());
                                         }
                                         return;
                                     }
@@ -1050,11 +1008,7 @@ impl PlexiApp {
                                         format!("{{\"error\":{}}}", serde_json::json!(msg))
                                     }
                                 };
-                                if let Err(e) = std::fs::write(rf, &json) {
-                                    log::error!(
-                                        "pane_ipc: spawn_pane: could not write response file: {e}"
-                                    );
-                                }
+                                write_response(rf, json.as_bytes());
                             }
                             return;
                         };
@@ -1196,9 +1150,7 @@ impl PlexiApp {
                             )
                         }
                     };
-                    if let Err(e) = std::fs::write(rf, &json) {
-                        log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
-                    }
+                    write_response(rf, json.as_bytes());
                 }
             }
             crate::app_protocol::AppRequest::SendToPane {
@@ -1271,9 +1223,7 @@ impl PlexiApp {
                             serde_json::to_string(msg).unwrap_or_else(|_| format!("\"{msg}\""))
                         ),
                     };
-                    if let Err(e) = std::fs::write(rf, &json) {
-                        log::error!("pane_ipc: send_to_pane: could not write response file: {e}");
-                    }
+                    write_response(rf, json.as_bytes());
                 }
             }
             crate::app_protocol::AppRequest::KeyPane {
@@ -1399,9 +1349,7 @@ impl PlexiApp {
                         Ok(v) => v.to_string(),
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
-                    if let Err(e) = std::fs::write(rf, &json) {
-                        log::error!("pane_ipc: key_pane: could not write response file: {e}");
-                    }
+                    write_response(rf, json.as_bytes());
                 }
             }
             crate::app_protocol::AppRequest::DropFile {
@@ -1440,9 +1388,7 @@ impl PlexiApp {
                     Ok(value) => serde_json::json!({"ok": true, "delivery": value}),
                     Err(error) => serde_json::json!({"error": error}),
                 };
-                if let Err(error) = std::fs::write(response_file, json.to_string()) {
-                    log::error!("pane_ipc: drop_file response write failed: {error}");
-                }
+                write_json_response(response_file, json);
                 self.ctx.request_repaint();
             }
             crate::app_protocol::AppRequest::ClickPane {
@@ -1553,9 +1499,7 @@ impl PlexiApp {
                         Ok(v) => v.to_string(),
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
-                    if let Err(e) = std::fs::write(rf, &json) {
-                        log::error!("pane_ipc: click_pane: could not write response file: {e}");
-                    }
+                    write_response(rf, json.as_bytes());
                 }
             }
             crate::app_protocol::AppRequest::ClickPaneNode {
@@ -1614,11 +1558,7 @@ impl PlexiApp {
                         Ok(v) => v.to_string(),
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
-                    if let Err(e) = std::fs::write(rf, &json) {
-                        log::error!(
-                            "pane_ipc: click_pane_node: could not write response file: {e}"
-                        );
-                    }
+                    write_response(rf, json.as_bytes());
                 }
             }
             crate::app_protocol::AppRequest::CapturePane {
@@ -1700,11 +1640,7 @@ impl PlexiApp {
                     }),
                     Err(msg) => serde_json::json!({"error": msg}).to_string(),
                 };
-                if let Err(e) = std::fs::write(response_file, &json_str) {
-                    log::error!(
-                        "pane_ipc: capture_pane: could not write response file {response_file:?}: {e}"
-                    );
-                }
+                write_response(response_file, json_str.as_bytes());
             }
             crate::app_protocol::AppRequest::Screenshot {
                 pane_id,
@@ -1722,11 +1658,7 @@ impl PlexiApp {
                     let response = serde_json::json!({
                         "error": format!("pane {} not found", pane_id.unwrap_or_default())
                     });
-                    if let Err(e) = std::fs::write(response_file, response.to_string()) {
-                        log::error!(
-                            "pane_ipc: screenshot: could not write response file {response_file:?}: {e}"
-                        );
-                    }
+                    write_json_response(response_file, response);
                 } else {
                     self.pending_screenshots
                         .push(crate::app::screenshot::PendingScreenshot {
@@ -1801,9 +1733,7 @@ impl PlexiApp {
                         }
                     }
                 };
-                if let Err(e) = std::fs::write(response_file, &json_str) {
-                    log::error!("pane_ipc: get_pane_state: could not write response file {response_file:?}: {e}");
-                }
+                write_response(response_file, json_str.as_bytes());
             }
             crate::app_protocol::AppRequest::SendAppAction {
                 pane_id,
@@ -1839,11 +1769,7 @@ impl PlexiApp {
                         Ok(()) => serde_json::json!({"ok": true}).to_string(),
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
-                    if let Err(e) = std::fs::write(rf, &json) {
-                        log::error!(
-                            "pane_ipc: send_app_action: could not write response file: {e}"
-                        );
-                    }
+                    write_response(rf, json.as_bytes());
                 }
             }
             crate::app_protocol::AppRequest::SetAgentState {
@@ -1904,13 +1830,7 @@ impl PlexiApp {
                     .filter_map(|pane| pane.agent())
                     .collect();
                 let json_str = serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
-                let temp = format!("{response_file}.tmp");
-                if let Err(e) = std::fs::write(&temp, &json_str) {
-                    log::error!("pane_ipc: get_agent_states: could not write temp file: {e}");
-                } else if let Err(e) = std::fs::rename(&temp, response_file) {
-                    log::error!("pane_ipc: get_agent_states: rename failed: {e}");
-                    let _ = std::fs::remove_file(&temp);
-                }
+                write_response(response_file, json_str.as_bytes());
             }
             crate::app_protocol::AppRequest::Notify {
                 level,
@@ -2126,13 +2046,7 @@ impl PlexiApp {
                             "context_id": new_ctx_id,
                             "windows": windows_info,
                         });
-                        if let Ok(s) = serde_json::to_string(&response) {
-                            if let Err(e) = std::fs::write(&rf, s) {
-                                log::warn!(
-                                    "pane_ipc: create_context failed to write response file {rf}: {e}"
-                                );
-                            }
-                        }
+                        write_json_response(&rf, response);
                     }
                 }
                 self.save_workspace();
@@ -2298,11 +2212,7 @@ impl PlexiApp {
             "running": running.into_iter().collect::<Vec<_>>(),
         })
         .to_string();
-        if let Err(e) = std::fs::write(response_file, &body) {
-            log::error!(
-                "pane_ipc: list_permissions: could not write response file {response_file:?}: {e}"
-            );
-        }
+        write_response(response_file, body.as_bytes());
     }
 
     /// `SetPermission` host handler (stint 0017). Persists the new state to
@@ -2407,11 +2317,7 @@ impl PlexiApp {
             Ok(()) => "{\"ok\":true}".to_string(),
             Err(e) => serde_json::json!({ "error": e }).to_string(),
         };
-        if let Err(e) = std::fs::write(response_file, &body) {
-            log::error!(
-                "pane_ipc: set_permission: could not write response file {response_file:?}: {e}"
-            );
-        }
+        write_response(response_file, body.as_bytes());
         if let Err(e) = outcome {
             log::warn!("pane_ipc: set_permission failed: {e}");
         }

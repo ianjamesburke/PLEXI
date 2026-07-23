@@ -58,7 +58,7 @@ Read the relevant PRM first. Use `stint next` for the next claimable task. Stint
 
 ## Logging
 
-Log file: `~/.plexi-<channel>/plexi.log`. Rotates at 10 MB. Level set in `config.toml`.
+Log file: `~/.plexi-<channel>/plexi.log`. Rotation is date-based, not size-based: on startup, a log last modified on a prior day is renamed to `plexi-<YYYY-MM-DD>.log` and dated archives older than `[log] retention_days` (default 30) are pruned — see `rotate_and_prune` in `src/platform/logging.rs`. Level set in `config.toml`.
 
 Every new feature must be instrumented. No new capability, command, or user-visible behavior ships without at least one `info`-level trace.
 

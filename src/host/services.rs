@@ -54,8 +54,12 @@ impl FileEventSink {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let line = format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now}}}\n");
-            let _ = writer.write_all(line.as_bytes());
-            let _ = writer.flush();
+            if let Err(e) = writer.write_all(line.as_bytes()).and_then(|()| writer.flush()) {
+                log::debug!(
+                    "FileEventSink: startup heartbeat write({}) failed: {e}",
+                    sink.path.display()
+                );
+            }
         }
         sink
     }
@@ -73,7 +77,9 @@ impl EventSink for FileEventSink {
                 if let Err(e) = writer.write_all(line.as_bytes()) {
                     log::warn!("FileEventSink write({}) failed: {e}", self.path.display());
                 }
-                let _ = writer.flush();
+                if let Err(e) = writer.flush() {
+                    log::debug!("FileEventSink flush({}) failed: {e}", self.path.display());
+                }
             }
             Err(e) => log::warn!("FileEventSink serialize failed: {e}"),
         }

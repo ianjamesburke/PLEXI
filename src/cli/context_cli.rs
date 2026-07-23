@@ -45,19 +45,9 @@ pub fn context_new_cli(
     };
     // Only request a response file when creating a sub-context (--parent set).
     // Top-level context new stays fire-and-forget to preserve existing behaviour.
-    let response_file = if explicit_parent.is_some() {
-        Some(
-            crate::config::config_dir()
-                .join(format!(
-                    "context-new-response-{}.json",
-                    uuid::Uuid::new_v4()
-                ))
-                .to_string_lossy()
-                .into_owned(),
-        )
-    } else {
-        None
-    };
+    let response_file = explicit_parent
+        .is_some()
+        .then(|| crate::rpc::response_file("context-new-response", "json"));
     // Portal split anchor: explicit --from wins; otherwise the caller's own pane
     // (PLEXI_PANE_ID, set in every Plexi terminal). Only meaningful with --parent.
     let anchor_pane = from.or_else(|| {
@@ -107,29 +97,9 @@ pub fn context_new_cli(
     }
     // Poll for response JSON (sub-context only).
     if let Some(rf) = response_file {
-        let path = std::path::PathBuf::from(&rf);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if path.exists() {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        let _ = std::fs::remove_file(&path);
-                        println!("{content}");
-                        return 0;
-                    }
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&path);
-                        eprintln!("error: could not read context-new response: {e}");
-                        return 1;
-                    }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = std::fs::remove_file(&path);
-                eprintln!("error: timed out waiting for context-new response");
-                return 1;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+        match super::poll_rpc(&rf, "context-new") {
+            Ok(content) => println!("{content}"),
+            Err(code) => return code,
         }
     }
     0
@@ -295,11 +265,7 @@ pub fn context_current_cli() -> i32 {
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
 pub fn context_list_cli() -> i32 {
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("context-list-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
+    let response_file = crate::rpc::response_file("context-list-response", "json");
 
     let payload = serde_json::json!({
         "type": "list_contexts",
@@ -316,29 +282,9 @@ pub fn context_list_cli() -> i32 {
         return code;
     }
 
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    return print_json_output(&content);
-                }
-                Err(e) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    log::warn!("context_list:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = std::fs::remove_file(&response_path);
-            eprintln!("error: timed out waiting for context list response");
-            return 1;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    match super::poll_rpc(&response_file, "context list") {
+        Ok(content) => print_json_output(&content),
+        Err(code) => code,
     }
 }
 
