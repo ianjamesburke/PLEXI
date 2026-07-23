@@ -1,0 +1,18 @@
+schema_version = 1
+
+[app]
+id = "com.plexi.daw-engine-poc"
+type = "wasm"
+name = "DAW Engine"
+entry = "../../../target/wasm32-wasip1/release/daw_engine_poc.wasm"
+version = "0.1.0"
+description = "DAW playback engine POC. Renders the plexi-daw-model edit model in real time and offline through one shared render path (stint 0515)."
+
+[app.capabilities]
+capabilities = ["audio.playback"]
+
+[app.capabilities.wasm]
+required = ["state:read-write"]
+optional = []
+
+[launch]
