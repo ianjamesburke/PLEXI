@@ -40,9 +40,11 @@ these at runtime:
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Capabilities gate PGAP host APIs; they do not sandbox or restrict what a native
-Python process can do outside PGAP. The **Cap** column in the tables below shows
-which capability is required. Requests without a cap are available to all apps.
+Capabilities gate PGAP host APIs on top of the sandbox, not instead of it: every
+app — Python or Rust — runs as a WASM component in its own `wasmtime::Store`, so
+there is no ambient process access outside PGAP to restrict. The **Cap** column
+in the tables below shows which capability is required. Requests without a cap
+are available to all apps.
 
 ## The Python SDK
 

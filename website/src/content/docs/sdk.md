@@ -14,9 +14,14 @@ Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
 functions. The V3AppRuntime drives the event loop: host sends JSON events on
 stdin, app responds with effects and component trees on stdout.
 
-Python apps are native processes, not sandboxed. Treat third-party Python apps
-like other reviewed native code; capabilities gate Plexi host APIs but do not
-restrict ambient process access.
+Python apps are sandboxed. They run through the CPython-in-WASM adapter
+(`src/host/wasm_python.rs`) inside their own `wasmtime::Store` with isolated
+linear memory — the same component boundary a Rust WASM app gets, not a native
+subprocess. An app reaches only the host interfaces Plexi links for its world,
+and protected effects (file, network, AI, clipboard, pane, audio, GPU) each
+require an explicit capability grant the user approves on first request. There
+is no ambient process access to escape to. See `docs/wasm-runtime.md`
+§ Security Model for the full boundary.
 
 ## Effects
 

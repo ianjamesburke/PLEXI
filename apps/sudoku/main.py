@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import random
 
-import plexi_sdk as sdk
 from plexi_sdk import dim, state, theme
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, MouseEvent, Resize, TimerFired
@@ -20,6 +19,12 @@ SIDEBAR_W_MIN = 100
 CLUES = {"easy": 46, "medium": 34, "hard": 26}
 DIFFICULTIES = ["easy", "medium", "hard"]
 DIFF_TONE = {"easy": "success", "medium": "warning", "hard": "danger"}
+
+# Viewport dimensions, owned by this app. The host reports them through the
+# `init` size tuple and `Resize`; `plexi_sdk` neither declares nor maintains
+# them, so they live here rather than as attributes stashed on the SDK module.
+_canvas_width: float = 0.0
+_canvas_height: float = 0.0
 
 # ── Sudoku generation ──────────────────────────────────────────────────────
 
@@ -175,8 +180,8 @@ def _enter_number(d, num):
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
 def init(size, _args):
-    sdk.canvas_width, sdk.canvas_height = size
-    sdk.pane_width, sdk.pane_height = size
+    global _canvas_width, _canvas_height
+    _canvas_width, _canvas_height = size
     missing = {k: v for k, v in _blank().items() if state.get(k) is None}
     effects = [
         SetTitle("Sudoku"),
@@ -188,6 +193,7 @@ def init(size, _args):
     return effects
 
 def update(event):
+    global _canvas_width, _canvas_height
     d = _load()
     screen = str(d.get("screen", "menu"))
 
@@ -198,10 +204,8 @@ def update(event):
         return []
 
     if isinstance(event, Resize):
-        sdk.canvas_width = event.width
-        sdk.canvas_height = event.height
-        sdk.pane_width = event.width
-        sdk.pane_height = event.height
+        _canvas_width = event.width
+        _canvas_height = event.height
         return []
 
     if isinstance(event, MouseEvent) and event.pressed:
@@ -233,8 +237,8 @@ def _hit_cell(x, y, ox, oy, cell):
 
 def _mouse(d, x, y):
     if str(d.get("screen")) != "game":
-        w = sdk.canvas_width or 800.0
-        h = sdk.canvas_height or 600.0
+        w = _canvas_width or 800.0
+        h = _canvas_height or 600.0
         rects = [(i, bx, by, bw, bh) for i, (bx, by, bw, bh) in enumerate(_diff_button_rects(w, h))]
         idx = _hit_rect(x, y, rects)
         if idx is not None:
@@ -243,7 +247,7 @@ def _mouse(d, x, y):
         return []
 
     sidebar_w, cell = _compute_layout()
-    pane_w = sdk.canvas_width or sdk.pane_width or 800.0
+    pane_w = _canvas_width or 800.0
     gw = cell * 9
     pair_w = gw + 12.0 + sidebar_w
     ox = max(8.0, (pane_w - pair_w) / 2.0)
@@ -356,8 +360,8 @@ def _game_key(d, event):
 
 def _compute_layout():
     """Return (sidebar_w, cell) from current pane dimensions."""
-    pane_w = sdk.pane_width or 800.0
-    pane_h = sdk.pane_height or 600.0
+    pane_w = _canvas_width or 800.0
+    pane_h = _canvas_height or 600.0
     sidebar_w = max(SIDEBAR_W_MIN, min(SIDEBAR_W_MAX, int(pane_w * 0.18)))
     body_h = pane_h - 76.0  # minus AppBar + footer
     max_grid_w = pane_w - sidebar_w - 20.0
@@ -378,7 +382,7 @@ def view():
         keys = [("1-9", "fill"), ("n", "notes"), ("p", "pause"), ("r", "restart"), ("m", "menu")]
         footer = FooterKeys(keys)
     screen = str(d.get("screen", "menu"))
-    w, h = sdk.canvas_width, sdk.canvas_height
+    w, h = _canvas_width, _canvas_height
     if screen != "menu":
         # Single canvas for the entire game body: grid + sidebar drawn together.
         # This avoids HStack grow-distribution fighting with fixed-size children.
@@ -415,10 +419,10 @@ def _diff_button_rects(w, h):
     return [(bx, by_start + i * 80.0, bw, bh) for i in range(3)]
 
 def _draw_menu(d):
-    w = sdk.canvas_width
-    h = sdk.canvas_height
+    w = _canvas_width
+    h = _canvas_height
     diff_idx = int(d.get("diff_idx", 0))
-    cmds = []
+    cmds: list = []
 
     title_y = h / 2 - 160.0
     cmds.append(CanvasText(w / 2, title_y, "SUDOKU", size=36.0, color=theme.fg, bold=True, align="center_center"))
@@ -455,7 +459,7 @@ def _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell):
     blanks = sum(1 for r in range(9) for c in range(9) if not given[r][c])
     d_color = getattr(theme, DIFF_TONE.get(difficulty, "accent"))
 
-    cmds = []
+    cmds: list = []
     y = oy
 
     def section(label):
@@ -511,7 +515,7 @@ def _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell):
 def _draw_game(d):
     """Full game body: grid + sidebar on one canvas, sidebar flush right of grid."""
     sidebar_w, cell = _compute_layout()
-    pane_w = sdk.canvas_width or sdk.pane_width or 800.0
+    pane_w = _canvas_width or 800.0
     gw = cell * 9
     pair_w = gw + 12.0 + sidebar_w
     ox = max(8.0, (pane_w - pair_w) / 2.0)
@@ -540,7 +544,7 @@ def _draw_grid(d, cell=None, ox=6.0, oy=8.0):
         _, cell = _compute_layout()
     gw = cell * 9
     gh = cell * 9
-    cmds = []
+    cmds: list = []
 
     # Grid shadow/bg
     cmds.append(CanvasRect(ox - 3, oy - 3, gw + 6, gh + 6, theme.bg_darkest, radius=6.0))

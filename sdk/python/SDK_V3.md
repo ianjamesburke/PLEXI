@@ -654,39 +654,7 @@ Reset `_next_id` to 0 before each `view()` call. Keys are positional by default;
 
 ## 7. Native ProcessApp Bridge Protocol (superseded — see status note above)
 
-**This section is historical.** SDK v3 Python apps no longer run through native `ProcessApp` — stint 0285 deleted `src/process_app/` and replaced this bridge with the CPython-in-WASM adapter (`src/host/wasm_python.rs`). Kept below for archival reference only; do not implement against it. See [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current contract.
-
-<details><summary>Original (superseded) content</summary>
-
-SDK v3 Python apps run through native `ProcessApp`: the host starts the system Python interpreter as a subprocess and invokes `python -m plexi_sdk._v3_process <entry.py>`. PGAP remains the process transport. WASM-contained Python is not part of this contract.
-
-### Bootstrap sequence
-
-1. `ProcessApp::launch` resolves the `.py` entry from the manifest and launches it with the SDK path on `PYTHONPATH`.
-2. `plexi_sdk._v3_process` loads the app module from that entry file.
-3. The runtime reads PGAP JSON events from stdin and emits PGAP JSON commands on stdout.
-4. Lifecycle calls are ordinary Python function calls into module-level `init(size, args)`, `update(event)`, and `view()`.
-
-### Runtime protocol
-
-- `PlexiEvent::Init` calls `init((width, height), args)` and applies returned effects.
-- `PlexiEvent::Render` dispatches `RenderFrame` through `update(event)`, then calls `view()` and emits a `component_tree` draw command.
-- Input events decode to typed SDK events such as `KeyEvent`, `UiAction`, `UiValueChange`, `FileListResult`, and `FileReadResult`.
-- Effects encode back to existing PGAP host/control commands, including `set_state`, `save_app_state`, `set_title`, `file_list`, `file_read`, `http_request`, `open_url`, and `set_scheduler_mode`.
-
-### File effects
-
-`FileList(path, extensions=[])` and `FileRead(path)` are native ProcessApp host requests. The host requires `fs.read`, resolves the requested path inside `workspace_root`, and returns `FileListResult(entries, error)` or `FileReadResult(content, error)`. Directory listings are sorted with directories first, then files by name.
-
-### URL effects
-
-`OpenUrl(url)` is a native ProcessApp host request for opening HTTP(S) URLs in the user's default browser. The host requires `net.http`, rejects non-HTTP(S) URLs, and applies the manifest `allowed_hosts` matcher before spawning the platform opener.
-
-### Deferred WASM Python boundary
-
-CPython-in-WASM remains deferred G8 runtime work. Do not add `[runtime] python_compat = true` for SDK v3 apps, do not route Python app manifests to a `WasmPythonAdapter`, and do not require CPython bundle or shim fixtures for this SDK contract.
-
-</details>
+**This section is historical.** SDK v3 Python apps no longer run through native `ProcessApp` — stint 0285 deleted `src/process_app/` and replaced this bridge with the CPython-in-WASM adapter (`src/host/wasm_python.rs`). The archival protocol body was removed in stint 0512; see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current contract.
 
 ---
 

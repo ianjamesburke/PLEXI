@@ -6,7 +6,7 @@ order: 5
 
 Plexi apps render into panes through PGAP. The Python SDK is the default authoring path.
 
-Python apps are native subprocesses. Capabilities gate host APIs such as `net.http`, `secrets.get`, and `ai.query`; they are not a Python process sandbox.
+Python apps are sandboxed, not native subprocesses: they run through the CPython-in-WASM adapter inside their own `wasmtime::Store`, the same component boundary a Rust WASM app gets. Capabilities gate host APIs such as `net.http`, `secrets.get`, and `ai.query` on top of that sandbox.
 
 ## Create an App
 

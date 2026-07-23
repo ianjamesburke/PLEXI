@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import math
 
-import plexi_sdk as sdk
 from plexi_sdk import log
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame, Resize
@@ -25,9 +24,15 @@ STARTING_LIVES = 3
 _runtime: dict | None = None
 _keys_held: set[str] = set()
 
+# Viewport dimensions, owned by this app. The host reports them through the
+# `init` size tuple and `Resize`; `plexi_sdk` neither declares nor maintains
+# them, so they live here rather than as attributes stashed on the SDK module.
+_canvas_width: float = 0.0
+_canvas_height: float = 0.0
+
 
 def _brick_width() -> float:
-    return (0.9 * sdk.canvas_width - (BRICK_COLS - 1) * BRICK_GAP) / BRICK_COLS
+    return (0.9 * _canvas_width - (BRICK_COLS - 1) * BRICK_GAP) / BRICK_COLS
 
 
 def _brick_height() -> float:
@@ -35,38 +40,38 @@ def _brick_height() -> float:
 
 
 def _paddle_width() -> float:
-    return sdk.canvas_width * 0.125
+    return _canvas_width * 0.125
 
 
 def _paddle_height() -> float:
-    return sdk.canvas_height * 0.033
+    return _canvas_height * 0.033
 
 
 def _ball_radius() -> float:
-    return min(sdk.canvas_width, sdk.canvas_height) * 0.0167
+    return min(_canvas_width, _canvas_height) * 0.0167
 
 
 def _ball_speed() -> float:
-    return min(sdk.canvas_width, sdk.canvas_height) * 0.833
+    return min(_canvas_width, _canvas_height) * 0.833
 
 
 def _paddle_speed() -> float:
-    return sdk.canvas_width * 0.625
+    return _canvas_width * 0.625
 
 
 def _brick_top_margin() -> float:
-    return sdk.canvas_height * 0.139
+    return _canvas_height * 0.139
 
 
 def _paddle_y_offset() -> float:
-    return sdk.canvas_height * 0.083
+    return _canvas_height * 0.083
 
 
 def _make_bricks() -> list[dict]:
     bw = _brick_width()
     bh = _brick_height()
     total_width = BRICK_COLS * bw + (BRICK_COLS - 1) * BRICK_GAP
-    offset_x = (sdk.canvas_width - total_width) / 2.0
+    offset_x = (_canvas_width - total_width) / 2.0
     bricks = []
     for row in range(BRICK_ROWS):
         color = BRICK_COLORS[row % len(BRICK_COLORS)]
@@ -86,7 +91,7 @@ def _rebuild_brick_positions(data: dict) -> None:
     bw = _brick_width()
     bh = _brick_height()
     total_width = BRICK_COLS * bw + (BRICK_COLS - 1) * BRICK_GAP
-    offset_x = (sdk.canvas_width - total_width) / 2.0
+    offset_x = (_canvas_width - total_width) / 2.0
     for i, brick in enumerate(data["bricks"]):
         row = i // BRICK_COLS
         col = i % BRICK_COLS
@@ -98,8 +103,8 @@ def _rebuild_brick_positions(data: dict) -> None:
 
 def _initial() -> dict:
     pw = _paddle_width()
-    paddle_x = (sdk.canvas_width - pw) / 2.0
-    paddle_y = sdk.canvas_height - _paddle_y_offset()
+    paddle_x = (_canvas_width - pw) / 2.0
+    paddle_y = _canvas_height - _paddle_y_offset()
     return {
         "paddle_x": paddle_x,
         "paddle_y": paddle_y,
@@ -149,9 +154,8 @@ def _alive_count(data: dict) -> int:
 
 
 def init(size, args) -> list:
-    global _runtime
-    sdk.canvas_width, sdk.canvas_height = size
-    sdk.pane_width, sdk.pane_height = size
+    global _runtime, _canvas_width, _canvas_height
+    _canvas_width, _canvas_height = size
     _keys_held.clear()
     _runtime = _initial()
     effects: list = [
@@ -164,13 +168,12 @@ def init(size, args) -> list:
 
 
 def update(event) -> list:
+    global _canvas_width, _canvas_height
     if isinstance(event, Resize):
-        sdk.canvas_width = event.width
-        sdk.canvas_height = event.height
-        sdk.pane_width = event.width
-        sdk.pane_height = event.height
+        _canvas_width = event.width
+        _canvas_height = event.height
         data = _sim()
-        data["paddle_y"] = sdk.canvas_height - _paddle_y_offset()
+        data["paddle_y"] = _canvas_height - _paddle_y_offset()
         _rebuild_brick_positions(data)
         if data["ball_attached"]:
             _reset_ball(data)
@@ -215,7 +218,7 @@ def _handle_key(event: KeyEvent) -> list:
 
 def _move_paddle(data: dict, dx: float) -> None:
     pw = _paddle_width()
-    data["paddle_x"] = max(0.0, min(sdk.canvas_width - pw, data["paddle_x"] + dx))
+    data["paddle_x"] = max(0.0, min(_canvas_width - pw, data["paddle_x"] + dx))
     if data["ball_attached"]:
         data["ball_x"] = data["paddle_x"] + pw / 2.0
 
@@ -245,15 +248,15 @@ def _step(data: dict, dt: float) -> list:
     if bx - br <= 0:
         bx = br
         data["ball_vx"] = abs(data["ball_vx"])
-    elif bx + br >= sdk.canvas_width:
-        bx = sdk.canvas_width - br
+    elif bx + br >= _canvas_width:
+        bx = _canvas_width - br
         data["ball_vx"] = -abs(data["ball_vx"])
 
     if by - br <= 0:
         by = br
         data["ball_vy"] = abs(data["ball_vy"])
 
-    if by + br >= sdk.canvas_height:
+    if by + br >= _canvas_height:
         data["lives"] -= 1
         if data["lives"] <= 0:
             data["state"] = "gameover"
@@ -318,7 +321,7 @@ def _step(data: dict, dt: float) -> list:
 
 def view():
     data = _sim()
-    w, h = sdk.canvas_width, sdk.canvas_height
+    w, h = _canvas_width, _canvas_height
     return Column(
         [
             Canvas(_draw(data, w, h), width=w, height=h, grow=True),

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import random
+from typing import Any
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetSchedulerMode, SetState, SetStatus, SetTitle
@@ -17,7 +18,7 @@ CANVAS_W = 360.0
 CANVAS_H = 440.0
 TARGET_FPS = 10
 
-PIECES = {
+PIECES: dict[str, dict[str, Any]] = {
     "I": {
         "color": "#94e2d5",
         "shapes": [

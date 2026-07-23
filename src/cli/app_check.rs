@@ -225,20 +225,14 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         // mypy proves attribute/type correctness — e.g. `event.payload` on a
         // `UiValueChange` (which only has `.value`) fails here instead of
         // crashing the guest on the first keystroke.
-        // Findings gate hard only for current-template scaffolds (every app
-        // the assistant generates). Pre-gate apps surface the same findings
-        // as loud warnings until the maintained set is annotated — tracked
-        // as its own stint, not silently skipped here.
-        let strict_types = scaffold_at_current_template(app_dir);
+        // Findings are errors for every Python app (stint 0457). The
+        // template-version split that spared pre-gate scaffolds existed only
+        // to land the gate without turning the maintained set red overnight;
+        // that set is annotated now, so there is no warning tier left.
         match run_python_type_check(&manifest.app.id, &entry_path, &manifest.app.dependencies) {
             Ok(TypeCheckOutcome::Clean) => println!("✓ types — mypy clean"),
-            Ok(TypeCheckOutcome::Findings(findings)) if strict_types => {
-                errors.push(format!("types — mypy found errors:\n{findings}"));
-            }
             Ok(TypeCheckOutcome::Findings(findings)) => {
-                warnings.push(format!(
-                    "types — mypy findings (pre-current-template scaffold; not failing the check):\n{findings}"
-                ));
+                errors.push(format!("types — mypy found errors:\n{findings}"));
             }
             Ok(TypeCheckOutcome::Unavailable(reason)) => {
                 warnings.push(format!("types — type-check skipped: {reason}"));

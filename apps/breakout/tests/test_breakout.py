@@ -10,17 +10,14 @@ sys.path.insert(
 )
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import plexi_sdk as sdk  # noqa: E402
 from plexi_sdk.events import KeyEvent, RenderFrame, Resize  # noqa: E402
 
 import breakout  # noqa: E402
 
 
 def _reset() -> dict:
-    sdk.pane_width = 640.0
-    sdk.pane_height = 360.0
-    sdk.canvas_width = 640.0
-    sdk.canvas_height = 360.0
+    breakout._canvas_width = 640.0
+    breakout._canvas_height = 360.0
     breakout._keys_held.clear()
     data = breakout._initial()
     breakout._runtime = data
@@ -40,13 +37,9 @@ def test_init_uses_continuous_scheduler() -> None:
 
 def test_resize_updates_bounds() -> None:
     _reset()
-    sdk.pane_width = 800.0
-    sdk.pane_height = 600.0
-    sdk.canvas_width = 800.0
-    sdk.canvas_height = 600.0
     breakout.update(Resize(width=800.0, height=600.0))
-    assert sdk.pane_width == 800.0
-    assert sdk.pane_height == 600.0
+    assert breakout._canvas_width == 800.0
+    assert breakout._canvas_height == 600.0
 
 
 def test_ball_launch_via_space() -> None:
@@ -108,8 +101,8 @@ def test_ball_displacement_per_second_is_tick_rate_independent() -> None:
     a future regression that reintroduces fixed per-tick increments."""
 
     def _travel(fps: int) -> tuple[float, float]:
-        sdk.pane_width = sdk.canvas_width = 2000.0
-        sdk.pane_height = sdk.canvas_height = 2000.0
+        breakout._canvas_width = 2000.0
+        breakout._canvas_height = 2000.0
         breakout._keys_held.clear()
         data = breakout._initial()
         breakout._runtime = data
@@ -150,7 +143,7 @@ def test_view_returns_canvas_with_correct_structure() -> None:
 
 def test_initial_frame_batches_contiguous_bricks() -> None:
     data = _reset()
-    commands = breakout._draw(data, sdk.canvas_width, sdk.canvas_height)
+    commands = breakout._draw(data, breakout._canvas_width, breakout._canvas_height)
 
     brick_colors = set(breakout.BRICK_COLORS)
     brick_commands = [
@@ -167,7 +160,7 @@ def test_destroyed_brick_remains_a_hole_in_batched_row() -> None:
     missing = data["bricks"][4]
     missing["alive"] = False
 
-    commands = breakout._draw(data, sdk.canvas_width, sdk.canvas_height)
+    commands = breakout._draw(data, breakout._canvas_width, breakout._canvas_height)
     row_color = breakout.BRICK_COLORS[0]
     row_rects = [
         command.to_command()
@@ -187,8 +180,8 @@ def test_game_over_on_lives_exhausted() -> None:
     data = _reset()
     data["lives"] = 1
     breakout._launch_ball(data)
-    data["ball_x"] = sdk.pane_width / 2
-    data["ball_y"] = sdk.pane_height - breakout._ball_radius() - 1
+    data["ball_x"] = breakout._canvas_width / 2
+    data["ball_y"] = breakout._canvas_height - breakout._ball_radius() - 1
     data["ball_vx"] = 0.0
     data["ball_vy"] = breakout._ball_speed()
 
