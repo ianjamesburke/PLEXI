@@ -459,16 +459,22 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
 /// the wake, a CLI request against an idle instance sits queued until the
 /// user touches the window (#s13 perf batch regression).
 ///
-/// The delay is nonzero because a literal zero-delay request makes egui
-/// schedule a second settling paint; one prompt pass is all an IPC arrival
-/// needs, and handlers that change visible state mark their own frames dirty.
+/// The callback delay must stay nonzero after egui advances delayed repaint
+/// requests by the predicted frame time. Add `predicted_dt` here so eframe
+/// receives a one-shot delayed repaint instead of a `RepaintNow` event whose
+/// pass-number freshness guard can reject it during startup/multipass layout.
+/// One prompt pass is all an IPC arrival needs; handlers that change visible
+/// state mark their own frames dirty.
 /// This wake only works if the process itself is wakeable — see
 /// `platform::app_nap::disable_app_nap` for the App Nap exemption that keeps
 /// macOS from deferring these cross-thread wakeups on an idle host.
 pub(crate) const IPC_WAKE_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
 
 fn wake_ui_for_ipc(egui_ctx: &egui::Context) {
-    egui_ctx.request_repaint_after(IPC_WAKE_DELAY);
+    let predicted_frame_time =
+        std::time::Duration::try_from_secs_f32(egui_ctx.input(|input| input.predicted_dt))
+            .unwrap_or_default();
+    egui_ctx.request_repaint_after(predicted_frame_time.saturating_add(IPC_WAKE_DELAY));
 }
 
 /// Handle one newline-delimited JSON line from the notify socket: parse the

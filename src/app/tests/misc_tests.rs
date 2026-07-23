@@ -723,6 +723,19 @@ fn socket_line_queues_request_and_requests_prompt_repaint() {
     use std::sync::{Arc, Mutex};
 
     let ctx = egui::Context::default();
+    // Match a real eframe host after its first pass. Egui advances delayed
+    // repaint deadlines by this predicted frame time before invoking the
+    // native callback; a wake shorter than `predicted_dt` silently becomes an
+    // immediate RepaintNow event instead of the intended one-shot delay.
+    for _ in 0..3 {
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                predicted_dt: 1.0 / 60.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+    }
     let delays: Arc<Mutex<Vec<std::time::Duration>>> = Arc::new(Mutex::new(Vec::new()));
     let delays_cb = delays.clone();
     ctx.set_request_repaint_callback(move |info| {
@@ -745,8 +758,13 @@ fn socket_line_queues_request_and_requests_prompt_repaint() {
         1,
         "one socket line must trigger exactly one wake callback"
     );
-    // egui subtracts the predicted frame time before invoking the callback,
-    // so the wire delay is at most the requested one — prompt either way.
+    // The callback delay must remain nonzero after egui subtracts
+    // `predicted_dt`. A zero callback is RepaintNow in eframe; its stale-pass
+    // rejection can strand the queued IPC request until unrelated input.
+    assert!(
+        delays[0] > std::time::Duration::ZERO,
+        "IPC wake collapsed to RepaintNow after egui predicted_dt adjustment"
+    );
     assert!(
         delays[0] <= IPC_WAKE_DELAY,
         "wake delay must be prompt (requested {IPC_WAKE_DELAY:?}, got {:?})",
