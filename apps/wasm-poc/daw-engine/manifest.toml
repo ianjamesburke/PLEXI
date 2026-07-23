@@ -6,7 +6,7 @@ type = "wasm"
 name = "DAW Engine"
 entry = "../../../target/wasm32-wasip1/release/daw_engine_poc.wasm"
 version = "0.1.0"
-description = "DAW playback engine POC. Renders the plexi-daw-model edit model in real time and offline through one shared render path (stint 0515)."
+description = "DAW POC. Keyboard-complete timeline / mixer / transport UI (stint 0516) over the plexi-daw-model edit model, rendered in real time and offline through one shared render path (stint 0515)."
 
 [app.capabilities]
 capabilities = ["audio.playback"]

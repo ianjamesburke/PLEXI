@@ -1,0 +1,75 @@
+# DAW timeline / mixer / transport UI (stint 0516). Opens the committed
+# daw-engine release fixture through the live host and drives it through
+# delivered keyboard input, asserting the semantic tree reacts — the
+# keyboard-complete, node-addressable contract the release gate depends on.
+#
+# Scene keys must be NAMED keys: the scene runner injects a bare printable
+# character as `egui::Event::Text`, which the WASM host swallows (reserved for
+# a future text-input channel), so only multi-character keys (space, arrows,
+# home, delete, …) reach the guest here. The single-character operations
+# (move `,`/`.`, trim `;`/`'`, split `s`, add-track `t`, mixer `m`/`n`/`9`/`0`/
+# `k`/`l`, tempo `-`/`=`, loop `\`, undo/redo `z`/`r`) reach a real physical
+# keyboard as `Event::Key` (see pong's "w"/"s") and are covered by the app's
+# Rust unit tests; every one of them also has a node-addressable button in
+# this tree (asserted below), so none is pointer- or scene-only.
+#
+# suite = true: hermetic, no external process. Run with
+# `just scene tests/scenes/daw-timeline.toml`.
+size = [1280.0, 800.0]
+suite = true
+
+[[steps]]
+open = { kind = "wasm", path = "tests/wasm-fixtures/daw-engine.wasm", as = "daw" }
+
+[[steps]]
+run_steps = 3
+
+# Seeded project + all three surfaces render: transport bar, mixer strips, and
+# the timeline canvas with both tracks.
+[[steps]]
+assert = { target = "daw", pane_count = 1, lifecycle = "running", tree_contains = "DAW" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Pluck" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Arp" }
+
+# Node-addressable transport + structural buttons.
+[[steps]]
+assert = { target = "daw", tree_contains = "Play" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "+ Track" }
+
+# Node-addressable mixer controls (mute / solo strip) and the position readout.
+[[steps]]
+assert = { target = "daw", tree_contains = "bar 1 · beat 1" }
+
+# Clean seeded state — the before evidence frame.
+[[steps]]
+shot = "daw-timeline.png"
+
+# Transport: space toggles playback (badge flips to PLAYING).
+[[steps]]
+expect = { target = "daw", after_key = "space", node_changes = "PLAYING", timeout_s = 3.0 }
+
+# Transport: → seeks one beat (position readout advances to beat 2).
+[[steps]]
+expect = { target = "daw", after_key = "right", node_changes = "beat 2", timeout_s = 3.0 }
+
+# Navigation: ↓ selects the next track; its first clip becomes the selection.
+[[steps]]
+expect = { target = "daw", after_key = "down", node_changes = "Selected clip 8", timeout_s = 3.0 }
+
+# Clip edit: Delete removes the selected clip; the next clip is selected.
+[[steps]]
+expect = { target = "daw", after_key = "delete", node_changes = "Selected clip 9", timeout_s = 3.0 }
+
+# Transport: Home returns the playhead to the start (beat 1).
+[[steps]]
+expect = { target = "daw", after_key = "home", node_changes = "bar 1 · beat 1", timeout_s = 3.0 }
+
+# After the keyboard-driven edits — the after evidence frame.
+[[steps]]
+shot = "daw-timeline-edited.png"
