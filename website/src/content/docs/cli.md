@@ -372,6 +372,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | Subcommand | Description |
 |---|---|
 | `open` | Open an app or tool in a new pane |
+| `trust` | Pre-approve a raw `.wasm` component's host imports without a prompt |
 | `install` | Install an app from a local path, a remote source, or a pack file |
 | `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps with their versions |
@@ -411,6 +412,16 @@ Default placement is a sibling split to the right — the calling pane is never 
 | `--window` | flag | no | New window |
 | `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
+
+### `plexi app trust`
+
+Pre-approve a raw `.wasm` component's host imports without a prompt.
+
+The non-interactive form of the review `plexi app open <file.wasm>` runs at a TTY: it persists Green grants for every host interface the component imports, scoped to the wasm's parent directory — the same store and scope an installed host checks at open time. Meant for automation (release gates, scene runners) pre-approving a vetted, repo-committed fixture so an installed host opens it without a human at a terminal. It never opens a pane; production interactive review is unchanged.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | Path to the `.wasm` component to trust |
 
 ### `plexi app install`
 

@@ -1261,6 +1261,16 @@ impl LiveBackend {
                     }
                     OpenSpec::Builtin { id, .. } => id.clone(),
                 };
+                // A live wasm open shells `plexi app open`, whose raw-WASM
+                // review would block on a human at a TTY. Pre-approve through
+                // the real channel binary first (`plexi app trust`), which
+                // persists the fixture's import grants into the channel profile
+                // the attached host reads — the scene-runner test process is
+                // walled off from real profiles, so it cannot do this itself.
+                if let OpenSpec::Wasm { path, .. } = open {
+                    let resolved = resolve(path).display().to_string();
+                    self.command(&["app".to_string(), "trust".to_string(), resolved], false)?;
+                }
                 let mut args = vec!["app".to_string(), "open".to_string(), target];
                 match open {
                     OpenSpec::Process {
@@ -2079,6 +2089,13 @@ fn resolve(path: &str) -> PathBuf {
     }
 }
 
+/// Seeds the in-process test profile's `PermissionStore` with Green grants for
+/// a headless scene fixture's raw-WASM imports so the scene never stalls on an
+/// unanswerable capability review. Headless only: the in-process host and this
+/// call share the same (test-isolated) profile. The live backend cannot use
+/// this — a `#[cfg(test)]` binary is walled off from real channel profiles
+/// (`assert_test_profile_is_isolated`) — so it pre-approves through the real
+/// channel binary with `plexi app trust` instead.
 fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
     let app_id = wasm_path
         .file_stem()

@@ -1,0 +1,51 @@
+# DAW project bundle save / open / export — installed-host (attach) variant of
+# daw-bundle.toml, for the Tier 4 gate (scripts/daw-gate.sh, stint 0519).
+#
+# The difference from daw-bundle.toml is the picker: an in-scene `picker_script`
+# is headless-only (the in-process suite backend), and the live runner rejects
+# it. Against a real host the picker is scripted by launching the host with
+# PLEXI_PICKER_SCRIPT — which the gate script sets before `host start` with the
+# same three outcomes (save-as bundle dir, open bundle dir, export .wav). So
+# this scene carries no picker_script and is `suite = false`: it is driven only
+# in attach mode by the gate, never by `scene_suite`. Raw-WASM review is
+# pre-approved by the live runner via `plexi app trust`. Every op is a function
+# key (the WASM key channel delivers only named keys in scenes).
+size = [1280.0, 800.0]
+suite = false
+
+[[steps]]
+open = { kind = "wasm", path = "tests/wasm-fixtures/daw-engine.wasm", as = "daw" }
+
+[[steps]]
+run_steps = 3
+
+# Seeded demo project renders with both tracks and the bundle controls.
+[[steps]]
+assert = { target = "daw", pane_count = 1, lifecycle = "running", tree_contains = "DAW" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Pluck" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Save" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Export" }
+
+# F2: save-as writes project.json into the host-scripted bundle dir.
+[[steps]]
+expect = { target = "daw", after_key = "f2", tree_contains = "saved bundle to", timeout_s = 8.0 }
+
+# F3: reopen the bundle from disk — the demo project survives the round trip.
+[[steps]]
+expect = { target = "daw", after_key = "f3", tree_contains = "opened bundle", timeout_s = 8.0 }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Pluck" }
+
+[[steps]]
+assert = { target = "daw", tree_contains = "Arp" }
+
+# F5: export the offline mixdown to the host-scripted .wav destination.
+[[steps]]
+expect = { target = "daw", after_key = "f5", tree_contains = "exporting", timeout_s = 8.0 }

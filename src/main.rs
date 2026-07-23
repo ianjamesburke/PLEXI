@@ -518,6 +518,10 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::app_uninstall(&id, yes))
                             }
                             AppCmd::List => std::process::exit(cli::app_list()),
+                            AppCmd::Trust { path } => {
+                                log::info!("app_trust:cli: path={path}");
+                                std::process::exit(cli::app_trust_cli(&path));
+                            }
                             AppCmd::Render {
                                 app,
                                 size,

@@ -512,6 +512,21 @@ pub enum AppCmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
     },
+    /// Pre-approve a raw `.wasm` component's host imports without a prompt.
+    ///
+    /// The non-interactive form of the review `plexi app open <file.wasm>`
+    /// runs at a TTY: it persists Green grants for every host interface the
+    /// component imports, scoped to the wasm's parent directory — the same
+    /// store and scope an installed host checks at open time. Meant for
+    /// automation (release gates, scene runners) pre-approving a vetted,
+    /// repo-committed fixture so an installed host opens it without a human at
+    /// a terminal. It never opens a pane; production interactive review is
+    /// unchanged.
+    Trust {
+        /// Path to the `.wasm` component to trust.
+        #[arg(value_hint = ValueHint::FilePath)]
+        path: String,
+    },
     /// Install an app from a local path, a remote source, or a pack file.
     ///
     /// Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store.

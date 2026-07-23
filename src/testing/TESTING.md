@@ -205,14 +205,23 @@ gate above:
    through the real `plexi-daw-engine` render path; `daw_gate_pane_drive` drives
    the committed DAW WASM fixture in-process through named-key input, asserting
    the semantic tree reacts.
-3. **Scenes headless** — the `daw-*.toml` scenes (`daw-timeline`, `daw-bundle`)
-   run in `scene_suite`; iterate on one with `just scene tests/scenes/<file>`.
+3. **Scenes headless** — the suite `daw-*.toml` scenes (`daw-timeline`,
+   `daw-bundle`) run in `scene_suite`; iterate on one with `just scene
+   tests/scenes/<file>`. The live scene runner pre-approves a fixture's
+   raw-WASM imports so an attach run never stalls on capability review:
+   headless seeds the in-process test profile directly, live shells `plexi app
+   trust <wasm>` through the real channel binary (the test process is walled
+   off from real profiles).
 4. **Installed host** — `just daw-gate pr-<N>` re-runs the core qualification,
    boots one hermetic host, leaves markers via `plexi host log --source
-   daw_gate`, runs every DAW scene in attach mode, and collects everything into
-   `/tmp/plexi-daw-gate/pr-<N>/` (per-scene SceneReports, best-effort host
-   screenshots, the core qualification artifact `daw-gate-core.json`, a channel
-   `log-tail.txt`, and `summary.json`).
+   daw_gate`, and runs the attach-eligible scene set (`daw-timeline` plus
+   `daw-gate-bundle`, the attach counterpart of the headless `daw-bundle` whose
+   in-scene `picker_script` is headless-only) against that host. Save/open/
+   export picks come from the host's `PLEXI_PICKER_SCRIPT`, set before `host
+   start`. The gate refuses any selected scene that declares a headless-only
+   feature. Everything lands in `/tmp/plexi-daw-gate/pr-<N>/` (per-scene
+   SceneReports, best-effort host screenshots, the `daw-gate-core.json`
+   artifact, a channel `log-tail.txt`, and `summary.json`).
 
 Randomized failures are replayable: the panic names a seed and writes a
 minimized replay bundle to `$TMPDIR/plexi-daw-gate-failure-<seed>.json`; rerun

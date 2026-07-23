@@ -80,14 +80,29 @@ cleanup_gate_host() {
 }
 trap cleanup_gate_host EXIT INT TERM HUP
 
+# Attach-eligible scene set. Only scenes that can run against a live installed
+# host belong here: raw-WASM review is pre-approved by the live runner
+# (`plexi app trust`), and the file picker is scripted through the host's
+# PLEXI_PICKER_SCRIPT (set below) — never an in-scene `picker_script`, which is
+# headless-only. daw-timeline drives transport/edit via named keys;
+# daw-gate-bundle is the attach counterpart of the headless daw-bundle scene.
+attach_scenes=(daw-timeline daw-gate-bundle)
 scenes=()
-for scene in "$scene_dir"/daw-*.toml; do
-    [[ -f "$scene" ]] && scenes+=("$scene")
+for name in "${attach_scenes[@]}"; do
+    scene="$scene_dir/$name.toml"
+    if [[ ! -f "$scene" ]]; then
+        echo "daw-gate: missing attach scene $scene" >&2
+        exit 1
+    fi
+    # Category guard (stint 0519): an in-scene picker_script is honored only by
+    # the in-process suite backend; the live runner rejects it. Such a scene is
+    # not attach-eligible and must never silently enter the installed-host gate.
+    if grep -Eq '^[[:space:]]*picker_script' "$scene"; then
+        echo "daw-gate: scene $name declares picker_script (headless-only) and is not attach-eligible; script the picker via PLEXI_PICKER_SCRIPT at host start instead" >&2
+        exit 1
+    fi
+    scenes+=("$scene")
 done
-if [[ ${#scenes[@]} -eq 0 ]]; then
-    echo "daw-gate: no DAW scenes found in $scene_dir" >&2
-    exit 1
-fi
 
 echo "daw-gate: started channel=$channel scenes=${#scenes[@]} out=$out_dir"
 
@@ -109,6 +124,21 @@ if [[ ! -f "$core_artifact" ]]; then
 fi
 cp "$core_artifact" "$out_dir/daw-gate-core.json"
 echo "daw-gate: collected core artifact daw-gate-core.json"
+
+# Script the host's file picker for daw-gate-bundle's save-as / open / export
+# (F2/F3/F5). The live host reads PLEXI_PICKER_SCRIPT per pane at launch, so it
+# must be exported before `host start`; each pick grants write to the concrete
+# path it returns. daw-timeline never opens a picker, so its unused queue is
+# harmless.
+picker_script="$out_dir/picker-script.json"
+cat > "$picker_script" <<PICKER
+[
+  {"paths": ["$out_dir/song"]},
+  {"paths": ["$out_dir/song"]},
+  {"paths": ["$out_dir/mixdown.wav"]}
+]
+PICKER
+export PLEXI_PICKER_SCRIPT="$picker_script"
 
 # One hermetic host for the whole gate: --ephemeral means the channel's saved
 # session is neither restored nor overwritten. The started flag is set before
