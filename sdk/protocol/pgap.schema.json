@@ -115,6 +115,15 @@
           ],
           "type": "object"
         },
+        "FilePickerMode": {
+          "description": "Dialog mode for `DrawCommand::OpenFilePicker`.\n\n- `Open` — pick one existing file (or several when `multiple` is true).\n- `Folder` — pick one existing directory; the grant covers the subtree.\n- `Save` — pick a save destination; the file may not exist yet.\n\n`multiple` is only meaningful for `Open`; `Folder` and `Save` always\nreturn exactly one path.",
+          "enum": [
+            "open",
+            "folder",
+            "save"
+          ],
+          "type": "string"
+        },
         "ModelTier": {
           "description": "Coarse model tier requested by the app. The host maps each tier to a\nconcrete model identifier per backend (spec §ai.query):\n  - `Low`    → Haiku\n  - `Medium` → Sonnet\n  - `High`   → Opus",
           "enum": [
@@ -1452,83 +1461,6 @@
           "type": "object"
         },
         {
-          "description": "Deliver a sanctioned pointer drag to an app pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
-          "properties": {
-            "button": {
-              "description": "\"left\" (default), \"right\", or \"middle\".",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "from": {
-              "items": {
-                "format": "float",
-                "type": "number"
-              },
-              "maxItems": 2,
-              "minItems": 2,
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "from_node": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "pane_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "response_file": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "steps": {
-              "description": "Intermediate move positions between press and release (default 8,\nmax 256). Each step is one frame, so scrub/threshold logic in the\ntarget app sees a realistic pointer trajectory.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "to": {
-              "items": {
-                "format": "float",
-                "type": "number"
-              },
-              "maxItems": 2,
-              "minItems": 2,
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "to_node": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "drag_pane",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "pane_id"
-          ],
-          "type": "object"
-        },
-        {
           "description": "Read the last N lines from a terminal pane's PTY scrollback buffer.\nSent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.",
           "properties": {
             "from_cursor": {
@@ -2586,13 +2518,17 @@
           "type": "object"
         },
         {
-          "description": "Show a native macOS file picker dialog. Requires `fs.pick` capability.\n\n`filter` is a list of file extensions without leading dots\n(e.g. `[\"mp4\", \"mov\"]`). Empty list = accept all files.\n\n`multiple` allows selecting more than one file.\n\nHost responds with `PlexiEvent::FilePicked` (paths) or\n`PlexiEvent::FilePickCancelled` (user dismissed / capability denied).",
+          "description": "Show a native file picker dialog. Requires `fs.pick` capability.\n\n`filter` is a list of file extensions without leading dots\n(e.g. `[\"mp4\", \"mov\"]`). Empty list = accept all files. Only applies\nto `open` and `save` modes.\n\n`multiple` allows selecting more than one file (`open` mode only).\n\n`mode` selects the dialog kind (`open` / `folder` / `save`); see\n`FilePickerMode`. Defaults to `open` when omitted.\n\nHost responds with `PlexiEvent::FilePicked` (paths) or\n`PlexiEvent::FilePickCancelled` (user dismissed / capability denied).\nEvery picked path is registered as a scoped fs grant for this pane:\nsubsequent `file_read` / `file_write` calls may name the granted path\n(or, for `folder` mode, any path under it) as an absolute path, in\naddition to workspace-relative paths. Grants live for the pane's\nlifetime and are never persisted.",
           "properties": {
             "filter": {
               "items": {
                 "type": "string"
               },
               "type": "array"
+            },
+            "mode": {
+              "$ref": "#/$defs/FilePickerMode",
+              "default": "open"
             },
             "multiple": {
               "type": "boolean"
@@ -4515,7 +4451,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `DrawCommand::OpenFilePicker`. At least one file was selected.\n`paths` contains the absolute paths chosen by the user.",
+          "description": "Response to `DrawCommand::OpenFilePicker`. At least one file was selected.\n`paths` contains the absolute, canonicalized paths chosen by the user.\nEach path is already registered as a scoped fs grant for this pane, so\nthe app can pass it verbatim to `file_read` / `file_write`.",
           "properties": {
             "paths": {
               "items": {

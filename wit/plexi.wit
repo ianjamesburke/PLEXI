@@ -195,6 +195,10 @@ interface types {
         // Payment
         payment-complete,
         payment-failed(string),
+
+        // File picker (stint 0508)
+        file-picked(file-picked-event),
+        file-pick-cancelled(string),
     }
 
     // ── Effects ───────────────────────────────────────────────────────────────
@@ -294,6 +298,26 @@ interface types {
         args: list<string>,
     }
 
+    // File picker (stint 0508). Requires the `fs.pick` capability. The host
+    // responds with `file-picked` (paths registered as scoped fs grants for
+    // this pane — pass them verbatim to file-read/file-write) or
+    // `file-pick-cancelled` (user dismissed / capability denied).
+    enum file-picker-mode { open, folder, save }
+
+    record open-file-picker-effect {
+        request-id: string,
+        // Extensions without leading dots; empty = accept all files.
+        filter: list<string>,
+        // Allow selecting more than one file (open mode only).
+        multiple: bool,
+        mode: file-picker-mode,
+    }
+
+    record file-picked-event {
+        request-id: string,
+        paths: list<string>,
+    }
+
     variant effect {
         file-read(file-read-effect),
         file-write(file-write-effect),
@@ -316,6 +340,7 @@ interface types {
         clipboard-write(string),
         notify(notification-effect),
         spawn(spawn-effect),
+        open-file-picker(open-file-picker-effect),
     }
 
     // ── UI node tree (arena — avoids WIT recursive types) ─────────────────────

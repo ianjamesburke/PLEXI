@@ -75,6 +75,27 @@ class ReadHostLog:
 
 
 @dataclass
+class OpenFilePicker:
+    """Show a host file picker (``fs.pick`` capability).
+
+    ``mode`` is ``"open"`` (existing file, or several when ``multiple`` is
+    true), ``"folder"`` (directory; the grant covers the subtree), or
+    ``"save"`` (destination that may not exist yet). ``filter`` lists file
+    extensions without leading dots; empty accepts all files.
+
+    The host replies with :class:`events.FilePicked` — whose paths are
+    already registered as scoped fs grants, so they can be passed verbatim
+    to :class:`FileRead` / :class:`FileWrite` — or
+    :class:`events.FilePickCancelled` (user dismissed, or capability
+    denied).
+    """
+    request_id: str
+    filter: list[str] = field(default_factory=list)
+    multiple: bool = False
+    mode: str = "open"
+
+
+@dataclass
 class HttpFetch:
     url: str
     method: str = "GET"

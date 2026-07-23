@@ -1,0 +1,21 @@
+schema_version = 1
+
+[app]
+id = "file-picker-poc"
+type = "app"
+name = "File Picker Poc"
+entry = "main.py"
+version = "0.1.0"
+description = "POC: OpenFilePicker round trip with picker-granted fs scopes (stint 0508)"
+watch = true
+
+[app.capabilities]
+capabilities = ["fs.pick", "fs.read", "fs.write"]
+
+[launch]
+
+# Uncomment and fill in to publish with `plexi app publish`:
+# [marketplace]
+# visibility = "public"   # public | unlisted | private
+# price = "free"          # "free", or a price like "4.99"
+# publisher = "your-org"  # required: your publisher / org slug

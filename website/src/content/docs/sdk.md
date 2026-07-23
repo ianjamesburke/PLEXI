@@ -84,6 +84,25 @@ The host owns path resolution — it tails its own `~/.plexi-<channel>/plexi.log
 and replies with an `events.HostLogResult`. The app never names or opens the
 file, so the request carries only how many trailing bytes to read.
 
+### `OpenFilePicker`
+
+```python
+OpenFilePicker(request_id: str, filter: list[str] = list(), multiple: bool = False, mode: str = 'open')
+```
+
+Show a host file picker (``fs.pick`` capability).
+
+``mode`` is ``"open"`` (existing file, or several when ``multiple`` is
+true), ``"folder"`` (directory; the grant covers the subtree), or
+``"save"`` (destination that may not exist yet). ``filter`` lists file
+extensions without leading dots; empty accepts all files.
+
+The host replies with :class:`events.FilePicked` — whose paths are
+already registered as scoped fs grants, so they can be passed verbatim
+to :class:`FileRead` / :class:`FileWrite` — or
+:class:`events.FilePickCancelled` (user dismissed, or capability
+denied).
+
 ### `HttpFetch`
 
 ```python
@@ -296,6 +315,28 @@ Host reply to an `effects.ReadHostLog` request.
 success; `error` names why the log could not be reached otherwise. `path` is
 the host-resolved channel-log path, echoed back for the app to display in its
 empty/error state. Exactly one of `content` / `error` is set.
+
+### `FilePicked`
+
+```python
+FilePicked(request_id: str, paths: list[str])
+```
+
+Host reply to :class:`effects.OpenFilePicker`: the user picked paths.
+
+``paths`` are absolute, canonicalized, and already registered as scoped
+fs grants for this pane — pass them verbatim to ``FileRead`` /
+``FileWrite``.
+
+### `FilePickCancelled`
+
+```python
+FilePickCancelled(request_id: str)
+```
+
+Host reply to :class:`effects.OpenFilePicker`: the user dismissed the
+dialog, or the app lacks the ``fs.pick`` capability. No grant was
+created.
 
 ### `HttpResponse`
 

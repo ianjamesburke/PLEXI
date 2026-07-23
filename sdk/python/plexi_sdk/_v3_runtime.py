@@ -186,6 +186,15 @@ class V3AppRuntime:
             ))
         elif t == "file_write_result":
             self._dispatch(events.FileWriteResult(error=ev.get("error")))
+        elif t == "file_picked":
+            self._dispatch(events.FilePicked(
+                request_id=ev.get("request_id", ""),
+                paths=[str(p) for p in ev.get("paths", [])],
+            ))
+        elif t == "file_pick_cancelled":
+            self._dispatch(events.FilePickCancelled(
+                request_id=ev.get("request_id", ""),
+            ))
         elif t == "host_log_result":
             content = ev.get("content")
             self._dispatch(events.HostLogResult(
@@ -224,6 +233,14 @@ class V3AppRuntime:
         self._app_id = ev.get("app_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
+        # Host-provided launch args (plexi app open <id> -- <args>, scene
+        # `open` args). Under the CPython-in-WASM bridge the process argv
+        # carries no app args, so the init event is their only route to
+        # init(size, args); argv args stay authoritative for bare
+        # `python -m plexi_sdk._v3_process app.py <args>` runs.
+        host_args = [str(arg) for arg in ev.get("args", [])]
+        if host_args:
+            self._launch_args = host_args
 
         from ._theme import theme as _theme
         _theme.update_from(ev.get("theme"))
@@ -470,6 +487,14 @@ class V3AppRuntime:
                 _emit(payload)
             elif isinstance(effect, effects.FileRead):
                 _emit({"type": "file_read", "path": effect.path})
+            elif isinstance(effect, effects.OpenFilePicker):
+                _emit({
+                    "type": "open_file_picker",
+                    "request_id": effect.request_id,
+                    "filter": list(effect.filter),
+                    "multiple": bool(effect.multiple),
+                    "mode": effect.mode,
+                })
             elif isinstance(effect, effects.FileWrite):
                 content = effect.content
                 if not isinstance(content, (bytes, bytearray)):
