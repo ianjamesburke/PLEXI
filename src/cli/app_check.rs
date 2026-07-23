@@ -283,6 +283,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                         &tree,
                         width as f32,
                         height as f32,
+                        1.0,
                     ) {
                         Ok(bytes) => match std::fs::write(&png_path, bytes) {
                             Ok(()) => println!("✓ png {label} — {}", png_path.display()),

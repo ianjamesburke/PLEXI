@@ -143,7 +143,15 @@ fn tree_wants_content_padding(nodes: &[IndexedNode]) -> bool {
 /// `plexi app check --png-dir` so the CLI renders exactly what the live host
 /// would paint instead of hand-rolling a second rasterizer for widget chrome
 /// (buttons, fonts, footer key chips) that has no flat-primitive form.
-pub fn render_ui_tree_to_png(tree: &UiTree, width: f32, height: f32) -> Result<Vec<u8>, String> {
+/// `pixels_per_point` is explicit: the CLI renders at 1.0; HiDPI screenshot
+/// tests render at 2.0 so surface-resolution and pixel-grid regressions are
+/// visible in the captured pixels.
+pub fn render_ui_tree_to_png(
+    tree: &UiTree,
+    width: f32,
+    height: f32,
+    pixels_per_point: f32,
+) -> Result<Vec<u8>, String> {
     let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
     let tree = tree.clone();
     // `set_fonts` only takes effect on the *next* frame's `begin_frame`, so the
@@ -156,6 +164,7 @@ pub fn render_ui_tree_to_png(tree: &UiTree, width: f32, height: f32) -> Result<V
     let mut fonts_ready = false;
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::Vec2::new(width, height))
+        .with_pixels_per_point(pixels_per_point)
         .build_ui(move |ui| {
             if !fonts_ready {
                 crate::ui::theme::setup_fonts(ui.ctx());
@@ -690,11 +699,18 @@ fn render_node(
                         );
                     }
                     CanvasCommand::Text(text) => {
+                        // Rasterize at the final effective size snapped to the
+                        // physical pixel grid (stint 0527): a raw
+                        // `size × scale` yields fractional per-frame font
+                        // sizes that re-rasterize soft at every canvas resize.
+                        let ppp = ui.painter().pixels_per_point();
+                        let effective = (text.size * sx.min(sy)).max(1.0);
+                        let snapped = (effective * ppp).round().max(1.0) / ppp;
                         ui.painter().text(
                             egui::pos2(origin.x + text.x * sx, origin.y + text.y * sy),
                             canvas_align(text.align),
                             &text.text,
-                            egui::FontId::proportional(text.size * sx.min(sy)),
+                            egui::FontId::proportional(snapped),
                             rgba(&text.color),
                         );
                     }
@@ -724,6 +740,14 @@ fn render_node(
                 egui::vec2(s.width as f32, s.height as f32),
                 egui::Sense::hover(),
             );
+            // The backing texture is allocated at `logical × ppp` physical
+            // pixels (stint 0527); snapping the composite rect to the pixel
+            // grid makes the texel→pixel mapping the identity at integer ppp,
+            // so no resampling blurs the guest's render.
+            let rect = {
+                use egui::emath::GuiRounding;
+                rect.round_to_pixels(ui.painter().pixels_per_point())
+            };
             match surface {
                 Some(tex) => {
                     ui.painter().image(
@@ -736,7 +760,8 @@ fn render_node(
                 None => {
                     ui.painter()
                         .rect_filled(rect, style::RADIUS_MD, colors.bg_active);
-                    ui.painter().text(
+                    crate::ui::snap::text_snapped(
+                        ui.painter(),
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "GPU surface",
@@ -812,7 +837,8 @@ fn render_node(
 mod tests {
     use super::*;
     use crate::host::wasm_app::bindings::plexi::platform::types::{
-        ButtonNode, CanvasNode, CanvasRect, ColumnNode, SurfaceNode, TextInputNode, TextNode,
+        AppBarNode, ButtonNode, CanvasNode, CanvasRect, CanvasText, ColumnNode, SurfaceNode,
+        TextInputNode, TextNode,
     };
     use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
 
@@ -857,9 +883,90 @@ mod tests {
                 ),
             ],
         };
-        let png = render_ui_tree_to_png(&tree, 420.0, 180.0).expect("render TextInput tree");
+        let png = render_ui_tree_to_png(&tree, 420.0, 180.0, 1.0).expect("render TextInput tree");
         std::fs::write("/tmp/plexi-render-0456-textinput.png", png)
             .expect("write screenshot for visual review");
+    }
+
+    /// Stints 0527/0528/0530 evidence: a text-heavy app (AppBar with
+    /// title+subtitle, flow text, canvas text commands) rendered at ppp 1.0
+    /// and 2.0. The ppp-2.0 capture must show 2× pixel detail — crisp canvas
+    /// text at the snapped effective size, pixel-grid AppBar galleys, and the
+    /// contrast-floored subtitle tone. Review artifacts:
+    /// /tmp/plexi-render-0527-app-text-ppp{1,2}.png.
+    #[test]
+    fn screenshot_text_heavy_app_at_ppp_1_and_2() {
+        let white = Color {
+            r: 0xe6,
+            g: 0xe6,
+            b: 0xf0,
+            a: 0xff,
+        };
+        let canvas_text = |x: f32, y: f32, size: f32, text: &str| {
+            CanvasCommand::Text(CanvasText {
+                x,
+                y,
+                text: text.to_string(),
+                size,
+                color: white,
+                bold: false,
+                align: Alignment::Start,
+            })
+        };
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                node(
+                    0,
+                    UiNodeData::Column(ColumnNode {
+                        children: vec![1, 2, 3],
+                        gap: 8.0,
+                        align: Alignment::Start,
+                        grow: true,
+                    }),
+                ),
+                node(
+                    1,
+                    UiNodeData::AppBar(AppBarNode {
+                        title: "Pixel Grid Fixture".to_string(),
+                        subtitle: "surface resolution · typography evidence".to_string(),
+                    }),
+                ),
+                node(
+                    2,
+                    UiNodeData::Text(TextNode {
+                        text: "The quick brown fox jumps over the lazy dog 0123456789"
+                            .to_string(),
+                        size: None,
+                        bold: false,
+                        color: None,
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                ),
+                node(
+                    3,
+                    UiNodeData::Canvas(CanvasNode {
+                        width: 420.0,
+                        height: 160.0,
+                        grow: false,
+                        commands: vec![
+                            canvas_text(8.0, 12.0, 11.0, "canvas 11pt: waveform ruler 0 dB"),
+                            canvas_text(8.0, 40.0, 14.0, "canvas 14pt: The quick brown fox"),
+                            canvas_text(8.0, 74.0, 18.0, "canvas 18pt: 120.0 BPM 44.1 kHz"),
+                        ],
+                    }),
+                ),
+            ],
+        };
+        for (ppp, path) in [
+            (1.0, "/tmp/plexi-render-0527-app-text-ppp1.png"),
+            (2.0, "/tmp/plexi-render-0527-app-text-ppp2.png"),
+        ] {
+            let png = render_ui_tree_to_png(&tree, 480.0, 300.0, ppp)
+                .unwrap_or_else(|e| panic!("render text-heavy tree at ppp {ppp}: {e}"));
+            std::fs::write(path, png).expect("write screenshot for visual review");
+        }
     }
 
     /// Stint 0456: the TextInput edit buffer only resets when the app

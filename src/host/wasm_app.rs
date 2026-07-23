@@ -714,6 +714,14 @@ impl WasmApp {
             .map(|g| g.alloc_surface(width, height))
     }
 
+    /// Drop a surface texture (display-scale reallocation, stint 0527).
+    /// Unknown handles and missing gpu capability are no-ops.
+    pub fn free_surface(&mut self, handle: u64) {
+        if let Some(g) = self.store.data_mut().gpu.as_mut() {
+            g.free_surface(handle);
+        }
+    }
+
     /// Read a surface texture back to an RGBA image for pixel assertions.
     /// Test-only: live composition never blocks the UI thread on a synchronous
     /// readback — see `request_surface_readback`/`take_surface_readback`.

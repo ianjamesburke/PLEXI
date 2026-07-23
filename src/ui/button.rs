@@ -156,7 +156,8 @@ pub(crate) fn choice_button(
 
     let painter = ui.painter();
     painter.rect_filled(rect, style::RADIUS_MD, actual_bg);
-    painter.text(
+    crate::ui::snap::text_snapped(
+        painter,
         rect.center(),
         Align2::CENTER_CENTER,
         label,
@@ -164,7 +165,8 @@ pub(crate) fn choice_button(
         fg,
     );
     if !shortcut_hint.is_empty() {
-        painter.text(
+        crate::ui::snap::text_snapped(
+            painter,
             egui::pos2(rect.right() - 18.0, rect.center().y),
             Align2::RIGHT_CENTER,
             shortcut_hint,

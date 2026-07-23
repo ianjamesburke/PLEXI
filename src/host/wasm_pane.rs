@@ -43,10 +43,16 @@ use super::wasm_app::{
 use super::wasm_render::{render_ui_tree_with_surface, RenderResult};
 
 /// A GPU surface the host allocated for the guest's `surface-node`.
+/// `width`/`height` are physical pixels (`logical × alloc_ppp`, stint 0527);
+/// the guest-facing UI tree keeps declaring logical points.
 struct SurfaceState {
     handle: u64,
     width: u32,
     height: u32,
+    /// Display scale the surface was allocated for. A change (display move,
+    /// scale change) frees the surface so it reallocates at the new
+    /// resolution.
+    alloc_ppp: f32,
 }
 
 /// A WASM effect that requires the live host rather than the pane-local effect
@@ -323,6 +329,10 @@ pub struct WasmPane {
     http_rx: Receiver<InputEvent>,
     pending_host_effects: VecDeque<WasmHostEffect>,
     external_inputs: Arc<ArrayQueue<InputEvent>>,
+    /// Current display scale, set by the live pane every frame. Surfaces
+    /// allocate at physical resolution (`logical × ppp`); headless contexts
+    /// (tests, `plexi app render`) keep the 1.0 default.
+    pixels_per_point: f32,
 }
 
 impl WasmPane {
@@ -353,6 +363,29 @@ impl WasmPane {
             http_rx,
             pending_host_effects: VecDeque::new(),
             external_inputs: Arc::new(ArrayQueue::new(256)),
+            pixels_per_point: 1.0,
+        }
+    }
+
+    /// Set the pane's current display scale. When it changes while a surface
+    /// is allocated, the surface is freed so the next `ensure_surface`
+    /// reallocates at the new physical resolution and re-delivers
+    /// `surface-ready` to the guest.
+    pub fn set_pixels_per_point(&mut self, ppp: f32) {
+        if !ppp.is_finite() || ppp <= 0.0 {
+            return;
+        }
+        self.pixels_per_point = ppp;
+        if let Some(s) = &self.surface {
+            if (s.alloc_ppp - ppp).abs() > f32::EPSILON {
+                log::info!(
+                    "wasm gpu: ppp changed {} -> {ppp}; freeing surface (texture {}) for realloc",
+                    s.alloc_ppp,
+                    s.handle
+                );
+                self.app.free_surface(s.handle);
+                self.surface = None;
+            }
         }
     }
 
@@ -629,22 +662,37 @@ impl WasmPane {
             return Ok(());
         }
         let tree = self.app.view()?;
-        let Some((width, height)) = first_surface_dims(&tree) else {
+        let Some((logical_w, logical_h)) = first_surface_dims(&tree) else {
             return Ok(());
         };
+        // Allocate at physical resolution (stint 0527): the composited rect is
+        // `logical` points = `logical × ppp` pixels on screen, so a texture
+        // allocated at logical dimensions gets bilinearly upscaled and every
+        // HiDPI app pane renders at half resolution. The guest-facing
+        // coordinate space stays logical — `surface-ready` reports the
+        // guest's declared dimensions, its NDC render passes fill the whole
+        // (physical) attachment, and its view tree keeps declaring logical
+        // points — so app code is untouched.
+        let ppp = self.pixels_per_point;
+        let width = ((logical_w as f32) * ppp).round().max(1.0) as u32;
+        let height = ((logical_h as f32) * ppp).round().max(1.0) as u32;
         let Some(handle) = self.app.alloc_surface(width, height) else {
             return Ok(());
         };
-        log::info!("wasm gpu: surface allocated {width}x{height} (texture {handle})");
+        log::info!(
+            "wasm gpu: surface allocated {width}x{height} physical \
+             ({logical_w}x{logical_h} logical @ ppp {ppp}) (texture {handle})"
+        );
         self.surface = Some(SurfaceState {
             handle,
             width,
             height,
+            alloc_ppp: ppp,
         });
         self.queue.push_back(InputEvent::SurfaceReady(SurfaceEvent {
             texture_handle: handle,
-            width,
-            height,
+            width: logical_w,
+            height: logical_h,
         }));
         self.drain(now_ms)
     }
@@ -1739,6 +1787,10 @@ impl LiveWasmPane {
 
         let size = ui.available_size();
         let now = self.now_ms();
+        // Keep the guest's surface allocation in sync with the display scale
+        // (stint 0527) — a display move/scale change frees and reallocates.
+        self.inner
+            .set_pixels_per_point(ui.ctx().pixels_per_point());
 
         let stepped = if let Some(snapshot) = self.pending_init.take() {
             log::info!(
@@ -1780,6 +1832,10 @@ impl LiveWasmPane {
             Some((w, h)) => match super::wasm_gpu::host_render_state() {
                 // Preferred: register the guest texture into egui's shared
                 // renderer once and sample it live. No readback, no upload.
+                // Linear filtering is inert at integer ppp — the surface is
+                // allocated at physical resolution and composited into a
+                // pixel-snapped rect (1:1 texel→pixel, stint 0527) — and
+                // remains only as the fractional-ppp resampling fallback.
                 Some(rs) => {
                     if self.surface_id.is_none() || self.surface_dims != Some((w, h)) {
                         if let Some(view) = self.inner.surface_srgb_view() {
@@ -3037,6 +3093,48 @@ mod tests {
         assert!(
             cy_after < cy_before - 20.0,
             "left paddle moved up after 60 W frames: {cy_before} -> {cy_after}"
+        );
+        Ok(())
+    }
+
+    // Stint 0527: on a HiDPI display the surface allocates at physical
+    // resolution (logical × ppp) so composition is 1:1 with screen pixels,
+    // and a display-scale change frees + reallocates the surface with a
+    // fresh surface-ready so the guest re-targets the new texture.
+    #[test]
+    fn surface_allocates_physical_resolution_and_reallocates_on_ppp_change(
+    ) -> wasmtime::Result<()> {
+        let mut p = pong_pane();
+        p.set_pixels_per_point(2.0);
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+
+        assert_eq!(
+            p.surface_size(),
+            Some((960, 640)),
+            "surface allocated at logical (480x320) × ppp 2.0"
+        );
+        let img = p.read_surface().expect("surface readback");
+        let bright = img
+            .pixels()
+            .filter(|px| px[0] as u32 + px[1] as u32 + px[2] as u32 > 480)
+            .count();
+        assert!(
+            bright > 100,
+            "guest rendered game objects into the physical-resolution texture"
+        );
+
+        // Display moves to a 1.0-scale screen: the surface is freed and the
+        // next tick reallocates at the new resolution.
+        p.set_pixels_per_point(1.0);
+        assert!(
+            p.surface_size().is_none(),
+            "surface freed when the display scale changes"
+        );
+        p.tick(16)?;
+        assert_eq!(
+            p.surface_size(),
+            Some((480, 320)),
+            "surface reallocated at the new display scale"
         );
         Ok(())
     }

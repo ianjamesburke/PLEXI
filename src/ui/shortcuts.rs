@@ -44,7 +44,7 @@ pub(crate) fn key_chip(
         rect.center().x - text_w / 2.0,
         rect.min.y + style::KEYCHIP_PAD_V,
     );
-    painter.galley(text_pos, galley, fg);
+    crate::ui::snap::galley_snapped(painter, text_pos, galley, fg);
     response
 }
 

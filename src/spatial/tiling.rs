@@ -239,7 +239,7 @@ pub(crate) fn paint_tab_bar(
             content_left + (tab_rect.right() - content_left) / 2.0 - galley.size().x / 2.0,
             tab_rect.center().y - galley.size().y / 2.0,
         );
-        painter.galley(text_pos, galley, text_color);
+        crate::ui::snap::galley_snapped(painter, text_pos, galley, text_color);
 
         if is_active {
             let accent_rect = egui::Rect::from_min_size(
@@ -282,7 +282,8 @@ pub(crate) fn paint_tab_bar(
             egui::Stroke::new(1.0_f32, colors.border),
             egui::StrokeKind::Inside,
         );
-        painter.text(
+        crate::ui::snap::text_snapped(
+            painter,
             chip_rect.center(),
             egui::Align2::CENTER_CENTER,
             hint_text,
@@ -645,7 +646,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         if self.ctrl_held {
             let c = self.colors.text_primary;
-            ui.painter().text(
+            crate::ui::snap::text_snapped(
+                ui.painter(),
                 pane_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 pane_id.to_string(),
@@ -1098,7 +1100,8 @@ pub(crate) fn paint_portal_minimap(
                     } else {
                         1.0
                     };
-                    painter.text(
+                    crate::ui::snap::text_snapped(
+                        painter,
                         egui::pos2(content_area.min.x + title_x_offset, content_area.min.y),
                         egui::Align2::LEFT_TOP,
                         title,
@@ -1293,7 +1296,8 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_primary.b(),
                         icon_alpha,
                     );
-                    painter.text(
+                    crate::ui::snap::text_snapped(
+                        painter,
                         draw_area.center(),
                         egui::Align2::CENTER_CENTER,
                         ">_",

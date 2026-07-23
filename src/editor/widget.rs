@@ -7,6 +7,7 @@
 //! editing logic. Focus arbitration is the caller's job (`src/ui/AGENTS.md`
 //! forbids direct `request_focus`).
 
+use egui::emath::GuiRounding;
 use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{Color32, Event, ImeEvent, Key, Modifiers, Rect, Sense, Ui, Vec2};
 
@@ -391,7 +392,16 @@ impl<'a> EditorWidget<'a> {
             Some(size) => egui::FontId::monospace(size),
             None => egui::TextStyle::Monospace.resolve(ui.style()),
         };
-        let line_height = ui.fonts_mut(|f| f.row_height(&font_id));
+        // Quantize the row metric to the physical pixel grid (stint 0529):
+        // a fractional font row height makes `line * line_height` land off-grid
+        // differently per line, so per-row rasterization yields uneven leading
+        // (17,17,16,17… physical pixels). Rounding once here keeps every
+        // `line_top` on-grid for any font size and display scale.
+        let ppp = ui.ctx().pixels_per_point();
+        let line_height = ui
+            .fonts_mut(|f| f.row_height(&font_id))
+            .round_to_pixels(ppp)
+            .max(1.0);
         let (auto_id, rect) = ui.allocate_space(ui.available_size_before_wrap());
         let id = self.id.unwrap_or(auto_id);
         let response = ui.interact(rect, id, Sense::click_and_drag());
@@ -624,7 +634,12 @@ impl<'a> EditorWidget<'a> {
                 }
                 ImageState::Failed(_) | ImageState::Remote => IMAGE_PLACEHOLDER_HEIGHT,
             };
-            extras.push((line, height + 2.0 * IMAGE_PAD));
+            // Quantized like `line_height` so `line_top` stays on the physical
+            // pixel grid for every line below an attachment strip.
+            extras.push((
+                line,
+                (height + 2.0 * IMAGE_PAD).round_to_pixels(ctx.pixels_per_point()),
+            ));
             rows.push((line, span.dest.clone()));
         }
         extras.sort_by_key(|(l, _)| *l);
@@ -642,6 +657,22 @@ impl<'a> EditorWidget<'a> {
         digits as f32 * char_width + 2.0 * GUTTER_PAD
     }
 
+    /// Paint-time offsets snapped to the physical pixel grid (stint 0529):
+    /// `(content_top, content_left, scroll_y, scroll_x)`. The scroll
+    /// accumulators in [`ViewState`] stay fractional so momentum scrolling
+    /// keeps its smooth feel; only the painted offset is rounded, so rows
+    /// never straddle a pixel boundary mid-scroll. `paint` and `hit_test`
+    /// both use these so what you click is what you see.
+    fn snapped_offsets(&self, ui: &Ui, rect: Rect, gutter_width: f32) -> (f32, f32, f32, f32) {
+        let ppp = ui.ctx().pixels_per_point();
+        (
+            rect.top().round_to_pixels(ppp),
+            (rect.left() + gutter_width).round_to_pixels(ppp),
+            self.view.scroll_y.round_to_pixels(ppp),
+            self.view.scroll_x.round_to_pixels(ppp),
+        )
+    }
+
     /// Maps a pointer position to a document cursor via per-line galley
     /// hit-testing.
     fn hit_test(
@@ -653,14 +684,15 @@ impl<'a> EditorWidget<'a> {
         pos: egui::Pos2,
     ) -> Cursor {
         let line_count = self.doc.buffer().line_count();
-        let y = pos.y - rect.top() + self.view.scroll_y;
+        // Invert the same snapped offsets `paint` renders with so a click maps
+        // to the row the user actually sees.
+        let (content_top, content_left, scroll_y, scroll_x) =
+            self.snapped_offsets(ui, rect, gutter_width);
+        let y = pos.y - content_top + scroll_y;
         let line = self.view.line_at_y(y, line_count);
         let text = line_text(self.doc.buffer(), line);
         let galley = ui.fonts_mut(|f| f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE));
-        let ccursor = galley.cursor_from_pos(Vec2::new(
-            pos.x - rect.left() - gutter_width + self.view.scroll_x,
-            0.0,
-        ));
+        let ccursor = galley.cursor_from_pos(Vec2::new(pos.x - content_left + scroll_x, 0.0));
         Cursor::new(line, ccursor.index)
     }
 
@@ -757,6 +789,9 @@ impl<'a> EditorWidget<'a> {
         let painter = ui.painter_at(text_rect);
         let selection_color = visuals.selection.bg_fill.linear_multiply(0.5);
         let caret_color = visuals.selection.stroke.color;
+        let ppp = ui.ctx().pixels_per_point();
+        let (content_top, content_left, scroll_y, scroll_x) =
+            self.snapped_offsets(ui, rect, gutter_width);
         let line_count = self.doc.buffer().line_count();
         let selection = self.doc.selection();
         let (sel_start, sel_end) = selection.ordered();
@@ -766,7 +801,9 @@ impl<'a> EditorWidget<'a> {
         let show_code_chrome = self.mode.is_code();
 
         for line in self.view.visible_lines(line_count) {
-            let top = rect.top() + self.view.line_top(line) - self.view.scroll_y;
+            // On-grid by construction: snapped origin + quantized line metric
+            // minus a snapped scroll offset.
+            let top = content_top + self.view.line_top(line) - scroll_y;
             let text = line_text(self.doc.buffer(), line);
             let galley = self.line_galley(
                 ui,
@@ -777,7 +814,7 @@ impl<'a> EditorWidget<'a> {
                 &code_theme,
                 md_active.as_ref(),
             );
-            let origin = egui::pos2(rect.left() + gutter_width - self.view.scroll_x, top);
+            let origin = egui::pos2(content_left - scroll_x, top);
 
             if show_code_chrome {
                 // Current-line highlight under everything else.
@@ -791,14 +828,17 @@ impl<'a> EditorWidget<'a> {
                         code_theme.current_line_bg,
                     );
                 }
-                // Right-aligned 1-based line number in the gutter.
-                gutter_painter.text(
-                    egui::pos2(rect.left() + gutter_width - GUTTER_PAD, top),
-                    egui::Align2::RIGHT_TOP,
+                // Right-aligned 1-based line number in the gutter, painted at
+                // a snapped origin (the right-aligned x is fractional).
+                let number = gutter_painter.layout_no_wrap(
                     (line + 1).to_string(),
                     font_id.clone(),
                     code_theme.gutter_text,
                 );
+                let number_pos =
+                    egui::pos2(content_left - GUTTER_PAD - number.size().x, top)
+                        .round_to_pixels(ppp);
+                gutter_painter.galley(number_pos, number, code_theme.gutter_text);
             }
 
             // Find-match highlight fills under the text and selection.
@@ -890,7 +930,9 @@ impl<'a> EditorWidget<'a> {
                 let x = galley
                     .pos_from_cursor(CCursor::new(caret.column.min(text.chars().count())))
                     .left();
-                let caret_x = origin.x + x;
+                // Caret and preedit sit on the pixel grid so the 1pt bar never
+                // smears across two physical columns.
+                let caret_x = (origin.x + x).round_to_pixels(ppp);
 
                 // IME preedit paints as underlined overlay text at the caret.
                 if let Some(preedit) = self.doc.ime().preedit().filter(|p| !p.is_empty()) {
@@ -934,12 +976,11 @@ impl<'a> EditorWidget<'a> {
                     if extra <= 0.0 {
                         continue;
                     }
-                    let strip_top = rect.top() + self.view.line_top(*line)
-                        - self.view.scroll_y
-                        + self.view.line_height
-                        + IMAGE_PAD;
+                    let strip_top =
+                        content_top + self.view.line_top(*line) - scroll_y + self.view.line_height
+                            + IMAGE_PAD;
                     let height = extra - 2.0 * IMAGE_PAD;
-                    let left = rect.left() + gutter_width + IMAGE_PAD - self.view.scroll_x;
+                    let left = content_left + IMAGE_PAD - scroll_x;
                     match cache.get(ui.ctx(), base, dest) {
                         ImageState::Ready { texture, size } => {
                             let scale = (height / size[1] as f32).min(1.0);
@@ -975,13 +1016,14 @@ impl<'a> EditorWidget<'a> {
                                 egui::Stroke::new(1.0_f32, weak),
                                 egui::StrokeKind::Inside,
                             );
-                            painter.text(
-                                strip_rect.left_center() + egui::vec2(8.0, 0.0),
-                                egui::Align2::LEFT_CENTER,
-                                label,
-                                font_id.clone(),
-                                weak,
-                            );
+                            let label_galley =
+                                painter.layout_no_wrap(label, font_id.clone(), weak);
+                            let label_pos = egui::pos2(
+                                strip_rect.left() + 8.0,
+                                strip_rect.center().y - label_galley.size().y / 2.0,
+                            )
+                            .round_to_pixels(ppp);
+                            painter.galley(label_pos, label_galley, weak);
                         }
                     }
                 }
@@ -1404,5 +1446,48 @@ mod tests {
         // Never zero (a zero-delay repaint would busy-loop the host).
         assert!(caret_blink_next_toggle(iv, iv) > 0.0);
         assert!(caret_blink_next_toggle(iv * 2.0, iv) > 0.0);
+    }
+
+    /// Stint 0529 gate: with the row metric quantized the way `show` does it
+    /// (real font metrics rounded to the physical pixel grid), every painted
+    /// row top lands on the grid and consecutive rows are uniformly spaced —
+    /// across font sizes 9–32 and at both ppp 1.0 and 2.0. Fractional metrics
+    /// used to yield 17,17,16,17… physical-pixel leading.
+    #[test]
+    fn painted_row_tops_uniform_in_physical_pixels_across_sizes_and_ppp() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for ppp in [1.0_f32, 2.0] {
+                for size in 9..=32 {
+                    let font_id = egui::FontId::monospace(size as f32);
+                    let raw = ui.fonts_mut(|f| f.row_height(&font_id));
+                    let line_height = raw.round_to_pixels(ppp).max(1.0);
+                    let view = ViewState {
+                        line_height,
+                        ..ViewState::default()
+                    };
+                    let expected_phys = (line_height * ppp).round();
+                    assert!(
+                        ((line_height * ppp) - expected_phys).abs() < 1e-3,
+                        "quantized line_height {line_height} not integer-physical at ppp {ppp}"
+                    );
+                    let mut prev = view.line_top(0) * ppp;
+                    for line in 1..200 {
+                        let top = view.line_top(line) * ppp;
+                        let spacing = top - prev;
+                        assert!(
+                            (spacing - expected_phys).abs() < 1e-2,
+                            "row spacing {spacing} != {expected_phys} physical px \
+                             (font {size}, ppp {ppp}, line {line})"
+                        );
+                        assert!(
+                            (top - top.round()).abs() < 1e-2,
+                            "row top {top} off the pixel grid (font {size}, ppp {ppp}, line {line})"
+                        );
+                        prev = top;
+                    }
+                }
+            }
+        });
     }
 }

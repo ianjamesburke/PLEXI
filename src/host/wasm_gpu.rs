@@ -18,7 +18,7 @@
 // test contexts (no eframe) fall back to a dedicated device via [`GpuDevice::new`].
 // `read_texture` survives as the capture path for scene/pixel assertions only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
@@ -237,6 +237,14 @@ pub struct GpuDevice {
     buffers: HashMap<u64, wgpu::Buffer>,
     textures: HashMap<u64, GpuTexture>,
     views: HashMap<u64, wgpu::TextureView>,
+    /// Source texture of each guest-created surface view (`create_surface_view`),
+    /// so freeing a surface also drops the views that retain its texture.
+    view_sources: HashMap<u64, u64>,
+    /// View handles retired by a surface reallocation (display-scale change).
+    /// A render pass targeting one is dropped with a warning instead of
+    /// erroring: the guest legitimately renders one more frame against the
+    /// old view before it processes the re-delivered `surface-ready`.
+    retired_views: HashSet<u64>,
     pipelines: HashMap<u64, GpuPipeline>,
     bind_groups: HashMap<u64, wgpu::BindGroup>,
     /// Surface readbacks performed by this device. The live present path leaves
@@ -287,6 +295,8 @@ impl GpuDevice {
             buffers: HashMap::new(),
             textures: HashMap::new(),
             views: HashMap::new(),
+            view_sources: HashMap::new(),
+            retired_views: HashSet::new(),
             pipelines: HashMap::new(),
             bind_groups: HashMap::new(),
             readbacks: AtomicU64::new(0),
@@ -340,6 +350,32 @@ impl GpuDevice {
             },
         );
         handle
+    }
+
+    /// Drop a surface texture allocated by [`Self::alloc_surface`] — used when
+    /// the display scale changes and the surface reallocates at the new
+    /// physical resolution (stint 0527). Unknown handles are a no-op; a guest
+    /// render against the freed handle gets the ordinary "unknown texture
+    /// handle" error until it handles the re-delivered `surface-ready`.
+    pub fn free_surface(&mut self, handle: u64) {
+        if self.textures.remove(&handle).is_none() {
+            log::warn!("wasm gpu: free_surface on unknown texture handle {handle}");
+        }
+        // Guest-created views retain the texture; drop them too or repeated
+        // display-scale changes leak the old texture for the pane's lifetime.
+        // Their handles go to `retired_views` so an in-flight guest frame
+        // that still targets one drops gracefully.
+        let stale: Vec<u64> = self
+            .view_sources
+            .iter()
+            .filter(|(_, tex)| **tex == handle)
+            .map(|(view, _)| *view)
+            .collect();
+        for view in stale {
+            self.views.remove(&view);
+            self.view_sources.remove(&view);
+            self.retired_views.insert(view);
+        }
     }
 
     /// Read a texture (typically a surface) back to a tightly-packed RGBA8
@@ -480,6 +516,7 @@ impl GpuDevice {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let handle = self.next();
         self.views.insert(handle, view);
+        self.view_sources.insert(handle, texture);
         Ok(handle)
     }
 
@@ -716,6 +753,17 @@ impl GpuDevice {
     }
 
     pub fn submit_render_pass(&mut self, pass: wit::RenderPassDesc) -> Result<(), String> {
+        // A frame drawn against a view retired by a surface reallocation is
+        // dropped, not an error: the guest hasn't processed the re-delivered
+        // `surface-ready` yet and re-targets on its next frame.
+        if self.retired_views.contains(&pass.target) {
+            log::warn!(
+                "wasm gpu: dropped render pass targeting retired view {} \
+                 (surface reallocated for a display-scale change)",
+                pass.target
+            );
+            return Ok(());
+        }
         let view = self
             .views
             .get(&pass.target)

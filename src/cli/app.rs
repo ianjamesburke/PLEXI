@@ -1596,6 +1596,7 @@ pub fn app_render(
             &tree,
             width as f32,
             height as f32,
+            1.0,
         ) {
             Ok(b) => b,
             Err(e) => {

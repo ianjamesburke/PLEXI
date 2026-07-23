@@ -27,6 +27,31 @@ fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+/// WCAG relative luminance.
+fn luminance(c: Color32) -> f32 {
+    let rgba = egui::Rgba::from(c);
+    fn linear(v: f32) -> f32 {
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
+}
+
+/// WCAG contrast ratio between two relative luminances.
+fn contrast(a: f32, b: f32) -> f32 {
+    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Per-channel sRGB blend from `a` (t = 0) to `b` (t = 1).
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub struct Colors {
     // Background layers
@@ -68,21 +93,6 @@ impl Colors {
     /// user-customized accents. Never hard-code WHITE or `bg_darkest` on a
     /// colored fill.
     pub fn text_on(&self, fill: Color32) -> Color32 {
-        fn luminance(c: Color32) -> f32 {
-            let rgba = egui::Rgba::from(c);
-            fn linear(v: f32) -> f32 {
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            }
-            0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
-        }
-        fn contrast(a: f32, b: f32) -> f32 {
-            let (hi, lo) = if a > b { (a, b) } else { (b, a) };
-            (hi + 0.05) / (lo + 0.05)
-        }
         let fill_lum = luminance(fill);
         let primary_contrast = contrast(luminance(self.text_primary), fill_lum);
         let darkest_contrast = contrast(luminance(self.bg_darkest), fill_lum);
@@ -98,6 +108,32 @@ impl Colors {
         } else {
             Color32::WHITE
         }
+    }
+
+    /// Foreground for *primary* labels that used to render in `text_dim`
+    /// (sidebar context names, app-bar subtitles, pane-name bars). `text_dim`
+    /// sits around 3:1 on most presets — fine for true-secondary metadata,
+    /// too faint for a label the user reads constantly. Blends `text_dim`
+    /// toward `text_primary` just far enough to reach WCAG 4.5:1 on `bg`
+    /// (stint 0528), so themes whose `text_dim` already passes keep their
+    /// look untouched.
+    pub fn text_secondary(&self, bg: Color32) -> Color32 {
+        const TARGET: f32 = 4.5;
+        let bg_lum = luminance(bg);
+        let mut result = self.text_dim;
+        // Eight even blend steps toward text_primary; the first one meeting
+        // the floor wins. If even text_primary misses the floor (a broken
+        // custom theme), text_primary is still the best available answer.
+        for step in 0..=8 {
+            let t = step as f32 / 8.0;
+            let candidate = lerp_color(self.text_dim, self.text_primary, t);
+            if contrast(luminance(candidate), bg_lum) >= TARGET {
+                result = candidate;
+                break;
+            }
+            result = candidate;
+        }
+        result
     }
 
     /// Background for terminal pane name bars: `terminal_bg` darkened ~12%.
@@ -999,10 +1035,12 @@ const SYSTEM_FALLBACK_FONTS: &[(&str, &str)] =
 
 pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
+    // Regular weight (stint 0528): the Light cut anti-aliases into grey mush
+    // at UI sizes (8–13 px); terminals and the editor read it constantly.
     fonts.font_data.insert(
         FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../fonts/JetBrainsMonoNerdFont-Light.ttf"
+            "../../fonts/JetBrainsMonoNerdFont-Regular.ttf"
         ))),
     );
     fonts.font_data.insert(
@@ -1039,22 +1077,24 @@ pub fn font_definitions() -> egui::FontDefinitions {
             "../../fonts/NotoEmoji-Regular.ttf"
         ))),
     );
-    // Proportional family: route UI text through JetBrains Mono Nerd Font so
-    // the host can be evaluated as a fully monospace app. Inter stays bundled
-    // as fallback while this experiment is active.
+    // Proportional family: Inter first (stint 0528 — proportional UI text
+    // renders in a real text face at Regular weight), with the Nerd Font
+    // immediately behind it so icon/glyph fallback (powerline, dev glyphs)
+    // keeps working in UI labels. Monospace/terminal text stays routed
+    // through `FontFamily::Monospace` below.
     let proportional = fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default();
-    proportional.insert(0, FONT_NAME.to_owned());
-    proportional.insert(1, UI_FONT_NAME.to_owned());
+    proportional.insert(0, UI_FONT_NAME.to_owned());
+    proportional.insert(1, FONT_NAME.to_owned());
     proportional.insert(2, FALLBACK_FONT_NAME.to_owned());
     proportional.insert(3, UNICODE_FALLBACK_FONT_NAME.to_owned());
     proportional.push(EMOJI_FALLBACK_FONT_NAME.to_owned());
-    // Medium family mirrors Proportional while the monospace UI experiment is
-    // active; egui has no weight axis for this bundled Nerd Font.
+    // Medium family: Inter Medium first, then the same fallback chain — this
+    // is how weight contrast works, since egui has no weight axis.
     let mut medium = proportional.clone();
-    medium.insert(2, UI_FONT_MEDIUM_NAME.to_owned());
+    medium.insert(0, UI_FONT_MEDIUM_NAME.to_owned());
     fonts
         .families
         .insert(egui::FontFamily::Name(UI_MEDIUM_FAMILY.into()), medium);
@@ -1168,6 +1208,32 @@ mod tests {
                 assert!(
                     contrast(text, fill) >= 3.0,
                     "{name}: text_on({fill:?}) = {text:?} is below 3:1 contrast"
+                );
+            }
+        }
+    }
+
+    /// Stint 0528 contrast floor: primary labels rendered in the secondary
+    /// tone (inactive sidebar context names, app-bar subtitles, pane-name
+    /// bars) must reach WCAG 4.5:1 on their actual backgrounds for every
+    /// preset. `text_dim` alone sits near 3:1 on most presets.
+    #[test]
+    fn text_secondary_meets_wcag_aa_on_every_preset() {
+        for name in preset_names() {
+            let cfg = preset_colors(name).unwrap();
+            let colors = Colors::from_config(&cfg);
+            for bg in [colors.bg_sidebar, colors.bg_toolbar] {
+                let fg = colors.text_secondary(bg);
+                let ratio = contrast(luminance(fg), luminance(bg));
+                // A theme whose text_primary itself sits below 4.5:1 (e.g.
+                // tokyo-night's #a9b1d6 on #16161e is 4.41:1) can't do better
+                // than its own ceiling — require the floor or that ceiling.
+                let ceiling = contrast(luminance(colors.text_primary), luminance(bg));
+                let target = 4.5_f32.min(ceiling) - 0.01;
+                assert!(
+                    ratio >= target,
+                    "{name}: text_secondary on {bg:?} = {fg:?} is {ratio:.2}:1, \
+                     below required {target:.2}:1"
                 );
             }
         }
