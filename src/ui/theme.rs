@@ -28,7 +28,7 @@ fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
 }
 
 /// WCAG relative luminance.
-fn luminance(c: Color32) -> f32 {
+pub(crate) fn luminance(c: Color32) -> f32 {
     let rgba = egui::Rgba::from(c);
     fn linear(v: f32) -> f32 {
         if v <= 0.03928 {
@@ -41,7 +41,7 @@ fn luminance(c: Color32) -> f32 {
 }
 
 /// WCAG contrast ratio between two relative luminances.
-fn contrast(a: f32, b: f32) -> f32 {
+pub(crate) fn contrast(a: f32, b: f32) -> f32 {
     let (hi, lo) = if a > b { (a, b) } else { (b, a) };
     (hi + 0.05) / (lo + 0.05)
 }

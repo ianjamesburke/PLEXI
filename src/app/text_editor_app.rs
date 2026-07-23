@@ -203,6 +203,23 @@ impl TextEditorApp {
         app
     }
 
+    /// The row metric the widget quantized to the physical pixel grid on its
+    /// last `show()` (stint 0529). Reads back the composited pane's value so
+    /// the crispness gate can assert it is integer-physical after a real host
+    /// render, not just in isolation.
+    #[cfg(test)]
+    pub(crate) fn test_view_line_height(&self) -> f32 {
+        self.view.line_height
+    }
+
+    /// Park the viewport at a fractional scroll offset so the crispness gate
+    /// can render the note mid-scroll — the case where an unsnapped scroll_y
+    /// would push painted rows off the physical pixel grid (stint 0529).
+    #[cfg(test)]
+    pub(crate) fn test_set_scroll_y(&mut self, y: f32) {
+        self.view.scroll_y = y;
+    }
+
     /// Flips Markdown presentation between Live Preview and source mode.
     /// Presentation only: document, selection, history, IME, and scroll
     /// anchor are untouched. No-op outside Markdown mode.

@@ -2474,4 +2474,406 @@ mod tests {
             .expect("render failed");
         println!("Screenshot saved to /tmp/plexi-0528-filebrowser-ppp2.png");
     }
+
+    // ── Text-crispness gate (stint 0531) ────────────────────────────────────
+    //
+    // Freezes the s8 pixel-grid + typography wins (stints 0527–0530) behind one
+    // runnable gate. Two halves, per `src/testing/TESTING.md`:
+    //
+    //   1. Seeded renders of the key text surfaces at BOTH display scales
+    //      (ppp 1.0 and 2.0) — a human/agent Reads the PNGs to confirm the
+    //      pixels look crisp, then deletes them. Non-scope: no golden-image
+    //      diffing (brittle across font-raster changes).
+    //   2. Mechanical assertions on the composited host state that stay green
+    //      without a human: app-surface texture dims scale with ppp (0527),
+    //      the editor's row metric is integer-physical after a real render
+    //      (0529), chrome labels clear the WCAG AA contrast floor (0528), and
+    //      hand-painted chrome galley origins land on the physical pixel grid
+    //      (0530). Each calls the production code path — it never re-implements
+    //      the invariant.
+    //
+    // The `paint_app_bar` title+subtitle band is painted only from
+    // `wasm_render`; rather than depend on a fixture app declaring app-chrome,
+    // its two crispness invariants are frozen mechanically below — the subtitle
+    // color clears the contrast floor on `bg_toolbar`, and its `font_medium`
+    // galleys snap to the grid.
+    mod crispness_gate {
+        use super::*;
+        use crate::app::permissions::{PermissionState, PermissionStore};
+        use crate::app::text_editor_app::TextEditorApp;
+        use crate::host::wasm_app::{StateSnapshot, StateStore, WasmApp};
+        use crate::host::wasm_pane::{SysinfoStats, WasmPane};
+
+        /// The two display scales every text surface must stay crisp at: 1.0
+        /// (integer) and 2.0 (HiDPI, where off-grid galleys and half-resolution
+        /// app surfaces surface as fuzz).
+        const GATE_PPP: [f32; 2] = [1.0, 2.0];
+
+        fn wasm_fixture(name: &str) -> std::path::PathBuf {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/wasm-fixtures")
+                .join(name)
+        }
+
+        /// Reach the first `text-editor` pane in any window and run `f` against
+        /// it. Returns `None` if no editor pane is open.
+        fn with_editor<R>(
+            h: &mut PlexiUiHarness,
+            f: impl FnOnce(&mut TextEditorApp) -> R,
+        ) -> Option<R> {
+            let mut f = Some(f);
+            h.with_app_mut(|app| {
+                for win in &mut app.windows {
+                    for pane in win.panes.values_mut() {
+                        if let Pane::App(a) = pane {
+                            if let AppRuntime::Builtin(b) = &mut a.runtime {
+                                if let Some(ed) = b.as_any_mut().downcast_mut::<TextEditorApp>() {
+                                    return Some((f.take().expect("f consumed once"))(ed));
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            })
+        }
+
+        // ── Seeding ─────────────────────────────────────────────────────────
+
+        /// Sidebar shown with several long context names + path subtitles —
+        /// the surface where `text_secondary` context labels and their galley
+        /// snapping are most visible.
+        fn seed_sidebar(h: &mut PlexiUiHarness) {
+            add_focused_pane(h);
+            h.with_app_mut(|app| {
+                app.sidebar_visible = true;
+                for (name, dir) in [
+                    ("Very Long Project Context Name", "GitHub/PLEXI/src/render"),
+                    ("videos", "Documents/videos/2026/exports"),
+                    ("scratch", "tmp/scratch/wip"),
+                ] {
+                    let ctx_id = app.next_window_id;
+                    app.next_window_id += 1;
+                    let root = std::env::temp_dir().join(dir);
+                    app.router.push(crate::host::context::Context {
+                        name: name.to_string(),
+                        path: root.clone(),
+                        root: Some(root),
+                        description: None,
+                        context_id: ctx_id,
+                        parent_id: None,
+                        depth: 0,
+                        parked: false,
+                    });
+                }
+            });
+        }
+
+        /// A Notes pane holding a multi-line document, parked at a fractional
+        /// mid-scroll offset so unsnapped rows would show off-grid.
+        fn seed_editor_mid_scroll(h: &mut PlexiUiHarness) {
+            let path = h.workspace.path().join("crispness-note.md");
+            let mut body = String::from("---\ntitle: \"Pixel Grid\"\n---\n");
+            for i in 1..=60 {
+                body.push_str(&format!(
+                    "Line {i:02}: the quick brown fox jumps over the lazy dog 0123456789\n"
+                ));
+            }
+            std::fs::write(&path, &body).expect("seed note");
+            h.with_app_mut(|app| {
+                let pane_id = app.host.alloc_pane_id();
+                let app_pane = AppPane {
+                    pip_status: None,
+                    id: pane_id,
+                    runtime: AppRuntime::Builtin(Box::new(TextEditorApp::new_for_test_note(
+                        path.clone(),
+                    ))),
+                    workspace_root: std::env::temp_dir(),
+                    permissions: AppPermissions::builtin(),
+                    manifest_id: "text-editor".to_string(),
+                    name: "Text Editor".to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    hidden: false,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                };
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                let tile_id = win.tree.tiles.insert_pane(pane_id);
+                if win.tree.root.is_none() {
+                    win.tree.root = Some(tile_id);
+                }
+                win.focused_pane = Some(tile_id);
+            });
+            // One pass so the widget lays out (sets line_height / viewport_height),
+            // then park at a fractional mid-document offset and render again.
+            h.run_steps(2);
+            with_editor(h, |ed| {
+                let line_height = ed.test_view_line_height().max(1.0);
+                ed.test_set_scroll_y(line_height * 18.0 + 0.5);
+            });
+        }
+
+        /// A file browser rooted at a small seeded dir (never `temp_dir()`,
+        /// whose dev-machine entry count balloons rendering).
+        fn seed_file_browser(h: &mut PlexiUiHarness) {
+            let root = h.workspace.path().join("files");
+            std::fs::create_dir_all(&root).expect("seed dir");
+            for name in ["notes.md", "render.rs", "todo.txt", "README.md"] {
+                std::fs::write(root.join(name), "alpha\nbravo\ncharlie\ndelta\necho\n")
+                    .expect("seed file");
+            }
+            std::fs::create_dir_all(root.join("assets")).expect("seed subdir");
+            h.with_app_mut(|app| {
+                let pane_id = app.host.alloc_pane_id();
+                let app_pane = AppPane {
+                    pip_status: None,
+                    id: pane_id,
+                    runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                        root.clone(),
+                    ))),
+                    workspace_root: root.clone(),
+                    permissions: AppPermissions::builtin(),
+                    manifest_id: "file-browser".to_string(),
+                    name: "Files".to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    hidden: false,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                };
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                let tile_id = win.tree.tiles.insert_pane(pane_id);
+                if win.tree.root.is_none() {
+                    win.tree.root = Some(tile_id);
+                }
+                win.focused_pane = Some(tile_id);
+            });
+        }
+
+        /// Launch the sysmon WASM fixture through the reviewed-path production
+        /// launcher: text-heavy L1 body plus its `paint_app_bar` title band.
+        /// Grants are pre-persisted into the harness profile so the review
+        /// auto-approves. The returned guard must outlive the harness.
+        fn seed_wasm_text(h: &mut PlexiUiHarness, profile: &std::path::Path) {
+            let fixture = wasm_fixture("sysmon.wasm");
+            let app_id = fixture
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("wasm");
+            let workspace_root = fixture.parent().expect("fixture parent");
+            let grants = WasmApp::inspect_required_grants(&fixture).expect("inspect grants");
+            let mut store = PermissionStore::load_or_default(profile);
+            for capability_id in grants.capability_ids() {
+                store.set_wasm(
+                    app_id,
+                    workspace_root,
+                    &capability_id,
+                    PermissionState::Green,
+                );
+            }
+            store.save();
+            h.with_app_mut(|app| {
+                app.launch_app_by_path_with_layout(
+                    &fixture.to_string_lossy(),
+                    Some("split_v".to_string()),
+                    None,
+                    &[],
+                )
+            })
+            .expect("reviewed wasm launch should succeed");
+        }
+
+        // ── Rendered fixtures at ppp 1.0 and 2.0 (visual review) ────────────
+
+        #[test]
+        fn gate_render_sidebar_ppp_1_and_2() {
+            for ppp in GATE_PPP {
+                let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, ppp);
+                h.step();
+                seed_sidebar(&mut h);
+                h.run_steps(3);
+                let out = format!("/tmp/plexi-0531-sidebar-ppp{}.png", (ppp * 10.0) as u32);
+                h.save_screenshot(&out).expect("sidebar render");
+                println!("Screenshot saved to {out}");
+            }
+        }
+
+        #[test]
+        fn gate_render_editor_mid_scroll_ppp_1_and_2() {
+            for ppp in GATE_PPP {
+                let mut h = PlexiUiHarness::new_sized_ppp(820.0, 560.0, ppp);
+                h.step();
+                seed_editor_mid_scroll(&mut h);
+                h.run_steps(3);
+                let out = format!("/tmp/plexi-0531-editor-ppp{}.png", (ppp * 10.0) as u32);
+                h.save_screenshot(&out).expect("editor render");
+                println!("Screenshot saved to {out}");
+            }
+        }
+
+        #[test]
+        fn gate_render_file_browser_ppp_1_and_2() {
+            for ppp in GATE_PPP {
+                let mut h = PlexiUiHarness::new_sized_ppp(900.0, 560.0, ppp);
+                h.step();
+                seed_file_browser(&mut h);
+                h.run_steps(3);
+                let out = format!("/tmp/plexi-0531-filebrowser-ppp{}.png", (ppp * 10.0) as u32);
+                h.save_screenshot(&out).expect("file browser render");
+                println!("Screenshot saved to {out}");
+            }
+        }
+
+        #[test]
+        fn gate_render_wasm_text_ppp_1_and_2() {
+            for ppp in GATE_PPP {
+                let profile = tempfile::tempdir().expect("profile dir");
+                let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+                let mut h = PlexiUiHarness::new_sized_ppp(900.0, 620.0, ppp);
+                h.step();
+                seed_wasm_text(&mut h, profile.path());
+                h.run_steps(6);
+                let out = format!("/tmp/plexi-0531-wasm-text-ppp{}.png", (ppp * 10.0) as u32);
+                h.save_screenshot(&out).expect("wasm text render");
+                println!("Screenshot saved to {out}");
+            }
+        }
+
+        // ── Mechanical assertions on composited state ───────────────────────
+
+        /// Stint 0527: a GPU app pane allocates its surface at physical
+        /// resolution (`logical × ppp`), so at ppp 2.0 the texture is exactly
+        /// twice the ppp-1.0 texture in each dimension — full-res on HiDPI, no
+        /// bilinear upscaling. Drives the production `WasmPane` surface path.
+        #[test]
+        fn gate_wasm_app_surface_scales_with_ppp() {
+            fn surface_at(ppp: f32) -> (u32, u32) {
+                let app = WasmApp::load_ephemeral_run(
+                    "pong-crispness",
+                    &wasm_fixture("pong.wasm"),
+                    StateStore::ephemeral(),
+                )
+                .expect("load pong fixture");
+                let mut pane = WasmPane::new(app, Box::new(SysinfoStats::new()));
+                pane.set_pixels_per_point(ppp);
+                pane.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])
+                    .expect("init pong");
+                pane.surface_size().expect("surface allocated after init")
+            }
+            let (w1, h1) = surface_at(1.0);
+            let (w2, h2) = surface_at(2.0);
+            assert!(w1 > 0 && h1 > 0, "ppp-1.0 surface must be non-empty");
+            assert_eq!(
+                (w2, h2),
+                (w1 * 2, h1 * 2),
+                "surface texture must scale 1:1 with display scale \
+                 (ppp1={w1}x{h1}, ppp2={w2}x{h2})"
+            );
+        }
+
+        /// Stint 0529: after a real host render the editor's row metric is
+        /// quantized to the physical pixel grid, so `line_height × ppp` is an
+        /// integer and every painted row top is uniformly spaced — at both
+        /// display scales, and mid-scroll.
+        #[test]
+        fn gate_editor_row_metric_is_integer_physical() {
+            for ppp in GATE_PPP {
+                let mut h = PlexiUiHarness::new_sized_ppp(820.0, 560.0, ppp);
+                h.step();
+                seed_editor_mid_scroll(&mut h);
+                h.run_steps(3);
+                let line_height =
+                    with_editor(&mut h, |ed| ed.test_view_line_height()).expect("editor pane open");
+                let phys = line_height * ppp;
+                assert!(
+                    line_height > 0.0 && (phys - phys.round()).abs() < 1e-2,
+                    "quantized line_height {line_height} not integer-physical at ppp {ppp} \
+                     (phys {phys})"
+                );
+                // Uniform, on-grid row tops for the metric the widget committed.
+                let view = crate::editor::ViewState {
+                    line_height,
+                    ..crate::editor::ViewState::default()
+                };
+                let expected = (line_height * ppp).round();
+                let mut prev = view.line_top(0) * ppp;
+                for line in 1..120 {
+                    let top = view.line_top(line) * ppp;
+                    let spacing = top - prev;
+                    assert!(
+                        (spacing - expected).abs() < 1e-2,
+                        "row spacing {spacing} != {expected} phys px (ppp {ppp}, line {line})"
+                    );
+                    prev = top;
+                }
+            }
+        }
+
+        /// Stint 0528: the labels the host hand-paints in `text_secondary`
+        /// (sidebar context names, app-bar subtitles, pane-name bars) clear the
+        /// WCAG AA 4.5:1 floor against every background they actually sit on —
+        /// mirroring the contrast check apps get. Reuses the production WCAG
+        /// math and the default theme.
+        #[test]
+        fn gate_chrome_labels_meet_wcag_aa_floor() {
+            use crate::ui::theme::{contrast, luminance};
+            let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+            let backgrounds = [
+                ("bg_sidebar", colors.bg_sidebar),
+                ("bg_toolbar", colors.bg_toolbar),
+                ("pane_header_bg", colors.pane_header_bg()),
+                ("bg_darkest", colors.bg_darkest),
+            ];
+            for (name, bg) in backgrounds {
+                let fg = colors.text_secondary(bg);
+                let ratio = contrast(luminance(fg), luminance(bg));
+                assert!(
+                    ratio >= 4.5,
+                    "chrome label on {name} has contrast {ratio:.2} < 4.5 AA floor"
+                );
+            }
+        }
+
+        /// Stint 0530: the hand-painted-text snapping helper lands every galley
+        /// origin on the physical pixel grid, for the whole UI text size range
+        /// and from fractional layout positions, at both display scales. Drives
+        /// the production `snap::text_snapped` path all chrome text routes
+        /// through.
+        #[test]
+        fn gate_chrome_galley_origins_snap_to_physical_grid() {
+            for ppp in GATE_PPP {
+                let ctx = egui::Context::default();
+                // Bind the real UI faces so `font_medium` ("ui-medium") resolves.
+                crate::ui::theme::setup_fonts(&ctx);
+                ctx.set_pixels_per_point(ppp);
+                let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let painter = ui.painter();
+                    for size in 8..=16 {
+                        let rect = crate::ui::snap::text_snapped(
+                            painter,
+                            egui::pos2(12.3, 9.7),
+                            egui::Align2::LEFT_TOP,
+                            "context / subtitle",
+                            crate::ui::theme::font_medium(size as f32),
+                            egui::Color32::WHITE,
+                        );
+                        for coord in [rect.min.x, rect.min.y] {
+                            let phys = coord * ppp;
+                            assert!(
+                                (phys - phys.round()).abs() < 1e-3,
+                                "galley origin {coord} off the grid at ppp {ppp} (size {size})"
+                            );
+                        }
+                    }
+                });
+            }
+        }
+    }
 }
