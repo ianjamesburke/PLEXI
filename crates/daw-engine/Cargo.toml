@@ -1,0 +1,9 @@
+[package]
+name = "plexi-daw-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+log = "0.4"
+plexi-daw-model = { path = "../daw-model" }

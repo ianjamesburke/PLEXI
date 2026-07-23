@@ -1,0 +1,29 @@
+[package]
+name = "daw-engine-poc"
+version = "0.1.0"
+edition = "2021"
+
+# DAW playback engine POC (stint 0515). Targets plexi-audio-app world:
+# process-output renders the plexi-daw-model edit model through the shared
+# plexi-daw-engine render path from the host's RT audio thread. Offline
+# mixdown of the same path is exposed as the `daw_mixdown` tool; the model
+# mutates only through `daw_command` DawCommand JSON.
+# Build: cargo component build --target wasm32-wasip2
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.41"
+serde_json = "1"
+plexi-daw-model = { path = "../../../crates/daw-model" }
+plexi-daw-engine = { path = "../../../crates/daw-engine" }
+
+[package.metadata.component]
+package = "plexi:daw-engine-poc"
+
+[package.metadata.component.target]
+path = "wit"
+world = "plexi-audio-app"
+
+[workspace]
