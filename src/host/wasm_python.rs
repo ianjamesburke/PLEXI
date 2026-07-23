@@ -710,6 +710,18 @@ pub struct LivePythonPane {
     persisted_state: serde_json::Map<String, Value>,
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
+    /// File-picker backend (stint 0508). Native rfd dialog in production, a
+    /// scripted queue under `PLEXI_PICKER_SCRIPT` / harness override so agent
+    /// tests can drive the full pick → grant → read/write flow headlessly.
+    picker: Arc<dyn crate::host::services::PickerService>,
+    picker_tx: std::sync::mpsc::Sender<(String, crate::host::services::FilePickOutcome)>,
+    picker_rx: std::sync::mpsc::Receiver<(String, crate::host::services::FilePickOutcome)>,
+    /// Picker-granted fs roots (stint 0508): canonicalized paths the user
+    /// picked through `OpenFilePicker`. `workspace_path` accepts absolute
+    /// paths under these roots in addition to the workspace jail. Grants are
+    /// per-pane, live for the pane's lifetime (deliberately kept across
+    /// hot-reload `relaunch`), and are never persisted.
+    granted_fs_roots: Vec<PathBuf>,
     pending_commands: Vec<crate::app::app_trait::AppCommand>,
     /// Stint 0426: `ui()`'s caller (`tiling.rs`/`render.rs`) removes a queued
     /// `PendingPaneClick` from `PlexiApp::pending_pane_clicks` *before*
@@ -1193,6 +1205,7 @@ impl LivePythonPane {
         let app_id = config.app_id.clone();
         let persisted_state = load_python_state(&config);
         let (http_tx, http_rx) = std::sync::mpsc::channel();
+        let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
         let repaint: RepaintHook = Arc::new(Mutex::new(None));
         let decoder = PythonOutputDecoder::spawn(&runtime, app_id.clone(), repaint.clone());
@@ -1226,6 +1239,10 @@ impl LivePythonPane {
             persisted_state,
             http_tx,
             http_rx,
+            picker: crate::host::services::default_picker_service(),
+            picker_tx,
+            picker_rx,
+            granted_fs_roots: Vec::new(),
             pending_commands: Vec::new(),
             pending_click_carry: None,
         })
@@ -1466,6 +1483,37 @@ impl LivePythonPane {
                 "headers": response.response_headers,
             }));
         }
+        while let Ok((request_id, outcome)) = self.picker_rx.try_recv() {
+            match outcome {
+                crate::host::services::FilePickOutcome::Picked(paths) => {
+                    let granted = self.register_picked_grants(&paths);
+                    if granted.is_empty() {
+                        log::error!(
+                            "app::{}: file pick {request_id}: no picked path could be granted; cancelling",
+                            self.app_id
+                        );
+                        self.queue_outbound_event(
+                            crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                        );
+                    } else {
+                        let paths = granted
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect();
+                        self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePicked {
+                            request_id,
+                            paths,
+                        });
+                    }
+                }
+                crate::host::services::FilePickOutcome::Cancelled => {
+                    log::info!("app::{}: file pick {request_id} cancelled", self.app_id);
+                    self.queue_outbound_event(
+                        crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                    );
+                }
+            }
+        }
         loop {
             match self.decoder.rx.try_recv() {
                 Ok(DecodedOutput::Tree {
@@ -1611,6 +1659,7 @@ impl LivePythonPane {
             Some("save_app_state") => self.save_state(message.get("payload")),
             Some("file_read") => self.handle_file_read(&message),
             Some("file_write") => self.handle_file_write(&message),
+            Some("open_file_picker") => self.handle_open_file_picker(&message),
             Some("read_host_log") => self.handle_read_host_log(&message),
             Some("http_request") => self.handle_http_request(&message),
             Some("capability_request") => self.handle_capability_request(&message),
@@ -1644,7 +1693,120 @@ impl LivePythonPane {
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
-        resolve_jailed_path(&self.config.workspace_root, raw, for_write)
+        resolve_app_fs_path(
+            &self.config.workspace_root,
+            &self.granted_fs_roots,
+            raw,
+            for_write,
+        )
+    }
+
+    /// Service one `open_file_picker` request (stint 0508). The dialog (or
+    /// scripted queue) runs on a background thread; the outcome re-enters the
+    /// pane through `picker_rx` in `drain_runtime`, where grants are
+    /// registered before `FilePicked` reaches the app.
+    fn handle_open_file_picker(&mut self, message: &Value) {
+        use crate::host::services::FilePickRequest;
+        let request_id = message
+            .get("request_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if request_id.is_empty() {
+            log::error!(
+                "app::{}: open_file_picker missing request_id; cancelling",
+                self.app_id
+            );
+            self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePickCancelled {
+                request_id,
+            });
+            return;
+        }
+        if !self.has_capability("fs.pick") {
+            log::info!(
+                "app::{}: open_file_picker {request_id} denied: missing capability fs.pick",
+                self.app_id
+            );
+            self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePickCancelled {
+                request_id,
+            });
+            return;
+        }
+        let filter: Vec<String> = message
+            .get("filter")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let multiple = message
+            .get("multiple")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mode = match message.get("mode") {
+            None | Some(Value::Null) => crate::app_protocol::FilePickerMode::default(),
+            Some(value) => match serde_json::from_value(value.clone()) {
+                Ok(mode) => mode,
+                Err(error) => {
+                    log::error!(
+                        "app::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
+                        self.app_id
+                    );
+                    self.queue_outbound_event(
+                        crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                    );
+                    return;
+                }
+            },
+        };
+        log::info!(
+            "app::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
+            self.app_id
+        );
+        let picker = Arc::clone(&self.picker);
+        let tx = self.picker_tx.clone();
+        std::thread::spawn(move || {
+            let outcome = picker.pick(&FilePickRequest {
+                filter,
+                multiple,
+                mode,
+            });
+            if tx.send((request_id, outcome)).is_err() {
+                log::debug!("CPython WASM picker outcome dropped after pane closed");
+            }
+        });
+    }
+
+    /// Register picked paths as per-pane fs grants and return the canonical
+    /// paths to deliver to the app. Paths that cannot be resolved (deleted
+    /// between pick and delivery, unreachable parent) are skipped loudly.
+    fn register_picked_grants(&mut self, paths: &[PathBuf]) -> Vec<PathBuf> {
+        let mut granted = Vec::new();
+        for path in paths {
+            match canonicalize_picked_path(path) {
+                Ok(resolved) => {
+                    log::info!(
+                        "app::{}: fs grant registered for picked path {}",
+                        self.app_id,
+                        resolved.display()
+                    );
+                    self.granted_fs_roots.push(resolved.clone());
+                    granted.push(resolved);
+                }
+                Err(error) => {
+                    log::error!(
+                        "app::{}: picked path {} not granted: {error}",
+                        self.app_id,
+                        path.display()
+                    );
+                }
+            }
+        }
+        granted
     }
 
     fn handle_file_read(&mut self, message: &Value) {
@@ -2288,6 +2450,58 @@ fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
         }
     }
     Ok(text)
+}
+
+/// Resolve an app-supplied fs path against the workspace jail and picker
+/// grants (stint 0508). This is the single chokepoint for CPython-WASM app fs
+/// access: relative paths stay jailed to `workspace_root` via
+/// `resolve_jailed_path` (stint 0509) exactly as before; absolute paths are
+/// accepted only when they resolve under a picker-granted root, with the same
+/// canonicalize + symlink-escape discipline, so a symlink inside either scope
+/// cannot reach outside it.
+fn resolve_app_fs_path(
+    workspace_root: &Path,
+    granted_roots: &[PathBuf],
+    raw: &str,
+    for_write: bool,
+) -> Result<PathBuf, String> {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        let resolved = resolve_concrete_path(path.to_path_buf(), for_write)?;
+        if granted_roots.iter().any(|root| resolved.starts_with(root)) {
+            return Ok(resolved);
+        }
+        return Err(format!(
+            "absolute path is outside every picker-granted scope: {raw}"
+        ));
+    }
+    resolve_jailed_path(workspace_root, raw, for_write)
+}
+
+/// Canonicalize a candidate path; for a write target that does not exist yet,
+/// canonicalize its parent and re-attach the file name (same discipline the
+/// workspace jail has always used for new files).
+fn resolve_concrete_path(candidate: PathBuf, for_write: bool) -> Result<PathBuf, String> {
+    let display = candidate.display().to_string();
+    if for_write && !candidate.exists() {
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| format!("path has no parent: {display}"))?;
+        let name = candidate
+            .file_name()
+            .ok_or_else(|| format!("path has no file name: {display}"))?
+            .to_os_string();
+        parent.canonicalize().map(|parent| parent.join(name))
+    } else {
+        candidate.canonicalize()
+    }
+    .map_err(|error| format!("resolve path {display}: {error}"))
+}
+
+/// Canonicalize a picker-returned path for grant registration. Save-as
+/// targets may not exist yet, so a missing path resolves through its parent.
+fn canonicalize_picked_path(path: &Path) -> Result<PathBuf, String> {
+    resolve_concrete_path(path.to_path_buf(), true)
 }
 
 fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_trait::AppCommand> {
@@ -3599,6 +3813,151 @@ mod tests {
     struct NoopWake;
     impl Wake for NoopWake {
         fn wake(self: Arc<Self>) {}
+    }
+
+    // ── resolve_app_fs_path (stint 0508: workspace jail + picker grants) ──
+
+    /// Relative paths keep the exact pre-grant jail behavior.
+    #[test]
+    fn resolve_app_fs_path_keeps_relative_workspace_jail() {
+        let workspace = tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("note.txt"), "hi").expect("seed");
+
+        let resolved = resolve_app_fs_path(workspace.path(), &[], "note.txt", false)
+            .expect("workspace-relative read resolves");
+        assert_eq!(
+            resolved,
+            workspace.path().canonicalize().unwrap().join("note.txt")
+        );
+        let escape = resolve_app_fs_path(workspace.path(), &[], "../outside.txt", false);
+        assert!(escape.is_err(), "parent-dir escape must stay rejected");
+    }
+
+    /// Absolute paths are rejected outright when no grant covers them — even
+    /// paths inside the workspace itself must go through the relative jail.
+    #[test]
+    fn resolve_app_fs_path_rejects_absolute_paths_without_grants() {
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "secret").expect("seed");
+
+        let denied =
+            resolve_app_fs_path(workspace.path(), &[], &secret.to_string_lossy(), false);
+        assert!(denied.is_err(), "ungranted absolute path must be rejected");
+
+        let workspace_file = workspace.path().join("inside.txt");
+        std::fs::write(&workspace_file, "inside").expect("seed inside");
+        let denied = resolve_app_fs_path(
+            workspace.path(),
+            &[],
+            &workspace_file.to_string_lossy(),
+            false,
+        );
+        assert!(
+            denied.is_err(),
+            "absolute form of a workspace file must still go through the relative jail"
+        );
+    }
+
+    /// A file grant covers exactly that file; a sibling in the same directory
+    /// stays rejected.
+    #[test]
+    fn resolve_app_fs_path_accepts_granted_file_only() {
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        let picked = outside.path().join("picked.txt");
+        let sibling = outside.path().join("sibling.txt");
+        std::fs::write(&picked, "picked").expect("seed picked");
+        std::fs::write(&sibling, "sibling").expect("seed sibling");
+        let grants = vec![canonicalize_picked_path(&picked).expect("grant")];
+
+        let allowed =
+            resolve_app_fs_path(workspace.path(), &grants, &picked.to_string_lossy(), false)
+                .expect("granted file readable");
+        assert_eq!(allowed, picked.canonicalize().unwrap());
+        let denied =
+            resolve_app_fs_path(workspace.path(), &grants, &sibling.to_string_lossy(), false);
+        assert!(denied.is_err(), "sibling of granted file must be rejected");
+    }
+
+    /// A folder grant covers the subtree, including new write targets, while
+    /// paths outside the folder stay rejected.
+    #[test]
+    fn resolve_app_fs_path_folder_grant_covers_subtree() {
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        let folder = outside.path().join("project");
+        std::fs::create_dir(&folder).expect("mkdir");
+        std::fs::write(folder.join("inner.txt"), "inner").expect("seed");
+        let grants = vec![canonicalize_picked_path(&folder).expect("grant")];
+
+        let read = resolve_app_fs_path(
+            workspace.path(),
+            &grants,
+            &folder.join("inner.txt").to_string_lossy(),
+            false,
+        );
+        assert!(read.is_ok(), "file under granted folder readable: {read:?}");
+        let write = resolve_app_fs_path(
+            workspace.path(),
+            &grants,
+            &folder.join("new.txt").to_string_lossy(),
+            true,
+        );
+        assert!(write.is_ok(), "new file under granted folder writable: {write:?}");
+        let denied = resolve_app_fs_path(
+            workspace.path(),
+            &grants,
+            &outside.path().join("evil.txt").to_string_lossy(),
+            true,
+        );
+        assert!(denied.is_err(), "outside the granted folder must be rejected");
+    }
+
+    /// A save-as grant targets a file that does not exist yet: the write
+    /// resolves through the canonicalized parent, and reading it back after
+    /// the write succeeds through the same grant.
+    #[test]
+    fn resolve_app_fs_path_save_grant_round_trips_new_file() {
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        let target = outside.path().join("exported.txt");
+        let grants = vec![canonicalize_picked_path(&target).expect("grant")];
+
+        let write =
+            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), true)
+                .expect("save-as target writable before it exists");
+        std::fs::write(&write, "exported").expect("write");
+        let read =
+            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), false)
+                .expect("granted save-as target readable after write");
+        assert_eq!(std::fs::read_to_string(read).unwrap(), "exported");
+    }
+
+    /// A symlink under a granted folder that points outside the grant is
+    /// rejected: canonicalization resolves the target before the scope check.
+    #[test]
+    fn resolve_app_fs_path_symlink_cannot_escape_grant() {
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        let folder = outside.path().join("granted");
+        std::fs::create_dir(&folder).expect("mkdir");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "secret").expect("seed");
+        std::os::unix::fs::symlink(&secret, folder.join("link.txt")).expect("symlink");
+        let grants = vec![canonicalize_picked_path(&folder).expect("grant")];
+
+        let denied = resolve_app_fs_path(
+            workspace.path(),
+            &grants,
+            &folder.join("link.txt").to_string_lossy(),
+            false,
+        );
+        assert!(
+            denied.is_err(),
+            "symlink escaping the granted folder must be rejected: {denied:?}"
+        );
     }
 
     /// Stint 0417: the benign CPython WASI startup line must classify as

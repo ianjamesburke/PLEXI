@@ -407,7 +407,9 @@ pub enum PlexiEvent {
     NavBack { view_id: String },
 
     /// Response to `DrawCommand::OpenFilePicker`. At least one file was selected.
-    /// `paths` contains the absolute paths chosen by the user.
+    /// `paths` contains the absolute, canonicalized paths chosen by the user.
+    /// Each path is already registered as a scoped fs grant for this pane, so
+    /// the app can pass it verbatim to `file_read` / `file_write`.
     FilePicked {
         request_id: String,
         paths: Vec<String>,

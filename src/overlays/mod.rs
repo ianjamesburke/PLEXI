@@ -20,52 +20,19 @@ use crate::app::PlexiApp;
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
 pub(crate) const R6: CornerRadius = CornerRadius::same(6);
 
-/// Show a native macOS folder picker using rfd's async API.
+/// Show a native folder picker through the shared `PickerService` seam.
 /// Blocks the calling (background) thread; must NOT be called on the main thread.
 pub(crate) fn pick_folder() -> Option<std::path::PathBuf> {
-    use std::pin::pin;
-    use std::sync::{Arc, Condvar, Mutex};
-    use std::task::{Context, Poll, Wake, Waker};
-
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        let signal = Arc::new((Mutex::new(false), Condvar::new()));
-        struct Signal(Arc<(Mutex<bool>, Condvar)>);
-        impl Wake for Signal {
-            fn wake(self: Arc<Self>) {
-                self.signal();
-            }
-            fn wake_by_ref(self: &Arc<Self>) {
-                self.signal();
-            }
-        }
-        impl Signal {
-            fn signal(&self) {
-                let (lock, cvar) = &*self.0;
-                *lock.lock().unwrap() = true;
-                cvar.notify_one();
-            }
-        }
-        let waker: Waker = Arc::new(Signal(Arc::clone(&signal))).into();
-        let mut cx = Context::from_waker(&waker);
-        let mut f = pin!(f);
-        loop {
-            match f.as_mut().poll(&mut cx) {
-                Poll::Ready(val) => return val,
-                Poll::Pending => {
-                    let (lock, cvar) = &*signal;
-                    let mut ready = lock.lock().unwrap();
-                    while !*ready {
-                        ready = cvar.wait(ready).unwrap();
-                    }
-                    *ready = false;
-                }
-            }
-        }
+    use crate::host::services::{default_picker_service, FilePickOutcome, FilePickRequest};
+    let outcome = default_picker_service().pick(&FilePickRequest {
+        filter: Vec::new(),
+        multiple: false,
+        mode: crate::app_protocol::FilePickerMode::Folder,
+    });
+    match outcome {
+        FilePickOutcome::Picked(paths) => paths.into_iter().next(),
+        FilePickOutcome::Cancelled => None,
     }
-
-    let dialog = rfd::AsyncFileDialog::new();
-    let handle = block_on(dialog.pick_folder())?;
-    Some(handle.path().to_path_buf())
 }
 
 pub(crate) fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {

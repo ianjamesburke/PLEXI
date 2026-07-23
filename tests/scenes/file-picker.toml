@@ -1,0 +1,29 @@
+# File-picker round trip (stint 0508): the POC app runs save-pick -> write ->
+# open-pick -> read -> cancelled-pick against the scripted picker backend, all
+# through picker-granted absolute paths outside the workspace jail. Spawns a
+# real CPython app process, so it is excluded from scene_suite; run it with
+# `just scene tests/scenes/file-picker.toml`.
+suite = false
+
+picker_script = [
+  { paths = ["{out}/roundtrip.txt"] }, # save-1
+  { paths = ["{out}/roundtrip.txt"] }, # open-1
+  { cancel = true },                   # cancel-1
+]
+
+[[steps]]
+open = { kind = "process", path = "apps/dev/file-picker-poc", as = "picker", args = ["--auto"] }
+
+[[steps]]
+wait_app_frame = { target = "picker", timeout_s = 30.0 }
+
+# The auto flow finishes with a pick the script cancels; by the time the
+# cancel lands, the write -> read round trip has already completed.
+[[steps]]
+expect = { target = "picker", tree_contains = "status: cancelled:cancel-1", timeout_s = 20.0 }
+
+[[steps]]
+expect = { target = "picker", tree_contains = "content: hello from the picker round trip", timeout_s = 5.0 }
+
+[[steps]]
+shot = "file-picker.png"

@@ -863,13 +863,14 @@ Cancel an in-flight `StreamProcess`. The host sends SIGTERM to the child, waits 
 
 ### `open_file_picker`
 
-Show a native macOS file picker dialog. Requires `fs.pick` capability.
+Show a native file picker dialog. Requires `fs.pick` capability.
 
 **Capability:** `fs.pick`
 
 | Field | Type | Required |
 |-------|------|----------|
 | `filter` | `string[]` | yes |
+| `mode` | `FilePickerMode` | no |
 | `multiple` | `boolean` | yes |
 | `request_id` | `string` | yes |
 
@@ -1467,7 +1468,7 @@ Emitted by host to app when Escape is pressed and the app's nav stack depth is >
 
 ### `file_picked`
 
-Response to `DrawCommand::OpenFilePicker`. At least one file was selected. `paths` contains the absolute paths chosen...
+Response to `DrawCommand::OpenFilePicker`. At least one file was selected. `paths` contains the absolute, canonicaliz...
 
 | Field | Type | Required |
 |-------|------|----------|

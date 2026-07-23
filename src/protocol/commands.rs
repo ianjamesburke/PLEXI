@@ -936,20 +936,31 @@ pub enum AppRequest {
     /// Capability: `terminal.bindings`. All fields required.
     CancelProcess { correlation_id: String },
 
-    // ── File picker (#514) ────────────────────────────────────────────────────
-    /// Show a native macOS file picker dialog. Requires `fs.pick` capability.
+    // ── File picker (#514, stint 0508) ───────────────────────────────────────
+    /// Show a native file picker dialog. Requires `fs.pick` capability.
     ///
     /// `filter` is a list of file extensions without leading dots
-    /// (e.g. `["mp4", "mov"]`). Empty list = accept all files.
+    /// (e.g. `["mp4", "mov"]`). Empty list = accept all files. Only applies
+    /// to `open` and `save` modes.
     ///
-    /// `multiple` allows selecting more than one file.
+    /// `multiple` allows selecting more than one file (`open` mode only).
+    ///
+    /// `mode` selects the dialog kind (`open` / `folder` / `save`); see
+    /// `FilePickerMode`. Defaults to `open` when omitted.
     ///
     /// Host responds with `PlexiEvent::FilePicked` (paths) or
     /// `PlexiEvent::FilePickCancelled` (user dismissed / capability denied).
+    /// Every picked path is registered as a scoped fs grant for this pane:
+    /// subsequent `file_read` / `file_write` calls may name the granted path
+    /// (or, for `folder` mode, any path under it) as an absolute path, in
+    /// addition to workspace-relative paths. Grants live for the pane's
+    /// lifetime and are never persisted.
     OpenFilePicker {
         request_id: String,
         filter: Vec<String>,
         multiple: bool,
+        #[serde(default)]
+        mode: FilePickerMode,
     },
 
     // ── App events + undo (src/host/app_timeline.rs, Phase B) ─────────

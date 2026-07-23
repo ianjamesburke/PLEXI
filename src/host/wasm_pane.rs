@@ -24,7 +24,10 @@ use crate::app_protocol::{
     ModelTier, TriggerMode,
 };
 use crate::host::app_timeline::{AppTimeline, EmittedEvent};
-use crate::host::services::{HttpResponse as HostHttpResponse, NetService, UreqNetService};
+use crate::host::services::{
+    default_picker_service, FilePickOutcome, FilePickRequest, HttpResponse as HostHttpResponse,
+    NetService, PickerService, UreqNetService,
+};
 use crate::media::audio::{start_output_stream, OutputSession};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
 use crate::ui::theme::Colors;
@@ -32,8 +35,9 @@ use crate::ui::theme::Colors;
 use super::wasm_app::bindings::plexi::platform::types::{
     AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, AppEventEvent, DeclareEventStreamsEffect,
     DeclareToolsEffect, EmitEventEffect, EventSubscriptionResultEvent,
-    EventUnsubscriptionResultEvent, FileReadEffect, FileWriteEffect, HttpFetchEffect,
-    HttpResponse as WitHttpResponse, SubscribeEventStreamsEffect, ToolCallEvent, ToolResultEffect,
+    EventUnsubscriptionResultEvent, FilePickedEvent, FilePickerMode as WitFilePickerMode,
+    FileReadEffect, FileWriteEffect, HttpFetchEffect, HttpResponse as WitHttpResponse,
+    OpenFilePickerEffect, SubscribeEventStreamsEffect, ToolCallEvent, ToolResultEffect,
     UiActionEvent, UiValueChangeEvent, UnsubscribeEventStreamsEffect,
 };
 use super::wasm_app::{
@@ -225,6 +229,17 @@ impl WasmAccessPolicy {
         }
     }
 
+    /// Register one picker-granted path (stint 0508) as both a read and a
+    /// write root. Unlike manifest scopes, a save-as target may not exist
+    /// yet, so a missing path resolves through its canonicalized parent.
+    /// Returns the canonical path the grant covers.
+    fn grant_picked_path(&mut self, path: impl Into<PathBuf>) -> Result<PathBuf, String> {
+        let resolved = canonicalize_scope(path.into(), false)?;
+        self.fs_read_roots.push(resolved.clone());
+        self.fs_write_roots.push(resolved.clone());
+        Ok(resolved)
+    }
+
     fn first_root(&self, access: FsAccess) -> Option<&Path> {
         self.fs_roots(access).first().map(PathBuf::as_path)
     }
@@ -327,6 +342,11 @@ pub struct WasmPane {
     pane_id: u64,
     http_tx: Sender<InputEvent>,
     http_rx: Receiver<InputEvent>,
+    /// File-picker backend (stint 0508); scripted in tests / under
+    /// `PLEXI_PICKER_SCRIPT` so agents can drive picks without a dialog.
+    picker: Arc<dyn PickerService>,
+    picker_tx: Sender<(String, FilePickOutcome)>,
+    picker_rx: Receiver<(String, FilePickOutcome)>,
     pending_host_effects: VecDeque<WasmHostEffect>,
     external_inputs: Arc<ArrayQueue<InputEvent>>,
     /// Current display scale, set by the live pane every frame. Surfaces
@@ -338,6 +358,7 @@ pub struct WasmPane {
 impl WasmPane {
     pub fn new(app: WasmApp, stats: Box<dyn SystemStatsSource>) -> Self {
         let (http_tx, http_rx) = mpsc::channel();
+        let (picker_tx, picker_rx) = mpsc::channel();
         WasmPane {
             app,
             stats,
@@ -361,6 +382,9 @@ impl WasmPane {
             pane_id: 0,
             http_tx,
             http_rx,
+            picker: default_picker_service(),
+            picker_tx,
+            picker_rx,
             pending_host_effects: VecDeque::new(),
             external_inputs: Arc::new(ArrayQueue::new(256)),
             pixels_per_point: 1.0,
@@ -407,6 +431,11 @@ impl WasmPane {
     #[cfg(test)]
     fn set_net_service(&mut self, net: Arc<dyn NetService>) {
         self.net = net;
+    }
+
+    #[cfg(test)]
+    fn set_picker_service(&mut self, picker: Arc<dyn PickerService>) {
+        self.picker = picker;
     }
 
     #[cfg(test)]
@@ -582,6 +611,7 @@ impl WasmPane {
     pub fn tick(&mut self, now_ms: u64) -> wasmtime::Result<()> {
         self.collect_external_inputs();
         self.collect_http_results();
+        self.collect_picker_results();
         self.fire_timers(now_ms);
         self.drain(now_ms)?;
         self.pump_audio()?;
@@ -956,6 +986,94 @@ impl WasmPane {
                 },
                 |err| InputEvent::SpawnResult(Err(err)),
             ),
+            Effect::OpenFilePicker(req) => {
+                log::info!(
+                    "wasm picker: open-file-picker request_id={} mode={:?} multiple={} filter={:?}",
+                    req.request_id,
+                    req.mode,
+                    req.multiple,
+                    req.filter
+                );
+                self.open_file_picker(req);
+            }
+        }
+    }
+
+    /// Service one `open-file-picker` effect (stint 0508). The dialog (or
+    /// scripted queue) runs on a background thread; the outcome re-enters the
+    /// pane through `picker_rx` in `collect_picker_results`, where the picked
+    /// paths become fs grants before `file-picked` reaches the guest.
+    fn open_file_picker(&mut self, req: OpenFilePickerEffect) {
+        if !self.has_session_grant("fs.pick") {
+            log::info!(
+                "wasm picker: request {} denied: missing capability fs.pick",
+                req.request_id
+            );
+            self.queue
+                .push_back(InputEvent::FilePickCancelled(req.request_id));
+            return;
+        }
+        let request = FilePickRequest {
+            filter: req.filter,
+            multiple: req.multiple,
+            mode: match req.mode {
+                WitFilePickerMode::Open => crate::app_protocol::FilePickerMode::Open,
+                WitFilePickerMode::Folder => crate::app_protocol::FilePickerMode::Folder,
+                WitFilePickerMode::Save => crate::app_protocol::FilePickerMode::Save,
+            },
+        };
+        let picker = Arc::clone(&self.picker);
+        let tx = self.picker_tx.clone();
+        std::thread::spawn(move || {
+            let outcome = picker.pick(&request);
+            let _ = tx.send((req.request_id, outcome));
+        });
+    }
+
+    /// Drain finished picker requests: register grants for picked paths, then
+    /// queue the guest-facing event. Cancellation creates no grant and leaves
+    /// no request state behind.
+    fn collect_picker_results(&mut self) {
+        while let Ok((request_id, outcome)) = self.picker_rx.try_recv() {
+            match outcome {
+                FilePickOutcome::Picked(paths) => {
+                    let mut granted = Vec::new();
+                    for path in paths {
+                        match self.access.grant_picked_path(&path) {
+                            Ok(resolved) => {
+                                log::info!(
+                                    "wasm picker: fs grant registered for picked path {}",
+                                    resolved.display()
+                                );
+                                granted.push(resolved.display().to_string());
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "wasm picker: picked path {} not granted: {error}",
+                                    path.display()
+                                );
+                            }
+                        }
+                    }
+                    if granted.is_empty() {
+                        log::error!(
+                            "wasm picker: pick {request_id}: no picked path could be granted; cancelling"
+                        );
+                        self.queue
+                            .push_back(InputEvent::FilePickCancelled(request_id));
+                    } else {
+                        self.queue.push_back(InputEvent::FilePicked(FilePickedEvent {
+                            request_id,
+                            paths: granted,
+                        }));
+                    }
+                }
+                FilePickOutcome::Cancelled => {
+                    log::info!("wasm picker: pick {request_id} cancelled");
+                    self.queue
+                        .push_back(InputEvent::FilePickCancelled(request_id));
+                }
+            }
         }
     }
 
@@ -2488,6 +2606,199 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn open_picker(request_id: &str, mode: WitFilePickerMode, multiple: bool) -> Effect {
+        Effect::OpenFilePicker(OpenFilePickerEffect {
+            request_id: request_id.to_string(),
+            filter: vec![],
+            multiple,
+            mode,
+        })
+    }
+
+    fn scripted_picker(outcomes: Vec<crate::host::services::FilePickOutcome>) -> Arc<dyn PickerService> {
+        Arc::new(crate::host::services::ScriptedPickerService::from_outcomes(
+            outcomes,
+        ))
+    }
+
+    fn collect_picker_events(p: &mut WasmPane, min_events: usize) {
+        for _ in 0..100 {
+            p.collect_picker_results();
+            if p.queue.len() >= min_events {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Without `fs.pick`, the picker never runs: the guest gets an immediate
+    /// `file-pick-cancelled` and no fs grant is created.
+    #[test]
+    fn file_pick_without_capability_cancels_and_grants_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let secret = dir.path().join("secret.txt");
+        std::fs::write(&secret, b"secret").expect("seed");
+
+        let mut p = pane(0.0);
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Picked(vec![secret.clone()]),
+        ]));
+        p.exec(open_picker("pick-1", WitFilePickerMode::Open, false), 0);
+
+        match pop_event(&mut p) {
+            InputEvent::FilePickCancelled(request_id) => assert_eq!(request_id, "pick-1"),
+            other => panic!("expected file-pick-cancelled, got {other:?}"),
+        }
+        p.exec(file_read(&secret.to_string_lossy()), 0);
+        match pop_event(&mut p) {
+            InputEvent::FileReadResult(Err(msg)) => {
+                assert!(msg.contains("scope"), "unexpected error: {msg}");
+            }
+            other => panic!("expected denied file-read-result, got {other:?}"),
+        }
+    }
+
+    /// A scripted pick grants exactly the picked file: reading it through the
+    /// delivered absolute path succeeds while a sibling stays rejected.
+    #[test]
+    fn file_pick_grants_scoped_read_and_rejects_outside_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let picked = dir.path().join("picked.txt");
+        let sibling = dir.path().join("sibling.txt");
+        std::fs::write(&picked, b"picked bytes").expect("seed picked");
+        std::fs::write(&sibling, b"nope").expect("seed sibling");
+
+        let mut p = pane(0.0);
+        grant_capability(&mut p, "fs.pick");
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Picked(vec![picked.clone()]),
+        ]));
+        p.exec(open_picker("pick-2", WitFilePickerMode::Open, false), 0);
+        collect_picker_events(&mut p, 1);
+
+        let delivered = match pop_event(&mut p) {
+            InputEvent::FilePicked(event) => {
+                assert_eq!(event.request_id, "pick-2");
+                assert_eq!(event.paths.len(), 1);
+                event.paths[0].clone()
+            }
+            other => panic!("expected file-picked, got {other:?}"),
+        };
+        assert_eq!(
+            std::path::PathBuf::from(&delivered),
+            picked.canonicalize().expect("canonical picked")
+        );
+
+        p.exec(file_read(&delivered), 0);
+        match pop_event(&mut p) {
+            InputEvent::FileReadResult(Ok(bytes)) => assert_eq!(bytes, b"picked bytes"),
+            other => panic!("expected successful file-read-result, got {other:?}"),
+        }
+
+        p.exec(file_read(&sibling.to_string_lossy()), 0);
+        match pop_event(&mut p) {
+            InputEvent::FileReadResult(Err(msg)) => {
+                assert!(msg.contains("outside granted scope"), "unexpected error: {msg}");
+            }
+            other => panic!("expected denied file-read-result, got {other:?}"),
+        }
+    }
+
+    /// A save-as pick grants a path that does not exist yet; writing then
+    /// reading it back through the grant round-trips.
+    #[test]
+    fn save_pick_grants_new_path_for_write_and_read_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("exported.txt");
+
+        let mut p = pane(0.0);
+        grant_capability(&mut p, "fs.pick");
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Picked(vec![target.clone()]),
+        ]));
+        p.exec(open_picker("save-1", WitFilePickerMode::Save, false), 0);
+        collect_picker_events(&mut p, 1);
+
+        let delivered = match pop_event(&mut p) {
+            InputEvent::FilePicked(event) => event.paths[0].clone(),
+            other => panic!("expected file-picked, got {other:?}"),
+        };
+        p.exec(file_write(&delivered, b"exported"), 0);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::FileWriteResult(Ok(()))
+        ));
+        p.exec(file_read(&delivered), 0);
+        match pop_event(&mut p) {
+            InputEvent::FileReadResult(Ok(bytes)) => assert_eq!(bytes, b"exported"),
+            other => panic!("expected successful file-read-result, got {other:?}"),
+        }
+    }
+
+    /// A folder pick grants the subtree: files under the picked directory are
+    /// readable and writable through absolute paths.
+    #[test]
+    fn folder_pick_grants_subtree_access() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).expect("mkdir");
+        std::fs::write(nested.join("inner.txt"), b"inner").expect("seed");
+
+        let mut p = pane(0.0);
+        grant_capability(&mut p, "fs.pick");
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Picked(vec![dir.path().to_path_buf()]),
+        ]));
+        p.exec(open_picker("folder-1", WitFilePickerMode::Folder, false), 0);
+        collect_picker_events(&mut p, 1);
+
+        let root = match pop_event(&mut p) {
+            InputEvent::FilePicked(event) => std::path::PathBuf::from(&event.paths[0]),
+            other => panic!("expected file-picked, got {other:?}"),
+        };
+        let inner = root.join("nested/inner.txt");
+        p.exec(file_read(&inner.to_string_lossy()), 0);
+        match pop_event(&mut p) {
+            InputEvent::FileReadResult(Ok(bytes)) => assert_eq!(bytes, b"inner"),
+            other => panic!("expected successful file-read-result, got {other:?}"),
+        }
+        let created = root.join("nested/created.txt");
+        p.exec(file_write(&created.to_string_lossy(), b"created"), 0);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::FileWriteResult(Ok(()))
+        ));
+    }
+
+    /// Cancelling is first-class: the guest gets `file-pick-cancelled`, no
+    /// grant exists afterwards, and no request state lingers.
+    #[test]
+    fn cancelled_pick_reaches_guest_without_grants() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("never-granted.txt");
+        std::fs::write(&path, b"never").expect("seed");
+
+        let mut p = pane(0.0);
+        grant_capability(&mut p, "fs.pick");
+        p.set_picker_service(scripted_picker(vec![
+            crate::host::services::FilePickOutcome::Cancelled,
+        ]));
+        p.exec(open_picker("pick-3", WitFilePickerMode::Open, false), 0);
+        collect_picker_events(&mut p, 1);
+
+        match pop_event(&mut p) {
+            InputEvent::FilePickCancelled(request_id) => assert_eq!(request_id, "pick-3"),
+            other => panic!("expected file-pick-cancelled, got {other:?}"),
+        }
+        p.exec(file_read(&path.to_string_lossy()), 0);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::FileReadResult(Err(_))
+        ));
+        p.collect_picker_results();
+        assert!(p.queue.is_empty(), "no dangling picker state after cancel");
     }
 
     // init runs startup effects: the first get-system-stats resolves through

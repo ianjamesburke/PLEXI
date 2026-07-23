@@ -248,6 +248,25 @@ pub mod effects {
             args: vec![],
         })
     }
+    /// Show a host file picker (`fs.pick` capability). `filter` lists file
+    /// extensions without leading dots (empty = all files); `multiple` only
+    /// applies to [`FilePickerMode::Open`]. The host replies with
+    /// `input-event` `file-picked` — whose paths are pre-granted for
+    /// `file_read` / `file_write` — or `file-pick-cancelled`.
+    #[must_use]
+    pub fn open_file_picker(
+        request_id: impl Into<String>,
+        filter: Vec<String>,
+        multiple: bool,
+        mode: FilePickerMode,
+    ) -> Effect {
+        Effect::OpenFilePicker(OpenFilePickerEffect {
+            request_id: request_id.into(),
+            filter,
+            multiple,
+            mode,
+        })
+    }
 }
 
 /// Arena UI tree builder. Each method maps one-to-one to a WIT `ui-node-data` variant.

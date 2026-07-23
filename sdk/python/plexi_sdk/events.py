@@ -122,6 +122,26 @@ class HostLogResult:
 
 
 @dataclass
+class FilePicked:
+    """Host reply to :class:`effects.OpenFilePicker`: the user picked paths.
+
+    ``paths`` are absolute, canonicalized, and already registered as scoped
+    fs grants for this pane — pass them verbatim to ``FileRead`` /
+    ``FileWrite``.
+    """
+    request_id: str
+    paths: list[str]
+
+
+@dataclass
+class FilePickCancelled:
+    """Host reply to :class:`effects.OpenFilePicker`: the user dismissed the
+    dialog, or the app lacks the ``fs.pick`` capability. No grant was
+    created."""
+    request_id: str
+
+
+@dataclass
 class HttpResponse:
     status: int
     headers: list

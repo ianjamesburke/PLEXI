@@ -119,6 +119,23 @@ pub enum StreamChannel {
     Structured,
 }
 
+/// Dialog mode for `DrawCommand::OpenFilePicker`.
+///
+/// - `Open` — pick one existing file (or several when `multiple` is true).
+/// - `Folder` — pick one existing directory; the grant covers the subtree.
+/// - `Save` — pick a save destination; the file may not exist yet.
+///
+/// `multiple` is only meaningful for `Open`; `Folder` and `Save` always
+/// return exactly one path.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FilePickerMode {
+    #[default]
+    Open,
+    Folder,
+    Save,
+}
+
 pub fn default_compact_threshold() -> f32 {
     280.0
 }

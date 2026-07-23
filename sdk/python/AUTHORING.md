@@ -86,8 +86,8 @@ fields is in `sdk.md` (Effects section). The common ones:
 
 <!-- drift-check:effects -->
 `SetState`, `PersistState`, `SetTitle`, `SetStatus`, `SetTimer`, `CancelTimer`,
-`SetSchedulerMode`, `FileRead`, `FileWrite`, `HttpFetch`, `AiQuery`, `AiMessage`,
-`CloseSelf`, `RequestCapability`,
+`SetSchedulerMode`, `FileRead`, `FileWrite`, `OpenFilePicker`, `HttpFetch`,
+`AiQuery`, `AiMessage`, `CloseSelf`, `RequestCapability`,
 `GetSystemStats`
 <!-- /drift-check:effects -->
 
@@ -103,6 +103,25 @@ under the `fs.read` / `fs.write` capabilities. The reply to a read is
 `events.FileReadResult` with `content: bytes` — decode yourself for text. Both
 directions are capped at `effects.MAX_FILE_IO_BYTES` per call; oversize payloads
 fail with a named error, never a truncated write.
+
+## Open and Save-As
+
+`FileRead`/`FileWrite` paths are workspace-relative and jailed to the
+workspace root. To reach a file the user chooses anywhere on disk, return
+`OpenFilePicker(request_id, mode=...)` (`fs.pick` capability): `"open"` picks
+existing files (`multiple=True` for several), `"folder"` picks a directory,
+`"save"` picks a destination that may not exist yet. The host replies with
+`FilePicked` — its absolute paths are registered as scoped fs grants for this
+pane, so pass them verbatim to `FileRead`/`FileWrite` (a folder grant covers
+the subtree) — or `FilePickCancelled` (dismissed or capability denied; no
+grant is created). Grants last for the pane's lifetime and are never
+persisted. `apps/dev/file-picker-poc` is the working example.
+
+Production shows a native dialog, which no test can click. Headless drivers
+script the picker instead: launch the host with `PLEXI_PICKER_SCRIPT`
+pointing at a JSON array of `{"paths": [...]}` / `{"cancel": true}` outcomes
+(consumed in order, per pane), or use a scene's `picker_script` key
+(`tests/scenes/file-picker.toml`).
 
 ## App Tools
 

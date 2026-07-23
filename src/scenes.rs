@@ -171,7 +171,24 @@ pub struct Scene {
     /// Use for scenes that spawn real app processes or need wall-clock time.
     #[serde(default = "default_true")]
     pub suite: bool,
+    /// Scripted file-picker outcomes (stint 0508), consumed in order by
+    /// `OpenFilePicker` requests from apps this scene opens. Each entry is
+    /// `{ paths = ["..."] }` or `{ cancel = true }`; a literal `{out}` prefix
+    /// in a path resolves to the scene's out dir. Headless-only: a live host
+    /// scripts its picker through `PLEXI_PICKER_SCRIPT` at host launch.
+    #[serde(default)]
+    pub picker_script: Option<Vec<PickerScriptEntry>>,
     pub steps: Vec<Step>,
+}
+
+/// One scripted picker outcome in a scene file.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct PickerScriptEntry {
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub cancel: Option<bool>,
 }
 
 fn default_size() -> [f32; 2] {
@@ -701,6 +718,55 @@ pub struct HeadlessBackend {
 /// Run a scene file. Writes `<out_dir>/<scene-stem>.json` and returns the
 /// report. Execution stops at the first failing step (fail fast); the report
 /// records everything up to and including the failure.
+/// Clears the process-wide picker override when a scene run ends.
+struct ScenePickerGuard;
+
+impl Drop for ScenePickerGuard {
+    fn drop(&mut self) {
+        crate::host::services::set_picker_override(None);
+    }
+}
+
+/// Turn a scene's `picker_script` entries into a scripted picker override.
+/// `{out}` path prefixes resolve to the scene out dir so round-trip scenes
+/// stay self-contained.
+fn install_scene_picker(
+    entries: &[PickerScriptEntry],
+    out_dir: &Path,
+) -> Result<ScenePickerGuard, SceneError> {
+    use crate::host::services::{FilePickOutcome, ScriptedPickerService};
+    let mut outcomes = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        match (&entry.paths, entry.cancel) {
+            (Some(paths), None) => {
+                let paths = paths
+                    .iter()
+                    .map(|path| {
+                        PathBuf::from(match path.strip_prefix("{out}/") {
+                            Some(rest) => out_dir.join(rest).display().to_string(),
+                            None => path.clone(),
+                        })
+                    })
+                    .collect();
+                outcomes.push(FilePickOutcome::Picked(paths));
+            }
+            (None, Some(true)) => outcomes.push(FilePickOutcome::Cancelled),
+            _ => {
+                return Err(SceneError::new(
+                    "picker_script_invalid",
+                    format!(
+                        "picker_script entry {index} must set exactly one of `paths` or `cancel = true`"
+                    ),
+                ));
+            }
+        }
+    }
+    crate::host::services::set_picker_override(Some(std::sync::Arc::new(
+        ScriptedPickerService::from_outcomes(outcomes),
+    )));
+    Ok(ScenePickerGuard)
+}
+
 pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneReport {
     if std::env::var("PLEXI_SCENE_BACKEND").is_ok_and(|value| value == "live") {
         return run_live_scene(scene_path, out_dir, no_shots);
@@ -733,6 +799,16 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     };
 
     std::fs::create_dir_all(out_dir).ok();
+
+    // Install the scene's scripted picker before any app opens, and clear it
+    // however this run ends so no override leaks into the next scene.
+    let _picker_guard = match scene.picker_script.as_deref() {
+        Some(entries) => match install_scene_picker(entries, out_dir) {
+            Ok(guard) => Some(guard),
+            Err(e) => return failed_report(scene_name, e),
+        },
+        None => None,
+    };
 
     let mut h = PlexiUiHarness::new_sized(scene.size[0], scene.size[1]);
     h.step();
@@ -1829,6 +1905,16 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             )
         }
     };
+    if scene.picker_script.is_some() {
+        return live_failed_report(
+            scene_name,
+            std::env::var("PLEXI_SCENE_CHANNEL").ok(),
+            SceneError::new(
+                "unsupported_live_verb",
+                "picker_script is headless-only; script a live host's picker by launching it with PLEXI_PICKER_SCRIPT",
+            ),
+        );
+    }
     let mut backend = match LiveBackend::from_env() {
         Ok(backend) => backend,
         Err(error) => {
