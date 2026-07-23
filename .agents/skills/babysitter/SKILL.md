@@ -307,6 +307,8 @@ For each **batch**, in order:
 
    **Only skip the wait when the user has explicitly opted into auto-merge for this queue** (see Rules). If they have, merge on PASS and roll straight to the next batch.
 
+   **COMMIT YOUR OWN SKILL EDITS BEFORE THE MERGE.** `just merge-pr` has a **dirty-tree gate**, and the head writes repo-tracked babysitter files all run long, so this trips on *every* batch. Worse, the sync step overwrites the working tree — an uncommitted `SKILL.md` edit is **silently destroyed** by the merge (lost live, 2026-07-23: a promoted lesson vanished between writing it and the next merge). `LOG.md` is gitignored and safe; `SKILL.md` is tracked and is not. So at each merge boundary, *before* handing the merge to the worker, have it commit your `SKILL.md` changes as a small `chore(babysitter):` commit. **Commit, never `git checkout --`** — a commit preserves, a checkout discards, and by then there is no copy anywhere else.
+
    Once approved, have the worker run **one command from the alpha root** (it owns git):
    ```
    just merge-pr <PR#>
