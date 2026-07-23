@@ -1,0 +1,29 @@
+[package]
+name = "jukebox"
+version = "0.1.0"
+edition = "2021"
+
+# Jukebox POC (stint 0513). Targets the plexi-audio-app world: picks audio
+# files (0508), reads + decodes them in-guest (0509 + plexi-daw-engine wav),
+# streams the current track through the RT audio-rt-process callback, and
+# exposes the jukebox.* connector surface (0517). Build:
+#   cargo component build --release --target wasm32-wasip2
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.41"
+serde_json = "1"
+# Reused only for its WAV decoder — the same codec the DAW engine loads clips
+# with, so the jukebox and the DAW never disagree on what a WAV file contains.
+plexi-daw-engine = { path = "../../../crates/daw-engine" }
+
+[package.metadata.component]
+package = "plexi:jukebox"
+
+[package.metadata.component.target]
+path = "wit"
+world = "plexi-audio-app"
+
+[workspace]
