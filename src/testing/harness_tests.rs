@@ -3193,6 +3193,67 @@ fn note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
         .expect("notes semantics")
 }
 
+/// A fresh scratch editor opened while the host is occluded still owns input
+/// once it becomes visible: pane text waits for the editor's first focusable
+/// render instead of being discarded by that render's preamble.
+#[test]
+fn blank_text_editor_open_acquires_input_focus() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let open_response = temp_response(tmp.path(), "blank-editor-open");
+    h.inject_ipc(AppRequest::SpawnPane {
+        type_id: "text-editor".to_string(),
+        layout: Some("split_h".to_string()),
+        args: vec![],
+        from_pane_id: None,
+        request_id: None,
+        response_file: Some(open_response.clone()),
+        ephemeral: false,
+        cwd: Some(tmp.path().to_string_lossy().into_owned()),
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        name: None,
+    });
+    // R3 moved IPC draining into logic so the editor can be opened while eframe
+    // skips ui for an occluded window. At this point no text surface has
+    // rendered or received egui focus yet.
+    h.hidden_frame();
+    let pane_id = read_json_response(&open_response)["pane_id"]
+        .as_u64()
+        .expect("open response pane id");
+
+    let text_response = temp_response(tmp.path(), "blank-editor-text");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id,
+        text: "hello".to_string(),
+        response_file: Some(text_response.clone()),
+    });
+    h.hidden_frame();
+    h.run_frames(4);
+    assert_eq!(read_json_response(&text_response)["ok"], true);
+    let after_text = note_semantics(&h, pane_id);
+    assert_eq!(after_text["source_text"], "hello");
+    assert_eq!(
+        after_text["focused"], true,
+        "editor owns input after first visible render"
+    );
+
+    let key_response = temp_response(tmp.path(), "blank-editor-ctrl-enter");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "ctrl+enter".to_string(),
+        response_file: Some(key_response.clone()),
+    });
+    h.run_frames(1);
+    assert_ne!(
+        read_json_response(&key_response)["disposition"],
+        "passthrough",
+        "focused editor must own Ctrl+Enter rather than fall through to pane routing"
+    );
+}
+
 /// Ctrl+Enter with the caret inside a Markdown link activates it through the
 /// real key path — the target note opens in a split (stint 0506 item 3).
 #[test]

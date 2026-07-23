@@ -2396,12 +2396,33 @@ impl eframe::App for PlexiApp {
                     egui_tiles::Tile::Container(_) => None,
                 })
         });
-        if let Some(batches) =
-            focused_pane.and_then(|pane_id| self.pending_pane_inputs.remove(&pane_id))
-        {
-            for batch in batches {
-                raw_input.modifiers = batch.modifiers;
-                raw_input.events.extend(batch.events);
+        if let Some(pane_id) = focused_pane {
+            let defer_text_until_focused =
+                self.pending_pane_inputs
+                    .get(&pane_id)
+                    .is_some_and(|batches| {
+                        batches.iter().any(|batch| {
+                            batch
+                                .events
+                                .iter()
+                                .any(|event| matches!(event, egui::Event::Text(_)))
+                        })
+                    })
+                    && !crate::app::input_owner::focused_pane_text_surface(ctx, pane_id);
+            if defer_text_until_focused {
+                // A pane can be created while eframe runs hidden logic-only
+                // passes. Its first visible pass has not rendered a text
+                // surface yet, so feeding queued text into that pass loses it
+                // before the post-frame reconciler grants default focus.
+                // Preserve the ordered batch until that focus exists.
+                log::info!(
+                    "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
+                );
+            } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
+                for batch in batches {
+                    raw_input.modifiers = batch.modifiers;
+                    raw_input.events.extend(batch.events);
+                }
             }
         }
     }
