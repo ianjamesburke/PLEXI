@@ -955,6 +955,65 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Find/replace bar: opening it (Cmd+F) renders the Replace/All buttons
+    /// through the embedded-bar primitive, whose safe insets keep the button
+    /// bottoms off the pane's clip edge (stint 0506 — the bar used to clip).
+    #[test]
+    fn text_editor_find_bar_buttons_render_unclipped() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 400.0);
+        h.step();
+
+        let path =
+            std::env::temp_dir().join(format!("plexi-ui-findbar-{}.md", std::process::id()));
+        std::fs::write(&path, "the quick brown fox\nthe lazy dog\n").expect("seed note");
+
+        h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                )),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: "Text Editor".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+        });
+        // Settle focus so the editor owns input, then open the find bar and
+        // type a query so the Replace/All buttons are enabled.
+        h.run_steps(3);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::T);
+        h.run_steps(2);
+
+        // The Replace/All buttons are real Button widgets — their presence in
+        // the accessibility tree proves the bar laid them out.
+        h.harness().get_by_label("Replace");
+        h.harness().get_by_label("All");
+        h.save_screenshot("/tmp/plexi_note_find_bar.png")
+            .expect("render failed");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Notes picker overlay: open → step → still visible and renders.
     #[test]
     fn notes_picker_overlay_smoke() {

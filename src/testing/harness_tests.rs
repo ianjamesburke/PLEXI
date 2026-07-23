@@ -3160,3 +3160,148 @@ fn editor_chords_do_not_hijack_focused_terminal() {
         );
     }
 }
+
+// -- stint 0506: notes/editor UX regressions ------------------------------
+
+/// Open a focused, settled text-editor note pane holding `body`. Returns its
+/// pane id after the reconciler has granted the editor egui focus.
+fn open_focused_note(h: &mut HostHarness, dir: &std::path::Path, body: &str) -> PaneId {
+    let note = dir.join("note.md");
+    std::fs::write(&note, body).expect("seed note");
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.run_frames(3);
+    pane_id
+}
+
+fn note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
+    h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .expect("notes pane")
+        .runtime
+        .semantic_details()
+        .expect("notes semantics")
+}
+
+/// Ctrl+Enter with the caret inside a Markdown link activates it through the
+/// real key path — the target note opens in a split (stint 0506 item 3).
+#[test]
+fn ctrl_enter_activates_markdown_link_at_caret() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("target.md"), "target body").expect("seed target");
+    let mut h = HostHarness::new();
+    // Caret defaults to (0,0), inside the leading [md](target.md) link.
+    let pane_id = open_focused_note(&mut h, tmp.path(), "[md](target.md) rest");
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::CTRL);
+    h.run_frames(1);
+
+    let state = note_semantics(&h, pane_id);
+    assert_eq!(
+        state["last_link_activation"]["outcome"], "opened_note",
+        "Ctrl+Enter should activate the markdown link at caret; state={state}"
+    );
+    assert_eq!(h.pane_count(), 2, "the target note opens in a split");
+}
+
+/// Ctrl+Enter on a `[[wiki]]` link to a nonexistent note creates the note and
+/// opens it (stint 0506 items 3 + 4).
+#[test]
+fn ctrl_enter_on_missing_wiki_link_creates_and_opens_note() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let notes_dir = crate::config::config_dir().join("notes");
+    std::fs::create_dir_all(&notes_dir).expect("notes dir");
+    let pane_id = open_focused_note(&mut h, tmp.path(), "[[fresh-idea]] rest");
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::CTRL);
+    h.run_frames(1);
+
+    let state = note_semantics(&h, pane_id);
+    assert_eq!(
+        state["last_link_activation"]["outcome"], "created_note",
+        "missing wiki target should be created; state={state}"
+    );
+    assert!(notes_dir.join("fresh-idea.md").exists());
+    assert_eq!(h.pane_count(), 2, "the new note opens in a split");
+}
+
+/// Escape while the note body is focused releases the editor to pane-level
+/// navigation: the pane stays open and focused, but the editor no longer owns
+/// the keyboard (stint 0506 item 1 / stint 0496).
+#[test]
+fn escape_releases_note_editor_to_pane_navigation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = open_focused_note(&mut h, tmp.path(), "hello world");
+
+    let before = note_semantics(&h, pane_id);
+    assert_eq!(before["focused"], true, "editor owns input before Escape");
+    let panes_before = h.pane_count();
+
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+
+    let after = note_semantics(&h, pane_id);
+    assert_eq!(after["input_released"], true, "Escape releases the editor");
+    assert_eq!(after["focused"], false, "editor no longer holds egui focus");
+    assert_eq!(h.pane_count(), panes_before, "the pane stays open");
+    use crate::app::input_owner::InputOwner;
+    let ctx = h.ctx.clone();
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane_id),
+        "the pane stays focused for pane-level navigation"
+    );
+}
+
+/// Pressing Enter on a text file in the File Explorer opens it in the builtin
+/// text-editor as a split to the right of the explorer — never the OS opener
+/// (stint 0506 item 5).
+#[test]
+fn explorer_enter_opens_text_file_in_text_editor_split() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let doc = tmp.path().join("readme.md");
+    std::fs::write(&doc, "# hello").expect("seed doc");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::file_browser::FileBrowserApp::new(tmp.path().to_path_buf())),
+        crate::app::permissions::AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let explorer = h.state().open_panes[0];
+    h.focus_pane(explorer);
+    h.run_frames(2);
+    assert_eq!(h.pane_count(), 1);
+
+    // The only entry (readme.md) is selected by default; Enter activates it.
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.run_frames(2);
+
+    assert_eq!(
+        h.pane_count(),
+        2,
+        "the text file opens a second pane, not the OS opener"
+    );
+    let opened = h.app.windows[0]
+        .panes
+        .iter()
+        .find(|(id, _)| **id != explorer)
+        .map(|(_, pane)| pane)
+        .and_then(Pane::as_app)
+        .expect("a new app pane");
+    assert_eq!(opened.manifest_id, "text-editor");
+}
