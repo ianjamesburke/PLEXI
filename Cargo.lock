@@ -4080,6 +4080,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "plexi-daw-model"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plexi-video-model"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plexi-wasm-sdk"
 version = "0.1.0"
 dependencies = [
