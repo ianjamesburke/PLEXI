@@ -9,7 +9,7 @@
 //! [package]
 //! id      = "my-app"
 //! version = "0.1.0"
-//! runtime = "python"   # "python" or "wasm"
+//! runtime = "python"   # generated, never authored — see below
 //!
 //! capabilities = ["ai.query"]
 //!
@@ -18,6 +18,16 @@
 //! sha256 = "…"
 //! size   = 123
 //! ```
+//!
+//! `runtime` is derived at build time by [`PackageRuntime::from_manifest`]
+//! (`[app] type = "wasm"` → `"wasm"`, a `.py` entry → `"python"`; anything
+//! else is rejected as unlaunchable) and written into the generated
+//! `PACKAGE.toml`. It is not a manifest key: no `manifest.toml` declares a
+//! `runtime = "…"` scalar. The author-facing runtime key is the manifest's
+//! `[runtime] python_compat` marker (`AppManifestRuntime` in
+//! `src/app/registry.rs`); actual routing into the CPython-in-WASM adapter
+//! keys off the `.py`/`.pyc` entry (`PythonLaunchConfig::from_manifest_file`
+//! in `src/host/wasm_python.rs`).
 //!
 //! NOT a "pack" (`src/app/packs.rs`) — a pack is a *collection* manifest that
 //! lists multiple apps to install; a package is one app's distributable
