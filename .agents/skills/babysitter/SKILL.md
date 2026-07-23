@@ -249,6 +249,16 @@ For each **batch**, in order:
 
    Branch on the state token: `working` → reschedule, done. `done`/`blocked`/`needs-input`/`failed` → read `pr`/`verdict`/`last_error` for the details and act. **The slot is the source of truth when its step token is current.**
 
+   **PROGRESS BLOCK — end every wake-up's final message with it.** The user glances at this instead of reconstructing state from tool calls. Three lines, always the same shape (`date +%H:%M` for the LOCAL time — never UTC; counts from your own distilled state, verified against `stint show` at merge boundaries):
+
+   ```
+   ⏱ 12:52 — 23/25 stints done
+   in flight: 0518 impl (worker-b11b) | queued: 0519 (waits 0518)
+   state: nominal — no fix rounds, next check ~13:02
+   ```
+
+   Line 1: current local time + done/total for THIS run's queue. Line 2: what is mid-flight (batch, phase, who) and what is queued next. Line 3: one plain-English clause on health — `nominal`, or the active incident (`pane spawn outage — sub-agent workaround`), plus when the next check fires. Emit it even on a nothing-changed wake; skip it only on turns that are pure verdict-routing between wakes.
+
    **EXCEPTION — a pane blocked on a permission prompt cannot update its own slot.** It is frozen mid-tool-call, so its last-written value (`…:working`) stays fresh-looking *and* passes the step-token freshness test forever. Slot-only polling waits indefinitely; the stale-token defence does not cover this at all. **So: if `status` reads the identical value on ~3 consecutive checks (roughly 30 min), stop trusting it and run the cheap triangle.** `agent.state: blocked` with a `detail` naming a Bash command is a permission prompt — the fix is **one `enter`**, not a nudge and not a re-brief. Live catch 2026-07-23: a tester sat blocked on `rm -rf /tmp/plexi-pr2470.XXXX`, its own `mktemp -d` scratch dir, while its slot still read `b6-test:working`. Note `co` bypasses most permissions but **still prompts on `rm -rf`**, and testers routinely mktemp/rm scratch dirs — expect this specific prompt in tester panes, and approve once you have confirmed the path is a self-created `/tmp` scratch dir.
 
    **Only fall back to capture when the slot is empty or its step token is stale** (the pane hasn't adopted the contract, or crashed before writing). Then the old two-command read applies:
