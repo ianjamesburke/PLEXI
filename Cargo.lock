@@ -4097,6 +4097,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "plexi-daw-tools"
+version = "0.1.0"
+dependencies = [
+ "plexi-daw-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plexi-video-model"
 version = "0.1.0"
 dependencies = [

@@ -3400,4 +3400,166 @@ mod tests {
         );
         Ok(())
     }
+
+    // ── daw.* connector tools (stint 0517) ───────────────────────────────
+
+    fn daw_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/daw-engine.wasm")
+    }
+
+    fn daw_pane() -> WasmPane {
+        let app = WasmApp::load_ephemeral_run("daw", &daw_fixture(), StateStore::ephemeral())
+            .expect("load daw-engine");
+        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    fn tool_call(call_id: &str, name: &str, input_json: &str) -> InputEvent {
+        InputEvent::ToolCall(ToolCallEvent {
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            input_json: input_json.to_string(),
+            caller_id: "assistant".to_string(),
+        })
+    }
+
+    /// The ToolResult host effect for `call_id`, as (output_json, error).
+    fn tool_result(
+        effects: &[WasmHostEffect],
+        call_id: &str,
+    ) -> (Option<String>, Option<String>) {
+        effects
+            .iter()
+            .find_map(|e| match e {
+                WasmHostEffect::ToolResult {
+                    call_id: id,
+                    output_json,
+                    error,
+                } if id == call_id => Some((output_json.clone(), error.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no ToolResult for {call_id} in {effects:?}"))
+    }
+
+    fn tool_output(effects: &[WasmHostEffect], call_id: &str) -> serde_json::Value {
+        let (output, error) = tool_result(effects, call_id);
+        assert_eq!(error, None, "{call_id} unexpectedly errored");
+        serde_json::from_str(&output.expect("ok result carries output_json"))
+            .expect("tool output is JSON")
+    }
+
+    // The app declares the full daw.* surface at init with truthful
+    // read-only flags: exactly the four read tools may auto-grant; every
+    // mutation (and both POC tools) must prompt.
+    #[test]
+    fn daw_app_declares_namespaced_tools_with_correct_read_only_flags(
+    ) -> wasmtime::Result<()> {
+        let mut p = daw_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        let effects = p.take_host_effects();
+        let tools = effects
+            .iter()
+            .find_map(|e| match e {
+                WasmHostEffect::DeclareTools { tools } => Some(tools),
+                _ => None,
+            })
+            .expect("init declares tools");
+
+        let read_only: Vec<&str> = tools
+            .iter()
+            .filter(|t| t.read_only)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(
+            read_only,
+            vec![
+                "daw.project_info",
+                "daw.list_tracks",
+                "daw.get_track",
+                "daw.transport_state"
+            ]
+        );
+        let mutating: Vec<&str> = tools
+            .iter()
+            .filter(|t| !t.read_only)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(
+            mutating,
+            vec![
+                "daw.add_track",
+                "daw.set_track_volume",
+                "daw.mute_track",
+                "daw.solo_track",
+                "daw.set_bpm",
+                "daw.add_clip",
+                "daw.play",
+                "daw.stop",
+                "daw_mixdown",
+                "daw_command"
+            ]
+        );
+        for tool in tools {
+            assert!(
+                tool.input_schema.is_object() && tool.output_schema.is_object(),
+                "{} schemas must be JSON objects",
+                tool.name
+            );
+        }
+        Ok(())
+    }
+
+    // The 0517 demo loop end to end: an assistant ToolCall reaches the guest,
+    // mutates the model through DawCommand, returns a chainable ToolResult,
+    // and the pane's semantic tree reflects the change. Errors surface the
+    // model's reason and never rebind dangling ids.
+    #[test]
+    fn daw_tool_call_mutates_model_and_tree_reflects_it() -> wasmtime::Result<()> {
+        let mut p = daw_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        p.take_host_effects();
+
+        // Create a MIDI track — the headline "create a MIDI track" ask.
+        p.push_input(tool_call("c1", "daw.add_track", r#"{"kind":"midi","name":"Bass"}"#));
+        p.tick(16)?;
+        let out = tool_output(&p.take_host_effects(), "c1");
+        assert_eq!(out["outcome"], "applied");
+        let track_id = out["track_id"].as_u64().expect("new track id");
+        assert!(tree_text(&p.view()?).contains("Bass"), "tree shows the new track");
+
+        // "Reduce the volume of the bass track" — by name, then read it back
+        // by id (list → set → get chaining on ids).
+        p.push_input(tool_call(
+            "c2",
+            "daw.set_track_volume",
+            r#"{"track":"bass","volume":0.25}"#,
+        ));
+        p.tick(32)?;
+        let out = tool_output(&p.take_host_effects(), "c2");
+        assert_eq!(out["outcome"], "applied");
+        assert_eq!(out["track_id"], track_id);
+        assert!(tree_text(&p.view()?).contains("vol 0.25"), "tree shows the new volume");
+
+        p.push_input(tool_call(
+            "c3",
+            "daw.get_track",
+            &format!(r#"{{"track":{track_id}}}"#),
+        ));
+        p.tick(48)?;
+        let out = tool_output(&p.take_host_effects(), "c3");
+        assert_eq!(out["name"], "Bass");
+        assert!((out["volume"].as_f64().unwrap() - 0.25).abs() < 1e-6);
+
+        // A dangling id is a clean not-found, never a rebind.
+        p.push_input(tool_call(
+            "c4",
+            "daw.set_track_volume",
+            r#"{"track":999,"volume":1.0}"#,
+        ));
+        p.tick(64)?;
+        let (output, error) = tool_result(&p.take_host_effects(), "c4");
+        assert_eq!(output, None);
+        let error = error.expect("dangling id errors");
+        assert!(error.contains("track id 999 not found"), "{error}");
+        Ok(())
+    }
 }

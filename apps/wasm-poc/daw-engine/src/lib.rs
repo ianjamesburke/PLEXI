@@ -323,7 +323,21 @@ impl App {
     // ── Tools ────────────────────────────────────────────────────────────────
 
     fn tool_decls() -> Vec<ToolDecl> {
-        vec![
+        // The daw.* connector surface (stint 0517): specs live in
+        // plexi-daw-tools so the schemas and the dispatch that enforces them
+        // can never drift apart.
+        let mut decls: Vec<ToolDecl> = plexi_daw_tools::tools()
+            .into_iter()
+            .map(|spec| ToolDecl {
+                name: spec.name.into(),
+                description: spec.description,
+                input_schema_json: spec.input_schema.to_string(),
+                output_schema_json: spec.output_schema.to_string(),
+                timeout_ms: None,
+                read_only: spec.read_only,
+            })
+            .collect();
+        decls.extend([
             ToolDecl {
                 name: TOOL_MIXDOWN.into(),
                 description: "Deterministic offline mixdown of the project (transport start to \
@@ -348,14 +362,45 @@ impl App {
                 timeout_ms: None,
                 read_only: false,
             },
-        ]
+        ]);
+        decls
+    }
+
+    /// Routes one `daw.*` call through the pure connector crate, then
+    /// re-prepares the engine when the model's revision moved — the same
+    /// follow-the-model contract as key handling. Returns `None` for names
+    /// outside the `daw.*` surface.
+    fn daw_tool(
+        &mut self,
+        name: &str,
+        input_json: &str,
+        effects: &mut Vec<Effect>,
+    ) -> Option<Result<String, String>> {
+        let prev_tick = self.model.transport().position;
+        let prev_revision = self.model.revision();
+        let result = plexi_daw_tools::dispatch(&mut self.model, name, input_json)?;
+        if self.model.revision() != prev_revision {
+            self.ensure_source_data(effects);
+            self.reprepare(prev_tick);
+            self.last_status = format!("{name} applied");
+        }
+        match &result {
+            Ok(_) => host_log::info(&format!("daw-engine-poc: tool {name} ok")),
+            Err(e) => host_log::info(&format!("daw-engine-poc: tool {name} error: {e}")),
+        }
+        Some(result.and_then(|value| {
+            serde_json::to_string(&value).map_err(|e| format!("{name} result: {e}"))
+        }))
     }
 
     fn handle_tool_call(&mut self, call: ToolCallEvent, effects: &mut Vec<Effect>) {
-        let result = match call.name.as_str() {
-            TOOL_MIXDOWN => self.tool_mixdown(&call.input_json, effects),
-            TOOL_COMMAND => self.tool_command(&call.input_json, effects),
-            other => Err(format!("unknown tool {other}")),
+        let result = match self.daw_tool(&call.name, &call.input_json, effects) {
+            Some(result) => result,
+            None => match call.name.as_str() {
+                TOOL_MIXDOWN => self.tool_mixdown(&call.input_json, effects),
+                TOOL_COMMAND => self.tool_command(&call.input_json, effects),
+                other => Err(format!("unknown tool {other}")),
+            },
         };
         let (output_json, error) = match result {
             Ok(json) => (Some(json), None),

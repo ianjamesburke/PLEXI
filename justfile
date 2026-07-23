@@ -62,6 +62,8 @@ wasm-fixtures:
     cp target/wasm32-wasip1/release/pong.wasm tests/wasm-fixtures/pong.wasm
     cd apps/wasm-poc/counter && cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/counter.wasm tests/wasm-fixtures/counter.wasm
+    cd apps/wasm-poc/daw-engine && cargo component build --release --target wasm32-wasip2
+    cp target/wasm32-wasip1/release/daw_engine_poc.wasm tests/wasm-fixtures/daw-engine.wasm
     bash scripts/build-wasm-python-shim.sh
 
 # Generate an HTML line-coverage report and open it in the browser.

@@ -53,6 +53,7 @@ version = "0.1.0"
 dependencies = [
  "plexi-daw-engine",
  "plexi-daw-model",
+ "plexi-daw-tools",
  "serde_json",
  "wit-bindgen",
 ]
@@ -400,6 +401,15 @@ name = "plexi-daw-model"
 version = "0.1.0"
 dependencies = [
  "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plexi-daw-tools"
+version = "0.1.0"
+dependencies = [
+ "plexi-daw-model",
  "serde",
  "serde_json",
 ]

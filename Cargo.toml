@@ -1,5 +1,5 @@
 [workspace]
-members = ["tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/video-model"]
+members = ["tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-tools", "crates/video-model"]
 exclude = ["apps/wasm-poc"]
 resolver = "2"
 
