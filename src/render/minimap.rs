@@ -179,8 +179,12 @@ pub fn render_minimap(
     // Workspace name
     let name_x = panel_rect.center().x - name_w * 0.5;
     let name_y = panel_rect.min.y + padding * 0.5;
-    ui.painter()
-        .galley(egui::pos2(name_x, name_y), name_galley, colors.text_primary);
+    crate::ui::snap::galley_snapped(
+        ui.painter(),
+        egui::pos2(name_x, name_y),
+        name_galley,
+        colors.text_primary,
+    );
 
     let grid_origin = egui::pos2(
         panel_min.x + (panel_w - grid_pixel_w) * 0.5,
@@ -242,11 +246,12 @@ pub fn render_minimap(
         );
 
         let page_num = spatial_rank.get(&idx).copied().unwrap_or(0);
-        ui.painter().text(
+        crate::ui::snap::text_snapped(
+            ui.painter(),
             egui::pos2(cell_rect.left() + 3.0, cell_rect.bottom() - 2.0),
             egui::Align2::LEFT_BOTTOM,
             format!("{}", page_num),
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(crate::ui::style::TEXT_META),
             if is_active {
                 colors.bg_darkest
             } else {

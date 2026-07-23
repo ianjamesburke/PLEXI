@@ -143,11 +143,12 @@ fn draw_pips(
         } else {
             with_alpha(colors.text_dim, 0.5)
         };
-        painter.text(
+        crate::ui::snap::text_snapped(
+            painter,
             egui::pos2(overflow_x, cy),
             egui::Align2::LEFT_CENTER,
             format!("+{}", dots.count - PANE_DOT_MAX),
-            egui::FontId::proportional(8.0),
+            egui::FontId::proportional(style::TEXT_META),
             overflow_color,
         );
     }
@@ -184,7 +185,17 @@ impl ContextItem {
         let bg_active = colors.bg_active;
         let bg_hover = colors.bg_hover;
 
-        let text_color = with_alpha(if is_active { text_primary } else { text_dim }, row_alpha);
+        // Context names are primary labels: inactive rows read constantly, so
+        // they get the contrast-floored secondary tone, not raw `text_dim`
+        // (stint 0528).
+        let text_color = with_alpha(
+            if is_active {
+                text_primary
+            } else {
+                colors.text_secondary(colors.bg_sidebar)
+            },
+            row_alpha,
+        );
 
         let scope_out = ui.scope(|ui| {
             ui.set_width(ui.available_width());
@@ -291,7 +302,7 @@ impl ContextItem {
                                         egui::Label::new(
                                             egui::RichText::new(shorten_path(path))
                                                 .size(style::TEXT_META)
-                                                .color(with_alpha(text_dim, row_alpha * 0.7)),
+                                                .color(with_alpha(text_dim, row_alpha)),
                                         )
                                         .selectable(false)
                                         .truncate(),

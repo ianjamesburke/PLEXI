@@ -91,7 +91,8 @@ pub(crate) fn paint_text_left_center(
     center_y: f32,
 ) {
     let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.into(), font_id, color));
-    ui.painter().galley(
+    crate::ui::snap::galley_snapped(
+        ui.painter(),
         Pos2::new(left, center_y - galley.size().y / 2.0),
         galley,
         color,
@@ -106,7 +107,8 @@ pub(crate) fn paint_text_centered(
     center: Pos2,
 ) {
     let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.into(), font_id, color));
-    ui.painter().galley(
+    crate::ui::snap::galley_snapped(
+        ui.painter(),
         Pos2::new(
             center.x - galley.size().x / 2.0,
             center.y - galley.size().y / 2.0,
@@ -320,7 +322,8 @@ impl<'a> ListRow<'a> {
                 } else {
                     colors.text_dim
                 };
-                ui.painter().text(
+                crate::ui::snap::text_snapped(
+                    ui.painter(),
                     trailing_rect.center(),
                     Align2::CENTER_CENTER,
                     label,
@@ -500,9 +503,13 @@ fn draw_text_block(
         let total_h = primary_size.y + 2.0 + secondary_h;
         let primary_pos = Pos2::new(x, center_y - total_h / 2.0);
         let secondary_pos = Pos2::new(x, primary_pos.y + primary_size.y + 2.0);
-        ui.painter().galley(primary_pos, primary, primary_color);
-        ui.painter()
-            .galley(secondary_pos, secondary_galley, colors.text_dim);
+        crate::ui::snap::galley_snapped(ui.painter(), primary_pos, primary, primary_color);
+        crate::ui::snap::galley_snapped(
+            ui.painter(),
+            secondary_pos,
+            secondary_galley,
+            colors.text_dim,
+        );
         TextBlockMetrics {
             primary_end_x: primary_pos.x + primary_size.x,
             primary_center_y: primary_pos.y + primary_size.y / 2.0,
@@ -510,7 +517,7 @@ fn draw_text_block(
         }
     } else {
         let pos = Pos2::new(x, center_y - primary_size.y / 2.0);
-        ui.painter().galley(pos, primary, primary_color);
+        crate::ui::snap::galley_snapped(ui.painter(), pos, primary, primary_color);
         TextBlockMetrics {
             primary_end_x: pos.x + primary_size.x,
             primary_center_y: center_y,
@@ -692,7 +699,8 @@ fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32)
     let rect = egui::Rect::from_min_size(Pos2::new(x, center_y - size.y / 2.0), size);
     ui.painter()
         .rect_filled(rect, CornerRadius::same(4), colors.bg_active);
-    ui.painter().galley(
+    crate::ui::snap::galley_snapped(
+        ui.painter(),
         Pos2::new(
             rect.center().x - galley.size().x / 2.0,
             rect.center().y - galley.size().y / 2.0,
@@ -784,7 +792,8 @@ fn draw_pips(
         } else {
             colors.text_dim.gamma_multiply(0.55)
         };
-        ui.painter().text(
+        crate::ui::snap::text_snapped(
+            ui.painter(),
             Pos2::new(overflow_x, center_y),
             Align2::LEFT_CENTER,
             format!("+{}", pips.count - PANE_PIP_MAX),

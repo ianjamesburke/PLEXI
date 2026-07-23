@@ -1376,7 +1376,7 @@ impl FileBrowserApp {
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(format!("Image \u{00b7} {}", entry.name))
-                        .size(10.5)
+                        .size(style::TEXT_HINT)
                         .color(colors.text_primary)
                         .strong(),
                 );
@@ -1435,7 +1435,7 @@ impl FileBrowserApp {
                 if let Some(size) = entry.size_bytes {
                     ui.label(
                         egui::RichText::new(format_size(Some(size)))
-                            .size(9.5)
+                            .size(style::TEXT_META)
                             .color(colors.text_dim),
                     );
                 }
@@ -1455,14 +1455,14 @@ impl FileBrowserApp {
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(format!("Folder \u{00b7} {}", entry.name))
-                        .size(10.5)
+                        .size(style::TEXT_HINT)
                         .color(colors.text_primary)
                         .strong(),
                 );
                 ui.separator();
                 ui.label(
                     egui::RichText::new(format!("Path: {}", entry.path.display()))
-                        .size(9.5)
+                        .size(style::TEXT_META)
                         .color(colors.text_dim),
                 );
                 let truncated = stats.map(|s| s.truncated).unwrap_or(false);
@@ -1473,7 +1473,7 @@ impl FileBrowserApp {
                         stats.map(|s| s.dir_count).unwrap_or(0),
                         stats.map(|s| s.file_count).unwrap_or(0),
                     ))
-                    .size(9.5)
+                    .size(style::TEXT_META)
                     .color(colors.text_primary),
                 );
                 ui.label(
@@ -1481,7 +1481,7 @@ impl FileBrowserApp {
                         "Immediate file size: {}",
                         format_size(stats.map(|s| s.total_bytes))
                     ))
-                    .size(9.5)
+                    .size(style::TEXT_META)
                     .color(colors.text_primary),
                 );
             });
@@ -1499,14 +1499,14 @@ impl FileBrowserApp {
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(format!("Text \u{00b7} {}", entry.name))
-                        .size(10.5)
+                        .size(style::TEXT_HINT)
                         .color(colors.text_primary)
                         .strong(),
                 );
                 if let Some(size) = entry.size_bytes {
                     ui.label(
                         egui::RichText::new(format_size(Some(size)))
-                            .size(9.5)
+                            .size(style::TEXT_META)
                             .color(colors.text_dim),
                     );
                 }
@@ -1524,7 +1524,7 @@ impl FileBrowserApp {
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(entry.name.clone())
-                        .size(10.5)
+                        .size(style::TEXT_HINT)
                         .color(colors.text_primary)
                         .strong(),
                 );
@@ -1532,7 +1532,7 @@ impl FileBrowserApp {
                 if let Some(size) = entry.size_bytes {
                     ui.label(
                         egui::RichText::new(format_size(Some(size)))
-                            .size(9.5)
+                            .size(style::TEXT_META)
                             .color(colors.text_dim),
                     );
                 }
@@ -1542,7 +1542,7 @@ impl FileBrowserApp {
                             "Modified: {}",
                             format_modified(Some(modified))
                         ))
-                        .size(9.5)
+                        .size(style::TEXT_META)
                         .color(colors.text_dim),
                     );
                 }

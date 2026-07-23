@@ -114,10 +114,19 @@ impl PlexiUiHarness {
     /// tests — the default kittest surface is too small for pane chrome and
     /// app content to be legible in the saved PNG.
     pub fn new_sized(width: f32, height: f32) -> Self {
+        Self::new_sized_ppp(width, height, 1.0)
+    }
+
+    /// Create a harness with an explicit surface size and `pixels_per_point`.
+    /// Use `ppp: 2.0` for HiDPI screenshot tests — pixel-grid regressions
+    /// (half-resolution surfaces, off-grid galley origins) are invisible at
+    /// the default ppp of 1.0.
+    pub fn new_sized_ppp(width: f32, height: f32, ppp: f32) -> Self {
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let frame_tick = Arc::new(AtomicU64::new(0));
         let harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(width, height))
+            .with_pixels_per_point(ppp)
             .build_eframe(move |cc| {
                 let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
                 app
@@ -2290,5 +2299,179 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_tab_truncation.png");
         // Visual: open /tmp/plexi_tab_truncation.png and confirm the long label
         // ends with '…' on a single line and does not push the tab bar taller.
+    }
+
+    // ── s8 pixel-grid + typography evidence (stints 0527–0530) ──────────────
+
+    /// Seeds a Notes pane with a multi-line document and screenshots it at the
+    /// given display scale. The ppp-2.0 capture is the one that shows editor
+    /// pixel-grid regressions (uneven leading, off-grid rows).
+    fn editor_rows_evidence(ppp: f32, out: &str) {
+        let mut h = PlexiUiHarness::new_sized_ppp(760.0, 520.0, ppp);
+        h.step();
+
+        let path = std::env::temp_dir().join(format!(
+            "plexi-ui-evidence-rows-{}-{}.md",
+            (ppp * 10.0) as u32,
+            std::process::id()
+        ));
+        let mut body = String::from("---\ntitle: \"Pixel Grid\"\n---\n");
+        for i in 1..=26 {
+            body.push_str(&format!(
+                "Line {i:02}: the quick brown fox jumps over the lazy dog 0123456789\n"
+            ));
+        }
+        std::fs::write(&path, &body).expect("seed note");
+
+        h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                )),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: "Text Editor".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+        });
+        h.run_steps(3);
+        h.save_screenshot(out).expect("render failed");
+        println!("Screenshot saved to {out}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Stint 0529 evidence: editor rows at ppp 1.0 — every painted row top on
+    /// the pixel grid with uniform leading.
+    #[test]
+    fn screenshot_editor_rows_pixel_grid_ppp1() {
+        editor_rows_evidence(1.0, "/tmp/plexi-0529-editor-rows-ppp1.png");
+    }
+
+    /// Stint 0529 evidence: same document at ppp 2.0 (the HiDPI case that
+    /// used to shimmer during scroll and show 17/17/16/17 leading).
+    #[test]
+    fn screenshot_editor_rows_pixel_grid_ppp2() {
+        editor_rows_evidence(2.0, "/tmp/plexi-0529-editor-rows-ppp2.png");
+    }
+
+    /// Stints 0528/0530 evidence: sidebar with seeded contexts (active +
+    /// inactive names, path subtitles) and the spatial minimap overlay with a
+    /// workspace name, at ppp 2.0. Review: inactive context names must meet
+    /// the contrast floor, minimap name galley must sit on the pixel grid.
+    #[test]
+    fn screenshot_sidebar_and_minimap_typography_ppp2() {
+        let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, 2.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            // The minimap overlay only draws when the active workspace has a
+            // second window — seed an empty one on the grid.
+            let ws_id = app.router.active().context_id;
+            let win_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: std::env::temp_dir(),
+                tree: egui_tiles::Tree::empty("plexi"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: win_id,
+                context_id: ws_id,
+            });
+            app.minimap = crate::render::minimap::MinimapState::with_visible(true);
+            // Two extra inactive contexts with realistic names + root paths;
+            // pushed directly (no root pane) so no PTY spawns headless.
+            for (name, dir) in [("PLEXI", "GitHub/PLEXI"), ("videos", "Documents/videos")] {
+                let ctx_id = app.next_window_id;
+                app.next_window_id += 1;
+                let root = std::env::temp_dir().join(dir);
+                app.router.push(crate::host::context::Context {
+                    name: name.to_string(),
+                    path: root.clone(),
+                    root: Some(root),
+                    description: None,
+                    context_id: ctx_id,
+                    parent_id: None,
+                    depth: 0,
+                    parked: false,
+                });
+            }
+        });
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi-0528-sidebar-minimap-ppp2.png")
+            .expect("render failed");
+        println!("Screenshot saved to /tmp/plexi-0528-sidebar-minimap-ppp2.png");
+    }
+
+    /// Stint 0528 evidence: file browser rows + preview panel at ppp 2.0 —
+    /// integer point sizes only (was 9.5/10.5).
+    #[test]
+    fn screenshot_file_browser_typography_ppp2() {
+        let dir = tempfile::tempdir().expect("seed dir");
+        for name in ["notes.md", "render.rs", "todo.txt"] {
+            std::fs::write(
+                dir.path().join(name),
+                "alpha\nbravo\ncharlie\ndelta\necho\n",
+            )
+            .expect("seed file");
+        }
+        std::fs::create_dir(dir.path().join("assets")).expect("seed subdir");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(900.0, 560.0, 2.0);
+        h.step();
+        h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                    dir.path().to_path_buf(),
+                ))),
+                workspace_root: dir.path().to_path_buf(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "file-browser".to_string(),
+                name: "Files".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+        });
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi-0528-filebrowser-ppp2.png")
+            .expect("render failed");
+        println!("Screenshot saved to /tmp/plexi-0528-filebrowser-ppp2.png");
     }
 }

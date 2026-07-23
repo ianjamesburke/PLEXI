@@ -183,12 +183,13 @@ fn render_name_bar_and_tabs(
         if has_name {
             let name = &pane_names[pane_id];
             let center_x = bar_rect.center().x + pip_space / 2.0;
-            ui.painter().text(
+            crate::ui::snap::text_snapped(
+                ui.painter(),
                 egui::pos2(center_x, bar_rect.center().y),
                 egui::Align2::CENTER_CENTER,
                 name,
                 egui::FontId::proportional(name_font_size),
-                colors.text_dim,
+                colors.text_secondary(colors.bg_toolbar),
             );
         }
 
@@ -237,7 +238,8 @@ fn paint_outside_workspace_badge(painter: &egui::Painter, bar_rect: egui::Rect) 
         egui::CornerRadius::same(3),
         egui::Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x6b, 28),
     );
-    painter.text(
+    crate::ui::snap::text_snapped(
+        painter,
         badge_rect.center(),
         egui::Align2::CENTER_CENTER,
         label,

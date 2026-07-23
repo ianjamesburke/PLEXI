@@ -13,6 +13,7 @@ pub mod row;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod sidebar_row;
+pub mod snap;
 pub mod style;
 pub mod surface;
 pub mod syntax;

@@ -92,7 +92,7 @@ impl<'a> AppChrome<'a> {
                 egui::pos2(text_x, title_y + APP_BAR_TITLE_SIZE + style::SPACE_XS),
                 subtitle,
                 FontId::proportional(style::TEXT_HINT),
-                self.colors.text_dim,
+                self.colors.text_secondary(self.colors.bg_toolbar),
             );
         } else {
             let title_y = full_rect.min.y + (band_h - APP_BAR_TITLE_SIZE).max(0.0) / 2.0;
@@ -180,7 +180,7 @@ impl<'a> AppChrome<'a> {
         color: Color32,
     ) {
         let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, color));
-        painter.galley(pos, galley, color);
+        crate::ui::snap::galley_snapped(painter, pos, galley, color);
     }
 }
 
@@ -351,7 +351,8 @@ fn paint_footer_keys_row(
                 egui::vec2(chip_w, chip_h),
             );
             painter.rect_filled(chip_rect, egui::CornerRadius::same(4), colors.bg_active);
-            painter.galley(
+            crate::ui::snap::galley_snapped(
+                &painter,
                 egui::pos2(
                     chip_rect.center().x - text_size.x / 2.0,
                     chip_rect.center().y - text_size.y / 2.0,
@@ -367,7 +368,8 @@ fn paint_footer_keys_row(
             f.layout_no_wrap(entry.description.clone(), desc_font.clone(), desc_color)
         });
         let desc_size = desc_galley.size();
-        painter.galley(
+        crate::ui::snap::galley_snapped(
+            &painter,
             egui::pos2(x, content_rect.center().y - desc_size.y / 2.0),
             desc_galley,
             desc_color,
