@@ -34,9 +34,9 @@ pub(crate) mod ui_mailbox;
 pub mod video_player_app;
 
 #[cfg(test)]
-pub(crate) use focus::FocusLogOutcome;
+pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
 pub(crate) use focus::{
-    ContextCloseItem, ContextCloseState, FocusKind, FocusSegmentReason, PendingRawWasmLaunch,
+    ContextCloseState, FocusKind, FocusSegmentReason, PendingRawWasmLaunch,
     FOCUS_HEARTBEAT_INTERVAL,
 };
 pub(crate) use notification_image::NotificationImageState;
