@@ -611,8 +611,8 @@ pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
 pub use notes::{notes_list_cli, notes_open_cli};
 pub use notify::notify_cli;
 pub use open::{
-    mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli, parse_prefix,
-    OpenPrefix,
+    app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
+    parse_prefix, OpenPrefix,
 };
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,

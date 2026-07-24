@@ -555,6 +555,8 @@ impl HostHarness {
 }
 
 #[cfg(test)]
+mod daw_gate;
+#[cfg(test)]
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;

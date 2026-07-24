@@ -442,6 +442,75 @@ fn review_raw_wasm_open(path: &Path) -> Result<(), String> {
     review_raw_wasm_open_with_reader(path, is_tty, &mut stdin)
 }
 
+/// Non-interactive raw-WASM pre-approval (`plexi app trust`): persist Green
+/// grants for every host interface the component imports, plus `fs.pick`
+/// (a runtime picker gate, not an import), scoped to the wasm's parent dir —
+/// the same store, app id, and scope the interactive review and the host use.
+/// Never opens a pane. Idempotent. Grants only what the component declares, so
+/// a caller vouches for a specific vetted file, not a blanket allow.
+fn trust_raw_wasm_open(path: &Path) -> Result<(), String> {
+    let app_id = raw_wasm_app_id(path);
+    let workspace_root = raw_wasm_workspace_root(path);
+    let required_grants =
+        crate::host::wasm_app::WasmApp::inspect_required_grants(path).map_err(|e| {
+            format!(
+                "could not inspect WASM imports for '{}': {e}",
+                path.display()
+            )
+        })?;
+    let config_dir = crate::config::config_dir();
+    let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
+    let mut granted: Vec<String> = required_grants.capability_ids();
+    // `fs.pick` gates the file picker at runtime rather than being a component
+    // import, so it never appears in the inspected grants; a fixture that
+    // drives the picker still needs it pre-approved.
+    granted.push("fs.pick".to_string());
+    for capability_id in &granted {
+        store.set_wasm(
+            &app_id,
+            &workspace_root,
+            capability_id,
+            crate::app::permissions::PermissionState::Green,
+        );
+    }
+    store.save();
+    log::info!(
+        "open:cli: app trust granted app={} path={} workspace={} grants={:?}",
+        app_id,
+        path.display(),
+        workspace_root.display(),
+        granted
+    );
+    Ok(())
+}
+
+/// `plexi app trust <file.wasm>` — see [`AppCmd::Trust`](crate::cli::args::AppCmd).
+pub fn app_trust_cli(path: &str) -> i32 {
+    let raw = std::path::Path::new(path);
+    let resolved = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(raw)
+    };
+    if resolved.extension().and_then(|e| e.to_str()) != Some("wasm") || !resolved.is_file() {
+        eprintln!(
+            "error: `plexi app trust` expects a path to a .wasm component file; got {}",
+            resolved.display()
+        );
+        return 1;
+    }
+    match trust_raw_wasm_open(&resolved) {
+        Ok(()) => {
+            println!("trusted raw WASM imports for {}", resolved.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 /// Thin wrapper preserving the existing `plexi app open` call site.
 pub fn open_cli(
     type_id: &str,
@@ -739,6 +808,39 @@ mod open_cli_tests {
                 store.get_wasm(app_id, workspace_root, &capability_id),
                 Some(crate::app::permissions::PermissionState::Green),
                 "{capability_id} should be remembered"
+            );
+        }
+    }
+
+    #[test]
+    fn app_trust_persists_grants_without_tty() {
+        // `plexi app trust` is the automation path: no reader, no TTY, yet it
+        // must persist Green grants for every imported interface plus `fs.pick`
+        // at the wasm's parent-dir scope — exactly what an installed host
+        // checks, so a raw wasm scene opens without review.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon.wasm");
+        let app_id = fixture
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wasm");
+        let workspace_root = fixture.parent().expect("fixture parent");
+
+        super::trust_raw_wasm_open(&fixture).expect("trust should persist grants");
+
+        let store = crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        let mut expected = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+            .expect("inspect fixture grants")
+            .capability_ids();
+        expected.push("fs.pick".to_string());
+        for capability_id in expected {
+            assert_eq!(
+                store.get_wasm(app_id, workspace_root, &capability_id),
+                Some(crate::app::permissions::PermissionState::Green),
+                "{capability_id} should be trusted"
             );
         }
     }

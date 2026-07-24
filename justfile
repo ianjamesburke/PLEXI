@@ -492,6 +492,11 @@ scene-live FILE channel out="/tmp/plexi-scenes-live":
 editor-gate channel:
     bash scripts/editor-gate.sh {{channel}}
 
+# Installed-host DAW release gate: core model qualification + every DAW scene
+# against a channel, reports + artifacts + summary.json (stint 0519).
+daw-gate channel:
+    bash scripts/daw-gate.sh {{channel}}
+
 # Run one agent-drives-agent app-authoring E2E session from a prompt fixture.
 # Provisions an isolated session and leaves a capture dir under benchmarks/app-authoring/sessions.
 #   just e2e-session tools/e2e_authoring/fixtures/counter.toml            — live (needs channel + display)

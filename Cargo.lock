@@ -4048,6 +4048,8 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "plexi-daw-engine",
+ "plexi-daw-model",
  "pollster",
  "pulldown-cmark",
  "regex",
