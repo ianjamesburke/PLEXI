@@ -160,10 +160,15 @@ impl TextEditorApp {
         log::info!("notes_editor: mode selected {} for {:?}", mode.describe(), path);
         let highlighter = mode.language().and_then(SyntaxHighlighter::new);
         let md_cache = mode.is_markdown().then(MarkdownLayoutCache::default);
+        let mut doc = Document::new(&content);
+        let mut view = ViewState::default();
+        if is_note {
+            position_caret_at_end(&mut doc, &mut view);
+        }
         Self {
             path,
-            doc: Document::new(&content),
-            view: ViewState::default(),
+            doc,
+            view,
             note_header,
             note_title,
             is_note,
@@ -787,6 +792,18 @@ fn detect_mode(path: &Path, is_note: bool) -> EditorMode {
 /// Split a note document into its raw frontmatter block (kept out of the
 /// editable buffer), the body, and the display title. Non-note files and
 /// notes without a frontmatter block pass through unchanged.
+/// Continue-writing is the dominant intent for reopening a note (especially
+/// one started in the Quick Note editor): land the caret at the end of the
+/// document with the viewport anchored to the tail, rather than offset 0.
+fn position_caret_at_end(doc: &mut Document, view: &mut ViewState) {
+    let line_count = doc.buffer().line_count();
+    doc.apply(EditorCommand::Move {
+        movement: crate::editor::commands::Movement::DocEnd,
+        extend: false,
+    });
+    view.scroll_to_line(doc.cursor().line, line_count);
+}
+
 fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
     if !is_note {
         return (None, raw, String::new());
@@ -1453,10 +1470,17 @@ impl App for TextEditorApp {
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({ "path": self.path.to_string_lossy() }))
+        Some(serde_json::json!({
+            "path": self.path.to_string_lossy(),
+            "font_size": self.font_size,
+        }))
     }
 
     fn restore_state(&mut self, state: &serde_json::Value) {
+        if let Some(size) = state.get("font_size").and_then(|v| v.as_f64()) {
+            self.font_size = (size as f32).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+            log::info!("notes_editor: font_size restored -> {}", self.font_size);
+        }
         if let Some(p) = state.get("path").and_then(|v| v.as_str()) {
             let new_path = PathBuf::from(p);
             if note_path_identity(&new_path) != note_path_identity(&self.path) {
@@ -1485,6 +1509,9 @@ impl App for TextEditorApp {
                 self.path = new_path;
                 self.doc = Document::new(&content);
                 self.view = ViewState::default();
+                if self.is_note {
+                    position_caret_at_end(&mut self.doc, &mut self.view);
+                }
                 self.note_header = note_header;
                 self.note_title = note_title;
                 self.load_error = load_error;
@@ -2676,5 +2703,56 @@ mod tests {
     #[test]
     fn slugify_empty_falls_back_to_note() {
         assert_eq!(slugify_title("---"), "note");
+    }
+
+    #[test]
+    fn font_size_survives_serialize_restore_cycle() {
+        let dir = unique_temp_dir("notes-font-size-persist");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "hello").unwrap();
+
+        let mut app = TextEditorApp::new(path.clone());
+        app.adjust_font_size(FONT_SIZE_MAX);
+        assert_eq!(app.font_size, FONT_SIZE_MAX);
+        let state = crate::app::app_trait::App::serialize_state(&app).unwrap();
+        assert_eq!(state["font_size"], FONT_SIZE_MAX as f64);
+
+        let mut restored = TextEditorApp::new(path.clone());
+        assert_eq!(restored.font_size, FONT_SIZE_DEFAULT);
+        crate::app::app_trait::App::restore_state(&mut restored, &state);
+        assert_eq!(restored.font_size, FONT_SIZE_MAX);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn font_size_restore_clamps_out_of_range_value() {
+        let dir = unique_temp_dir("notes-font-size-clamp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "hello").unwrap();
+
+        let mut app = TextEditorApp::new(path);
+        let state = serde_json::json!({ "font_size": FONT_SIZE_MAX + 100.0 });
+        crate::app::app_trait::App::restore_state(&mut app, &state);
+        assert_eq!(app.font_size, FONT_SIZE_MAX);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn font_size_restore_missing_key_keeps_default() {
+        let dir = unique_temp_dir("notes-font-size-missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "hello").unwrap();
+
+        let mut app = TextEditorApp::new(path.clone());
+        let state = serde_json::json!({ "path": path.to_string_lossy() });
+        crate::app::app_trait::App::restore_state(&mut app, &state);
+        assert_eq!(app.font_size, FONT_SIZE_DEFAULT);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
