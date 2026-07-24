@@ -26,8 +26,12 @@ run_steps = 3
 
 # Seeded project + all three surfaces render: transport bar, mixer strips, and
 # the timeline canvas with both tracks.
+# No absolute `pane_count`: this scene also runs in the installed-host gate
+# (scripts/daw-gate.sh) in attach mode, where the host already holds a base
+# terminal pane, so the count is not 1. `lifecycle` + `tree_contains` prove the
+# DAW pane opened and rendered either way.
 [[steps]]
-assert = { target = "daw", pane_count = 1, lifecycle = "running", tree_contains = "DAW" }
+assert = { target = "daw", lifecycle = "running", tree_contains = "DAW" }
 
 [[steps]]
 assert = { target = "daw", tree_contains = "Pluck" }

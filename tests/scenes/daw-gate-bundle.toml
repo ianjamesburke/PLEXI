@@ -19,9 +19,11 @@ open = { kind = "wasm", path = "tests/wasm-fixtures/daw-engine.wasm", as = "daw"
 [[steps]]
 run_steps = 3
 
-# Seeded demo project renders with both tracks and the bundle controls.
+# Seeded demo project renders with both tracks and the bundle controls. No
+# absolute pane_count: the attached gate host already holds a base terminal
+# pane, so `lifecycle` + `tree_contains` are the portable proof.
 [[steps]]
-assert = { target = "daw", pane_count = 1, lifecycle = "running", tree_contains = "DAW" }
+assert = { target = "daw", lifecycle = "running", tree_contains = "DAW" }
 
 [[steps]]
 assert = { target = "daw", tree_contains = "Pluck" }
