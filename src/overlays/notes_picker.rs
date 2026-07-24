@@ -527,6 +527,55 @@ mod tests {
     }
 
     #[test]
+    fn notes_picker_open_selected_lands_caret_at_document_end() {
+        let ctx = egui::Context::default();
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+        let profile = std::env::temp_dir().join(format!(
+            "plexi-notes-picker-caret-end-{}",
+            std::process::id()
+        ));
+        let notes_dir = profile.join("notes");
+        std::fs::create_dir_all(&notes_dir).expect("create notes dir");
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let note_path = notes_dir.join("note.md");
+        let note_body = "first line\nsecond line\nthird line";
+        std::fs::write(&note_path, note_body).expect("seed note");
+        let other_path = notes_dir.join("other.md");
+        std::fs::write(&other_path, "unrelated").expect("seed other note");
+
+        let (_existing_tile, _existing_pane) = app.add_test_pane();
+        let (focused_tile, focused_pane) = app.add_test_pane();
+        replace_with_text_editor(&mut app, focused_pane, other_path);
+
+        app.windows[0].focused_pane = Some(focused_tile);
+        app.notes_picker_entries = vec![picker_entry(note_path.clone(), "note")];
+        app.notes_picker_selected = 0;
+        app.push_focus_layer(FocusKind::NotesPicker);
+
+        app.notes_picker_open_selected();
+
+        let semantic = app.windows[0]
+            .panes
+            .get(&focused_pane)
+            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.runtime.semantic_details())
+            .expect("focused text editor semantic state");
+        assert_eq!(
+            semantic["caret"].as_u64(),
+            Some(note_body.len() as u64),
+            "caret should land at doc end, not offset 0"
+        );
+        assert!(
+            semantic["scroll"]["y"].as_f64().unwrap_or(0.0) > 0.0,
+            "viewport should scroll to anchor the tail, not stay pinned at the top"
+        );
+
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
     fn notes_picker_refuses_to_delete_open_text_editor_note() {
         let ctx = egui::Context::default();
         let frame_tick = crate::platform::logging::FrameTick::default();
