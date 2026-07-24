@@ -1,6 +1,6 @@
 ---
 name: babysitter
-description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude `c` or Codex `co`) in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Checks in every 10 min. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
+description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude or Codex, launched via size-tier aliases) in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Checks in every 10 min. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
 source: local
 date_added: "2026-07-11"
 ---
@@ -12,17 +12,17 @@ You are the **HEAD AGENT — a router and coordinator, not a coder.** You never 
 - **Worker** — a pane that implements the batch and opens the PR.
 - **Tester** — a *separate, fresh* pane that installs the PR build, drives the app to verify it, and reports bugs back to you.
 
-**Panes run Claude (`c` alias) or Codex (`co` alias) — both bypass permissions.** Never use bare `claude`/`codex`. The two TUIs drive identically for this loop: same send/enter two-step, same `/model <name>` switch, same `/compact`. The one divergence: fresh-conversation reset is `/clear` in Claude, `/new` in Codex. Examples below use `co`; substitute `c` freely.
+**Panes launch Claude or Codex through the size-tier aliases — `cs`/`cm`/`cl` (Claude small/medium/large) and `cos`/`com`/`col` (Codex equivalents) — all bypass permissions.** Never use bare `claude`/`codex`. The tier→model mapping lives only in the user's zshrc — pick a tier by alias, never by model id (ids go stale). The two TUIs drive identically for this loop: same send/enter two-step, same `/compact`. The one divergence: fresh-conversation reset is `/clear` in Claude, `/new` in Codex. Examples below use Codex aliases; substitute the Claude ones freely.
 
-### Model tiers — opus is the worker default
+### Model tiers — medium (`cm`) is the worker default
 
-| Tier | Claude (`c`) | Codex (`co`) | Use for |
+| Tier | Claude | Codex | Use for |
 |---|---|---|---|
-| Low | `sonnet` | `gpt-5.6-terra` | genuinely trivial, mechanical batches only |
-| Default | `opus` | `gpt-5.6-terra` | most batches — the standard worker tier |
-| High | `fable` | `gpt-5.6-sol` | hard/ambiguous batches, any pane that is fumbling or looping, every fix round |
+| Small | `cs` | `cos` | genuinely trivial, mechanical batches only |
+| Medium | `cm` | `com` | most batches — the standard worker tier |
+| Large | `cl` | `col` | hard/ambiguous batches, any pane that is fumbling or looping, every fix round |
 
-Set via the two-step: `plexi pane send <id> "/model <name>"` then `plexi pane key <id> enter`. Judge difficulty from the stint bodies before briefing; when unsure, use the default tier, not low. **Every fix round runs on the high tier** — see step 4.
+The tier is chosen at launch: pass the alias as the shell command in `plexi pane command` — there is no post-boot `/model` step. Judge difficulty from the stint bodies before spawning; when unsure, use medium, not small. `/model` exists solely for mid-run escalation on a warm pane. **Every fix round runs on the large tier** — see step 4.
 
 **Panes are single-use — NEVER recycle a worker or a tester across tasks.** A tester validates exactly one thing (one PR, or one re-check of a fix) and is then done. A worker owns exactly one batch, from brief through merge, and is then done. For the next task or validation, **close the old pane and open a brand-new one** — a warm transcript biases the read, bloats context, and silently degrades the agent. (`/compact` mid-batch during a fix round is fine — that's the same task; carrying a pane into a *new* task is not.)
 
@@ -41,10 +41,10 @@ You are the wire between them: Worker → PR → Tester → (bugs) → you → W
 - `sprints <SPRINT_ID...>` — **sprint-queue mode**: the queue is every open task in the named sprints, in the given sprint order. Resolve it with `stint sprint show <id>` at start, and **re-resolve after every merge** — a merge can unblock tasks (`blocked` → `ready`) that were not in the initial snapshot. The run ends when the named sprints have no claimable tasks left, not when the initial snapshot drains. Tasks that stay `blocked` on work outside the named sprints are reported as skipped, never waited on.
 - `resume` — **fresh-head takeover** of a run already in flight: read `RUN_STATE.md` (next to this SKILL.md) for the mode, flags, and next batch; re-resolve the queue from stint; append a takeover line to `LOG.md`; continue the loop at the next batch. This is both the head-relay mechanism (see "Head handoff" below) and the crash-recovery path — a user can boot a brand-new babysitter with `/babysitter resume` at any time.
 
-**The head runs Opus by default.** Routing, slot reads, and brief relaying do not need the high tier — the hard reasoning happens in worker panes, which get their own model per batch. If the head itself hits a genuine judgment call (ambiguous pre-existing-bug ruling, a stop-condition decision), note it in `RUN_STATE.md` for the record and escalate yourself for that one decision rather than running the whole loop on the high tier.
+**The head runs the medium tier (`cm`) by default.** Routing, slot reads, and brief relaying do not need the large tier — the hard reasoning happens in worker panes, which get their own tier per batch. If the head itself hits a genuine judgment call (ambiguous pre-existing-bug ruling, a stop-condition decision), note it in `RUN_STATE.md` for the record and escalate yourself for that one decision rather than running the whole loop on the large tier.
 
 First action:
-- **No pane handed (default):** spawn worker-1 yourself — `plexi pane new -n "worker-1"`, launch the agent, poll for the booted prompt, set the model tier (see "Spawning an agent pane").
+- **No pane handed (default):** spawn worker-1 yourself — `plexi pane new -n "worker-1"`, launch the tier alias, poll for the booted prompt (see "Spawning an agent pane").
 - **Pane handed:** confirm it is real and idle, and label it.
   ```
   plexi pane capture <PANE_ID> --from-cursor 0
@@ -69,8 +69,8 @@ Exact forms confirmed in live runs. Use them; don't invent variants.
 | **Submit** the prompt | `plexi pane key <id> enter` |
 | Interrupt the agent | `plexi pane key <id> ctrl+c` |
 | Open a new terminal pane | `plexi pane new -n "<label>"` |
-| Launch an agent in a shell pane | `plexi pane command <id> "co" --enter` (Codex) or `"c"` (Claude) |
-| Set the pane's model | `plexi pane send <id> "/model <name>"` then `key enter` |
+| Launch an agent in a shell pane | `plexi pane command <id> "com" --enter` — the tier alias (`cs`/`cm`/`cl`, `cos`/`com`/`col`) picks the model |
+| Escalate a warm pane's model mid-run (only use of `/model`) | `plexi pane send <id> "/model <name>"` then `key enter` |
 | Rename / label a pane | `plexi pane name <id> "<label>"` |
 | List panes (alive? find by name) | `plexi pane list` |
 | Close a pane | `plexi pane close <id>` |
@@ -174,7 +174,7 @@ sleep 3
 plexi pane capture <id> --from-cursor 0   # confirm it took; re-send enter ONCE if not
 ```
 
-(This is for typing into a pane's *TUI*. Launching the agent at the *shell* level in a fresh pane uses `plexi pane command <id> "co" --enter`.)
+(This is for typing into a pane's *TUI*. Launching the agent at the *shell* level in a fresh pane uses `plexi pane command <id> "<tier alias>" --enter`.)
 
 ## Batch into as few PRs as possible (hard rule)
 
@@ -182,22 +182,21 @@ Before feeding anything, group the queue. **Fewer PRs is always better.** Small 
 
 ## Spawning an agent pane
 
-Workers and testers are agent panes launched with `co` (Codex) or `c` (Claude) — both bypass permissions.
+Workers and testers are agent panes launched with a size-tier alias (tier table above) — the alias sets the model, so there is no post-boot `/model` step.
 
 ```
 plexi pane new -n "worker-<N>"          # or tester-<N>
 # grab the new pane id from the command output (fall back to `plexi pane list`)
-plexi pane command <newid> "co" --enter
+plexi pane command <newid> "com" --enter   # tier alias: cs/cm/cl or cos/com/col
 sleep 4
 plexi pane capture <newid> --from-cursor 0   # confirm the agent booted to its prompt
-# then set the model tier before briefing: /model <name> two-step
 ```
 
-**GOTCHA: BOOT RACE. Never fire a brief back-to-back on a just-launched agent pane.** Both TUIs take a few seconds to boot to their prompt. If a brief lands before the prompt is up, input is lost or mangled. Fix: after `plexi pane command <id> "co" --enter` (or `"c"`), poll `plexi pane capture <id> --from-cursor 0` until you see the booted prompt (the input line with the model footer, e.g. `gpt-...` for Codex) **before** sending the work brief.
+**GOTCHA: BOOT RACE. Never fire a brief back-to-back on a just-launched agent pane.** Both TUIs take a few seconds to boot to their prompt. If a brief lands before the prompt is up, input is lost or mangled. Fix: after `plexi pane command <id> "<tier alias>" --enter`, poll `plexi pane capture <id> --from-cursor 0` until you see the booted prompt (the input line with the model footer, e.g. `gpt-...` for Codex) **before** sending the work brief.
 
 ## Model selection per pane
 
-Set the model right after boot, per the tier table above: workers default to `opus` (`gpt-5.6-terra` on Codex); drop to low tier (`sonnet`) only for genuinely trivial mechanical batches, and start on high tier (`fable` or `gpt-5.6-sol`) for hard or ambiguous ones. Testers usually run low tier — their job is following a drive script, not design. Escalate a pane to high tier the moment it is fumbling/looping, and always for fix rounds (step 4).
+Pick the tier at launch via the alias: workers default to medium (`cm`/`com`); drop to small (`cs`/`cos`) only for genuinely trivial mechanical batches, and start on large (`cl`/`col`) for hard or ambiguous ones. Testers usually launch small — their job is following a drive script, not design. Mid-run escalation is the only use of `/model`: escalate a warm pane to the large-tier model the moment it is fumbling/looping, and always for fix rounds (step 4).
 
 ## The loop
 
@@ -247,7 +246,7 @@ For each **batch**, in order:
 
    Line 1: current local time + done/total for THIS run's queue. Line 2: what is mid-flight (batch, phase, who) and what is queued next. Line 3: one plain-English clause on health — `nominal`, or the active incident (`pane spawn outage — sub-agent workaround`), plus when the next check fires. Emit it even on a nothing-changed wake; skip it only on turns that are pure verdict-routing between wakes.
 
-   **EXCEPTION — a pane blocked on a permission prompt cannot update its own slot.** It is frozen mid-tool-call, so its last-written value (`…:working`) stays fresh-looking *and* passes the step-token freshness test forever. Slot-only polling waits indefinitely; the stale-token defence does not cover this at all. **So: if `status` reads the identical value on ~3 consecutive checks (roughly 30 min), stop trusting it and run the cheap triangle.** `agent.state: blocked` with a `detail` naming a Bash command is a permission prompt — the fix is **one `enter`**, not a nudge and not a re-brief. Live catch 2026-07-23: a tester sat blocked on `rm -rf /tmp/plexi-pr2470.XXXX`, its own `mktemp -d` scratch dir, while its slot still read `b6-test:working`. Note `co` bypasses most permissions but **still prompts on `rm -rf`**, and testers routinely mktemp/rm scratch dirs — expect this specific prompt in tester panes, and approve once you have confirmed the path is a self-created `/tmp` scratch dir.
+   **EXCEPTION — a pane blocked on a permission prompt cannot update its own slot.** It is frozen mid-tool-call, so its last-written value (`…:working`) stays fresh-looking *and* passes the step-token freshness test forever. Slot-only polling waits indefinitely; the stale-token defence does not cover this at all. **So: if `status` reads the identical value on ~3 consecutive checks (roughly 30 min), stop trusting it and run the cheap triangle.** `agent.state: blocked` with a `detail` naming a Bash command is a permission prompt — the fix is **one `enter`**, not a nudge and not a re-brief. Live catch 2026-07-23: a tester sat blocked on `rm -rf /tmp/plexi-pr2470.XXXX`, its own `mktemp -d` scratch dir, while its slot still read `b6-test:working`. Note the Codex aliases bypass most permissions but **still prompt on `rm -rf`**, and testers routinely mktemp/rm scratch dirs — expect this specific prompt in tester panes, and approve once you have confirmed the path is a self-created `/tmp` scratch dir.
 
    **Only fall back to capture when the slot is empty or its step token is stale** (the pane hasn't adopted the contract, or crashed before writing). Then the old two-command read applies:
 
@@ -268,7 +267,7 @@ For each **batch**, in order:
    Bash (run_in_background): until [ "$(gh pr view <PR#> --json state --jq .state)" != "OPEN" ]; do sleep 15; done; gh pr view <PR#> --json state,mergedAt
    ```
 
-3. **Spawn the Tester (always a brand-new pane) once the PR is open.** Open a fresh pane with `co`, labeled `tester-<N>`, boot it (poll for the Codex prompt), then brief it. **Never reuse an existing tester pane** — every validation and every re-check gets its own new pane; the old one is closed once its verdict is read. First gate on the diff — judge from `gh pr diff <PR#> --name-only`:
+3. **Spawn the Tester (always a brand-new pane) once the PR is open.** Open a fresh pane with the tester's tier alias (usually small — `cs`/`cos`), labeled `tester-<N>`, boot it (poll for the booted prompt), then brief it. **Never reuse an existing tester pane** — every validation and every re-check gets its own new pane; the old one is closed once its verdict is read. First gate on the diff — judge from `gh pr diff <PR#> --name-only`:
 
    - **Docs/scripts/manifests-only, no runtime behavior change** → the tester does a diff review only and skips both the install and the suites. There is nothing to live-drive and the worker already ran the suites pre-push; re-running them here duplicates that.
    - **Pure library/model crate with no host wiring yet** (a new `crates/*` edit model, a `cfg(test)`-only core, anything the host does not call yet) → **explicitly tell the tester NOT to `pr-install` and NOT to boot a host**, and brief *adversarial API + invariant validation* instead. There is no installed-build surface, so a live-drive brief manufactures a false FAIL for "no live surface" — this has cost a full round twice (stint 0317 on 2026-07-21, and pre-empted for 0514/0523 on 2026-07-23). What to demand instead: **prove the gate is not vacuous** by deliberately breaking an invariant in a scratch copy and confirming the fuzzer/gate catches it (an invariant suite that passes on a knowingly-broken model is the most likely defect in this shape); undo/redo round-trips byte-identical, including a destructive command and interleaved undo-then-new to check redo invalidation; and **the command enum is the only mutation path** — any `pub` field or setter that bypasses the command log silently breaks undo and every downstream consumer.
@@ -293,11 +292,11 @@ For each **batch**, in order:
    - **Brief-induced false FAIL — YOUR bug, not the tester's.** When a tester reports FAIL *and* says the substance is correct ("the new prose correctly describes the implementation, **but** it violates the specified criterion"), you wrote a bad criterion. **Never write a mechanical proxy — a grep returning nothing, an exact string absence, a line count — as the pass criterion for a semantic requirement.** Live case: the re-check brief demanded `git grep -F 'runtime = "python"'` return nothing; the correct fix legitimately kept that literal inside a fenced example of the *generated* `PACKAGE.toml` (annotated `# generated, never authored`) while the prose stated it is not a manifest key. Substance right, proxy failed. **Resolution: read the artifact yourself, overrule the FAIL on the record, log it as your error, and merge — do not open a fix round and do not make the worker satisfy a criterion you got wrong.** State the requirement semantically instead ("the header must not claim a nonexistent *authored manifest* key; showing the generated field is correct").
    - **Bugs found** → run the **fix-round protocol** on the worker, in order, before relaying anything:
      1. **Compact:** send `/compact` (two-step, then poll until it finishes) — the worker is about to reason hard and its implement transcript is dead weight.
-     2. **Escalate the model:** if the worker isn't already on the high tier, `/model fable` (or `/model gpt-5.6-sol` on Codex).
+     2. **Escalate the model:** if the worker isn't already on the large tier, `/model` it to the large-tier model — the one the `cl`/`col` alias launches (mapping lives in the user's zshrc).
      3. **Relay the tester report verbatim, wrapped in the no-quick-fix directive.** The Worker Mode contract still governs the fix round (headless gate, evidence, slots, no yields) — reference it, never restate it:
      > "Tester found these on PR #`<PR#>`: <bug list>. **Do NOT quick-fix patch this.** A failure that survived your own gate is a high-level symptom of a lower-level problem — investigate the root cause first, and ask whether this reveals a chance to design the system so this *category* of bug is impossible in the future, not just this instance. Never reach for a hacky workaround because it's faster; time spent is not a constraint — optimize for long-term robustness, elegant system design, and current best practices. If the right fix is a real refactor, propose it to me before patching. Then: determine whether each bug is caused by your change or pre-existing on alpha (prove pre-existing with a baseline repro before claiming it). Verify the fix with the closest automated/headless repro of the tester's finding (the live re-check stays the tester's), satisfy the Worker Mode gate again, push, reply with the commit and a one-line root-cause statement."
      If the worker proves a bug pre-existing on alpha with baseline evidence, drop it from this PR's gate and have the worker file a follow-up stint for it — never scope-creep the PR.
-     When the worker reports fixed, **close the previous tester pane and open a NEW `co` tester pane** for the re-check (never reuse the warm one), and give it a **targeted re-check, not a full re-run**:
+     When the worker reports fixed, **close the previous tester pane and open a NEW tester pane (its tier alias)** for the re-check (never reuse the warm one), and give it a **targeted re-check, not a full re-run**:
      > "New commits pushed to PR #`<PR#>` (<what changed>). Re-install and re-validate ONLY the changed path thoroughly, plus a one-item smoke of the previously-passed area. Everything else already passed at <prior commit> — do not repeat it. PASS or bugs?"
      Loop worker ↔ (a fresh tester each round) until a tester returns a clean PASS. You are the only channel between them, and you hold the running summary of what already passed so each fresh tester only re-checks the delta.
    - **PASS** → proceed to merge.
@@ -334,8 +333,8 @@ For each **batch**, in order:
    ```
    plexi pane close <worker-id>
    plexi pane new -n "worker-<N+1>"
-   plexi pane command <newid> "co" --enter
-   # poll for the booted prompt, set the model tier, then send a self-contained brief
+   plexi pane command <newid> "com" --enter   # tier alias picks the model
+   # poll for the booted prompt, then send a self-contained brief
    ```
 
    The information the next worker needs is **not** the old scrollback — it is a good self-contained brief. You already hold the distilled state (PR numbers, merge results, decisions, gotchas); put that in the brief and throw the transcript away. Never rely on "warm repo knowledge" as a reason to keep a pane alive.
@@ -367,7 +366,7 @@ The full sprint queue is never carried in context or in the baton — sprint-que
 **The relay, at each merge boundary (after step 6):**
 
 1. Overwrite `RUN_STATE.md` per the template.
-2. Spawn the successor: `plexi pane new -n "babysitter-<N+1>"`, launch `c`, poll for the booted prompt, set `/model opus` (two-step).
+2. Spawn the successor: `plexi pane new -n "babysitter-<N+1>"`, launch `cm` (the head's default tier), poll for the booted prompt.
 3. Send `/babysitter resume` (two-step, once).
 4. **Wait for the takeover ack: poll `LOG.md`** (not the successor's screen) for its takeover line — the successor's first duty on resume is appending `HH:MM babysitter-<N+1> took over (after batch <N>, PR #<M>)` to `LOG.md`. File-poll beats screen-scrape: unambiguous, ~0 tokens.
 5. Ack seen → stop scheduling wakeups; if you are running in a pane, `plexi pane close <own pane id>` as your final act. If you are the initial head running in a user session (not a pane), just report the successor's pane id and end the loop on your side.
@@ -397,7 +396,7 @@ This file is the durable artifact — never keep the pending-checks list only in
 The loop keeps a self-improvement log at `.agents/skills/babysitter/LOG.md`. It is telemetry about the **workflow**, not the codebase — its whole purpose is to make future babysitter runs cheaper and smoother. Append as you go; don't reconstruct at the end from memory.
 
 **Log an entry (UTC timestamp + a few lines) at each of these moments:**
-- Worker briefed: batch stints, agent (`c`/`co`), model tier, pane label, start time.
+- Worker briefed: batch stints, launch alias (tier), pane label, start time.
 - PR opened: PR#, elapsed since brief.
 - Each tester verdict: PASS/bugs, elapsed, attempt number.
 - Merge: total wall-clock brief→merge, number of worker↔tester rounds.
@@ -409,7 +408,7 @@ Format (keep entries terse):
 
 ```
 ## 2026-07-21 — sprint <name/ids>
-- 18:04 worker-1 briefed: stints 0501+0502, co/gpt-5.6-terra
+- 18:04 worker-1 briefed: stints 0501+0502, com (medium)
 - 18:41 PR #2460 open (37m)
 - 19:10 tester-1: 2 bugs (attempt 1)
 - 19:12 friction: worker ran /validate-pr despite brief clause — reword?
