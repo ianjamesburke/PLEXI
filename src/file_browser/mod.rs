@@ -1691,6 +1691,8 @@ impl FileBrowserApp {
                     egui::Id::new(("file_browser_rename_input", pane_key)),
                     "",
                 )
+                .select_all_on_focus(true)
+                .log_name("file_browser_rename")
                 .show(ui, &mut self.rename_buffer, colors);
                 let submitted = text_response.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter));

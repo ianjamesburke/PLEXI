@@ -2417,7 +2417,7 @@ impl eframe::App for PlexiApp {
                                 .any(|event| matches!(event, egui::Event::Text(_)))
                         })
                     })
-                    && !crate::app::input_owner::focused_pane_text_surface(ctx, pane_id);
+                    && !crate::app::input_owner::pane_receives_ipc_text(ctx, pane_id);
             if defer_text_until_focused {
                 // A pane can be created while eframe runs hidden logic-only
                 // passes. Its first visible pass has not rendered a text
