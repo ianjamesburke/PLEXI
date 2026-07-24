@@ -14,6 +14,7 @@ Use this when the requested work is a `.stint` task, or when no specific GitHub 
 |---|---|
 | `/implement-stint` | Run `stint next`, pick the first ready task, claim it (`stint claim` owns state), then create a worktree from alpha HEAD |
 | `/implement-stint <task-id>` | Use that task directly, claim it, then create a worktree from alpha HEAD |
+| `/implement-stint worker <task-id> [<task-id> ...]` | **Worker mode**: batch all given tasks into one worktree and ONE PR, stop at PR open + green checks — see Worker Mode |
 
 Output on successful implementation:
 
@@ -43,6 +44,37 @@ This skill is not complete when the worktree exists. Completion means the task w
 - Worktree path rule: after creation, all implementation reads, edits, tests, and commits run from the worktree path, not the repo root.
 - If the task links a GitHub issue, keep issue labels as the live PR pipeline state. If it does not, still open a PR; just skip issue labels and Ship Log updates.
 - Publish phase handoff state with `. .agents/skills/_lib/pipeline-slots.sh` and `pipeline_slots_set implement <issue-or-task> "" <status> "" ""` whenever pane title state changes.
+
+## Worker Mode
+
+`/implement-stint worker <task-id> [<task-id> ...]` is the contract for babysitter worker panes and any other invoker that wants stop-at-PR-open batching. Everything else in this skill still applies; worker mode overrides only what follows.
+
+- **One worktree, one PR.** Claim every given task, implement all of them in a single worktree branched from alpha HEAD (branch: `feature/stint-<first-id>-<short-slug>`), and open ONE PR to alpha covering the whole batch.
+- **Stop at PR open + green checks.** Hand off to `/open-pr` in Stop-at-PR-open mode (Phase 5): never invoke `/validate-pr`, never merge, never run `just pr-install`. A separate tester pane owns validation.
+- **The gate is automated + headless only.** Never install, boot, foreground, or drive the GUI host — even when a task's Done-When asks for live validation; the tester round satisfies that requirement. Headless renders (`just scene` / `just scene-live` → PNG) are allowed. Observed cost of ignoring this: 40+ minutes stuck in AppKit `NSRunningApplication.activate` returning `activated=false`, long after the code and suites were green.
+- **Run every suite env-stripped.** Worker panes run inside a live Plexi host, so `PLEXI_CHANNEL` / `PLEXI_CONTEXT_*` / `PLEXI_SOCKET` leak into `cargo test`, which resolves workspace/config state to the host's real channel profile and produces flaky `.plexi-<channel>` / `config_dir` / `temp_dir` failures that look like the diff's own. Always run:
+  ```bash
+  env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi
+  ```
+  When the diff touches the Python SDK or generated docs, also run `mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py` and every `just gen-*-docs` / `just check-*-docs` generator the diff touches, committing regenerated output.
+- **Memory watchdog on every suite run.** `ulimit -v` does not work on macOS — XNU does not enforce `RLIMIT_AS`, so a `( ulimit -v ...; cargo test )` wrap constrains nothing; proven twice with test binaries ballooning past 20 GB despite the wrap. Instead, run the suite alongside a background poller that kills any `target/debug/deps/plexi-*` process exceeding ~8 GB RSS, sampling `top -l 1 -o mem -n 5 -stats mem,pid,command` every 15 s. A multi-GB test balloon is a real bug in the diff (unbounded queue, wake feedback loop, an accumulating test adapter) — never flake to re-run.
+- **Evidence in the reply.** Paste the final green summary line of every suite run (cargo test, mypy, docs checks). After push, confirm `gh pr checks <PR#>` is green and fix any red check before reporting done. Never end a turn while a build or test is still running — wait on it in the foreground and report its result.
+- **No pane renames.** The head labels worker panes; the pane renames and `pipeline_slots_set` calls elsewhere in this skill are interactive-mode affordances. In worker mode, publish state through the typed pane slots below instead.
+- **Publish progress on the pane's typed slots — required, event-driven on every state transition, never on a timer.**
+
+### Pane-slot write contract (canonical)
+
+Slot names and meanings (`status`, `pr`, `verdict`, `last_error`, `issue`) are defined in the pane-owned slot contract in `.agents/skills/babysitter/SKILL.md` — the head reads them instead of scraping the screen. Write syntax — exact, do not improvise it:
+
+```bash
+plexi pane slot write <name> <content> --replace
+```
+
+- There is **no positional pane-id argument** — the pane defaults to `$PLEXI_PANE_ID`; use the `--pane-id <id>` *flag* to target another pane. Passing an id positionally fails with `unexpected argument`.
+- `--replace` is **mandatory on every write after the first**, or the write errors `slot already exists`.
+- Success is **silent** (no output, exit 0); failure prints a named error and exits non-zero. Trust the exit code — never read a slot back to confirm a write.
+
+Worker sequence: write `status` = `impl:working` at start, then `pr:working`, `blocked`, `needs-input`, or `failed` as those transitions happen; write the PR number to `pr` and any blocker reason to `last_error` the same way. Write `impl:done` (with `pr` set) the moment the PR is open and its checks are green.
 
 ## Phase 0 - Resolve Task
 
@@ -343,7 +375,7 @@ Then invoke `/open-pr` inline for the branch. Do not run `stint done` here; `/me
 
 If no linked GitHub issue exists, still invoke `/open-pr` for the branch. The PR body should name the stint task and state that there is no linked GitHub issue.
 
-**Stop-at-PR-open mode.** When the invoker says to stop once the PR is open — babysitter workers always do — hand off to `/open-pr` but tell it not to chain into `/validate-pr`. Report the PR number and green checks, then end the turn. A separate tester owns validation in that mode; running `/validate-pr` anyway costs a duplicate `just pr-install` (~5 min) and leaves the turn parked on a `[TESTING]` block waiting for a reply that is not coming.
+**Stop-at-PR-open mode.** When the invoker says to stop once the PR is open — worker mode always does — hand off to `/open-pr` but tell it not to chain into `/validate-pr`. Report the PR number and green checks, then end the turn. A separate tester owns validation in that mode; running `/validate-pr` anyway costs a duplicate `just pr-install` (~5 min) and leaves the turn parked on a `[TESTING]` block waiting for a reply that is not coming.
 
 ## Blocked Or Abandoned Work
 
