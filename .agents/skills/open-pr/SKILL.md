@@ -136,7 +136,7 @@ EOF
 )")
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 ```
-Keep the stint ids in the title or body — `just merge-pr` resolves them from either to close the tasks on merge.
+Keep every stint id in the **body** — `just merge-pr` resolves the tasks to close from the branch name plus the PR body only; the title is never read.
 
 Update pane status:
 ```bash
