@@ -832,7 +832,13 @@ impl FileBrowserApp {
         if trimmed.is_empty() || trimmed.contains('/') {
             return Err("Rename requires a non-empty file name".to_string());
         }
-        let target = self.cwd.join(trimmed);
+        // Rename stays in the source's own directory — `cwd` can differ from
+        // the source's parent (search results, host-process cwd) and joining
+        // it relocates the file instead of renaming it.
+        let target = match source.parent() {
+            Some(parent) => parent.join(trimmed),
+            None => return Err(format!("'{}' has no parent directory", source.display())),
+        };
         fs::rename(&source, &target).map_err(|err| {
             let msg = format!(
                 "Unable to rename '{}' to '{}': {err}",

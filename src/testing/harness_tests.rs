@@ -3797,9 +3797,30 @@ fn rename_context_overlay_preselects_prefill() {
     );
 }
 
+/// Run `n` frames with the OS window blurred (`RawInput::focused = false`) —
+/// how every CLI-driven session (`plexi pane key/send`, drive-host, the
+/// babysitter tester) actually reaches the host. `Response::has_focus` is
+/// OS-focus-gated and reads false for the whole blurred session, which is
+/// exactly how the first 0545 fix passed the (default-focused) harness while
+/// never firing in the real build.
+fn run_blurred_frames(h: &mut HostHarness, n: u32) {
+    for _ in 0..n {
+        h.frame(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            focused: false,
+            ..Default::default()
+        });
+    }
+}
+
 /// Stint 0545: the File Browser rename modal (Cmd+R on a selected entry)
 /// must open with the entry name fully selected. Driven through the real
-/// KeyPane path so the modal opens exactly as a keystroke opens it.
+/// KeyPane path so the modal opens exactly as a keystroke opens it, on
+/// OS-blurred frames so the test models the CLI-driven session where the
+/// first fix silently never fired.
 #[test]
 fn file_browser_rename_modal_preselects_entry_name() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -3824,7 +3845,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
         key: "cmd+r".to_string(),
         response_file: Some(response_file.clone()),
     });
-    h.run_frames(3);
+    run_blurred_frames(&mut h, 3);
     assert_eq!(read_json_response(&response_file)["ok"], true);
 
     let field = egui::Id::new(("file_browser_rename_input", pane_id));
@@ -3837,6 +3858,36 @@ fn file_browser_rename_modal_preselects_entry_name() {
         text_selection(&h.ctx, field),
         Some((0, "alpha.txt".chars().count())),
         "file browser rename prefill must be fully selected on open"
+    );
+
+    // Complete the tester's repro end-to-end: typed text must REPLACE the
+    // selected prefill, and the rename must land in the source's own
+    // directory (not the browse/host cwd).
+    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        pane_id,
+        text: "QQ".to_string(),
+        response_file: None,
+    });
+    run_blurred_frames(&mut h, 2);
+    let enter_response = temp_response(tmp.path(), "rename-enter");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "enter".to_string(),
+        response_file: Some(enter_response.clone()),
+    });
+    run_blurred_frames(&mut h, 3);
+    assert_eq!(read_json_response(&enter_response)["ok"], true);
+    assert!(
+        tmp.path().join("QQ").exists(),
+        "typing over the selected prefill then Enter must rename alpha.txt to QQ in place"
+    );
+    assert!(
+        !tmp.path().join("alpha.txt").exists(),
+        "the original file name must be gone after the rename"
+    );
+    assert!(
+        !tmp.path().join("alpha.txtQQ").exists(),
+        "typed text must replace the selection, never append to the prefill"
     );
 }
 

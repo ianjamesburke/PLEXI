@@ -129,13 +129,22 @@ pub(crate) fn draw_text_caret(
 
 /// Focus-gain edge detection that survives the reconciler (stint 0545).
 ///
-/// `Response::gained_focus` compares against egui's `id_previous_frame`,
-/// which is snapshotted at `begin_pass` — but the post-frame reconciler
-/// (`reconcile_egui_focus`, stint 0429) grants focus *after* every widget has
-/// drawn, so by this widget's next pass the snapshot already names it and the
-/// gained edge never fires. Track the focus state we actually observed on our
-/// own previous pass instead.
-fn focus_gained_since_last_pass(ctx: &egui::Context, id: egui::Id, has_focus: bool) -> bool {
+/// Two egui conveniences are unusable here, proven against the real build:
+/// - `Response::gained_focus` compares against egui's `id_previous_frame`,
+///   snapshotted at `begin_pass` — the post-frame reconciler
+///   (`reconcile_egui_focus`, stint 0429) grants focus *after* every widget
+///   has drawn, so by this widget's next pass the snapshot already names it
+///   and the gained edge never fires.
+/// - `Response::has_focus` is `i.focused && memory.has_focus(id)` — gated on
+///   OS window focus. Reconciler focus deliberately ignores OS focus so that
+///   CLI-injected input (`plexi pane send`, drive-host, harness) lands while
+///   the window is blurred; an OS-gated edge detector reads `false` for the
+///   entire blurred session and never fires.
+///
+/// So: read pure memory focus and track the state observed on our own
+/// previous pass.
+fn focus_gained_since_last_pass(ctx: &egui::Context, id: egui::Id) -> bool {
+    let has_focus = ctx.memory(|memory| memory.has_focus(id));
     let flag = id.with("plexi_observed_focus");
     let was_focused = ctx.data_mut(|data| {
         let was = data.get_temp::<bool>(flag).unwrap_or(false);
@@ -213,9 +222,7 @@ impl<'a> TextField<'a> {
         if let Some(key) = self.surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, self.id);
         }
-        if self.select_all_on_focus
-            && focus_gained_since_last_pass(ui.ctx(), self.id, response.has_focus())
-        {
+        if self.select_all_on_focus && focus_gained_since_last_pass(ui.ctx(), self.id) {
             select_all(ui.ctx(), self.id, buf, self.log_name);
         }
         response
@@ -389,7 +396,7 @@ impl<'a> TextArea<'a> {
         if let Some(key) = surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, id);
         }
-        if select_all_on_focus && focus_gained_since_last_pass(ui.ctx(), id, response.has_focus()) {
+        if select_all_on_focus && focus_gained_since_last_pass(ui.ctx(), id) {
             select_all(ui.ctx(), id, buf, log_name);
         }
         response
