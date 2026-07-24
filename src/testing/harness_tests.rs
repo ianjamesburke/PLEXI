@@ -186,6 +186,10 @@ struct TextInputProbe {
     enter_handled: bool,
     enter_rendered: bool,
     consume_enter: bool,
+    focus_grabbed: bool,
+    /// Distinguishes the raw TextEdit ids when a test opens several probes —
+    /// auto ids collide across identically-shaped pane uis.
+    id_salt: u32,
 }
 
 #[derive(Default)]
@@ -251,6 +255,9 @@ impl crate::app::app_trait::App for TextInputProbe {
 
     // Deliberately simulates a misbehaving pane widget grabbing raw egui
     // focus — the exact pattern the reconciler must survive (stint 0429).
+    // The grab fires once, not every frame: a per-frame re-grab across two
+    // probe panes flips egui focus mid-pass so that neither TextEdit ever
+    // draws while focused, and typed/injected text lands in neither.
     #[allow(clippy::disallowed_methods)]
     fn ui(
         &mut self,
@@ -261,8 +268,14 @@ impl crate::app::app_trait::App for TextInputProbe {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             self.enter_rendered = true;
         }
-        let response = ui.text_edit_singleline(&mut self.text);
-        response.request_focus();
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.text)
+                .id(egui::Id::new(("text_input_probe_edit", self.id_salt))),
+        );
+        if !self.focus_grabbed {
+            response.request_focus();
+            self.focus_grabbed = true;
+        }
     }
 
     fn handle_key(
@@ -3718,5 +3731,235 @@ fn pending_pane_inputs_survive_hidden_passes() {
             .get(&pane)
             .is_none_or(|batches| batches.is_empty()),
         "queued pane input must be delivered on the next visible frame"
+    );
+}
+
+// -- Rename pre-selection (stint 0545) ------------------------------------
+
+/// The sorted char range of a TextEdit's current selection, if any.
+fn text_selection(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+    egui::TextEdit::load_state(ctx, id)
+        .and_then(|state| state.cursor.char_range())
+        .map(|range| {
+            let [start, end] = range.sorted_cursors();
+            (start.index, end.index)
+        })
+}
+
+/// Stint 0545: the rename-pane overlay (Cmd+R) must open with its prefill
+/// fully selected so typing replaces the old name. The reconciler grants
+/// focus post-frame, after every widget has drawn, so egui's
+/// `Response::gained_focus` never fires for reconciler-granted focus —
+/// `TextField` must detect the focus edge itself.
+#[test]
+fn rename_pane_overlay_preselects_prefill() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.app.renaming_pane = Some(pane);
+    h.app.rename_buffer = "test name".to_string();
+    h.app.push_focus_layer(crate::app::FocusKind::RenamePane);
+    h.run_frames(3);
+
+    let field = egui::Id::new("rename_pane_input");
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        Some(field),
+        "rename field must hold focus after the reconciler grants it"
+    );
+    assert_eq!(
+        text_selection(&h.ctx, field),
+        Some((0, "test name".chars().count())),
+        "rename-pane prefill must be fully selected on open"
+    );
+}
+
+/// Stint 0545: the rename-context overlay (Cmd+Shift+R, sidebar hidden)
+/// must open with its prefill fully selected.
+#[test]
+fn rename_context_overlay_preselects_prefill() {
+    let mut h = HostHarness::new();
+    h.app.renaming_window = Some(0);
+    h.app.rename_buffer = "new context".to_string();
+    h.app.sidebar_visible = false;
+    h.app.push_focus_layer(crate::app::FocusKind::ContextRename);
+    h.run_frames(3);
+
+    let field = egui::Id::new("rename_context_input");
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        Some(field),
+        "context rename field must hold focus after the reconciler grants it"
+    );
+    assert_eq!(
+        text_selection(&h.ctx, field),
+        Some((0, "new context".chars().count())),
+        "rename-context prefill must be fully selected on open"
+    );
+}
+
+/// Run `n` frames with the OS window blurred (`RawInput::focused = false`) —
+/// how every CLI-driven session (`plexi pane key/send`, drive-host, the
+/// babysitter tester) actually reaches the host. `Response::has_focus` is
+/// OS-focus-gated and reads false for the whole blurred session, which is
+/// exactly how the first 0545 fix passed the (default-focused) harness while
+/// never firing in the real build.
+fn run_blurred_frames(h: &mut HostHarness, n: u32) {
+    for _ in 0..n {
+        h.frame(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            focused: false,
+            ..Default::default()
+        });
+    }
+}
+
+/// Stint 0545: the File Browser rename modal (Cmd+R on a selected entry)
+/// must open with the entry name fully selected. Driven through the real
+/// KeyPane path so the modal opens exactly as a keystroke opens it, on
+/// OS-blurred frames so the test models the CLI-driven session where the
+/// first fix silently never fired.
+#[test]
+fn file_browser_rename_modal_preselects_entry_name() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("alpha.txt"), b"x").expect("seed file");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::file_browser::FileBrowserApp::new(
+            tmp.path().to_path_buf(),
+        )),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.run_frames(2);
+
+    let response_file = temp_response(tmp.path(), "rename-key");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "cmd+r".to_string(),
+        response_file: Some(response_file.clone()),
+    });
+    run_blurred_frames(&mut h, 3);
+    assert_eq!(read_json_response(&response_file)["ok"], true);
+
+    let field = egui::Id::new(("file_browser_rename_input", pane_id));
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        Some(field),
+        "file browser rename field must hold focus while its modal is open"
+    );
+    assert_eq!(
+        text_selection(&h.ctx, field),
+        Some((0, "alpha.txt".chars().count())),
+        "file browser rename prefill must be fully selected on open"
+    );
+
+    // Complete the tester's repro end-to-end: typed text must REPLACE the
+    // selected prefill, and the rename must land in the source's own
+    // directory (not the browse/host cwd).
+    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        pane_id,
+        text: "QQ".to_string(),
+        response_file: None,
+    });
+    run_blurred_frames(&mut h, 2);
+    let enter_response = temp_response(tmp.path(), "rename-enter");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "enter".to_string(),
+        response_file: Some(enter_response.clone()),
+    });
+    run_blurred_frames(&mut h, 3);
+    assert_eq!(read_json_response(&enter_response)["ok"], true);
+    assert!(
+        tmp.path().join("QQ").exists(),
+        "typing over the selected prefill then Enter must rename alpha.txt to QQ in place"
+    );
+    assert!(
+        !tmp.path().join("alpha.txt").exists(),
+        "the original file name must be gone after the rename"
+    );
+    assert!(
+        !tmp.path().join("alpha.txtQQ").exists(),
+        "typed text must replace the selection, never append to the prefill"
+    );
+}
+
+/// Stint 0537 (review finding): queued IPC text for a just-focused pane must
+/// not be swallowed by a raw-focus widget belonging to the previously focused
+/// pane. The unknown-focused-id delivery path only counts for the pane that
+/// already owned input on the last reconciled frame.
+#[test]
+fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(TextInputProbe {
+            id_salt: 1,
+            ..Default::default()
+        }),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_a = h.state().open_panes[0];
+    // Pane A renders, grabs raw egui focus, and owns input for real frames.
+    h.run_frames(2);
+
+    h.app.open_builtin_app_pane(
+        Box::new(TextInputProbe {
+            id_salt: 2,
+            ..Default::default()
+        }),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_b = *h
+        .state()
+        .open_panes
+        .iter()
+        .find(|id| **id != pane_a)
+        .expect("second probe pane");
+
+    // Queue text for B while A's raw widget still holds egui focus.
+    let response_file = temp_response(tmp.path(), "send-text-b");
+    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        pane_id: pane_b,
+        text: "for-b-only".to_string(),
+        response_file: Some(response_file.clone()),
+    });
+    h.run_frames(4);
+
+    let probe_text = |h: &HostHarness, pane_id| -> String {
+        h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .and_then(|pane| pane.runtime.serialize_state())
+            .expect("probe state")["text"]
+            .as_str()
+            .expect("text field")
+            .to_string()
+    };
+    assert_eq!(
+        probe_text(&h, pane_a),
+        "",
+        "pane A's raw-focus widget must never receive text queued for pane B"
+    );
+    assert_eq!(
+        probe_text(&h, pane_b),
+        "for-b-only",
+        "pane B must consume its queued text once it owns input"
     );
 }

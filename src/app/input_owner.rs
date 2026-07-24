@@ -218,6 +218,7 @@ impl PlexiApp {
         }
 
         store_previous_surfaces(ctx, registry);
+        store_previous_owner(ctx, owner);
     }
 }
 
@@ -241,7 +242,46 @@ pub(crate) fn focused_pane_text_surface(ctx: &egui::Context, pane_id: PaneId) ->
     })
 }
 
+/// True when the production pass can deliver queued IPC text to `pane_id`
+/// (stint 0537). egui delivers `Event::Text` to the focused widget, so text is
+/// deliverable when that widget is either a text surface registered for the
+/// pane on the previous frame, or an id no registration knows about — a widget
+/// managing its own raw egui focus, which the reconciler deliberately leaves
+/// alone. An unknown id can only be attributed to the pane by history: it
+/// counts only when the pane already owned input on the last reconciled
+/// frame, otherwise a raw widget belonging to the previously focused pane
+/// would swallow text meant for a target the host focused this frame. With no
+/// focused widget at all (a pane created during hidden passes that has not
+/// rendered its text surface yet), the text must keep waiting.
+pub(crate) fn pane_receives_ipc_text(ctx: &egui::Context, pane_id: PaneId) -> bool {
+    let surfaces_id = Id::new(PREVIOUS_SURFACES_ID);
+    ctx.memory_mut(|memory| {
+        let Some(focused) = memory.focused() else {
+            return false;
+        };
+        let registry = memory.data.get_temp::<SurfaceRegistry>(surfaces_id);
+        let registered = registry
+            .as_ref()
+            .is_some_and(|r| r.is_surface_of(SurfaceKey::Pane(pane_id), focused));
+        let unknown = registry.as_ref().is_none_or(|r| !r.contains(focused));
+        let owned_last_frame = memory
+            .data
+            .get_temp::<InputOwner>(Id::new(PREVIOUS_OWNER_ID))
+            == Some(InputOwner::Pane(pane_id));
+        registered || (unknown && owned_last_frame)
+    })
+}
+
 const PREVIOUS_SURFACES_ID: &str = "plexi_text_surfaces_previous_frame";
+const PREVIOUS_OWNER_ID: &str = "plexi_input_owner_previous_frame";
+
+fn store_previous_owner(ctx: &egui::Context, owner: InputOwner) {
+    ctx.memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp(Id::new(PREVIOUS_OWNER_ID), owner);
+    });
+}
 
 fn take_previous_surfaces(ctx: &egui::Context) -> Vec<(SurfaceKey, Id, bool)> {
     let id = Id::new(PREVIOUS_SURFACES_ID);
@@ -292,5 +332,46 @@ mod tests {
         // A focused id no registration knows about (transient widget) → off.
         ctx.memory_mut(|m| m.request_focus(Id::new("unrelated")));
         assert!(!focused_pane_text_surface(&ctx, 7));
+    }
+
+    /// Stint 0537: IPC text is deliverable when the focused widget is the
+    /// pane's registered surface OR an id the registry has never seen (a
+    /// widget holding raw egui focus, which the reconciler leaves alone) —
+    /// but a raw-focus id only counts for the pane that already owned input
+    /// on the last reconciled frame. It must keep waiting when nothing is
+    /// focused or when the focused id belongs to some other surface.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // this module owns egui focus
+    fn pane_receives_ipc_text_accepts_registered_and_raw_focus() {
+        let ctx = egui::Context::default();
+        let field = Id::new("pane_field");
+        let mut registry = SurfaceRegistry::default();
+        registry.surfaces.push((SurfaceKey::Pane(7), field, false));
+        store_previous_surfaces(&ctx, registry);
+        store_previous_owner(&ctx, InputOwner::Pane(7));
+
+        // Nothing focused → the queued text must wait.
+        assert!(!pane_receives_ipc_text(&ctx, 7));
+
+        // Focused id registered for the pane → deliverable.
+        ctx.memory_mut(|m| m.request_focus(field));
+        assert!(pane_receives_ipc_text(&ctx, 7));
+
+        // Same focused id, different pane → that pane must keep waiting.
+        assert!(!pane_receives_ipc_text(&ctx, 8));
+
+        // A raw-focus widget the registry has never seen → deliverable for
+        // the pane that owned input last frame: the reconciler leaves
+        // unknown ids alone, so this is that pane's own misbehaving widget
+        // and egui will hand it the text.
+        ctx.memory_mut(|m| m.request_focus(Id::new("raw_focus_widget")));
+        assert!(pane_receives_ipc_text(&ctx, 7));
+
+        // The same raw-focus id must NOT deliver text queued for a pane that
+        // was host-focused only this frame — the widget belongs to the
+        // previous owner and would swallow the other pane's text.
+        assert!(!pane_receives_ipc_text(&ctx, 8));
+        store_previous_owner(&ctx, InputOwner::Pane(8));
+        assert!(pane_receives_ipc_text(&ctx, 8));
     }
 }

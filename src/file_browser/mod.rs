@@ -832,7 +832,13 @@ impl FileBrowserApp {
         if trimmed.is_empty() || trimmed.contains('/') {
             return Err("Rename requires a non-empty file name".to_string());
         }
-        let target = self.cwd.join(trimmed);
+        // Rename stays in the source's own directory — `cwd` can differ from
+        // the source's parent (search results, host-process cwd) and joining
+        // it relocates the file instead of renaming it.
+        let target = match source.parent() {
+            Some(parent) => parent.join(trimmed),
+            None => return Err(format!("'{}' has no parent directory", source.display())),
+        };
         fs::rename(&source, &target).map_err(|err| {
             let msg = format!(
                 "Unable to rename '{}' to '{}': {err}",
@@ -1691,6 +1697,8 @@ impl FileBrowserApp {
                     egui::Id::new(("file_browser_rename_input", pane_key)),
                     "",
                 )
+                .select_all_on_focus(true)
+                .log_name("file_browser_rename")
                 .show(ui, &mut self.rename_buffer, colors);
                 let submitted = text_response.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter));
