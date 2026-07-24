@@ -1840,6 +1840,153 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Seed a context-close confirm with a realistic pane inventory. When
+    /// `portal_backed`, the active window gets a Portal tile targeting the
+    /// context, which is what unlocks the Dissolve action (stint 0542).
+    fn seed_context_close_confirm(h: &mut PlexiUiHarness, portal_backed: bool) {
+        h.with_app_mut(|app| {
+            let ctx_id = if portal_backed {
+                let child_ctx_id = app.router.active().context_id + 4_000;
+                let portal_pane_id = app.host.alloc_pane_id();
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(
+                    portal_pane_id,
+                    Pane::Portal(Box::new(PortalPane {
+                        pane_id: portal_pane_id,
+                        target_context_id: child_ctx_id,
+                        context_state: None,
+                        hidden: false,
+                    })),
+                );
+                child_ctx_id
+            } else {
+                app.router.active().context_id
+            };
+            let mut state = app.build_context_close_state(ctx_id);
+            state.context_name = "api-server".to_string();
+            state.items = vec![
+                crate::app::ContextCloseItem {
+                    kind: "Terminal",
+                    name: "cargo watch".to_string(),
+                },
+                crate::app::ContextCloseItem {
+                    kind: "Terminal",
+                    name: "psql plexi_dev".to_string(),
+                },
+                crate::app::ContextCloseItem {
+                    kind: "App",
+                    name: "File Browser".to_string(),
+                },
+            ];
+            app.pending_context_close = Some(state);
+            app.push_focus_layer(crate::app::FocusKind::ContextCloseConfirm);
+        });
+        // Two steps for the egui Area sizing pass.
+        h.run_steps(2);
+    }
+
+    /// ActionModal defaults: shortcut chips lead every action row, all rows
+    /// share the modal's left edge, and the destructive action is distinct
+    /// without a filled button (stint 0542).
+    #[test]
+    fn screenshot_action_modal_context_close_confirm() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
+        add_focused_pane(&mut h);
+        h.step();
+        seed_context_close_confirm(&mut h, true);
+        h.save_screenshot("/tmp/plexi_action_modal_context_close.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| app.pending_context_close.is_some()),
+            "confirm must still be pending — nothing consumed it"
+        );
+        println!("Screenshot saved to /tmp/plexi_action_modal_context_close.png");
+    }
+
+    /// A top-level context has no parent portal, so the modal must render
+    /// exactly two action rows — Dissolve would early-return (stint 0542).
+    #[test]
+    fn screenshot_action_modal_context_close_top_level_has_no_dissolve() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
+        add_focused_pane(&mut h);
+        h.step();
+        seed_context_close_confirm(&mut h, false);
+        h.save_screenshot("/tmp/plexi_action_modal_context_close_top_level.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| app
+                .pending_context_close
+                .as_ref()
+                .is_some_and(|state| !state.can_dissolve)),
+            "a top-level context must not advertise Dissolve"
+        );
+        println!("Screenshot saved to /tmp/plexi_action_modal_context_close_top_level.png");
+    }
+
+    /// Density review surface for the modal padding tokens (stint 0543):
+    /// palette, notes picker, and a confirm modal rendered with realistic
+    /// seeded content at the given `pixels_per_point`.
+    #[test]
+    #[ignore = "density review artifact — run explicitly when tuning MODAL_PADDING_*"]
+    fn screenshot_modal_density_review() {
+        for ppp in [1.0_f32, 2.0] {
+            let tag = if ppp == 1.0 { "1x" } else { "2x" };
+
+            let mut h = PlexiUiHarness::new_sized_ppp(1168.0, 720.0, ppp);
+            add_focused_pane(&mut h);
+            h.step();
+            h.with_app_mut(|app| {
+                app.palette_notes = ["deploy checklist", "sprint 12 retro", "api rate limits"]
+                    .iter()
+                    .map(|title| crate::notes::NotePickerEntry {
+                        path: std::env::temp_dir().join(format!("plexi-density-{title}.md")),
+                        title: (*title).to_string(),
+                        preview: format!("{title} — first body line of the note"),
+                        inbox: false,
+                        search_text: title.to_lowercase(),
+                    })
+                    .collect();
+                app.show_command_palette = true;
+                app.sync_command_palette_focus();
+            });
+            h.run_steps(3);
+            h.save_screenshot(&format!("/tmp/plexi_density_palette_{tag}.png"))
+                .expect("render failed");
+
+            let mut h = PlexiUiHarness::new_sized_ppp(1168.0, 720.0, ppp);
+            add_focused_pane(&mut h);
+            h.step();
+            h.with_app_mut(|app| {
+                app.open_notes_picker();
+                app.notes_picker_entries = [
+                    ("meeting notes 2026-07-24", true),
+                    ("deploy checklist", false),
+                    ("sprint 12 retro", false),
+                ]
+                .iter()
+                .map(|(title, inbox)| crate::notes::NotePickerEntry {
+                    path: std::env::temp_dir().join(format!("plexi-density-{title}.md")),
+                    title: (*title).to_string(),
+                    preview: format!("{title} — first body line of the note"),
+                    inbox: *inbox,
+                    search_text: title.to_lowercase(),
+                })
+                .collect();
+                app.notes_picker_selected = 0;
+            });
+            h.run_steps(3);
+            h.save_screenshot(&format!("/tmp/plexi_density_picker_{tag}.png"))
+                .expect("render failed");
+
+            let mut h = PlexiUiHarness::new_sized_ppp(1168.0, 720.0, ppp);
+            add_focused_pane(&mut h);
+            h.step();
+            seed_context_close_confirm(&mut h, true);
+            h.save_screenshot(&format!("/tmp/plexi_density_confirm_{tag}.png"))
+                .expect("render failed");
+        }
+    }
+
     #[test]
     fn screenshot_command_palette_metadata_lane() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);

@@ -954,6 +954,10 @@ impl App for TextEditorApp {
         "text-editor"
     }
 
+    fn open_note_path(&self) -> Option<&Path> {
+        self.is_note.then_some(self.path.as_path())
+    }
+
     fn display_name(&self) -> String {
         self.path
             .file_name()

@@ -322,6 +322,11 @@ pub(crate) struct ContextCloseState {
     pub context_id: u64,
     pub context_name: String,
     pub items: Vec<ContextCloseItem>,
+    /// True when a Portal tile in the active window targets this context —
+    /// exactly `dissolve_portal`'s precondition. False for a top-level
+    /// context, where dissolving early-returns and does nothing, so the
+    /// confirm modal must not offer the action at all.
+    pub can_dissolve: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1199,10 +1204,17 @@ impl PlexiApp {
             }
         }
 
+        let can_dissolve = self.context_has_portal(context_id);
+        log::info!(
+            "context_close: prompt ctx={context_id} name={context_name:?} panes={} can_dissolve={can_dissolve}",
+            items.len(),
+        );
+
         ContextCloseState {
             context_id,
             context_name,
             items,
+            can_dissolve,
         }
     }
 
@@ -1219,6 +1231,55 @@ impl PlexiApp {
     /// source of truth, focus stack follows it deterministically each frame.
     pub(crate) fn sync_command_palette_focus(&mut self) {
         self.reconcile_focus_layer(FocusKind::CommandPalette, self.show_command_palette);
+    }
+
+    /// Every note currently open in an editor pane, across all windows, newest
+    /// modification first. This is the command palette's note corpus — the
+    /// palette is a switcher for what is already open, while the Cmd+O picker
+    /// stays the browse-everything surface that scans inbox and workspace.
+    ///
+    /// The same note open in two panes yields one entry.
+    pub(crate) fn open_note_entries(&self) -> Vec<crate::notes::NotePickerEntry> {
+        let notes_base = crate::config::config_dir().join("notes");
+        let inbox_dir = notes_base.join("inbox");
+
+        let mut seen = std::collections::HashSet::new();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for win in &self.windows {
+            let mut pane_entries: Vec<_> = win.panes.iter().collect();
+            // Pane id order keeps the pre-sort deterministic when two notes
+            // share an mtime.
+            pane_entries.sort_by_key(|(id, _)| *id);
+            for (_, pane) in pane_entries {
+                let Some(app) = pane.as_app() else { continue };
+                let crate::host::pane::AppRuntime::Builtin(builtin) = &app.runtime else {
+                    continue;
+                };
+                let Some(path) = builtin.open_note_path() else {
+                    continue;
+                };
+                let identity = crate::app::text_editor_app::note_path_identity(path);
+                if seen.insert(identity) {
+                    paths.push(path.to_path_buf());
+                }
+            }
+        }
+
+        // Preserve the picker's newest-first ordering. One stat per open note,
+        // not a directory walk.
+        let mut with_mtime: Vec<(Option<std::time::SystemTime>, PathBuf)> = paths
+            .into_iter()
+            .map(|p| (std::fs::metadata(&p).and_then(|m| m.modified()).ok(), p))
+            .collect();
+        with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+
+        with_mtime
+            .into_iter()
+            .filter_map(|(_, path)| {
+                let inbox = path.parent() == Some(inbox_dir.as_path());
+                crate::notes::NotePickerEntry::load(&path, inbox)
+            })
+            .collect()
     }
 
     /// Navigate to a pane by id, updating both `focused_pane` on its window and

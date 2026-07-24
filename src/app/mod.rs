@@ -36,7 +36,7 @@ pub mod video_player_app;
 #[cfg(test)]
 pub(crate) use focus::FocusLogOutcome;
 pub(crate) use focus::{
-    ContextCloseState, FocusKind, FocusSegmentReason, PendingRawWasmLaunch,
+    ContextCloseItem, ContextCloseState, FocusKind, FocusSegmentReason, PendingRawWasmLaunch,
     FOCUS_HEARTBEAT_INTERVAL,
 };
 pub(crate) use notification_image::NotificationImageState;
@@ -4164,43 +4164,12 @@ impl eframe::App for PlexiApp {
                             "palette: opened, focused workspace = {:?}",
                             self.palette_workspace_root
                         );
-                        // Load notes once at open-time, same pattern as palette_workspace_root.
-                        let notes_base = crate::config::config_dir().join("notes");
-                        let scan_md = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
-                            let mut with_mtime: Vec<(std::time::SystemTime, std::path::PathBuf)> =
-                                std::fs::read_dir(dir)
-                                    .into_iter()
-                                    .flatten()
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
-                                    .filter_map(|e| {
-                                        let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-                                        Some((mtime, e.path()))
-                                    })
-                                    .collect();
-                            with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
-                            with_mtime.into_iter().map(|(_, p)| p).collect()
-                        };
-                        let mut palette_notes: Vec<crate::notes::NotePickerEntry> =
-                            scan_md(&notes_base.join("inbox"))
-                                .iter()
-                                .filter_map(|p| crate::notes::NotePickerEntry::load(p, true))
-                                .collect();
-                        let workspace_slug = self
-                            .palette_workspace_root
-                            .as_ref()
-                            .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                            .map(|n| n.to_string_lossy().into_owned());
-                        let notes_dir = match workspace_slug {
-                            Some(ref slug) => notes_base.join(slug),
-                            None => notes_base,
-                        };
-                        palette_notes.extend(
-                            scan_md(&notes_dir)
-                                .iter()
-                                .filter_map(|p| crate::notes::NotePickerEntry::load(p, false)),
-                        );
-                        log::info!("palette: loaded {} notes", palette_notes.len());
+                        // The palette is a switcher for what you are working
+                        // on, so it lists only notes open in an editor pane —
+                        // never the whole notes dir. Cmd+O's picker remains
+                        // the browse-everything surface. No disk scan here.
+                        let palette_notes = self.open_note_entries();
+                        log::info!("palette: loaded {} open note(s)", palette_notes.len());
                         self.palette_notes = palette_notes;
                         // Resolve user commands once at open-time (re-read each open
                         // → hot reload). Mirrors `plexi run` precedence exactly.
