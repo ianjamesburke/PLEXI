@@ -2332,3 +2332,42 @@ fn set_context_root_ipc_targets_caller_context() {
         "active context root must be untouched"
     );
 }
+
+/// Dissolve is only reachable for a context that hangs off a Portal tile.
+/// `dissolve_portal` early-returns without one, so the close-confirm modal
+/// must not offer the action for a top-level context (stint 0542).
+#[test]
+fn context_close_offers_dissolve_only_for_portal_backed_context() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let top_level_id = app.router.active().context_id;
+    assert!(
+        !app.build_context_close_state(top_level_id).can_dissolve,
+        "a top-level context has no parent portal — Dissolve would do nothing"
+    );
+
+    // Give the active window a Portal tile pointing at a child context.
+    let child_ctx_id = top_level_id + 1_000;
+    let portal_pane_id = app.host.alloc_pane_id();
+    let win = &mut app.windows[app.active_window];
+    win.panes.insert(
+        portal_pane_id,
+        crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+            pane_id: portal_pane_id,
+            target_context_id: child_ctx_id,
+            context_state: None,
+            hidden: false,
+        })),
+    );
+
+    assert!(
+        app.build_context_close_state(child_ctx_id).can_dissolve,
+        "a context reached through a Portal tile must offer Dissolve"
+    );
+    assert!(
+        !app.build_context_close_state(child_ctx_id + 1).can_dissolve,
+        "an unrelated context id must not inherit the portal's dissolvability"
+    );
+}

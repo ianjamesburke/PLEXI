@@ -54,6 +54,18 @@ impl PlexiApp {
         })
     }
 
+    /// The pane holding `path` in any window, not just the active one. The
+    /// command palette's note corpus spans every window, so activating an
+    /// entry must be able to reach the pane that owns it — searching only the
+    /// active window would open a second editor on an already-open note.
+    pub(crate) fn find_open_text_editor_pane_any_window(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        (0..self.windows.len())
+            .find_map(|idx| self.find_open_text_editor_tile(idx, path).map(|(_, pane)| pane))
+    }
+
     /// Indices into `notes_picker_entries` matching the current query, ranked:
     /// title substring, then title fuzzy, then full-text fuzzy. Empty query
     /// returns every entry in stored order (inbox first, then by mtime).

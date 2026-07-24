@@ -37,7 +37,6 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Enter"],
-                "confirm",
                 egui::Modifiers::NONE,
                 egui::Key::Enter,
             )),
@@ -48,7 +47,6 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
-                "cancel",
                 egui::Modifiers::NONE,
                 egui::Key::Escape,
             )),
@@ -114,29 +112,34 @@ impl PlexiApp {
         } else {
             format!("Close \"{}\"?", state.context_name)
         };
-        let actions = [
-            crate::ui::dialog::DialogAction::new(
-                "close_all",
-                "Close all",
-                crate::ui::button::ButtonKind::Danger,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Enter"],
-                "close all",
-                egui::Modifiers::NONE,
-                egui::Key::Enter,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "dissolve",
-                "Dissolve",
-                crate::ui::button::ButtonKind::Secondary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["D"],
-                "dissolve",
-                egui::Modifiers::NONE,
-                egui::Key::D,
-            )),
+        let mut actions = vec![crate::ui::dialog::DialogAction::new(
+            "close_all",
+            "Close all",
+            crate::ui::button::ButtonKind::Danger,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Enter"],
+            egui::Modifiers::NONE,
+            egui::Key::Enter,
+        ))];
+        // Dissolve only exists for a context reached through a Portal tile.
+        // Offering it on a top-level context reads as a broken command: the
+        // key is consumed and `dissolve_portal` early-returns.
+        if state.can_dissolve {
+            actions.push(
+                crate::ui::dialog::DialogAction::new(
+                    "dissolve",
+                    "Dissolve",
+                    crate::ui::button::ButtonKind::Secondary,
+                )
+                .shortcut(crate::ui::dialog::DialogShortcut::new(
+                    &["D"],
+                    egui::Modifiers::NONE,
+                    egui::Key::D,
+                )),
+            );
+        }
+        actions.push(
             crate::ui::dialog::DialogAction::new(
                 "cancel",
                 "Cancel",
@@ -144,11 +147,10 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
-                "cancel",
                 egui::Modifiers::NONE,
                 egui::Key::Escape,
             )),
-        ];
+        );
         let response =
             crate::ui::dialog::ActionModal::new("ctx_close_confirm_modal", &title, &actions)
                 .width(super::MODAL_WIDTH)
@@ -266,7 +268,6 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Enter"],
-                "allow once",
                 egui::Modifiers::NONE,
                 egui::Key::Enter,
             )),
@@ -277,7 +278,6 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["A"],
-                "always",
                 egui::Modifiers::NONE,
                 egui::Key::A,
             )),
@@ -288,7 +288,6 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
-                "deny",
                 egui::Modifiers::NONE,
                 egui::Key::Escape,
             )),
@@ -343,7 +342,6 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Enter"],
-                "allow",
                 egui::Modifiers::NONE,
                 egui::Key::Enter,
             )),
@@ -354,7 +352,6 @@ impl PlexiApp {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
-                "deny",
                 egui::Modifiers::NONE,
                 egui::Key::Escape,
             )),

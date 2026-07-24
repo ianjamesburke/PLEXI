@@ -101,6 +101,64 @@ pub(crate) fn key_combo_list_with_body<R>(
     })
 }
 
+/// Paint one key chip with its left edge at `left`, vertically centered on
+/// `center_y`, without allocating layout space. Returns the chip width.
+/// For painter-driven rows that place their own chips (modal action rows).
+pub(crate) fn key_chip_painted(
+    ui: &egui::Ui,
+    left: f32,
+    center_y: f32,
+    label: &str,
+    colors: &Colors,
+) -> f32 {
+    let fg = shortcut_key_color(colors);
+    let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), combo_chip_font(), fg));
+    let text_w = galley.size().x;
+    let chip_h = galley.size().y + style::KEYCHIP_PAD_V * 2.0;
+    let chip_w = (text_w + style::KEYCHIP_PAD_H * 2.0)
+        .max(chip_h)
+        .max(style::KEYCHIP_MIN_W);
+    let rect = egui::Rect::from_min_size(
+        Pos2::new(left, center_y - chip_h / 2.0),
+        Vec2::new(chip_w, chip_h),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
+    let text_pos = Pos2::new(
+        rect.center().x - text_w / 2.0,
+        rect.min.y + style::KEYCHIP_PAD_V,
+    );
+    crate::ui::snap::galley_snapped(painter, text_pos, galley, fg);
+    chip_w
+}
+
+/// Paint a whole key combo starting at `left`, centered on `center_y`.
+/// Returns the total painted width. Pairs with [`key_combo_width`], which
+/// measures the same geometry without painting.
+pub(crate) fn key_combo_painted(
+    ui: &egui::Ui,
+    left: f32,
+    center_y: f32,
+    keys: &[&str],
+    colors: &Colors,
+) -> f32 {
+    let mut x = left;
+    for (i, key) in keys.iter().enumerate() {
+        if i > 0 {
+            x += style::KEYCHIP_GAP;
+        }
+        x += key_chip_painted(ui, x, center_y, key, colors);
+    }
+    x - left
+}
+
+/// Rendered width of one combo's chips and their gaps. Callers aligning a
+/// column of combos (modal action rows) measure every combo with this and
+/// lay the labels out past the widest.
+pub(crate) fn key_combo_width(ui: &egui::Ui, keys: &[&str]) -> f32 {
+    key_combo_list_width(ui, &[keys], None)
+}
+
 pub(crate) fn key_combo_list_width(
     ui: &egui::Ui,
     combos: &[&[&str]],

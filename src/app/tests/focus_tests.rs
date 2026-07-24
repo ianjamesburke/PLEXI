@@ -622,3 +622,193 @@ fn navigate_to_activates_ancestor_tabs() {
     #[cfg(debug_assertions)]
     app.windows[0].assert_focus_invariants();
 }
+
+// ── Command palette note corpus (stint 0543) ──────────────────────────────
+
+/// Install a text editor pane on `path` in window 0.
+fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
+    let (_tile, pane_id) = app.add_test_pane();
+    let app_pane = crate::host::pane::AppPane {
+        pip_status: None,
+        id: pane_id,
+        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+            crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.to_path_buf()),
+        )),
+        workspace_root: std::env::temp_dir(),
+        permissions: crate::app::permissions::AppPermissions::builtin(),
+        manifest_id: "text-editor".to_string(),
+        name: "Text Editor".to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
+    };
+    app.windows[0]
+        .panes
+        .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+}
+
+/// Cmd+P lists the notes you have open, not every note on disk. A note
+/// sitting in the notes dir with no pane must not appear, and the same note
+/// open twice must appear once.
+#[test]
+fn open_note_entries_lists_only_notes_open_in_a_pane() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let dir = tempfile::tempdir().expect("notes dir");
+    let opened = dir.path().join("opened.md");
+    let opened_twice = dir.path().join("opened-twice.md");
+    let on_disk_only = dir.path().join("never-opened.md");
+    std::fs::write(&opened, "opened note body").expect("write opened");
+    std::fs::write(&opened_twice, "twice note body").expect("write twice");
+    std::fs::write(&on_disk_only, "unopened body").expect("write unopened");
+
+    assert!(
+        app.open_note_entries().is_empty(),
+        "no editor panes open — the palette's note corpus must be empty"
+    );
+
+    open_note_in_editor(&mut app, &opened);
+    open_note_in_editor(&mut app, &opened_twice);
+    open_note_in_editor(&mut app, &opened_twice);
+
+    let paths: Vec<std::path::PathBuf> = app
+        .open_note_entries()
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect();
+
+    assert_eq!(
+        paths.len(),
+        2,
+        "one entry per open note, deduped across panes: {paths:?}"
+    );
+    assert!(paths.contains(&opened), "open note must be listed: {paths:?}");
+    assert!(
+        paths.contains(&opened_twice),
+        "note open in two panes must be listed once: {paths:?}"
+    );
+    assert!(
+        !paths.contains(&on_disk_only),
+        "a note that is not open must never reach the palette: {paths:?}"
+    );
+}
+
+/// A text editor on an ordinary file is not a note, so it contributes nothing
+/// to the palette's note corpus.
+#[test]
+fn open_note_entries_ignores_non_note_editor_panes() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let dir = tempfile::tempdir().expect("src dir");
+    let source = dir.path().join("main.rs");
+    std::fs::write(&source, "fn main() {}").expect("write source");
+
+    let (_tile, pane_id) = app.add_test_pane();
+    let app_pane = crate::host::pane::AppPane {
+        pip_status: None,
+        id: pane_id,
+        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+            crate::app::text_editor_app::TextEditorApp::new(source.clone()),
+        )),
+        workspace_root: std::env::temp_dir(),
+        permissions: crate::app::permissions::AppPermissions::builtin(),
+        manifest_id: "text-editor".to_string(),
+        name: "Text Editor".to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
+    };
+    app.windows[0]
+        .panes
+        .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+
+    assert!(
+        app.open_note_entries().is_empty(),
+        "an editor on a non-note file must not appear in the palette's notes"
+    );
+}
+
+/// The palette's note corpus spans every window, so activating a note that
+/// lives in another window must navigate to that pane, not open a second
+/// editor on the same file (stint 0543).
+#[test]
+fn palette_finds_open_note_editor_in_a_non_active_window() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let dir = tempfile::tempdir().expect("notes dir");
+    let note = dir.path().join("cross-window.md");
+    std::fs::write(&note, "cross window body").expect("write note");
+
+    // Second window, holding the only editor pane for the note.
+    let other_window_idx = app.windows.len();
+    let mut panes = std::collections::HashMap::new();
+    let mut tiles = egui_tiles::Tiles::default();
+    let pane_id = app.host.alloc_pane_id();
+    panes.insert(
+        pane_id,
+        crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+            pip_status: None,
+            id: pane_id,
+            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+                crate::app::text_editor_app::TextEditorApp::new_for_test_note(note.clone()),
+            )),
+            workspace_root: std::env::temp_dir(),
+            permissions: crate::app::permissions::AppPermissions::builtin(),
+            manifest_id: "text-editor".to_string(),
+            name: "Text Editor".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        })),
+    );
+    let tile = tiles.insert_pane(pane_id);
+    let window_id = app.next_window_id;
+    app.next_window_id += 1;
+    app.windows.push(crate::host::context::Window {
+        name: "second".to_string(),
+        path: std::env::temp_dir(),
+        tree: egui_tiles::Tree::new("second", tile, tiles),
+        panes,
+        focused_pane: Some(tile),
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id,
+        context_id: app.router.active().context_id,
+    });
+
+    assert_eq!(
+        app.find_open_text_editor_tile(app.active_window, &note),
+        None,
+        "the note is deliberately not open in the active window"
+    );
+    assert_eq!(
+        app.find_open_text_editor_pane_any_window(&note),
+        Some(pane_id),
+        "the palette must find the editor pane in the other window"
+    );
+
+    assert!(app.pane_navigate(pane_id), "navigation must reach the pane");
+    assert_eq!(
+        app.active_window, other_window_idx,
+        "navigating must move focus to the window that owns the note"
+    );
+}

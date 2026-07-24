@@ -314,6 +314,14 @@ pub trait App: Send {
     /// the new name into the note's frontmatter `title`.
     fn on_pane_renamed(&mut self, _name: &str) {}
 
+    /// The note this app currently has open, if any. The command palette
+    /// lists notes that are open in a pane, so it asks every builtin app
+    /// rather than scanning the notes dir. Apps that are not note editors —
+    /// and TextEditorApp on an ordinary file — return `None`.
+    fn open_note_path(&self) -> Option<&std::path::Path> {
+        None
+    }
+
     /// Read-only, app-owned semantic details appended to `plexi pane state`.
     /// Production state is authoritative; callers may only serialize it.
     fn semantic_state(&self) -> Option<serde_json::Value> {

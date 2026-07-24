@@ -879,12 +879,10 @@ impl PlexiApp {
             Some(Action::OpenNote(path)) => {
                 self.show_command_palette = false;
                 self.palette_query.clear();
-                let active = self.active_window;
                 let path_str = path.display().to_string();
-                if let Some((existing_tile_id, _)) = self.find_open_text_editor_tile(active, &path)
-                {
-                    log::info!("palette: note already open, focusing pane");
-                    self.set_window_focused_pane(active, existing_tile_id);
+                if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
+                    log::info!("palette: note already open in pane {pane_id}, navigating");
+                    self.pane_navigate(pane_id);
                 } else {
                     log::info!("palette: opening note {:?} in new pane", path);
                     let _ =
@@ -1220,13 +1218,14 @@ impl PlexiApp {
                         Action::OpenNote(path) => {
                             self.show_command_palette = false;
                             self.palette_query.clear();
-                            let active = self.active_window;
                             let path_str = path.display().to_string();
-                            if let Some((existing_tile_id, _)) =
-                                self.find_open_text_editor_tile(active, &path)
+                            if let Some(pane_id) =
+                                self.find_open_text_editor_pane_any_window(&path)
                             {
-                                log::info!("palette: note already open, focusing pane");
-                                self.set_window_focused_pane(active, existing_tile_id);
+                                log::info!(
+                                    "palette: note already open in pane {pane_id}, navigating"
+                                );
+                                self.pane_navigate(pane_id);
                             } else {
                                 log::info!("palette: opening note {:?} in new pane", path);
                                 let _ = self.launch_app_by_id_with_layout(

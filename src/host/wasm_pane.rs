@@ -1897,7 +1897,6 @@ impl LiveWasmPane {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Enter"],
-                "grant once",
                 egui::Modifiers::NONE,
                 egui::Key::Enter,
             )),
@@ -1908,7 +1907,6 @@ impl LiveWasmPane {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Shift", "Enter"],
-                "always allow",
                 egui::Modifiers::SHIFT,
                 egui::Key::Enter,
             )),
@@ -1919,7 +1917,6 @@ impl LiveWasmPane {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
-                "deny once",
                 egui::Modifiers::NONE,
                 egui::Key::Escape,
             )),
@@ -1930,7 +1927,6 @@ impl LiveWasmPane {
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Shift", "Esc"],
-                "always deny",
                 egui::Modifiers::SHIFT,
                 egui::Key::Escape,
             )),

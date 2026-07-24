@@ -86,11 +86,18 @@ pub const TABLE_HEADER_H: f32 = 28.0;
 pub const SCRIM_ALPHA: u8 = 190;
 
 /// Inner padding of a modal frame (horizontal, vertical). Applied via
-/// `egui::Margin::symmetric`. Calibrated against the rename-pane popover
-/// (16/12), the tightest modal in the product: ModalShell carries a title
-/// row so it gets slightly more, but anything past 20/16 read as dead air.
-pub const MODAL_PADDING_H: i8 = 20;
-pub const MODAL_PADDING_V: i8 = 16;
+/// `egui::Margin::symmetric`. Judged by screenshot at ppp 1.0 and 2.0 across
+/// the command palette, the notes picker, and a confirm modal: the frame's
+/// own border and shadow already separate it from the scrim, so the padding
+/// only has to keep text off the edge. Past ~12/10 the gap reads as dead air
+/// rather than as breathing room.
+pub const MODAL_PADDING_H: i8 = 12;
+pub const MODAL_PADDING_V: i8 = 10;
+
+/// Height of one `ActionModal` action row (shortcut chips + label). Sits
+/// between a dense list row and a form button: the chips need breathing room
+/// but a confirm modal's action stack must not read as a menu.
+pub const MODAL_ACTION_ROW_H: f32 = 30.0;
 
 // ── Pane ID overlay ────────────────────────────────────────────────────────
 /// Font size for the ⌘-hold pane ID ghost number (large, centered over pane content).

@@ -1387,6 +1387,17 @@ impl PlexiApp {
         self.reload_config_for_active_context();
     }
 
+    /// True when the active window holds a Portal tile targeting `child_ctx_id`,
+    /// which is precisely what [`Self::dissolve_portal`] needs to do anything.
+    /// Offer Dissolve only when this holds — a top-level context has no parent
+    /// portal, so the action would early-return and visibly do nothing.
+    pub(crate) fn context_has_portal(&self, child_ctx_id: u64) -> bool {
+        self.windows[self.active_window]
+            .panes
+            .values()
+            .any(|pane| pane.portal_target() == Some(child_ctx_id))
+    }
+
     /// Dissolve a portal: remove the context boundary while preserving the child
     /// layout. The active child window is grafted into the Portal tile's exact
     /// position; any remaining child windows are promoted as parent-context windows.
