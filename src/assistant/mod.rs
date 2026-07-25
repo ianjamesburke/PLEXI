@@ -538,15 +538,22 @@ struct PendingSubscribe {
 
 impl AssistantApp {
     /// Open the Assistant for a workspace: resume the persisted active
-    /// conversation, or create a fresh one. `profile_dir` is the channel
-    /// config dir — grants load from `<profile_dir>/grants.toml` and audit
-    /// events append to `<profile_dir>/audit.jsonl`.
-    pub fn new(workspace_root: PathBuf, broker: Arc<dyn AiBroker>, profile_dir: &Path) -> Self {
+    /// conversation of `context_id` (the host context this pane lives in),
+    /// or create a fresh one. `profile_dir` is the channel config dir —
+    /// grants load from `<profile_dir>/grants.toml` and audit events append
+    /// to `<profile_dir>/audit.jsonl`.
+    pub fn new(
+        workspace_root: PathBuf,
+        broker: Arc<dyn AiBroker>,
+        profile_dir: &Path,
+        context_id: u64,
+    ) -> Self {
         Self::new_with_timeline(
             workspace_root,
             broker,
             profile_dir,
             crate::host::app_timeline::global(),
+            context_id,
         )
     }
 
@@ -556,8 +563,9 @@ impl AssistantApp {
         broker: Arc<dyn AiBroker>,
         profile_dir: &Path,
         timeline: Arc<Mutex<AppTimeline>>,
+        context_id: u64,
     ) -> Self {
-        let store = AssistantStore::new(&workspace_root);
+        let store = AssistantStore::new(&workspace_root, context_id);
         let mut model = match store.active_conversation() {
             Some(id) => {
                 let turns = store.load_turns(&id);
@@ -3532,7 +3540,7 @@ mod tests {
 
     /// Assistant whose grants + audit live in the (temp) workspace dir.
     fn test_app(ws: &Path) -> AssistantApp {
-        AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws)
+        AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, 1)
     }
 
     fn wait_for_turn(app: &mut AssistantApp) {
@@ -3558,7 +3566,7 @@ mod tests {
     fn app_build_prompt_missed_by_general_matcher_still_gets_sdk_context_and_raised_cap() {
         let ws = tempfile::tempdir().unwrap();
         let broker = Arc::new(CapturingBroker::default());
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path());
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
 
         app.model.composer = "Build me a tiny counter app with plus and minus buttons".to_string();
         let effects = app.model.submit();
@@ -3644,7 +3652,7 @@ enabled = ["allowed.tool"]
         )
         .unwrap();
         let broker = Arc::new(CapturingBroker::default());
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path());
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
         register_echo_provider(
             9199,
             &["allowed.tool", "denied.tool"],
@@ -4646,7 +4654,7 @@ enabled = ["allowed.tool"]
     }
 
     fn test_app_with_timeline(ws: &Path, timeline: Arc<Mutex<AppTimeline>>) -> AssistantApp {
-        AssistantApp::new_with_timeline(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, timeline)
+        AssistantApp::new_with_timeline(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, timeline, 1)
     }
 
     fn emit_move(
@@ -4932,6 +4940,7 @@ enabled = ["allowed.tool"]
                 dispatched: AtomicUsize::new(0),
             }),
             ws.path(),
+            1,
         );
 
         // Turn 1 starts and parks in the broker.
@@ -5224,13 +5233,13 @@ enabled = ["allowed.tool"]
     #[test]
     fn rename_persists_session_name() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
         assert_eq!(app.model.session_name, None);
         app.on_pane_renamed("My Session");
         assert_eq!(app.model.session_name.as_deref(), Some("My Session"));
         // Reopen: name persists.
         drop(app);
-        let reopened = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
+        let reopened = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
         assert_eq!(reopened.model.session_name.as_deref(), Some("My Session"));
     }
 
@@ -5252,7 +5261,7 @@ enabled = ["allowed.tool"]
     #[test]
     fn error_turn_appends_error_row() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::error(), ws.path());
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::error(), ws.path(), 1);
         app.model.composer = "trigger error".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
@@ -5563,7 +5572,7 @@ enabled = ["allowed.tool"]
         )
         .unwrap();
         let broker = Arc::new(CapturingBroker::default());
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path());
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
         app.model.composer = "/release /Users/ian/project".to_string();
         let effects = app.model.submit();
         assert!(matches!(

@@ -729,3 +729,151 @@ fn split_mirror_bypasses_on_launch_dedup() {
         "mirror-split of a focus_existing app must spawn a second instance, not dedup"
     );
 }
+
+// ── Assistant: one instance + conversation per context (stint 0538) ─────────
+
+/// Count assistant panes across every window (top-level panes only — an
+/// assistant used as an overlay still sits in `win.panes`).
+fn assistant_pane_count(app: &PlexiApp) -> usize {
+    app.windows
+        .iter()
+        .flat_map(|w| w.panes.values())
+        .filter(|p| p.as_app().is_some_and(|a| a.manifest_id == "assistant"))
+        .count()
+}
+
+/// A second open in the SAME window focuses the existing assistant instead of
+/// spawning a duplicate.
+#[test]
+fn assistant_open_focuses_existing_in_same_window() {
+    // Alpha-tier channel so the assistant feature gate passes.
+    let _channel = crate::config::set_test_channel("pr-0538");
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane(); // window 0, context 1
+    let (assistant_tile, assistant_pane) = h.app.add_app_pane_in_window(0, "assistant");
+
+    h.app.open_assistant_pane();
+
+    assert_eq!(
+        assistant_pane_count(&h.app),
+        1,
+        "reopening in the same window must focus, never spawn a second assistant"
+    );
+    assert_eq!(h.app.active_window, 0);
+    assert_eq!(
+        h.app.windows[0].focused_pane,
+        Some(assistant_tile),
+        "the existing assistant pane must be focused"
+    );
+    assert_eq!(
+        h.app
+            .find_app_pane_by_type("assistant", Some(h.app.windows[0].context_id))
+            .map(|(p, _)| p),
+        Some(assistant_pane)
+    );
+}
+
+/// Assistant open in window A of context X; opening from window B of the SAME
+/// context focuses the instance in window A cross-window — no second instance.
+#[test]
+fn assistant_open_focuses_existing_across_windows_of_same_context() {
+    let _channel = crate::config::set_test_channel("pr-0538");
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane(); // window 0, context 1
+    let (assistant_tile, assistant_pane) = h.app.add_app_pane_in_window(0, "assistant");
+
+    // Window B of the SAME context 1, caller side.
+    h.app.windows.push(empty_window(1, 2));
+    let _other = h.app.add_app_pane_in_window(1, "test");
+    h.app.active_window = 1;
+
+    h.app.open_assistant_pane();
+
+    assert_eq!(
+        assistant_pane_count(&h.app),
+        1,
+        "an instance in another window of the same context must satisfy the open"
+    );
+    assert_eq!(
+        h.app.active_window, 0,
+        "focus must jump to the window holding the existing instance"
+    );
+    assert_eq!(h.app.windows[0].focused_pane, Some(assistant_tile));
+    assert_eq!(
+        h.app
+            .find_app_pane_by_type("assistant", Some(1))
+            .map(|(p, _)| p),
+        Some(assistant_pane)
+    );
+}
+
+/// Assistant open in context X; opening from a window of context Y spawns a
+/// SECOND distinct instance, and each context's store persists its own
+/// conversation pointer.
+#[test]
+fn assistant_open_spawns_second_instance_in_other_context() {
+    let _channel = crate::config::set_test_channel("pr-0538");
+    // Pin the workspace root to this repo checkout by planting the channel
+    // marker dir the workspace resolver walks up to. The channel is unique to
+    // this test and the dir is git-ignored (`.plexi-pr-*/`); nothing here may
+    // ever touch $HOME.
+    let cwd = std::env::current_dir().expect("cwd");
+    let marker = cwd.join(".plexi-pr-0538");
+    std::fs::create_dir_all(&marker).expect("create channel marker dir");
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(marker);
+    let workspace_root =
+        crate::config::active_workspace_root().expect("marker dir must make cwd a workspace root");
+    assert_eq!(workspace_root, cwd, "workspace root must resolve to the repo checkout");
+
+    let mut h = HostHarness::new();
+    let (pane_a_tile, _pane_a) = h.app.add_test_pane(); // window 0, context 1
+    h.app.windows[0].focused_pane = Some(pane_a_tile);
+
+    // First open spawns in context 1.
+    h.app.open_assistant_pane();
+    assert_eq!(assistant_pane_count(&h.app), 1);
+
+    // A window of context 2, caller side.
+    h.app.windows.push(empty_window(2, 2));
+    let (pane_b_tile, _pane_b) = h.app.add_app_pane_in_window(1, "test");
+    h.app.router.push(context_b(2));
+    h.app.jump_to_context(1, 2, None);
+    h.app.windows[1].focused_pane = Some(pane_b_tile);
+
+    // Opening from context 2 must NOT focus context 1's instance — it spawns
+    // a second one in the current window.
+    h.app.open_assistant_pane();
+    assert_eq!(
+        assistant_pane_count(&h.app),
+        2,
+        "a different context must get its own assistant instance"
+    );
+    assert_eq!(h.app.active_window, 1, "no cross-context jump on spawn");
+    assert!(
+        h.app.windows[1]
+            .panes
+            .values()
+            .any(|p| p.as_app().is_some_and(|a| a.manifest_id == "assistant")),
+        "the second instance must live in the caller's window"
+    );
+
+    // Each context persisted its own conversation pointer in the store.
+    let store_ctx1 = crate::assistant::store::AssistantStore::new(&workspace_root, 1);
+    let store_ctx2 = crate::assistant::store::AssistantStore::new(&workspace_root, 2);
+    let conv1 = store_ctx1
+        .active_conversation()
+        .expect("context 1 persisted a conversation");
+    let conv2 = store_ctx2
+        .active_conversation()
+        .expect("context 2 persisted a conversation");
+    assert_ne!(
+        conv1, conv2,
+        "each context must persist (and resume) its own conversation"
+    );
+}

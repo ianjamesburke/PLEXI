@@ -137,11 +137,13 @@ pub(crate) fn restore_assistant_pane(
     workspace_root: PathBuf,
     broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker>,
     profile_dir: &std::path::Path,
+    context_id: u64,
 ) -> Pane {
     let app = Box::new(crate::assistant::AssistantApp::new(
         workspace_root.clone(),
         broker,
         profile_dir,
+        context_id,
     ));
     let runtime_id = app.type_id().to_string();
     let name = app.display_name();
@@ -1093,7 +1095,6 @@ impl PlexiApp {
             return None;
         };
         let ctx_id = self.windows[win_idx].context_id;
-        let win_id = self.windows[win_idx].window_id;
         log::info!(
             "on_launch[{scope}]: '{id}' already open at slot {slot} in context {ctx_id} (overlay_depth={overlay_depth}) — focusing instead of spawning"
         );
@@ -1104,8 +1105,19 @@ impl PlexiApp {
                  (relaunch arg delivery to a running instance is future work)"
             );
         }
-        // Pop any overlays covering the instance so a relaunch reveals it, then
-        // unhide (it may have been hidden rather than overlaid) and focus.
+        self.reveal_and_focus_instance(win_idx, slot, overlay_depth);
+        Some(slot)
+    }
+
+    /// Reveal a located app instance and focus it: pop any overlays covering
+    /// it, unhide it (it may have been hidden rather than overlaid), and jump
+    /// to its window via the sanctioned
+    /// [`jump_to_context`](Self::jump_to_context) path — never by mutating
+    /// `active_window`/`router.active` directly. Popping overlays closes every
+    /// app overlay stacked above the instance, exactly as pressing Esc that
+    /// many times would.
+    fn reveal_and_focus_instance(&mut self, win_idx: usize, slot: PaneId, overlay_depth: usize) {
+        let win_id = self.windows[win_idx].window_id;
         for _ in 0..overlay_depth {
             super::layout::restore_overlay_replacement(&mut self.windows[win_idx].panes, slot);
         }
@@ -1113,7 +1125,6 @@ impl PlexiApp {
             pane.set_hidden(false);
         }
         self.jump_to_context(win_idx, win_id, Some(slot));
-        Some(slot)
     }
 
     /// Launch an installed app by id in the focused pane.
@@ -1198,17 +1209,9 @@ impl PlexiApp {
                 crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
                 return Err("assistant is not enabled on this release channel".to_string());
             }
-            let predicted = self.host.next_pane_id();
-            self.open_assistant_pane_with_hint(layout.as_deref().unwrap_or("overlay"));
-            let pane_id = self.windows[self.active_window]
-                .panes
-                .iter()
-                .find_map(|(pane_id, pane)| {
-                    pane.as_app()
-                        .filter(|app| app.runtime.type_id() == "assistant")
-                        .map(|_| *pane_id)
-                })
-                .unwrap_or(predicted);
+            let pane_id = self
+                .open_assistant_pane_with_hint(layout.as_deref().unwrap_or("overlay"))
+                .ok_or_else(|| "assistant is not enabled on this release channel".to_string())?;
             log::info!(
                 "launch_app_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}"
             );
@@ -1509,52 +1512,44 @@ impl PlexiApp {
     /// Open (or focus) the host Assistant pane (Phase 1 of
     /// `docs/assistant-host-app.md`, reachable via Cmd+Ctrl+A and the
     /// Cmd+P palette). Opens as an overlay — it overtakes the focused pane
-    /// like every other app launch. One Assistant pane per window: if one
-    /// already exists it is focused and unhidden instead of spawning a
-    /// duplicate. Conversation state is workspace-scoped on disk, so
-    /// close-then-reopen resumes the same conversation.
+    /// like every other app launch. One Assistant pane per *context*: if one
+    /// already exists in any window of the caller's context it is revealed
+    /// and focused (cross-window) instead of spawning a duplicate.
+    /// Conversation state is persisted per context on disk, so
+    /// close-then-reopen resumes that context's conversation.
     ///
     /// Builtin exception to the manifest `[launch] on_launch` policy (#0336):
     /// the Assistant is a host builtin with its own entry point and is never
-    /// routed through `launch_app_by_id_with_layout`, so the generic resolver
-    /// does not see it. Its dedup is per *window* (not per context) and is kept
-    /// hardcoded here rather than expressed as `focus_existing_in_context`,
-    /// which would change the granularity from window to context.
+    /// routed through the registry resolver, so its dedup — matching
+    /// `focus_existing_in_context` semantics — is kept hardcoded here.
     pub(crate) fn open_assistant_pane(&mut self) {
         self.open_assistant_pane_with_hint("overlay");
     }
 
-    fn open_assistant_pane_with_hint(&mut self, hint: &str) {
+    /// Returns the pane id of the focused-or-spawned Assistant, or `None`
+    /// when the feature gate blocks the open.
+    fn open_assistant_pane_with_hint(&mut self, hint: &str) -> Option<PaneId> {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
-            return;
+            return None;
         }
-        let active = self.active_window;
-        // Focus an existing Assistant pane instead of opening a second one.
-        let existing = self.windows[active].panes.iter().find_map(|(id, pane)| {
-            pane.as_app()
-                .filter(|a| a.runtime.type_id() == "assistant")
-                .map(|_| *id)
-        });
-        if let Some(pane_id) = existing {
-            let win = &mut self.windows[active];
-            if let Some(pane) = win.panes.get_mut(&pane_id) {
-                pane.set_hidden(false);
-            }
-            let tile_id = win.tree.tiles.iter().find_map(|(tid, tile)| {
-                matches!(tile, egui_tiles::Tile::Pane(pid) if *pid == pane_id).then_some(*tid)
-            });
-            if let Some(tile_id) = tile_id {
-                win.focused_pane = Some(tile_id);
-            }
-            log::info!("assistant: focused existing pane {pane_id}");
-            return;
+        let caller_context_id = self.windows[self.active_window].context_id;
+        // Focus an existing Assistant pane anywhere in this context instead
+        // of opening a second one.
+        if let Some((win_idx, slot, overlay_depth)) =
+            self.locate_app_instance("assistant", Some(caller_context_id))
+        {
+            log::info!(
+                "assistant: focusing existing instance at pane {slot} in context {caller_context_id}"
+            );
+            self.reveal_and_focus_instance(win_idx, slot, overlay_depth);
+            return Some(slot);
         }
 
         let workspace_root = crate::config::active_workspace_root()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         log::info!(
-            "assistant: opening pane for workspace {}",
+            "assistant: opening pane for workspace {} in context {caller_context_id}",
             workspace_root.display()
         );
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
@@ -1564,9 +1559,12 @@ impl PlexiApp {
             workspace_root.clone(),
             broker,
             &crate::config::config_dir(),
+            caller_context_id,
         ));
         let perms = crate::app::permissions::AppPermissions::builtin();
+        let predicted = self.host.next_pane_id();
         self.open_builtin_app_pane(app, perms, workspace_root, None, Some(hint), None);
+        Some(predicted)
     }
 
     /// Create a new scratch note in `notes/inbox/` and open it in a text-editor

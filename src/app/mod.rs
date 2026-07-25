@@ -1148,6 +1148,7 @@ impl PlexiApp {
                                 app_cwd.clone(),
                                 broker,
                                 &crate::config::config_dir(),
+                                saved_win.context_id,
                             ));
                         }
                         if pane_entry.is_none() && app_type == "assistant" {
