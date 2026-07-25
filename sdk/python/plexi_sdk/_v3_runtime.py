@@ -27,15 +27,29 @@ from plexi_sdk._v3_state import StateSnapshot
 
 
 _LOCK = threading.Lock()
-_EMIT_BATCH: list[dict] | None = None
+_EMIT_BATCH: list[str] | None = None
+
+#: Protocol output carries no human reader, so the default `", "` / `": "`
+#: separators are pure wire weight on every key of every frame.
+_JSON_SEPARATORS = (",", ":")
+
+
+def _dump_line(obj: dict) -> str:
+    """Serialise one protocol message to its exact wire line."""
+    return json.dumps(obj, separators=_JSON_SEPARATORS) + "\n"
 
 
 def _emit(obj: dict) -> None:
+    _emit_line(_dump_line(obj))
+
+
+def _emit_line(line: str) -> None:
+    """Write an already-serialised protocol line, or queue it in the batch."""
     with _LOCK:
         if _EMIT_BATCH is not None:
-            _EMIT_BATCH.append(obj)
+            _EMIT_BATCH.append(line)
             return
-        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.write(line)
         sys.stdout.flush()
 
 
@@ -54,7 +68,7 @@ def _finish_emit_batch() -> None:
         _EMIT_BATCH = None
         if not batch:
             return
-        sys.stdout.write("".join(json.dumps(obj) + "\n" for obj in batch))
+        sys.stdout.write("".join(batch))
         sys.stdout.flush()
 
 
@@ -349,29 +363,41 @@ class V3AppRuntime:
         the host never has to guess what a patch applies to. Relies on the
         documented `view()` purity contract: nodes are rebuilt every frame,
         never cached and mutated in place across frames.
+
+        A delta is only a win when it is actually smaller than the frame it
+        replaces. On a full-motion canvas, where every command changes every
+        frame, each changed command is re-sent wrapped in its own index — so
+        the delta comes out slightly *larger* than the full frame. Both
+        encodings are already supported by the host decoder, so the smaller of
+        the two wins on a per-frame basis rather than by assumption.
         """
         prev = self._last_tree
         self._last_tree = encoded
         nodes = encoded["nodes"]
         force_full = self._force_full_tree
         self._force_full_tree = False
+        full = {"type": "component_tree", "frame_id": frame_id, "tree": encoded}
         if (
             force_full
             or prev is None
             or encoded["root"] != prev["root"]
             or len(nodes) != len(prev["nodes"])
         ):
-            _emit({"type": "component_tree", "frame_id": frame_id, "tree": encoded})
+            _emit(full)
             return
         changed: list[dict] = []
         for node, old in zip(nodes, prev["nodes"]):
             if node == old:
                 continue
             if node["key"] != old["key"]:
-                _emit({"type": "component_tree", "frame_id": frame_id, "tree": encoded})
+                _emit(full)
                 return
             changed.append(_node_patch(node, old))
-        _emit({"type": "tree_delta", "frame_id": frame_id, "changed": changed})
+        delta_line = _dump_line(
+            {"type": "tree_delta", "frame_id": frame_id, "changed": changed}
+        )
+        full_line = _dump_line(full)
+        _emit_line(delta_line if len(delta_line) < len(full_line) else full_line)
 
     def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))

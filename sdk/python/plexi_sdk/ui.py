@@ -963,6 +963,27 @@ class Divider(Component):
         return {"type": "divider"}
 
 
+#: Canvas wire policy: geometry is emitted rounded to this many decimal places.
+#:
+#: Canvas coordinates are pixel-scale units — a canvas declares its logical
+#: width/height in the same order of magnitude as the pane it draws into, and
+#: the host scales that space to the pane rect. A hundredth of a logical unit is
+#: therefore a hundredth of a pixel at ``fit="fill"`` (scale ~1), and still far
+#: below one device pixel for a ``fit="contain"`` canvas magnified onto a large
+#: pane. Full float precision on the wire buys nothing visible and costs bytes
+#: on every coordinate of every command at the app's full frame rate.
+#:
+#: This policy assumes a pixel-scale coordinate space. A normalised (0..1)
+#: canvas space, where one logical unit spans the whole pane, would quantise
+#: visibly at this precision and is not supported.
+CANVAS_WIRE_DECIMALS = 2
+
+
+def _wire(value: float) -> float:
+    """Round one canvas geometry value to the wire precision policy."""
+    return round(float(value), CANVAS_WIRE_DECIMALS)
+
+
 @dataclass
 class CanvasRect:
     x: float
@@ -973,9 +994,9 @@ class CanvasRect:
     radius: float = 0.0
 
     def to_command(self) -> dict:
-        return {"type": "rect", "x": self.x, "y": self.y,
-                "w": self.width, "h": self.height,
-                "fill": self.fill, "radius": self.radius}
+        return {"type": "rect", "x": _wire(self.x), "y": _wire(self.y),
+                "w": _wire(self.width), "h": _wire(self.height),
+                "fill": self.fill, "radius": _wire(self.radius)}
 
 
 @dataclass
@@ -986,8 +1007,8 @@ class CanvasCircle:
     fill: str
 
     def to_command(self) -> dict:
-        return {"type": "circle", "cx": self.x, "cy": self.y,
-                "r": self.radius, "fill": self.fill}
+        return {"type": "circle", "cx": _wire(self.x), "cy": _wire(self.y),
+                "r": _wire(self.radius), "fill": self.fill}
 
 
 @dataclass
@@ -1000,9 +1021,9 @@ class CanvasLine:
     width: float = 1.0
 
     def to_command(self) -> dict:
-        return {"type": "line", "x1": self.x1, "y1": self.y1,
-                "x2": self.x2, "y2": self.y2,
-                "color": self.color, "width": self.width}
+        return {"type": "line", "x1": _wire(self.x1), "y1": _wire(self.y1),
+                "x2": _wire(self.x2), "y2": _wire(self.y2),
+                "color": self.color, "width": _wire(self.width)}
 
 
 @dataclass
@@ -1016,8 +1037,8 @@ class CanvasText:
     align: str = "left_top"
 
     def to_command(self) -> dict:
-        return {"type": "text", "x": self.x, "y": self.y,
-                "text": self.text, "size": self.size,
+        return {"type": "text", "x": _wire(self.x), "y": _wire(self.y),
+                "text": self.text, "size": _wire(self.size),
                 "color": self.color, "bold": self.bold,
                 "align": self.align, "monospace": False,
                 "max_width": None, "elide": True, "selectable": False}
