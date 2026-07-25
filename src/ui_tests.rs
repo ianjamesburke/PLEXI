@@ -70,6 +70,7 @@ fn assistant_harness_factory(
         workspace_root.to_path_buf(),
         broker,
         workspace_root,
+        1,
     ))
 }
 
@@ -459,10 +460,18 @@ impl PlexiUiHarness {
     pub fn open_assistant(&mut self, workspace_root: std::path::PathBuf) {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        // Scope the store to the active window's context — same as the
+        // production open path.
+        let context_id =
+            self.with_app_mut(|app| app.windows[app.active_window].context_id);
         // Grants/audit also stay inside the temp workspace, never the real
         // channel profile dir.
-        let assistant =
-            crate::assistant::AssistantApp::new(workspace_root.clone(), broker, &workspace_root);
+        let assistant = crate::assistant::AssistantApp::new(
+            workspace_root.clone(),
+            broker,
+            &workspace_root,
+            context_id,
+        );
         self.open_assistant_built(assistant, workspace_root);
     }
 
@@ -1426,7 +1435,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -1499,7 +1508,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![Turn {
             role: TurnRole::User,
             text: "build me a tictactoe app".to_string(),
@@ -1530,7 +1539,7 @@ mod tests {
         let broker2: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant2 =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker2, ws.path());
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker2, ws.path(), 1);
         assistant2.model.streaming.in_flight = true;
         assistant2.model.streaming.partial_answer =
             "The SDK uses state.get() from plexi_sdk. Let me fix all the issues.".to_string();
@@ -1562,7 +1571,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
 
         let mut write_tool = Turn::tool("host.files.write", ToolStatus::Succeeded);
         write_tool.input_summary = Some("path: main.py".to_string());
@@ -1633,7 +1642,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -1753,7 +1762,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant
             .model
             .permission_requested("csv.write_range", r#"{"range": "A1:B2"}"#);
@@ -1798,7 +1807,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         let turn = |role, text: &str| crate::assistant::model::Turn {
             role,
             text: text.to_string(),

@@ -181,10 +181,14 @@ impl HostHarness {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
         let workspace_root = self._workspace_dir.path().to_path_buf();
+        // The pane is inserted into windows[0] below — scope the store to
+        // that window's context.
+        let context_id = self.app.windows[0].context_id;
         let assistant = crate::assistant::AssistantApp::new(
             workspace_root.clone(),
             Arc::new(InertBroker),
             &crate::config::config_dir(),
+            context_id,
         );
         let app_pane = AppPane {
             pip_status: None,

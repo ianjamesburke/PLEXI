@@ -559,7 +559,7 @@ impl AssistantHarness {
             skills: Mutex::new(probes),
             agent_id: Mutex::new("default".to_string()),
         });
-        let mut app = AssistantApp::new(workspace.clone(), broker.clone(), &profile);
+        let mut app = AssistantApp::new(workspace.clone(), broker.clone(), &profile, 1);
         if let Some((agent_id, _, _)) = route {
             app.model.active_agent_id = agent_id.to_string();
         }

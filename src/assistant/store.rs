@@ -4,9 +4,19 @@
 //!
 //! ```text
 //! <workspace>/<workspace_channel_dir>/assistant/
-//!   state.toml                     — active_conversation = "<id>"
+//!   state.toml                     — show_thoughts (global UI pref) plus
+//!                                    [contexts.<context_id>] tables, each with
+//!                                    active_conversation = "<id>" and the
+//!                                    per-context session/agent/effort/in-flight
+//!                                    state
 //!   conversations/<id>.jsonl       — one serialized `Turn` per line
 //! ```
+//!
+//! Conversation state is keyed per host *context* (`Window.context_id`): each
+//! context owns its own active conversation pointer, while transcripts on disk
+//! are shared workspace-wide. A conversation claims its owning context the
+//! first time a context activates it (`ConversationHistory::context_id`);
+//! untagged legacy conversations stay visible to every context until claimed.
 //!
 //! JSON lines with tolerant line-by-line reads (a corrupt line is logged and
 //! skipped, never fatal). Each save rewrites the whole transcript: turns can
@@ -21,12 +31,21 @@ use crate::plexi_ai::broker::ReasoningEffort;
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct StateToml {
+    /// `/thoughts` toggle: show reasoning sections in the transcript.
+    /// Global UI preference — shared by every context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    show_thoughts: Option<bool>,
+    /// Per-context conversation state, keyed by `context_id` rendered as a
+    /// string (TOML table keys are strings).
+    #[serde(default)]
+    contexts: std::collections::BTreeMap<String, ContextStateToml>,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct ContextStateToml {
     active_conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_name: Option<String>,
-    /// `/thoughts` toggle: show reasoning sections in the transcript.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    show_thoughts: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     active_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,6 +82,10 @@ pub struct CompactionMetadata {
 pub struct ConversationHistory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The context that owns this conversation. `None` = untagged legacy
+    /// conversation, visible to every context until one activates (claims) it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<u64>,
     #[serde(default)]
     pub updated_at: String,
     #[serde(default)]
@@ -73,19 +96,27 @@ pub struct ConversationHistory {
     pub interruptions: Vec<String>,
 }
 
-/// Handle to the on-disk Assistant store for one workspace.
+/// Handle to the on-disk Assistant store for one workspace, scoped to one
+/// host context: conversation-pointer state reads and writes go to this
+/// context's entry in `state.toml`.
 pub struct AssistantStore {
     dir: PathBuf,
+    context_id: u64,
 }
 
 impl AssistantStore {
-    /// Store rooted in the workspace's channel dir.
-    pub fn new(workspace_root: &Path) -> Self {
+    /// Store rooted in the workspace's channel dir, scoped to `context_id`.
+    pub fn new(workspace_root: &Path, context_id: u64) -> Self {
         Self {
             dir: workspace_root
                 .join(crate::config::workspace_channel_dir())
                 .join("assistant"),
+            context_id,
         }
+    }
+
+    fn context_key(&self) -> String {
+        self.context_id.to_string()
     }
 
     fn state_path(&self) -> PathBuf {
@@ -153,13 +184,21 @@ impl AssistantStore {
         Self::atomic_write(&self.state_path(), raw.as_bytes())
     }
 
-    /// The persisted active conversation id, if any.
-    pub fn active_conversation(&self) -> Option<String> {
-        Some(self.read_state()?.active_conversation)
+    /// Read this store's context entry, if any.
+    fn read_context_state(&self) -> Option<ContextStateToml> {
+        self.read_state()?.contexts.remove(&self.context_key())
     }
 
-    /// Persist `id` as the active conversation, along with an optional
-    /// session name. Other persisted preferences are preserved.
+    /// The persisted active conversation id for this context, if any.
+    pub fn active_conversation(&self) -> Option<String> {
+        Some(self.read_context_state()?.active_conversation)
+    }
+
+    /// Persist `id` as this context's active conversation, along with an
+    /// optional session name. Other persisted preferences (and other
+    /// contexts' entries) are preserved. The conversation's history is
+    /// stamped with this context id — claim-on-activate: an untagged legacy
+    /// conversation becomes owned by the context that activates it.
     pub fn set_active_conversation(
         &self,
         id: &str,
@@ -168,28 +207,30 @@ impl AssistantStore {
         effort_override: Option<ReasoningEffort>,
     ) -> Result<(), String> {
         let mut state = self.read_state().unwrap_or_default();
-        state.active_conversation = id.to_string();
-        state.session_name = session_name.map(str::to_string);
-        state.active_agent_id = Some(active_agent_id.to_string());
-        state.effort_override = effort_override;
+        let entry = state.contexts.entry(self.context_key()).or_default();
+        entry.active_conversation = id.to_string();
+        entry.session_name = session_name.map(str::to_string);
+        entry.active_agent_id = Some(active_agent_id.to_string());
+        entry.effort_override = effort_override;
         self.write_state(&state)?;
         let mut history = self.load_history(id)?;
         history.name = session_name.map(str::to_string);
+        history.context_id = Some(self.context_id);
         history.updated_at = crate::host::event_log::now_timestamp();
         self.write_history(id, &history)
     }
 
-    /// The persisted session name for the active conversation, if any.
+    /// The persisted session name for this context's active conversation.
     pub fn active_session_name(&self) -> Option<String> {
-        self.read_state()?.session_name
+        self.read_context_state()?.session_name
     }
 
     pub fn active_agent_id(&self) -> Option<String> {
-        self.read_state()?.active_agent_id
+        self.read_context_state()?.active_agent_id
     }
 
     pub fn effort_override(&self) -> Option<ReasoningEffort> {
-        self.read_state()?.effort_override
+        self.read_context_state()?.effort_override
     }
 
     /// The persisted `/thoughts` toggle. Default: hidden.
@@ -208,14 +249,22 @@ impl AssistantStore {
 
     pub fn set_turn_in_flight(&self, in_flight: bool) -> Result<(), String> {
         let mut state = self.read_state().unwrap_or_default();
-        state.turn_in_flight = in_flight;
+        state
+            .contexts
+            .entry(self.context_key())
+            .or_default()
+            .turn_in_flight = in_flight;
         self.write_state(&state)
     }
 
-    /// Clear a persisted in-flight marker and record that restart interrupted it.
+    /// Clear this context's persisted in-flight marker and record that
+    /// restart interrupted it.
     pub fn recover_interrupted_turn(&self, conversation_id: &str) -> Result<bool, String> {
         let mut state = self.read_state().unwrap_or_default();
-        if !state.turn_in_flight || state.active_conversation != conversation_id {
+        let Some(entry) = state.contexts.get_mut(&self.context_key()) else {
+            return Ok(false);
+        };
+        if !entry.turn_in_flight || entry.active_conversation != conversation_id {
             return Ok(false);
         }
         let mut history = self.load_history(conversation_id)?;
@@ -223,7 +272,7 @@ impl AssistantStore {
             .interruptions
             .push(crate::host::event_log::now_timestamp());
         self.write_history(conversation_id, &history)?;
-        state.turn_in_flight = false;
+        entry.turn_in_flight = false;
         self.write_state(&state)?;
         Ok(true)
     }
@@ -274,6 +323,9 @@ impl AssistantStore {
         turns
     }
 
+    /// List conversations visible to this context: those claimed by this
+    /// context plus untagged legacy ones (visible everywhere until a context
+    /// activates them). The `active` marker is this context's pointer.
     pub fn list_conversations(&self) -> Result<Vec<ConversationSummary>, String> {
         let active = self.active_conversation();
         let dir = self.dir.join("conversations");
@@ -299,6 +351,12 @@ impl AssistantStore {
                 .map(|turn| turn.text.chars().take(60).collect())
                 .unwrap_or_else(|| "Untitled conversation".to_string());
             let history = self.load_history(id)?;
+            if history
+                .context_id
+                .is_some_and(|owner| owner != self.context_id)
+            {
+                continue;
+            }
             items.push(ConversationSummary {
                 id: id.to_string(),
                 title: history.name.unwrap_or(title),
@@ -440,7 +498,7 @@ mod tests {
     #[test]
     fn round_trip_resumes_the_same_conversation() {
         let ws = tempfile::tempdir().unwrap();
-        let store = AssistantStore::new(ws.path());
+        let store = AssistantStore::new(ws.path(), 1);
         assert_eq!(store.active_conversation(), None);
 
         let id = "conv-test-1";
@@ -458,7 +516,7 @@ mod tests {
             .unwrap();
 
         // A fresh store handle (same workspace) resumes the same state.
-        let reopened = AssistantStore::new(ws.path());
+        let reopened = AssistantStore::new(ws.path(), 1);
         assert_eq!(reopened.active_conversation().as_deref(), Some(id));
         let turns = reopened.load_turns(id);
         assert_eq!(turns.len(), 2);
@@ -479,7 +537,7 @@ mod tests {
     #[test]
     fn store_path_is_channel_aware() {
         let ws = tempfile::tempdir().unwrap();
-        let store = AssistantStore::new(ws.path());
+        let store = AssistantStore::new(ws.path(), 1);
         store
             .set_active_conversation("c1", None, "default", None)
             .unwrap();
@@ -494,7 +552,7 @@ mod tests {
     #[test]
     fn show_thoughts_round_trips_and_survives_conversation_switch() {
         let ws = tempfile::tempdir().unwrap();
-        let store = AssistantStore::new(ws.path());
+        let store = AssistantStore::new(ws.path(), 1);
         assert!(!store.show_thoughts(), "default is hidden");
 
         store.set_show_thoughts(true).unwrap();
@@ -516,7 +574,7 @@ mod tests {
     #[test]
     fn missing_conversation_loads_empty_and_corrupt_lines_are_skipped() {
         let ws = tempfile::tempdir().unwrap();
-        let store = AssistantStore::new(ws.path());
+        let store = AssistantStore::new(ws.path(), 1);
         assert!(store.load_turns("nope").is_empty());
 
         let id = "conv-corrupt";
@@ -548,7 +606,7 @@ mod tests {
     #[test]
     fn lists_multiple_conversations_with_active_marker() {
         let ws = tempfile::tempdir().unwrap();
-        let store = AssistantStore::new(ws.path());
+        let store = AssistantStore::new(ws.path(), 1);
         store
             .write_turns("older", &[Turn::now(TurnRole::User, "first topic")])
             .unwrap();
@@ -572,7 +630,7 @@ mod tests {
     #[test]
     fn checkpoint_preserves_raw_turns_and_history_metadata() {
         let ws = tempfile::tempdir().unwrap();
-        let store = AssistantStore::new(ws.path());
+        let store = AssistantStore::new(ws.path(), 1);
         let turns = vec![
             Turn::now(TurnRole::User, "one"),
             Turn::now(TurnRole::Assistant, "two"),
@@ -590,9 +648,87 @@ mod tests {
     }
 
     #[test]
+    fn contexts_keep_separate_active_conversation_and_in_flight_state() {
+        let ws = tempfile::tempdir().unwrap();
+        let ctx_a = AssistantStore::new(ws.path(), 1);
+        let ctx_b = AssistantStore::new(ws.path(), 2);
+
+        ctx_a
+            .set_active_conversation("conv-a", Some("alpha"), "default", None)
+            .unwrap();
+        ctx_b
+            .set_active_conversation("conv-b", None, "default", None)
+            .unwrap();
+        ctx_a.set_turn_in_flight(true).unwrap();
+
+        // Each context's pointer is independent.
+        assert_eq!(ctx_a.active_conversation().as_deref(), Some("conv-a"));
+        assert_eq!(ctx_b.active_conversation().as_deref(), Some("conv-b"));
+        assert_eq!(ctx_a.active_session_name().as_deref(), Some("alpha"));
+        assert_eq!(ctx_b.active_session_name(), None);
+
+        // Context A's in-flight marker never bleeds into context B.
+        assert!(ctx_a.recover_interrupted_turn("conv-a").unwrap());
+        assert!(!ctx_b.recover_interrupted_turn("conv-b").unwrap());
+
+        // A reopened store per context resumes its own conversation id.
+        let reopened_a = AssistantStore::new(ws.path(), 1);
+        let reopened_b = AssistantStore::new(ws.path(), 2);
+        assert_eq!(reopened_a.active_conversation().as_deref(), Some("conv-a"));
+        assert_eq!(reopened_b.active_conversation().as_deref(), Some("conv-b"));
+    }
+
+    #[test]
+    fn list_conversations_scopes_by_context_and_claims_legacy_on_activate() {
+        let ws = tempfile::tempdir().unwrap();
+        let ctx_a = AssistantStore::new(ws.path(), 1);
+        let ctx_b = AssistantStore::new(ws.path(), 2);
+
+        // `claimed-b` is activated (claimed) by context B; `legacy` only has a
+        // transcript, no history tag — visible everywhere until claimed.
+        ctx_b
+            .write_turns("claimed-b", &[Turn::now(TurnRole::User, "b topic")])
+            .unwrap();
+        ctx_b
+            .set_active_conversation("claimed-b", None, "default", None)
+            .unwrap();
+        ctx_a
+            .write_turns("legacy", &[Turn::now(TurnRole::User, "old topic")])
+            .unwrap();
+
+        let a_list = ctx_a.list_conversations().unwrap();
+        assert!(
+            a_list.iter().all(|item| item.id != "claimed-b"),
+            "context A must not list a conversation claimed by context B"
+        );
+        assert!(a_list.iter().any(|item| item.id == "legacy"));
+        let b_list = ctx_b.list_conversations().unwrap();
+        assert!(b_list.iter().any(|item| item.id == "claimed-b"));
+        assert!(
+            b_list.iter().any(|item| item.id == "legacy"),
+            "untagged legacy conversations are visible to every context"
+        );
+
+        // Context A activates the legacy conversation → claimed by A, gone
+        // from context B's list.
+        ctx_a
+            .set_active_conversation("legacy", None, "default", None)
+            .unwrap();
+        let a_list = ctx_a.list_conversations().unwrap();
+        assert!(a_list
+            .iter()
+            .any(|item| item.id == "legacy" && item.active));
+        let b_list = ctx_b.list_conversations().unwrap();
+        assert!(
+            b_list.iter().all(|item| item.id != "legacy"),
+            "a claimed conversation disappears from other contexts' lists"
+        );
+    }
+
+    #[test]
     fn export_contains_transcript_and_audit_material() {
         let ws = tempfile::tempdir().unwrap();
-        let store = AssistantStore::new(ws.path());
+        let store = AssistantStore::new(ws.path(), 1);
         let turns = vec![Turn::now(TurnRole::User, "hello")];
         let path = store
             .export_conversation("conv", &turns, "{\"kind\":\"tool_call\"}\n")
