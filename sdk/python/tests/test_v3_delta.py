@@ -334,6 +334,71 @@ class TestWireFraming:
         finally:
             proc.kill()
 
+    def test_full_frame_preference_persists_between_measures(self, tmp_path):
+        # The full-vs-delta size compare is measured, then remembered: once a
+        # full-motion canvas picks the full frame, following frames ride that
+        # verdict without re-serialising both encodings.
+        app = tmp_path / "a.py"
+        app.write_text(FULL_MOTION_APP)
+        proc = _spawn(app)
+        try:
+            _init(proc)
+            _render(proc, 1)
+            for frame_id in (2, 3, 4):
+                _key(proc)
+                events = _render(proc, frame_id)
+                assert _only(events, "component_tree"), (frame_id, events)
+                assert not _only(events, "tree_delta"), (frame_id, events)
+        finally:
+            proc.kill()
+
+    def test_steady_state_delta_frames_serialise_at_most_once(self, monkeypatch):
+        # Regression guard for the guest_fps hit found on the balls exemplar:
+        # serialising the frame both ways on every delta frame doubled the
+        # dominant per-frame guest cost. Between measure frames, each frame
+        # serialises at most one encoding.
+        from plexi_sdk import _v3_runtime as rt
+
+        runtime = rt.V3AppRuntime.__new__(rt.V3AppRuntime)
+        runtime._last_tree = None
+        runtime._force_full_tree = True
+        runtime._prefer_full_tree = False
+        runtime._tree_size_check_in = 0
+
+        real_dump = rt._dump_line
+        dump_calls: list[dict] = []
+
+        def counting_dump(obj: dict) -> str:
+            dump_calls.append(obj)
+            return real_dump(obj)
+
+        monkeypatch.setattr(rt, "_dump_line", counting_dump)
+        emitted: list[str] = []
+        monkeypatch.setattr(rt, "_emit", lambda obj: emitted.append(real_dump(obj)))
+        monkeypatch.setattr(rt, "_emit_line", emitted.append)
+
+        def tree(t: float) -> dict:
+            return {
+                "root": 0,
+                "nodes": [{
+                    "id": 0, "key": "c",
+                    "data": {"type": "canvas", "commands": [
+                        {"type": "circle", "cx": i * 7.0 + t, "cy": 1.0,
+                         "r": 2.0, "fill": "#fff"}
+                        for i in range(4)
+                    ]},
+                }],
+            }
+
+        runtime._emit_tree(1, tree(0.0))  # first frame: full
+        runtime._emit_tree(2, tree(1.0))  # first delta-eligible frame: measures
+        dump_calls.clear()
+        steady_frames = 10
+        for frame_id in range(3, 3 + steady_frames):
+            runtime._emit_tree(frame_id, tree(float(frame_id)))
+        assert len(emitted) == 2 + steady_frames
+        assert len(dump_calls) <= steady_frames, len(dump_calls)
+
     def test_structural_change_forces_full_tree(self, tmp_path):
         app = tmp_path / "a.py"
         app.write_text(STRUCTURAL_APP)

@@ -33,6 +33,16 @@ _EMIT_BATCH: list[str] | None = None
 #: separators are pure wire weight on every key of every frame.
 _JSON_SEPARATORS = (",", ":")
 
+#: How many delta-eligible frames ride a previously measured full-vs-delta
+#: verdict before it is re-measured. Measuring means serialising the frame
+#: both ways, which costs more guest CPU than the byte difference it can
+#: recover — on a full-motion canvas the double serialisation alone measurably
+#: lowered achievable guest_fps. The winner is a property of the app's frame
+#: shape, not of any single frame, so it is stable between structural changes;
+#: every full frame resets the countdown so the first delta-eligible frame
+#: after one always re-measures.
+_TREE_SIZE_CHECK_INTERVAL = 30
+
 
 def _dump_line(obj: dict) -> str:
     """Serialise one protocol message to its exact wire line."""
@@ -99,6 +109,8 @@ class V3AppRuntime:
         self._last_render_time: float | None = None
         self._last_tree: dict | None = None
         self._force_full_tree = True
+        self._prefer_full_tree = False
+        self._tree_size_check_in = 0
         self._frame_id = 0
         self._app_id = ""
         self._workspace_root = ""
@@ -367,9 +379,12 @@ class V3AppRuntime:
         A delta is only a win when it is actually smaller than the frame it
         replaces. On a full-motion canvas, where every command changes every
         frame, each changed command is re-sent wrapped in its own index — so
-        the delta comes out slightly *larger* than the full frame. Both
+        the delta can come out slightly *larger* than the full frame. Both
         encodings are already supported by the host decoder, so the smaller of
-        the two wins on a per-frame basis rather than by assumption.
+        the two wins — measured by serialising both on the first delta-eligible
+        frame after any full frame and every `_TREE_SIZE_CHECK_INTERVAL` frames
+        after, and remembered in between (see the interval's docstring for why
+        measuring every frame is not affordable).
         """
         prev = self._last_tree
         self._last_tree = encoded
@@ -383,6 +398,12 @@ class V3AppRuntime:
             or encoded["root"] != prev["root"]
             or len(nodes) != len(prev["nodes"])
         ):
+            self._tree_size_check_in = 0
+            _emit(full)
+            return
+        measure = self._tree_size_check_in <= 0
+        if self._prefer_full_tree and not measure:
+            self._tree_size_check_in -= 1
             _emit(full)
             return
         changed: list[dict] = []
@@ -390,14 +411,21 @@ class V3AppRuntime:
             if node == old:
                 continue
             if node["key"] != old["key"]:
+                self._tree_size_check_in = 0
                 _emit(full)
                 return
             changed.append(_node_patch(node, old))
         delta_line = _dump_line(
             {"type": "tree_delta", "frame_id": frame_id, "changed": changed}
         )
-        full_line = _dump_line(full)
-        _emit_line(delta_line if len(delta_line) < len(full_line) else full_line)
+        if measure:
+            full_line = _dump_line(full)
+            self._prefer_full_tree = len(full_line) <= len(delta_line)
+            self._tree_size_check_in = _TREE_SIZE_CHECK_INTERVAL
+            _emit_line(full_line if self._prefer_full_tree else delta_line)
+            return
+        self._tree_size_check_in -= 1
+        _emit_line(delta_line)
 
     def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))
