@@ -9,6 +9,12 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+/// Cadence bounds an app can steer the host to. Matched to the CPython path's
+/// `fps.clamp(1, 240)` so neither runtime lets a guest declare a rate the host
+/// would pay an unbounded repaint cost to honour.
+pub const MIN_TARGET_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 240);
+pub const MAX_TARGET_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Result of advancing the clock by one repaint: how many fixed sim steps the
 /// guest should run, and how many were dropped because the host fell too far
 /// behind to catch up.
@@ -23,6 +29,7 @@ pub struct FrameStep {
 /// anything still owed past that bound is dropped, not deferred.
 pub struct FrameClock {
     target_interval: Duration,
+    default_interval: Duration,
     max_catch_up: u32,
     accumulator: Duration,
     last: Option<Instant>,
@@ -30,10 +37,14 @@ pub struct FrameClock {
 
 impl FrameClock {
     /// Build a clock targeting `target_hz` frames per second (clamped to ≥1).
+    /// That rate is also the fallback [`retarget`](Self::retarget) restores when
+    /// an app declares no cadence of its own.
     pub fn new(target_hz: u32) -> Self {
         let hz = target_hz.max(1);
+        let interval = Duration::from_secs_f64(1.0 / hz as f64);
         FrameClock {
-            target_interval: Duration::from_secs_f64(1.0 / hz as f64),
+            target_interval: interval,
+            default_interval: interval,
             max_catch_up: 5,
             accumulator: Duration::ZERO,
             last: None,
@@ -44,6 +55,25 @@ impl FrameClock {
     /// `request_repaint_after`.
     pub fn target_interval(&self) -> Duration {
         self.target_interval
+    }
+
+    /// Retarget the clock at the cadence the app declared for itself, clamped to
+    /// [`MIN_TARGET_INTERVAL`]..=[`MAX_TARGET_INTERVAL`] — an app steers the
+    /// host's repaint rate here, so it never gets to name an arbitrary one.
+    /// `None` means the app declares nothing (or stopped declaring), which
+    /// restores the construction-time default rather than stranding the pane on
+    /// a cadence its app no longer asks for. Idempotent when unchanged; a real
+    /// change discards the partial accumulator, which is debt measured against
+    /// the old interval and meaningless against the new one.
+    pub fn retarget(&mut self, declared: Option<Duration>) {
+        let interval = declared
+            .unwrap_or(self.default_interval)
+            .clamp(MIN_TARGET_INTERVAL, MAX_TARGET_INTERVAL);
+        if interval == self.target_interval {
+            return;
+        }
+        self.target_interval = interval;
+        self.accumulator = Duration::ZERO;
     }
 
     /// Advance to wall-clock `now`, returning how many fixed sim steps to run.
@@ -64,13 +94,26 @@ impl FrameClock {
             self.accumulator -= self.target_interval;
             steps += 1;
         }
-        let mut dropped = 0u32;
-        while self.accumulator >= self.target_interval {
-            self.accumulator -= self.target_interval;
-            dropped += 1;
-        }
+        // Whatever is still owed past the bound is dropped in one arithmetic
+        // step — a multi-minute stall must not cost an iteration per missed
+        // frame just to discard them.
+        let owed = self.accumulator.as_nanos() / self.target_interval.as_nanos();
+        let dropped = u32::try_from(owed).unwrap_or(u32::MAX);
+        self.accumulator -= self.target_interval * dropped;
         FrameStep { steps, dropped }
     }
+}
+
+/// Delay to hand `request_repaint_after` so the repaint actually lands on
+/// `deadline`.
+///
+/// egui starts a repaint one predicted frame *before* the requested delay, so
+/// passing a bare 16.7 ms interval at 60 Hz collapses into an immediate,
+/// unbounded host repaint loop. Adding the estimate back is the fix; both the
+/// native surface path and the CPython-WASM path schedule through here so the
+/// two cannot drift apart.
+pub fn repaint_delay_until(deadline: Instant, now: Instant, predicted_frame: Duration) -> Duration {
+    deadline.saturating_duration_since(now) + predicted_frame
 }
 
 /// Rolling wall-clock telemetry for a surface pane. Fixed-size windows keep the
@@ -199,6 +242,100 @@ mod tests {
         let step = clock.advance(t0 + dt * 20);
         assert_eq!(step.steps, 5);
         assert_eq!(step.dropped, 15);
+    }
+
+    #[test]
+    fn retargeting_paces_at_the_declared_rate() {
+        let mut clock = FrameClock::new(60);
+        clock.retarget(Some(Duration::from_millis(50)));
+        assert_eq!(clock.target_interval(), Duration::from_millis(50));
+
+        // One step per frame at the *new* cadence, not the constructed 60 Hz.
+        let dt = clock.target_interval();
+        let mut t = Instant::now();
+        clock.advance(t);
+        for _ in 0..10 {
+            t += dt;
+            assert_eq!(
+                clock.advance(t),
+                FrameStep {
+                    steps: 1,
+                    dropped: 0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn retargeting_drops_accumulator_owed_against_the_old_interval() {
+        let mut clock = FrameClock::new(60);
+        let t0 = Instant::now();
+        clock.advance(t0);
+        // Bank most of a 60 Hz frame, then retarget: that debt is measured in
+        // the old grid and must not leak into the new one.
+        clock.advance(t0 + Duration::from_micros(16_000));
+        clock.retarget(Some(Duration::from_millis(100)));
+        let step = clock.advance(t0 + Duration::from_micros(16_000) + Duration::from_millis(99));
+        assert_eq!(
+            step,
+            FrameStep {
+                steps: 0,
+                dropped: 0
+            }
+        );
+    }
+
+    #[test]
+    fn retargeting_clamps_what_an_app_can_ask_the_host_to_repaint_at() {
+        let mut clock = FrameClock::new(60);
+        clock.retarget(Some(Duration::from_micros(100)));
+        assert_eq!(clock.target_interval(), MIN_TARGET_INTERVAL);
+        clock.retarget(Some(Duration::from_secs(600)));
+        assert_eq!(clock.target_interval(), MAX_TARGET_INTERVAL);
+    }
+
+    #[test]
+    fn retargeting_with_no_declaration_restores_the_default() {
+        let mut clock = FrameClock::new(60);
+        let default = clock.target_interval();
+        clock.retarget(Some(Duration::from_millis(500)));
+        assert_eq!(clock.target_interval(), Duration::from_millis(500));
+        // The app stopped declaring a cadence (cancelled its frame timer): the
+        // pane returns to the host default, it does not strand on 500 ms.
+        clock.retarget(None);
+        assert_eq!(clock.target_interval(), default);
+    }
+
+    #[test]
+    fn retargeting_to_the_same_interval_is_inert() {
+        let mut clock = FrameClock::new(20);
+        let t0 = Instant::now();
+        clock.advance(t0);
+        clock.advance(t0 + Duration::from_millis(49));
+        clock.retarget(Some(Duration::from_millis(50)));
+        // The banked 49 ms survives, so 1 ms more is a full step.
+        let step = clock.advance(t0 + Duration::from_millis(50));
+        assert_eq!(step.steps, 1);
+    }
+
+    #[test]
+    fn repaint_delay_compensates_for_egui_predicted_frame_subtraction() {
+        let now = Instant::now();
+        let interval = Duration::from_nanos(16_666_666);
+        assert_eq!(
+            repaint_delay_until(now + interval, now, interval),
+            interval * 2
+        );
+    }
+
+    #[test]
+    fn repaint_delay_never_underflows_a_passed_deadline() {
+        let now = Instant::now();
+        let predicted = Duration::from_millis(8);
+        assert_eq!(
+            repaint_delay_until(now - Duration::from_secs(1), now, predicted),
+            predicted
+        );
     }
 
     #[test]

@@ -881,6 +881,28 @@ impl WasmPane {
         self.timers.iter().map(|t| t.next_fire_ms).min()
     }
 
+    /// The cadence the app declared for itself: the shortest repeating timer it
+    /// registered. A surface app drives its simulation off a repeating timer, so
+    /// that interval *is* its requested frame rate — the host's `FrameClock`
+    /// paces to it rather than a construction-time constant. `None` when the app
+    /// declared no repeating timer, which leaves the clock at its default.
+    ///
+    /// `set-timer` is the general timer API, so this reads a cadence out of a
+    /// signal that is not exclusively about frames: a surface app whose *only*
+    /// repeating timer is a slow status poll gets paced at that poll rate. That
+    /// is the honest reading of what the app asked to be woken at — and input
+    /// still forces an immediate repaint of its own accord — but a dedicated
+    /// frame-cadence signal in the WIT world would say it outright. Adding one
+    /// is an ABI change, deliberately out of scope for stint 0552.
+    pub fn declared_frame_interval(&self) -> Option<Duration> {
+        self.timers
+            .iter()
+            .filter(|t| t.repeat && t.delay_ms > 0)
+            .map(|t| t.delay_ms)
+            .min()
+            .map(|ms| Duration::from_millis(ms as u64))
+    }
+
     pub fn take_title(&mut self) -> Option<String> {
         self.pending_title.take()
     }
@@ -1687,6 +1709,13 @@ pub struct LiveWasmPane {
     telemetry: super::wasm_frame::FrameTelemetry,
     /// Wall-clock instant of the previous presented frame, for interval metrics.
     last_present: Option<Instant>,
+    /// Guest clock for a surface pane, advanced only by whole fixed timesteps
+    /// the [`FrameClock`](super::wasm_frame::FrameClock) granted. `None` until
+    /// the first surface step anchors it to pane-elapsed time. Kept in
+    /// nanoseconds because the grid is not a whole number of milliseconds — at
+    /// 60 Hz, truncating each 16.666 ms step to 16 ms would bleed 40 ms of guest
+    /// time per real second.
+    sim_ns: Option<u64>,
     /// Launch arguments (`plexi app open <path> -- <args>`), forwarded to the
     /// guest's `init` as its argv. Empty for palette/registry launches.
     launch_args: Vec<String>,
@@ -1716,12 +1745,93 @@ impl LiveWasmPane {
             clock: super::wasm_frame::FrameClock::new(60),
             telemetry: super::wasm_frame::FrameTelemetry::new(240),
             last_present: None,
+            sim_ns: None,
             launch_args,
         }
     }
 
     fn now_ms(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
+    }
+
+    /// The clock the guest sees: the host's fixed grid once a surface pane has
+    /// started stepping, wall time otherwise. Every path that hands the guest a
+    /// timestamp goes through here, so a timer can never be armed in one domain
+    /// and fired in another.
+    fn guest_now_ms(&self) -> u64 {
+        self.sim_ns
+            .map(|ns| ns / 1_000_000)
+            .unwrap_or_else(|| self.now_ms())
+    }
+
+    /// Advance a surface pane by the host's fixed timestep, returning the guest
+    /// clock afterwards and the step the clock granted.
+    ///
+    /// This is the whole host-owned pacing contract in one place: retarget the
+    /// clock at the cadence the app declared, ask it how many fixed sim steps
+    /// this repaint is owed, run exactly that many, and discard the remainder it
+    /// refused to grant. A dropped step is skipped, never banked and replayed
+    /// later — that is what keeps a long stall from spiralling.
+    ///
+    /// Dropped *time*, however, still advances the guest clock. The guest gets
+    /// one clock, quantised to the fixed grid but tracking wall time to within a
+    /// step; a stalled pane skips simulation rather than falling permanently
+    /// behind. Letting it lag instead would split the pane into two clock
+    /// domains — timers armed from `background_tick`/`dispatch_ui_action` run on
+    /// wall time — and those timers would then fire a whole stall late.
+    fn step_surface(
+        &mut self,
+        now_inst: Instant,
+        wall_ms: u64,
+    ) -> wasmtime::Result<(u64, super::wasm_frame::FrameStep)> {
+        let declared = self.inner.declared_frame_interval();
+        let before = self.clock.target_interval();
+        self.clock.retarget(declared);
+        if self.clock.target_interval() != before {
+            log::info!(
+                "app::{}: surface frame clock retargeted {}ms -> {}ms ({})",
+                self.spawn_name,
+                before.as_millis(),
+                self.clock.target_interval().as_millis(),
+                if declared.is_some() {
+                    "app-declared cadence"
+                } else {
+                    "app declares none; host default"
+                },
+            );
+        }
+        let step = self.clock.advance(now_inst);
+        self.telemetry.record_dropped(step.dropped);
+        let dt_ns = (self.clock.target_interval().as_nanos() as u64).max(1);
+        // The very first grid point IS the arming instant: the guest's timers
+        // were set against `wall_ms`, so stepping past it before the first tick
+        // would fire them a whole interval early.
+        let mut sim_ns = self
+            .sim_ns
+            .unwrap_or_else(|| (wall_ms * 1_000_000).saturating_sub(dt_ns));
+        let mut result = Ok(());
+        for _ in 0..step.steps {
+            sim_ns += dt_ns;
+            result = self.inner.tick(sim_ns / 1_000_000);
+            if result.is_err() {
+                break;
+            }
+        }
+        // Skipped simulation, not skipped time.
+        sim_ns += dt_ns * step.dropped as u64;
+        self.sim_ns = Some(sim_ns);
+        result.map(|()| (sim_ns / 1_000_000, step))
+    }
+
+    /// Delay to request for the next surface repaint. Routes through the shared
+    /// [`repaint_delay_until`](super::wasm_frame::repaint_delay_until) so the
+    /// egui predicted-frame compensation stays identical to the CPython path.
+    fn surface_repaint_delay(&self, now_inst: Instant, predicted_frame: Duration) -> Duration {
+        super::wasm_frame::repaint_delay_until(
+            now_inst + self.clock.target_interval(),
+            now_inst,
+            predicted_frame,
+        )
     }
 
     /// True while the app is alive (no fatal error, has not asked to close).
@@ -1845,7 +1955,7 @@ impl LiveWasmPane {
         if self.pending_init.is_some() {
             return;
         }
-        if let Err(error) = self.inner.tick(self.now_ms()) {
+        if let Err(error) = self.inner.tick(self.guest_now_ms()) {
             self.fail("background step", error);
             return;
         }
@@ -1869,7 +1979,7 @@ impl LiveWasmPane {
             return Err("WASM app has not rendered its initial frame yet".to_string());
         }
         self.inner
-            .dispatch_ui_action(handler_id, self.now_ms())
+            .dispatch_ui_action(handler_id, self.guest_now_ms())
             .map_err(|e| format!("WASM action failed: {e}"))?;
         let tree = self
             .inner
@@ -1966,7 +2076,7 @@ impl LiveWasmPane {
             } else {
                 self.inner.decide_next_capability_prompt(granted);
             }
-            if let Err(e) = self.inner.drain(self.now_ms()) {
+            if let Err(e) = self.inner.drain(self.guest_now_ms()) {
                 self.fail("capability decision", e);
             }
             ctx.request_repaint();
@@ -1986,11 +2096,14 @@ impl LiveWasmPane {
         }
 
         let size = ui.available_size();
-        let now = self.now_ms();
+        // The guest clock, not wall time: a surface pane whose texture is
+        // momentarily freed (a display-scale change) still takes the non-surface
+        // branch below, and must not arm timers in a different domain than the
+        // one the surface path fires them in.
+        let mut now = self.guest_now_ms();
         // Keep the guest's surface allocation in sync with the display scale
         // (stint 0527) — a display move/scale change frees and reallocates.
-        self.inner
-            .set_pixels_per_point(ui.ctx().pixels_per_point());
+        self.inner.set_pixels_per_point(ui.ctx().pixels_per_point());
 
         let stepped = if let Some(snapshot) = self.pending_init.take() {
             log::info!(
@@ -2000,6 +2113,12 @@ impl LiveWasmPane {
             );
             self.inner
                 .init(&snapshot, (size.x, size.y), now, &self.launch_args)
+        } else if self.inner.surface_size().is_some() {
+            // Surface panes are paced by the host clock, not by the repaint
+            // rate: the guest advances in whole fixed steps on its own clock.
+            self.step_surface(Instant::now(), now).map(|(sim, _)| {
+                now = sim;
+            })
         } else {
             self.inner.tick(now)
         };
@@ -2128,9 +2247,10 @@ impl LiveWasmPane {
             }
         }
 
-        // Host-owned pacing + telemetry for surface apps: the clock advances by
-        // wall-clock time and records interval/present/dropped metrics. The
-        // guest never measures its own frame rate.
+        // Host-owned telemetry for surface apps. The clock itself already
+        // advanced in `step_surface` (it gates the guest's sim steps); here we
+        // only record the wall-clock measurements. The guest never measures its
+        // own frame rate.
         if self.inner.surface_size().is_some() {
             let now_inst = Instant::now();
             if let Some(prev) = self.last_present {
@@ -2138,8 +2258,6 @@ impl LiveWasmPane {
                     .record_frame(now_inst.saturating_duration_since(prev));
             }
             self.last_present = Some(now_inst);
-            let step = self.clock.advance(now_inst);
-            self.telemetry.record_dropped(step.dropped);
             self.telemetry.record_present(present_start.elapsed());
             // Sampled, not per-frame, so presentation logging never taxes the
             // hot path the way the old per-frame readback/upload logs did.
@@ -2163,7 +2281,9 @@ impl LiveWasmPane {
         // host frame clock; audio tops up its ring; timers fire on deadline.
         let has_surface = self.inner.surface_size().is_some();
         if has_surface {
-            ui.ctx().request_repaint_after(self.clock.target_interval());
+            let predicted_frame = Duration::from_secs_f32(ui.input(|input| input.predicted_dt));
+            let delay = self.surface_repaint_delay(Instant::now(), predicted_frame);
+            ui.ctx().request_repaint_after(delay);
         }
         if self.inner.has_audio() {
             ui.ctx().request_repaint_after(Duration::from_millis(15));
@@ -2661,7 +2781,9 @@ mod tests {
         })
     }
 
-    fn scripted_picker(outcomes: Vec<crate::host::services::FilePickOutcome>) -> Arc<dyn PickerService> {
+    fn scripted_picker(
+        outcomes: Vec<crate::host::services::FilePickOutcome>,
+    ) -> Arc<dyn PickerService> {
         Arc::new(crate::host::services::ScriptedPickerService::from_outcomes(
             outcomes,
         ))
@@ -2744,7 +2866,10 @@ mod tests {
         p.exec(file_read(&sibling.to_string_lossy()), 0);
         match pop_event(&mut p) {
             InputEvent::FileReadResult(Err(msg)) => {
-                assert!(msg.contains("outside granted scope"), "unexpected error: {msg}");
+                assert!(
+                    msg.contains("outside granted scope"),
+                    "unexpected error: {msg}"
+                );
             }
             other => panic!("expected denied file-read-result, got {other:?}"),
         }
@@ -3118,6 +3243,153 @@ mod tests {
             InputEvent::CapabilityDenied(cap) => assert_eq!(cap, denied_cap),
             other => panic!("expected session deny auto-answer, got {other:?}"),
         }
+    }
+
+    // ── Host-owned surface pacing (stint 0552) ──────────────────────────────
+    //
+    // sysmon declares a repeating poll timer, which is exactly the shape a
+    // surface app uses to declare its cadence, so these drive the real pacing
+    // path without needing a GPU surface allocated.
+
+    fn live_pane() -> LiveWasmPane {
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "sysmon",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+        );
+        live.inner
+            .init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])
+            .expect("init");
+        live
+    }
+
+    #[test]
+    fn declared_frame_interval_reports_the_apps_repeating_cadence() {
+        let live = live_pane();
+        let declared = live
+            .inner
+            .declared_frame_interval()
+            .expect("app declared a repeating cadence");
+        assert_eq!(
+            declared,
+            Duration::from_millis(live.inner.timers[0].delay_ms as u64)
+        );
+        assert_ne!(
+            declared,
+            live.clock.target_interval(),
+            "fixture must declare something other than the constructed 60 Hz \
+             for this suite to prove anything"
+        );
+    }
+
+    #[test]
+    fn surface_step_retargets_the_clock_at_the_declared_rate() {
+        let mut live = live_pane();
+        let declared = live.inner.declared_frame_interval().expect("declared");
+        live.step_surface(Instant::now(), 0).expect("step");
+        assert_eq!(
+            live.clock.target_interval(),
+            declared.clamp(
+                super::super::wasm_frame::MIN_TARGET_INTERVAL,
+                super::super::wasm_frame::MAX_TARGET_INTERVAL,
+            )
+        );
+    }
+
+    #[test]
+    fn surface_steps_drive_the_guest_clock_by_whole_fixed_steps() {
+        let mut live = live_pane();
+        let t0 = Instant::now();
+        // The baseline step lands ON the arming instant, not one interval past
+        // it — otherwise every surface app fires its frame timer early on the
+        // first paint after init.
+        let (baseline, _) = live.step_surface(t0, 7_000).expect("baseline");
+        assert_eq!(baseline, 7_000);
+
+        // Three whole intervals plus a partial: three steps, remainder banked.
+        let dt = live.clock.target_interval();
+        let (sim, step) = live
+            .step_surface(t0 + dt * 3 + dt / 2, 7_000)
+            .expect("step");
+        assert_eq!(step.steps, 3);
+        assert_eq!(step.dropped, 0);
+        assert_eq!(sim, 7_000 + (dt * 3).as_millis() as u64);
+    }
+
+    #[test]
+    fn surface_guest_clock_keeps_sub_millisecond_step_remainder() {
+        let mut live = live_pane();
+        // No declared cadence: the host default is 16.666… ms, which truncates
+        // to 16 ms per step and would bleed ~40 ms of guest time per second.
+        live.inner.timers.clear();
+        let t0 = Instant::now();
+        let dt = live.clock.target_interval();
+        let (baseline, _) = live.step_surface(t0, 0).expect("baseline");
+        for i in 1..=60 {
+            live.step_surface(t0 + dt * i, 0).expect("step");
+        }
+        let elapsed = live.guest_now_ms() - baseline;
+        assert!(
+            (999..=1001).contains(&elapsed),
+            "60 steps of the default cadence must be ~1s of guest time, got {elapsed}ms"
+        );
+    }
+
+    #[test]
+    fn surface_catch_up_is_bounded_and_the_remainder_is_dropped_not_deferred() {
+        let mut live = live_pane();
+        let t0 = Instant::now();
+        let (after_baseline, _) = live.step_surface(t0, 0).expect("baseline");
+        let declared = live.clock.target_interval();
+        let dt = declared.as_millis() as u64;
+
+        // A 20-interval stall: simulate up to the clock's bound, drop the rest.
+        let (sim, step) = live.step_surface(t0 + declared * 20, 0).expect("stall");
+        assert!(
+            step.steps > 0 && step.steps < 20,
+            "catch-up must be bounded, ran {} steps",
+            step.steps
+        );
+        assert_eq!(step.steps + step.dropped, 20, "no owed step goes missing");
+        assert_eq!(live.telemetry.dropped(), step.dropped as u64);
+        // Simulation was skipped, but the guest clock still tracks wall time —
+        // it must not strand a whole stall behind.
+        assert_eq!(sim, after_baseline + dt * 20);
+
+        // Dropped steps are never repaid: the next on-cadence repaint grants
+        // exactly one, with no backlog.
+        let dropped_so_far = live.telemetry.dropped();
+        let (next, step) = live
+            .step_surface(t0 + declared * 20 + declared, 0)
+            .expect("next");
+        assert_eq!(step.steps, 1);
+        assert_eq!(step.dropped, 0);
+        assert_eq!(next, sim + dt);
+        assert_eq!(live.telemetry.dropped(), dropped_so_far);
+    }
+
+    #[test]
+    fn guest_timestamps_follow_the_surface_clock_once_it_starts_stepping() {
+        let mut live = live_pane();
+        assert!(
+            live.sim_ns.is_none(),
+            "a pane that has not stepped a surface runs on wall time"
+        );
+        let (sim, _) = live.step_surface(Instant::now(), 4_000).expect("step");
+        assert_eq!(live.guest_now_ms(), sim);
+    }
+
+    #[test]
+    fn surface_repaint_delay_includes_the_egui_predicted_frame() {
+        let mut live = live_pane();
+        live.step_surface(Instant::now(), 0).expect("step");
+        let predicted = Duration::from_millis(8);
+        let now = Instant::now();
+        assert_eq!(
+            live.surface_repaint_delay(now, predicted),
+            live.clock.target_interval() + predicted
+        );
     }
 
     #[test]

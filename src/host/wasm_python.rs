@@ -41,6 +41,7 @@ use super::wasm_app::bindings::plexi::platform::types::{
 use super::wasm_app::Alignment;
 #[cfg(test)]
 use super::wasm_app::{Effect, Grants, StateStore, WasmApp};
+use super::wasm_frame::repaint_delay_until;
 
 #[derive(Default)]
 struct InputState {
@@ -2300,17 +2301,6 @@ fn advance_fixed_deadline(
     next
 }
 
-fn repaint_delay_until(
-    deadline: std::time::Instant,
-    now: std::time::Instant,
-    predicted_frame: std::time::Duration,
-) -> std::time::Duration {
-    // egui starts a repaint one predicted frame before the requested delay.
-    // Add that estimate back so a 60 Hz app does not turn a 16.7 ms deadline
-    // into an immediate, unbounded host repaint loop.
-    deadline.saturating_duration_since(now) + predicted_frame
-}
-
 fn python_render_event(frame_id: u64, timer_ids: Vec<String>) -> Value {
     json!({
         "type": "render",
@@ -4342,18 +4332,6 @@ mod tests {
                 Some(now + interval - CONTINUOUS_FRAME_HEADROOM)
             );
         }
-    }
-
-    #[test]
-    fn repaint_delay_compensates_for_egui_predicted_frame_subtraction() {
-        let now = std::time::Instant::now();
-        let interval = std::time::Duration::from_nanos(16_666_666);
-        let predicted = std::time::Duration::from_nanos(16_666_666);
-
-        assert_eq!(
-            repaint_delay_until(now + interval, now, predicted),
-            interval * 2
-        );
     }
 
     #[test]
