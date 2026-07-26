@@ -807,6 +807,30 @@ fn assistant_open_focuses_existing_across_windows_of_same_context() {
     );
 }
 
+#[test]
+fn assistant_open_uses_caller_context_root_as_workspace() {
+    let _channel = crate::config::set_test_channel("pr-0538");
+    let root = tempfile::tempdir().expect("context root");
+    let expected = root.path().to_path_buf();
+    let mut h = HostHarness::new();
+    let (caller_tile, _caller_pane) = h.app.add_test_pane();
+    h.app.windows[0].focused_pane = Some(caller_tile);
+    h.app.set_context_root(expected.clone(), None);
+
+    h.app.open_assistant_pane();
+
+    let actual = h.app.windows[0]
+        .panes
+        .values()
+        .find_map(|pane| {
+            pane.as_app()
+                .filter(|app| app.manifest_id == "assistant")
+                .map(|app| app.workspace_root.clone())
+        })
+        .expect("assistant pane");
+    assert_eq!(actual, expected);
+}
+
 /// Assistant open in context X; opening from a window of context Y spawns a
 /// SECOND distinct instance, and each context's store persists its own
 /// conversation pointer.

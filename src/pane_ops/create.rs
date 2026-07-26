@@ -1546,7 +1546,9 @@ impl PlexiApp {
             return Some(slot);
         }
 
-        let workspace_root = crate::config::active_workspace_root()
+        let workspace_root = self
+            .context_root_for(caller_context_id)
+            .or_else(crate::config::active_workspace_root)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         log::info!(
             "assistant: opening pane for workspace {} in context {caller_context_id}",
