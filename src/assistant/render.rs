@@ -290,6 +290,7 @@ impl AssistantRenderer {
                 // message that started it — so rows appended mid-turn
                 // (slash-view output, queued messages) appear below it, in
                 // the position the committed reply will land in.
+                Self::forward_selection_wheel_scroll(ui);
                 let anchor = model
                     .turn_anchor
                     .unwrap_or(model.turns.len())
@@ -333,6 +334,20 @@ impl AssistantRenderer {
                 );
                 ui.add_space(style::SPACE_SM);
             });
+    }
+
+    /// Egui intentionally ignores wheel input while a child widget owns a
+    /// drag. That is normally right for a scroll area's own drag gesture, but
+    /// transcript labels own the drag for text selection. Forward the wheel
+    /// delta to the enclosing scroll area so a selection can continue beyond
+    /// the visible page without handing drag ownership back to the area.
+    fn forward_selection_wheel_scroll(ui: &egui::Ui) {
+        if ui.ctx().dragged_id().is_some() {
+            let delta = ui.input(|input| input.smooth_scroll_delta());
+            if delta != egui::Vec2::ZERO {
+                ui.scroll_with_delta(delta);
+            }
+        }
     }
 
     /// Render a contiguous slice of `model.turns` in order — one row per
@@ -1461,6 +1476,84 @@ mod tests {
             .find(|(fill, _)| *fill == r.colors.bg_active)
             .map(|(_, rect)| *rect)
             .expect("user bubble frame must be painted with the bg_active fill")
+    }
+
+    fn selection_scroll_frame(ctx: &egui::Context, input: egui::RawInput) -> f32 {
+        let mut offset = 0.0;
+        let _ = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let output = egui::ScrollArea::vertical()
+                    .id_salt("assistant_transcript")
+                    .auto_shrink([false, false])
+                    .scroll_source(egui::scroll_area::ScrollSource {
+                        drag: false,
+                        ..Default::default()
+                    })
+                    .show(ui, |ui| {
+                        ui.style_mut().interaction.selectable_labels = true;
+                        AssistantRenderer::forward_selection_wheel_scroll(ui);
+                        for row in 0..100 {
+                            ui.label(format!("transcript row {row}"));
+                        }
+                    });
+                offset = output.state.offset.y;
+            });
+        });
+        offset
+    }
+
+    fn transcript_input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(240.0, 120.0),
+            )),
+            events,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn transcript_wheel_scrolls_while_text_selection_drag_is_active() {
+        let ctx = egui::Context::default();
+        let pointer = egui::pos2(20.0, 10.0);
+        selection_scroll_frame(&ctx, transcript_input(vec![]));
+        selection_scroll_frame(
+            &ctx,
+            transcript_input(vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]),
+        );
+        selection_scroll_frame(
+            &ctx,
+            transcript_input(vec![egui::Event::PointerMoved(egui::pos2(20.0, 32.0))]),
+        );
+        assert!(
+            ctx.dragged_id().is_some(),
+            "test setup must start a label-owned selection drag"
+        );
+
+        selection_scroll_frame(
+            &ctx,
+            transcript_input(vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -80.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }]),
+        );
+        let offset = selection_scroll_frame(&ctx, transcript_input(vec![]));
+
+        assert!(
+            offset > 0.0,
+            "a wheel event must advance the transcript while a label owns the selection drag"
+        );
     }
 
     /// A wrapped user message renders left-justified: even though the bubble
