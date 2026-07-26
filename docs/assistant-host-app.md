@@ -55,16 +55,28 @@ Plexi claims Claude Code replacement parity after these behaviors pass on an ins
 - Load scoped instructions, skills with supporting files/scripts, lifecycle hooks, agents, and connector/tool packages from user and project scopes. Installed extensions are inspectable files and cannot silently widen authority.
 - Spawn foreground or background sub-agents with isolated context, explicit model/effort, tool/skill/connector allowlists, narrowed inherited grants, per-worker budgets, cancellation, durable transcripts, and optional worktree isolation. A child cannot increase its own or its parent's authority.
 - Persist and resume sessions, compact context without losing raw history, checkpoint both conversation and Assistant-owned file edits, show diffs and command results, rewind safely, and attribute every action and permission decision.
-- Expose the same agent loop through a structured non-interactive entrypoint so tests, scheduled work, and other Plexi apps can submit a task and consume streaming events without screen-scraping a pane.
-- Attach local images and host screenshots through explicit file/pane grants so visual debugging and UI work do not require an external coding agent.
+- Expose the same agent loop and structured turn-input envelope through pane and non-interactive entrypoints so tests, scheduled work, Quick Note, Notes panes, and other Plexi apps can submit text and images and consume streaming events without screen-scraping a pane.
+- Attach local images, note assets, and host screenshots through explicit file/pane grants so visual debugging, note handoff, and UI work do not require an external coding agent.
 
 The core coding loop is gather context, take action, verify, and repeat. A feature does not count as parity because a user can manually reproduce it through a visible terminal; the Assistant itself must have a typed, permissioned, testable path.
+
+## Structured Turn Input
+
+Every Assistant entrypoint uses one ordered content-block envelope. A turn can contain text, granted local-image references, sanctioned host-screenshot references, and source provenance. The pane composer, Quick Note, Notes panes, app connectors, tests, and headless clients all submit this envelope. They do not maintain separate text-only and multimodal agent loops.
+
+Quick Note and Notes can send their current text and chosen local images into the Assistant thread for the same context. The handoff opens or focuses that context's Assistant pane when a UI is present. Headless operation appends the same user turn without requiring a visible pane. The resulting turn visibly identifies its source note and shows image attachments in their original content order.
+
+Notes already copies dropped local images into the note collection's `assets/` directory and stores relative Markdown references. The handoff resolves chosen references relative to the source note, then asks the reference monitor for those exact files. It never treats a Markdown path as authority, scans the note for unrelated files, or fetches a remote image URL implicitly. Remote images require an approved network action before they become model input.
+
+The transcript persists durable attachment metadata and provenance, not an unbounded base64 copy. At model-dispatch time, the host validates the grant, media type, decode result, dimensions, and byte limit, then emits the provider's native image content block. Unsupported providers return a visible capability error rather than silently replacing an image with its path or alt text. Compaction and resume preserve enough metadata to display and re-authorize the original turn.
+
+The headless event stream reports accepted input blocks, permission requests, rejected attachments, model progress, tool activity, and the final result. A caller can therefore prove that an image reached the model request instead of merely appearing in a note or transcript.
 
 ## Capability Sequence
 
 Build in this dependency order:
 
-1. `0554` defines the host reference monitor, argument/resource-bound grants, context isolation, process and filesystem authority, secret injection, connector trust, and audit shape. It decomposes the coding runtime into independently testable implementation stints.
+1. `0554` defines the host reference monitor, argument/resource-bound grants, context isolation, process and filesystem authority, secret injection, connector trust, structured turn-input envelope, and audit shape. It decomposes the coding runtime into independently testable implementation stints.
 2. The resulting coding-runtime stints deliver project instruction discovery, complete scoped file operations, the sandboxed command worker, workspace-secret environment injection, background jobs, edit checkpoints, and a general-project E2E gate.
 3. `0381` and `0382` add network fetch and MCP interoperability through the same authority plane. Native browser automation remains owned by [`browser-surface.md`](browser-surface.md).
 4. `0439` specifies the delegated-worker model after the parent authority model is fixed, then creates its implementation stints.
@@ -725,7 +737,9 @@ Phase 3:
 - Network fetch, MCP bridge tools, and browser automation are attributable to their domain, server, connector, profile, and actor.
 - Assistant-owned file edits have restorable checkpoints distinct from conversation-only rewind.
 - A structured non-interactive client can submit a task, receive tool/permission/progress events, and collect a final result without pane capture.
-- Local images and sanctioned host screenshots can be attached to a turn through explicit grants.
+- Quick Note and Notes can send text plus chosen local images to the current context's Assistant thread, with visible source provenance and exact-file grants.
+- Pane and headless callers use the same ordered content-block envelope, and an integration test proves that an approved note image reaches the provider request as an image block.
+- Local images and sanctioned host screenshots can be attached to a turn through explicit grants; unsupported media, oversized files, denied paths, and unapproved remote URLs fail visibly.
 - The current PGAP Assistant no longer shells out to the Plexi CLI for pane/app/terminal control.
 - HostHarness tests cover command parsing, settings precedence, permission rule order, grant persistence, app connector filtering, and audit writes.
 - PlexiUiHarness tests cover the Assistant pane, command picker, permission sheet, settings view, and app-write preview.
