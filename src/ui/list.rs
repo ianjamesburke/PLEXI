@@ -703,7 +703,7 @@ fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32)
         ui.painter(),
         Pos2::new(
             rect.center().x - galley.size().x / 2.0,
-            rect.center().y - galley.size().y / 2.0,
+            rect.center().y - galley.size().y / 2.0 + style::LIST_CHIP_TEXT_OFFSET_Y,
         ),
         galley,
         text_color,
@@ -806,6 +806,62 @@ fn draw_pips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn collect_chip_shapes(
+        shape: &egui::Shape,
+        fill: Color32,
+        rects: &mut Vec<egui::Rect>,
+        texts: &mut Vec<(Pos2, std::sync::Arc<egui::Galley>)>,
+    ) {
+        match shape {
+            egui::Shape::Rect(rect) if rect.fill == fill => rects.push(rect.rect),
+            egui::Shape::Text(text) => texts.push((text.pos, text.galley.clone())),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_chip_shapes(shape, fill, rects, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn list_chip_text_has_optical_vertical_centering() {
+        for ppp in [1.0_f32, 2.0] {
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            ctx.set_pixels_per_point(ppp);
+            let colors = crate::ui::theme::Colors::from_config(
+                &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+            );
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                draw_chip(ui, "app", &colors, 12.0, 30.0);
+            });
+
+            let mut rects = Vec::new();
+            let mut texts = Vec::new();
+            for clipped in &output.shapes {
+                collect_chip_shapes(&clipped.shape, colors.bg_active, &mut rects, &mut texts);
+            }
+            let chip = rects
+                .into_iter()
+                .find(|rect| rect.width() > 10.0 && rect.height() > 10.0)
+                .expect("chip background");
+            let (text_pos, galley) = texts
+                .into_iter()
+                .find(|(_, galley)| galley.job.text == "app")
+                .expect("chip text");
+            let line_box_center = text_pos.y + galley.size().y / 2.0;
+            let center_delta = line_box_center - chip.center().y;
+
+            assert!(
+                (-1.01..=-0.49).contains(&center_delta),
+                "chip text line box should sit visibly above geometric center at ppp={ppp}: \
+                 center_delta={center_delta}, line_box_center={line_box_center}, chip_center={}",
+                chip.center().y
+            );
+        }
+    }
 
     #[test]
     fn list_row_builder_keeps_optional_secondary_empty_by_default() {
