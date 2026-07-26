@@ -555,14 +555,27 @@ impl PlexiApp {
         serde_json::Value::Array(entries)
     }
 
-    /// Directories the Assistant's file tools may touch: the global apps dir
-    /// plus the origin context's workspace apps dir. App authoring only —
-    /// never the whole filesystem.
+    /// Directories the Assistant's file tools may touch. The caller context
+    /// root is primary so relative paths and pathless walks behave like a
+    /// coding agent opened in that workspace. The global apps directory stays
+    /// available as an explicit auxiliary root for app authoring.
     fn assistant_file_roots(&self, origin_context_id: u64) -> Vec<std::path::PathBuf> {
-        let mut roots = vec![crate::app::registry::apps_dir()];
+        let global_apps = crate::app::registry::apps_dir();
+        let mut roots = Vec::new();
         if let Some(root) = self.context_root_for(origin_context_id) {
-            roots.push(crate::app::registry::workspace_apps_dir(&root));
+            roots.push(root);
         }
+        if !roots.iter().any(|root| global_apps.starts_with(root)) {
+            roots.push(global_apps);
+        }
+        log::info!(
+            "assistant_host_tool: file scope context={origin_context_id} roots={}",
+            roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         roots
     }
 
@@ -636,32 +649,43 @@ const MAX_LIST_ENTRIES: usize = 500;
 const DIFF_CONTEXT_LINES: usize = 3;
 const MAX_DIFF_CHARS: usize = 4000;
 
-/// Resolve `raw` against the allowed roots: expand a leading `~/`, require an
-/// absolute path, reject `..` components, and require the result to sit under
-/// one of `roots`. Every rejection names what failed.
+/// Resolve `raw` against the allowed roots. Relative paths use the primary
+/// root, while absolute and `~/` paths may address any explicit root. The
+/// deepest existing prefix is canonicalized before containment is checked so
+/// a workspace symlink cannot redirect direct reads or writes outside scope.
 fn resolve_scoped_file_path(
     roots: &[std::path::PathBuf],
     raw: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+    let Some(primary_root) = roots.first() else {
+        return Err("path_scope_unavailable: this context has no file root".to_string());
+    };
+    let requested = if let Some(rest) = raw.strip_prefix("~/") {
         dirs::home_dir()
             .ok_or_else(|| "path_error: could not resolve home directory".to_string())?
             .join(rest)
     } else {
         std::path::PathBuf::from(raw)
     };
-    if !expanded.is_absolute() {
-        return Err(format!("path_not_absolute: {raw}"));
-    }
-    if expanded
+    if requested
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
     {
         return Err(format!("path_traversal_rejected: {raw}"));
     }
-    if !roots.iter().any(|root| expanded.starts_with(root)) {
+    let absolute = if requested.is_absolute() {
+        requested
+    } else {
+        primary_root.join(requested)
+    };
+    let resolved = super::canvas_bindings::canonicalize_existing_prefix(&absolute);
+    let allowed = roots
+        .iter()
+        .map(|root| super::canvas_bindings::canonicalize_existing_prefix(root))
+        .any(|root| resolved.starts_with(root));
+    if !allowed {
         return Err(format!(
-            "path_out_of_scope: {raw} is not under an apps directory ({})",
+            "path_out_of_scope: {raw} is not under a context file root ({})",
             roots
                 .iter()
                 .map(|r| r.display().to_string())
@@ -669,7 +693,7 @@ fn resolve_scoped_file_path(
                 .join(", ")
         ));
     }
-    Ok(expanded)
+    Ok(resolved)
 }
 
 fn read_scoped_file(roots: &[std::path::PathBuf], raw: &str) -> Result<String, String> {
@@ -796,7 +820,7 @@ fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool)
 }
 
 /// Resolve the search start points for grep/list: an explicit scoped path, or
-/// every existing root when no path is given.
+/// the primary existing root when no path is given.
 fn scoped_walk_starts(
     roots: &[std::path::PathBuf],
     raw_path: Option<&str>,
@@ -809,12 +833,17 @@ fn scoped_walk_starts(
             }
             Ok(vec![path])
         }
-        None => Ok(roots.iter().filter(|root| root.exists()).cloned().collect()),
+        None => Ok(roots
+            .iter()
+            .find(|root| root.exists())
+            .cloned()
+            .into_iter()
+            .collect()),
     }
 }
 
-/// Regex search across scoped app files — the in-process replacement for the
-/// `cat`/`grep` PTY round-trips that burned the tool budget.
+/// Regex search across scoped workspace files — the in-process replacement
+/// for the `cat`/`grep` PTY round-trips that burned the tool budget.
 fn grep_scoped(
     roots: &[std::path::PathBuf],
     raw_path: Option<&str>,
@@ -864,8 +893,7 @@ fn grep_scoped(
     }))
 }
 
-/// List scoped app files with sizes — how the model discovers what a
-/// scaffold created without shelling out.
+/// List scoped workspace files with sizes.
 fn list_scoped(
     roots: &[std::path::PathBuf],
     raw_path: Option<&str>,
@@ -1076,8 +1104,10 @@ mod tests {
         let escaped = super::read_scoped_file(&roots, &traversal).unwrap_err();
         assert!(escaped.starts_with("path_traversal_rejected"), "{escaped}");
 
-        let relative = super::read_scoped_file(&roots, "apps/demo/main.py").unwrap_err();
-        assert!(relative.starts_with("path_not_absolute"), "{relative}");
+        assert_eq!(
+            super::read_scoped_file(&roots, "demo/main.py").unwrap(),
+            "a\na\n"
+        );
     }
 
     #[test]
@@ -1272,6 +1302,96 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("invalid_input"));
+    }
+
+    #[test]
+    fn files_tools_use_context_root_and_accept_relative_paths() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+        std::fs::write(workspace.path().join("README.md"), "workspace marker\n").unwrap();
+        std::fs::write(workspace.path().join("src/lib.rs"), "pub fn marker() {}\n").unwrap();
+
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+        let context = harness.app.windows[0].context_id;
+        harness
+            .app
+            .set_context_root(workspace.path().to_path_buf(), None);
+
+        let listed =
+            harness
+                .app
+                .handle_assistant_host_tool("host.files.list", "{}", origin, context);
+        assert!(
+            listed
+                .output_json
+                .as_deref()
+                .is_some_and(|output| output.contains("README.md")
+                    && output.contains("src/lib.rs")),
+            "{listed:?}"
+        );
+
+        let read = harness.app.handle_assistant_host_tool(
+            "host.files.read",
+            r#"{"path":"src/lib.rs"}"#,
+            origin,
+            context,
+        );
+        assert!(
+            read.output_json
+                .as_deref()
+                .is_some_and(|output| output.contains("pub fn marker()")),
+            "{read:?}"
+        );
+
+        let write = harness.app.handle_assistant_host_tool(
+            "host.files.write",
+            r#"{"path":"notes/new.txt","content":"before\n"}"#,
+            origin,
+            context,
+        );
+        assert!(write.error.is_none(), "{write:?}");
+
+        let edit = harness.app.handle_assistant_host_tool(
+            "host.files.edit",
+            r#"{"path":"notes/new.txt","old_string":"before","new_string":"after"}"#,
+            origin,
+            context,
+        );
+        assert!(edit.error.is_none(), "{edit:?}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("notes/new.txt")).unwrap(),
+            "after\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_file_tools_reject_symlink_escapes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "outside\n").unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+        let roots = vec![workspace.clone()];
+
+        let read = super::read_scoped_file(
+            &roots,
+            &workspace.join("escape/secret.txt").display().to_string(),
+        )
+        .unwrap_err();
+        assert!(read.starts_with("path_out_of_scope"), "{read}");
+
+        let write = super::write_scoped_file(
+            &roots,
+            &workspace.join("escape/new.txt").display().to_string(),
+            "outside\n",
+        )
+        .unwrap_err();
+        assert!(write.starts_with("path_out_of_scope"), "{write}");
+        assert!(!outside.join("new.txt").exists());
     }
 
     #[test]

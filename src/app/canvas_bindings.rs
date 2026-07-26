@@ -655,10 +655,11 @@ fn canonical_within_workspace(root: &std::path::Path, absolute: &std::path::Path
 /// on the existing prefix, so this catches a workspace-internal symlink that
 /// redirects outside the sandbox even when the final target does not exist yet.
 /// Falls back to the lexical normalization when nothing on the chain exists.
-fn canonicalize_existing_prefix(path: &std::path::Path) -> std::path::PathBuf {
+pub(super) fn canonicalize_existing_prefix(path: &std::path::Path) -> std::path::PathBuf {
     for ancestor in path.ancestors() {
         if let Ok(canonical) = ancestor.canonicalize() {
             return match path.strip_prefix(ancestor) {
+                Ok(rest) if rest.as_os_str().is_empty() => canonical,
                 Ok(rest) => canonical.join(rest),
                 Err(_) => canonical,
             };

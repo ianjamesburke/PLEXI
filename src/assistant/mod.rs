@@ -1166,49 +1166,52 @@ impl AssistantApp {
             },
             AiTool {
                 name: HOST_TOOL_FILES_READ.into(),
-                description: "Read a file inside an apps directory (global or \
-                    workspace) with line-numbered output (`   N\\tcontent`). \
+                description: "Read a file inside the current context root (or \
+                    the global Plexi apps directory) with line-numbered output \
+                    (`   N\\tcontent`). Relative paths resolve from the context \
+                    root. \
                     Strip the number prefix before reusing content in \
                     host.files.edit or host.files.write. Page large files \
-                    with offset/limit instead of re-reading them whole. App \
-                    authoring only; paths outside the apps directories are \
-                    rejected."
+                    with offset/limit instead of re-reading them whole. Paths \
+                    outside the granted roots are rejected."
                     .into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path (or ~/) under an apps directory."},"offset":{"type":"integer","description":"1-based first line to read (default 1)."},"limit":{"type":"integer","description":"Max lines to return (default 2000)."}},"required":["path"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Path relative to the current context root, or an absolute path under a granted root."},"offset":{"type":"integer","description":"1-based first line to read (default 1)."},"limit":{"type":"integer","description":"Max lines to return (default 2000)."}},"required":["path"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
             },
             AiTool {
                 name: HOST_TOOL_FILES_GREP.into(),
-                description: "Search files inside the apps directories with a \
-                    regular expression. Returns matching lines with file and \
-                    line number. Use this to find symbols or SDK usage \
+                description: "Search files inside the current context root with \
+                    a regular expression. Returns matching lines with file and \
+                    line number. Relative paths resolve from the context root; \
+                    omit path to search that root. Use this to find symbols \
                     instead of reading whole files."
                     .into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Rust-syntax regular expression matched per line."},"path":{"type":"string","description":"Optional absolute file or directory to search; defaults to every apps root."},"max_matches":{"type":"integer","description":"Cap on returned matches (default 50, max 200)."}},"required":["pattern"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Rust-syntax regular expression matched per line."},"path":{"type":"string","description":"Optional relative or granted absolute file/directory; defaults to the current context root."},"max_matches":{"type":"integer","description":"Cap on returned matches (default 50, max 200)."}},"required":["pattern"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
             },
             AiTool {
                 name: HOST_TOOL_FILES_LIST.into(),
-                description: "List files (with sizes) under an apps directory. \
-                    Use after scaffolding to see what `plexi app init` created."
+                description: "List files (with sizes) under the current context \
+                    root. Relative paths resolve from the context root; omit \
+                    path to list the root."
                     .into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Optional absolute directory to list; defaults to every apps root."}}}),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Optional relative or granted absolute directory; defaults to the current context root."}}}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
             },
             AiTool {
                 name: HOST_TOOL_FILES_WRITE.into(),
-                description: "Create or fully replace a file inside an apps \
-                    directory. Use for writing an app's main.py; prefer \
-                    host.files.edit for small changes. Overwrites return a \
-                    unified diff of what changed."
+                description: "Create or fully replace a file inside the current \
+                    context root (or global Plexi apps directory). Relative \
+                    paths resolve from the context root. Prefer host.files.edit \
+                    for small changes. Overwrites return a unified diff."
                     .into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Path relative to the current context root, or an absolute path under a granted root."},"content":{"type":"string"}},"required":["path","content"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
@@ -1216,11 +1219,12 @@ impl AssistantApp {
             AiTool {
                 name: HOST_TOOL_FILES_EDIT.into(),
                 description: "Replace one unique occurrence of old_string with \
-                    new_string in a file inside an apps directory. Fails loudly \
-                    if old_string is absent or matches more than once. Returns \
-                    a unified diff of the change."
+                    new_string in a file inside the current context root (or \
+                    global Plexi apps directory). Relative paths resolve from \
+                    the context root. Fails loudly if old_string is absent or \
+                    matches more than once. Returns a unified diff."
                     .into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Path relative to the current context root, or an absolute path under a granted root."},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
