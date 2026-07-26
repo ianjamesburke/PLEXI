@@ -70,9 +70,7 @@ stint done <task-id>
 
 If estimate was off >2x, add one sentence to the task body explaining why. If no linked task exists, note it in the ship log.
 
-**Do not run a full whats-next audit here.** `stint list` + `stint status` + `git log` + `gh pr list` followed by a rewrite of `WHATS_NEXT.md` costs four commands and a regenerated file on *every* merge; in a babysitter queue that repeats per batch and the intermediate rewrites are all thrown away by the next one.
-
-Run `/whats-next` **once at the end of a session** (or after a batch of merges lands) instead. If you are merging a single PR interactively and want the file current, invoking `/whats-next` yourself afterward is the cheap path — it is the same work, done once.
+Do not maintain a separate priority projection after merge. `.stint/` is the live graph; `stint status`, `stint next`, and the task bodies own current state and ordering.
 
 ---
 

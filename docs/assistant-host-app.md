@@ -1,8 +1,9 @@
 # Host Assistant App Spec
 
-Status: product and architecture spec.
+Status: active.
+Stint: `0554`, `0439`, `0381`, `0382`.
 Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md).
-Last updated: 2026-06-11.
+Last updated: 2026-07-26.
 
 This document defines the first-party Plexi Assistant as a host app, not a PGAP app. It is the workspace operator: it can reason about panes, apps, files, permissions, installed skills, and app-exposed tools because the host owns those things.
 
@@ -28,6 +29,7 @@ The design mirrors Claude Code where the model fits Plexi:
 The host Assistant is the place where a user asks Plexi to do work across the workspace:
 
 - answer questions using `ai.query`
+- inspect, edit, build, test, and ship arbitrary coding projects rooted in the current context
 - read panes and app state
 - open apps and terminals
 - drive app UIs through typed actions
@@ -36,7 +38,39 @@ The host Assistant is the place where a user asks Plexi to do work across the wo
 - ask for one-time or persistent grants before making changes
 - leave a local audit trail of every permission decision and meaningful action
 
-The Assistant should feel like Claude Code inside Plexi, but its power model is different. Claude Code drives a repository through shell and file tools. Plexi Assistant drives a local computing environment through panes, PGAP apps, host APIs, and app-published tools.
+The Assistant must match Claude Code's local project behavior while also operating Plexi panes and apps. The UI and CLI may differ. A user should be able to replace a terminal coding agent with the Assistant for normal repository work without losing filesystem access, command execution, project instructions, secrets, extensibility, recovery, or delegated workers.
+
+Plexi's power model remains different. The model is an untrusted planner. It proposes typed actions; the host authorizes the exact actor, context, resource, arguments, environment, and duration before an adapter executes them. A context root selects relevance and default visibility. It does not grant ambient authority.
+
+## Coding-Agent Parity Contract
+
+Plexi claims Claude Code replacement parity after these behaviors pass on an installed host:
+
+- Start from the current context root, discover project and nested-directory instructions, follow `AGENTS.md` and compatible `CLAUDE.md` imports, reference files/directories explicitly, and add outside roots only through visible grants.
+- Search, glob, read, create, patch, move, and delete text files throughout an approved project root. Handle large files and binary/image inputs through bounded typed tools. Prevent traversal, symlink, and replacement-race escapes.
+- Run arbitrary project commands in a non-visible execution worker with an explicit working directory, structured stdout/stderr, streaming progress, cancellation, timeouts, process-tree cleanup, exit status, and background-job monitoring. Human-observed PTY injection remains a separate terminal affordance.
+- Inject only workspace-routed, allowlisted secret names into an approved process without revealing secret values to the model or transcript. Secret identity, command shape, working directory, destination process, and duration are independently grantable and audited.
+- Inspect an unfamiliar repository, edit it, run its build/test/lint/typecheck commands, use Git, resolve failures, package artifacts, and invoke project-defined release/deploy commands subject to approval.
+- Fetch approved domains, use search through a connector, consume MCP servers through the app-connector plane, and drive a browser through the native browser automation surface.
+- Load scoped instructions, skills with supporting files/scripts, lifecycle hooks, agents, and connector/tool packages from user and project scopes. Installed extensions are inspectable files and cannot silently widen authority.
+- Spawn foreground or background sub-agents with isolated context, explicit model/effort, tool/skill/connector allowlists, narrowed inherited grants, per-worker budgets, cancellation, durable transcripts, and optional worktree isolation. A child cannot increase its own or its parent's authority.
+- Persist and resume sessions, compact context without losing raw history, checkpoint both conversation and Assistant-owned file edits, show diffs and command results, rewind safely, and attribute every action and permission decision.
+- Expose the same agent loop through a structured non-interactive entrypoint so tests, scheduled work, and other Plexi apps can submit a task and consume streaming events without screen-scraping a pane.
+- Attach local images and host screenshots through explicit file/pane grants so visual debugging and UI work do not require an external coding agent.
+
+The core coding loop is gather context, take action, verify, and repeat. A feature does not count as parity because a user can manually reproduce it through a visible terminal; the Assistant itself must have a typed, permissioned, testable path.
+
+## Capability Sequence
+
+Build in this dependency order:
+
+1. `0554` defines the host reference monitor, argument/resource-bound grants, context isolation, process and filesystem authority, secret injection, connector trust, and audit shape. It decomposes the coding runtime into independently testable implementation stints.
+2. The resulting coding-runtime stints deliver project instruction discovery, complete scoped file operations, the sandboxed command worker, workspace-secret environment injection, background jobs, edit checkpoints, and a general-project E2E gate.
+3. `0381` and `0382` add network fetch and MCP interoperability through the same authority plane. Native browser automation remains owned by [`browser-surface.md`](browser-surface.md).
+4. `0439` specifies the delegated-worker model after the parent authority model is fixed, then creates its implementation stints.
+5. The replacement claim is gated by an installed-host run in a non-Plexi repository: inspect, edit, build, test, use a workspace-scoped secret without disclosing it, delegate an isolated subtask, recover from one failed command, and produce an auditable final diff.
+
+Do not expand execution, network, MCP, hooks, or sub-agent powers ahead of `0554`. Their interfaces depend on the exact capability identities and grant semantics it defines.
 
 ## Non-Goals
 
@@ -71,6 +105,11 @@ Reuse these primitives:
 - The SDK/UI learnings from the refactored chat composer: multiline input, Enter submit, Shift+Enter newline, live thinking display, bottom-aligned scroll, pinned-to-bottom behavior only during streaming, and persisted collapsed thinking markers.
 - Text input live-edit and control-key events (`TextChanged`, `TextInputKey`) for slash command filtering, completion menus, history navigation, and double-`Escape` history.
 - Headless scene coverage for idle and streaming Assistant states as the pattern for host Assistant UI regression tests.
+- Context-root `host.files.list/read/grep/write/edit` tools, including canonical existing-prefix checks. Extend this file module rather than returning to terminal-based file discovery.
+- `host.build.run` as a proven hidden-process adapter for narrow `plexi app init/check` commands. General project execution needs a new sandboxed worker interface; it must not widen this allowlist in place.
+- The workspace secret resolver in `src/workspace/secrets.rs`. The coding worker consumes its routed environment output after authorization; it does not read Keychain values into model-visible text.
+- The unified grant and audit stores as persistence adapters. Their current tool-name/workspace matching is not sufficient authority for general commands, paths, panes, connectors, or secrets; `0554` deepens that interface before new powers use it.
+- The agent registry, layered Assistant settings, conversation store, skill registry, and connector dispatcher. These are reusable configuration and persistence modules, not yet a delegated-worker runtime.
 
 Do not keep the privileged workspace operator as a PGAP app. The refactor's useful output is the streaming, composer, thinking, and scene-test infrastructure. The pane/app/terminal control path still moves into host-native tools and the unified permission broker.
 
@@ -304,14 +343,15 @@ Agent-specific permissions are how a spreadsheet agent can be trusted to edit a 
 
 ## Memory Scope
 
-Durable memory is not a v1 implementation target. The Assistant should be future-compatible with memory, but the first implementation should not depend on automatic memory discovery.
+Automatic learned memory follows the core coding runtime, but it is required before Plexi claims full Claude Code replacement parity. The coding runtime must not depend on it.
 
-For now:
+The base contract is:
 
 - `AGENT.md` is the durable prompt for one agent.
 - `settings.toml` is the mutable config for that agent.
+- Repository `AGENTS.md` and compatible `CLAUDE.md` files are project instructions, distinct from an Assistant agent persona.
 - Conversation persistence, compaction, and history are required.
-- Learned long-term memory, directory walking, and automatic memory snapshots are deferred.
+- Learned memory is scoped to user, project, or agent, stored as inspectable markdown, and never becomes an authority or task-state source.
 
 When memory lands, it must remain channel-aware and must not create a second task-state source of truth.
 
@@ -668,6 +708,10 @@ Phase 3:
 ## Done When
 
 - A user can open the host Assistant pane and chat with streaming responses.
+- In an arbitrary non-Plexi repository, the Assistant can discover scoped project instructions, inspect and patch files, run the repository's own build/test commands, iterate on failures, and return a verified diff without using a human-observed terminal.
+- A project command runs in the approved context root with structured streaming output, cancellation, timeout, process-tree cleanup, and an argument-bound audit record.
+- A workspace-routed secret can be injected into one approved project command without its value appearing in the model request, transcript, command preview, or audit log.
+- Additional directories, networks, secrets, panes, connectors, and commands require resource-specific grants; no grant bleeds across contexts, paths, arguments, actors, or workers.
 - `/` opens a searchable command picker with built-ins, skills, app connectors, and installed packages.
 - `/settings`, `/permissions`, `/skills`, `/tools`, and `/audit` are real host views.
 - Assistant settings support user, workspace, local workspace, and session scope.
@@ -676,6 +720,13 @@ Phase 3:
 - A running PGAP app can expose a read-only connector and a mutating connector.
 - The Assistant can call the read-only connector without write grants.
 - A mutating connector prompts before it runs, supports allow-once and persisted narrow grants, and writes an audit event.
+- Lifecycle hooks run at their declared events through the same permission broker and cannot silently execute local commands or network requests.
+- A parent Assistant can delegate a task to a restricted sub-agent, observe its progress, cancel it, inspect its durable transcript, and merge or discard an isolated worktree result. The child cannot widen inherited grants.
+- Network fetch, MCP bridge tools, and browser automation are attributable to their domain, server, connector, profile, and actor.
+- Assistant-owned file edits have restorable checkpoints distinct from conversation-only rewind.
+- A structured non-interactive client can submit a task, receive tool/permission/progress events, and collect a final result without pane capture.
+- Local images and sanctioned host screenshots can be attached to a turn through explicit grants.
 - The current PGAP Assistant no longer shells out to the Plexi CLI for pane/app/terminal control.
 - HostHarness tests cover command parsing, settings precedence, permission rule order, grant persistence, app connector filtering, and audit writes.
 - PlexiUiHarness tests cover the Assistant pane, command picker, permission sheet, settings view, and app-write preview.
+- An installed-host parity gate proves the full non-Plexi coding-project flow, secret isolation, delegated worker, recovery, and final audit trail.

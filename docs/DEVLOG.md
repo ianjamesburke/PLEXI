@@ -1,10 +1,13 @@
 # Devlog
 
-Landed-work history moved out of `WHATS_NEXT.md` so the orientation file stays
-forward-looking. Newest entries first. Append a dated section when `/whats-next`
-or `/merge-pr` trims the orientation file; do not rewrite old entries.
+Landed-work history only. Newest entries first; do not rewrite old entries.
+Live work, priority, and dependency state belongs exclusively to `.stint/`.
 
 ---
+
+## 2026-07-26: Assistant context-root file access
+
+`42ae578c` made the current Plexi context root the Assistant file tools' primary scope instead of limiting discovery to the channel's global app directory. Relative list/read/grep/write/edit paths now behave like a coding agent opened in the context root, while the global app directory remains an explicit auxiliary root. Canonical deepest-existing-prefix validation rejects symlink escapes for both reads and writes. The installed alpha host was exercised against `/Users/ianburke/temp_prod`: the Assistant used only `host.files.list` and `host.files.read` to find `hi.md` and return its exact contents.
 
 ## 2026-07-17 — Assistant app-building hardening (0413 gate dogfood)
 
