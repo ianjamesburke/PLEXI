@@ -96,6 +96,7 @@ Beyond the link-time boundary, protected effects (`file-read`, `file-write`, `ht
 
 The items below are not current runtime guarantees.
 
+- Stable frame pacing, shared Python/native telemetry, latest-frame presentation, and real-time canvas transport belong to [`realtime-app-runtime.md`](realtime-app-runtime.md).
 - Registry resolution, publisher signatures, payments, and hosted marketplace execution belong to the marketplace work described in `docs/app-framework-marketplace.md`.
 - Cloud execution, remote binary RPC, mobile runtime work, and CPython compatibility remain planned runtime work. See `wasm-runtime-impl-plan.md` for the sequencing document.
 - File listing/watch, WebSocket, CRDT merge and state sync, payment events, and additional audio/video effects are not declared by the current WIT contract. They require a versioned WIT change and a tracked implementation task before documentation can call them supported.
