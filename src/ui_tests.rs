@@ -1426,6 +1426,62 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_assistant_pane.png");
     }
 
+    /// Visual review for stints 0466/0380: a tool row whose input/output carry
+    /// nested JSON strings must show decoded text (real newlines, real quotes)
+    /// rather than `\n` / `\"` literals, and a shared slash-command row must
+    /// render like an ordinary assistant row.
+    #[test]
+    fn screenshot_assistant_decoded_tool_rows_and_command_output() {
+        use crate::assistant::model::{Turn, TurnRole};
+
+        let ws = tempfile::tempdir().unwrap();
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        let mut assistant =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+        let row = |role: TurnRole, text: &str, at: &str| Turn {
+            role,
+            text: text.to_string(),
+            created_at: at.to_string(),
+            status: None,
+            thoughts: None,
+            detail: None,
+            input_summary: None,
+            output_preview: None,
+        };
+        let mut tool = row(TurnRole::Tool, "host.files.write", "2026-07-27T00:00:02Z");
+        tool.status = Some(crate::assistant::model::ToolStatus::Succeeded);
+        tool.input_summary =
+            Some(r#"{path: notes/log.md, body: line one line two, note: he said "hi"}"#.to_string());
+        tool.output_preview = Some("stdout: wrote 2 lines\nline one\nline two".to_string());
+
+        assistant.model.turns = vec![
+            row(TurnRole::User, "/context", "2026-07-27T00:00:00Z"),
+            row(
+                TurnRole::Command,
+                "Assistant context:\n- Estimated transcript tokens: ~180 (4 turns)\n- Enabled tools: host.files.write, host.build.run",
+                "2026-07-27T00:00:01Z",
+            ),
+            tool,
+            row(
+                TurnRole::Assistant,
+                "Wrote both lines to `notes/log.md`.",
+                "2026-07-27T00:00:03Z",
+            ),
+        ];
+
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        h.step();
+        h.open_assistant_built(assistant, ws.path().to_path_buf());
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_assistant_decoded_rows.png")
+            .expect("render failed");
+        println!(
+            "Screenshot saved to /tmp/plexi_assistant_decoded_rows.png — inspect: \
+             no literal \\n or \\\" anywhere, /context output reads as a normal row."
+        );
+    }
+
     /// Visual regression for stints 0435/0442: a real multi-turn conversation
     /// (short + long messages on both sides) rendered end-to-end through the
     /// actual assistant pane path, screenshotted for human/agent eyeball

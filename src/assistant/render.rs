@@ -118,6 +118,8 @@ impl MarkdownTextCache {
             TurnRole::Tool => 2,
             TurnRole::Error => 3,
             TurnRole::Event => 4,
+            TurnRole::Command => 5,
+            TurnRole::Local => 6,
         }
         .hash(&mut hasher);
         hasher.finish()
@@ -557,6 +559,13 @@ impl AssistantRenderer {
                         Self::draw_thoughts_section(ui, colors, thoughts);
                     }
                 }
+                let markdown = text_cache.softened_turn_text(conversation_id, turn_index, turn);
+                Self::assistant_bubble(ui, colors, md_cache, markdown);
+                ui.add_space(style::SPACE_MD);
+            }
+            // Slash-command output reads like an assistant reply either way;
+            // the split is who receives it, not how it looks (stint 0380).
+            TurnRole::Command | TurnRole::Local => {
                 let markdown = text_cache.softened_turn_text(conversation_id, turn_index, turn);
                 Self::assistant_bubble(ui, colors, md_cache, markdown);
                 ui.add_space(style::SPACE_MD);

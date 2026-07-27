@@ -99,7 +99,15 @@ user sees), and validate with host.build.run {\"args\": [\"app\", \"check\", \
 \"<app-dir>\"]} until it passes. Open the app with host.apps.open as soon as the \
 first check passes — workspace apps hot-reload on every file save, so the user \
 watches the app improve live while you keep editing; you do not need to close \
-or reopen it. ";
+or reopen it. \
+A scope refusal is a final answer, not an obstacle to route around. When a tool \
+fails with path_out_of_scope or command_not_allowed, that path or command is \
+outside what you are permitted to touch — the refusal will not change on a \
+retry. Do NOT re-attempt it through host.terminals.run, host.terminals.open, or \
+any other tool: the same limit applies there, the attempt costs the user a \
+permission prompt they must deny, and it reads as working around your own \
+boundaries. Instead, stop, tell the user in plain words what was refused and \
+why, and offer the nearest thing you can do inside scope. ";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
 const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";
@@ -305,10 +313,9 @@ mod output_preview_tests {
         let preview = tool_output_preview(output);
         assert_eq!(preview, "stdout: line one\nline two\nstderr: boom");
 
-        // No liftable string fields → pretty-printed JSON, one field per line.
-        let pretty = tool_output_preview(r#"{"ok": true, "count": 3}"#);
-        assert!(pretty.contains("\n"), "must break into lines: {pretty}");
-        assert!(pretty.contains("\"count\": 3"));
+        // No liftable string fields → one decoded `key: value` line per entry.
+        let fallback = tool_output_preview(r#"{"ok": true, "count": 3}"#);
+        assert_eq!(fallback, "count: 3\nok: true");
 
         // Input detail: one key per line, string values unquoted.
         let detail = super::tool_input_detail(r#"{"path": "/tmp/x.py", "sizes": [480, 320]}"#);
@@ -320,11 +327,93 @@ mod output_preview_tests {
         assert!(bounded.chars().count() <= super::TOOL_OUTPUT_PREVIEW_BUDGET + 40);
         assert!(bounded.contains("chars omitted"));
     }
+
+    /// Stint 0466: the three transcript render paths all decode JSON strings at
+    /// every depth. Before the shared helper, `summarize_input` never parsed at
+    /// all, `tool_input_detail` decoded only top-level strings, and
+    /// `tool_output_preview`'s fallback re-escaped everything it printed.
+    #[test]
+    fn every_render_path_decodes_nested_strings() {
+        let nested = r#"{"edits": [{"body": "line one\nline two"}], "note": "he said \"hi\""}"#;
+
+        let summary = super::summarize_input(nested);
+        assert!(
+            !summary.contains("\\n") && !summary.contains("\\\""),
+            "summary must not carry raw escape sequences: {summary}"
+        );
+        assert!(summary.contains("line one line two"), "{summary}");
+        assert!(summary.contains(r#"he said "hi""#), "{summary}");
+
+        let detail = super::tool_input_detail(nested);
+        assert!(
+            !detail.contains("\\n") && !detail.contains("\\\""),
+            "detail must not carry raw escape sequences: {detail}"
+        );
+        assert!(detail.contains("line one\nline two"), "{detail}");
+
+        // Output fallback: no liftable top-level field, so the nested string is
+        // reached only through the recursive renderer.
+        let preview = tool_output_preview(r#"{"result": {"body": "line one\nline two"}}"#);
+        assert!(
+            !preview.contains("\\n"),
+            "output fallback must not re-escape nested strings: {preview}"
+        );
+        assert!(preview.contains("line one\nline two"), "{preview}");
+    }
+}
+
+/// Renders a JSON value as the text a human reads, with every string decoded at
+/// every depth.
+///
+/// `serde_json::Value`'s `Display` re-serialises, so any string it renders comes
+/// back escaped — a nested `"line one\nline two"` reaches the transcript as the
+/// literal characters `\` and `n`. Every assistant render path funnels through
+/// this one helper so decoding never depends on how deep a string happens to sit
+/// (stint 0466).
+fn render_json_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(items) => {
+            let rendered = items
+                .iter()
+                .map(render_json_value)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{rendered}]")
+        }
+        serde_json::Value::Object(map) => {
+            let rendered = map
+                .iter()
+                .map(|(key, value)| format!("{key}: {}", render_json_value(value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{rendered}}}")
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Renders a JSON object as one decoded `key: value` line per entry. Returns
+/// `None` when the text is not a non-empty JSON object, leaving the caller to
+/// decide its own fallback.
+fn render_json_object_lines(json: &str) -> Option<String> {
+    match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(serde_json::Value::Object(map)) if !map.is_empty() => Some(
+            map.iter()
+                .map(|(key, value)| format!("{key}: {}", render_json_value(value)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
 }
 
 /// Compact single-line summary of a tool input for sheets and audit lines.
 fn summarize_input(input_json: &str) -> String {
-    let flat: String = input_json.split_whitespace().collect::<Vec<_>>().join(" ");
+    let decoded = serde_json::from_str::<serde_json::Value>(input_json)
+        .map(|value| render_json_value(&value))
+        .unwrap_or_else(|_| input_json.to_string());
+    let flat: String = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > 120 {
         let truncated: String = flat.chars().take(117).collect();
         format!("{truncated}…")
@@ -361,13 +450,17 @@ fn tool_output_preview(output_json: &str) -> String {
             }
         }
     }
-    // No liftable string field: pretty-print the JSON so it breaks into
-    // lines instead of one endless run that overflows the pane.
+    // No liftable string field: render one decoded `key: value` line per entry
+    // so it breaks into lines instead of one endless run that overflows the
+    // pane — and so nested strings arrive decoded rather than re-escaped by a
+    // pretty-printer.
     let raw = if sections.is_empty() {
-        parsed
-            .as_ref()
-            .and_then(|value| serde_json::to_string_pretty(value).ok())
-            .unwrap_or_else(|| output_json.to_string())
+        render_json_object_lines(output_json).unwrap_or_else(|| {
+            parsed
+                .as_ref()
+                .map(render_json_value)
+                .unwrap_or_else(|| output_json.to_string())
+        })
     } else {
         sections.join("\n")
     };
@@ -378,17 +471,8 @@ fn tool_output_preview(output_json: &str) -> String {
 /// body — string values keep their real newlines, non-strings print as
 /// compact JSON. Falls back to the raw input when it isn't a JSON object.
 fn tool_input_detail(input_json: &str) -> String {
-    let detail = match serde_json::from_str::<serde_json::Value>(input_json) {
-        Ok(serde_json::Value::Object(map)) if !map.is_empty() => map
-            .iter()
-            .map(|(key, value)| match value {
-                serde_json::Value::String(text) => format!("{key}: {text}"),
-                other => format!("{key}: {other}"),
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => input_json.to_string(),
-    };
+    let detail =
+        render_json_object_lines(input_json).unwrap_or_else(|| input_json.to_string());
     bounded_head_tail_multiline(&detail, TOOL_OUTPUT_PREVIEW_BUDGET)
 }
 
@@ -1280,10 +1364,21 @@ impl AssistantApp {
     /// Conversation history for the broker: user/assistant turns plus
     /// delivered app events (as user-role context lines).
     fn history_messages(&self) -> Vec<AiMessage> {
+        // Slash-command output is next-turn context, not permanent context.
+        // Keep the transcript row for rendering/audit, but stop injecting it
+        // after the assistant has had one chance to respond to it. This also
+        // prevents repeated `/history` and `/context` calls from growing every
+        // later broker request without bound.
+        let last_assistant = self
+            .model
+            .turns
+            .iter()
+            .rposition(|turn| turn.role == TurnRole::Assistant);
         self.model
             .turns
             .iter()
-            .filter_map(|turn| match turn.role {
+            .enumerate()
+            .filter_map(|(index, turn)| match turn.role {
                 TurnRole::User => Some(AiMessage {
                     role: "user".to_string(),
                     content: turn.text.clone(),
@@ -1296,7 +1391,20 @@ impl AssistantApp {
                     role: "assistant".to_string(),
                     content: turn.text.clone(),
                 }),
-                TurnRole::Tool | TurnRole::Error => None,
+                // Shared slash-command output enters as labelled context, not
+                // as something the assistant said — an assistant that cannot
+                // see `/context` cannot help debug its own session (0380).
+                TurnRole::Command if last_assistant.is_none_or(|at| index > at) => {
+                    Some(AiMessage {
+                        role: "user".to_string(),
+                        content: format!(
+                            "Output of a slash command the user ran in this session:\n{}",
+                            turn.text
+                        ),
+                    })
+                }
+                TurnRole::Command => None,
+                TurnRole::Tool | TurnRole::Error | TurnRole::Local => None,
             })
             .collect()
     }
@@ -2242,7 +2350,7 @@ impl AssistantApp {
             .join("\n");
         let effects = self
             .model
-            .push_info(format!("**Assistant agents**\n\n{lines}"));
+            .push_command_output(format!("**Assistant agents**\n\n{lines}"));
         self.execute_effects(effects);
     }
 
@@ -2262,7 +2370,7 @@ impl AssistantApp {
             agent.id,
             agent.source.label()
         );
-        let effects = self.model.push_info(format!(
+        let effects = self.model.push_command_output(format!(
             "Active agent: `{}` ({}).",
             agent.id, agent.display_name
         ));
@@ -2343,7 +2451,7 @@ impl AssistantApp {
         } else {
             format!("{text}\n\n**Shadowed definitions**\n\n{shadow_details}")
         };
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -2418,7 +2526,7 @@ impl AssistantApp {
         );
         let effects = self
             .model
-            .push_info(format!("Created agent `{id}` at `{}`.", dir.display()));
+            .push_command_output(format!("Created agent `{id}` at `{}`.", dir.display()));
         self.execute_effects(effects);
     }
 
@@ -2443,7 +2551,7 @@ impl AssistantApp {
         log::info!("assistant: edit agent '{}' at {}", id, path.display());
         let effects = self
             .model
-            .push_info(format!("Edit agent `{id}` at `{}`.", path.display()));
+            .push_command_output(format!("Edit agent `{id}` at `{}`.", path.display()));
         self.execute_effects(effects);
     }
 
@@ -2457,7 +2565,7 @@ impl AssistantApp {
         } else {
             "provider default"
         };
-        let effects = self.model.push_info(format!(
+        let effects = self.model.push_command_output(format!(
             "Reasoning effort: `{}` ({source}).",
             effective.map(ReasoningEffort::label).unwrap_or("auto")
         ));
@@ -2470,7 +2578,7 @@ impl AssistantApp {
             "assistant: session reasoning effort set to {}",
             effort.map(ReasoningEffort::label).unwrap_or("auto")
         );
-        let effects = self.model.push_info(format!(
+        let effects = self.model.push_command_output(format!(
             "Reasoning effort set to `{}` for this session.",
             effort.map(ReasoningEffort::label).unwrap_or("auto")
         ));
@@ -2501,7 +2609,7 @@ impl AssistantApp {
                         .join("\n");
                     format!("**Workspace conversations**\n\n{rows}\n\nUse `/resume <index-or-id>`.")
                 };
-                let effects = self.model.push_info(body);
+                let effects = self.model.push_local_note(body);
                 self.execute_effects(effects);
             }
             Err(e) => {
@@ -2560,7 +2668,7 @@ impl AssistantApp {
         self.model.session_name = session_name;
         self.execute_effects(cancel);
         log::info!("assistant[{id}]: resumed conversation ({turn_count} turn(s))");
-        let effects = self.model.push_info(format!(
+        let effects = self.model.push_local_note(format!(
             "Resumed `{id}` with {turn_count} turn(s). Agent, effort, and thought settings were preserved."
         ));
         self.execute_effects(effects);
@@ -2615,7 +2723,7 @@ impl AssistantApp {
                     history.compactions.len(),
                     history.interruptions.len()
                 );
-                let effects = self.model.push_info(format!(
+                let effects = self.model.push_command_output(format!(
                     "**Conversation history**\n\n{}",
                     if rows.is_empty() {
                         "No history yet.".to_string()
@@ -2679,7 +2787,7 @@ impl AssistantApp {
             "assistant[{id}]: rewound conversation context safety_checkpoint={}",
             checkpoint.id
         );
-        let effects = self.model.push_info(format!(
+        let effects = self.model.push_local_note(format!(
             "Conversation context rewound to `{selector}`. Safety checkpoint: `{}`. Files and apps were untouched.",
             checkpoint.id
         ));
@@ -2693,7 +2801,7 @@ impl AssistantApp {
             self.model.clear_compaction();
             let effects = self
                 .model
-                .push_info("Nothing to compact yet; fewer than seven turns are active.");
+                .push_local_note("Nothing to compact yet; fewer than seven turns are active.");
             self.execute_effects(effects);
             return;
         }
@@ -2745,7 +2853,7 @@ impl AssistantApp {
             "assistant[{id}]: compacted {compacted} turn(s) checkpoint={}",
             checkpoint.id
         );
-        let effects = self.model.push_info(format!(
+        let effects = self.model.push_local_note(format!(
             "Compacted {compacted} turns into checkpoint `{}`.",
             checkpoint.id
         ));
@@ -2788,7 +2896,7 @@ impl AssistantApp {
                     "assistant[{id}]: exported transcript and audit to {}",
                     path.display()
                 );
-                let effects = self.model.push_info(format!(
+                let effects = self.model.push_local_note(format!(
                     "Exported transcript and tool/audit log to `{}`.",
                     path.display()
                 ));
@@ -2810,7 +2918,7 @@ impl AssistantApp {
             self.model.conversation_id,
             settings::model_tier_name(tier)
         );
-        let effects = self.model.push_info(format!(
+        let effects = self.model.push_local_note(format!(
             "Model tier set to `{}` for this session.",
             settings::model_tier_name(tier)
         ));
@@ -2898,7 +3006,7 @@ impl AssistantApp {
             self.settings.permissions.rules.len(),
             self.settings_errors.len()
         );
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -2953,7 +3061,7 @@ impl AssistantApp {
                 ));
             }
         }
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -2984,7 +3092,7 @@ impl AssistantApp {
             }
             text
         };
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -3071,7 +3179,7 @@ impl AssistantApp {
             self.model.turns.len(),
             chars.div_ceil(4)
         );
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -3102,7 +3210,7 @@ impl AssistantApp {
             )
         };
         log::info!("assistant: /hooks");
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -3140,7 +3248,7 @@ impl AssistantApp {
             }
             out
         };
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -3263,7 +3371,7 @@ impl AssistantApp {
         } else {
             format!("Updated {changed} permission(s).")
         };
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -3324,7 +3432,7 @@ impl AssistantApp {
                 }
             )
         };
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 
@@ -3353,7 +3461,7 @@ impl AssistantApp {
             }
             out
         };
-        let effects = self.model.push_info(text);
+        let effects = self.model.push_command_output(text);
         self.execute_effects(effects);
     }
 }
@@ -3589,6 +3697,86 @@ mod tests {
             seen[0].max_tool_iterations,
             Some(60),
             "app-build turns must get the raised tool-call cap, not the 30-call default"
+        );
+    }
+
+    /// Stint 0380: `/context` and friends land in the next turn's history as
+    /// labelled command output, while user-only rows (`/help`, `/thoughts`,
+    /// `/export`) never reach the model.
+    #[test]
+    fn shared_slash_command_output_reaches_the_model_and_local_output_does_not() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+
+        app.model.composer = "/context".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        app.model.composer = "/help".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        assert!(
+            app.model
+                .turns
+                .iter()
+                .any(|t| t.role == TurnRole::Command && t.text.contains("Assistant context:")),
+            "/context output must be a shared command row: {:?}",
+            app.model.turns
+        );
+        assert!(
+            app.model
+                .turns
+                .iter()
+                .any(|t| t.role == TurnRole::Local && t.text.contains("Built-in commands")),
+            "/help output must be a user-only row: {:?}",
+            app.model.turns
+        );
+
+        let history = app.history_messages();
+        let shared = history
+            .iter()
+            .find(|m| m.content.contains("Assistant context:"))
+            .expect("shared command output must reach the model");
+        assert_eq!(
+            shared.role, "user",
+            "command output is context handed to the model, not something it said"
+        );
+        assert!(
+            shared.content.starts_with("Output of a slash command"),
+            "command output must be labelled as such: {}",
+            shared.content
+        );
+        assert!(
+            !history
+                .iter()
+                .any(|m| m.content.contains("Built-in commands")),
+            "user-only command output must never reach the model: {history:?}"
+        );
+
+        app.model.turns.push(model::Turn::now(
+            TurnRole::Assistant,
+            "I can see the context output.",
+        ));
+        let after_reply = app.history_messages();
+        assert_eq!(
+            after_reply
+                .iter()
+                .filter(|m| m.content.contains("Assistant context:"))
+                .count(),
+            0,
+            "command output is next-turn context and must not grow every later request"
+        );
+
+        app.model
+            .push_command_output("Assistant context: refreshed");
+        let refreshed = app.history_messages();
+        assert_eq!(
+            refreshed
+                .iter()
+                .filter(|m| m.content.contains("Assistant context:"))
+                .count(),
+            1,
+            "a new command row must be injected exactly once, not duplicated"
         );
     }
 
