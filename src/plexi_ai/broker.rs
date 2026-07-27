@@ -281,8 +281,9 @@ fn dispatch_openrouter(
 /// differently-signed binary, so its first Keychain read raises a macOS access
 /// dialog only a human can click — which stalls unattended PR validation. This
 /// var is the escape hatch for exactly that case, gated by
-/// [`crate::config::is_test_channel`] so a leaked env var can never redirect a
-/// real user build's credentials.
+/// [`crate::config::is_test_channel`]. That gate requires a compile-time PR
+/// marker matching the runtime channel, so a leaked env var or renamed
+/// production binary cannot redirect a real user build's credentials.
 pub const TEST_CHANNEL_API_KEY_ENV: &str = "PLEXI_TEST_OPENROUTER_API_KEY";
 
 /// Resolve the broker API key from the test-channel escape hatch.
@@ -295,7 +296,14 @@ fn test_channel_api_key(
     channel: Option<&str>,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    if !crate::config::is_test_channel(channel) {
+    test_channel_api_key_if(crate::config::is_test_channel(channel), lookup)
+}
+
+fn test_channel_api_key_if(
+    is_test_channel: bool,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if !is_test_channel {
         return None;
     }
     lookup(TEST_CHANNEL_API_KEY_ENV).filter(|v| !v.is_empty())
@@ -1255,9 +1263,9 @@ mod tests {
         };
 
         assert_eq!(
-            test_channel_api_key(Some("pr-2493"), present).as_deref(),
+            test_channel_api_key_if(true, present).as_deref(),
             Some("stub-value"),
-            "a pr-<N> build must take the key from the env escape hatch"
+            "a verified pr-<N> build must take the key from the env escape hatch"
         );
 
         for production in [None, Some("alpha"), Some("beta"), Some("main")] {
@@ -1267,10 +1275,10 @@ mod tests {
             );
         }
 
-        for forged in ["pr-", "pr-evil", "pr-12a", "PR-1"] {
+        for forged in ["pr-1", "pr-", "pr-evil", "pr-12a", "PR-1"] {
             assert!(
                 test_channel_api_key(Some(forged), present).is_none(),
-                "channel '{forged}' must not qualify as a test channel"
+                "a normal build renamed to '{forged}' must not qualify as a test channel"
             );
         }
     }
@@ -1278,11 +1286,11 @@ mod tests {
     #[test]
     fn test_channel_env_key_falls_through_when_unset_or_empty() {
         assert!(
-            test_channel_api_key(Some("pr-2493"), |_| None).is_none(),
+            test_channel_api_key_if(true, |_| None).is_none(),
             "unset env var must fall through to the Keychain path"
         );
         assert!(
-            test_channel_api_key(Some("pr-2493"), |_| Some(String::new())).is_none(),
+            test_channel_api_key_if(true, |_| Some(String::new())).is_none(),
             "empty env var must fall through to the Keychain path"
         );
     }

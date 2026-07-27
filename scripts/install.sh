@@ -74,7 +74,16 @@ if [[ "$skip_bin_install" != "1" ]] && $bin_install_needs_sudo; then
   sudo -v
 fi
 
-cargo bundle --release
+# Embed a second, compile-time identity for test-only behavior. The runtime
+# basename remains necessary for profile routing, but is not a security
+# boundary: any installed binary can be renamed. Explicitly clear the marker
+# for every real channel so an inherited shell variable cannot taint a
+# production build.
+if [[ "$channel" =~ ^pr-[0-9]+$ ]]; then
+  PLEXI_BUILD_TEST_CHANNEL="$channel" cargo bundle --release
+else
+  env -u PLEXI_BUILD_TEST_CHANNEL cargo bundle --release
+fi
 
 if [[ ! -d "$app_src" ]]; then
   echo "Error: bundle not found at: $app_src"

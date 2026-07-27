@@ -94,8 +94,10 @@ export PLEXI_TEST_OPENROUTER_API_KEY="$(grep -m1 '^OPENROUTER_API_KEY=' .env | c
 ```
 
 Unset, the Keychain path runs unchanged, so the dialog is back. `alpha`, `beta`,
-and `main` never read this var — do not try to use it to configure a real build.
-Never echo or paste the value.
+and `main` never read this var: the broker requires both the runtime `pr-<N>`
+name and the matching compile-time marker embedded by `scripts/install.sh`.
+Renaming a real-channel binary is insufficient. Do not try to use the var to
+configure a real build. Never echo or paste the value.
 
 ### Capture forms — `--lines 20` is the default; full-buffer reads are the exception
 
