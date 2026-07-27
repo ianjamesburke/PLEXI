@@ -42,6 +42,13 @@ def test_key_moves_piece_and_view_has_canvas() -> None:
     assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
 
 
+def test_playfield_has_a_distinct_backdrop() -> None:
+    commands = tetris._draw(tetris._initial())
+
+    assert commands[0].fill == tetris.PLAYFIELD_BG
+    assert tetris.PLAYFIELD_BG == "#24243a"
+
+
 def test_init_uses_the_continuous_ten_hz_clock() -> None:
     _with_state({})
 

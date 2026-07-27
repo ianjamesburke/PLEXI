@@ -17,6 +17,7 @@ CELL = 20.0
 CANVAS_W = 360.0
 CANVAS_H = 440.0
 TARGET_FPS = 10
+PLAYFIELD_BG = "#24243a"
 
 PIECES: dict[str, dict[str, Any]] = {
     "I": {
@@ -277,7 +278,12 @@ def _draw(data: dict) -> list:
     by = 20.0
     commands: list = [
         CanvasRect(
-            bx - 2, by - 2, COLS * CELL + 4, ROWS * CELL + 4, "#11111b", radius=2.0
+            bx - 2,
+            by - 2,
+            COLS * CELL + 4,
+            ROWS * CELL + 4,
+            PLAYFIELD_BG,
+            radius=2.0,
         )
     ]
     for row in range(ROWS):
