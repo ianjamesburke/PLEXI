@@ -1077,14 +1077,24 @@ mod tests {
                     true,
                     None,
                 ),
-                mk("release checklist", "tag, changelog, notarize, publish", true, None),
+                mk(
+                    "release checklist",
+                    "tag, changelog, notarize, publish",
+                    true,
+                    None,
+                ),
                 mk(
                     "north star — what v1 has to prove",
                     "one workspace you never leave",
                     false,
                     None,
                 ),
-                mk("pricing notes", "seat-based vs usage, land on seats", false, None),
+                mk(
+                    "pricing notes",
+                    "seat-based vs usage, land on seats",
+                    false,
+                    None,
+                ),
                 mk(
                     "wasm wire format decisions",
                     "postcard over JSON for frame payloads",
@@ -1527,8 +1537,9 @@ mod tests {
         };
         let mut tool = row(TurnRole::Tool, "host.files.write", "2026-07-27T00:00:02Z");
         tool.status = Some(crate::assistant::model::ToolStatus::Succeeded);
-        tool.input_summary =
-            Some(r#"{path: notes/log.md, body: line one line two, note: he said "hi"}"#.to_string());
+        tool.input_summary = Some(
+            r#"{path: notes/log.md, body: line one line two, note: he said "hi"}"#.to_string(),
+        );
         tool.output_preview = Some("stdout: wrote 2 lines\nline one\nline two".to_string());
 
         assistant.model.turns = vec![
@@ -2315,13 +2326,13 @@ mod tests {
 
             let squad: Vec<(u64, Pane)> = [
                 (
-                    "impl-a",
+                    "claude-code",
                     crate::app_protocol::AgentState::Working,
                     Some("Edit"),
                 ),
-                ("impl-b", crate::app_protocol::AgentState::Idle, None),
+                ("claude-code", crate::app_protocol::AgentState::Idle, None),
                 (
-                    "tester",
+                    "claude-code",
                     crate::app_protocol::AgentState::Blocked,
                     Some("Bash(just pr-install)"),
                 ),

@@ -51,7 +51,6 @@ enum PaletteEntry {
     },
     /// A pane running an agent, anywhere in the host. Enter focuses it.
     Agent {
-        win_idx: usize,
         window_id: u64,
         pane_id: u64,
         /// Hook-reported agent name (`PaneAgentState::agent`).
@@ -462,9 +461,11 @@ fn palette_pane_rows_for_context(
 /// sourced from every window of every context — the fleet is addressable from
 /// wherever you happen to be standing.
 struct AgentRow {
-    win_idx: usize,
     window_id: u64,
     pane_id: u64,
+    /// One-based position among agent panes in the owning context. This keeps
+    /// same-name squad members distinguishable without exposing tree ids.
+    context_agent_index: usize,
     agent_name: String,
     pane_title: String,
     context_name: String,
@@ -485,16 +486,18 @@ fn agent_state_label(state: &crate::app_protocol::AgentState) -> &'static str {
 /// hook-reported detail (the active tool) when there is one.
 fn agent_row_secondary(
     context_name: &str,
+    context_agent_index: usize,
     state: &crate::app_protocol::AgentState,
     detail: Option<&str>,
 ) -> String {
-    let mut parts: Vec<&str> = Vec::new();
+    let mut parts = Vec::new();
     if !context_name.is_empty() {
-        parts.push(context_name);
+        parts.push(context_name.to_string());
     }
-    parts.push(agent_state_label(state));
+    parts.push(format!("agent {context_agent_index}"));
+    parts.push(agent_state_label(state).to_string());
     if let Some(detail) = detail.filter(|d| !d.is_empty()) {
-        parts.push(detail);
+        parts.push(detail.to_string());
     }
     parts.join(" · ")
 }
@@ -504,7 +507,8 @@ fn palette_agent_rows(
     context_names: &[(u64, String)],
 ) -> Vec<AgentRow> {
     let mut rows = Vec::new();
-    for (win_idx, win) in windows.iter().enumerate() {
+    let mut context_agent_counts = std::collections::HashMap::<u64, usize>::new();
+    for win in windows {
         let Some(root) = win.tree.root() else {
             continue;
         };
@@ -526,6 +530,8 @@ fn palette_agent_rows(
             let Some(agent) = pane.agent() else {
                 continue;
             };
+            let context_agent_index = context_agent_counts.entry(win.context_id).or_default();
+            *context_agent_index += 1;
             let (pane_title, _) = pane_row_identity(pane, context_names);
             // A hook that reports no agent name still gets a nameable row.
             let agent_name = if agent.agent.is_empty() {
@@ -534,9 +540,9 @@ fn palette_agent_rows(
                 agent.agent.clone()
             };
             rows.push(AgentRow {
-                win_idx,
                 window_id: win.window_id,
                 pane_id,
+                context_agent_index: *context_agent_index,
                 agent_name,
                 pane_title,
                 context_name: context_name.clone(),
@@ -791,11 +797,11 @@ impl PlexiApp {
                 continue;
             }
             entries.push(PaletteEntry::Agent {
-                win_idx: row.win_idx,
                 window_id: row.window_id,
                 pane_id: row.pane_id,
                 secondary: agent_row_secondary(
                     &row.context_name,
+                    row.context_agent_index,
                     &row.state,
                     row.detail.as_deref(),
                 ),
@@ -959,7 +965,6 @@ impl PlexiApp {
             RunCommand(PaletteCommand),
             JumpContext(usize, u64, Option<u64>),
             JumpAgent {
-                win_idx: usize,
                 window_id: u64,
                 pane_id: u64,
                 agent_name: String,
@@ -1009,14 +1014,12 @@ impl PlexiApp {
                         action = Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
                     }
                     Some(PaletteEntry::Agent {
-                        win_idx,
                         window_id,
                         pane_id,
                         agent_name,
                         ..
                     }) => {
                         action = Some(Action::JumpAgent {
-                            win_idx: *win_idx,
                             window_id: *window_id,
                             pane_id: *pane_id,
                             agent_name: agent_name.clone(),
@@ -1062,12 +1065,11 @@ impl PlexiApp {
                 return;
             }
             Some(Action::JumpAgent {
-                win_idx,
                 window_id,
                 pane_id,
                 agent_name,
             }) => {
-                self.jump_to_agent_pane(win_idx, window_id, pane_id, &agent_name);
+                self.jump_to_agent_pane(window_id, pane_id, &agent_name);
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 return;
@@ -1239,7 +1241,6 @@ impl PlexiApp {
                                 }
                             }
                             PaletteEntry::Agent {
-                                win_idx,
                                 window_id,
                                 pane_id,
                                 agent_name,
@@ -1277,7 +1278,6 @@ impl PlexiApp {
                                 }
                                 if row_response.row_clicked() {
                                     click_action = Some(Action::JumpAgent {
-                                        win_idx: *win_idx,
                                         window_id: *window_id,
                                         pane_id: *pane_id,
                                         agent_name: agent_name.clone(),
@@ -1464,12 +1464,11 @@ impl PlexiApp {
                             self.palette_query.clear();
                         }
                         Action::JumpAgent {
-                            win_idx,
                             window_id,
                             pane_id,
                             agent_name,
                         } => {
-                            self.jump_to_agent_pane(win_idx, window_id, pane_id, &agent_name);
+                            self.jump_to_agent_pane(window_id, pane_id, &agent_name);
                             self.show_command_palette = false;
                             self.palette_query.clear();
                         }
@@ -1487,8 +1486,7 @@ impl PlexiApp {
                             self.show_command_palette = false;
                             self.palette_query.clear();
                             let path_str = path.display().to_string();
-                            if let Some(pane_id) =
-                                self.find_open_text_editor_pane_any_window(&path)
+                            if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path)
                             {
                                 log::info!(
                                     "palette: note already open in pane {pane_id}, navigating"
@@ -1570,15 +1568,21 @@ impl PlexiApp {
 
     /// Focus an agent pane selected in the palette. Routes through the same
     /// explicit-target navigation the context rows use — the target window
-    /// index and pane id are carried by the row, never read back out of
+    /// window id and pane id are carried by the row, never read back out of
     /// `active_window` or `router.active`.
-    fn jump_to_agent_pane(
-        &mut self,
-        win_idx: usize,
-        window_id: u64,
-        pane_id: u64,
-        agent_name: &str,
-    ) {
+    fn jump_to_agent_pane(&mut self, window_id: u64, pane_id: u64, agent_name: &str) {
+        let Some(win_idx) = self.windows.iter().position(|win| {
+            win.window_id == window_id
+                && win
+                    .panes
+                    .get(&pane_id)
+                    .is_some_and(|pane| pane.agent().is_some())
+        }) else {
+            log::warn!(
+                "palette: agent pane {pane_id} (agent '{agent_name}') disappeared before focus"
+            );
+            return;
+        };
         log::info!("palette: focusing agent pane {pane_id} (agent '{agent_name}')");
         self.jump_to_context(win_idx, window_id, Some(pane_id));
     }
@@ -1994,9 +1998,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["squad-alpha", "squad-alpha", "plexi"]
         );
-        // win_idx/window_id must address the owning window, not the active one.
-        assert_eq!(rows[2].win_idx, 1);
+        // The stable window id must address the owning window, not the active one.
         assert_eq!(rows[2].window_id, 80);
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.context_agent_index)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 1]
+        );
         // Focus is per-window: pane 11 in the squad, pane 20 in the other context.
         assert_eq!(
             rows.iter().map(|r| r.focused).collect::<Vec<_>>(),
@@ -2006,26 +2015,26 @@ mod tests {
     }
 
     #[test]
-    fn squad_panes_sharing_a_title_stay_separable_by_agent_name() {
+    fn squad_panes_sharing_a_title_and_agent_name_stay_distinguishable() {
         use crate::app_protocol::AgentState;
 
-        // stint 0568 spawns N panes into one subcontext; their pane titles can
-        // all be the same, so the agent name has to carry the distinction.
+        // stint 0568 commonly launches the same agent command N times. Those
+        // panes can share both title and reported agent name.
         let squad = window_of(
             7,
             70,
             vec![
                 (
                     10,
-                    test_agent_pane(10, "claude", "impl-a", AgentState::Working, None),
+                    test_agent_pane(10, "claude", "claude-code", AgentState::Working, None),
                 ),
                 (
                     11,
-                    test_agent_pane(11, "claude", "impl-b", AgentState::Idle, None),
+                    test_agent_pane(11, "claude", "claude-code", AgentState::Idle, None),
                 ),
                 (
                     12,
-                    test_agent_pane(12, "claude", "tester", AgentState::Blocked, None),
+                    test_agent_pane(12, "claude", "claude-code", AgentState::Blocked, None),
                 ),
             ],
             0,
@@ -2044,16 +2053,18 @@ mod tests {
             })
             .collect();
 
-        // The shared title matches all three; the agent name narrows to one.
+        // Search still reaches the whole squad, while the visible one-based
+        // positions distinguish otherwise identical rows.
         assert_eq!(
             search.iter().filter(|s| s.contains("claude")).count(),
             3,
             "the shared pane title must reach every squad member"
         );
         assert_eq!(
-            search.iter().filter(|s| s.contains("tester")).count(),
-            1,
-            "the agent name must isolate one squad member"
+            rows.iter()
+                .map(|r| r.context_agent_index)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
         );
         // The context name reaches the whole squad — jump by squad, then pick.
         assert_eq!(
@@ -2067,7 +2078,6 @@ mod tests {
         use crate::app_protocol::AgentState;
 
         let agent = |agent_name: &str, state: AgentState| PaletteEntry::Agent {
-            win_idx: 0,
             window_id: 1,
             pane_id: 10,
             agent_name: agent_name.to_string(),
@@ -2124,7 +2134,6 @@ mod tests {
                 search_text: "claude-ctx".to_string(),
             },
             PaletteEntry::Agent {
-                win_idx: 0,
                 window_id: 1,
                 pane_id: 10,
                 agent_name: "blocked-one".to_string(),
@@ -2145,20 +2154,23 @@ mod tests {
         use crate::app_protocol::AgentState;
 
         assert_eq!(
-            agent_row_secondary("squad-alpha", &AgentState::Working, Some("Bash")),
-            "squad-alpha · working · Bash"
+            agent_row_secondary("squad-alpha", 2, &AgentState::Working, Some("Bash")),
+            "squad-alpha · agent 2 · working · Bash"
         );
         assert_eq!(
-            agent_row_secondary("squad-alpha", &AgentState::Blocked, None),
-            "squad-alpha · blocked"
+            agent_row_secondary("squad-alpha", 1, &AgentState::Blocked, None),
+            "squad-alpha · agent 1 · blocked"
         );
         // An empty detail string is not a detail.
         assert_eq!(
-            agent_row_secondary("plexi", &AgentState::Idle, Some("")),
-            "plexi · idle"
+            agent_row_secondary("plexi", 3, &AgentState::Idle, Some("")),
+            "plexi · agent 3 · idle"
         );
         // A context with no resolvable name still yields a usable line.
-        assert_eq!(agent_row_secondary("", &AgentState::Idle, None), "idle");
+        assert_eq!(
+            agent_row_secondary("", 1, &AgentState::Idle, None),
+            "agent 1 · idle"
+        );
     }
 
     #[test]
@@ -2176,6 +2188,59 @@ mod tests {
         );
         let rows = palette_agent_rows(&[win], &[(7, "squad-alpha".to_string())]);
         assert_eq!(rows[0].agent_name, "claude");
+    }
+
+    #[test]
+    fn agent_jump_switches_window_context_and_focused_pane_together() {
+        use crate::app_protocol::AgentState;
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let target = window_of(
+            7,
+            70,
+            vec![(
+                10,
+                test_agent_pane(10, "claude", "claude-code", AgentState::Working, None),
+            )],
+            0,
+        );
+        h.app.windows.push(target);
+        h.app.router.push(crate::host::context::Context {
+            name: "squad-alpha".to_string(),
+            path: std::env::temp_dir(),
+            root: None,
+            description: None,
+            context_id: 7,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
+
+        h.app.jump_to_agent_pane(70, 10, "claude-code");
+
+        assert_eq!(h.app.active_window, 1);
+        assert_eq!(h.app.windows[h.app.active_window].context_id, 7);
+        assert_eq!(h.app.router.active().context_id, 7);
+        let focused = h.app.windows[1]
+            .focused_pane
+            .and_then(|tile| h.app.windows[1].tree.tiles.get(tile));
+        assert!(matches!(focused, Some(egui_tiles::Tile::Pane(10))));
+        assert_eq!(h.app.context_active_window.get(&7), Some(&70));
+    }
+
+    #[test]
+    fn stale_agent_jump_leaves_focus_unchanged() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let active_window = h.app.active_window;
+        let active_context = h.app.router.active().context_id;
+
+        h.app.jump_to_agent_pane(999, 123, "gone");
+
+        assert_eq!(h.app.active_window, active_window);
+        assert_eq!(h.app.router.active().context_id, active_context);
     }
 
     fn test_pane(id: u64, hidden: bool) -> Pane {

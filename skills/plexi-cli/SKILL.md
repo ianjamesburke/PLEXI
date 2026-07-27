@@ -117,8 +117,9 @@ agent status             Table of pane agent state. Adds DETAIL when any pane re
 
 A reported agent is addressable, not just observable: every pane with agent state
 becomes a row in the human's Cmd+P palette, across every context and window, keyed
-on the `--agent` name and annotated with `--detail`. Blocked agents sort first.
-Report a name a human would search for; keep `--detail` to the active tool.
+on the `--agent` name and annotated with `--detail`. Same-name agents are numbered
+within their context; blocked agents sort first. Report a name a human would
+search for; keep `--detail` to the active tool.
 
 ### workspace, run, routine
 
