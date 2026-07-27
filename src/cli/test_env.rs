@@ -114,4 +114,24 @@ mod tests {
         );
         drop(env);
     }
+
+    #[test]
+    fn guard_restores_when_a_test_panics() {
+        let mut before = None;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let env = socket_env_guard();
+            before = Some(std::env::var_os("PLEXI_SOCKET"));
+            env.set("/tmp/plexi-panicking-guard.sock");
+            panic!("probe unwind");
+        }));
+        assert!(result.is_err());
+
+        let env = socket_env_guard();
+        assert_eq!(
+            std::env::var_os("PLEXI_SOCKET"),
+            before.expect("captured under the socket lock"),
+            "unwinding must restore the value captured at acquisition"
+        );
+        drop(env);
+    }
 }

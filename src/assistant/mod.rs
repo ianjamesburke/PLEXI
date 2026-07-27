@@ -1364,10 +1364,21 @@ impl AssistantApp {
     /// Conversation history for the broker: user/assistant turns plus
     /// delivered app events (as user-role context lines).
     fn history_messages(&self) -> Vec<AiMessage> {
+        // Slash-command output is next-turn context, not permanent context.
+        // Keep the transcript row for rendering/audit, but stop injecting it
+        // after the assistant has had one chance to respond to it. This also
+        // prevents repeated `/history` and `/context` calls from growing every
+        // later broker request without bound.
+        let last_assistant = self
+            .model
+            .turns
+            .iter()
+            .rposition(|turn| turn.role == TurnRole::Assistant);
         self.model
             .turns
             .iter()
-            .filter_map(|turn| match turn.role {
+            .enumerate()
+            .filter_map(|(index, turn)| match turn.role {
                 TurnRole::User => Some(AiMessage {
                     role: "user".to_string(),
                     content: turn.text.clone(),
@@ -1383,13 +1394,16 @@ impl AssistantApp {
                 // Shared slash-command output enters as labelled context, not
                 // as something the assistant said — an assistant that cannot
                 // see `/context` cannot help debug its own session (0380).
-                TurnRole::Command => Some(AiMessage {
-                    role: "user".to_string(),
-                    content: format!(
-                        "Output of a slash command the user ran in this session:\n{}",
-                        turn.text
-                    ),
-                }),
+                TurnRole::Command if last_assistant.is_none_or(|at| index > at) => {
+                    Some(AiMessage {
+                        role: "user".to_string(),
+                        content: format!(
+                            "Output of a slash command the user ran in this session:\n{}",
+                            turn.text
+                        ),
+                    })
+                }
+                TurnRole::Command => None,
                 TurnRole::Tool | TurnRole::Error | TurnRole::Local => None,
             })
             .collect()
@@ -3737,6 +3751,32 @@ mod tests {
                 .iter()
                 .any(|m| m.content.contains("Built-in commands")),
             "user-only command output must never reach the model: {history:?}"
+        );
+
+        app.model.turns.push(model::Turn::now(
+            TurnRole::Assistant,
+            "I can see the context output.",
+        ));
+        let after_reply = app.history_messages();
+        assert_eq!(
+            after_reply
+                .iter()
+                .filter(|m| m.content.contains("Assistant context:"))
+                .count(),
+            0,
+            "command output is next-turn context and must not grow every later request"
+        );
+
+        app.model
+            .push_command_output("Assistant context: refreshed");
+        let refreshed = app.history_messages();
+        assert_eq!(
+            refreshed
+                .iter()
+                .filter(|m| m.content.contains("Assistant context:"))
+                .count(),
+            1,
+            "a new command row must be injected exactly once, not duplicated"
         );
     }
 
