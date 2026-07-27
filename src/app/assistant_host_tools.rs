@@ -5,6 +5,165 @@ use crate::plexi_ai::tool_dispatch::ToolCallResult;
 
 use super::PlexiApp;
 
+/// Assistant host tool that fetches one URL through the host's HTTP broker.
+pub(crate) const HOST_TOOL_NET_FETCH: &str = "host.net.fetch";
+
+/// Cap on the response body handed back to the model. A fetched page is
+/// untrusted text entering a capable planner's context; an unbounded body
+/// would also blow the turn's token budget on one call.
+const MAX_FETCH_BODY_CHARS: usize = 100_000;
+
+/// Methods the Assistant may issue. Anything outside this set is refused
+/// rather than passed through to `ureq`.
+const ALLOWED_FETCH_METHODS: [&str; 5] = ["GET", "HEAD", "POST", "PUT", "DELETE"];
+
+impl PlexiApp {
+    /// Execute one `host.net.fetch` call. Authorization is resolved here on
+    /// the UI thread against the *origin pane's* real permissions — the same
+    /// `net.http` capability and `allowed_hosts` allowlist that gate
+    /// `DrawCommand::HttpRequest` — and only then is the request handed to a
+    /// worker thread, so a hung peer cannot wedge the host. The user-facing
+    /// prompt already happened: the tool is declared non-read-only, so the
+    /// Assistant's gate asks before this is ever reached.
+    pub(crate) fn handle_assistant_net_fetch(
+        &mut self,
+        input_json: &str,
+        origin_pane_id: u64,
+        reply: std::sync::mpsc::SyncSender<ToolCallResult>,
+    ) {
+        let refuse = |reply: &std::sync::mpsc::SyncSender<ToolCallResult>, error: String| {
+            log::warn!("assistant_host_tool: {HOST_TOOL_NET_FETCH} rejected: {error}");
+            let _ = reply.send(failed(error));
+        };
+        let parsed: serde_json::Value = match serde_json::from_str(input_json) {
+            Ok(value) => value,
+            Err(error) => return refuse(&reply, format!("invalid_input: {error}")),
+        };
+        let Some(url) = parsed
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+        else {
+            return refuse(&reply, "invalid_input: url is required".to_string());
+        };
+        let method = parsed
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("GET")
+            .to_ascii_uppercase();
+        if !ALLOWED_FETCH_METHODS.contains(&method.as_str()) {
+            return refuse(
+                &reply,
+                format!(
+                    "invalid_input: method {method} is not allowed (expected one of {})",
+                    ALLOWED_FETCH_METHODS.join(", ")
+                ),
+            );
+        }
+        let allowed_hosts = match self.assistant_net_policy(origin_pane_id) {
+            Ok(hosts) => hosts,
+            Err(error) => return refuse(&reply, error),
+        };
+        if !crate::host::services::http_host_allowed(&url, &allowed_hosts) {
+            return refuse(
+                &reply,
+                format!("net_host_not_allowed: {url} is not an allowed http(s) host"),
+            );
+        }
+        let headers: std::collections::HashMap<String, String> = parsed
+            .get("headers")
+            .and_then(serde_json::Value::as_object)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|value| (key.clone(), value.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let body = parsed
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        log::info!(
+            "assistant_host_tool: {HOST_TOOL_NET_FETCH} {method} {url} origin_pane={origin_pane_id} allowed_hosts={}",
+            if allowed_hosts.is_empty() {
+                "unrestricted".to_string()
+            } else {
+                allowed_hosts.join(",")
+            }
+        );
+        let spawned = std::thread::Builder::new()
+            .name("assistant-net-fetch".to_string())
+            .spawn(move || {
+                use crate::host::services::NetService;
+                let response = crate::host::services::UreqNetService::new()
+                    .http(&method, &url, &headers, body.as_deref());
+                let outcome = if let Some(error) = response.error {
+                    log::warn!("assistant_host_tool: {HOST_TOOL_NET_FETCH} {url} failed: {error}");
+                    failed(format!("fetch_failed: {error}"))
+                } else {
+                    let (text, truncated) = truncate_fetch_body(&response.body);
+                    log::info!(
+                        "assistant_host_tool: {HOST_TOOL_NET_FETCH} {url} status={} bytes={} truncated={truncated}",
+                        response.status,
+                        response.body.len()
+                    );
+                    succeeded(serde_json::json!({
+                        "url": url,
+                        "status": response.status,
+                        "headers": response.response_headers,
+                        "body": text,
+                        "truncated": truncated,
+                    }))
+                };
+                if reply.send(outcome).is_err() {
+                    log::warn!(
+                        "assistant_host_tool: {HOST_TOOL_NET_FETCH} worker dropped its reply channel"
+                    );
+                }
+            });
+        if let Err(error) = spawned {
+            log::error!("assistant_host_tool: failed to spawn net-fetch thread: {error}");
+        }
+    }
+
+    /// Network policy for the Assistant's origin pane: the `net.http`
+    /// capability and the `allowed_hosts` allowlist, read from the pane's own
+    /// permissions rather than from anything the caller declared. Built-in
+    /// panes carry an empty allowlist, which the shared check reads as
+    /// unrestricted http(s) — the same posture a manifest app gets when it
+    /// declares `net.http` without naming hosts.
+    fn assistant_net_policy(&self, origin_pane_id: u64) -> Result<Vec<String>, String> {
+        let Some((window_index, _)) = self.find_pane_in_any_window(origin_pane_id) else {
+            return Err(format!("pane_not_found: {origin_pane_id}"));
+        };
+        let Some(app) = self.windows[window_index]
+            .panes
+            .get(&origin_pane_id)
+            .and_then(crate::host::pane::Pane::as_app)
+        else {
+            return Err(format!("origin pane {origin_pane_id} is not an app pane"));
+        };
+        if !app.permissions.is_builtin
+            && !app.permissions.capabilities.contains(&Capability::NetHttp)
+        {
+            return Err("net_capability_missing: origin app lacks net.http".to_string());
+        }
+        Ok(app.permissions.allowed_hosts.clone())
+    }
+}
+
+/// Trim a fetched body to `MAX_FETCH_BODY_CHARS`, always on a char boundary.
+fn truncate_fetch_body(body: &str) -> (String, bool) {
+    if body.chars().count() <= MAX_FETCH_BODY_CHARS {
+        return (body.to_string(), false);
+    }
+    let cut: String = body.chars().take(MAX_FETCH_BODY_CHARS).collect();
+    (format!("{cut}… [body truncated]"), true)
+}
+
 impl PlexiApp {
     pub(super) fn handle_assistant_host_tool(
         &mut self,
@@ -1059,6 +1218,92 @@ fn failed(error: String) -> ToolCallResult {
 #[cfg(test)]
 mod tests {
     use crate::testing::HostHarness;
+
+    /// Every rejection `host.net.fetch` makes before a socket is opened —
+    /// each one must answer on the reply channel rather than hang the worker.
+    #[test]
+    fn net_fetch_refuses_bad_input_schemes_and_methods_without_touching_the_network() {
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+
+        let refusal = |harness: &mut HostHarness, input: &str| -> String {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            harness.app.handle_assistant_net_fetch(input, origin, tx);
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("net fetch must always answer its reply channel");
+            result.error.expect("expected a refusal")
+        };
+
+        assert!(refusal(&mut harness, "not json").starts_with("invalid_input"));
+        assert!(refusal(&mut harness, "{}").starts_with("invalid_input"));
+        // A non-http(s) scheme is refused even though a built-in pane carries
+        // an empty (unrestricted) allowlist — `file://` is never a read path.
+        assert!(
+            refusal(&mut harness, r#"{"url":"file:///etc/passwd"}"#)
+                .starts_with("net_host_not_allowed"),
+            "file:// must be refused under an empty allowlist"
+        );
+        assert!(refusal(&mut harness, r#"{"url":"https://example.com","method":"TRACE"}"#)
+            .starts_with("invalid_input"));
+
+        let missing_pane = {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            harness
+                .app
+                .handle_assistant_net_fetch(r#"{"url":"https://example.com"}"#, 999_999, tx);
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .error
+                .unwrap()
+        };
+        assert!(missing_pane.starts_with("pane_not_found"), "{missing_pane}");
+    }
+
+    /// The allowlist gating `host.net.fetch` is the pane's own
+    /// `allowed_hosts` — the same source `DrawCommand::HttpRequest` uses —
+    /// not anything the tool call declares.
+    #[test]
+    fn net_fetch_allowlist_comes_from_pane_permissions_not_the_call() {
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+        let app = harness.app.windows[0]
+            .panes
+            .get_mut(&origin)
+            .and_then(crate::host::pane::Pane::as_app_mut)
+            .expect("test pane is an app pane");
+        app.permissions.allowed_hosts = vec!["api.example.com".to_string()];
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        harness.app.handle_assistant_net_fetch(
+            r#"{"url":"https://evil.test/steal","allowed_hosts":["evil.test"]}"#,
+            origin,
+            tx,
+        );
+        let error = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .error
+            .expect("an off-allowlist host must be refused");
+        assert!(error.starts_with("net_host_not_allowed"), "{error}");
+    }
+
+    #[test]
+    fn fetch_body_truncation_lands_on_a_char_boundary() {
+        let short = "hello";
+        assert_eq!(
+            super::truncate_fetch_body(short),
+            ("hello".to_string(), false)
+        );
+        let long: String = std::iter::repeat_n('★', super::MAX_FETCH_BODY_CHARS + 500).collect();
+        let (text, truncated) = super::truncate_fetch_body(&long);
+        assert!(truncated);
+        assert!(text.ends_with("… [body truncated]"), "{}", text.len());
+        assert_eq!(
+            text.chars().count(),
+            super::MAX_FETCH_BODY_CHARS + "… [body truncated]".chars().count()
+        );
+    }
 
     #[test]
     fn scoped_file_helpers_write_read_edit_within_roots_and_reject_escapes() {

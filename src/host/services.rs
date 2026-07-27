@@ -96,6 +96,33 @@ pub struct HttpResponse {
     pub response_headers: std::collections::HashMap<String, Vec<String>>,
 }
 
+/// The single host-side host-allowlist check for every outbound HTTP path:
+/// PGAP `DrawCommand::HttpRequest`, `OpenUrl`, and the Assistant's
+/// `host.net.fetch`. An empty list is unrestricted; a pattern matches the
+/// exact host or any subdomain of it, and any non-`http(s)` scheme is
+/// rejected outright.
+pub fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
+    let host = url::Url::parse(raw_url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+        });
+    let Some(host) = host else {
+        // A non-HTTP scheme is never allowed, even under an empty allowlist:
+        // `file:///…` must not become a read primitive.
+        return false;
+    };
+    if allowed_hosts.is_empty() {
+        return true;
+    }
+    allowed_hosts.iter().any(|pattern| {
+        let pattern = pattern.trim().trim_end_matches('.').to_ascii_lowercase();
+        host == pattern || host.ends_with(&format!(".{pattern}"))
+    })
+}
+
 /// Host-side HTTP broker. `Send + Sync` so a single handle can be shared across
 /// per-pane WASM runtimes that all call out concurrently.
 pub trait NetService: Send + Sync {

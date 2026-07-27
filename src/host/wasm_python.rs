@@ -1939,7 +1939,7 @@ impl LivePythonPane {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if !http_host_allowed(&url, &self.config.allowed_hosts) {
+        if !crate::host::services::http_host_allowed(&url, &self.config.allowed_hosts) {
             self.send_to_runtime(&json!({"type": "http_response", "request_id": request_id, "error": "host is not in manifest allowed_hosts"}));
             return;
         }
@@ -2320,25 +2320,6 @@ fn commit_python_frame(
         *visible_tree = Some(tree);
     }
     Some(sent_at)
-}
-
-fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
-    if allowed_hosts.is_empty() {
-        return true;
-    }
-    let host = url::Url::parse(raw_url)
-        .ok()
-        .filter(|url| matches!(url.scheme(), "http" | "https"))
-        .and_then(|url| {
-            url.host_str()
-                .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
-        });
-    host.as_deref().is_some_and(|host| {
-        allowed_hosts.iter().any(|pattern| {
-            let pattern = pattern.trim().trim_end_matches('.').to_ascii_lowercase();
-            host == pattern || host.ends_with(&format!(".{pattern}"))
-        })
-    })
 }
 
 /// Resolve an app-supplied relative path inside `root`, rejecting absolute
@@ -4249,6 +4230,7 @@ mod tests {
 
     #[test]
     fn manifest_http_hosts_allow_exact_and_subdomains_only() {
+        use crate::host::services::http_host_allowed;
         let hosts = vec!["api.example.com".to_string()];
         assert!(http_host_allowed("https://api.example.com/v1", &hosts));
         assert!(http_host_allowed("https://x.api.example.com/v1", &hosts));
