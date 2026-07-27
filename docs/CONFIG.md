@@ -80,6 +80,19 @@ model_medium = "llama3.3:70b"
 model_high   = "qwq:32b"
 ```
 
+Use `local` for any other OpenAI-compatible chat-completions server (e.g. a Meridian proxy). `base_url` is required. `api_key_env` is optional: when set, the named environment variable must hold the key; when unset, no auth header is sent.
+
+```toml
+[ai]
+backend = "local"
+
+[ai.local]
+base_url     = "http://127.0.0.1:3456"
+model_low    = "claude-haiku-4-5"
+model_medium = "claude-opus-5"
+model_high   = "claude-fable-5"
+```
+
 Optional AI spend caps:
 
 ```toml
@@ -168,7 +181,7 @@ ghost_opacity = 0.75
 # interrupt_threshold = 100    # 0=LOW 50=NORMAL 100=HIGH 200=CRITICAL
 
 [ai]
-backend = "openrouter"         # "openrouter" (cloud) or "ollama" (local)
+backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
@@ -181,6 +194,12 @@ model_high   = "anthropic/claude-fable-5"
 # model_low    = "llama3.2:3b"
 # model_medium = "llama3.3:70b"
 # model_high   = "qwq:32b"
+
+# [ai.local]                   # any OpenAI-compatible server; api_key_env optional
+# base_url     = "http://127.0.0.1:3456"
+# model_low    = "claude-haiku-4-5"
+# model_medium = "claude-opus-5"
+# model_high   = "claude-fable-5"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart

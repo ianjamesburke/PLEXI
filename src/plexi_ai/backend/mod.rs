@@ -1,12 +1,15 @@
 //! AI backend abstraction for the Plexi AI broker.
 //!
-//! Concrete backends: `OpenRouterBackend` (SSE streaming via OpenRouter) and
-//! `OllamaBackend` (NDJSON streaming via local Ollama). The host reads API
-//! keys from the environment at dispatch time; apps never see keys.
+//! Concrete backends: `OpenRouterBackend` (SSE streaming via OpenRouter),
+//! `OllamaBackend` (NDJSON streaming via local Ollama), and
+//! `LocalOpenAiBackend` (OpenAI-compatible SSE streaming against a
+//! configurable base URL). The host reads API keys from the environment at
+//! dispatch time; apps never see keys.
 //!
 //! Backends deliver events through an `mpsc::Sender<StreamEvent>` so the
 //! caller can drain a receiver each frame without blocking the UI.
 
+pub mod local;
 pub mod ollama;
 pub mod openrouter;
 

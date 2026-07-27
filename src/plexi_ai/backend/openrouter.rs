@@ -4,6 +4,10 @@
 //! no tokio). The host reads `OPENROUTER_API_KEY` from the environment at
 //! dispatch time; apps never see the key.
 //!
+//! The SSE streaming worker (`stream_openai_compatible`) speaks the plain
+//! OpenAI chat-completions protocol against any endpoint URL — the `local`
+//! backend (`super::local`) reuses it against a configurable base URL.
+//!
 //! **System prompt format:** OpenRouter uses the OpenAI message format.
 //! The system prompt is injected as a leading `{"role":"system","content":"…"}`
 //! entry in the messages array — NOT as a top-level `"system"` field (which
@@ -67,7 +71,14 @@ impl AiBackend for OpenRouterBackend {
         thread::Builder::new()
             .name("plexi-ai-openrouter".to_string())
             .spawn(move || {
-                stream_openrouter(api_key, model, request, tx);
+                stream_openai_compatible(
+                    OPENROUTER_ENDPOINT,
+                    Some(api_key),
+                    model,
+                    true,
+                    request,
+                    tx,
+                );
             })
             .map_err(|e| {
                 AiBackendError::Io(format!("failed to spawn OpenRouter stream thread: {e}"))
@@ -127,10 +138,31 @@ fn sanitize_message_tool_names(message: &mut serde_json::Value) {
     }
 }
 
-/// Worker: calls OpenRouter SSE endpoint and delivers events to `tx`.
-fn stream_openrouter(
-    api_key: String,
+/// Canonical OpenRouter chat-completions endpoint.
+const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+
+/// `Authorization` header value for an OpenAI-compatible request — present
+/// only when an API key is configured (local proxies may accept
+/// unauthenticated requests).
+fn authorization_header(api_key: Option<&str>) -> Option<String> {
+    api_key.map(|key| format!("Bearer {key}"))
+}
+
+/// Worker: streams a turn from any OpenAI-compatible chat-completions SSE
+/// endpoint and delivers events to `tx`. OpenRouter passes its canonical
+/// endpoint and required key; the `local` backend passes `{base_url}/v1/…`
+/// and an optional key. The `X-Generation-Id` capture is OpenRouter-specific
+/// — other endpoints simply omit the header and `Done.generation_id` is None.
+///
+/// `openrouter_reasoning` gates the nonstandard `reasoning` body field
+/// (OpenRouter's extension for reasoning-effort control): strict
+/// OpenAI-compatible servers reject unknown request properties, so the
+/// `local` backend passes `false`.
+pub(super) fn stream_openai_compatible(
+    endpoint: &str,
+    api_key: Option<String>,
     model: String,
+    openrouter_reasoning: bool,
     request: AiBackendRequest,
     tx: mpsc::Sender<StreamEvent>,
 ) {
@@ -191,13 +223,15 @@ fn stream_openrouter(
         body["tools"] = serde_json::Value::Array(tools_json);
     }
 
-    apply_reasoning_config(&mut body, request.model_tier, request.reasoning_effort);
+    if openrouter_reasoning {
+        apply_reasoning_config(&mut body, request.model_tier, request.reasoning_effort);
+    }
 
     let body_str = match serde_json::to_string(&body) {
         Ok(s) => s,
         Err(e) => {
             let _ = tx.send(StreamEvent::Error(format!(
-                "failed to serialize OpenRouter request: {e}"
+                "failed to serialize chat-completions request: {e}"
             )));
             return;
         }
@@ -209,13 +243,15 @@ fn stream_openrouter(
         .timeout(std::time::Duration::from_secs(90))
         .build();
 
-    let resp = agent
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .set("Authorization", &format!("Bearer {api_key}"))
+    let mut req = agent
+        .post(endpoint)
         .set("Content-Type", "application/json")
         .set("HTTP-Referer", "https://plexiapp.com")
-        .set("X-Title", "Plexi")
-        .send_string(&body_str);
+        .set("X-Title", "Plexi");
+    if let Some(auth) = authorization_header(api_key.as_deref()) {
+        req = req.set("Authorization", &auth);
+    }
+    let resp = req.send_string(&body_str);
 
     let resp = match resp {
         Ok(r) => r,
@@ -225,7 +261,7 @@ fn stream_openrouter(
             // "metadata":{"raw":"<the upstream provider's actual error>"}}}.
             // "Provider returned error" alone is undiagnosable — always
             // surface metadata.raw when present and log the full body.
-            log::warn!("openrouter: http {status} error body: {body}");
+            log::warn!("openai_compat[{endpoint}]: http {status} error body: {body}");
             let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
             let message = parsed
                 .as_ref()
@@ -241,12 +277,14 @@ fn stream_openrouter(
                 (None, _) => body.clone(),
             };
             let _ = tx.send(StreamEvent::Error(format!(
-                "openrouter http error {status}: {msg}"
+                "http error {status} from {endpoint}: {msg}"
             )));
             return;
         }
         Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format!("openrouter io error: {e}")));
+            let _ = tx.send(StreamEvent::Error(format!(
+                "io error from {endpoint}: {e}"
+            )));
             return;
         }
     };
@@ -267,7 +305,7 @@ fn stream_openrouter(
         // the token. Stop reading and drop `tx` — the turn loop returns the
         // partial text accumulated so far rather than draining the full stream.
         if request.cancel.is_cancelled() {
-            log::info!("openrouter: stream cancelled by caller — aborting read mid-stream");
+            log::info!("openai_compat[{endpoint}]: stream cancelled by caller — aborting read mid-stream");
             return;
         }
         let line = match line_result {
@@ -296,7 +334,7 @@ fn stream_openrouter(
         let chunk: serde_json::Value = match serde_json::from_str(data) {
             Ok(v) => v,
             Err(e) => {
-                log::debug!("openrouter: failed to parse SSE chunk: {e} — data={data}");
+                log::debug!("openai_compat[{endpoint}]: failed to parse SSE chunk: {e} — data={data}");
                 continue;
             }
         };
@@ -321,7 +359,7 @@ fn stream_openrouter(
                 .unwrap_or("unknown error")
                 .to_string();
             let _ = tx.send(StreamEvent::Error(format!(
-                "openrouter stream error: {msg}"
+                "stream error from {endpoint}: {msg}"
             )));
             return;
         }
@@ -423,7 +461,7 @@ fn stream_openrouter(
     });
     if input_tokens.is_none() && output_tokens.is_none() {
         log::debug!(
-            "openrouter: stream completed without usage metadata; broker will use generation endpoint fallback"
+            "openai_compat[{endpoint}]: stream completed without usage metadata; broker will use generation endpoint fallback"
         );
     }
 }
@@ -474,6 +512,17 @@ mod tests {
         });
         sanitize_message_tool_names(&mut tool_msg);
         assert_eq!(tool_msg["name"], serde_json::json!("host_build_run"));
+    }
+
+    /// Auth header is present only when an API key is configured — the local
+    /// backend passes `None` for unauthenticated proxies (e.g. Meridian).
+    #[test]
+    fn authorization_header_present_only_with_key() {
+        assert_eq!(
+            authorization_header(Some("sk-test")).as_deref(),
+            Some("Bearer sk-test")
+        );
+        assert_eq!(authorization_header(None), None);
     }
 
     #[test]

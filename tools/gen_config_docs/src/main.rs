@@ -325,7 +325,7 @@ plexi secret set openrouter-api-key --global
         let scalar: Vec<&FieldInfo> = s
             .fields
             .iter()
-            .filter(|f| f.name != "openrouter" && f.name != "ollama")
+            .filter(|f| f.name != "openrouter" && f.name != "ollama" && f.name != "local")
             .collect();
         emit_table_refs(&scalar);
     }
@@ -337,6 +337,11 @@ plexi secret set openrouter-api-key --global
 
     println!("#### Ollama (`[ai.ollama]`)\n");
     if let Some(s) = structs.get("OllamaBackendConfig") {
+        emit_table(&s.fields);
+    }
+
+    println!("#### Local OpenAI-compatible (`[ai.local]`)\n");
+    if let Some(s) = structs.get("LocalBackendConfig") {
         emit_table(&s.fields);
     }
 
