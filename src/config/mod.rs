@@ -874,6 +874,27 @@ pub fn build_channel() -> Option<String> {
     }
 }
 
+/// True when this binary was compiled for, and is currently running as, the
+/// same disposable per-PR test channel (`pr-<N>`).
+///
+/// This is the *only* sanctioned way to ask "is this a throwaway test build?".
+/// Runtime naming alone is not trusted: renaming a production binary to
+/// `plexi-pr-1` must not unlock test-only behavior. `scripts/install.sh` embeds
+/// the marker only while building an all-digit PR channel.
+pub fn is_test_channel(channel: Option<&str>) -> bool {
+    is_matching_test_channel(option_env!("PLEXI_BUILD_TEST_CHANNEL"), channel)
+}
+
+fn is_matching_test_channel(compiled: Option<&str>, runtime: Option<&str>) -> bool {
+    let Some(compiled) = compiled else {
+        return false;
+    };
+    compiled == runtime.unwrap_or_default()
+        && compiled
+            .strip_prefix("pr-")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Maps a binary basename to its config directory name.
 /// `plexi` → `.plexi`; `plexi-<suffix>` → `.plexi-<suffix>`.
 fn channel_suffix_from_basename(basename: &str) -> String {
@@ -1674,6 +1695,33 @@ mod tests {
     #[test]
     fn config_dir_name_alpha() {
         assert_eq!(channel_suffix_from_basename("plexi-alpha"), ".plexi-alpha");
+    }
+
+    #[test]
+    fn only_numbered_pr_channels_are_test_channels() {
+        assert!(is_matching_test_channel(Some("pr-1"), Some("pr-1")));
+        assert!(is_matching_test_channel(
+            Some("pr-2493"),
+            Some("pr-2493")
+        ));
+
+        for (compiled, runtime) in [
+            (None, Some("pr-1")),
+            (Some("pr-1"), None),
+            (Some("pr-1"), Some("main")),
+            (Some("pr-1"), Some("alpha")),
+            (Some("pr-1"), Some("beta")),
+            (Some("pr-1"), Some("pr-2")),
+            (Some("pr-"), Some("pr-")),
+            (Some("pr-evil"), Some("pr-evil")),
+            (Some("pr-12a"), Some("pr-12a")),
+            (Some("PR-1"), Some("PR-1")),
+        ] {
+            assert!(
+                !is_matching_test_channel(compiled, runtime),
+                "compiled={compiled:?}, runtime={runtime:?} must not be a test channel"
+            );
+        }
     }
 
     #[test]

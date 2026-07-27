@@ -79,6 +79,26 @@ Exact forms confirmed in live runs. Use them; don't invent variants.
 
 **Backtick trap:** never put backticks in the text you pass to `plexi pane send` from a double-quoted shell string — they trigger command substitution and the send fails or mangles. Write commands and paths bare in briefs.
 
+### AI broker key on `pr-<N>` channels — export `PLEXI_TEST_OPENROUTER_API_KEY`
+
+Every `plexi-pr-<N>` binary is signed differently, so its first Keychain read
+raises a macOS access dialog only a human can click — which silently stalls an
+unattended tester mid-run. On a `pr-<N>` channel only, the broker takes the key
+from `PLEXI_TEST_OPENROUTER_API_KEY` and skips the Keychain entirely
+(`test_channel_api_key` in `src/plexi_ai/broker.rs`). Export it in the pane that
+starts the PR host whenever the stints under test touch the assistant or
+`ai.query`:
+
+```bash
+export PLEXI_TEST_OPENROUTER_API_KEY="$(grep -m1 '^OPENROUTER_API_KEY=' .env | cut -d= -f2-)"
+```
+
+Unset, the Keychain path runs unchanged, so the dialog is back. `alpha`, `beta`,
+and `main` never read this var: the broker requires both the runtime `pr-<N>`
+name and the matching compile-time marker embedded by `scripts/install.sh`.
+Renaming a real-channel binary is insufficient. Do not try to use the var to
+configure a real build. Never echo or paste the value.
+
 ### Capture forms — `--lines 20` is the default; full-buffer reads are the exception
 
 Since stint 0383 (PR #2390), `capture --lines N` returns the last N real content lines on full-screen TUIs. Cost order, cheapest first:

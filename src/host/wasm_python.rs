@@ -35,8 +35,8 @@ use super::wasm_app::bindings::plexi::platform::types::{
 };
 #[cfg(test)]
 use super::wasm_app::bindings::plexi::platform::types::{
-    FileReadEffect, FileWriteEffect, HttpFetchEffect, InputEvent, KeyEvent, StateSnapshot,
-    TimerEffect, UiActionEvent, UiValueChangeEvent,
+    DeclareToolsEffect, FileReadEffect, FileWriteEffect, HttpFetchEffect, InputEvent, KeyEvent,
+    StateSnapshot, TimerEffect, ToolDecl, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
 };
 use super::wasm_app::Alignment;
 #[cfg(test)]
@@ -3076,6 +3076,35 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
             &value, "id",
         )?))),
         "GetSystemStats" => Ok(PythonBridgeEffect::Host(Effect::GetSystemStats)),
+        // v3.7 tool protocol. The SDK names these `ExposeTools`/`ToolResult`
+        // after the wire commands; the WIT effect variants are
+        // `declare-tools`/`tool-result`. Schemas cross the bridge as JSON
+        // objects and are re-serialized into the WIT string fields.
+        "ExposeTools" => Ok(PythonBridgeEffect::Host(Effect::DeclareTools(
+            DeclareToolsEffect {
+                tools: value
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        WasmPythonError::BridgeJson(
+                            "ExposeTools missing array 'tools'".to_string(),
+                        )
+                    })?
+                    .iter()
+                    .map(decode_tool_decl)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+        ))),
+        "ToolResult" => Ok(PythonBridgeEffect::Host(Effect::ToolResult(
+            ToolResultEffect {
+                call_id: required_string(&value, "call_id")?,
+                output_json: value
+                    .get("output_json")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                error: value.get("error").and_then(Value::as_str).map(str::to_string),
+            },
+        ))),
         "FileRead" => Ok(PythonBridgeEffect::Host(Effect::FileRead(FileReadEffect {
             path: required_string(&value, "path")?,
         }))),
@@ -3577,6 +3606,36 @@ fn decode_hex_color(hex: &str) -> Result<Color, WasmPythonError> {
             "invalid color '{hex}': expected #rrggbb or #rrggbbaa"
         ))),
     }
+}
+
+/// Decode one SDK `AiTool` payload into the WIT `tool-decl` record.
+///
+/// The Python side carries `input_schema`/`output_schema` as JSON objects while
+/// WIT carries them as strings, so both are re-serialized here.
+#[cfg(test)]
+fn decode_tool_decl(value: &Value) -> Result<ToolDecl, WasmPythonError> {
+    let schema = |field: &str| -> Result<String, WasmPythonError> {
+        let schema = value.get(field).ok_or_else(|| {
+            WasmPythonError::BridgeJson(format!("tool missing object field '{field}'"))
+        })?;
+        if !schema.is_object() {
+            return Err(WasmPythonError::BridgeJson(format!(
+                "tool field '{field}' must be a JSON object"
+            )));
+        }
+        serde_json::to_string(schema).map_err(|e| WasmPythonError::BridgeJson(e.to_string()))
+    };
+    Ok(ToolDecl {
+        name: required_string(value, "name")?,
+        description: required_string(value, "description")?,
+        input_schema_json: schema("input_schema")?,
+        output_schema_json: schema("output_schema")?,
+        timeout_ms: value.get("timeout_ms").and_then(Value::as_u64),
+        read_only: value
+            .get("read_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
 }
 
 fn required_string(value: &Value, field: &str) -> Result<String, WasmPythonError> {
@@ -5286,6 +5345,68 @@ execution = "cloud"
             .nodes
             .iter()
             .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text == "Calculator")));
+
+        // Calc declares its connector tools on init; the bridge must carry the
+        // whole set across with schemas re-serialized into the WIT string fields.
+        let declared = init
+            .iter()
+            .find_map(|effect| match effect {
+                PythonBridgeEffect::Host(Effect::DeclareTools(req)) => Some(req),
+                _ => None,
+            })
+            .expect("calc init must declare tools");
+        let names: Vec<&str> = declared.tools.iter().map(|t| t.name.as_str()).collect();
+        for expected in [
+            "calc.add",
+            "calc.subtract",
+            "calc.multiply",
+            "calc.divide",
+            "calc.evaluate",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "missing declared tool {expected} in {names:?}"
+            );
+        }
+        for tool in &declared.tools {
+            assert!(tool.read_only, "{} must be read-only", tool.name);
+            assert!(
+                serde_json::from_str::<Value>(&tool.input_schema_json)
+                    .expect("input schema json")
+                    .is_object(),
+                "{} input schema must cross the bridge as a JSON object string",
+                tool.name
+            );
+            assert!(serde_json::from_str::<Value>(&tool.output_schema_json)
+                .expect("output schema json")
+                .is_object());
+        }
+    }
+
+    #[test]
+    fn native_python_bridge_decodes_tool_result_effect() {
+        let effects = decode_effects(
+            r#"[{"type":"ToolResult","call_id":"call-1","output_json":"{\"result\":12}","error":null}]"#,
+        )
+        .expect("tool result effect");
+        let PythonBridgeEffect::Host(Effect::ToolResult(result)) = &effects[0] else {
+            panic!("expected ToolResult, got {:?}", effects[0]);
+        };
+        assert_eq!(result.call_id, "call-1");
+        assert_eq!(result.output_json.as_deref(), Some(r#"{"result":12}"#));
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn native_python_bridge_rejects_non_object_tool_schema() {
+        let err = decode_effects(
+            r#"[{"type":"ExposeTools","tools":[{"name":"t","description":"d","input_schema":"nope","output_schema":{},"timeout_ms":null,"read_only":true}]}]"#,
+        )
+        .expect_err("a string schema must not silently decode");
+        assert!(
+            format!("{err}").contains("input_schema"),
+            "error must name the offending field: {err}"
+        );
     }
 
     #[test]
