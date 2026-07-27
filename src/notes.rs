@@ -191,7 +191,27 @@ pub(crate) fn context_scope_root(ctx: &Context) -> &Path {
 /// `/foo/bar`. `Path::starts_with` compares whole components, which is exactly
 /// the boundary we need.
 pub(crate) fn is_self_or_descendant(candidate: &Path, ancestor: &Path) -> bool {
-    candidate.starts_with(ancestor)
+    comparable_scope_path(candidate).starts_with(comparable_scope_path(ancestor))
+}
+
+/// Resolve symlinks when both roots exist; otherwise remove lexical `.` / `..`
+/// components. This keeps descendant matching component-safe for live contexts
+/// whose configured roots use different but equivalent path spellings.
+fn comparable_scope_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Lowercase ASCII slug of a path's final component, for human readability in
@@ -237,6 +257,21 @@ pub(crate) fn context_notes_dir(root: &Path) -> PathBuf {
         .join(context_notes_dir_name(root))
 }
 
+/// Legacy dir readable by `active` only when its basename identifies exactly
+/// one live context. Ambiguous legacy notes stay on disk but are never presented
+/// as belonging to an arbitrary context.
+pub(crate) fn unambiguous_legacy_notes_dir(
+    contexts: &[Context],
+    active: &Context,
+) -> Option<PathBuf> {
+    let slug = context_scope_root(active).file_name()?;
+    let matches = contexts
+        .iter()
+        .filter(|ctx| context_scope_root(ctx).file_name() == Some(slug))
+        .count();
+    (matches == 1).then(|| crate::config::config_dir().join("notes").join(slug))
+}
+
 /// One kept-notes directory to scan, with the label shown on its rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ContextNotesScope {
@@ -249,7 +284,10 @@ pub(crate) struct ContextNotesScope {
 /// Kept-note dirs for `active`: its own dir first, then every descendant
 /// context's dir in the order they appear in `contexts`. Pure string work over
 /// the live context list.
-pub(crate) fn context_notes_scopes(contexts: &[Context], active: &Context) -> Vec<ContextNotesScope> {
+pub(crate) fn context_notes_scopes(
+    contexts: &[Context],
+    active: &Context,
+) -> Vec<ContextNotesScope> {
     let active_root = context_scope_root(active);
     let mut seen = std::collections::HashSet::new();
     let mut scopes = vec![ContextNotesScope {
@@ -328,21 +366,23 @@ pub(crate) fn migrate_legacy_workspace_notes(contexts: &[Context]) -> NotesMigra
         return report;
     }
 
-    // Legacy slugs were the basename of the launch workspace root. Match on the
-    // basename of each context's scope root; shallowest context wins so a
-    // parent takes precedence over a same-named child.
-    let mut candidates: Vec<&Context> = contexts.iter().collect();
-    candidates.sort_by_key(|c| (c.depth, c.context_id));
-
     for (slug, src_dir) in legacy_dirs {
-        let Some(ctx) = candidates.iter().find(|c| {
-            context_scope_root(c)
-                .file_name()
-                .map(|n| n.to_string_lossy() == slug.as_str())
-                .unwrap_or(false)
-        }) else {
+        // A legacy slug contains only a basename. It cannot distinguish two
+        // contexts with the same basename, so ambiguity is unmappable rather
+        // than a license to pick one and misfile a person's notes.
+        let matches: Vec<&Context> = contexts
+            .iter()
+            .filter(|c| {
+                context_scope_root(c)
+                    .file_name()
+                    .map(|n| n.to_string_lossy() == slug.as_str())
+                    .unwrap_or(false)
+            })
+            .collect();
+        let [ctx] = matches.as_slice() else {
             log::warn!(
-                "notes_migration: no context matches legacy dir {slug:?} — leaving notes in place at {src_dir:?}"
+                "notes_migration: legacy dir {slug:?} has {} matching contexts — leaving notes in place at {src_dir:?}",
+                matches.len()
             );
             report.unmapped_dirs.push(slug);
             continue;
@@ -409,47 +449,85 @@ enum MigratedNote {
 /// Copy one note into `dest_dir`, verify it landed, then remove the source.
 /// Never overwrites and never removes a source whose copy is unconfirmed.
 fn migrate_one_note(src: &Path, dest_dir: &Path) -> std::io::Result<MigratedNote> {
+    use std::io::Write;
+
     let src_bytes = std::fs::read(src)?;
     let file_name = src
         .file_name()
         .ok_or_else(|| std::io::Error::other(format!("no file name in {src:?}")))?;
 
-    let mut dest = dest_dir.join(file_name);
-    if dest.exists() {
-        if std::fs::read(&dest).map(|b| b == src_bytes).unwrap_or(false) {
-            // Already migrated (or a re-run) — the destination is authoritative.
+    let primary = dest_dir.join(file_name);
+    if std::fs::read(&primary)
+        .map(|b| b == src_bytes)
+        .unwrap_or(false)
+    {
+        // Already migrated (or a re-run) — the destination is authoritative.
+        std::fs::remove_file(src)?;
+        return Ok(MigratedNote::AlreadyPresent(primary));
+    }
+
+    // A process may have died after confirming a suffixed collision copy but
+    // before removing the source. Reuse that byte-identical copy on the next
+    // pass instead of manufacturing `-legacy-1`, `-legacy-2`, and so on.
+    for dest in collision_destinations(dest_dir, src) {
+        if std::fs::read(&dest)
+            .map(|b| b == src_bytes)
+            .unwrap_or(false)
+        {
             std::fs::remove_file(src)?;
             return Ok(MigratedNote::AlreadyPresent(dest));
         }
-        dest = non_colliding_dest(dest_dir, src)?;
     }
 
-    std::fs::write(&dest, &src_bytes)?;
-    let landed = std::fs::metadata(&dest)?.len() as usize == src_bytes.len();
-    if !landed {
+    let (dest, mut file) = create_collision_safe_destination(dest_dir, src)?;
+    file.write_all(&src_bytes)?;
+    file.sync_all()?;
+    drop(file);
+    if std::fs::read(&dest)? != src_bytes {
         return Err(std::io::Error::other(format!(
-            "destination {dest:?} short-wrote; source kept"
+            "destination {dest:?} did not verify byte-for-byte; source kept"
         )));
     }
     std::fs::remove_file(src)?;
     Ok(MigratedNote::Moved(dest))
 }
 
-/// `<stem>-legacy[-N].md` inside `dest_dir`, first name that does not exist.
-fn non_colliding_dest(dest_dir: &Path, src: &Path) -> std::io::Result<PathBuf> {
+fn collision_destinations<'a>(
+    dest_dir: &'a Path,
+    src: &'a Path,
+) -> impl Iterator<Item = PathBuf> + 'a {
     let stem = src
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "note".to_string());
-    for n in 0..1000 {
+    (0..1000).map(move |n| {
         let name = if n == 0 {
             format!("{stem}-legacy.md")
         } else {
             format!("{stem}-legacy-{n}.md")
         };
-        let candidate = dest_dir.join(name);
-        if !candidate.exists() {
-            return Ok(candidate);
+        dest_dir.join(name)
+    })
+}
+
+/// Atomically reserve either the original filename or a legacy suffix.
+fn create_collision_safe_destination(
+    dest_dir: &Path,
+    src: &Path,
+) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let primary = dest_dir.join(
+        src.file_name()
+            .ok_or_else(|| std::io::Error::other(format!("no file name in {src:?}")))?,
+    );
+    for candidate in std::iter::once(primary).chain(collision_destinations(dest_dir, src)) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
         }
     }
     Err(std::io::Error::other(format!(
@@ -771,10 +849,32 @@ mod tests {
     }
 
     #[test]
+    fn descendant_match_normalizes_equivalent_live_context_paths() {
+        assert!(is_self_or_descendant(
+            Path::new("/foo/project/tmp/../child"),
+            Path::new("/foo/project")
+        ));
+
+        let fixture = tempfile::tempdir().expect("temp fixture");
+        let real = fixture.path().join("real");
+        let child = real.join("child");
+        let alias = fixture.path().join("alias");
+        std::fs::create_dir_all(&child).expect("real child");
+        std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+        assert!(
+            is_self_or_descendant(&alias.join("child"), &real),
+            "existing symlink aliases should compare by canonical components"
+        );
+    }
+
+    #[test]
     fn context_dir_name_is_readable_stable_and_collision_free() {
         let a = context_notes_dir_name(Path::new("/Users/x/Code/My Project"));
         assert!(a.starts_with("ctx-my-project-"), "unexpected dir name {a}");
-        assert_eq!(a, context_notes_dir_name(Path::new("/Users/x/Code/My Project")));
+        assert_eq!(
+            a,
+            context_notes_dir_name(Path::new("/Users/x/Code/My Project"))
+        );
 
         // Same basename, different root — must not collide.
         let b = context_notes_dir_name(Path::new("/Users/x/Other/My Project"));
@@ -893,6 +993,32 @@ mod tests {
     }
 
     #[test]
+    fn migration_retry_reuses_a_confirmed_collision_copy() {
+        let (_guard, notes) = notes_profile("collision-retry");
+        let root = Path::new("/tmp/plexi-mig-collision-retry/proj");
+        let contexts = vec![ctx(1, "proj", "/tmp/plexi-mig-collision-retry/proj", 0)];
+
+        let legacy = notes.join("proj");
+        std::fs::create_dir_all(&legacy).expect("legacy dir");
+        std::fs::write(legacy.join("a.md"), "legacy body").expect("seed legacy");
+        let dest = context_notes_dir(root);
+        std::fs::create_dir_all(&dest).expect("dest dir");
+        std::fs::write(dest.join("a.md"), "newer body").expect("seed primary");
+        // Simulate death after the collision copy was confirmed but before the
+        // source was removed.
+        std::fs::write(dest.join("a-legacy.md"), "legacy body").expect("seed prior copy");
+
+        let report = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(report.already_present, 1);
+        assert_eq!(report.moved, 0);
+        assert!(!legacy.exists());
+        assert!(
+            !dest.join("a-legacy-1.md").exists(),
+            "a retry must not duplicate the already-confirmed collision copy"
+        );
+    }
+
+    #[test]
     fn migration_treats_an_identical_destination_as_already_migrated() {
         let (_guard, notes) = notes_profile("identical");
         let root = Path::new("/tmp/plexi-mig-identical/proj");
@@ -930,6 +1056,28 @@ mod tests {
             "orphan note",
             "an unmappable note is never dropped"
         );
+    }
+
+    #[test]
+    fn migration_leaves_ambiguous_legacy_notes_in_place() {
+        let (_guard, notes) = notes_profile("ambiguous");
+        let contexts = vec![
+            ctx(1, "proj-a", "/tmp/plexi-mig-ambiguous/a/proj", 0),
+            ctx(2, "proj-b", "/tmp/plexi-mig-ambiguous/b/proj", 0),
+        ];
+
+        let legacy = notes.join("proj");
+        std::fs::create_dir_all(&legacy).expect("legacy dir");
+        std::fs::write(legacy.join("keep.md"), "ambiguous note").expect("seed");
+
+        let report = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(report.unmapped_dirs, vec!["proj".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(legacy.join("keep.md")).unwrap(),
+            "ambiguous note"
+        );
+        assert!(!context_notes_dir(Path::new("/tmp/plexi-mig-ambiguous/a/proj")).exists());
+        assert!(!context_notes_dir(Path::new("/tmp/plexi-mig-ambiguous/b/proj")).exists());
     }
 
     #[test]

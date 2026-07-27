@@ -4603,9 +4603,10 @@ impl PlexiApp {
 
         // Belt and braces: a legacy dir whose migration could not complete stays
         // readable for the context it belongs to rather than silently vanishing.
-        let legacy_dir = crate::notes::context_scope_root(self.router.active())
-            .file_name()
-            .map(|slug| notes_base.join(slug));
+        let legacy_dir = crate::notes::unambiguous_legacy_notes_dir(
+            self.router.as_slice(),
+            self.router.active(),
+        );
         if let Some(legacy_dir) = legacy_dir.filter(|d| d.is_dir()) {
             log::warn!("notes_picker: reading un-migrated legacy dir {legacy_dir:?}");
             entries.extend(
