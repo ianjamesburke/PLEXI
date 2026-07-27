@@ -23,10 +23,20 @@ pub fn context_new_cli(
     // "--parent" with no value resolves to the current context via env.
     // "--parent <name>" passes that name directly.
     // No "--parent" → None (top-level context).
+    //
+    // Bare "--parent" also sends PLEXI_CONTEXT_ID, which disambiguates when two
+    // contexts share a name. An explicit "--parent=<name>" does not: the caller
+    // named a context, so name resolution is what they asked for.
+    let mut parent_context_id = None;
     let explicit_parent = match parent {
         None => None,
         Some("__current__") => match std::env::var("PLEXI_CONTEXT_NAME") {
-            Ok(n) if !n.is_empty() => Some(n),
+            Ok(n) if !n.is_empty() => {
+                parent_context_id = std::env::var("PLEXI_CONTEXT_ID")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok());
+                Some(n)
+            }
             _ => {
                 eprintln!(
                     "error: --parent (no value) requires PLEXI_CONTEXT_NAME — run inside a Plexi pane"
@@ -74,6 +84,9 @@ pub fn context_new_cli(
     if let Some(p) = &explicit_parent {
         payload["parent_name"] = serde_json::Value::String(p.clone());
     }
+    if let Some(id) = parent_context_id {
+        payload["parent_context_id"] = serde_json::Value::from(id);
+    }
     if !windows.is_empty() {
         payload["windows"] = serde_json::to_value(windows).expect("Vec<String> is serializable");
     }
@@ -103,6 +116,134 @@ pub fn context_new_cli(
         }
     }
     0
+}
+
+/// Expand `--agents N` + repeated `--command` into exactly one entry per pane.
+///
+/// Zero commands means N plain shells; one command applies to every pane; N
+/// commands assign one per pane in order. Any other count is an error — never a
+/// silent truncation or a cycle, because a squad that quietly drops an agent's
+/// job is worse than one that refuses to start.
+pub(super) fn expand_pane_commands(
+    agents: u32,
+    commands: &[String],
+) -> Result<Vec<Option<String>>, String> {
+    let agents = agents as usize;
+    match commands.len() {
+        0 => Ok(vec![None; agents]),
+        1 => Ok(vec![Some(commands[0].clone()); agents]),
+        n if n == agents => Ok(commands.iter().cloned().map(Some).collect()),
+        n => Err(format!(
+            "error: --command given {n} times but --agents is {agents} — pass it once (same command for every pane) or exactly {agents} times (one per pane)"
+        )),
+    }
+}
+
+/// `plexi context sub <name> --agents N --command CMD`
+///
+/// Creates a sub-context under the caller's context and seeds it with exactly
+/// `agents` panes in one tiled window, each running its assigned command.
+pub fn context_sub_cli(
+    name: &str,
+    path: Option<&str>,
+    agents: u32,
+    commands: &[String],
+    layout: crate::app_protocol::SubContextLayout,
+    focus: bool,
+    from: Option<u64>,
+) -> i32 {
+    let panes = match expand_pane_commands(agents, commands) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    // Deliberate divergence from `context new`: the sub-context roots at the
+    // caller's cwd, not the parent context's path, so agents launched here
+    // start in the directory the operator was standing in.
+    let root = match resolve_path(path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    // Parent by id — PLEXI_CONTEXT_ID is set in every Plexi pane and is unique;
+    // the name is only a fallback for a pane that somehow has one without the
+    // other.
+    let parent_context_id = std::env::var("PLEXI_CONTEXT_ID")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    let parent_name = std::env::var("PLEXI_CONTEXT_NAME")
+        .ok()
+        .filter(|n| !n.is_empty());
+    if parent_context_id.is_none() && parent_name.is_none() {
+        eprintln!("error: context sub requires PLEXI_CONTEXT_ID — run it inside a Plexi pane");
+        return 1;
+    }
+    let anchor_pane = from.or_else(|| {
+        std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    });
+    log::info!(
+        "context_sub_cli: name={name:?} root={} parent_context_id={parent_context_id:?} \
+         parent_name={parent_name:?} agents={agents} layout={layout:?} focus={focus} \
+         anchor_pane={anchor_pane:?} panes={panes:?}",
+        root.display()
+    );
+    let response_file = crate::rpc::response_file("context-sub-response", "json");
+    let mut payload = serde_json::json!({
+        "type": "create_sub_context",
+        "name": name,
+        "root": root.to_string_lossy(),
+        "panes": panes,
+        "layout": layout,
+        "focus": focus,
+        "response_file": response_file,
+    });
+    if let Some(id) = parent_context_id {
+        payload["parent_context_id"] = serde_json::Value::from(id);
+    }
+    if let Some(n) = parent_name {
+        payload["parent_name"] = serde_json::Value::String(n);
+    }
+    if let Some(ap) = anchor_pane {
+        payload["anchor_pane"] = serde_json::Value::from(ap);
+    }
+    let rc = send_to_socket(payload);
+    if rc != 0 {
+        return rc;
+    }
+    match super::poll_rpc(&response_file, "context-sub") {
+        Ok(content) => {
+            // `poll_rpc` only distinguishes transport failures. The host reports
+            // a refused parent or a failed terminal spawn *in* the payload, so
+            // an unattended caller needs that surfaced as a nonzero exit rather
+            // than a successful-looking JSON blob.
+            if let Some(err) = sub_response_error(&content) {
+                eprintln!("error: context sub failed: {err}");
+                return 1;
+            }
+            println!("{content}");
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// The `error` field of a `context sub` response, if the host reported one.
+///
+/// Unparseable output is not treated as an error here — `poll_rpc` already
+/// owns transport failures, and swallowing a valid-but-unexpected shape would
+/// hide the response from the caller.
+fn sub_response_error(content: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()?
+        .get("error")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 
 /// `plexi context zoom <context_id>`
@@ -346,5 +487,78 @@ fn print_json_output(json_str: &str) -> i32 {
             eprintln!("error: invalid JSON output: {e}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod context_sub_tests {
+    use super::expand_pane_commands;
+
+    #[test]
+    fn no_command_gives_every_pane_a_plain_shell() {
+        assert_eq!(expand_pane_commands(3, &[]), Ok(vec![None, None, None]));
+    }
+
+    #[test]
+    fn one_command_applies_to_every_pane() {
+        assert_eq!(
+            expand_pane_commands(3, &["cm".to_string()]),
+            Ok(vec![
+                Some("cm".to_string()),
+                Some("cm".to_string()),
+                Some("cm".to_string())
+            ])
+        );
+    }
+
+    #[test]
+    fn n_commands_map_one_per_pane_in_order() {
+        let cmds = ["a".to_string(), "b".to_string()];
+        assert_eq!(
+            expand_pane_commands(2, &cmds),
+            Ok(vec![Some("a".to_string()), Some("b".to_string())])
+        );
+    }
+
+    /// A count that is neither 1 nor N is an error, never a silent truncation
+    /// or a cycle — a squad that quietly drops an agent's job is worse than one
+    /// that refuses to start.
+    #[test]
+    fn mismatched_command_count_is_an_error() {
+        let cmds = ["a".to_string(), "b".to_string()];
+        let err = expand_pane_commands(3, &cmds).expect_err("2 commands for 3 agents must fail");
+        assert!(err.contains("--command given 2 times"), "got: {err}");
+        assert!(err.contains("--agents is 3"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod sub_response_tests {
+    use super::sub_response_error;
+
+    /// A host-reported failure must be detectable so the CLI can exit nonzero —
+    /// `poll_rpc` succeeds here, because the transport worked.
+    #[test]
+    fn error_field_is_surfaced() {
+        assert_eq!(
+            sub_response_error(r#"{"error":"no parent context for id=Some(9)"}"#).as_deref(),
+            Some("no parent context for id=Some(9)")
+        );
+    }
+
+    #[test]
+    fn successful_response_has_no_error() {
+        assert_eq!(
+            sub_response_error(r#"{"context_id":76,"windows":[],"panes":[317,318]}"#),
+            None
+        );
+    }
+
+    /// Unparseable output is not an error here: `poll_rpc` owns transport
+    /// failures, and swallowing an unexpected-but-valid shape would hide the
+    /// response from the caller.
+    #[test]
+    fn unparseable_output_is_not_treated_as_an_error() {
+        assert_eq!(sub_response_error("not json at all"), None);
     }
 }

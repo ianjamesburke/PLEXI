@@ -20,6 +20,7 @@ pub(crate) use create::restore_assistant_pane;
 pub(crate) use create::restore_builtin_app_pane;
 pub(crate) use layout::insert_split_tile;
 pub(crate) use layout::SwapResult;
+pub(crate) use workspace::ChildContextSpec;
 
 /// Apply `initial_cmd` to `settings`, using the same shell-suffix injection
 /// logic as `split_focused`. Call before `TerminalPane::new`.

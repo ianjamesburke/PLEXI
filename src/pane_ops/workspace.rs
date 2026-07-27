@@ -192,22 +192,123 @@ fn reserve_grid_slot(
     }
 }
 
+/// Where a new child context attaches, and what its window is seeded with.
+pub(crate) struct ChildContextSpec {
+    /// Parent context id — the caller's `PLEXI_CONTEXT_ID`. Authoritative when
+    /// present: two contexts can share a name, so resolving by name alone
+    /// silently nests under whichever was created first.
+    pub parent_id: Option<u64>,
+    /// Parent context name. Consulted only when `parent_id` is absent — a
+    /// present-but-unknown id is an error, never a reason to guess by name.
+    pub parent_name: String,
+    /// Explicit name for the child context. When `None` the name is derived
+    /// from the path (or the anchor's `[context]` defaults). Set it here rather
+    /// than renaming afterwards: the panes are spawned with this name in
+    /// `PLEXI_CONTEXT_NAME`, so a later rename would leave running agents
+    /// advertising a name the router no longer uses.
+    pub name: Option<String>,
+    /// Root path and working directory for the child context.
+    pub path: PathBuf,
+    /// Portal tile orientation in the parent window: `true` splits side-by-side.
+    pub portal_vertical: bool,
+    /// `true` places the portal before the anchor tile (left / up).
+    pub portal_first: bool,
+    /// Pane in the parent to anchor the portal split at; falls back to the
+    /// parent's focused pane when absent or unknown.
+    pub anchor_pane: Option<u64>,
+    /// One entry per pane to seed in the child window, in order; `None` launches
+    /// a plain shell. Never empty.
+    pub panes: Vec<Option<String>>,
+    /// How the seeded panes are arranged inside the child's single window.
+    pub layout: crate::app_protocol::SubContextLayout,
+}
+
+impl ChildContextSpec {
+    /// The historical single-terminal child: one plain shell, tiled.
+    pub fn single_terminal(
+        parent_id: Option<u64>,
+        parent_name: String,
+        path: PathBuf,
+        portal_vertical: bool,
+        portal_first: bool,
+        anchor_pane: Option<u64>,
+    ) -> Self {
+        Self {
+            parent_id,
+            parent_name,
+            name: None,
+            path,
+            portal_vertical,
+            portal_first,
+            anchor_pane,
+            panes: vec![None],
+            layout: crate::app_protocol::SubContextLayout::default(),
+        }
+    }
+}
+
+/// What a successful [`PlexiApp::new_child_context`] created.
+pub(crate) struct ChildContext {
+    pub context_id: u64,
+    /// Seeded pane ids, in the order their commands were given.
+    pub pane_ids: Vec<PaneId>,
+    /// The parent window the portal was inserted into, and its focused tile,
+    /// both captured *before* the insert. A caller that pushes a depth entry
+    /// must use these rather than the globally active window: a background pane
+    /// can create a sub-context while the user is looking at another context
+    /// entirely, and a depth entry pairing this parent with an unrelated window
+    /// cannot restore the caller's location on zoom-out.
+    pub parent_window_id: Option<u64>,
+    pub parent_focused_pane: Option<egui_tiles::TileId>,
+}
+
 impl PlexiApp {
-    /// Create a child context nested inside `parent_name`. Always creates a fresh
-    /// terminal in the child (portal model — no pane adoption). Inserts a Portal
-    /// tile into the parent window as a sibling of the focused tile. No depth cap.
+    /// Resolve a parent context to a router index: by `id` when one is given,
+    /// otherwise by case-insensitive `name`.
+    ///
+    /// An `id` that names no live context resolves to `None` — it does **not**
+    /// fall back to the name. Names are not unique, so a stale
+    /// `PLEXI_CONTEXT_ID` (its context deleted) plus a name another context
+    /// happens to share would silently attach the child to a stranger. Failing
+    /// loudly is the only safe answer.
+    pub(crate) fn resolve_parent_context(&self, id: Option<u64>, name: &str) -> Option<usize> {
+        match id {
+            Some(want) => self.router.position(|c| c.context_id == want),
+            None => self.router.position(|c| c.name.eq_ignore_ascii_case(name)),
+        }
+    }
+
+    /// Create a child context nested under `spec`'s parent, seeded with exactly
+    /// `spec.panes.len()` terminals in one window (portal model — no pane
+    /// adoption). Inserts a Portal tile into the parent window as a sibling of
+    /// the anchor tile. No depth cap.
     pub(crate) fn new_child_context(
         &mut self,
-        parent_name: &str,
-        path: PathBuf,
-        vertical: bool,
-        new_pane_first: bool,
-        anchor_pane: Option<u64>,
-    ) -> Result<(), String> {
+        spec: ChildContextSpec,
+    ) -> Result<ChildContext, String> {
+        let ChildContextSpec {
+            parent_id: want_parent_id,
+            parent_name,
+            name: explicit_name,
+            path,
+            portal_vertical: vertical,
+            portal_first: new_pane_first,
+            anchor_pane,
+            panes: pane_commands,
+            layout,
+        } = spec;
+        if pane_commands.is_empty() {
+            return Err("child context requires at least one pane".to_string());
+        }
         let parent_idx = self
-            .router
-            .position(|c| c.name.eq_ignore_ascii_case(parent_name))
-            .ok_or_else(|| format!("no context named '{parent_name}'"))?;
+            .resolve_parent_context(want_parent_id, &parent_name)
+            .ok_or_else(|| match want_parent_id {
+                Some(id) => format!(
+                    "no context with id {id} — PLEXI_CONTEXT_ID is stale (its context was closed); \
+                     open a new pane or pass an explicit parent"
+                ),
+                None => format!("no context named '{parent_name}'"),
+            })?;
         let parent_id = self.router.get(parent_idx).context_id;
         let parent_depth = self.router.get(parent_idx).depth;
         let child_depth = parent_depth + 1;
@@ -237,19 +338,33 @@ impl PlexiApp {
                     (name, None)
                 }
             };
+        // An explicit name wins over the derived one, and must be settled here:
+        // the panes below are spawned with it in PLEXI_CONTEXT_NAME.
+        let ctx_name = explicit_name.unwrap_or(ctx_name);
 
         log::info!(
             "new_child_context: parent_id={parent_id} parent_depth={parent_depth} \
-             child_depth={child_depth} name={ctx_name} path={}",
+             child_depth={child_depth} name={ctx_name} panes={} layout={layout:?} path={}",
+            pane_commands.len(),
             path.display()
         );
 
-        // 1. Build the child window with a fresh terminal.
-        let Some((child_tree, child_panes, child_root_tile)) =
-            self.create_single_pane_tree(Some(path.clone()), None, false)
+        // 1. Build the child window's panes. Their PLEXI_CONTEXT_* env is
+        // stamped from the child's own identity, which is not in the router
+        // yet — hence the explicit PaneContextEnv rather than the active
+        // window's context.
+        let child_env = super::create::PaneContextEnv {
+            context_id: ctx_id,
+            name: ctx_name.clone(),
+            description: ctx_description.clone().unwrap_or_default(),
+            root: Some(path.clone()),
+            depth: child_depth,
+        };
+        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) =
+            self.create_context_pane_set(&child_env, path.clone(), &pane_commands, layout)
         else {
-            log::error!("new_child_context: failed to create terminal for child context");
-            return Err("failed to create terminal for child context".to_string());
+            log::error!("new_child_context: failed to create terminals for child context");
+            return Err("failed to create terminals for child context".to_string());
         };
 
         // 2. Insert Portal tile into the parent window via the standard split path.
@@ -278,6 +393,11 @@ impl PlexiApp {
                 })
                 .or_else(|| self.windows.iter().position(|w| w.context_id == parent_id))
         });
+        // Snapshot the caller's location before the portal insert. A depth entry
+        // built from `active_window` would be wrong whenever the request came
+        // from a pane the user is not currently looking at.
+        let parent_window_id = parent_win_idx.map(|idx| self.windows[idx].window_id);
+        let parent_focused_pane = parent_win_idx.and_then(|idx| self.windows[idx].focused_pane);
         let sub_ctx_pane_id = self.host.alloc_pane_id();
         if let Some(parent_win_idx) = parent_win_idx {
             let split_target = portal_anchor
@@ -333,7 +453,12 @@ impl PlexiApp {
         self.context_active_window.insert(ctx_id, win_id);
 
         self.save_workspace();
-        Ok(())
+        Ok(ChildContext {
+            context_id: ctx_id,
+            pane_ids: child_pane_ids,
+            parent_window_id,
+            parent_focused_pane,
+        })
     }
 
     /// Create a new empty child context under the current context and auto-zoom
@@ -351,8 +476,15 @@ impl PlexiApp {
             parent_path.display()
         );
 
-        match self.new_child_context(&parent_name, parent_path, true, false, None) {
-            Ok(()) => {
+        match self.new_child_context(ChildContextSpec::single_terminal(
+            Some(parent_ctx_id),
+            parent_name.clone(),
+            parent_path,
+            true,
+            false,
+            None,
+        )) {
+            Ok(_) => {
                 let new_ctx_idx = self.router.len() - 1;
                 self.router
                     .push_depth(parent_ctx_id, current_win_id, current_focused);

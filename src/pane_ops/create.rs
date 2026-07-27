@@ -16,6 +16,19 @@ use egui_tiles::{Tile, TileId, Tree};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// Context identity stamped into a new pane's `PLEXI_CONTEXT_*` environment.
+///
+/// Carried explicitly so a pane can be created for a context that is not the
+/// active one — including one not yet pushed to the router, which is the case
+/// while a child context's window is still being built.
+pub(crate) struct PaneContextEnv {
+    pub context_id: u64,
+    pub name: String,
+    pub description: String,
+    pub root: Option<PathBuf>,
+    pub depth: u32,
+}
+
 /// Instantiate a builtin `App` by id, checked before the process registry.
 ///
 /// Builtins are compiled-in and never require disk access. Add one line here
@@ -819,6 +832,90 @@ impl PlexiApp {
                 timestamp: crate::host::event_log::now_timestamp(),
             });
         }
+    }
+
+    /// Build a window's worth of terminal panes for a context that is **not**
+    /// the active one — typically one that does not exist in the router yet.
+    ///
+    /// [`create_single_pane_tree`](Self::create_single_pane_tree) stamps
+    /// `PLEXI_CONTEXT_*` from `active_window`, which is wrong for a child
+    /// context being constructed: its panes would advertise the parent's id.
+    /// This takes the context identity explicitly instead, per the root
+    /// AGENTS.md rule against steering helpers by mutating global focus state.
+    ///
+    /// One pane per entry in `commands`, in order; `None` launches a plain
+    /// shell. Returns the tiled tree, the pane map, the first pane's tile (the
+    /// window's initial focus), and the pane ids in creation order.
+    ///
+    /// Returns `None` if any terminal fails to spawn — partial squads are never
+    /// installed. Panes already built are dropped, closing their PTYs.
+    pub(super) fn create_context_pane_set(
+        &mut self,
+        context: &PaneContextEnv,
+        cwd: PathBuf,
+        commands: &[Option<String>],
+        layout: crate::app_protocol::SubContextLayout,
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId, Vec<PaneId>)> {
+        if commands.is_empty() {
+            log::error!("create_context_pane_set: refusing to build a window with zero panes");
+            return None;
+        }
+        let total = commands.len();
+        let mut panes: HashMap<PaneId, Pane> = HashMap::new();
+        let mut pane_ids: Vec<PaneId> = Vec::with_capacity(total);
+        for (idx, initial_cmd) in commands.iter().enumerate() {
+            let new_id = self.host.alloc_pane_id();
+            let mut settings = Self::make_backend_settings(
+                new_id,
+                Some(cwd.clone()),
+                &self.colors,
+                context.context_id,
+                &context.name,
+                &context.description,
+                context.root.as_ref(),
+                context.depth,
+            );
+            if let Some(cmd) = initial_cmd {
+                super::apply_initial_cmd(&mut settings, cmd, false);
+            }
+            let Some(pane) = TerminalPane::new(
+                new_id,
+                self.ctx.clone(),
+                self.pty_event_tx.clone(),
+                settings,
+                self.default_font_size,
+            ) else {
+                // The 2am case: a squad that half-spawned. Name which pane of
+                // how many died, on what command, and what is being torn down —
+                // the caller only ever sees "failed to create terminals".
+                log::error!(
+                    "create_context_pane_set: TerminalPane::new failed for pane {} of {total} \
+                     (pane_id={new_id} context_id={} cmd={initial_cmd:?}) — discarding \
+                     {} already-created pane(s) {:?}, no partial squad is installed",
+                    idx + 1,
+                    context.context_id,
+                    pane_ids.len(),
+                    pane_ids
+                );
+                return None;
+            };
+            log::info!(
+                "create_context_pane_set: spawned pane {} of {total} pane_id={new_id} \
+                 context_id={} cmd={initial_cmd:?}",
+                idx + 1,
+                context.context_id
+            );
+            panes.insert(new_id, Pane::Terminal(Box::new(pane)));
+            pane_ids.push(new_id);
+        }
+        let (tree, first_tile) = super::layout::build_squad_tree(&pane_ids, layout);
+        log::info!(
+            "create_context_pane_set: context_id={} panes={:?} layout={layout:?} cwd={}",
+            context.context_id,
+            pane_ids,
+            cwd.display()
+        );
+        Some((tree, panes, first_tile, pane_ids))
     }
 
     pub(super) fn create_single_pane_tree(

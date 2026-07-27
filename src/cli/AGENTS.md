@@ -22,6 +22,13 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **Namespace design:** verify a new command belongs in the right namespace. Place it where the noun already lives, not at top level.
 - **Pane naming:** always name panes after spawning them. Every `plexi pane new`, `plexi app open`, split, or new window should be followed by `plexi pane name <id> "descriptive name"`.
 - **Tips:** use `print_tip()` from `src/cli/mod.rs`. Never raw `eprintln!`. Respects `config.cli.tips` and `NO_COLOR`.
+- **Repeatable flags fan out or they error.** A count flag paired with a repeatable value flag (`context sub --agents N --command CMD`) accepts the value once (applies to all) or exactly N times (one each). Any other count is a hard error — never truncate, never cycle. Expand to one entry per unit in the CLI so the host receives an unambiguous list; see `expand_pane_commands`.
+- **Resolve the caller's context by `PLEXI_CONTEXT_ID`, not `PLEXI_CONTEXT_NAME`.** Context names are not unique; the id is. Send the id; the host consults the name only when no id was sent (`resolve_parent_context`). An id naming no live context is an error, never a reason to fall back to the name — a stale id plus a name some other context happens to share would silently target a stranger.
+- **Agent-facing commands answer in one round trip.** A command that creates addressable objects returns their ids in its JSON response (`context sub` → `{"context_id","windows","panes":[…]}`), so the caller never needs a follow-up `pane list` to act on what it just made.
+
+## Documentation Rule for CLI Changes
+
+Any change to a CLI verb, flag, or agent-facing behavior updates this file **and** `skills/plexi-cli/SKILL.md` in the same PR. Edit the skill through the real `skills/` path — `.agents/skills/plexi-cli` is a symlink and some editors do not write through it. Shell completions are generated from the clap tree (`completions_cli`), so a new flag needs no hand-written block; verify with `plexi completions zsh | grep <flag>`.
 
 ## Traps
 

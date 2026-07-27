@@ -2072,6 +2072,7 @@ impl PlexiApp {
                 root,
                 name,
                 parent_name,
+                parent_context_id,
                 windows,
                 focus,
                 portal_direction,
@@ -2091,7 +2092,8 @@ impl PlexiApp {
                     };
                 log::info!(
                     "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} \
-                     windows={} focus={focus} direction={:?} anchor_pane={:?}",
+                     parent_context_id={parent_context_id:?} windows={} focus={focus} \
+                     direction={:?} anchor_pane={:?}",
                     root,
                     name,
                     parent_name,
@@ -2116,13 +2118,16 @@ impl PlexiApp {
                     let current_ctx_id = self.router.active().context_id;
                     let current_win_id = self.windows[self.active_window].window_id;
                     let current_focused = self.windows[self.active_window].focused_pane;
-                    if let Err(e) = self.new_child_context(
-                        pname.as_str(),
-                        path,
-                        portal_vertical,
-                        portal_first,
-                        *anchor_pane,
-                    ) {
+                    if let Err(e) =
+                        self.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+                            *parent_context_id,
+                            pname.clone(),
+                            path,
+                            portal_vertical,
+                            portal_first,
+                            *anchor_pane,
+                        ))
+                    {
                         log::warn!("pane_ipc: create_context with parent failed: {e}");
                         ctx_ok = false;
                     } else {
@@ -2208,6 +2213,133 @@ impl PlexiApp {
                         });
                         write_json_response(&rf, response);
                     }
+                }
+                self.save_workspace();
+            }
+            crate::app_protocol::AppRequest::CreateSubContext {
+                name,
+                root,
+                parent_context_id,
+                parent_name,
+                panes,
+                layout,
+                focus,
+                anchor_pane,
+                response_file,
+            } => {
+                // Resolve the parent up front: everything below (depth push,
+                // window bookkeeping) is relative to it, and a bad parent must
+                // fail before any pane is spawned.
+                let parent_idx = self.resolve_parent_context(
+                    *parent_context_id,
+                    parent_name.as_deref().unwrap_or_default(),
+                );
+                let Some(parent_idx) = parent_idx else {
+                    log::warn!(
+                        "pane_ipc: create_sub_context — no parent context for id={parent_context_id:?} name={parent_name:?}"
+                    );
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": format!(
+                                    "no parent context for id={parent_context_id:?} name={parent_name:?}"
+                                ),
+                            }),
+                        );
+                    }
+                    return;
+                };
+                let parent_ctx_id = self.router.get(parent_idx).context_id;
+                log::info!(
+                    "pane_ipc: kind=create_sub_context name={name:?} parent_ctx_id={parent_ctx_id} \
+                     panes={} layout={layout:?} focus={focus} root={} anchor_pane={anchor_pane:?}",
+                    panes.len(),
+                    root.display()
+                );
+                let spec = crate::pane_ops::ChildContextSpec {
+                    parent_id: Some(parent_ctx_id),
+                    parent_name: parent_name.clone().unwrap_or_default(),
+                    // Named up front, not renamed after: the squad's panes are
+                    // spawned with this in PLEXI_CONTEXT_NAME.
+                    name: Some(name.clone()),
+                    path: root.clone(),
+                    // A squad reads best beside the caller, matching the
+                    // `context new --parent` default.
+                    portal_vertical: true,
+                    portal_first: false,
+                    anchor_pane: *anchor_pane,
+                    panes: panes.clone(),
+                    layout: *layout,
+                };
+                let child = match self.new_child_context(spec) {
+                    Ok(child) => child,
+                    Err(e) => {
+                        log::warn!("pane_ipc: create_sub_context failed: {e}");
+                        if let Some(rf) = response_file {
+                            write_json_response(rf, serde_json::json!({ "error": e }));
+                        }
+                        return;
+                    }
+                };
+                let child_idx = self.router.len() - 1;
+                // The stint-stipulated trace: parent id, child id, pane count,
+                // and the command each pane launched. Pairs pane_id → cmd so a
+                // "wrong agent got the wrong job" report is answerable from the
+                // log alone, without re-running anything.
+                let launched = launched_pairs(&child.pane_ids, panes);
+                log::info!(
+                    "context_sub: parent_ctx_id={parent_ctx_id} child_ctx_id={} name={name:?} \
+                     pane_count={} layout={layout:?} root={} launched={launched:?}",
+                    child.context_id,
+                    child.pane_ids.len(),
+                    root.display()
+                );
+                if *focus {
+                    // Zoom-out must land back on the *caller's* window, which is
+                    // not necessarily the globally active one — a background
+                    // pane can create a squad while the user is elsewhere.
+                    match child.parent_window_id {
+                        Some(win_id) => {
+                            self.router.push_depth(
+                                parent_ctx_id,
+                                win_id,
+                                child.parent_focused_pane,
+                            );
+                            self.switch_workspace(child_idx);
+                            log::info!(
+                                "pane_ipc: zoomed into new sub-context ctx_id={} (return win_id={win_id})",
+                                child.context_id
+                            );
+                        }
+                        None => {
+                            log::warn!(
+                                "pane_ipc: create_sub_context --focus ignored — parent ctx_id={parent_ctx_id} has no window to return to"
+                            );
+                        }
+                    }
+                }
+                if let Some(rf) = response_file {
+                    let windows_info: Vec<serde_json::Value> = self
+                        .windows
+                        .iter()
+                        .filter(|w| w.context_id == child.context_id)
+                        .map(|w| {
+                            serde_json::json!({
+                                "window_id": w.window_id,
+                                "grid_x": w.grid_x,
+                                "grid_y": w.grid_y,
+                            })
+                        })
+                        .collect();
+                    write_json_response(
+                        rf,
+                        serde_json::json!({
+                            "context_id": child.context_id,
+                            "windows": windows_info,
+                            "panes": child.pane_ids,
+                        }),
+                    );
                 }
                 self.save_workspace();
             }
@@ -2786,6 +2918,21 @@ impl PlexiApp {
     }
 }
 
+/// Pair each created pane with the command it launched, for the `context_sub:`
+/// trace. A plain shell renders as `<shell>` rather than `None`, so the log
+/// reads the same way whether or not `--command` was given.
+///
+/// Zips defensively: if the host ever creates a different number of panes than
+/// commands requested, the trace shows the panes it actually made rather than
+/// panicking inside a log statement.
+fn launched_pairs<'a>(pane_ids: &[u64], commands: &'a [Option<String>]) -> Vec<(u64, &'a str)> {
+    pane_ids
+        .iter()
+        .zip(commands.iter())
+        .map(|(id, cmd)| (*id, cmd.as_deref().unwrap_or("<shell>")))
+        .collect()
+}
+
 /// Age of a spawn-queue file in whole seconds, from its `queued_at_ms` stamp.
 /// `None` when the file predates the stamp (written by an older CLI) or the
 /// clock went backwards.
@@ -2807,5 +2954,46 @@ mod spawn_queue_age_tests {
     fn missing_or_future_stamp_is_none() {
         assert_eq!(spawn_file_age_secs(None, 91_000), None);
         assert_eq!(spawn_file_age_secs(Some(91_000), 1_000), None);
+    }
+}
+
+#[cfg(test)]
+mod context_sub_trace_tests {
+    use super::launched_pairs;
+
+    /// The stint-stipulated trace must name the command each pane launched, so
+    /// "agent 2 got the wrong job" is answerable from `plexi.log` alone.
+    #[test]
+    fn pairs_each_pane_with_its_command() {
+        let cmds = vec![
+            Some("cm review".to_string()),
+            Some("cm test".to_string()),
+            Some("cm".to_string()),
+        ];
+        assert_eq!(
+            launched_pairs(&[317, 318, 319], &cmds),
+            vec![(317, "cm review"), (318, "cm test"), (319, "cm")]
+        );
+    }
+
+    /// A plain shell reads as `<shell>`, not `None` — the log line has the same
+    /// shape whether or not `--command` was given.
+    #[test]
+    fn a_plain_shell_is_named_not_null() {
+        assert_eq!(
+            launched_pairs(&[42, 43], &[None, None]),
+            vec![(42, "<shell>"), (43, "<shell>")]
+        );
+    }
+
+    /// Never panic inside a log statement: a length mismatch reports the panes
+    /// actually created rather than taking the host down.
+    #[test]
+    fn length_mismatch_reports_what_exists() {
+        assert_eq!(
+            launched_pairs(&[1], &[Some("a".into()), Some("b".into())]),
+            vec![(1, "a")]
+        );
+        assert_eq!(launched_pairs(&[1, 2], &[Some("a".into())]), vec![(1, "a")]);
     }
 }

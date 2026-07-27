@@ -149,13 +149,14 @@ fn new_child_context_does_not_adopt_focused_pane() {
     let parent_id = app.router.active().context_id;
     let parent_name = app.router.active().name.clone();
 
-    app.new_child_context(
-        &parent_name,
+    app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+        None,
+        parent_name.clone(),
         std::path::PathBuf::from("/tmp/no_adopt"),
         true,
         false,
         None,
-    )
+    ))
     .expect("child create should succeed");
 
     let parent_win = app
@@ -200,13 +201,14 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     let parent_pane_count_before = app.windows[0].panes.len();
     let parent_id = app.router.active().context_id;
 
-    let result = app.new_child_context(
-        "Test",
+    let result = app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+        None,
+        "Test".to_string(),
         std::path::PathBuf::from("/tmp/child2"),
         true,
         false,
         None,
-    );
+    ));
 
     // Whether success or failure, the parent's focused_pane must remain None.
     assert_eq!(
@@ -256,13 +258,14 @@ fn new_child_context_anchor_pane_overrides_focused() {
     let parent_id = app.router.active().context_id;
     let parent_name = app.router.active().name.clone();
 
-    app.new_child_context(
-        &parent_name,
+    app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+        None,
+        parent_name.clone(),
         std::path::PathBuf::from("/tmp/anchor_pane"),
         true,
         false,
         Some(pane_b),
-    )
+    ))
     .expect("child create should succeed");
 
     let parent_win = app
@@ -371,13 +374,14 @@ fn new_child_context_unknown_anchor_falls_back_to_focused() {
     let parent_id = app.router.active().context_id;
     let parent_name = app.router.active().name.clone();
 
-    app.new_child_context(
-        &parent_name,
+    app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+        None,
+        parent_name.clone(),
         std::path::PathBuf::from("/tmp/anchor_missing"),
         true,
         false,
         Some(999_999),
-    )
+    ))
     .expect("child create should succeed despite unknown anchor");
 
     let parent_win = app
@@ -421,13 +425,14 @@ fn new_child_context_case_insensitive_parent() {
     // The initial context is named "Test" (from new_for_test).
     // Lookup with lowercase "test" must not return "no context named" error.
     // It may fail for another reason (PTY unavailable in test env), but not lookup.
-    let result = app.new_child_context(
-        "test",
+    let result = app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+        None,
+        "test".to_string(),
         std::path::PathBuf::from("/tmp/child_ci"),
         true,
         false,
         None,
-    );
+    ));
     match result {
         Ok(_) => {}
         Err(e) => {
@@ -455,13 +460,14 @@ fn create_child_context_auto_zooms() {
 
     // Simulate what the CreateContext handler does: capture current state,
     // call new_child_context, then push_depth + switch_workspace.
-    let result = app.new_child_context(
-        "Test",
+    let result = app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+        None,
+        "Test".to_string(),
         std::path::PathBuf::from("/tmp/child_zoom"),
         true,
         false,
         None,
-    );
+    ));
 
     if result.is_err() {
         // PTY unavailable in test env — verify caller-side depth push still works.
@@ -567,7 +573,14 @@ fn depth_four_chain_has_portal_tiles() {
 
     for &child in &names {
         let path = std::path::PathBuf::from(format!("/tmp/depth_test_{child}"));
-        let result = app.new_child_context(&parent_name, path, true, false, None);
+        let result = app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+            None,
+            parent_name.clone(),
+            path,
+            true,
+            false,
+            None,
+        ));
         if result.is_err() {
             // PTY unavailable — can't build the full chain in test env. Stop here.
             break;
@@ -2369,5 +2382,410 @@ fn context_close_offers_dissolve_only_for_portal_backed_context() {
     assert!(
         !app.build_context_close_state(child_ctx_id + 1).can_dissolve,
         "an unrelated context id must not inherit the portal's dissolvability"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// stint 0568 — `plexi context sub`: one command, N agent panes, one subcontext.
+//
+// The four defects this route fixes, each with a guard below:
+//   1. N commands produced N+1 panes (a spare seeded terminal).
+//   2. Panes landed as sibling *pages*, not tiles in one window.
+//   3. The root defaulted to the parent context's path, not the caller's cwd.
+//   4. The parent was resolved by name, so duplicate names nested wrongly.
+// ---------------------------------------------------------------------------
+
+/// Defect 1: the squad window holds exactly the requested pane count — the
+/// unconditional seeded terminal is gone from this route.
+#[test]
+fn context_sub_creates_exactly_n_panes() {
+    let mut h = crate::testing::HostHarness::new();
+    let anchor = h.add_test_pane();
+    let parent_id = h.app.router.active().context_id;
+    let root = tempfile::tempdir().expect("squad root");
+
+    let payload = serde_json::json!({
+        "type": "create_sub_context",
+        "name": "agentsquad",
+        "root": root.path(),
+        "parent_context_id": parent_id,
+        "panes": ["echo pane-a", "echo pane-b", "echo pane-c"],
+        "anchor_pane": anchor,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .expect("sub-context must exist");
+    assert_eq!(child.name, "agentsquad", "explicit CLI name must win");
+    let child_windows: Vec<_> = h
+        .app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == child.context_id)
+        .collect();
+
+    // Defect 2: one window, not one page per command.
+    assert_eq!(
+        child_windows.len(),
+        1,
+        "3 agents must live in ONE window, not N sibling pages"
+    );
+    // Defect 1: three agents, three panes — no spare terminal.
+    assert_eq!(
+        child_windows[0].panes.len(),
+        3,
+        "--agents 3 must yield exactly 3 panes, not 3 + a seeded terminal"
+    );
+    // Defect 3: rooted at the path the caller passed (its cwd), not the parent's.
+    assert_eq!(
+        child.root.as_deref(),
+        Some(root.path()),
+        "sub-context must root at the caller-supplied path"
+    );
+}
+
+/// Defect 2, structurally: the squad's panes are tiles of a single container in
+/// one tree, so they render side by side rather than as separate pages.
+#[test]
+fn context_sub_panes_share_one_tiled_window() {
+    let mut h = crate::testing::HostHarness::new();
+    let parent_id = h.app.router.active().context_id;
+    let root = tempfile::tempdir().expect("squad root");
+
+    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "tiled",
+        "root": root.path(),
+        "parent_context_id": parent_id,
+        "panes": [null, null, null, null],
+        "layout": "tiled",
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let child_ctx = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .expect("sub-context must exist")
+        .context_id;
+    let win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == child_ctx)
+        .expect("child window");
+    let root_tile = win.tree.root.expect("child tree must have a root");
+    let children = match win.tree.tiles.get(root_tile) {
+        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect::<Vec<_>>(),
+        other => panic!("tiled squad root must be a container, got {other:?}"),
+    };
+    assert_eq!(
+        children.len(),
+        4,
+        "all 4 panes must be tiles under one container"
+    );
+    assert!(
+        matches!(
+            win.tree.tiles.get(root_tile),
+            Some(egui_tiles::Tile::Container(egui_tiles::Container::Grid(_)))
+        ),
+        "the default tiled layout must build a Grid container"
+    );
+}
+
+/// Defect 4: two contexts sharing a name must not make the parent ambiguous —
+/// `PLEXI_CONTEXT_ID` decides.
+#[test]
+fn resolve_parent_context_prefers_id_over_duplicate_name() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let first_id = app.router.active().context_id;
+    let duplicate_id = first_id + 500;
+    app.router.push(crate::host::context::Context {
+        name: app.router.active().name.clone(),
+        path: std::path::PathBuf::from("/tmp/dupe"),
+        root: Some(std::path::PathBuf::from("/tmp/dupe")),
+        description: None,
+        context_id: duplicate_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    let name = app.router.active().name.clone();
+
+    let by_id = app
+        .resolve_parent_context(Some(duplicate_id), &name)
+        .expect("id must resolve");
+    assert_eq!(
+        app.router.get(by_id).context_id,
+        duplicate_id,
+        "the id must select the second context even though the first shares its name"
+    );
+
+    // No id → first name match, the historical behaviour.
+    let by_name = app
+        .resolve_parent_context(None, &name)
+        .expect("name must resolve");
+    assert_eq!(app.router.get(by_name).context_id, first_id);
+
+    // A stale id must NOT fall back to the name. The pane's context was
+    // deleted; resolving its name would silently attach the child to whichever
+    // unrelated context happens to share it.
+    assert_eq!(
+        app.resolve_parent_context(Some(999_999), &name),
+        None,
+        "an id naming no live context must fail, not guess by name"
+    );
+}
+
+/// The child is registered one level below its parent and rooted where the
+/// caller asked, which is what `create_context_pane_set` stamps into each
+/// squad pane's `PLEXI_CONTEXT_*` env.
+///
+/// `TerminalBackend` moves its `BackendSettings` into the PTY options rather
+/// than retaining them, so the env itself is not observable after spawn; the
+/// two halves of that contract are pinned here and in
+/// `make_backend_settings_stamps_the_context_it_is_given` below.
+#[test]
+fn context_sub_child_is_registered_one_level_below_parent() {
+    let mut h = crate::testing::HostHarness::new();
+    let parent_id = h.app.router.active().context_id;
+    let parent_depth = h.app.router.active().depth;
+    let root = tempfile::tempdir().expect("squad root");
+
+    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "envcheck",
+        "root": root.path(),
+        "parent_context_id": parent_id,
+        "panes": [null, null],
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .expect("sub-context must exist")
+        .clone();
+    assert_eq!(child.depth, parent_depth + 1, "child sits one level deeper");
+    assert_eq!(child.root.as_deref(), Some(root.path()));
+    assert_eq!(
+        h.app.context_depth_for(child.context_id),
+        parent_depth + 1,
+        "depth must be resolvable by id — this is what panes stamp as PLEXI_CONTEXT_DEPTH"
+    );
+}
+
+/// The env seam `create_context_pane_set` feeds: whatever context identity it is
+/// handed is what lands in the pane's environment. Seeding the squad *before*
+/// the child context is registered is only safe because this takes the identity
+/// explicitly instead of reading the active window.
+#[test]
+fn make_backend_settings_stamps_the_context_it_is_given() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let settings = PlexiApp::make_backend_settings(
+        7,
+        Some(std::path::PathBuf::from("/tmp")),
+        &app.colors,
+        4242,
+        "agentsquad",
+        "",
+        Some(&std::path::PathBuf::from("/tmp/squad")),
+        3,
+    );
+    assert_eq!(
+        settings.env.get("PLEXI_CONTEXT_ID"),
+        Some(&"4242".to_string())
+    );
+    assert_eq!(
+        settings.env.get("PLEXI_CONTEXT_NAME"),
+        Some(&"agentsquad".to_string())
+    );
+    assert_eq!(
+        settings.env.get("PLEXI_CONTEXT_DEPTH"),
+        Some(&"3".to_string())
+    );
+    assert_eq!(settings.env.get("PLEXI_PANE_ID"), Some(&"7".to_string()));
+}
+
+/// An unresolvable parent fails before any pane is spawned — no orphan context,
+/// no half-built squad.
+#[test]
+fn context_sub_unknown_parent_creates_nothing() {
+    let mut h = crate::testing::HostHarness::new();
+    let contexts_before = h.app.router.len();
+    let windows_before = h.app.windows.len();
+
+    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "orphan",
+        "root": "/tmp",
+        "parent_context_id": 987_654_321_u64,
+        "parent_name": "no-such-context",
+        "panes": [null, null],
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    assert_eq!(
+        h.app.router.len(),
+        contexts_before,
+        "no context may be added"
+    );
+    assert_eq!(
+        h.app.windows.len(),
+        windows_before,
+        "no window may be added"
+    );
+}
+
+/// The name must be carried *into* `new_child_context` via the spec, not
+/// applied by renaming the router entry afterwards.
+///
+/// This calls `new_child_context` directly, so nothing downstream can patch the
+/// name up: if the spec's name were ignored, the context would come back named
+/// after its directory. That ordering is what matters — the panes are spawned
+/// inside this call with the name in `PLEXI_CONTEXT_NAME`, so a rename applied
+/// by the caller afterwards would leave running agents advertising a name the
+/// router no longer uses.
+#[test]
+fn child_context_takes_its_name_from_the_spec_not_the_path() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let parent_id = app.router.active().context_id;
+    // A root whose basename cannot be confused with the requested name.
+    let root = tempfile::tempdir().expect("squad root");
+    let derived = root
+        .path()
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .expect("tempdir has a basename");
+
+    let child = app
+        .new_child_context(crate::pane_ops::ChildContextSpec {
+            parent_id: Some(parent_id),
+            parent_name: String::new(),
+            name: Some("agentsquad".to_string()),
+            path: root.path().to_path_buf(),
+            portal_vertical: true,
+            portal_first: false,
+            anchor_pane: None,
+            panes: vec![None, None],
+            layout: crate::app_protocol::SubContextLayout::Tiled,
+        })
+        .expect("child create should succeed");
+
+    assert_eq!(
+        app.context_name_for(child.context_id),
+        "agentsquad",
+        "the spec's name must be the context's name the moment it is created"
+    );
+    assert_ne!(
+        app.context_name_for(child.context_id),
+        derived,
+        "the path-derived name must not win over an explicit one"
+    );
+
+    // And with no explicit name, the derived name is still the fallback.
+    let plain = app
+        .new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+            Some(parent_id),
+            String::new(),
+            root.path().to_path_buf(),
+            true,
+            false,
+            None,
+        ))
+        .expect("child create should succeed");
+    assert_eq!(app.context_name_for(plain.context_id), derived);
+}
+
+/// `--focus` must record the *caller's* window as the zoom-out target. A
+/// background pane can create a squad while the user is looking at a different
+/// context; a depth entry naming the globally active window could not restore
+/// the caller's location.
+#[test]
+fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
+    let mut h = crate::testing::HostHarness::new();
+    let caller_pane = h.add_test_pane();
+    let caller_ctx_id = h.app.router.active().context_id;
+    let caller_win_id = h.app.windows[0].window_id;
+
+    // Make a second context active, so `active_window` is NOT the caller's.
+    let other_ctx_id = 9_001;
+    let other_win_id = 9_002;
+    h.app.router.push(crate::host::context::Context {
+        name: "Elsewhere".into(),
+        path: std::path::PathBuf::from("/tmp/elsewhere"),
+        root: Some(std::path::PathBuf::from("/tmp/elsewhere")),
+        description: None,
+        context_id: other_ctx_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.push(Window {
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp/elsewhere"),
+        tree: egui_tiles::Tree::empty("plexi"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: other_win_id,
+        context_id: other_ctx_id,
+    });
+    h.app.active_window = h.app.windows.len() - 1;
+    assert_ne!(
+        h.app.windows[h.app.active_window].window_id, caller_win_id,
+        "precondition: the active window is not the caller's"
+    );
+
+    let root = tempfile::tempdir().expect("squad root");
+    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "bgsquad",
+        "root": root.path(),
+        "parent_context_id": caller_ctx_id,
+        "anchor_pane": caller_pane,
+        "panes": [null],
+        "focus": true,
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let (depth_ctx, depth_win, _) = h
+        .app
+        .router
+        .depth_stack
+        .last()
+        .copied()
+        .expect("--focus must push a depth entry");
+    assert_eq!(depth_ctx, caller_ctx_id, "return context is the caller's");
+    assert_eq!(
+        depth_win, caller_win_id,
+        "return window must be the caller's, not the globally active one"
     );
 }

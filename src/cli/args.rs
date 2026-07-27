@@ -1300,6 +1300,41 @@ pub enum ContextCmd {
         #[arg(long, short = 'r', conflicts_with_all = ["down", "left", "up"])]
         right: bool,
     },
+    /// Create a sub-context under the current one, pre-populated with panes.
+    ///
+    /// One command spins up a scoped squad: N panes in a single tiled window
+    /// inside the new sub-context, each running the same command (or its own).
+    /// Unlike `context new --parent --window`, this creates exactly N panes —
+    /// no spare terminal — and roots them at the caller's cwd.
+    ///
+    /// Examples:
+    ///   plexi context sub agentsquad --agents 3 --command cm
+    ///   plexi context sub review --agents 2 --command "cm review" --command "cm test"
+    ///   plexi context sub build --agents 4 --layout columns --focus
+    Sub {
+        /// Name for the new sub-context.
+        name: String,
+        /// Root path for the sub-context. Defaults to the caller's cwd.
+        #[arg(long)]
+        path: Option<String>,
+        /// Number of panes to open inside the new sub-context.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=32))]
+        agents: u32,
+        /// Command to launch in each pane. Give it once to apply to every pane,
+        /// or exactly --agents times to give each pane its own command.
+        #[arg(long, action = clap::ArgAction::Append, value_name = "CMD")]
+        command: Vec<String>,
+        /// How the panes are arranged inside the sub-context's window.
+        #[arg(long, value_enum, default_value_t = crate::app_protocol::SubContextLayout::Tiled)]
+        layout: crate::app_protocol::SubContextLayout,
+        /// Zoom into the new sub-context after creation. Default: stay put.
+        #[arg(long)]
+        focus: bool,
+        /// Pane to anchor the portal split at. Defaults to the calling pane
+        /// (PLEXI_PANE_ID env), falling back to the parent's focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        from: Option<u64>,
+    },
     /// Switch the current pane to a context at the given path.
     Open { path: Option<String> },
     /// Change the root folder for the active context.

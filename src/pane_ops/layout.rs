@@ -61,6 +61,39 @@ pub(super) fn restore_overlay_replacement(
     }
 }
 
+/// Build a fresh tile tree holding `pane_ids` arranged per `layout`.
+/// Pure tile manipulation — no PlexiApp state, no pane creation.
+///
+/// A single pane becomes the root directly (no container wrapper), matching the
+/// shape `create_single_pane_tree` produces. Returns the tree plus the root tile
+/// of the *first* pane, which callers use as the window's initial focus.
+///
+/// Panics if `pane_ids` is empty — every caller seeds at least one pane, and a
+/// rootless window is not a state the host can render.
+pub(crate) fn build_squad_tree(
+    pane_ids: &[PaneId],
+    layout: crate::app_protocol::SubContextLayout,
+) -> (egui_tiles::Tree<PaneId>, TileId) {
+    assert!(
+        !pane_ids.is_empty(),
+        "build_squad_tree requires at least one pane"
+    );
+    let mut tiles = egui_tiles::Tiles::default();
+    let pane_tiles: Vec<TileId> = pane_ids.iter().map(|id| tiles.insert_pane(*id)).collect();
+    let first_tile = pane_tiles[0];
+    let root = if pane_tiles.len() == 1 {
+        first_tile
+    } else {
+        match layout {
+            crate::app_protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
+            crate::app_protocol::SubContextLayout::Columns => {
+                tiles.insert_horizontal_tile(pane_tiles)
+            }
+        }
+    };
+    (egui_tiles::Tree::new("plexi", root, tiles), first_tile)
+}
+
 /// Insert `new_pane_id` as a new tile next to `split_target` in `tree`.
 /// Pure tile/tree manipulation — no PlexiApp state, no focus history.
 ///
@@ -1862,6 +1895,62 @@ mod send_pane_tests {
         assert!(matches!(
             app.send_pane(Direction::Right),
             SwapResult::AtBoundary
+        ));
+    }
+}
+
+#[cfg(test)]
+mod squad_tree_tests {
+    use super::build_squad_tree;
+    use crate::app_protocol::SubContextLayout;
+
+    /// `--layout tiled` (the `context sub` default) builds a Grid container, so
+    /// an agent squad renders as a near-square block rather than a strip.
+    #[test]
+    fn tiled_layout_builds_a_grid_container() {
+        let (tree, first) = build_squad_tree(&[1, 2, 3, 4], SubContextLayout::Tiled);
+        let root = tree.root.expect("root");
+        match tree.tiles.get(root) {
+            Some(egui_tiles::Tile::Container(egui_tiles::Container::Grid(grid))) => {
+                assert_eq!(grid.children().count(), 4);
+            }
+            other => panic!("tiled layout must be a Grid, got {other:?}"),
+        }
+        assert!(matches!(
+            tree.tiles.get(first),
+            Some(egui_tiles::Tile::Pane(1))
+        ));
+    }
+
+    /// `--layout columns` builds one horizontal linear container: N full-height
+    /// columns, left to right in the order the commands were given.
+    #[test]
+    fn columns_layout_builds_a_horizontal_linear_container() {
+        let (tree, first) = build_squad_tree(&[7, 8, 9], SubContextLayout::Columns);
+        let root = tree.root.expect("root");
+        match tree.tiles.get(root) {
+            Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) => {
+                assert_eq!(linear.dir, egui_tiles::LinearDir::Horizontal);
+                assert_eq!(linear.children.len(), 3);
+                assert_eq!(
+                    linear.children[0], first,
+                    "the first pane's tile is the window's initial focus"
+                );
+            }
+            other => panic!("columns layout must be a horizontal Linear, got {other:?}"),
+        }
+    }
+
+    /// A single pane is the root directly — the same tree shape
+    /// `create_single_pane_tree` produces, so the historical single-terminal
+    /// child context is structurally unchanged.
+    #[test]
+    fn single_pane_needs_no_container() {
+        let (tree, first) = build_squad_tree(&[42], SubContextLayout::Tiled);
+        assert_eq!(tree.root, Some(first));
+        assert!(matches!(
+            tree.tiles.get(first),
+            Some(egui_tiles::Tile::Pane(42))
         ));
     }
 }

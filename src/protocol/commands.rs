@@ -38,6 +38,20 @@ impl PipStatus {
     }
 }
 
+/// How `plexi context sub` arranges the panes it seeds inside the new
+/// sub-context's single window.
+#[derive(
+    Serialize, Deserialize, JsonSchema, clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SubContextLayout {
+    /// Near-square grid — the default for an agent squad.
+    #[default]
+    Tiled,
+    /// One full-height column per pane, left to right.
+    Columns,
+}
+
 /// Per-pane agent state stored on the pane struct.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PaneAgentState {
@@ -576,6 +590,12 @@ pub enum AppRequest {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_name: Option<String>,
+        /// Parent context id, sent for bare `--parent` (the caller's
+        /// `PLEXI_CONTEXT_ID`). Wins over `parent_name`, which is ambiguous when
+        /// two contexts share a name. Absent for an explicit `--parent=<name>`,
+        /// where resolving by name is what the caller asked for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_context_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         windows: Vec<String>,
         /// Zoom into the new sub-context after creation. Default false (stay in parent).
@@ -590,6 +610,46 @@ pub enum AppRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         anchor_pane: Option<u64>,
         /// If set, the host writes a JSON response (context_id, windows) to this path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
+    /// Create a sub-context under the caller's context, pre-populated with a
+    /// squad of terminal panes in a single window. Sent by `plexi context sub`.
+    ///
+    /// Unlike `CreateContext { parent_name, windows }` this seeds *exactly*
+    /// `panes.len()` terminals — no spare root terminal — and tiles them inside
+    /// one window instead of creating sibling pages.
+    CreateSubContext {
+        /// Name for the new sub-context.
+        name: String,
+        /// Root path for the new sub-context. The CLI sends the caller's cwd.
+        root: std::path::PathBuf,
+        /// Parent context id (the caller's `PLEXI_CONTEXT_ID`). Authoritative:
+        /// `parent_name` is consulted only when this is absent. An id naming no
+        /// live context is an error, not a reason to fall back to the name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_context_id: Option<u64>,
+        /// Parent context name. Used only when `parent_context_id` is absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_name: Option<String>,
+        /// One entry per pane to create, in order. `null` launches a plain
+        /// shell. Never empty — the CLI expands `--agents`/`--command` into
+        /// exactly the requested pane count before sending.
+        panes: Vec<Option<String>>,
+        /// How the panes are arranged inside the sub-context's single window.
+        #[serde(default)]
+        layout: SubContextLayout,
+        /// Zoom into the new sub-context after creation. Default false.
+        #[serde(default)]
+        focus: bool,
+        /// Pane in the parent context to anchor the portal split at. The CLI
+        /// sends the caller's `PLEXI_PANE_ID`; absent or unknown ids fall back
+        /// to the parent's focused pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor_pane: Option<u64>,
+        /// If set, the host writes a JSON response (context_id, windows, panes)
+        /// to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
