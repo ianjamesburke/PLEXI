@@ -92,21 +92,79 @@ impl EventSink for FileEventSink {
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    /// True when the body was cut at the caller's `max_body_bytes` cap. A
+    /// truncated body is still a success; only a read *failure* sets `error`.
+    pub truncated: bool,
     pub error: Option<String>,
     pub response_headers: std::collections::HashMap<String, Vec<String>>,
+}
+
+/// The single host-side host-allowlist check for every outbound HTTP path:
+/// PGAP `DrawCommand::HttpRequest`, `OpenUrl`, and the Assistant's
+/// `host.net.fetch`. An empty list is unrestricted; a pattern matches the
+/// exact host or any subdomain of it, and any non-`http(s)` scheme is
+/// rejected outright.
+pub fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
+    let host = url::Url::parse(raw_url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+        });
+    let Some(host) = host else {
+        // A non-HTTP scheme is never allowed, even under an empty allowlist:
+        // `file:///…` must not become a read primitive.
+        return false;
+    };
+    if allowed_hosts.is_empty() {
+        return true;
+    }
+    allowed_hosts.iter().any(|pattern| {
+        let pattern = pattern.trim().trim_end_matches('.').to_ascii_lowercase();
+        host == pattern || host.ends_with(&format!(".{pattern}"))
+    })
+}
+
+/// Default response-body cap for PGAP HTTP brokering. This was previously
+/// ureq's implicit `into_string()` 10 MiB ceiling; it is now an explicit,
+/// enforced bound applied while streaming the body.
+pub const DEFAULT_MAX_HTTP_BODY_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Read at most `max_body_bytes` of a response body, lossily decoded as
+/// UTF-8. Returns `(body, truncated)`. This is the *only* way a body enters
+/// an `HttpResponse`: a read failure propagates as `Err` and can never be
+/// mistaken for an empty successful body.
+pub fn read_body_lossy<R: std::io::Read>(
+    reader: R,
+    max_body_bytes: u64,
+) -> std::io::Result<(String, bool)> {
+    use std::io::Read as _;
+    let mut buf = Vec::new();
+    // Read one byte past the cap so truncation is detectable.
+    reader.take(max_body_bytes + 1).read_to_end(&mut buf)?;
+    let truncated = buf.len() as u64 > max_body_bytes;
+    if truncated {
+        buf.truncate(max_body_bytes as usize);
+    }
+    Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
 }
 
 /// Host-side HTTP broker. `Send + Sync` so a single handle can be shared across
 /// per-pane WASM runtimes that all call out concurrently.
 pub trait NetService: Send + Sync {
-    /// Issue a synchronous HTTP request. Implementations must never panic;
-    /// transport errors are returned as `HttpResponse { status: 0, error: Some(..) }`.
+    /// Issue a synchronous HTTP request, reading at most `max_body_bytes` of
+    /// the response body. Implementations must never panic; transport errors
+    /// are returned as `HttpResponse { status: 0, error: Some(..) }`, and a
+    /// body that could not be fully read must surface via `error`, never as
+    /// a success with a shorter body.
     fn http(
         &self,
         method: &str,
         url: &str,
         headers: &HashMap<String, String>,
         body: Option<&str>,
+        max_body_bytes: u64,
     ) -> HttpResponse;
 }
 
@@ -146,6 +204,30 @@ impl UreqNetService {
         }
         map
     }
+
+    /// Single completion path for any response ureq handed back with a
+    /// status (2xx or not): stream the body under the cap, and turn a read
+    /// failure into an explicit `error` — never a shorter "successful" body.
+    fn finish(resp: ureq::Response, max_body_bytes: u64) -> HttpResponse {
+        let status = resp.status();
+        let response_headers = Self::collect_headers(&resp);
+        match read_body_lossy(resp.into_reader(), max_body_bytes) {
+            Ok((body, truncated)) => HttpResponse {
+                status,
+                body,
+                truncated,
+                error: None,
+                response_headers,
+            },
+            Err(error) => HttpResponse {
+                status,
+                body: String::new(),
+                truncated: false,
+                error: Some(format!("body_read: {error}")),
+                response_headers,
+            },
+        }
+    }
 }
 
 impl NetService for UreqNetService {
@@ -155,6 +237,7 @@ impl NetService for UreqNetService {
         url: &str,
         headers: &HashMap<String, String>,
         body: Option<&str>,
+        max_body_bytes: u64,
     ) -> HttpResponse {
         let mut req = self.agent.request(method, url);
         for (k, v) in headers {
@@ -165,35 +248,17 @@ impl NetService for UreqNetService {
             None => req.call(),
         };
         match response {
-            Ok(resp) => {
-                let status = resp.status();
-                let response_headers = Self::collect_headers(&resp);
-                let body_text = resp.into_string().unwrap_or_default();
-                HttpResponse {
-                    status,
-                    body: body_text,
-                    error: None,
-                    response_headers,
-                }
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                // Non-2xx — ureq returns this as Err, but the caller still
-                // wants the body + status for real diagnostics (e.g. 429
-                // Retry-After bodies or GitHub's JSON error payloads).
-                let response_headers = Self::collect_headers(&resp);
-                let body_text = resp.into_string().unwrap_or_default();
-                HttpResponse {
-                    status,
-                    body: body_text,
-                    error: None,
-                    response_headers,
-                }
-            }
+            Ok(resp) => Self::finish(resp, max_body_bytes),
+            // Non-2xx — ureq returns this as Err, but the caller still wants
+            // the body + status for real diagnostics (e.g. 429 Retry-After
+            // bodies or GitHub's JSON error payloads).
+            Err(ureq::Error::Status(_, resp)) => Self::finish(resp, max_body_bytes),
             Err(ureq::Error::Transport(t)) => {
                 log::warn!("UreqNetService: transport error for {method} {url}: {t}");
                 HttpResponse {
                     status: 0,
                     body: String::new(),
+                    truncated: false,
                     error: Some(format!("transport: {t}")),
                     response_headers: HashMap::new(),
                 }
@@ -464,6 +529,30 @@ mod tests {
             multiple: false,
             mode: FilePickerMode::Open,
         }
+    }
+
+    /// The bounded body reader is the only path into a successful
+    /// `HttpResponse` body: under the cap passes through, over the cap
+    /// truncates with the flag set, and a read failure is an `Err` — it can
+    /// never be mistaken for an empty successful body.
+    #[test]
+    fn read_body_lossy_bounds_and_flags_truncation() {
+        let (body, truncated) = read_body_lossy(&b"hello"[..], 100).unwrap();
+        assert_eq!((body.as_str(), truncated), ("hello", false));
+
+        let big = vec![b'a'; 50];
+        let (body, truncated) = read_body_lossy(&big[..], 10).unwrap();
+        assert_eq!(body.len(), 10);
+        assert!(truncated);
+
+        struct FailingReader;
+        impl std::io::Read for FailingReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("connection reset mid-body"))
+            }
+        }
+        let err = read_body_lossy(FailingReader, 100).unwrap_err();
+        assert!(err.to_string().contains("connection reset mid-body"));
     }
 
     /// Scripted outcomes resolve in order; an exhausted script cancels

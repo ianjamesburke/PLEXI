@@ -1,6 +1,6 @@
 pub mod account;
 pub mod app_trait;
-mod assistant_host_tools;
+pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
 mod dispatch;
@@ -3019,6 +3019,13 @@ impl eframe::App for PlexiApp {
                     origin_context_id,
                     reply,
                 } => {
+                    // Network fetch resolves its policy here on the UI thread
+                    // but must not block it on a remote peer, so it owns its
+                    // own reply channel and answers from a worker thread.
+                    if name == crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH {
+                        self.handle_assistant_net_fetch(&input_json, origin_pane_id, reply);
+                        continue;
+                    }
                     let result = self.handle_assistant_host_tool(
                         &name,
                         &input_json,

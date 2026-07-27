@@ -100,6 +100,10 @@ user sees), and validate with host.build.run {\"args\": [\"app\", \"check\", \
 first check passes — workspace apps hot-reload on every file save, so the user \
 watches the app improve live while you keep editing; you do not need to close \
 or reopen it. \
+When you need information you cannot know — current docs, a release note, an \
+API response — fetch the exact URL with host.net.fetch rather than guessing or \
+saying you have no internet access. There is no web search tool: if you do not \
+have a concrete URL, say so and ask the user for one. Never shell out to curl. \
 A scope refusal is a final answer, not an obstacle to route around. When a tool \
 fails with path_out_of_scope or command_not_allowed, that path or command is \
 outside what you are permitted to touch — the refusal will not change on a \
@@ -127,6 +131,7 @@ const HOST_TOOL_FILES_EDIT: &str = "host.files.edit";
 const HOST_TOOL_FILES_GREP: &str = "host.files.grep";
 const HOST_TOOL_FILES_LIST: &str = "host.files.list";
 const HOST_TOOL_BUILD_RUN: &str = "host.build.run";
+use crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH;
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
@@ -1328,6 +1333,23 @@ impl AssistantApp {
                 timeout_ms: Some(build_exec::MAX_BUILD_TIMEOUT_MS + 10_000),
                 read_only: false,
             },
+            AiTool {
+                name: HOST_TOOL_NET_FETCH.into(),
+                description: "Fetch one http(s) URL and return its status, \
+                    headers, and body text. Use this for current information \
+                    the model cannot know — a docs page, a release feed, an \
+                    API response. This is fetch-a-URL only: there is no web \
+                    search, so you need a concrete URL. Reaching the network \
+                    asks the user every time; never route around a refusal \
+                    through a terminal."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"Absolute http:// or https:// URL. Other schemes are rejected."},"method":{"type":"string","description":"HTTP method (default GET)."},"headers":{"type":"object","additionalProperties":{"type":"string"},"description":"Optional request headers."},"body":{"type":"string","description":"Optional request body."}},"required":["url"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(60_000),
+                // Host policy, not a self-declared bit: reaching the network
+                // is never unprompted, regardless of the HTTP method.
+                read_only: false,
+            },
         ]
     }
 
@@ -1525,6 +1547,14 @@ impl AssistantApp {
                 self.audit.append(&AuditEvent::now(
                     "terminal_command",
                     HOST_TOOL_TERMINALS_RUN,
+                    "requested",
+                    &summarize_input(input_json),
+                ));
+            }
+            if tool == HOST_TOOL_NET_FETCH {
+                self.audit.append(&AuditEvent::now(
+                    "network_request",
+                    HOST_TOOL_NET_FETCH,
                     "requested",
                     &summarize_input(input_json),
                 ));
