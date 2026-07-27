@@ -860,9 +860,10 @@ impl PlexiApp {
             log::error!("create_context_pane_set: refusing to build a window with zero panes");
             return None;
         }
+        let total = commands.len();
         let mut panes: HashMap<PaneId, Pane> = HashMap::new();
-        let mut pane_ids: Vec<PaneId> = Vec::with_capacity(commands.len());
-        for initial_cmd in commands {
+        let mut pane_ids: Vec<PaneId> = Vec::with_capacity(total);
+        for (idx, initial_cmd) in commands.iter().enumerate() {
             let new_id = self.host.alloc_pane_id();
             let mut settings = Self::make_backend_settings(
                 new_id,
@@ -884,14 +885,26 @@ impl PlexiApp {
                 settings,
                 self.default_font_size,
             ) else {
+                // The 2am case: a squad that half-spawned. Name which pane of
+                // how many died, on what command, and what is being torn down —
+                // the caller only ever sees "failed to create terminals".
                 log::error!(
-                    "create_context_pane_set: TerminalPane::new failed for pane_id={new_id} \
-                     context_id={} — discarding {} already-created pane(s)",
+                    "create_context_pane_set: TerminalPane::new failed for pane {} of {total} \
+                     (pane_id={new_id} context_id={} cmd={initial_cmd:?}) — discarding \
+                     {} already-created pane(s) {:?}, no partial squad is installed",
+                    idx + 1,
                     context.context_id,
-                    pane_ids.len()
+                    pane_ids.len(),
+                    pane_ids
                 );
                 return None;
             };
+            log::info!(
+                "create_context_pane_set: spawned pane {} of {total} pane_id={new_id} \
+                 context_id={} cmd={initial_cmd:?}",
+                idx + 1,
+                context.context_id
+            );
             panes.insert(new_id, Pane::Terminal(Box::new(pane)));
             pane_ids.push(new_id);
         }

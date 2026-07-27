@@ -190,7 +190,7 @@ pub fn context_sub_cli(
     log::info!(
         "context_sub_cli: name={name:?} root={} parent_context_id={parent_context_id:?} \
          parent_name={parent_name:?} agents={agents} layout={layout:?} focus={focus} \
-         anchor_pane={anchor_pane:?}",
+         anchor_pane={anchor_pane:?} panes={panes:?}",
         root.display()
     );
     let response_file = crate::rpc::response_file("context-sub-response", "json");

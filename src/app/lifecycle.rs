@@ -2283,11 +2283,17 @@ impl PlexiApp {
                     }
                 };
                 let child_idx = self.router.len() - 1;
+                // The stint-stipulated trace: parent id, child id, pane count,
+                // and the command each pane launched. Pairs pane_id → cmd so a
+                // "wrong agent got the wrong job" report is answerable from the
+                // log alone, without re-running anything.
+                let launched = launched_pairs(&child.pane_ids, panes);
                 log::info!(
                     "context_sub: parent_ctx_id={parent_ctx_id} child_ctx_id={} name={name:?} \
-                     panes={:?} layout={layout:?}",
+                     pane_count={} layout={layout:?} root={} launched={launched:?}",
                     child.context_id,
-                    child.pane_ids
+                    child.pane_ids.len(),
+                    root.display()
                 );
                 if *focus {
                     // Zoom-out must land back on the *caller's* window, which is
@@ -2912,6 +2918,21 @@ impl PlexiApp {
     }
 }
 
+/// Pair each created pane with the command it launched, for the `context_sub:`
+/// trace. A plain shell renders as `<shell>` rather than `None`, so the log
+/// reads the same way whether or not `--command` was given.
+///
+/// Zips defensively: if the host ever creates a different number of panes than
+/// commands requested, the trace shows the panes it actually made rather than
+/// panicking inside a log statement.
+fn launched_pairs<'a>(pane_ids: &[u64], commands: &'a [Option<String>]) -> Vec<(u64, &'a str)> {
+    pane_ids
+        .iter()
+        .zip(commands.iter())
+        .map(|(id, cmd)| (*id, cmd.as_deref().unwrap_or("<shell>")))
+        .collect()
+}
+
 /// Age of a spawn-queue file in whole seconds, from its `queued_at_ms` stamp.
 /// `None` when the file predates the stamp (written by an older CLI) or the
 /// clock went backwards.
@@ -2933,5 +2954,46 @@ mod spawn_queue_age_tests {
     fn missing_or_future_stamp_is_none() {
         assert_eq!(spawn_file_age_secs(None, 91_000), None);
         assert_eq!(spawn_file_age_secs(Some(91_000), 1_000), None);
+    }
+}
+
+#[cfg(test)]
+mod context_sub_trace_tests {
+    use super::launched_pairs;
+
+    /// The stint-stipulated trace must name the command each pane launched, so
+    /// "agent 2 got the wrong job" is answerable from `plexi.log` alone.
+    #[test]
+    fn pairs_each_pane_with_its_command() {
+        let cmds = vec![
+            Some("cm review".to_string()),
+            Some("cm test".to_string()),
+            Some("cm".to_string()),
+        ];
+        assert_eq!(
+            launched_pairs(&[317, 318, 319], &cmds),
+            vec![(317, "cm review"), (318, "cm test"), (319, "cm")]
+        );
+    }
+
+    /// A plain shell reads as `<shell>`, not `None` — the log line has the same
+    /// shape whether or not `--command` was given.
+    #[test]
+    fn a_plain_shell_is_named_not_null() {
+        assert_eq!(
+            launched_pairs(&[42, 43], &[None, None]),
+            vec![(42, "<shell>"), (43, "<shell>")]
+        );
+    }
+
+    /// Never panic inside a log statement: a length mismatch reports the panes
+    /// actually created rather than taking the host down.
+    #[test]
+    fn length_mismatch_reports_what_exists() {
+        assert_eq!(
+            launched_pairs(&[1], &[Some("a".into()), Some("b".into())]),
+            vec![(1, "a")]
+        );
+        assert_eq!(launched_pairs(&[1, 2], &[Some("a".into())]), vec![(1, "a")]);
     }
 }
