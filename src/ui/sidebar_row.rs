@@ -74,6 +74,9 @@ pub struct PaneDots {
 pub struct PaneDotWindow {
     pub start: usize,
     pub count: usize,
+    /// The window this context will restore when it is activated.
+    pub is_return_target: bool,
+    /// Whether this is also the globally active window right now.
     pub is_active: bool,
 }
 
@@ -139,6 +142,7 @@ fn draw_pips(
     let painter = ui.painter();
     let cy = rect.center().y;
     let mut dot_centers = vec![0.0; capped];
+    let mut group_rects = Vec::with_capacity(groups.len());
     let mut cursor_x = rect.min.x;
     if groups.is_empty() {
         for (dot_i, center) in dot_centers.iter_mut().enumerate() {
@@ -178,12 +182,19 @@ fn draw_pips(
             let fill = if group.is_active {
                 with_alpha(colors.accent, 0.16 * row_alpha)
             } else {
-                with_alpha(colors.bg_hover, 0.7 * row_alpha)
+                // Keep group fill darker than a hovered row, so hover remains
+                // a row-level wash instead of erasing window boundaries.
+                with_alpha(colors.bg_darkest, 0.3 * row_alpha)
             };
             let stroke = if group.is_active {
                 egui::Stroke::new(1.0_f32, with_alpha(colors.accent, row_alpha))
+            } else if group.is_return_target {
+                egui::Stroke::new(
+                    1.5_f32,
+                    with_alpha(colors.text_secondary(colors.bg_sidebar), row_alpha),
+                )
             } else {
-                egui::Stroke::new(1.0_f32, with_alpha(colors.border, 0.9 * row_alpha))
+                egui::Stroke::new(1.0_f32, with_alpha(colors.text_dim, 0.72 * row_alpha))
             };
             painter.rect_filled(group_rect, egui::CornerRadius::same(4), fill);
             painter.rect_stroke(
@@ -192,6 +203,7 @@ fn draw_pips(
                 stroke,
                 egui::StrokeKind::Inside,
             );
+            group_rects.push((group, group_rect));
             for dot_i in start..end {
                 dot_centers[dot_i] = cursor_x
                     + WINDOW_GROUP_PAD_X
@@ -219,6 +231,34 @@ fn draw_pips(
             painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0_f32, color));
         } else {
             painter.circle_filled(center, PANE_DOT_RADIUS, color);
+        }
+    }
+    // The pin is intentionally neutral: dot color describes agent activity,
+    // while this tiny direction marker describes where a context will return.
+    if let Some(focused_idx) = dots.focused_idx {
+        if let Some((group, group_rect)) = group_rects.iter().find(|(group, _)| {
+            group.is_return_target
+                && (group.start..group.start + group.count).contains(&focused_idx)
+        }) {
+            let cx = dot_centers[focused_idx];
+            let tip_y = (cy - PANE_DOT_RADIUS - 0.5).max(group_rect.min.y + 2.0);
+            let pin_color = with_alpha(
+                colors.text_primary,
+                if group.is_active {
+                    row_alpha
+                } else {
+                    0.78 * row_alpha
+                },
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(cx - 2.5, group_rect.min.y + 1.5),
+                    egui::pos2(cx + 2.5, group_rect.min.y + 1.5),
+                    egui::pos2(cx, tip_y),
+                ],
+                pin_color,
+                egui::Stroke::NONE,
+            ));
         }
     }
     if dots.count > PANE_DOT_MAX {

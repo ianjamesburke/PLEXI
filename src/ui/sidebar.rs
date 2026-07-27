@@ -72,6 +72,96 @@ fn reorder_line_y(rects: &[Rect], slot: usize) -> f32 {
 }
 
 impl PlexiApp {
+    /// Sidebar pane dots retain the window and pane that context activation
+    /// will restore, even while another context is active.
+    fn sidebar_pane_dots(&self, ctx_id: u64, is_active_context: bool) -> Option<PaneDots> {
+        let return_window_id = if is_active_context {
+            self.windows
+                .get(self.active_window)
+                .map(|window| window.window_id)
+        } else {
+            self.context_active_window
+                .get(&ctx_id)
+                .copied()
+                .or_else(|| {
+                    self.windows
+                        .iter()
+                        .find(|window| window.context_id == ctx_id)
+                        .map(|window| window.window_id)
+                })
+        };
+        let mut ctx_windows: Vec<usize> = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, window)| window.context_id == ctx_id)
+            .map(|(idx, _)| idx)
+            .collect();
+        ctx_windows.sort_by_key(|&idx| {
+            let window = &self.windows[idx];
+            (window.grid_y, window.grid_x)
+        });
+
+        let mut pane_ids = Vec::new();
+        let mut windows = Vec::new();
+        for &win_idx in &ctx_windows {
+            let window = &self.windows[win_idx];
+            let start = pane_ids.len();
+            if let Some(root) = window.tree.root() {
+                pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(
+                    &window.tree.tiles,
+                    root,
+                ));
+            }
+            let count = pane_ids.len() - start;
+            if count > 0 {
+                windows.push(crate::ui::sidebar_row::PaneDotWindow {
+                    start,
+                    count,
+                    is_return_target: return_window_id == Some(window.window_id),
+                    is_active: is_active_context && self.active_window == win_idx,
+                });
+            }
+        }
+
+        if pane_ids.is_empty() {
+            return None;
+        }
+        let focused_idx = return_window_id
+            .and_then(|window_id| {
+                self.windows
+                    .iter()
+                    .find(|window| window.window_id == window_id && window.context_id == ctx_id)
+            })
+            .and_then(|window| window.focused_pane.map(|tile| (window, tile)))
+            .and_then(|(window, tile)| match window.tree.tiles.get(tile) {
+                Some(Tile::Pane(pane_id)) => pane_ids.iter().position(|&id| id == *pane_id),
+                _ => None,
+            });
+        let mut hidden_set = std::collections::HashSet::new();
+        let mut activities = Vec::with_capacity(pane_ids.len());
+        for (dot_idx, &pane_id) in pane_ids.iter().enumerate() {
+            let pane = self
+                .windows
+                .iter()
+                .filter(|window| window.context_id == ctx_id)
+                .find_map(|window| window.panes.get(&pane_id));
+            if pane.is_some_and(|pane| pane.is_hidden()) {
+                hidden_set.insert(dot_idx);
+            }
+            activities.push(pane.and_then(|pane| pane.effective_activity()).cloned());
+        }
+        Some(PaneDots {
+            count: pane_ids.len(),
+            focused_idx,
+            hidden_set,
+            activities,
+            windows,
+        })
+    }
+}
+
+impl PlexiApp {
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
 
@@ -149,82 +239,8 @@ impl PlexiApp {
             let is_dragging = self.drag_context == Some(i);
             let any_dragging = self.drag_context.is_some();
 
-            // Pane count + focused-pane index for this context
             let ctx_id = self.router.get(i).context_id;
-            let mut ctx_windows: Vec<usize> = self
-                .windows
-                .iter()
-                .enumerate()
-                .filter(|(_, w)| w.context_id == ctx_id)
-                .map(|(idx, _)| idx)
-                .collect();
-            ctx_windows.sort_by_key(|&idx| {
-                let w = &self.windows[idx];
-                (w.grid_y, w.grid_x)
-            });
-            let mut pane_ids: Vec<u64> = Vec::new();
-            let mut pane_windows = Vec::new();
-            for &win_idx in &ctx_windows {
-                let w = &self.windows[win_idx];
-                let start = pane_ids.len();
-                if let Some(root) = w.tree.root() {
-                    pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(
-                        &w.tree.tiles,
-                        root,
-                    ));
-                }
-                let count = pane_ids.len() - start;
-                if count > 0 {
-                    pane_windows.push(crate::ui::sidebar_row::PaneDotWindow {
-                        start,
-                        count,
-                        is_active: is_active && self.active_window == win_idx,
-                    });
-                }
-            }
-            let pane_count = pane_ids.len();
-
-            let focused_pane_idx: Option<usize> = if is_active {
-                self.windows
-                    .get(self.active_window)
-                    .and_then(|w| w.focused_pane)
-                    .and_then(|tile_id| {
-                        let w = &self.windows[self.active_window];
-                        match w.tree.tiles.get(tile_id) {
-                            Some(Tile::Pane(pid)) => pane_ids.iter().position(|&p| p == *pid),
-                            _ => None,
-                        }
-                    })
-            } else {
-                None
-            };
-
-            // Build pane dots for this context row — track hidden + agent state.
-            let pane_dots = if pane_count > 0 {
-                let mut hidden_set = std::collections::HashSet::new();
-                let mut activities = Vec::with_capacity(pane_count);
-                for (dot_idx, &pid) in pane_ids.iter().enumerate() {
-                    let pane_opt = self
-                        .windows
-                        .iter()
-                        .filter(|w| w.context_id == ctx_id)
-                        .find_map(|w| w.panes.get(&pid));
-                    let is_hidden = pane_opt.map_or(false, |p| p.is_hidden());
-                    if is_hidden {
-                        hidden_set.insert(dot_idx);
-                    }
-                    activities.push(pane_opt.and_then(|p| p.effective_activity()).cloned());
-                }
-                Some(PaneDots {
-                    count: pane_count,
-                    focused_idx: focused_pane_idx,
-                    hidden_set,
-                    activities,
-                    windows: pane_windows,
-                })
-            } else {
-                None
-            };
+            let pane_dots = self.sidebar_pane_dots(ctx_id, is_active);
 
             // --- Renaming: special-cased before ContextItem path ---
             if is_renaming {
@@ -461,64 +477,7 @@ impl PlexiApp {
                     let subtitle = ctx.root.as_ref().map(|p| p.display().to_string());
                     let indent = ctx.depth;
 
-                    // Build pane dots for parked row (same logic as active rows).
-                    let mut ctx_windows: Vec<usize> = self
-                        .windows
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, w)| w.context_id == ctx_id)
-                        .map(|(idx, _)| idx)
-                        .collect();
-                    ctx_windows.sort_by_key(|&idx| {
-                        let w = &self.windows[idx];
-                        (w.grid_y, w.grid_x)
-                    });
-                    let mut pane_ids: Vec<u64> = Vec::new();
-                    let mut pane_windows = Vec::new();
-                    for &win_idx in &ctx_windows {
-                        let w = &self.windows[win_idx];
-                        let start = pane_ids.len();
-                        if let Some(root) = w.tree.root() {
-                            pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(
-                                &w.tree.tiles,
-                                root,
-                            ));
-                        }
-                        let count = pane_ids.len() - start;
-                        if count > 0 {
-                            pane_windows.push(crate::ui::sidebar_row::PaneDotWindow {
-                                start,
-                                count,
-                                is_active: false,
-                            });
-                        }
-                    }
-                    let pane_count = pane_ids.len();
-                    let pane_dots = if pane_count > 0 {
-                        let mut hidden_set = std::collections::HashSet::new();
-                        let mut activities = Vec::with_capacity(pane_count);
-                        for (dot_idx, &pid) in pane_ids.iter().enumerate() {
-                            let pane_opt = self
-                                .windows
-                                .iter()
-                                .filter(|w| w.context_id == ctx_id)
-                                .find_map(|w| w.panes.get(&pid));
-                            let is_hidden = pane_opt.map_or(false, |p| p.is_hidden());
-                            if is_hidden {
-                                hidden_set.insert(dot_idx);
-                            }
-                            activities.push(pane_opt.and_then(|p| p.effective_activity()).cloned());
-                        }
-                        Some(PaneDots {
-                            count: pane_count,
-                            focused_idx: None,
-                            hidden_set,
-                            activities,
-                            windows: pane_windows,
-                        })
-                    } else {
-                        None
-                    };
+                    let pane_dots = self.sidebar_pane_dots(ctx_id, false);
 
                     let (action, response) = ContextItem {
                         is_active: false,
@@ -782,7 +741,7 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{reorder_line_y, resolve_drag_drop, SidebarDrop};
+    use super::*;
     use egui::{pos2, vec2, Rect};
 
     // Two stacked active rows (y in [0,20] and [20,40]), the Parked header at
@@ -801,6 +760,53 @@ mod tests {
     }
     fn header() -> Rect {
         Rect::from_min_size(pos2(0.0, 50.0), vec2(100.0, 20.0))
+    }
+
+    #[test]
+    fn sidebar_pane_dots_marks_the_saved_window_and_pane_for_inactive_contexts() {
+        let ctx = egui::Context::default();
+        let tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, tick);
+        let _ = app.add_test_pane();
+
+        let context_id = 41;
+        app.router.push(crate::host::context::Context {
+            name: "return target".to_string(),
+            path: std::path::PathBuf::from("/tmp"),
+            root: None,
+            description: None,
+            context_id,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
+        for (window_id, grid_x, pane_id) in [(42, 0, 420), (43, 1, 430)] {
+            let mut tree = egui_tiles::Tree::empty(format!("sidebar-{window_id}"));
+            let tile = tree.tiles.insert_pane(pane_id);
+            tree.root = Some(tile);
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: std::path::PathBuf::from("/tmp"),
+                tree,
+                panes: std::collections::HashMap::new(),
+                focused_pane: (window_id == 43).then_some(tile),
+                zoomed_pane: None,
+                grid_x,
+                grid_y: 0,
+                window_id,
+                context_id,
+            });
+        }
+        app.context_active_window.insert(context_id, 43);
+
+        let dots = app
+            .sidebar_pane_dots(context_id, false)
+            .expect("inactive context panes should render");
+        assert_eq!(dots.focused_idx, Some(1));
+        assert_eq!(dots.windows.len(), 2);
+        assert!(!dots.windows[0].is_return_target);
+        assert!(dots.windows[1].is_return_target);
+        assert!(!dots.windows[1].is_active);
     }
 
     fn resolve(

@@ -462,8 +462,7 @@ impl PlexiUiHarness {
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         // Scope the store to the active window's context — same as the
         // production open path.
-        let context_id =
-            self.with_app_mut(|app| app.windows[app.active_window].context_id);
+        let context_id = self.with_app_mut(|app| app.windows[app.active_window].context_id);
         // Grants/audit also stay inside the temp workspace, never the real
         // channel profile dir.
         let assistant = crate::assistant::AssistantApp::new(
@@ -509,6 +508,14 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
+        let active_window = h.with_app(|app| app.active_window);
+        add_focused_pane_to_window(h, active_window)
+    }
+
+    fn add_focused_pane_to_window(
+        h: &mut PlexiUiHarness,
+        window_index: usize,
+    ) -> crate::spatial::tiling::PaneId {
         // Root the file browser in the harness's empty workspace — never the
         // real temp_dir(), whose ~50k dev-machine entries balloon rendering.
         let browser_root = h.workspace.path().to_path_buf();
@@ -532,7 +539,7 @@ mod tests {
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
             };
-            let win = &mut app.windows[app.active_window];
+            let win = &mut app.windows[window_index];
             win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
@@ -989,8 +996,7 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(900.0, 400.0);
         h.step();
 
-        let path =
-            std::env::temp_dir().join(format!("plexi-ui-findbar-{}.md", std::process::id()));
+        let path = std::env::temp_dir().join(format!("plexi-ui-findbar-{}.md", std::process::id()));
         std::fs::write(&path, "the quick brown fox\nthe lazy dog\n").expect("seed note");
 
         h.with_app_mut(|app| {
@@ -2537,7 +2543,7 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, 2.0);
         h.step();
         add_focused_pane(&mut h);
-        h.with_app_mut(|app| {
+        let inactive_ctx_id = h.with_app_mut(|app| {
             app.sidebar_visible = true;
             // The minimap overlay only draws when the active workspace has a
             // second window — seed an empty one on the grid.
@@ -2557,9 +2563,39 @@ mod tests {
                 context_id: ws_id,
             });
             app.minimap = crate::render::minimap::MinimapState::with_visible(true);
-            // Two extra inactive contexts with realistic names + root paths;
-            // pushed directly (no root pane) so no PTY spawns headless.
-            for (name, dir) in [("PLEXI", "GitHub/PLEXI"), ("videos", "Documents/videos")] {
+            // Two extra inactive contexts with realistic names + root paths.
+            // The first has a persisted return window so the sidebar screenshot
+            // covers its inactive focus capsule + pane pin.
+            let plexi_ctx_id = app.next_window_id;
+            app.next_window_id += 1;
+            let plexi_root = std::env::temp_dir().join("GitHub/PLEXI");
+            app.router.push(crate::host::context::Context {
+                name: "PLEXI".to_string(),
+                path: plexi_root.clone(),
+                root: Some(plexi_root.clone()),
+                description: None,
+                context_id: plexi_ctx_id,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+            let plexi_window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: plexi_root,
+                tree: egui_tiles::Tree::empty("plexi-sidebar-focus-preview"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 0,
+                window_id: plexi_window_id,
+                context_id: plexi_ctx_id,
+            });
+            app.context_active_window
+                .insert(plexi_ctx_id, plexi_window_id);
+            for (name, dir) in [("videos", "Documents/videos")] {
                 let ctx_id = app.next_window_id;
                 app.next_window_id += 1;
                 let root = std::env::temp_dir().join(dir);
@@ -2574,6 +2610,13 @@ mod tests {
                     parked: false,
                 });
             }
+            plexi_ctx_id
+        });
+        // Index 2 is the inactive PLEXI context's only window: indexes 0 and
+        // 1 are the active context's two spatial windows seeded above.
+        add_focused_pane_to_window(&mut h, 2);
+        h.with_app_mut(|app| {
+            assert_eq!(app.windows[2].context_id, inactive_ctx_id);
         });
         h.run_steps(3);
         h.save_screenshot("/tmp/plexi-0528-sidebar-minimap-ppp2.png")
@@ -2788,9 +2831,9 @@ mod tests {
                 let app_pane = AppPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
-                        root.clone(),
-                    ))),
+                    runtime: AppRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserApp::new(root.clone()),
+                    )),
                     workspace_root: root.clone(),
                     permissions: AppPermissions::builtin(),
                     manifest_id: "file-browser".to_string(),
@@ -2980,7 +3023,8 @@ mod tests {
         #[test]
         fn gate_chrome_labels_meet_wcag_aa_floor() {
             use crate::ui::theme::{contrast, luminance};
-            let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+            let colors =
+                crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
             let backgrounds = [
                 ("bg_sidebar", colors.bg_sidebar),
                 ("bg_toolbar", colors.bg_toolbar),
