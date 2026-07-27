@@ -366,7 +366,11 @@ pub fn agent_hook_install_cli(claude_code: bool, codex: bool, pi: bool) -> i32 {
 
     // Hooks are global but execute inside panes from every release channel.
     // The bare shim honors the pane's PLEXI_SOCKET, while a channel-suffixed
-    // binary would report to whichever channel last installed hooks.
+    // binary would report to whichever channel last installed hooks. The
+    // script itself lives under the channel-neutral shared dir for the same
+    // reason: every channel writes byte-identical content there, so the path
+    // patched into the agent's global config survives uninstalling whichever
+    // channel happened to run install last.
     let script_path = match write_agent_state_script("plexi") {
         Ok(path) => path,
         Err(e) => {
@@ -412,7 +416,7 @@ pub fn agent_hook_uninstall_cli(claude_code: bool, codex: bool, pi: bool) -> i32
 }
 
 fn write_agent_state_script(binary: &str) -> Result<PathBuf, String> {
-    let hooks_dir = crate::config::config_dir().join("hooks");
+    let hooks_dir = crate::config::shared_dir().join("hooks");
     std::fs::create_dir_all(&hooks_dir)
         .map_err(|e| format!("could not create hooks dir {}: {e}", hooks_dir.display()))?;
     let script_path = hooks_dir.join(PLEXI_AGENT_STATE_SCRIPT);
@@ -535,13 +539,7 @@ fn install_claude_code_hooks(script_str: &str) -> i32 {
     let settings_path = claude_settings_path();
     let mut settings = read_json_settings(&settings_path);
 
-    if settings.get("hooks").is_none() {
-        settings["hooks"] = serde_json::json!({});
-    }
-
-    for event in CLAUDE_CODE_HOOK_EVENTS {
-        register_json_hook(&mut settings, event, script_str, None);
-    }
+    register_agent_hooks(&mut settings, CLAUDE_CODE_HOOK_EVENTS, script_str, None);
 
     let code = write_json_settings(&settings_path, &settings);
     if code == 0 {
@@ -559,13 +557,12 @@ fn install_codex_hooks(script_str: &str) -> i32 {
     let mut settings = read_json_settings(&hooks_path);
     let command = format!("PLEXI_AGENT_NAME=codex {script_str}");
 
-    if settings.get("hooks").is_none() {
-        settings["hooks"] = serde_json::json!({});
-    }
-
-    for event in CODEX_HOOK_EVENTS {
-        register_json_hook(&mut settings, event, &command, Some("Plexi agent state"));
-    }
+    register_agent_hooks(
+        &mut settings,
+        CODEX_HOOK_EVENTS,
+        &command,
+        Some("Plexi agent state"),
+    );
 
     let code = write_json_settings(&hooks_path, &settings);
     if code == 0 {
@@ -577,6 +574,23 @@ fn install_codex_hooks(script_str: &str) -> i32 {
         println!("Run `/hooks` in Codex once to trust the new hook definitions.");
     }
     code
+}
+
+/// Point every lifecycle event at `command`, dropping any Plexi entry already
+/// there. Re-installing from a second channel therefore rewrites stale
+/// channel-suffixed script paths instead of stacking a duplicate beside them.
+fn register_agent_hooks(
+    settings: &mut serde_json::Value,
+    events: &[&str],
+    command: &str,
+    status_message: Option<&str>,
+) {
+    if settings.get("hooks").is_none() {
+        settings["hooks"] = serde_json::json!({});
+    }
+    for event in events {
+        register_json_hook(settings, event, command, status_message);
+    }
 }
 
 fn register_json_hook(
@@ -929,5 +943,82 @@ mod agent_tests {
     fn channel_neutral_hook_script_uses_the_bare_plexi_shim() {
         let shell = super::agent_state_script("plexi");
         assert!(shell.contains("\"plexi\" \"${ARGS[@]}\""));
+    }
+
+    #[test]
+    fn hook_script_lands_in_the_channel_neutral_shared_dir() {
+        let shared = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let _shared_guard = crate::config::set_test_shared_dir(shared.path().to_path_buf());
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+
+        let script_path = super::write_agent_state_script("plexi").unwrap();
+
+        assert_eq!(
+            script_path,
+            shared
+                .path()
+                .join("hooks")
+                .join(super::PLEXI_AGENT_STATE_SCRIPT),
+            "hook script must live under the shared dir, not the channel profile dir"
+        );
+        assert!(script_path.is_file());
+        assert!(!profile.path().join("hooks").exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&script_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+    }
+
+    #[test]
+    fn shared_dir_is_channel_neutral() {
+        let _channel = crate::config::set_test_channel("pr-999");
+        assert!(crate::config::shared_dir().ends_with(".plexi"));
+    }
+
+    #[test]
+    fn reinstall_rewrites_stale_channel_suffixed_script_paths() {
+        let stale = "/home/u/.plexi-alpha/hooks/claude-code-agent-state.sh";
+        let neutral = "/home/u/.plexi/hooks/claude-code-agent-state.sh";
+
+        let mut settings = serde_json::json!({});
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, stale, None);
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None);
+
+        for event in super::CLAUDE_CODE_HOOK_EVENTS {
+            let entries = settings["hooks"][*event].as_array().unwrap();
+            assert_eq!(
+                entries.len(),
+                1,
+                "{event} kept a stale entry alongside the new one"
+            );
+            assert_eq!(entries[0]["hooks"][0]["command"], neutral);
+        }
+    }
+
+    #[test]
+    fn reinstall_preserves_unrelated_hook_entries() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": "/usr/local/bin/my-own-hook"}]
+                }]
+            }
+        });
+        let neutral = "/home/u/.plexi/hooks/claude-code-agent-state.sh";
+
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None);
+
+        let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0]["hooks"][0]["command"],
+            "/usr/local/bin/my-own-hook"
+        );
+        assert_eq!(entries[1]["hooks"][0]["command"], neutral);
     }
 }
