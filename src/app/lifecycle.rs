@@ -1824,6 +1824,8 @@ impl PlexiApp {
                             output_path: output_path.clone(),
                             response_file: response_file.clone(),
                             capture_requested_at: None,
+                            expires_at: std::time::Instant::now()
+                                + crate::app::screenshot::SCREENSHOT_DEADLINE,
                         });
                     self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }

@@ -3734,6 +3734,144 @@ fn pending_pane_inputs_survive_hidden_passes() {
     );
 }
 
+// -- Screenshot reply invariant (stints 0495, 0504) -----------------------
+
+/// `plexi host screenshot` must ask the viewport for a capture even while the
+/// window is hidden. The request was issued from `App::ui`, which eframe skips
+/// entirely on an occluded or minimized host, so no capture was ever requested:
+/// the PNG landed only once something un-occluded the window (after the CLI had
+/// already timed out — stint 0495), or never at all (stint 0504).
+#[test]
+fn screenshot_capture_requested_on_hidden_passes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.run_frames(1);
+
+    let response_file = temp_response(tmp.path(), "hidden-screenshot");
+    h.inject_ipc(AppRequest::Screenshot {
+        pane_id: None,
+        output_path: tmp.path().join("hidden.png").to_string_lossy().into_owned(),
+        response_file,
+    });
+    h.run_hidden_frames(1);
+
+    let pending = h
+        .app
+        .pending_screenshots
+        .first()
+        .expect("request must stay queued until the viewport delivers a capture");
+    assert!(
+        pending.capture_requested_at.is_some(),
+        "a hidden (logic-only) pass must still issue the viewport capture request"
+    );
+}
+
+/// Every screenshot request gets a typed reply — including when the compositor
+/// never produces a frame at all. Before the bounded deadline the request sat
+/// queued forever: no PNG, no response file, and nothing in the host log, so
+/// the CLI reported its own generic timeout and the failure was
+/// indistinguishable from a hung host.
+#[test]
+fn screenshot_without_viewport_delivery_replies_with_typed_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.run_frames(1);
+
+    let response_file = temp_response(tmp.path(), "stalled-screenshot");
+    let output_path = tmp.path().join("stalled.png").to_string_lossy().into_owned();
+    h.inject_ipc(AppRequest::Screenshot {
+        pane_id: None,
+        output_path: output_path.clone(),
+        response_file: response_file.clone(),
+    });
+    h.run_hidden_frames(1);
+
+    // No capture is ever delivered. Nothing may be written before the deadline.
+    h.run_hidden_frames(3);
+    assert!(
+        !std::path::Path::new(&response_file).exists(),
+        "a request inside its deadline must not be answered early"
+    );
+
+    // Age the request past its deadline rather than sleeping for it.
+    h.app
+        .pending_screenshots
+        .iter_mut()
+        .for_each(|request| request.expires_at = std::time::Instant::now());
+    h.run_hidden_frames(1);
+
+    let response = read_json_response(&response_file);
+    let error = response["error"]
+        .as_str()
+        .expect("undelivered screenshot must reply with a typed error");
+    assert!(
+        error.contains("screenshot readback did not complete"),
+        "error must name the failure verbatim for the CLI to surface: {error}"
+    );
+    assert!(
+        h.app.pending_screenshots.is_empty(),
+        "an expired request must be dropped, not answered twice"
+    );
+    assert!(
+        !std::path::Path::new(&output_path).exists(),
+        "a failed capture must not leave a partial PNG behind"
+    );
+}
+
+/// The deadline is a backstop, not a replacement: a delivered capture still
+/// fulfills normally and writes the PNG plus a success response.
+#[test]
+fn screenshot_delivered_capture_still_fulfills() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.run_frames(1);
+
+    let response_file = temp_response(tmp.path(), "delivered-screenshot");
+    let output_path = tmp
+        .path()
+        .join("delivered.png")
+        .to_string_lossy()
+        .into_owned();
+    h.inject_ipc(AppRequest::Screenshot {
+        pane_id: None,
+        output_path: output_path.clone(),
+        response_file: response_file.clone(),
+    });
+    h.run_frames(1);
+
+    // Stand in for wgpu's asynchronous readback, which no headless pass can
+    // produce: hand the app the capture event eframe would have injected.
+    let image = std::sync::Arc::new(egui::ColorImage::filled(
+        [64, 48],
+        egui::Color32::from_rgb(10, 20, 30),
+    ));
+    let raw_input = egui::RawInput {
+        events: vec![egui::Event::Screenshot {
+            viewport_id: egui::ViewportId::ROOT,
+            user_data: egui::UserData::default(),
+            image,
+        }],
+        ..Default::default()
+    };
+    let ctx = h.ctx.clone();
+    h.app.fulfill_screenshot_events(&ctx, &raw_input);
+
+    let response = read_json_response(&response_file);
+    assert_eq!(
+        response["ok"].as_bool(),
+        Some(true),
+        "a delivered capture must reply with success: {response}"
+    );
+    assert!(
+        std::path::Path::new(&output_path).exists(),
+        "a delivered capture must write the PNG"
+    );
+    assert!(
+        h.app.pending_screenshots.is_empty(),
+        "a fulfilled request must be dequeued"
+    );
+}
+
 // -- Rename pre-selection (stint 0545) ------------------------------------
 
 /// The sorted char range of a TextEdit's current selection, if any.
