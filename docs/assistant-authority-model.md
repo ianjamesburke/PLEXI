@@ -50,19 +50,21 @@ These exist today and are the reason this document exists. Each is stated as the
 
 **Grants do not bind to resources.** `GrantRecord` carries `resource_scope` and `resource_id`, and `GrantRecord::matches` never compares them. Matching is actor plus `target_id` plus workspace root. `PermissionRequest` has no field for arguments at all. The practical result: approving one file write approves every future file write in that workspace, and approving one terminal command approves every future command. The Assistant's session-approval set and ask-list are likewise keyed by bare tool name. Narrow binding is documented in the product spec and structurally present in the record type, but inert at evaluation time.
 
-**Read-only is self-asserted and buys silent invocation.** A connector tool's `read_only` flag comes straight from the app's own declaration, and `AssistantApp::gated_dispatcher` auto-allows a read-only tool under an `Ask` decision with no prompt. An app that marks a mutating tool read-only gets unprompted execution. Grants for connector tools bind to a tool-name string rather than to app package identity, so two apps claiming the same tool name are indistinguishable to the grant store.
+**Read-only is self-asserted and buys silent invocation.** A connector tool's `read_only` flag comes straight from the app's own declaration, and `AssistantApp::gated_dispatcher` auto-allows a read-only tool under an `Ask` decision with no prompt. An app that marks a mutating tool read-only gets unprompted execution. Grants for connector tools bind to a tool-name string rather than to app package identity. The dispatcher withholds simultaneously exposed duplicate names, but a grant still cannot distinguish which package supplied that name across time.
 
-**Pane and terminal observation and control cross contexts.** `assistant_pane_list` walks every window in every context and takes no origin context parameter. `assistant_pane_state` and `assistant_read_terminal` resolve a pane id against all windows. Focus and close do the same. Terminal reads are marked read-only, so they are auto-allowed — any context's terminal scrollback, including any secret echoed into it, is readable without a prompt. The mutating terminal paths (`assistant_run_terminal`, `assistant_bind_terminal`) are context-checked and are the correct model; the read and control paths are not.
+**Pane and terminal observation and control cross contexts.** `assistant_pane_list` walks every window in every context and takes no origin context parameter. `assistant_pane_state` and `assistant_read_terminal` resolve a pane id against all windows. Focus and close do the same. The optional target `pane_id` accepted by pane and app open also resolves through `find_pane_in_any_window` without proving that the target belongs to the origin context; a successful retarget can then close that cross-context pane. Terminal reads are marked read-only, so they are auto-allowed — any context's terminal scrollback, including any secret echoed into it, is readable without a prompt. `assistant_run_terminal` and `assistant_bind_terminal` do constrain the linked terminal to the origin context, but they do not make the other read and control paths context-local.
 
 **The global apps directory is an unconditional writable root.** `assistant_file_roots` returns the caller's context root plus the installed-apps directory for every conversation in every workspace.
 
-**Write plus build is unsandboxed execution.** `host.build.run` restricts argv to the `plexi app` init and check shapes, but checking an app spawns that app's interpreter. Combined with a workspace-scoped write grant, two approvals compose into arbitrary code execution as the user, outside any sandbox.
+**Scoped files still carry ambient root authority and a check-to-use gap.** Direct paths reject `..` and canonicalize the deepest existing prefix before checking containment; directory walks also skip symlinks. Those are real protections. They are not grants: every file tool receives the context root and global apps root before any resource decision, and the resolved path is later reopened by pathname. A path component can therefore be replaced between containment checking and the file operation. The reference monitor must preserve the existing traversal protections while replacing ambient roots and pathname reuse with explicit root grants and race-resistant resolution.
+
+**The hidden build adapter is process authority broader than its grant.** `host.build.run` restricts the leading argv shape to `plexi app init` or `plexi app check`, but the grant binds only to the tool name and workspace, not the subcommand, path, flags, or timeout. The `plexi` child itself is a native process with the host's inherited environment. Python app code exercised by `app check` runs through the existing CPython-in-Wasmtime path, so this is not currently an arbitrary-native-code path; the defect is that the authorization record does not describe the concrete process invocation it permits.
 
 **The built-in bypass makes Assistant authority unenumerable.** `AppPermissions::builtin()` carries an empty capability set because `is_builtin` short-circuits the PGAP checks. The terminal-binding capability check is therefore vacuous for the Assistant. Its real restraints live only in the newer broker layer, and nothing lists what it actually holds or lets a user revoke it.
 
 **Secrets can reach the transcript through auto-allowed reads.** Terminal reads, file reads, and grep are all read-only and therefore unprompted, and the walk skip-list excludes dependency and VCS directories but not dotfiles or `.env`. Build output returns raw subprocess stdout. There is no secret target type in the broker at all, so a policy line denying secret reads names a target that does not exist.
 
-**The audit trail records intent, not outcome.** The high-risk tools write a "requested" event before execution and no completion record. The actor field is a hardcoded literal rather than the agent that ran.
+**The audit trail cannot correlate intent with outcome.** Terminal commands, file mutations, and builds write a specific "requested" event before execution, and the common tool hook later writes a generic `tool_call` outcome. The records have no shared call or grant identity, the outcome omits the authorized arguments, and the actor field is a hardcoded literal rather than the agent that ran. The log therefore cannot prove which concrete request produced a given outcome.
 
 ## Design
 
@@ -79,7 +81,7 @@ An authorization request names:
 - **Environment**: working directory and the set of injected secret names.
 - **Origin**: the pane and context the request came from, supplied by the host and never by the model.
 
-Two rules make this real. **Resolve before you authorize**: the monitor sees the canonicalized path, the expanded command, the resolved pane, never the model's raw string. **Authorize the same value you execute**: the adapter receives the exact authorized argument set as a token, so nothing can be re-read from ambient state between decision and execution. This is the general form of the existing repo-wide rule that a command handler's data must be self-contained.
+The monitor follows **resolve before you authorize**: it sees the canonicalized path, the expanded command, and the resolved pane, never the model's raw string. It also follows **authorize the same value you execute**: the adapter receives the exact authorized argument set as a token, so nothing can be re-read from ambient state between decision and execution. This is the general form of the existing repo-wide rule that a command handler's data must be self-contained.
 
 Grant matching compares every identity field, including resource and arguments. A grant whose resource does not match the request does not match the request. Argument-bearing actions bind to a normalized argument fingerprint, so a changed argument is a new decision. Session-scoped approval binds the same fields as a persisted grant; it differs only in duration.
 
@@ -93,13 +95,13 @@ Every pane-addressed action takes the origin context as a parameter and resolves
 
 ### Filesystem authority
 
-Filesystem authority is a set of explicitly granted capability roots. The context root is the default root and the only one present without a decision. There is no implicit global root; installed-app directories are a normal grantable root like any other.
+Filesystem authority is a set of explicitly granted capability roots. The context root is the default root proposed in a permission request, not a root the Assistant may use without a decision. There is no implicit global root; installed-app directories are a normal grantable root like any other.
 
 Containment is proven on the canonical path, with symlinks not followed, for existing paths and for not-yet-existing descendants alike. Lexical prefix comparison is never a boundary. The window between checking a path and using it is closed by carrying the resolved handle or path forward from the authorization, so a replacement race cannot swap the target underneath an approved operation. Directory walks do not traverse symlinks. Bounded size, line, match, and depth limits stay in force; they are resource protection, not authority.
 
 ### Process execution
 
-Two distinct planes, permanently separated:
+The process surface has distinct, permanently separated planes:
 
 **The human terminal** is a PTY a person is watching. Injection into it is a human affordance. It stays context-scoped and bound to the origin pane's own linked terminal, it stays echoed so the human sees what was sent, and it is never a data channel between the Assistant and anything else.
 
@@ -111,7 +113,7 @@ The worker's policy binds the whole process tree. A child process, a shell start
 
 ### Workspace secrets
 
-A secret is an environment capability, never model context. A grant binds the canonical secret name, the destination command shape and working directory, the workspace, the actor, and a duration — five fields, all required.
+A secret is an environment capability, never model context. A grant binds the canonical secret name, destination command shape, working directory, workspace, actor, and duration; none may be omitted.
 
 Values are resolved at process-construction time and injected directly into the child's environment. They never enter a prompt, a transcript, a tool result, a command preview, an audit record, or an error message. The audit trail records that a named secret was injected into a named command; it records nothing about the value. A worker receives only the names explicitly injected for that invocation, not the host's ambient environment.
 
@@ -192,7 +194,7 @@ Implementation is split so that each piece is independently testable and lands b
 
 **The sandbox profile for the worker** is deliberately a separate follow-on. The worker's typed contract is valuable and testable on its own, and the OS sandbox profile is a platform-specific layer applied to an already-correct process boundary. Splitting them keeps a platform detail from blocking the authority work.
 
-**Workspace-secret environment injection** depends on the worker, since a secret's destination is a command. Five-field grants, injection at process construction, and egress redaction as a backstop.
+**Workspace-secret environment injection** depends on the worker, since a secret's destination is a command. Fully bound grants, injection at process construction, and egress redaction as a backstop.
 
 **Project-instruction loading** is independent of the worker and can land in parallel: root and nested `AGENTS.md`, compatible `CLAUDE.md` imports, explicit additional roots, path-scoped rules, and the invariant that none of it can widen authority.
 
@@ -206,7 +208,7 @@ Implementation is split so that each piece is independently testable and lands b
 
 ## Decisions Needing Sign-Off
 
-Everything above is decided. These three are decided provisionally and are worth an explicit human confirmation, because each trades user friction or migration pain for containment and the right balance is a product judgment.
+Everything above is decided. The decisions below are provisional and are worth explicit human confirmation, because each trades user friction or migration pain for containment and the right balance is a product judgment.
 
 **Invalidating existing broad grants rather than translating them.** This is the correct security answer — a grant the user gave under "this tool, this workspace" was never consent to a specific resource — but it means every existing Assistant user re-approves their common actions once. The alternative, a one-time migration prompt that lets a user re-issue the old grants in narrow form, is friendlier and weaker.
 
