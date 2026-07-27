@@ -103,6 +103,10 @@ pub(crate) struct NotePickerEntry {
     pub inbox: bool,
     /// Lowercased haystack for fuzzy search: title + file name + body.
     pub search_text: String,
+    /// Owning context name, set only for notes aggregated from a *descendant*
+    /// context. `None` means the note belongs to the active context (or inbox),
+    /// which needs no disambiguating chip.
+    pub context_label: Option<String>,
 }
 
 impl NotePickerEntry {
@@ -134,7 +138,14 @@ impl NotePickerEntry {
             preview: first_line,
             inbox,
             search_text,
+            context_label: None,
         })
+    }
+
+    /// Tag this entry as belonging to a descendant context, for the picker chip.
+    pub(crate) fn with_context_label(mut self, label: Option<String>) -> Self {
+        self.context_label = label;
+        self
     }
 }
 
@@ -148,6 +159,302 @@ pub(crate) fn fuzzy_match(query: &str, haystack: &str) -> bool {
         .filter(|c| !c.is_whitespace())
         .flat_map(|c| c.to_lowercase())
         .all(|q| chars.any(|h| h == q))
+}
+
+// ─── Context-scoped kept notes ───────────────────────────────────────────────
+//
+// Kept notes live in `notes/ctx-<slug>-<hash8>/`, keyed by the context's scope
+// root rather than by the directory Plexi happened to be launched from. The
+// picker unions the active context's dir with every descendant context's dir,
+// resolved by path-component-boundary prefix match over the live context list —
+// never by crawling the filesystem for context roots.
+
+use crate::host::context::Context;
+
+/// Directory names under `notes/` that are never a context's kept-note dir.
+const RESERVED_NOTES_DIRS: [&str; 2] = ["inbox", "trash"];
+
+/// Prefix marking a directory under `notes/` as context-keyed. Legacy
+/// workspace-slug dirs never carry it, which is what makes migration
+/// distinguishable and repeatable.
+const CONTEXT_DIR_PREFIX: &str = "ctx-";
+
+/// The path a context scopes its notes to: the explicit project `root` when set,
+/// otherwise the context's own `path`.
+pub(crate) fn context_scope_root(ctx: &Context) -> &Path {
+    ctx.root.as_deref().unwrap_or(ctx.path.as_path())
+}
+
+/// `true` when `candidate` is `ancestor` itself or lives beneath it.
+///
+/// Component-wise, not textual: `/foo/barbaz` is **not** a descendant of
+/// `/foo/bar`. `Path::starts_with` compares whole components, which is exactly
+/// the boundary we need.
+pub(crate) fn is_self_or_descendant(candidate: &Path, ancestor: &Path) -> bool {
+    candidate.starts_with(ancestor)
+}
+
+/// Lowercase ASCII slug of a path's final component, for human readability in
+/// the dir name. Never load-bearing for identity — the hash is.
+fn readable_slug(root: &Path) -> String {
+    let base = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut slug = String::new();
+    for ch in base.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.extend(ch.to_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= 24 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "root".to_string()
+    } else {
+        slug
+    }
+}
+
+/// Directory name holding kept notes for the context rooted at `root`:
+/// `ctx-<readable-slug>-<sha256-prefix>`. The hash is over the full path, so
+/// two same-named roots never collide.
+pub(crate) fn context_notes_dir_name(root: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(root.to_string_lossy().as_bytes());
+    let hash: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("{CONTEXT_DIR_PREFIX}{}-{hash}", readable_slug(root))
+}
+
+/// Absolute kept-notes directory for the context rooted at `root`.
+pub(crate) fn context_notes_dir(root: &Path) -> PathBuf {
+    crate::config::config_dir()
+        .join("notes")
+        .join(context_notes_dir_name(root))
+}
+
+/// One kept-notes directory to scan, with the label shown on its rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContextNotesScope {
+    pub dir: PathBuf,
+    /// Context name for descendant scopes; `None` for the active context, whose
+    /// notes need no disambiguating chip.
+    pub label: Option<String>,
+}
+
+/// Kept-note dirs for `active`: its own dir first, then every descendant
+/// context's dir in the order they appear in `contexts`. Pure string work over
+/// the live context list.
+pub(crate) fn context_notes_scopes(contexts: &[Context], active: &Context) -> Vec<ContextNotesScope> {
+    let active_root = context_scope_root(active);
+    let mut seen = std::collections::HashSet::new();
+    let mut scopes = vec![ContextNotesScope {
+        dir: context_notes_dir(active_root),
+        label: None,
+    }];
+    seen.insert(context_notes_dir_name(active_root));
+
+    for ctx in contexts {
+        if ctx.context_id == active.context_id {
+            continue;
+        }
+        let root = context_scope_root(ctx);
+        if !is_self_or_descendant(root, active_root) {
+            continue;
+        }
+        let name = context_notes_dir_name(root);
+        if !seen.insert(name) {
+            continue;
+        }
+        scopes.push(ContextNotesScope {
+            dir: context_notes_dir(root),
+            label: Some(ctx.name.clone()),
+        });
+    }
+    scopes
+}
+
+/// Outcome of one migration pass. Counts are for logging and tests only.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(crate) struct NotesMigrationReport {
+    /// Notes copied into a context dir and removed from the legacy dir.
+    pub moved: usize,
+    /// Notes already present at the destination — left alone.
+    pub already_present: usize,
+    /// Legacy dirs with no matching context — left in place untouched.
+    pub unmapped_dirs: Vec<String>,
+    /// Notes that failed to migrate. The source copy is always still there.
+    pub failed: usize,
+}
+
+/// Migrate legacy `notes/<workspace-slug>/` dirs into their context's dir.
+///
+/// Data-safety rules, in order:
+/// - copy first, verify the destination byte length, only then remove the source
+/// - a destination that already holds an identical file counts as migrated
+/// - a destination that holds a *different* file of the same name gets the
+///   source under a suffixed name; nothing is ever overwritten
+/// - a legacy dir with no matching context is logged and left completely alone
+/// - the legacy dir is removed only when `remove_dir` succeeds, i.e. it is empty
+///
+/// Idempotent: a second pass finds no legacy dirs (or finds identical
+/// destinations) and moves nothing.
+pub(crate) fn migrate_legacy_workspace_notes(contexts: &[Context]) -> NotesMigrationReport {
+    let mut report = NotesMigrationReport::default();
+    let notes_base = crate::config::config_dir().join("notes");
+
+    let Ok(entries) = std::fs::read_dir(&notes_base) else {
+        return report;
+    };
+
+    // Deterministic order so a partial failure replays the same way.
+    let mut legacy_dirs: Vec<(String, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let reserved = RESERVED_NOTES_DIRS.contains(&name.as_str())
+                || name.starts_with(CONTEXT_DIR_PREFIX);
+            (!reserved).then_some((name, e.path()))
+        })
+        .collect();
+    legacy_dirs.sort();
+
+    if legacy_dirs.is_empty() {
+        return report;
+    }
+
+    // Legacy slugs were the basename of the launch workspace root. Match on the
+    // basename of each context's scope root; shallowest context wins so a
+    // parent takes precedence over a same-named child.
+    let mut candidates: Vec<&Context> = contexts.iter().collect();
+    candidates.sort_by_key(|c| (c.depth, c.context_id));
+
+    for (slug, src_dir) in legacy_dirs {
+        let Some(ctx) = candidates.iter().find(|c| {
+            context_scope_root(c)
+                .file_name()
+                .map(|n| n.to_string_lossy() == slug.as_str())
+                .unwrap_or(false)
+        }) else {
+            log::warn!(
+                "notes_migration: no context matches legacy dir {slug:?} — leaving notes in place at {src_dir:?}"
+            );
+            report.unmapped_dirs.push(slug);
+            continue;
+        };
+
+        let dest_dir = context_notes_dir(context_scope_root(ctx));
+        if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+            log::warn!("notes_migration: failed to create {dest_dir:?}: {e}");
+            report.failed += 1;
+            continue;
+        }
+
+        let Ok(notes) = std::fs::read_dir(&src_dir) else {
+            log::warn!("notes_migration: failed to read {src_dir:?}");
+            report.failed += 1;
+            continue;
+        };
+        let mut note_paths: Vec<PathBuf> = notes
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |x| x == "md"))
+            .collect();
+        note_paths.sort();
+
+        for src in note_paths {
+            match migrate_one_note(&src, &dest_dir) {
+                Ok(MigratedNote::Moved(dest)) => {
+                    report.moved += 1;
+                    log::info!("notes_migration: moved {src:?} → {dest:?}");
+                }
+                Ok(MigratedNote::AlreadyPresent(dest)) => {
+                    report.already_present += 1;
+                    log::info!("notes_migration: {src:?} already present at {dest:?}");
+                }
+                Err(e) => {
+                    report.failed += 1;
+                    log::warn!("notes_migration: leaving {src:?} in place: {e}");
+                }
+            }
+        }
+
+        // Only succeeds when the dir is now empty; a leftover non-note file or a
+        // failed note keeps the dir, which is the safe outcome.
+        if std::fs::remove_dir(&src_dir).is_ok() {
+            log::info!("notes_migration: removed empty legacy dir {src_dir:?}");
+        }
+    }
+
+    log::info!(
+        "notes_migration: moved={} already_present={} failed={} unmapped={:?}",
+        report.moved,
+        report.already_present,
+        report.failed,
+        report.unmapped_dirs
+    );
+    report
+}
+
+enum MigratedNote {
+    Moved(PathBuf),
+    AlreadyPresent(PathBuf),
+}
+
+/// Copy one note into `dest_dir`, verify it landed, then remove the source.
+/// Never overwrites and never removes a source whose copy is unconfirmed.
+fn migrate_one_note(src: &Path, dest_dir: &Path) -> std::io::Result<MigratedNote> {
+    let src_bytes = std::fs::read(src)?;
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| std::io::Error::other(format!("no file name in {src:?}")))?;
+
+    let mut dest = dest_dir.join(file_name);
+    if dest.exists() {
+        if std::fs::read(&dest).map(|b| b == src_bytes).unwrap_or(false) {
+            // Already migrated (or a re-run) — the destination is authoritative.
+            std::fs::remove_file(src)?;
+            return Ok(MigratedNote::AlreadyPresent(dest));
+        }
+        dest = non_colliding_dest(dest_dir, src)?;
+    }
+
+    std::fs::write(&dest, &src_bytes)?;
+    let landed = std::fs::metadata(&dest)?.len() as usize == src_bytes.len();
+    if !landed {
+        return Err(std::io::Error::other(format!(
+            "destination {dest:?} short-wrote; source kept"
+        )));
+    }
+    std::fs::remove_file(src)?;
+    Ok(MigratedNote::Moved(dest))
+}
+
+/// `<stem>-legacy[-N].md` inside `dest_dir`, first name that does not exist.
+fn non_colliding_dest(dest_dir: &Path, src: &Path) -> std::io::Result<PathBuf> {
+    let stem = src
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "note".to_string());
+    for n in 0..1000 {
+        let name = if n == 0 {
+            format!("{stem}-legacy.md")
+        } else {
+            format!("{stem}-legacy-{n}.md")
+        };
+        let candidate = dest_dir.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "no free destination name for {src:?} in {dest_dir:?}"
+    )))
 }
 
 // ─── Triage actions ──────────────────────────────────────────────────────────
@@ -415,6 +722,237 @@ mod tests {
         assert_eq!(entry.title, "note-20260611.md");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Context-scoped kept notes ───────────────────────────────────────────
+
+    fn ctx(id: u64, name: &str, root: &str, depth: u32) -> Context {
+        Context {
+            name: name.to_string(),
+            path: PathBuf::from(root),
+            root: Some(PathBuf::from(root)),
+            description: None,
+            context_id: id,
+            parent_id: None,
+            depth,
+            parked: false,
+        }
+    }
+
+    /// Isolated profile dir + the `notes/` base inside it.
+    fn notes_profile(tag: &str) -> (crate::config::TestProfileDirGuard, PathBuf) {
+        let profile = std::env::temp_dir().join(format!(
+            "plexi-notes-scope-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&profile);
+        let notes = profile.join("notes");
+        std::fs::create_dir_all(&notes).expect("create notes base");
+        let guard = crate::config::set_test_profile_dir(profile);
+        (guard, notes)
+    }
+
+    #[test]
+    fn descendant_match_respects_path_component_boundary() {
+        let bar = Path::new("/foo/bar");
+        assert!(
+            is_self_or_descendant(Path::new("/foo/bar"), bar),
+            "a context is its own scope"
+        );
+        assert!(is_self_or_descendant(Path::new("/foo/bar/sub"), bar));
+        assert!(is_self_or_descendant(Path::new("/foo/bar/sub/deep"), bar));
+        assert!(
+            !is_self_or_descendant(Path::new("/foo/barbaz"), bar),
+            "a textual prefix that is not a component boundary is not a descendant"
+        );
+        assert!(!is_self_or_descendant(Path::new("/foo"), bar));
+        assert!(!is_self_or_descendant(Path::new("/other/bar"), bar));
+    }
+
+    #[test]
+    fn context_dir_name_is_readable_stable_and_collision_free() {
+        let a = context_notes_dir_name(Path::new("/Users/x/Code/My Project"));
+        assert!(a.starts_with("ctx-my-project-"), "unexpected dir name {a}");
+        assert_eq!(a, context_notes_dir_name(Path::new("/Users/x/Code/My Project")));
+
+        // Same basename, different root — must not collide.
+        let b = context_notes_dir_name(Path::new("/Users/x/Other/My Project"));
+        assert_ne!(a, b);
+
+        assert!(context_notes_dir_name(Path::new("/")).starts_with("ctx-root-"));
+    }
+
+    #[test]
+    fn scopes_union_active_with_descendants_only() {
+        let (_guard, _notes) = notes_profile("scopes");
+        let contexts = vec![
+            ctx(1, "proj", "/proj", 0),
+            ctx(2, "sub", "/proj/sub", 1),
+            ctx(3, "deep", "/proj/sub/deep", 2),
+            ctx(4, "sibling", "/projx", 0),
+            ctx(5, "elsewhere", "/other", 0),
+        ];
+
+        let from_root = context_notes_scopes(&contexts, &contexts[0]);
+        assert_eq!(
+            from_root
+                .iter()
+                .map(|s| s.label.clone())
+                .collect::<Vec<_>>(),
+            vec![None, Some("sub".to_string()), Some("deep".to_string())],
+            "root sees itself unlabeled plus every descendant, and never /projx"
+        );
+        assert_eq!(from_root[0].dir, context_notes_dir(Path::new("/proj")));
+
+        // A child sees only itself and its own descendants — no ancestor walk (v2).
+        let from_sub = context_notes_scopes(&contexts, &contexts[1]);
+        assert_eq!(
+            from_sub.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
+            vec![None, Some("deep".to_string())]
+        );
+
+        let from_leaf = context_notes_scopes(&contexts, &contexts[2]);
+        assert_eq!(from_leaf.len(), 1);
+    }
+
+    #[test]
+    fn scopes_dedupe_contexts_sharing_a_root() {
+        let (_guard, _notes) = notes_profile("dedupe");
+        let contexts = vec![ctx(1, "a", "/proj", 0), ctx(2, "a-again", "/proj", 0)];
+        let scopes = context_notes_scopes(&contexts, &contexts[0]);
+        assert_eq!(scopes.len(), 1, "one dir per root, not one per context");
+    }
+
+    #[test]
+    fn migration_moves_legacy_notes_and_is_idempotent() {
+        let (_guard, notes) = notes_profile("migrate");
+        let contexts = vec![ctx(1, "proj", "/tmp/plexi-mig/proj", 0)];
+
+        let legacy = notes.join("proj");
+        std::fs::create_dir_all(&legacy).expect("legacy dir");
+        std::fs::write(legacy.join("a.md"), "note a").expect("seed a");
+        std::fs::write(legacy.join("b.md"), "note b").expect("seed b");
+        // Non-note files are never touched, and keep the legacy dir alive.
+        std::fs::write(legacy.join("README.txt"), "keep me").expect("seed txt");
+
+        let report = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(report.moved, 2);
+        assert_eq!(report.failed, 0);
+        assert!(report.unmapped_dirs.is_empty());
+
+        let dest = context_notes_dir(Path::new("/tmp/plexi-mig/proj"));
+        assert_eq!(
+            std::fs::read_to_string(dest.join("a.md")).expect("a migrated"),
+            "note a"
+        );
+        assert!(!legacy.join("a.md").exists(), "source removed after verify");
+        assert!(
+            legacy.join("README.txt").exists(),
+            "non-note files are left alone"
+        );
+
+        // Second pass moves nothing.
+        let again = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(again.moved, 0);
+        assert_eq!(again.already_present, 0);
+        assert_eq!(again.failed, 0);
+        assert_eq!(
+            std::fs::read_dir(&dest).unwrap().count(),
+            2,
+            "a re-run must not duplicate notes"
+        );
+    }
+
+    #[test]
+    fn migration_never_overwrites_a_differing_destination() {
+        let (_guard, notes) = notes_profile("collide");
+        let root = Path::new("/tmp/plexi-mig-collide/proj");
+        let contexts = vec![ctx(1, "proj", "/tmp/plexi-mig-collide/proj", 0)];
+
+        let legacy = notes.join("proj");
+        std::fs::create_dir_all(&legacy).expect("legacy dir");
+        std::fs::write(legacy.join("a.md"), "legacy body").expect("seed legacy");
+
+        let dest = context_notes_dir(root);
+        std::fs::create_dir_all(&dest).expect("dest dir");
+        std::fs::write(dest.join("a.md"), "existing body").expect("seed dest");
+
+        let report = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(report.moved, 1);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("a.md")).unwrap(),
+            "existing body",
+            "the pre-existing note must survive untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("a-legacy.md")).unwrap(),
+            "legacy body",
+            "the legacy note lands under a suffixed name"
+        );
+    }
+
+    #[test]
+    fn migration_treats_an_identical_destination_as_already_migrated() {
+        let (_guard, notes) = notes_profile("identical");
+        let root = Path::new("/tmp/plexi-mig-identical/proj");
+        let contexts = vec![ctx(1, "proj", "/tmp/plexi-mig-identical/proj", 0)];
+
+        let legacy = notes.join("proj");
+        std::fs::create_dir_all(&legacy).expect("legacy dir");
+        std::fs::write(legacy.join("a.md"), "same body").expect("seed legacy");
+        let dest = context_notes_dir(root);
+        std::fs::create_dir_all(&dest).expect("dest dir");
+        std::fs::write(dest.join("a.md"), "same body").expect("seed dest");
+
+        let report = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(report.already_present, 1);
+        assert_eq!(report.moved, 0);
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 1);
+        assert!(!legacy.exists(), "emptied legacy dir is removed");
+    }
+
+    #[test]
+    fn migration_leaves_unmapped_legacy_notes_in_place() {
+        let (_guard, notes) = notes_profile("unmapped");
+        let contexts = vec![ctx(1, "proj", "/tmp/plexi-mig-unmapped/proj", 0)];
+
+        let orphan = notes.join("some-old-workspace");
+        std::fs::create_dir_all(&orphan).expect("orphan dir");
+        std::fs::write(orphan.join("keep.md"), "orphan note").expect("seed orphan");
+
+        let report = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(report.moved, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.unmapped_dirs, vec!["some-old-workspace".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(orphan.join("keep.md")).unwrap(),
+            "orphan note",
+            "an unmappable note is never dropped"
+        );
+    }
+
+    #[test]
+    fn migration_skips_reserved_and_already_context_keyed_dirs() {
+        let (_guard, notes) = notes_profile("reserved");
+        let contexts = vec![ctx(1, "proj", "/tmp/plexi-mig-reserved/proj", 0)];
+
+        for reserved in ["inbox", "trash"] {
+            let dir = notes.join(reserved);
+            std::fs::create_dir_all(&dir).expect("reserved dir");
+            std::fs::write(dir.join("n.md"), "stay").expect("seed");
+        }
+        let ctx_dir = notes.join(context_notes_dir_name(Path::new(
+            "/tmp/plexi-mig-reserved/proj",
+        )));
+        std::fs::create_dir_all(&ctx_dir).expect("ctx dir");
+        std::fs::write(ctx_dir.join("n.md"), "stay").expect("seed");
+
+        let report = migrate_legacy_workspace_notes(&contexts);
+        assert_eq!(report, NotesMigrationReport::default());
+        assert!(notes.join("inbox").join("n.md").exists());
+        assert!(notes.join("trash").join("n.md").exists());
+        assert!(ctx_dir.join("n.md").exists());
     }
 
     #[test]

@@ -2,6 +2,61 @@ use super::pane::pane_send_cli;
 
 use super::binary_in_path;
 
+/// The context root this CLI invocation belongs to.
+///
+/// `PLEXI_CONTEXT_ROOT` is exported into panes of a context that has an explicit
+/// project root, so an in-pane `plexi notes` resolves to the same dir the GUI
+/// picker scans. Outside a pane, fall back to the workspace root the cwd sits in.
+///
+/// Known gap: a context with `root: None` exports no `PLEXI_CONTEXT_ROOT`, while
+/// the GUI keys that context's notes on `Context::path`. When the cwd's workspace
+/// root differs from that path, the CLI scans a different dir than the picker.
+/// Closing it means exporting the effective scope root into every pane's env,
+/// which is pane-env plumbing outside this change; the mismatch is logged below
+/// so it is observable rather than silent.
+fn cli_context_root() -> Option<std::path::PathBuf> {
+    if let Some(root) = std::env::var_os("PLEXI_CONTEXT_ROOT").filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(root));
+    }
+    let fallback = crate::config::active_workspace_root();
+    if std::env::var_os("PLEXI_PANE_ID").is_some() {
+        log::warn!(
+            "notes: pane exports no PLEXI_CONTEXT_ROOT (rootless context) — \
+             falling back to workspace root {fallback:?}, which may differ from the picker's dir"
+        );
+    }
+    fallback
+}
+
+/// Kept-notes dir for this invocation's context. Falls back to `notes/` itself
+/// when no context or workspace root can be resolved, matching the picker.
+fn cli_kept_notes_dir() -> std::path::PathBuf {
+    match cli_context_root() {
+        Some(root) => crate::notes::context_notes_dir(&root),
+        None => crate::config::config_dir().join("notes"),
+    }
+}
+
+/// Every dir holding this context's kept notes: the context-keyed dir, plus the
+/// legacy `notes/<workspace-slug>/` dir while it still exists.
+///
+/// The CLI has no live context list, so it cannot run the migration itself. It
+/// reads the legacy dir instead, which keeps existing notes visible to a
+/// CLI-only user between upgrade and the GUI's first picker open.
+fn cli_kept_notes_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![cli_kept_notes_dir()];
+    let legacy = cli_context_root()
+        .as_deref()
+        .and_then(|root| root.file_name())
+        .map(|slug| crate::config::config_dir().join("notes").join(slug))
+        .filter(|d| d.is_dir());
+    if let Some(legacy) = legacy {
+        log::info!("notes: including un-migrated legacy dir {legacy:?}");
+        dirs.push(legacy);
+    }
+    dirs
+}
+
 /// `plexi note "<text>"` — capture a quick note to the inbox.
 pub fn note_capture_cli(text: &str) -> i32 {
     let inbox_dir = crate::config::config_dir().join("notes").join("inbox");
@@ -24,8 +79,12 @@ pub fn note_capture_cli(text: &str) -> i32 {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    // `context_root` is what triage keys the keep destination on.
+    let context_root = cli_context_root()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let frontmatter = format!(
-        "---\ncaptured_at: {ts_human}\nsource: cli\ncwd: {cwd}\nworkspace: {workspace}\n---\n"
+        "---\ncaptured_at: {ts_human}\nsource: cli\ncwd: {cwd}\nworkspace: {workspace}\ncontext_root: {context_root}\n---\n"
     );
     let content = format!("{frontmatter}{}\n", text.trim());
 
@@ -104,21 +163,15 @@ pub fn notes_list_cli() -> i32 {
     // Always include inbox.
     let inbox_dir = notes_base.join("inbox");
 
-    // Workspace-scoped dir (kept notes).
-    let workspace_slug = crate::config::active_workspace_root()
-        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-        .map(|n| n.to_string_lossy().into_owned());
-    let workspace_dir = workspace_slug.map(|slug| notes_base.join(slug));
+    // Context-scoped dirs (kept notes), including any un-migrated legacy dir.
+    let mut dirs = vec![inbox_dir];
+    dirs.extend(cli_kept_notes_dirs());
 
-    log::info!(
-        "notes_list: scanning inbox={:?} workspace={:?}",
-        inbox_dir,
-        workspace_dir
-    );
+    log::info!("notes_list: scanning {dirs:?}");
 
     let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
 
-    for dir in [Some(inbox_dir), workspace_dir].into_iter().flatten() {
+    for dir in dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -143,15 +196,12 @@ pub fn notes_list_cli() -> i32 {
 ///
 /// Falls back to printing the notes directory when PLEXI_SOCKET is unset or fzf is absent.
 pub fn notes_open_cli() -> i32 {
-    let notes_base = crate::config::config_dir().join("notes");
-    let workspace_slug = crate::config::active_workspace_root()
-        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-        .map(|n| n.to_string_lossy().into_owned());
-    let notes_dir = match workspace_slug {
-        Some(ref slug) => notes_base.join(slug),
-        None => notes_base,
-    };
-    let notes_dir_str = notes_dir.display().to_string();
+    let notes_dirs = cli_kept_notes_dirs();
+    let notes_dir_str = notes_dirs
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
 
     if !binary_in_path("fzf") {
         eprintln!("error: fzf is not installed — run `brew install fzf` to enable the picker");
@@ -164,16 +214,18 @@ pub fn notes_open_cli() -> i32 {
         return 0;
     }
 
-    let has_notes = notes_dir.is_dir()
-        && std::fs::read_dir(&notes_dir)
-            .map(|d| {
-                d.filter_map(|e| e.ok()).any(|e| {
-                    std::path::Path::new(&e.file_name())
-                        .extension()
-                        .map_or(false, |x| x == "md")
+    let has_notes = notes_dirs.iter().any(|dir| {
+        dir.is_dir()
+            && std::fs::read_dir(dir)
+                .map(|d| {
+                    d.filter_map(|e| e.ok()).any(|e| {
+                        std::path::Path::new(&e.file_name())
+                            .extension()
+                            .map_or(false, |x| x == "md")
+                    })
                 })
-            })
-            .unwrap_or(false);
+                .unwrap_or(false)
+    });
     if !has_notes {
         eprintln!("No notes yet. Create one with \u{2318}+Shift+Space.");
         return 0;
@@ -201,8 +253,13 @@ pub fn notes_open_cli() -> i32 {
     } else {
         "vim"
     };
+    let globs = notes_dirs
+        .iter()
+        .map(|d| format!("{}/*.md", d.display()))
+        .collect::<Vec<_>>()
+        .join(" ");
     let cmd = format!(
-        "selected=$(ls -t {notes_dir_str}/*.md 2>/dev/null | fzf --header='Select note'); [ -n \"$selected\" ] && {editor} \"$selected\"\r"
+        "selected=$(ls -t {globs} 2>/dev/null | fzf --header='Select note'); [ -n \"$selected\" ] && {editor} \"$selected\"\r"
     );
     log::info!("notes_open: injecting fzf picker into pane {pane_id}");
     pane_send_cli(pane_id, &cmd)

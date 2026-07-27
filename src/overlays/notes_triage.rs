@@ -306,21 +306,25 @@ impl PlexiApp {
         }
     }
 
-    /// Move `note` to `notes/<workspace>/` using the workspace slug from the note's frontmatter.
+    /// Move `note` into its owning context's kept-notes dir.
+    ///
+    /// The note's captured `context_root` wins over the active context, so a note
+    /// taken in a subproject is kept there even when triaged from elsewhere.
     pub(crate) fn notes_triage_keep(&self, note: &InboxNote) {
-        let active_root = crate::config::active_workspace_root();
-        let active_slug: Option<String> = active_root
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string());
-        let workspace = note
+        // A context without an explicit `root` writes `context_root: ""`. An empty
+        // value is *absent*, not a path — filing under the hash of "" would put the
+        // note in a dir no picker ever scans.
+        let captured_root = note
             .frontmatter
-            .workspace
+            .context_root
             .as_deref()
-            .or_else(|| active_slug.as_deref())
-            .unwrap_or("default");
-        self.notes_triage_keep_to(note, workspace);
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from);
+        let root = captured_root.unwrap_or_else(|| {
+            crate::notes::context_scope_root(self.router.active()).to_path_buf()
+        });
+        self.notes_triage_keep_to(note, &crate::notes::context_notes_dir_name(&root));
     }
 
     /// Move `note` to `notes/<workspace>/` using an explicit workspace slug.
@@ -441,6 +445,51 @@ mod tests {
         let frame_tick = crate::platform::logging::FrameTick::default();
         let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
         app
+    }
+
+    /// Keep files a note into the context that captured it, and treats an empty
+    /// `context_root` as absent rather than as the path `""` — the latter hashes
+    /// to a dir no picker ever scans.
+    #[test]
+    fn triage_keep_files_into_the_capturing_context() {
+        let profile = std::env::temp_dir().join(format!("plexi-triage-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        let inbox = profile.join("notes").join("inbox");
+        std::fs::create_dir_all(&inbox).expect("inbox");
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+
+        let mut app = test_app();
+        let active_root = std::path::PathBuf::from("/tmp/plexi-triage-active");
+        app.router.get_mut(0).root = Some(active_root.clone());
+
+        // Captured in a *different* context — keep must follow the capture.
+        let captured_root = std::path::PathBuf::from("/tmp/plexi-triage-captured");
+        let mut note = inbox_note("captured");
+        note.path = inbox.join("captured.md");
+        note.frontmatter.context_root = Some(captured_root.display().to_string());
+        std::fs::write(&note.path, "captured body").expect("seed");
+        app.notes_triage_keep(&note);
+        assert!(
+            crate::notes::context_notes_dir(&captured_root)
+                .join("captured.md")
+                .exists(),
+            "kept into the capturing context's dir"
+        );
+
+        // Empty frontmatter value → fall back to the active context.
+        let mut rootless = inbox_note("rootless");
+        rootless.path = inbox.join("rootless.md");
+        rootless.frontmatter.context_root = Some(String::new());
+        std::fs::write(&rootless.path, "rootless body").expect("seed");
+        app.notes_triage_keep(&rootless);
+        assert!(
+            crate::notes::context_notes_dir(&active_root)
+                .join("rootless.md")
+                .exists(),
+            "an empty context_root must not file the note under the hash of \"\""
+        );
+
+        let _ = std::fs::remove_dir_all(&profile);
     }
 
     #[test]

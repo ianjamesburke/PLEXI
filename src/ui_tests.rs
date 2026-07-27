@@ -1046,6 +1046,81 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Visual review surface for context-scoped kept notes (stint 0557): the
+    /// picker as a root context's "master view" — global inbox on top, the
+    /// active context's own notes chipped `note`, and aggregated descendant
+    /// notes chipped with their context name. Geometry assertions cannot prove
+    /// the chips read well, so this renders realistic seeded content.
+    #[test]
+    fn screenshot_notes_picker_context_chips() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 760.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.step();
+
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            let mk = |title: &str, preview: &str, inbox: bool, label: Option<&str>| {
+                crate::notes::NotePickerEntry {
+                    path: std::env::temp_dir().join(format!("plexi-ctx-chip-{title}.md")),
+                    title: title.to_string(),
+                    preview: preview.to_string(),
+                    inbox,
+                    search_text: title.to_lowercase(),
+                    context_label: label.map(|s| s.to_string()),
+                }
+            };
+            app.notes_picker_entries = vec![
+                mk(
+                    "ask Sam about the staging cert",
+                    "expires 2026-08-03, renewal is manual",
+                    true,
+                    None,
+                ),
+                mk("release checklist", "tag, changelog, notarize, publish", true, None),
+                mk(
+                    "north star — what v1 has to prove",
+                    "one workspace you never leave",
+                    false,
+                    None,
+                ),
+                mk("pricing notes", "seat-based vs usage, land on seats", false, None),
+                mk(
+                    "wasm wire format decisions",
+                    "postcard over JSON for frame payloads",
+                    false,
+                    Some("plexi-runtime"),
+                ),
+                mk(
+                    "font bootstrap ordering trap",
+                    "ui-medium binds on the next frame, not this one",
+                    false,
+                    Some("plexi-runtime"),
+                ),
+                mk(
+                    "onboarding copy pass",
+                    "cut the second paragraph entirely",
+                    false,
+                    Some("website"),
+                ),
+            ];
+            app.notes_picker_selected = 0;
+        });
+        h.run_steps(2);
+
+        let out = "/tmp/plexi_notes_picker_context_chips.png";
+        h.save_screenshot(out).expect("render failed");
+        h.with_app(|app| {
+            assert!(
+                app.notes_picker_entries
+                    .iter()
+                    .any(|e| e.context_label.as_deref() == Some("plexi-runtime")),
+                "descendant rows must reach the render with their context label"
+            );
+        });
+        println!("Screenshot saved to {out}");
+    }
+
     /// Notes picker overlay: open → step → still visible and renders.
     #[test]
     fn notes_picker_overlay_smoke() {
@@ -1063,6 +1138,7 @@ mod tests {
                 preview: format!("{name} preview"),
                 inbox,
                 search_text: name.to_lowercase(),
+                context_label: None,
             };
             app.notes_picker_entries = vec![mk("inbox-note", true), mk("kept-note", false)];
             app.notes_picker_selected = 0;
@@ -2015,6 +2091,7 @@ mod tests {
                         preview: format!("{title} — first body line of the note"),
                         inbox: false,
                         search_text: title.to_lowercase(),
+                        context_label: None,
                     })
                     .collect();
                 app.show_command_palette = true;
@@ -2041,6 +2118,7 @@ mod tests {
                     preview: format!("{title} — first body line of the note"),
                     inbox: *inbox,
                     search_text: title.to_lowercase(),
+                    context_label: None,
                 })
                 .collect();
                 app.notes_picker_selected = 0;
@@ -2233,6 +2311,7 @@ mod tests {
                     preview: "Deterministic row for palette scrolling".to_string(),
                     inbox: false,
                     search_text: format!("palette note {idx:02} deterministic row"),
+                    context_label: None,
                 })
                 .collect();
             app.show_command_palette = true;
