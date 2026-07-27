@@ -275,10 +275,47 @@ fn dispatch_openrouter(
     )
 }
 
+/// Env var carrying the AI broker API key on disposable `pr-<N>` test channels.
+///
+/// **Never read on `main`, `alpha`, or `beta`.** Every `plexi-pr-<N>` build is a
+/// differently-signed binary, so its first Keychain read raises a macOS access
+/// dialog only a human can click — which stalls unattended PR validation. This
+/// var is the escape hatch for exactly that case, gated by
+/// [`crate::config::is_test_channel`] so a leaked env var can never redirect a
+/// real user build's credentials.
+pub const TEST_CHANNEL_API_KEY_ENV: &str = "PLEXI_TEST_OPENROUTER_API_KEY";
+
+/// Resolve the broker API key from the test-channel escape hatch.
+///
+/// Returns `None` — leaving the normal workspace-secrets → Keychain path fully
+/// intact — unless the running build is a `pr-<N>` channel *and*
+/// [`TEST_CHANNEL_API_KEY_ENV`] is set to a non-empty value. `lookup` is
+/// injected so this stays testable without mutating process env.
+fn test_channel_api_key(
+    channel: Option<&str>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if !crate::config::is_test_channel(channel) {
+        return None;
+    }
+    lookup(TEST_CHANNEL_API_KEY_ENV).filter(|v| !v.is_empty())
+}
+
 fn resolve_openrouter_api_key(
     api_key_env: &str,
     workspace_root: Option<&std::path::Path>,
 ) -> Result<String, String> {
+    // Test channels only: take the key straight from the environment so the
+    // Keychain (and its human-only access dialog) is never touched.
+    let channel = crate::config::build_channel();
+    if let Some(key) = test_channel_api_key(channel.as_deref(), |name| std::env::var(name).ok()) {
+        log::info!(
+            "ai_broker: resolved API key from {TEST_CHANNEL_API_KEY_ENV} (test channel {}) — Keychain skipped",
+            channel.as_deref().unwrap_or("?")
+        );
+        return Ok(key);
+    }
+
     // An empty value is treated as unset so it falls through to the keychain.
     let process_env = std::env::var(api_key_env).ok().filter(|v| !v.is_empty());
 
@@ -1207,6 +1244,46 @@ mod tests {
                 .unwrap_or("")
                 .contains("api_key_missing"),
             "missing-key error must surface the api_key_missing tag"
+        );
+    }
+
+    #[test]
+    fn test_channel_env_key_is_used_only_on_pr_channels() {
+        let present = |name: &str| {
+            assert_eq!(name, TEST_CHANNEL_API_KEY_ENV);
+            Some("stub-value".to_string())
+        };
+
+        assert_eq!(
+            test_channel_api_key(Some("pr-2493"), present).as_deref(),
+            Some("stub-value"),
+            "a pr-<N> build must take the key from the env escape hatch"
+        );
+
+        for production in [None, Some("alpha"), Some("beta"), Some("main")] {
+            assert!(
+                test_channel_api_key(production, present).is_none(),
+                "production channel {production:?} must never read {TEST_CHANNEL_API_KEY_ENV}"
+            );
+        }
+
+        for forged in ["pr-", "pr-evil", "pr-12a", "PR-1"] {
+            assert!(
+                test_channel_api_key(Some(forged), present).is_none(),
+                "channel '{forged}' must not qualify as a test channel"
+            );
+        }
+    }
+
+    #[test]
+    fn test_channel_env_key_falls_through_when_unset_or_empty() {
+        assert!(
+            test_channel_api_key(Some("pr-2493"), |_| None).is_none(),
+            "unset env var must fall through to the Keychain path"
+        );
+        assert!(
+            test_channel_api_key(Some("pr-2493"), |_| Some(String::new())).is_none(),
+            "empty env var must fall through to the Keychain path"
         );
     }
 

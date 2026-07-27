@@ -874,6 +874,19 @@ pub fn build_channel() -> Option<String> {
     }
 }
 
+/// True when `channel` is a disposable per-PR test channel (`pr-<N>`, the
+/// channel `just pr-install <N>` builds).
+///
+/// This is the *only* sanctioned way to ask "is this a throwaway test build?".
+/// It deliberately does not match `main`, `alpha`, or `beta` — those are real
+/// user-facing channels — and it requires an all-digit PR number so a
+/// hand-crafted binary name like `plexi-pr-evil` cannot claim test status.
+pub fn is_test_channel(channel: Option<&str>) -> bool {
+    channel
+        .and_then(|c| c.strip_prefix("pr-"))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Maps a binary basename to its config directory name.
 /// `plexi` → `.plexi`; `plexi-<suffix>` → `.plexi-<suffix>`.
 fn channel_suffix_from_basename(basename: &str) -> String {
@@ -1674,6 +1687,29 @@ mod tests {
     #[test]
     fn config_dir_name_alpha() {
         assert_eq!(channel_suffix_from_basename("plexi-alpha"), ".plexi-alpha");
+    }
+
+    #[test]
+    fn only_numbered_pr_channels_are_test_channels() {
+        assert!(is_test_channel(Some("pr-1")));
+        assert!(is_test_channel(Some("pr-2493")));
+
+        for not_a_test in [
+            None,
+            Some("main"),
+            Some("alpha"),
+            Some("beta"),
+            Some("pr-"),
+            Some("pr-evil"),
+            Some("pr-12a"),
+            Some("PR-1"),
+            Some("prod"),
+        ] {
+            assert!(
+                !is_test_channel(not_a_test),
+                "{not_a_test:?} must not be treated as a test channel"
+            );
+        }
     }
 
     #[test]

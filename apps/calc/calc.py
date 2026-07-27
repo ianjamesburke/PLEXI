@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+import math
+from typing import Any, Callable
 
 from plexi_sdk import log, state
-from plexi_sdk.effects import SetState, SetStatus, SetTitle
-from plexi_sdk.events import KeyEvent, UiAction
+from plexi_sdk.effects import AiTool, ExposeTools, SetState, SetStatus, SetTitle, ToolResult
+from plexi_sdk.events import KeyEvent, ToolCall, UiAction
 from plexi_sdk.ui import Button, Column, Component, FooterKeys, Spacer, Text
 
 BUTTON_ROWS = [
@@ -23,6 +25,31 @@ DEFAULT_STATE: dict[str, Any] = {
     "pending": None,
     "op": None,
     "fresh": True,
+}
+
+# Connector tools. Every one is pure compute over its own arguments — none reads
+# or writes the calculator's display state — so all are read_only and the
+# assistant can run them without a write-grant prompt.
+BINARY_OPS: dict[str, Callable[[float, float], float]] = {
+    "add": lambda a, b: a + b,
+    "subtract": lambda a, b: a - b,
+    "multiply": lambda a, b: a * b,
+    "divide": lambda a, b: a / b,
+}
+
+_NUMBER_PAIR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "a": {"type": "number", "description": "Left operand."},
+        "b": {"type": "number", "description": "Right operand."},
+    },
+    "required": ["a", "b"],
+}
+
+_RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {"result": {"type": "number"}},
+    "required": ["result"],
 }
 
 
@@ -51,13 +78,55 @@ def init(size, args) -> list:
         if state.get(key, None) is None
     }
     log.info("calc: SDK v3 initialized")
-    effects: list = [SetTitle("Calculator"), SetStatus(_status(data))]
+    effects: list = [
+        SetTitle("Calculator"),
+        SetStatus(_status(data)),
+        ExposeTools(_tools()),
+    ]
+    log.info(f"calc: exposed {len(BINARY_OPS) + 1} connector tools")
     if missing:
         effects.append(SetState(missing))
     return effects
 
 
+def _tools() -> list[AiTool]:
+    tools = [
+        AiTool(
+            name=f"calc.{name}",
+            description=f"{name.capitalize()} two numbers and return the result.",
+            input_schema=_NUMBER_PAIR_SCHEMA,
+            output_schema=_RESULT_SCHEMA,
+            read_only=True,
+        )
+        for name in BINARY_OPS
+    ]
+    tools.append(
+        AiTool(
+            name="calc.evaluate",
+            description=(
+                "Evaluate a single binary expression of the form '<number> <op> <number>', "
+                "where op is one of + - * /."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "For example '12 * 3.5'.",
+                    }
+                },
+                "required": ["expression"],
+            },
+            output_schema=_RESULT_SCHEMA,
+            read_only=True,
+        )
+    )
+    return tools
+
+
 def update(event) -> list:
+    if isinstance(event, ToolCall):
+        return [_handle_tool_call(event)]
     label = _event_label(event)
     if label is None:
         return []
@@ -88,6 +157,80 @@ def view():
         ],
         gap=8.0,
         grow=True,
+    )
+
+
+def _handle_tool_call(call: ToolCall) -> ToolResult:
+    log.info(f"calc: tool call {call.name} from {call.caller_id}")
+    try:
+        payload = json.loads(call.input_json or "{}")
+    except ValueError as e:
+        return ToolResult(call.call_id, error=f"input_json is not valid JSON: {e}")
+    if not isinstance(payload, dict):
+        return ToolResult(call.call_id, error="input must be a JSON object")
+
+    try:
+        if call.name == "calc.evaluate":
+            result = _evaluate(payload.get("expression"))
+        else:
+            op = BINARY_OPS.get(call.name.removeprefix("calc."))
+            if op is None or not call.name.startswith("calc."):
+                return ToolResult(call.call_id, error=f"unknown tool '{call.name}'")
+            result = op(_operand(payload, "a"), _operand(payload, "b"))
+    except (ValueError, ZeroDivisionError, OverflowError) as e:
+        log.warn(f"calc: tool call {call.name} failed: {e}")
+        return ToolResult(call.call_id, error=str(e))
+
+    # `inf`/`nan` serialize as bare `Infinity`/`NaN`, which is not valid JSON and
+    # breaks the declared number-typed output schema. Report them as errors.
+    if not math.isfinite(result):
+        log.warn(f"calc: tool call {call.name} produced a non-finite result")
+        return ToolResult(call.call_id, error=f"result is not a finite number: {result}")
+
+    return ToolResult(call.call_id, output_json=json.dumps({"result": result}))
+
+
+def _operand(payload: dict, key: str) -> float:
+    if key not in payload:
+        raise ValueError(f"missing required operand '{key}'")
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"operand '{key}' must be a number")
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        raise ValueError(f"operand '{key}' is not a number: {value!r}") from None
+    if not math.isfinite(number):
+        raise ValueError(f"operand '{key}' must be finite, got {value!r}")
+    return number
+
+
+def _evaluate(expression: Any) -> float:
+    """Parse and compute one `<number> <op> <number>` expression.
+
+    Deliberately not a general expression evaluator — the four binary ops are the
+    whole contract, and hand-parsing keeps `eval` well away from assistant input.
+    """
+    if not isinstance(expression, str):
+        raise ValueError("'expression' must be a string")
+    symbols = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide"}
+    # Scan from the right so a leading sign stays attached to its operand.
+    for index in range(len(expression) - 1, 0, -1):
+        name = symbols.get(expression[index])
+        if name is None:
+            continue
+        left, right = expression[:index].strip(), expression[index + 1 :].strip()
+        if not left or not right:
+            continue
+        try:
+            a, b = float(left), float(right)
+        except ValueError:
+            continue
+        if not (math.isfinite(a) and math.isfinite(b)):
+            raise ValueError(f"operands in '{expression}' must be finite")
+        return BINARY_OPS[name](a, b)
+    raise ValueError(
+        f"could not parse '{expression}' as '<number> <op> <number>' with op in + - * /"
     )
 
 
