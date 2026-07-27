@@ -201,6 +201,8 @@ pub mod help;
 pub mod registry;
 pub mod setup;
 pub mod subprocess;
+#[cfg(test)]
+pub mod test_env;
 
 pub mod account;
 pub mod agent;

@@ -124,18 +124,20 @@ mod notify_tests {
     use serde_json::Value;
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::cli::test_env::{socket_env_guard, SocketEnvGuard};
 
-    fn capture_notify_payload<F>(run_cli: F) -> (i32, Value)
+    /// Runs `run_cli` against a throwaway listener with `PLEXI_SOCKET` pointed at
+    /// it. The caller owns the [`SocketEnvGuard`], which both serialises against
+    /// every other socket-mutating CLI test and restores the prior value on drop.
+    fn capture_notify_payload<F>(env: &SocketEnvGuard, run_cli: F) -> (i32, Value)
     where
         F: FnOnce() -> i32,
     {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("notify.sock");
         let listener = UnixListener::bind(&socket_path).expect("bind notify socket");
-        std::env::set_var("PLEXI_SOCKET", &socket_path);
+        env.set(&socket_path);
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -149,7 +151,6 @@ mod notify_tests {
         });
 
         let code = run_cli();
-        std::env::remove_var("PLEXI_SOCKET");
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("notify listener did not receive a connection within 5s — notify_cli likely failed to connect");
@@ -159,22 +160,22 @@ mod notify_tests {
     /// Without PLEXI_SOCKET set, notify_cli must fail fast (exit 1) rather than panic.
     #[test]
     fn notify_cli_no_socket_returns_one() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("PLEXI_SOCKET");
+        let env = socket_env_guard();
+        env.unset();
         let code = notify_cli("Test title", "Test body", "info", &[], true, 0, None);
         assert_eq!(code, 1);
     }
 
     #[test]
     fn notify_cli_nonblocking_choice_omits_response_file() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let env = socket_env_guard();
         let choices = vec![(
             "talk".to_string(),
             "Talk to Claude".to_string(),
             Some("pane_focus:188".to_string()),
         )];
 
-        let (code, payload) = capture_notify_payload(|| {
+        let (code, payload) = capture_notify_payload(&env, || {
             notify_cli("Ready", "Review tests", "info", &choices, false, 0, None)
         });
 
@@ -193,10 +194,10 @@ mod notify_tests {
     /// and must not leave a response file behind in the profile's rpc/ dir.
     #[test]
     fn notify_cli_timeout_leaves_no_response_file() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let env = socket_env_guard();
         let _channel_guard = crate::config::set_test_channel("notify-test");
         let choices = vec![("talk".to_string(), "Talk".to_string(), None)];
-        let (code, payload) = capture_notify_payload(|| {
+        let (code, payload) = capture_notify_payload(&env, || {
             notify_cli("Ready", "Review tests", "info", &choices, true, 1, None)
         });
         assert_eq!(code, 2, "timeout must exit 2");
@@ -215,11 +216,11 @@ mod notify_tests {
 
     #[test]
     fn notify_cli_blocking_choice_sends_response_file() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let env = socket_env_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("notify.sock");
         let listener = UnixListener::bind(&socket_path).expect("bind notify socket");
-        std::env::set_var("PLEXI_SOCKET", &socket_path);
+        env.set(&socket_path);
         let _channel_guard = crate::config::set_test_channel("notify-test");
 
         let handle = std::thread::spawn(move || {
@@ -245,7 +246,6 @@ mod notify_tests {
 
         let choices = vec![("talk".to_string(), "Talk to Claude".to_string(), None)];
         let code = notify_cli("Ready", "Review tests", "info", &choices, true, 1, None);
-        std::env::remove_var("PLEXI_SOCKET");
         let payload = handle.join().expect("payload thread");
 
         assert_eq!(code, 0);

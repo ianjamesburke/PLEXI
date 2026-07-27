@@ -658,21 +658,22 @@ fn open_app_by_path(
 #[cfg(test)]
 mod open_cli_tests {
     use super::{open_cli, review_raw_wasm_open_with_reader};
+    use crate::cli::test_env::{socket_env_guard, SocketEnvGuard};
     use serde_json::Value;
     use std::io::{BufRead, BufReader, Cursor};
     use std::os::unix::net::UnixListener;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn capture_spawn_payload<F>(run_cli: F) -> (i32, Value)
+    /// Runs `run_cli` against a throwaway listener with `PLEXI_SOCKET` pointed at
+    /// it. The caller owns the [`SocketEnvGuard`], which both serialises against
+    /// every other socket-mutating CLI test and restores the prior value on drop.
+    fn capture_spawn_payload<F>(env: &SocketEnvGuard, run_cli: F) -> (i32, Value)
     where
         F: FnOnce() -> i32,
     {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("open.sock");
         let listener = UnixListener::bind(&socket_path).expect("bind open socket");
-        std::env::set_var("PLEXI_SOCKET", &socket_path);
+        env.set(&socket_path);
 
         let handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept open connection");
@@ -688,7 +689,6 @@ mod open_cli_tests {
         });
 
         let code = run_cli();
-        std::env::remove_var("PLEXI_SOCKET");
         let payload = handle.join().expect("payload thread");
         (code, payload)
     }
@@ -698,8 +698,9 @@ mod open_cli_tests {
         // With no directional flag the CLI must leave `layout` unset so the host
         // applies its placement default (manifest `[launch] placement`, else a
         // sibling split) rather than forcing an overlay takeover (stint 0330).
-        let _guard = ENV_LOCK.lock().unwrap();
-        let (code, payload) = capture_spawn_payload(|| open_cli("balls", &[], None, None, None));
+        let env = socket_env_guard();
+        let (code, payload) =
+            capture_spawn_payload(&env, || open_cli("balls", &[], None, None, None));
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
@@ -713,9 +714,10 @@ mod open_cli_tests {
 
     #[test]
     fn app_open_explicit_tab_layout_is_preserved() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let (code, payload) =
-            capture_spawn_payload(|| open_cli("file_browser", &[], Some("tab"), None, None));
+        let env = socket_env_guard();
+        let (code, payload) = capture_spawn_payload(&env, || {
+            open_cli("file_browser", &[], Some("tab"), None, None)
+        });
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
@@ -725,7 +727,7 @@ mod open_cli_tests {
 
     #[test]
     fn wasm_path_open_forwards_launch_args() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let env = socket_env_guard();
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
 
@@ -759,7 +761,7 @@ mod open_cli_tests {
         let args = vec!["--sample".to_string(), "96".to_string()];
 
         let (code, payload) =
-            capture_spawn_payload(|| open_cli(&wasm_path_str, &args, None, None, None));
+            capture_spawn_payload(&env, || open_cli(&wasm_path_str, &args, None, None, None));
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
@@ -769,7 +771,6 @@ mod open_cli_tests {
 
     #[test]
     fn raw_wasm_review_requires_tty_for_unreviewed_imports() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -784,7 +785,6 @@ mod open_cli_tests {
 
     #[test]
     fn raw_wasm_review_tty_persists_required_imports() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -818,7 +818,6 @@ mod open_cli_tests {
         // must persist Green grants for every imported interface plus `fs.pick`
         // at the wasm's parent-dir scope — exactly what an installed host
         // checks, so a raw wasm scene opens without review.
-        let _guard = ENV_LOCK.lock().unwrap();
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

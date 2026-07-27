@@ -436,9 +436,18 @@ mod tests {
             .instructions
             .contains(r#"host.build.run {"args": ["app", "check", "<app-dir>"]}"#));
         assert!(skill.instructions.contains("host.files.write"));
+        // The build flow must never route through a user-visible terminal. The
+        // skill now names `host.terminals.run` only to forbid it after a scope
+        // refusal (stint 0427), so assert the prohibition rather than absence.
         assert!(
-            !skill.instructions.contains("host.terminals.run"),
-            "the build flow must never route through a user-visible terminal"
+            skill
+                .instructions
+                .contains("Never open a terminal pane for your own build work"),
+            "the build flow must still forbid terminals for build work"
+        );
+        assert!(
+            skill.instructions.contains("Never route around one via host.terminals.run"),
+            "a scope refusal must be a final answer, not a cue to use a terminal"
         );
         assert_eq!(
             registry

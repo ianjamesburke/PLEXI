@@ -18,6 +18,13 @@ pub enum TurnRole {
     Error,
     /// An app event delivered through a granted subscription (Phase D3).
     Event,
+    /// Output of a slash command the user ran, shared with the model. It
+    /// enters the next turn's history as clearly-labelled command output so
+    /// the assistant can reason about its own session state (stint 0380).
+    Command,
+    /// Output of a slash command that is the user's business only — cosmetic
+    /// toggles and local artifacts. Rendered, never sent to the model.
+    Local,
 }
 
 /// Final state of a tool-call transcript row. In-flight states (pending,
@@ -697,7 +704,7 @@ impl AssistantModel {
                 self.set_session_name(&cmd.args);
                 if !cmd.args.is_empty() {
                     self.turns.push(Turn::now(
-                        TurnRole::Assistant,
+                        TurnRole::Local,
                         format!("Started conversation '{}'.", cmd.args),
                     ));
                 }
@@ -713,7 +720,7 @@ impl AssistantModel {
             }
             "help" => {
                 self.turns
-                    .push(Turn::now(TurnRole::Assistant, commands::help_text()));
+                    .push(Turn::now(TurnRole::Local, commands::help_text()));
                 vec![AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
                 }]
@@ -722,7 +729,7 @@ impl AssistantModel {
             "thoughts" => {
                 self.show_thoughts = !self.show_thoughts;
                 self.turns.push(Turn::now(
-                    TurnRole::Assistant,
+                    TurnRole::Local,
                     if self.show_thoughts {
                         "Thoughts are now shown. Run /thoughts again to hide them."
                     } else {
@@ -899,10 +906,22 @@ impl AssistantModel {
         }
     }
 
-    /// Push an informational assistant row (slash-view output). Returns the
-    /// persistence effect.
-    pub fn push_info(&mut self, text: impl Into<String>) -> Vec<AssistantEffect> {
-        self.turns.push(Turn::now(TurnRole::Assistant, text));
+    /// Push slash-command output the model should see. It reaches the next
+    /// turn as labelled command output, not as something the assistant said —
+    /// an assistant that cannot see `/context` cannot help debug its own
+    /// session (stint 0380).
+    pub fn push_command_output(&mut self, text: impl Into<String>) -> Vec<AssistantEffect> {
+        self.turns.push(Turn::now(TurnRole::Command, text));
+        vec![AssistantEffect::SessionWrite {
+            conversation_id: self.conversation_id.clone(),
+        }]
+    }
+
+    /// Push slash-command output that stays with the user: cosmetic toggles,
+    /// local file artifacts, and notes describing context surgery the context
+    /// itself already reflects. Never sent to the model.
+    pub fn push_local_note(&mut self, text: impl Into<String>) -> Vec<AssistantEffect> {
+        self.turns.push(Turn::now(TurnRole::Local, text));
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
         }]
@@ -1215,7 +1234,9 @@ mod tests {
         let effects = submitted(&mut m, "/help");
         assert!(m.composer.is_empty());
         assert!(m.streaming.in_flight, "in-flight turn unaffected by /help");
-        assert_eq!(m.turns.last().unwrap().role, TurnRole::Assistant);
+        // `/help` is a static table the model gains nothing from carrying, so
+        // it is a user-only row (stint 0380).
+        assert_eq!(m.turns.last().unwrap().role, TurnRole::Local);
         assert!(m.turns.last().unwrap().text.contains("/clear"));
         assert!(matches!(effects[0], AssistantEffect::SessionWrite { .. }));
     }

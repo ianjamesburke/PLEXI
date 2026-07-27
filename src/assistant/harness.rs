@@ -1029,4 +1029,72 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("supports native host tools only"));
     }
+
+    /// Stint 0427: a scope refusal must end the turn, not redirect it through a
+    /// terminal. `reject_unexpected_calls` makes any `host.terminals.*` call
+    /// after the refusal a test failure, and the guidance the model is given is
+    /// asserted alongside it — the prompt is what keeps a live model on this
+    /// path, so it is part of the regression surface.
+    #[test]
+    fn scope_refusal_is_final_and_never_routes_through_a_terminal() {
+        for guidance in [
+            crate::assistant::DEFAULT_AGENT_PROMPT,
+            &crate::assistant::skills::SkillRegistry::load(
+                std::path::Path::new("/nonexistent-profile"),
+                std::path::Path::new("/nonexistent-workspace"),
+            )
+            .get(crate::assistant::skills::APP_BUILD_SKILL_NAME)
+            .expect("builtin app-build skill")
+            .instructions
+            .clone(),
+        ] {
+            assert!(
+                guidance.contains("path_out_of_scope")
+                    && guidance.contains("command_not_allowed"),
+                "guidance must name both refusal codes: {guidance}"
+            );
+            assert!(
+                guidance.contains("host.terminals.run"),
+                "guidance must name the terminal fallback it forbids: {guidance}"
+            );
+        }
+
+        let mut harness = AssistantHarness::new(&[]);
+        let args = serde_json::json!({"path": "/etc/hosts", "content": "nope"});
+        let trace = harness
+            .run_turn(
+                "write to /etc/hosts",
+                ScriptedTurn {
+                    calls: vec![ScriptedCall::failure(
+                        "host.files.write",
+                        args,
+                        "path_out_of_scope: /etc/hosts is not under a context file root",
+                    )
+                    .with_permission(HarnessPermission::AllowOnce)],
+                    outcome: ScriptedOutcome::Answer(
+                        "/etc/hosts is outside my file scope, so I can't write there.".to_string(),
+                    ),
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !trace.iter().any(|event| matches!(
+                event,
+                OrchestrationEvent::ToolCall { name, .. } | OrchestrationEvent::HostEffect { name, .. }
+                    if name.starts_with("host.terminals.")
+            )),
+            "a scope refusal must not be followed by a terminal call: {trace:?}"
+        );
+        let error = trace
+            .iter()
+            .find_map(|event| match event {
+                OrchestrationEvent::ToolResult {
+                    error: Some(error), ..
+                } => Some(error.clone()),
+                _ => None,
+            })
+            .expect("the refusal must surface as a tool error");
+        assert!(error.starts_with("path_out_of_scope"), "{error}");
+    }
 }
