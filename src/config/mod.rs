@@ -1073,6 +1073,51 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
+/// Channel-neutral state directory, always `~/.plexi` regardless of which
+/// channel's binary is running. For state that is global to the machine rather
+/// than scoped to a release channel — anything a third party reads by absolute
+/// path, where the last channel to write must not own it. Everything else
+/// belongs in `config_dir()`.
+pub fn shared_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        let override_dir = TEST_SHARED_DIR_OVERRIDE.with(|c| c.borrow().clone());
+        if let Some(dir) = override_dir {
+            return dir;
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(SHARED_DIR_NAME)
+}
+
+const SHARED_DIR_NAME: &str = ".plexi";
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SHARED_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard that clears the per-thread test shared dir override on drop.
+#[cfg(test)]
+pub struct TestSharedDirGuard;
+
+#[cfg(test)]
+impl Drop for TestSharedDirGuard {
+    fn drop(&mut self) {
+        TEST_SHARED_DIR_OVERRIDE.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// Redirect `shared_dir()` to an isolated tempdir for the current test thread.
+/// The returned guard must be held for the duration of the test.
+#[cfg(test)]
+pub fn set_test_shared_dir(path: std::path::PathBuf) -> TestSharedDirGuard {
+    TEST_SHARED_DIR_OVERRIDE.with(|c| *c.borrow_mut() = Some(path));
+    TestSharedDirGuard
+}
+
 pub fn workspace_config_path(workspace_root: &Path) -> PathBuf {
     workspace_config_path_for_channel(workspace_root, &workspace_channel_dir())
 }
