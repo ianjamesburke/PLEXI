@@ -480,14 +480,25 @@ fn migrate_one_note(src: &Path, dest_dir: &Path) -> std::io::Result<MigratedNote
     }
 
     let (dest, mut file) = create_collision_safe_destination(dest_dir, src)?;
-    file.write_all(&src_bytes)?;
-    file.sync_all()?;
+    if let Err(e) = file.write_all(&src_bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(&dest);
+        return Err(e);
+    }
     drop(file);
-    if std::fs::read(&dest)? != src_bytes {
+    let verified = std::fs::read(&dest).map(|bytes| bytes == src_bytes);
+    if !matches!(verified, Ok(true)) {
+        let detail = verified
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "byte mismatch".to_string());
+        let _ = std::fs::remove_file(&dest);
         return Err(std::io::Error::other(format!(
-            "destination {dest:?} did not verify byte-for-byte; source kept"
+            "destination {dest:?} did not verify byte-for-byte ({detail}); source kept"
         )));
     }
+    // Persist the new directory entry before removing the only old name.
+    std::fs::File::open(dest_dir)?.sync_all()?;
     std::fs::remove_file(src)?;
     Ok(MigratedNote::Moved(dest))
 }
