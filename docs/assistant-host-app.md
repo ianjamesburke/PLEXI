@@ -297,24 +297,11 @@ Exact model pointers are for power users and package authors. Marketplace packag
 
 ## Unified Permissions
 
-Threat model, reference-monitor contract, what a grant binds to, context isolation, filesystem and process authority, secret injection, connector trust, and the runtime-boundary decision are owned by [`assistant-authority-model.md`](assistant-authority-model.md). This section and [Permission Model](#permission-model) describe the user-facing shape of that system; where the two appear to disagree, the authority model wins.
+Threat model, reference-monitor contract, grant identity and precedence, context isolation, filesystem and process authority, secret injection, connector trust, and the runtime-boundary decision are owned by [`assistant-authority-model.md`](assistant-authority-model.md). This section and [Permission Model](#permission-model) describe only the user-facing shape of that system.
 
 Agents have individual permission scoping, but Plexi has one permission system.
 
 An agent is a first-class actor in the host permission broker. The Assistant does not own a parallel grant engine. Every agent tool call, app connector call, file write, secret access, terminal input, package install, and model-cost escalation is checked by the same permission broker used for PGAP capabilities and host APIs.
-
-Grant record shape:
-
-```text
-actor_type: app | agent | system
-actor_id: app id or agent id
-actor_scope: built-in | user | workspace | marketplace | managed
-target_type: host_tool | app_connector | mcp_tool | file_scope | secret | package | model_pointer
-target_id: stable capability/tool id
-scope: call | session | workspace | document | path | package_identity | always
-decision: allow | ask | deny
-source: managed | user | workspace | session
-```
 
 Agent permission config lives in the agent's `settings.toml`, but persisted grants and audit events go through the unified Plexi permission store. The settings file expresses defaults and requested posture; the permission store records user decisions.
 
@@ -338,19 +325,6 @@ deny = [
   "host.secrets.read",
 ]
 ```
-
-Evaluation order:
-
-1. Managed deny.
-2. User/workspace/session deny.
-3. Agent-specific deny.
-4. Managed ask.
-5. User/workspace/session ask.
-6. Agent-specific ask.
-7. Existing persisted grant.
-8. Agent-specific allow.
-9. User/workspace allow.
-10. Default posture.
 
 The UI must expose this as one permissions surface. `/permissions` can filter by agent, app, connector, tool, workspace, or recent denial, but it edits the same underlying permission model.
 
@@ -576,15 +550,7 @@ Rule types:
 - Ask: show a prompt before the call.
 - Allow: approve without prompting inside the rule scope.
 
-Evaluation order:
-
-1. Managed deny.
-2. User/workspace/session deny.
-3. Managed ask.
-4. User/workspace/session ask.
-5. Existing grant.
-6. Allow rule.
-7. Default posture.
+Rule precedence and exact grant matching are defined only in [`assistant-authority-model.md`](assistant-authority-model.md); this surface renders the resulting decision and never maintains a second evaluator.
 
 Default postures:
 

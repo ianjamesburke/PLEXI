@@ -85,6 +85,8 @@ The monitor follows **resolve before you authorize**: it sees the canonicalized 
 
 Grant matching compares every identity field, including resource and arguments. A grant whose resource does not match the request does not match the request. Argument-bearing actions bind to a normalized argument fingerprint, so a changed argument is a new decision. Session-scoped approval binds the same fields as a persisted grant; it differs only in duration.
 
+Decision precedence is deterministic: matching managed denies, other matching denies, and actor-posture denies take priority; matching managed asks, other matching asks, and actor-posture asks follow; only then may an exact persisted allow or actor-posture allow authorize the request, with the configured default posture as fallback. Deny therefore wins over ask, ask wins over allow, and no broader rule can override a narrower deny.
+
 Every decision — deny, ask, allow, use, revoke — writes an audit record naming the actor, the resource, the arguments, and the grant that authorized it. Risk-bearing actions write both a request record and a completion record carrying the outcome. A user can answer "what did the Assistant actually do, under whose approval" from the audit log alone, without reading a transcript.
 
 ### Context isolation
