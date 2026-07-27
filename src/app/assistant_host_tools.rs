@@ -13,6 +13,11 @@ pub(crate) const HOST_TOOL_NET_FETCH: &str = "host.net.fetch";
 /// would also blow the turn's token budget on one call.
 const MAX_FETCH_BODY_CHARS: usize = 100_000;
 
+/// Byte cap passed to the streaming body reader — four bytes per char covers
+/// the widest UTF-8 encoding of `MAX_FETCH_BODY_CHARS`, so the char cap below
+/// stays the user-visible limit while the wire read is still bounded.
+const MAX_FETCH_BODY_BYTES: u64 = MAX_FETCH_BODY_CHARS as u64 * 4;
+
 /// Methods the Assistant may issue. Anything outside this set is refused
 /// rather than passed through to `ureq`.
 const ALLOWED_FETCH_METHODS: [&str; 5] = ["GET", "HEAD", "POST", "PUT", "DELETE"];
@@ -70,6 +75,9 @@ impl PlexiApp {
                 format!("net_host_not_allowed: {url} is not an allowed http(s) host"),
             );
         }
+        if let Some(reason) = fetch_destination_rejected(&url) {
+            return refuse(&reply, format!("net_destination_rejected: {reason}"));
+        }
         let headers: std::collections::HashMap<String, String> = parsed
             .get("headers")
             .and_then(serde_json::Value::as_object)
@@ -94,17 +102,24 @@ impl PlexiApp {
                 allowed_hosts.join(",")
             }
         );
+        let worker_reply = reply.clone();
         let spawned = std::thread::Builder::new()
             .name("assistant-net-fetch".to_string())
             .spawn(move || {
                 use crate::host::services::NetService;
-                let response = crate::host::services::UreqNetService::new()
-                    .http(&method, &url, &headers, body.as_deref());
+                let response = crate::host::services::UreqNetService::new().http(
+                    &method,
+                    &url,
+                    &headers,
+                    body.as_deref(),
+                    MAX_FETCH_BODY_BYTES,
+                );
                 let outcome = if let Some(error) = response.error {
                     log::warn!("assistant_host_tool: {HOST_TOOL_NET_FETCH} {url} failed: {error}");
                     failed(format!("fetch_failed: {error}"))
                 } else {
-                    let (text, truncated) = truncate_fetch_body(&response.body);
+                    let (text, char_truncated) = truncate_fetch_body(&response.body);
+                    let truncated = response.truncated || char_truncated;
                     log::info!(
                         "assistant_host_tool: {HOST_TOOL_NET_FETCH} {url} status={} bytes={} truncated={truncated}",
                         response.status,
@@ -118,14 +133,16 @@ impl PlexiApp {
                         "truncated": truncated,
                     }))
                 };
-                if reply.send(outcome).is_err() {
+                if worker_reply.send(outcome).is_err() {
                     log::warn!(
                         "assistant_host_tool: {HOST_TOOL_NET_FETCH} worker dropped its reply channel"
                     );
                 }
             });
+        // Every exit from this function answers the model — a spawn failure
+        // must not leave the tool call hanging until its outer timeout.
         if let Err(error) = spawned {
-            log::error!("assistant_host_tool: failed to spawn net-fetch thread: {error}");
+            refuse(&reply, format!("fetch_failed: worker spawn: {error}"));
         }
     }
 
@@ -152,6 +169,27 @@ impl PlexiApp {
             return Err("net_capability_missing: origin app lacks net.http".to_string());
         }
         Ok(app.permissions.allowed_hosts.clone())
+    }
+}
+
+/// SSRF guard for `host.net.fetch` destinations, applied after the
+/// allowlist: an agent-issued fetch must never reach the local machine or
+/// the local network. All IP-literal hosts are rejected outright (which
+/// covers loopback, RFC 1918, and link-local), as are `localhost` names.
+/// DNS-rebinding defence is explicitly out of scope (parked ruling).
+fn fetch_destination_rejected(raw_url: &str) -> Option<String> {
+    let url = url::Url::parse(raw_url).ok()?;
+    match url.host()? {
+        url::Host::Ipv4(ip) => Some(format!("IP-literal destination {ip} is not allowed")),
+        url::Host::Ipv6(ip) => Some(format!("IP-literal destination {ip} is not allowed")),
+        url::Host::Domain(domain) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            if domain == "localhost" || domain.ends_with(".localhost") {
+                Some(format!("loopback destination {domain} is not allowed"))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -1258,6 +1296,28 @@ mod tests {
                 .unwrap()
         };
         assert!(missing_pane.starts_with("pane_not_found"), "{missing_pane}");
+
+        // SSRF guard: loopback / private / link-local reach the host machine
+        // or LAN; every IP literal plus localhost names are refused even
+        // under an unrestricted allowlist.
+        for url in [
+            "http://127.0.0.1:8080/admin",
+            "http://10.0.0.5/metadata",
+            "http://192.168.1.1/router",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://8.8.8.8/",
+            "http://localhost:3000/",
+            "http://dev.localhost/",
+        ] {
+            let error = refusal(&mut harness, &format!(r#"{{"url":"{url}"}}"#));
+            assert!(
+                error.starts_with("net_destination_rejected"),
+                "{url} must be rejected, got: {error}"
+            );
+        }
+        assert_eq!(super::fetch_destination_rejected("https://example.com/x"), None);
     }
 
     /// The allowlist gating `host.net.fetch` is the pane's own

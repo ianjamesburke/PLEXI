@@ -1481,7 +1481,7 @@ impl LivePythonPane {
             self.send_to_runtime(&json!({
                 "type": "http_response", "request_id": request_id,
                 "status": response.status, "body": response.body, "error": response.error,
-                "headers": response.response_headers,
+                "truncated": response.truncated, "headers": response.response_headers,
             }));
         }
         while let Ok((request_id, outcome)) = self.picker_rx.try_recv() {
@@ -1967,6 +1967,7 @@ impl LivePythonPane {
                 &url,
                 &headers,
                 body.as_deref(),
+                crate::host::services::DEFAULT_MAX_HTTP_BODY_BYTES,
             );
             if tx.send((request_id, response)).is_err() {
                 log::debug!("CPython WASM HTTP response dropped after pane closed");

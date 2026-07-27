@@ -1594,7 +1594,13 @@ impl WasmPane {
             let body = req
                 .body
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-            let response = net.http(&req.method, &req.url, &headers, body.as_deref());
+            let response = net.http(
+                &req.method,
+                &req.url,
+                &headers,
+                body.as_deref(),
+                crate::host::services::DEFAULT_MAX_HTTP_BODY_BYTES,
+            );
             let _ = tx.send(InputEvent::HttpResponse(host_http_to_wit(response)));
         });
     }
@@ -1615,6 +1621,11 @@ fn host_http_to_wit(response: HostHttpResponse) -> WitHttpResponse {
         for value in values {
             headers.push((name.clone(), value));
         }
+    }
+    if response.truncated {
+        // The WIT response has no truncation field; surface the cut honestly
+        // instead of letting a capped body read as the full document.
+        headers.push(("x-plexi-body-truncated".to_string(), "true".to_string()));
     }
     let body = match response.error {
         Some(err) if response.body.is_empty() => err.into_bytes(),
@@ -2687,11 +2698,13 @@ mod tests {
             url: &str,
             headers: &HashMap<String, String>,
             body: Option<&str>,
+            _max_body_bytes: u64,
         ) -> HostHttpResponse {
             let mut response_headers = HashMap::new();
             response_headers.insert("content-type".to_string(), vec!["text/plain".to_string()]);
             HostHttpResponse {
                 status: 201,
+                truncated: false,
                 body: format!(
                     "{method} {url} accept={} body={}",
                     headers.get("accept").map(String::as_str).unwrap_or(""),
