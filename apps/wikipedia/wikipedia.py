@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import urllib.parse
 from typing import Any
 
 from plexi_sdk import log, state
@@ -13,10 +12,13 @@ from plexi_sdk.events import HttpResponse, KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import (
     AppBar,
     Button,
+    Card,
     Column,
+    EmptyState,
     FooterKeys,
     Scrollable,
-    SelectList,
+    Section,
+    Skeleton,
     Spacer,
     Text,
     TextInput,
@@ -65,6 +67,20 @@ def update(event) -> list:
         return [SetState(data)]
     if isinstance(event, UiAction) and event.handler_id == "wiki-submit":
         return _start_search(data)
+    if isinstance(event, UiAction) and event.handler_id == "wiki-back-search":
+        data["mode"] = "search"
+        return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, UiAction) and event.handler_id == "wiki-back-results":
+        data["mode"] = "results"
+        return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, UiAction) and event.handler_id.startswith("wiki-result-"):
+        try:
+            selected = int(event.handler_id.removeprefix("wiki-result-"))
+        except ValueError:
+            return []
+        if 0 <= selected < len(data["results"]):
+            return _start_article(data, selected)
+        return []
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
 
@@ -79,16 +95,7 @@ def update(event) -> list:
         elif key in ("up", "k", "ArrowUp"):
             data["selected"] = _clamp(data["selected"] - 1, len(data["results"]))
         elif key in ("return", "enter") and data["results"]:
-            title = data["results"][data["selected"]]
-            data["loading"] = True
-            data["pending"] = "article"
-            data["article_title"] = title
-            data["error"] = ""
-            return [
-                SetState(data),
-                SetStatus(f"Loading {title}"),
-                _fetch_article(title),
-            ]
+            return _start_article(data, data["selected"])
         elif key == "escape":
             data["mode"] = "search"
         else:
@@ -125,27 +132,49 @@ def _start_search(data: dict) -> list:
     query = data["query"].strip()
     if not query:
         return []
+    log.info(f"wikipedia: searching for {query!r}")
     data["loading"] = True
     data["pending"] = "search"
     data["error"] = ""
     return [SetState(data), SetStatus("Searching"), _fetch_search(query)]
 
 
+def _start_article(data: dict, selected: int) -> list:
+    title = data["results"][selected]
+    log.info(f"wikipedia: loading article {title!r}")
+    data["selected"] = selected
+    data["loading"] = True
+    data["pending"] = "article"
+    data["article_title"] = title
+    data["error"] = ""
+    return [
+        SetState(data),
+        SetStatus(f"Loading {title}"),
+        _fetch_article(title),
+    ]
+
+
 def _fetch_search(query: str) -> HttpFetch:
-    params = urllib.parse.urlencode(
-        {
-            "action": "opensearch",
-            "search": query,
-            "limit": 10,
-            "format": "json",
-        }
+    params = (
+        "action=opensearch"
+        f"&search={_quote(query)}"
+        "&limit=10"
+        "&format=json"
     )
     return HttpFetch(f"{API}?{params}", headers={"Accept": "application/json"})
 
 
 def _fetch_article(title: str) -> HttpFetch:
     return HttpFetch(
-        EXTRACT_API + urllib.parse.quote(title), headers={"Accept": "application/json"}
+        EXTRACT_API + _quote(title), headers={"Accept": "application/json"}
+    )
+
+
+def _quote(value: str) -> str:
+    """Percent-encode UTF-8 without importing urllib, which stalls in CPython-WASM."""
+    safe = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    return "".join(
+        chr(byte) if byte in safe else f"%{byte:02X}" for byte in value.encode("utf-8")
     )
 
 
@@ -195,26 +224,38 @@ def _body_text(event: HttpResponse) -> str:
 
 
 def _search_view(data: dict):
+    content = (
+        Card([Skeleton(rows=3)])
+        if data["loading"]
+        else Card(
+            [
+                Text("Search the free encyclopedia", size=16.0, bold=True),
+                Text(
+                    "Find an article, then read its summary without leaving Plexi.",
+                    size=12.0,
+                ),
+                TextInput(
+                    "wiki-query",
+                    value=data["query"],
+                    placeholder="Try “Detroit”, “Tetris”, or “Ada Lovelace”",
+                    on_change="wiki-query",
+                    on_submit="wiki-submit",
+                ),
+                Button(
+                    "Search Wikipedia",
+                    "wiki-submit",
+                    style="primary",
+                    disabled=not data["query"].strip(),
+                ),
+            ],
+            gap=12.0,
+        )
+    )
     return Column(
         [
-            AppBar("Wikipedia", "search"),
-            TextInput(
-                "wiki-query",
-                value=data["query"],
-                placeholder="Search Wikipedia",
-                on_change="wiki-query",
-                on_submit="wiki-submit",
-            ),
-            Button(
-                "Search",
-                "wiki-submit",
-                style="primary",
-                disabled=not data["query"].strip(),
-            ),
-            Text(
-                data["error"] if data["error"] else "Type a query and press Enter.",
-                size=12.0,
-            ),
+            AppBar("Wikipedia", "The free encyclopedia"),
+            content,
+            Text(data["error"], size=12.0) if data["error"] else Spacer(),
             Spacer(grow=True),
             FooterKeys([("enter", "search")]),
         ],
@@ -223,17 +264,25 @@ def _search_view(data: dict):
 
 
 def _results_view(data: dict):
-    rows = [{"name": title} for title in data["results"]]
-    body = (
-        SelectList(rows, selected_idx=data["selected"])
-        if rows
-        else Text(data["error"] or "No results.", size=12.0)
+    rows = [
+        Button(
+            title,
+            f"wiki-result-{index}",
+            style="primary" if index == data["selected"] else "secondary",
+        )
+        for index, title in enumerate(data["results"])
+    ]
+    body = Scrollable(Column(rows, gap=8.0)) if rows else EmptyState(
+        "No articles found",
+        "Try a broader or differently spelled search.",
+        icon="∅",
     )
     return Column(
         [
-            AppBar("Wikipedia", f"Results for {data['query']}"),
+            AppBar("Wikipedia", f"Search results for “{data['query']}”"),
+            Button("← New search", "wiki-back-search", style="secondary"),
+            Section("Articles"),
             body,
-            Spacer(grow=True),
             FooterKeys([("j/k", "select"), ("enter", "open"), ("esc", "search")]),
         ],
         grow=True,
@@ -241,13 +290,17 @@ def _results_view(data: dict):
 
 
 def _article_view(data: dict):
+    article = (
+        Card([Skeleton(rows=5)])
+        if data["loading"]
+        else Card([Text(data["article"] or data["error"] or "No summary available.", size=13.0)])
+    )
     return Column(
         [
             AppBar("Wikipedia", data["article_title"]),
-            Scrollable(
-                Text(data["article"] or data["error"] or "Loading...", size=12.0)
-            ),
-            Spacer(grow=True),
+            Button("← Search results", "wiki-back-results", style="secondary"),
+            Section("Summary"),
+            Scrollable(article),
             FooterKeys([("esc", "results")]),
         ],
         grow=True,
