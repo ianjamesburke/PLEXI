@@ -128,11 +128,19 @@ const KNOWN_AI: &[&str] = &[
     "backend",
     "openrouter",
     "ollama",
+    "local",
     "per_app_daily_usd",
     "global_daily_usd",
 ];
 const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
 const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
+const KNOWN_AI_LOCAL: &[&str] = &[
+    "base_url",
+    "api_key_env",
+    "model_low",
+    "model_medium",
+    "model_high",
+];
 const KNOWN_MARKETPLACE: &[&str] = &[
     "registry_url",
     "cdn_url",
@@ -259,6 +267,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                 }
                 if let Some(toml::Value::Table(ol)) = t.get("ollama") {
                     check_unknown_keys(ol, "ai.ollama", KNOWN_AI_OLLAMA, &path_str, &mut diags);
+                }
+                if let Some(toml::Value::Table(lo)) = t.get("local") {
+                    check_unknown_keys(lo, "ai.local", KNOWN_AI_LOCAL, &path_str, &mut diags);
                 }
             }
             if let Some(toml::Value::Table(t)) = table.get("keybindings") {
@@ -533,16 +544,17 @@ pub struct MarketplaceConfig {
 
 /// Plexi AI broker configuration (`ai.query` capability).
 ///
-/// `backend` selects the provider: `"openrouter"` (default) or `"ollama"`.
-/// API keys are NOT stored here — export `OPENROUTER_API_KEY` in your shell
-/// profile (`~/.zshrc`, `~/.zprofile`, etc.). Never store API keys in
-/// plaintext config files.
+/// `backend` selects the provider: `"openrouter"` (default), `"ollama"`, or
+/// `"local"` (any OpenAI-compatible server). API keys are NOT stored here —
+/// export `OPENROUTER_API_KEY` in your shell profile (`~/.zshrc`,
+/// `~/.zprofile`, etc.). Never store API keys in plaintext config files.
 #[derive(Deserialize, Default, Clone)]
 pub struct AiConfig {
-    /// Backend selection: `"openrouter"` (default) or `"ollama"`.
+    /// Backend selection: `"openrouter"` (default), `"ollama"`, or `"local"`.
     pub backend: Option<String>,
     pub openrouter: Option<OpenRouterBackendConfig>,
     pub ollama: Option<OllamaBackendConfig>,
+    pub local: Option<LocalBackendConfig>,
     /// Per-app daily spend cap in USD. Default $1.00.
     pub per_app_daily_usd: Option<f64>,
     /// Global daily spend cap across all apps in USD. Default $10.00.
@@ -587,6 +599,23 @@ pub struct OllamaBackendConfig {
     pub model_high: Option<String>,
 }
 
+/// Local OpenAI-compatible backend configuration (any server speaking the
+/// OpenAI chat-completions API, e.g. a Meridian proxy).
+#[derive(Deserialize, Default, Clone)]
+pub struct LocalBackendConfig {
+    /// Server base URL. Required — no default. e.g. "http://127.0.0.1:3456"
+    pub base_url: Option<String>,
+    /// Environment variable name for the API key. Unset = no auth header
+    /// (for local proxies that accept unauthenticated requests).
+    pub api_key_env: Option<String>,
+    /// Low-tier model. e.g. "claude-haiku-4-5"
+    pub model_low: Option<String>,
+    /// Medium-tier model. e.g. "claude-opus-5"
+    pub model_medium: Option<String>,
+    /// High-tier model. e.g. "claude-fable-5"
+    pub model_high: Option<String>,
+}
+
 impl AiConfig {
     /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
     pub fn overlay(&mut self, other: Self) {
@@ -607,6 +636,11 @@ impl AiConfig {
         match (self.ollama.as_mut(), other.ollama) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.ollama = Some(incoming),
+            _ => {}
+        }
+        match (self.local.as_mut(), other.local) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.local = Some(incoming),
             _ => {}
         }
     }
@@ -633,6 +667,26 @@ impl OllamaBackendConfig {
     fn overlay(&mut self, other: Self) {
         if other.host.is_some() {
             self.host = other.host;
+        }
+        if other.model_low.is_some() {
+            self.model_low = other.model_low;
+        }
+        if other.model_medium.is_some() {
+            self.model_medium = other.model_medium;
+        }
+        if other.model_high.is_some() {
+            self.model_high = other.model_high;
+        }
+    }
+}
+
+impl LocalBackendConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.base_url.is_some() {
+            self.base_url = other.base_url;
+        }
+        if other.api_key_env.is_some() {
+            self.api_key_env = other.api_key_env;
         }
         if other.model_low.is_some() {
             self.model_low = other.model_low;
@@ -1812,6 +1866,90 @@ mod tests {
         .unwrap();
         let diags = validate_from_path(&path);
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
+    fn validate_ai_local_config_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[ai]\nbackend = \"local\"\n\
+             [ai.local]\n\
+             base_url = \"http://127.0.0.1:3456\"\n\
+             api_key_env = \"MERIDIAN_API_KEY\"\n\
+             model_low = \"claude-haiku-4-5\"\n\
+             model_medium = \"claude-opus-5\"\n\
+             model_high = \"claude-fable-5\"\n",
+        )
+        .unwrap();
+        let diags = validate_from_path(&path);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
+    fn validate_ai_local_unknown_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[ai.local]\nhost = \"http://127.0.0.1:3456\"\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].to_string().contains("host"));
+        assert!(diags[0].to_string().contains("[ai.local]"));
+    }
+
+    #[test]
+    fn ai_local_config_parses_round_trip() {
+        let cfg: PlexiConfig = toml::from_str(
+            "[ai]\nbackend = \"local\"\n\
+             [ai.local]\n\
+             base_url = \"http://127.0.0.1:3456\"\n\
+             model_high = \"claude-fable-5\"\n",
+        )
+        .unwrap();
+        let ai = cfg.ai.unwrap();
+        assert_eq!(ai.backend.as_deref(), Some("local"));
+        let local = ai.local.unwrap();
+        assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
+        assert_eq!(local.api_key_env, None);
+        assert_eq!(local.model_high.as_deref(), Some("claude-fable-5"));
+    }
+
+    #[test]
+    fn ai_local_overlay_merges_fields() {
+        let mut base: AiConfig = toml::from_str(
+            "backend = \"openrouter\"\n\
+             [local]\n\
+             base_url = \"http://127.0.0.1:3456\"\n\
+             model_low = \"claude-haiku-4-5\"\n",
+        )
+        .unwrap();
+        let project: AiConfig = toml::from_str(
+            "backend = \"local\"\n\
+             [local]\n\
+             model_low = \"claude-opus-5\"\n\
+             model_high = \"claude-fable-5\"\n",
+        )
+        .unwrap();
+        base.overlay(project);
+        assert_eq!(base.backend.as_deref(), Some("local"));
+        let local = base.local.unwrap();
+        // Project value wins; unset project fields keep the base value.
+        assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
+        assert_eq!(local.model_low.as_deref(), Some("claude-opus-5"));
+        assert_eq!(local.model_high.as_deref(), Some("claude-fable-5"));
+    }
+
+    #[test]
+    fn ai_local_overlay_adopts_section_when_base_absent() {
+        let mut base = AiConfig::default();
+        let project: AiConfig =
+            toml::from_str("[local]\nbase_url = \"http://127.0.0.1:3456\"\n").unwrap();
+        base.overlay(project);
+        assert_eq!(
+            base.local.unwrap().base_url.as_deref(),
+            Some("http://127.0.0.1:3456")
+        );
     }
 
     #[test]

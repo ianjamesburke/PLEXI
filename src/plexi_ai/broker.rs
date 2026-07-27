@@ -18,8 +18,9 @@
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::app_protocol::{AiMessage, AiTool, ModelTier};
-use crate::config::{AiConfig, OllamaBackendConfig, OpenRouterBackendConfig};
+use crate::config::{AiConfig, LocalBackendConfig, OllamaBackendConfig, OpenRouterBackendConfig};
 use crate::host::event_log::{self, HostEvent};
+use crate::plexi_ai::backend::local::LocalOpenAiBackend;
 use crate::plexi_ai::backend::ollama::OllamaBackend;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
 use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
@@ -151,8 +152,9 @@ pub trait AiBroker: Send + Sync {
 }
 
 /// Production broker: reads config from `AiConfig`, routes to the configured
-/// backend (OpenRouter or Ollama), fetches real per-call cost (OpenRouter only),
-/// writes the ledger, and emits `HostEvent::AgentTurn`.
+/// backend (OpenRouter, Ollama, or a local OpenAI-compatible server), fetches
+/// real per-call cost (OpenRouter only), writes the ledger, and emits
+/// `HostEvent::AgentTurn`.
 ///
 /// `AiConfig` is cloned at construction from `PlexiConfig::load().ai`.
 /// If the config section is absent, `dispatch` fails fast with a clear error.
@@ -204,6 +206,7 @@ impl AiBroker for LiveAiBroker {
         match backend_name.as_str() {
             "ollama" => dispatch_ollama(request, ai_config, on_delta),
             "openrouter" => dispatch_openrouter(request, ai_config, on_delta),
+            "local" => dispatch_local(request, ai_config, on_delta),
             other => AiBrokerResponse::err(format!("unsupported_model_provider: {other}")),
         }
     }
@@ -505,6 +508,110 @@ fn dispatch_ollama(
         String::new(),
         on_delta,
     )
+}
+
+/// Dispatch through a local OpenAI-compatible backend (`[ai.local]`).
+fn dispatch_local(
+    request: AiBrokerRequest,
+    ai_config: &AiConfig,
+    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+) -> AiBrokerResponse {
+    let local_config = match ai_config.local.as_ref() {
+        Some(c) => c,
+        None => {
+            let msg = "ai_config_missing: [ai.local] section required for local backend";
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
+        }
+    };
+
+    // base_url is required — no default (missing required config throws).
+    let base_url = match local_config.base_url.as_deref() {
+        Some(u) => u.to_string(),
+        None => {
+            let msg = "ai_config_missing: base_url not set in [ai.local] config section — required for local backend";
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
+        }
+    };
+
+    if let Some(route) = request
+        .concrete_model
+        .as_ref()
+        .filter(|route| route.provider != "local")
+    {
+        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
+    }
+    let model_id = request
+        .concrete_model
+        .as_ref()
+        .map(|route| route.model.clone())
+        .or_else(|| resolve_local_model_tier(&request.model_tier, local_config));
+    let model_id = match model_id {
+        Some(m) => m,
+        None => {
+            let msg = format!(
+                "ai_config_missing: model_{} not set in [ai.local] config section",
+                tier_name(&request.model_tier)
+            );
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
+        }
+    };
+
+    // Never touches the Keychain or workspace secrets: local proxies either
+    // need no key or take one from a plain env var named in api_key_env.
+    let api_key = match resolve_local_api_key(local_config.api_key_env.as_deref(), |name| {
+        std::env::var(name).ok()
+    }) {
+        Ok(k) => k,
+        Err(msg) => {
+            log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
+            return AiBrokerResponse::err(msg);
+        }
+    };
+
+    log::info!(
+        "ai_broker[{}]: dispatch backend=local base_url={} model={}",
+        request.app_id,
+        base_url,
+        model_id
+    );
+
+    let backend = LocalOpenAiBackend {
+        base_url,
+        api_key,
+        model: model_id.clone(),
+    };
+
+    run_turn_and_respond(
+        request,
+        &backend,
+        BillingModel::Subscription,
+        model_id,
+        String::new(),
+        on_delta,
+    )
+}
+
+/// Resolve the local backend API key. `api_key_env = None` means no auth —
+/// `Ok(None)` — for proxies that accept unauthenticated requests. When
+/// `api_key_env` names a variable, it must be set non-empty or the dispatch
+/// fails with an error naming the variable. `lookup` is injected so this
+/// stays testable without mutating process env.
+fn resolve_local_api_key(
+    api_key_env: Option<&str>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(env_name) = api_key_env else {
+        return Ok(None);
+    };
+    match lookup(env_name).filter(|v| !v.is_empty()) {
+        Some(key) => Ok(Some(key)),
+        None => Err(format!(
+            "api_key_missing: {env_name} not set — export it in your shell profile, or remove api_key_env from [ai.local] if the server needs no auth"
+        )),
+    }
 }
 
 /// Build a compact host context block to prepend to the system prompt.
@@ -979,6 +1086,14 @@ fn resolve_model_tier(tier: &ModelTier, config: &OpenRouterBackendConfig) -> Opt
 }
 
 fn resolve_ollama_model_tier(tier: &ModelTier, config: &OllamaBackendConfig) -> Option<String> {
+    match tier {
+        ModelTier::Low => config.model_low.clone(),
+        ModelTier::Medium => config.model_medium.clone(),
+        ModelTier::High => config.model_high.clone(),
+    }
+}
+
+fn resolve_local_model_tier(tier: &ModelTier, config: &LocalBackendConfig) -> Option<String> {
     match tier {
         ModelTier::Low => config.model_low.clone(),
         ModelTier::Medium => config.model_medium.clone(),
@@ -1556,6 +1671,148 @@ mod tests {
             resp.error.as_deref().unwrap_or("").contains("[ai.ollama]"),
             "error must mention missing [ai.ollama] section"
         );
+    }
+
+    /// Minimal dispatch request for local-backend error-path tests.
+    fn local_test_request() -> AiBrokerRequest {
+        AiBrokerRequest {
+            app_id: "test".to_string(),
+            model_tier: ModelTier::Low,
+            concrete_model: None,
+            reasoning_effort: None,
+            system: String::new(),
+            messages: vec![AiMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            }],
+            tools: vec![],
+            workspace_root: None,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+            cancel: CancelToken::new(),
+            max_tool_iterations: None,
+        }
+    }
+
+    #[test]
+    fn live_broker_errors_when_local_selected_but_config_missing() {
+        let broker = LiveAiBroker::new(Some(AiConfig {
+            backend: Some("local".to_string()),
+            openrouter: None,
+            ollama: None,
+            local: None,
+            ..Default::default()
+        }));
+        let resp = broker.dispatch(local_test_request(), &mut |_| {});
+        let err = resp.error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("ai_config_missing") && err.contains("[ai.local]"),
+            "error must carry the ai_config_missing tag and name [ai.local]: {err}"
+        );
+    }
+
+    #[test]
+    fn live_broker_errors_when_local_base_url_missing() {
+        let broker = LiveAiBroker::new(Some(AiConfig {
+            backend: Some("local".to_string()),
+            local: Some(crate::config::LocalBackendConfig {
+                base_url: None,
+                api_key_env: None,
+                model_low: Some("claude-haiku-4-5".to_string()),
+                model_medium: None,
+                model_high: None,
+            }),
+            ..Default::default()
+        }));
+        let resp = broker.dispatch(local_test_request(), &mut |_| {});
+        let err = resp.error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("base_url") && err.contains("[ai.local]"),
+            "error must name base_url and [ai.local]: {err}"
+        );
+    }
+
+    #[test]
+    fn live_broker_errors_when_local_model_tier_missing() {
+        let broker = LiveAiBroker::new(Some(AiConfig {
+            backend: Some("local".to_string()),
+            local: Some(crate::config::LocalBackendConfig {
+                base_url: Some("http://127.0.0.1:3456".to_string()),
+                api_key_env: None,
+                model_low: None,
+                model_medium: None,
+                model_high: Some("claude-fable-5".to_string()),
+            }),
+            ..Default::default()
+        }));
+        // Request is Low tier — only model_high is configured.
+        let resp = broker.dispatch(local_test_request(), &mut |_| {});
+        let err = resp.error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("model_low") && err.contains("[ai.local]"),
+            "error must name model_low in [ai.local]: {err}"
+        );
+    }
+
+    /// `dispatch_local` guards against a concrete route naming a foreign
+    /// provider (same defensive check as the openrouter/ollama paths —
+    /// unreachable through `LiveAiBroker::dispatch`, which routes by
+    /// provider first, but load-bearing for any direct caller).
+    #[test]
+    fn dispatch_local_rejects_foreign_provider_route() {
+        let ai_config = AiConfig {
+            backend: Some("local".to_string()),
+            local: Some(crate::config::LocalBackendConfig {
+                base_url: Some("http://127.0.0.1:3456".to_string()),
+                api_key_env: None,
+                model_low: Some("claude-haiku-4-5".to_string()),
+                model_medium: None,
+                model_high: None,
+            }),
+            ..Default::default()
+        };
+        let mut request = local_test_request();
+        request.concrete_model = Some(ConcreteModelRoute {
+            provider: "openrouter".to_string(),
+            model: "anthropic/claude-fable-5".to_string(),
+        });
+        let resp = dispatch_local(request, &ai_config, &mut |_| {});
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("unsupported_model_provider"),
+            "foreign provider route must be rejected"
+        );
+    }
+
+    /// `api_key_env` unset = unauthenticated proxy; set = env var must be
+    /// non-empty. Lookup is injected — never mutates process env.
+    #[test]
+    fn resolve_local_api_key_contract() {
+        // No api_key_env configured — no auth, no lookup needed.
+        assert_eq!(resolve_local_api_key(None, |_| None), Ok(None));
+
+        // Configured and set non-empty — key flows through.
+        assert_eq!(
+            resolve_local_api_key(Some("MERIDIAN_KEY"), |name| {
+                assert_eq!(name, "MERIDIAN_KEY");
+                Some("sk-abc".to_string())
+            }),
+            Ok(Some("sk-abc".to_string()))
+        );
+
+        // Configured but unset or empty — error names the variable.
+        for lookup in [
+            (|_: &str| None) as fn(&str) -> Option<String>,
+            (|_: &str| Some(String::new())) as fn(&str) -> Option<String>,
+        ] {
+            let err = resolve_local_api_key(Some("MERIDIAN_KEY"), lookup).unwrap_err();
+            assert!(
+                err.contains("api_key_missing") && err.contains("MERIDIAN_KEY"),
+                "error must tag api_key_missing and name the env var: {err}"
+            );
+        }
     }
 
     /// Verify the tool loop: a backend that returns one tool call on the first

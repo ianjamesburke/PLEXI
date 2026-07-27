@@ -125,7 +125,7 @@ plexi secret set openrouter-api-key --global
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `backend` | string | — | Backend selection: `"openrouter"` (default) or `"ollama"`. |
+| `backend` | string | — | Backend selection: `"openrouter"` (default), `"ollama"`, or `"local"`. |
 | `per_app_daily_usd` | float | $1.00 | Per-app daily spend cap in USD. Default $1.00. |
 | `global_daily_usd` | float | $10.00 | Global daily spend cap across all apps in USD. Default $10.00. |
 
@@ -146,6 +146,16 @@ plexi secret set openrouter-api-key --global
 | `model_low` | string | — | Low-tier model. e.g. "llama3.2:3b" |
 | `model_medium` | string | — | Medium-tier model. e.g. "llama3.3:70b" |
 | `model_high` | string | — | High-tier model. e.g. "qwq:32b" |
+
+#### Local OpenAI-compatible (`[ai.local]`)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `base_url` | string | — | Server base URL. Required — no default. e.g. "http://127.0.0.1:3456" |
+| `api_key_env` | string | — | Environment variable name for the API key. Unset = no auth header (for local proxies that accept unauthenticated requests). |
+| `model_low` | string | — | Low-tier model. e.g. "claude-haiku-4-5" |
+| `model_medium` | string | — | Medium-tier model. e.g. "claude-opus-5" |
+| `model_high` | string | — | High-tier model. e.g. "claude-fable-5" |
 
 ### Agents (`[agents]`)
 
@@ -299,7 +309,7 @@ ghost_opacity = 0.75
 # interrupt_threshold = 100    # 0=LOW 50=NORMAL 100=HIGH 200=CRITICAL
 
 [ai]
-backend = "openrouter"         # "openrouter" (cloud) or "ollama" (local)
+backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
@@ -312,6 +322,12 @@ model_high   = "anthropic/claude-fable-5"
 # model_low    = "llama3.2:3b"
 # model_medium = "llama3.3:70b"
 # model_high   = "qwq:32b"
+
+# [ai.local]                   # any OpenAI-compatible server; api_key_env optional
+# base_url     = "http://127.0.0.1:3456"
+# model_low    = "claude-haiku-4-5"
+# model_medium = "claude-opus-5"
+# model_high   = "claude-fable-5"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart
