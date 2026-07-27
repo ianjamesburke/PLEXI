@@ -8,8 +8,33 @@
 //! encodes, and writes the PNG plus the CLI response file. This captures the
 //! pixels the user actually sees — chrome, terminals, apps, overlays — with
 //! no OS-level screen capture involved.
+//!
+//! # The reply invariant (stints 0495, 0504)
+//!
+//! Every queued request gets exactly one typed reply — a success object or an
+//! `{"error": ...}` object — and it always arrives inside the CLI's wait
+//! window. Two rules hold that up:
+//!
+//! 1. [`PlexiApp::service_pending_screenshots`] runs from `App::logic`, never
+//!    `App::ui`. eframe skips `ui` entirely while the window is minimized or
+//!    fully occluded, so issuing the viewport command from `ui` meant an
+//!    occluded host never asked for a capture at all: the PNG landed late
+//!    (once something un-occluded the window — stint 0495) or never (asleep
+//!    display — stint 0504), and the CLI reported its own generic timeout with
+//!    nothing in the host log to explain it.
+//! 2. [`SCREENSHOT_DEADLINE`] bounds every request. When the compositor
+//!    genuinely cannot produce pixels, the host writes the typed error itself
+//!    and logs it at warn, rather than leaving the caller to time out silently.
 
 use super::PlexiApp;
+
+/// How long the host waits for wgpu to deliver a capture before replying with
+/// a typed error. Must stay comfortably under `host_screenshot_cli`'s response
+/// timeout so the caller surfaces this reason instead of its own generic one.
+pub const SCREENSHOT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// How often an undelivered capture is re-requested from the viewport.
+const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Debug)]
 pub struct PendingScreenshot {
@@ -18,11 +43,82 @@ pub struct PendingScreenshot {
     pub output_path: String,
     pub response_file: String,
     pub capture_requested_at: Option<std::time::Instant>,
+    /// Reply with a typed error once this instant passes. Set from
+    /// [`SCREENSHOT_DEADLINE`] at enqueue time.
+    pub expires_at: std::time::Instant,
 }
 
 impl PlexiApp {
-    pub(crate) fn request_pending_screenshot(&mut self, ctx: &egui::Context) {
-        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+    /// Drive every outstanding screenshot request one step.
+    ///
+    /// Call this from `App::logic` only — see the module docs. Expiry runs
+    /// first so an overdue request replies even on a pass where the readback
+    /// poll would be a no-op.
+    pub(crate) fn service_pending_screenshots(
+        &mut self,
+        ctx: &egui::Context,
+        render_state: Option<&egui_wgpu::RenderState>,
+    ) {
+        if self.pending_screenshots.is_empty() {
+            return;
+        }
+        self.expire_pending_screenshots();
+        if self.pending_screenshots.is_empty() {
+            return;
+        }
+        self.poll_pending_screenshots(render_state);
+        self.request_pending_screenshot(ctx);
+        // eframe 0.34 handles viewport commands after the current paint, then
+        // delivers wgpu's asynchronous result before a later pass. Keep those
+        // lifecycle stages moving while a CLI request is outstanding. egui
+        // advances delayed requests by predicted_dt, so include that interval
+        // to guarantee this targets a subsequent OS frame — and never pass a
+        // literal zero, which schedules an extra settling paint.
+        let predicted_dt = ctx.input(|input| input.predicted_dt);
+        ctx.request_repaint_after(
+            std::time::Duration::from_secs_f32(predicted_dt) + std::time::Duration::from_millis(25),
+        );
+    }
+
+    /// Reply with a typed error for any request the viewport never fulfilled.
+    ///
+    /// A silent stall is indistinguishable from a hung host, so this is the
+    /// backstop that makes "no pixels available" an observable, actionable
+    /// failure instead of a CLI-side timeout with an empty host log.
+    fn expire_pending_screenshots(&mut self) {
+        let now = std::time::Instant::now();
+        if !self
+            .pending_screenshots
+            .iter()
+            .any(|request| now >= request.expires_at)
+        {
+            return;
+        }
+        let (expired, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_screenshots)
+            .into_iter()
+            .partition(|request| now >= request.expires_at);
+        self.pending_screenshots = live;
+        for request in expired {
+            let error = format!(
+                "screenshot readback did not complete within {}s: the host window produced no \
+                 frame (display asleep, window minimized or fully occluded, or GPU readback \
+                 stalled)",
+                SCREENSHOT_DEADLINE.as_secs()
+            );
+            log::warn!(
+                "screenshot: pane_id={:?} output={} timed out: {error}",
+                request.pane_id,
+                request.output_path
+            );
+            crate::rpc::write_json_response(
+                &request.response_file,
+                serde_json::json!({ "error": error }),
+            );
+        }
+    }
+
+    /// Ask the viewport for a capture, at most once per [`RETRY_INTERVAL`].
+    fn request_pending_screenshot(&mut self, ctx: &egui::Context) {
         let now = std::time::Instant::now();
         let should_capture = self.pending_screenshots.iter().any(|request| {
             request
@@ -39,21 +135,10 @@ impl PlexiApp {
             egui::ViewportId::ROOT,
             egui::ViewportCommand::Screenshot(egui::UserData::default()),
         );
-        let predicted_dt = ctx.input(|input| input.predicted_dt);
-        ctx.request_repaint_after(
-            std::time::Duration::from_secs_f32(predicted_dt) + std::time::Duration::from_millis(25),
-        );
     }
 
     /// Advance wgpu's asynchronous screenshot readback.
-    pub(crate) fn poll_pending_screenshots(
-        &self,
-        ctx: &egui::Context,
-        render_state: Option<&egui_wgpu::RenderState>,
-    ) {
-        if self.pending_screenshots.is_empty() {
-            return;
-        }
+    fn poll_pending_screenshots(&self, render_state: Option<&egui_wgpu::RenderState>) {
         // wgpu 29 no longer advances map_async callbacks without an explicit
         // device poll. Keep this non-blocking: a blocking wait stalls the UI
         // before eframe has painted and registered the capture callback.
@@ -64,15 +149,6 @@ impl PlexiApp {
         } else {
             log::warn!("screenshot: eframe wgpu render state unavailable for readback polling");
         }
-        // eframe 0.34 handles viewport commands after the current paint, then
-        // delivers wgpu's asynchronous result before a later pass. Keep those
-        // lifecycle stages moving while a CLI request is outstanding. egui
-        // advances delayed requests by predicted_dt, so include that interval
-        // to guarantee this targets a subsequent OS frame.
-        let predicted_dt = ctx.input(|input| input.predicted_dt);
-        ctx.request_repaint_after(
-            std::time::Duration::from_secs_f32(predicted_dt) + std::time::Duration::from_millis(25),
-        );
     }
 
     /// Fulfill queued requests from eframe's raw-input hook.

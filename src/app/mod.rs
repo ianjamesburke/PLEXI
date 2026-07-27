@@ -2452,11 +2452,6 @@ impl eframe::App for PlexiApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Screenshot readback is stateful frame logic, not UI. Keeping it in
-        // eframe's once-per-frame hook ensures viewport commands and returned
-        // input events survive egui 0.34's UI layout passes.
-        self.poll_pending_screenshots(ctx, frame.wgpu_render_state());
-
         // Everything that services external clients — pane IPC, spawn queue,
         // PTY events, shutdown, event-bus subscriptions, agent turns — must
         // run here, not in `ui`. eframe skips `ui` entirely while the window
@@ -2466,6 +2461,15 @@ impl eframe::App for PlexiApp {
         // logic-only passes ran, and queued commands sat until the window was
         // next uncovered (stint 0505 fix round 3).
         self.update_preamble(ctx);
+
+        // Screenshot capture is an external-client request path, not UI: the
+        // viewport request, the readback poll, and the bounded-deadline reply
+        // all live here so an occluded or minimized host — which never enters
+        // `ui` at all — still captures, and still answers (stints 0495, 0504).
+        // It follows `update_preamble` so a request arriving on this pass is
+        // issued on this pass, not one frame later.
+        self.service_pending_screenshots(ctx, frame.wgpu_render_state());
+
         self.drain_app_subscription_replies();
         self.deliver_app_event_subscriptions();
 
@@ -2522,8 +2526,6 @@ impl eframe::App for PlexiApp {
                 self.frame_diag_window = Some((std::time::Instant::now(), 0));
             }
         }
-        self.request_pending_screenshot(ctx);
-
         // Unified overlay dispatch: each overlay owns its complete keyboard
         // contract via a `*_handle_key` method that returns `Consumed`, preventing
         // `dispatch_app_key_events` and `poll_actions` from seeing those events.
