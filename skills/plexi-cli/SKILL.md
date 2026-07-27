@@ -72,6 +72,10 @@ app action ID ACTION [ARGS]  Send a semantic action to a running app (not raw te
 
 ```
 context new [NAME]       New context. --path DIR, --parent[=NAME] (bare = current context), --from PANE_ID (portal anchor; defaults to caller), -d/-l/-u/-r portal direction, --focus, --window CMD (repeatable; creates extra windows atomically).
+context sub NAME         Sub-context under the caller's context, pre-populated with panes.
+                         --agents N (1-32, default 1), --command CMD (once = all panes, or exactly N times = one each; any other count errors),
+                         --layout tiled|columns (default tiled), --path DIR (defaults to caller's cwd), --focus, --from PANE_ID.
+                         Prints {"context_id","windows","panes":[ids]} — address the panes directly, no follow-up `pane list`.
 context open [PATH]      Switch current pane to a context at PATH.
 context set-root [PATH]  Change root folder for the caller's context (PLEXI_CONTEXT_ID).
 context current          Print context id/name as JSON.
@@ -221,6 +225,20 @@ BALLS=$(plexi app open balls -r --from $PLEXI_PANE_ID)
 plexi app open tetris -d --from $PLEXI_PANE_ID
 plexi app open snake -d --from $BALLS
 ```
+
+### Scoped agent squad (one command)
+
+```bash
+# 3 agents in their own sub-context, rooted at the current cwd.
+SQUAD=$(plexi context sub agentsquad --agents 3 --command cm)
+# Pane ids come back in the response — no follow-up `pane list` needed.
+for P in $(echo "$SQUAD" | jq -r '.panes[]'); do plexi pane name $P "squad-$P"; done
+```
+
+Prefer this over `context new --parent --window CMD ...`: that route seeds a
+spare terminal (N commands → N+1 panes), spreads the panes across sibling
+*pages* instead of tiling them in one window, and roots the sub-context at the
+parent context's path rather than your cwd.
 
 ### Named agent dispatch lane
 

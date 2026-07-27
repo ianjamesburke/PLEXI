@@ -2072,6 +2072,7 @@ impl PlexiApp {
                 root,
                 name,
                 parent_name,
+                parent_context_id,
                 windows,
                 focus,
                 portal_direction,
@@ -2091,7 +2092,8 @@ impl PlexiApp {
                     };
                 log::info!(
                     "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} \
-                     windows={} focus={focus} direction={:?} anchor_pane={:?}",
+                     parent_context_id={parent_context_id:?} windows={} focus={focus} \
+                     direction={:?} anchor_pane={:?}",
                     root,
                     name,
                     parent_name,
@@ -2116,13 +2118,16 @@ impl PlexiApp {
                     let current_ctx_id = self.router.active().context_id;
                     let current_win_id = self.windows[self.active_window].window_id;
                     let current_focused = self.windows[self.active_window].focused_pane;
-                    if let Err(e) = self.new_child_context(
-                        pname.as_str(),
-                        path,
-                        portal_vertical,
-                        portal_first,
-                        *anchor_pane,
-                    ) {
+                    if let Err(e) =
+                        self.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+                            *parent_context_id,
+                            pname.clone(),
+                            path,
+                            portal_vertical,
+                            portal_first,
+                            *anchor_pane,
+                        ))
+                    {
                         log::warn!("pane_ipc: create_context with parent failed: {e}");
                         ctx_ok = false;
                     } else {
@@ -2208,6 +2213,127 @@ impl PlexiApp {
                         });
                         write_json_response(&rf, response);
                     }
+                }
+                self.save_workspace();
+            }
+            crate::app_protocol::AppRequest::CreateSubContext {
+                name,
+                root,
+                parent_context_id,
+                parent_name,
+                panes,
+                layout,
+                focus,
+                anchor_pane,
+                response_file,
+            } => {
+                // Resolve the parent up front: everything below (depth push,
+                // window bookkeeping) is relative to it, and a bad parent must
+                // fail before any pane is spawned.
+                let parent_idx = self.resolve_parent_context(
+                    *parent_context_id,
+                    parent_name.as_deref().unwrap_or_default(),
+                );
+                let Some(parent_idx) = parent_idx else {
+                    log::warn!(
+                        "pane_ipc: create_sub_context — no parent context for id={parent_context_id:?} name={parent_name:?}"
+                    );
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": format!(
+                                    "no parent context for id={parent_context_id:?} name={parent_name:?}"
+                                ),
+                            }),
+                        );
+                    }
+                    return;
+                };
+                let parent_ctx_id = self.router.get(parent_idx).context_id;
+                log::info!(
+                    "pane_ipc: kind=create_sub_context name={name:?} parent_ctx_id={parent_ctx_id} \
+                     panes={} layout={layout:?} focus={focus} root={} anchor_pane={anchor_pane:?}",
+                    panes.len(),
+                    root.display()
+                );
+                let spec = crate::pane_ops::ChildContextSpec {
+                    parent_id: Some(parent_ctx_id),
+                    parent_name: parent_name.clone().unwrap_or_default(),
+                    // Named up front, not renamed after: the squad's panes are
+                    // spawned with this in PLEXI_CONTEXT_NAME.
+                    name: Some(name.clone()),
+                    path: root.clone(),
+                    // A squad reads best beside the caller, matching the
+                    // `context new --parent` default.
+                    portal_vertical: true,
+                    portal_first: false,
+                    anchor_pane: *anchor_pane,
+                    panes: panes.clone(),
+                    layout: *layout,
+                };
+                let child = match self.new_child_context(spec) {
+                    Ok(child) => child,
+                    Err(e) => {
+                        log::warn!("pane_ipc: create_sub_context failed: {e}");
+                        if let Some(rf) = response_file {
+                            write_json_response(rf, serde_json::json!({ "error": e }));
+                        }
+                        return;
+                    }
+                };
+                let child_idx = self.router.len() - 1;
+                log::info!(
+                    "context_sub: parent_ctx_id={parent_ctx_id} child_ctx_id={} name={name:?} \
+                     panes={:?} layout={layout:?}",
+                    child.context_id,
+                    child.pane_ids
+                );
+                if *focus {
+                    // Zoom-out must land back on the *caller's* window, which is
+                    // not necessarily the globally active one — a background
+                    // pane can create a squad while the user is elsewhere.
+                    match child.parent_window_id {
+                        Some(win_id) => {
+                            self.router.push_depth(
+                                parent_ctx_id,
+                                win_id,
+                                child.parent_focused_pane,
+                            );
+                            self.switch_workspace(child_idx);
+                            log::info!(
+                                "pane_ipc: zoomed into new sub-context ctx_id={} (return win_id={win_id})",
+                                child.context_id
+                            );
+                        }
+                        None => {
+                            log::warn!(
+                                "pane_ipc: create_sub_context --focus ignored — parent ctx_id={parent_ctx_id} has no window to return to"
+                            );
+                        }
+                    }
+                }
+                if let Some(rf) = response_file {
+                    let windows_info: Vec<serde_json::Value> = self
+                        .windows
+                        .iter()
+                        .filter(|w| w.context_id == child.context_id)
+                        .map(|w| {
+                            serde_json::json!({
+                                "window_id": w.window_id,
+                                "grid_x": w.grid_x,
+                                "grid_y": w.grid_y,
+                            })
+                        })
+                        .collect();
+                    write_json_response(
+                        rf,
+                        serde_json::json!({
+                            "context_id": child.context_id,
+                            "windows": windows_info,
+                            "panes": child.pane_ids,
+                        }),
+                    );
                 }
                 self.save_workspace();
             }

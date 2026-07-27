@@ -508,11 +508,28 @@ Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
 | `anchor_pane` | `integer?` | no |
 | `focus` | `boolean` | no |
 | `name` | `string?` | no |
+| `parent_context_id` | `integer?` | no |
 | `parent_name` | `string?` | no |
 | `portal_direction` | `string?` | no |
 | `response_file` | `string?` | no |
 | `root` | `string?` | no |
 | `windows` | `string[]` | no |
+
+### `create_sub_context`
+
+Create a sub-context under the caller's context, pre-populated with a squad of terminal panes in a single window. Sen...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `anchor_pane` | `integer?` | no |
+| `focus` | `boolean` | no |
+| `layout` | `SubContextLayout` | no |
+| `name` | `string` | yes |
+| `panes` | `string?[]` | yes |
+| `parent_context_id` | `integer?` | no |
+| `parent_name` | `string?` | no |
+| `response_file` | `string?` | no |
+| `root` | `string` | yes |
 
 ### `focus_context`
 

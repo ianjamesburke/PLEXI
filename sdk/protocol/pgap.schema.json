@@ -296,6 +296,21 @@
             }
           ]
         },
+        "SubContextLayout": {
+          "description": "How `plexi context sub` arranges the panes it seeds inside the new\nsub-context's single window.",
+          "oneOf": [
+            {
+              "const": "tiled",
+              "description": "Near-square grid — the default for an agent squad.",
+              "type": "string"
+            },
+            {
+              "const": "columns",
+              "description": "One full-height column per pane, left to right.",
+              "type": "string"
+            }
+          ]
+        },
         "TriggerMode": {
           "description": "How an event subscription triggers its subscriber\n(src/host/app_timeline.rs). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
           "oneOf": [
@@ -1692,6 +1707,15 @@
                 "null"
               ]
             },
+            "parent_context_id": {
+              "description": "Parent context id, sent for bare `--parent` (the caller's\n`PLEXI_CONTEXT_ID`). Wins over `parent_name`, which is ambiguous when\ntwo contexts share a name. Absent for an explicit `--parent=<name>`,\nwhere resolving by name is what the caller asked for.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "parent_name": {
               "type": [
                 "string",
@@ -1731,6 +1755,82 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Create a sub-context under the caller's context, pre-populated with a\nsquad of terminal panes in a single window. Sent by `plexi context sub`.\n\nUnlike `CreateContext { parent_name, windows }` this seeds *exactly*\n`panes.len()` terminals — no spare root terminal — and tiles them inside\none window instead of creating sibling pages.",
+          "properties": {
+            "anchor_pane": {
+              "description": "Pane in the parent context to anchor the portal split at. The CLI\nsends the caller's `PLEXI_PANE_ID`; absent or unknown ids fall back\nto the parent's focused pane.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "focus": {
+              "default": false,
+              "description": "Zoom into the new sub-context after creation. Default false.",
+              "type": "boolean"
+            },
+            "layout": {
+              "$ref": "#/$defs/SubContextLayout",
+              "default": "tiled",
+              "description": "How the panes are arranged inside the sub-context's single window."
+            },
+            "name": {
+              "description": "Name for the new sub-context.",
+              "type": "string"
+            },
+            "panes": {
+              "description": "One entry per pane to create, in order. `null` launches a plain\nshell. Never empty — the CLI expands `--agents`/`--command` into\nexactly the requested pane count before sending.",
+              "items": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": "array"
+            },
+            "parent_context_id": {
+              "description": "Parent context id (the caller's `PLEXI_CONTEXT_ID`). Authoritative:\n`parent_name` is consulted only when this is absent. An id naming no\nlive context is an error, not a reason to fall back to the name.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "parent_name": {
+              "description": "Parent context name. Used only when `parent_context_id` is absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "response_file": {
+              "description": "If set, the host writes a JSON response (context_id, windows, panes)\nto this path.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "root": {
+              "description": "Root path for the new sub-context. The CLI sends the caller's cwd.",
+              "type": "string"
+            },
+            "type": {
+              "const": "create_sub_context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "root",
+            "panes"
           ],
           "type": "object"
         },

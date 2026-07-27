@@ -1097,6 +1097,23 @@ fn main() -> eframe::Result {
                                 from,
                             ))
                         }
+                        ContextCmd::Sub {
+                            name,
+                            path,
+                            agents,
+                            command,
+                            layout,
+                            focus,
+                            from,
+                        } => std::process::exit(cli::context_sub_cli(
+                            &name,
+                            path.as_deref(),
+                            agents,
+                            &command,
+                            layout,
+                            focus,
+                            from,
+                        )),
                         ContextCmd::Open { path } => {
                             std::process::exit(cli::context_open_cli(path.as_deref()))
                         }

@@ -282,6 +282,7 @@ Manage the active context (the folder and project scope tied to the current pane
 | Subcommand | Description |
 |---|---|
 | `new` | Open a new context with an optional name |
+| `sub` | Create a sub-context under the current one, pre-populated with panes |
 | `open` | Switch the current pane to a context at the given path |
 | `set-root` | Change the root folder for the active context |
 | `current` | Print the id and name of the current pane's context as JSON |
@@ -309,6 +310,24 @@ Examples: plexi context new "sprint"                          # top-level contex
 | `--left` / `-l` | flag | no | Split portal left (requires --parent) |
 | `--up` / `-u` | flag | no | Split portal above (requires --parent) |
 | `--right` / `-r` | flag | no | Split portal right — explicit (default, requires --parent) |
+
+### `plexi context sub`
+
+Create a sub-context under the current one, pre-populated with panes.
+
+One command spins up a scoped squad: N panes in a single tiled window inside the new sub-context, each running the same command (or its own). Unlike `context new --parent --window`, this creates exactly N panes — no spare terminal — and roots them at the caller's cwd.
+
+Examples: plexi context sub agentsquad --agents 3 --command cm plexi context sub review --agents 2 --command "cm review" --command "cm test" plexi context sub build --agents 4 --layout columns --focus
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Name for the new sub-context |
+| `--path` | string | no | Root path for the sub-context. Defaults to the caller's cwd |
+| `--agents` | string | no | Number of panes to open inside the new sub-context Default: `1`. |
+| `--command` | string (repeatable) | no | Command to launch in each pane. Give it once to apply to every pane, or exactly --agents times to give each pane its own command |
+| `--layout` | string | no | How the panes are arranged inside the sub-context's window Default: `tiled`. |
+| `--focus` | flag | no | Zoom into the new sub-context after creation. Default: stay put |
+| `--from` | string | no | Pane to anchor the portal split at. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the parent's focused pane |
 
 ### `plexi context open`
 
