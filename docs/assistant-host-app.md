@@ -1,9 +1,10 @@
 # Host Assistant App Spec
 
 Status: active.
-Stint: `0554`, `0439`, `0381`, `0382`.
+Stint: `0439`, `0381`, `0382`.
 Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md).
-Last updated: 2026-07-26.
+Authority plane: [`assistant-authority-model.md`](assistant-authority-model.md).
+Last updated: 2026-07-27.
 
 This document defines the first-party Plexi Assistant as a host app, not a PGAP app. It is the workspace operator: it can reason about panes, apps, files, permissions, installed skills, and app-exposed tools because the host owns those things.
 
@@ -76,13 +77,13 @@ The headless event stream reports accepted input blocks, permission requests, re
 
 Build in this dependency order:
 
-1. `0554` defines the host reference monitor, argument/resource-bound grants, context isolation, process and filesystem authority, secret injection, connector trust, structured turn-input envelope, and audit shape. It decomposes the coding runtime into independently testable implementation stints.
+1. [`assistant-authority-model.md`](assistant-authority-model.md) defines the host reference monitor, argument/resource-bound grants, context isolation, process and filesystem authority, secret injection, connector trust, the turn-input authority rule, the runtime-boundary decision, and the audit shape. It also sets the order in which the coding runtime is implemented.
 2. The resulting coding-runtime stints deliver project instruction discovery, complete scoped file operations, the sandboxed command worker, workspace-secret environment injection, background jobs, edit checkpoints, and a general-project E2E gate.
 3. `0381` and `0382` add network fetch and MCP interoperability through the same authority plane. Native browser automation remains owned by [`browser-surface.md`](browser-surface.md).
 4. `0439` specifies the delegated-worker model after the parent authority model is fixed, then creates its implementation stints.
 5. The replacement claim is gated by an installed-host run in a non-Plexi repository: inspect, edit, build, test, use a workspace-scoped secret without disclosing it, delegate an isolated subtask, recover from one failed command, and produce an auditable final diff.
 
-Do not expand execution, network, MCP, hooks, or sub-agent powers ahead of `0554`. Their interfaces depend on the exact capability identities and grant semantics it defines.
+Do not expand execution, network, MCP, hooks, or sub-agent powers ahead of the authority model. Their interfaces depend on the exact capability identities and grant semantics it defines.
 
 ## Non-Goals
 
@@ -120,7 +121,7 @@ Reuse these primitives:
 - Context-root `host.files.list/read/grep/write/edit` tools, including canonical existing-prefix checks. Extend this file module rather than returning to terminal-based file discovery.
 - `host.build.run` as a proven hidden-process adapter for narrow `plexi app init/check` commands. General project execution needs a new sandboxed worker interface; it must not widen this allowlist in place.
 - The workspace secret resolver in `src/workspace/secrets.rs`. The coding worker consumes its routed environment output after authorization; it does not read Keychain values into model-visible text.
-- The unified grant and audit stores as persistence adapters. Their current tool-name/workspace matching is not sufficient authority for general commands, paths, panes, connectors, or secrets; `0554` deepens that interface before new powers use it.
+- The unified grant and audit stores as persistence adapters. Their current tool-name/workspace matching is not sufficient authority for general commands, paths, panes, connectors, or secrets; the authority model deepens that interface before new powers use it.
 - The agent registry, layered Assistant settings, conversation store, skill registry, and connector dispatcher. These are reusable configuration and persistence modules, not yet a delegated-worker runtime.
 
 Do not keep the privileged workspace operator as a PGAP app. The refactor's useful output is the streaming, composer, thinking, and scene-test infrastructure. The pane/app/terminal control path still moves into host-native tools and the unified permission broker.
@@ -296,22 +297,11 @@ Exact model pointers are for power users and package authors. Marketplace packag
 
 ## Unified Permissions
 
+Threat model, reference-monitor contract, grant identity and precedence, context isolation, filesystem and process authority, secret injection, connector trust, and the runtime-boundary decision are owned by [`assistant-authority-model.md`](assistant-authority-model.md). This section and [Permission Model](#permission-model) describe only the user-facing shape of that system.
+
 Agents have individual permission scoping, but Plexi has one permission system.
 
 An agent is a first-class actor in the host permission broker. The Assistant does not own a parallel grant engine. Every agent tool call, app connector call, file write, secret access, terminal input, package install, and model-cost escalation is checked by the same permission broker used for PGAP capabilities and host APIs.
-
-Grant record shape:
-
-```text
-actor_type: app | agent | system
-actor_id: app id or agent id
-actor_scope: built-in | user | workspace | marketplace | managed
-target_type: host_tool | app_connector | mcp_tool | file_scope | secret | package | model_pointer
-target_id: stable capability/tool id
-scope: call | session | workspace | document | path | package_identity | always
-decision: allow | ask | deny
-source: managed | user | workspace | session
-```
 
 Agent permission config lives in the agent's `settings.toml`, but persisted grants and audit events go through the unified Plexi permission store. The settings file expresses defaults and requested posture; the permission store records user decisions.
 
@@ -335,19 +325,6 @@ deny = [
   "host.secrets.read",
 ]
 ```
-
-Evaluation order:
-
-1. Managed deny.
-2. User/workspace/session deny.
-3. Agent-specific deny.
-4. Managed ask.
-5. User/workspace/session ask.
-6. Agent-specific ask.
-7. Existing persisted grant.
-8. Agent-specific allow.
-9. User/workspace allow.
-10. Default posture.
 
 The UI must expose this as one permissions surface. `/permissions` can filter by agent, app, connector, tool, workspace, or recent denial, but it edits the same underlying permission model.
 
@@ -573,15 +550,7 @@ Rule types:
 - Ask: show a prompt before the call.
 - Allow: approve without prompting inside the rule scope.
 
-Evaluation order:
-
-1. Managed deny.
-2. User/workspace/session deny.
-3. Managed ask.
-4. User/workspace/session ask.
-5. Existing grant.
-6. Allow rule.
-7. Default posture.
+Rule precedence and exact grant matching are defined only in [`assistant-authority-model.md`](assistant-authority-model.md); this surface renders the resulting decision and never maintains a second evaluator.
 
 Default postures:
 
