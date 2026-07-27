@@ -25,6 +25,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **Repeatable flags fan out or they error.** A count flag paired with a repeatable value flag (`context sub --agents N --command CMD`) accepts the value once (applies to all) or exactly N times (one each). Any other count is a hard error — never truncate, never cycle. Expand to one entry per unit in the CLI so the host receives an unambiguous list; see `expand_pane_commands`.
 - **Resolve the caller's context by `PLEXI_CONTEXT_ID`, not `PLEXI_CONTEXT_NAME`.** Context names are not unique; the id is. Send the id; the host consults the name only when no id was sent (`resolve_parent_context`). An id naming no live context is an error, never a reason to fall back to the name — a stale id plus a name some other context happens to share would silently target a stranger.
 - **Agent-facing commands answer in one round trip.** A command that creates addressable objects returns their ids in its JSON response (`context sub` → `{"context_id","windows","panes":[…]}`), so the caller never needs a follow-up `pane list` to act on what it just made.
+- **Reported agent identity is human-facing.** The `agent report --agent` name and `--detail` active tool appear in Cmd+P across all contexts. Same-name agents are distinguished by their one-based position within the context, so repeated squad commands remain navigable.
 
 ## Documentation Rule for CLI Changes
 

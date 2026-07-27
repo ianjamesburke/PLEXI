@@ -211,6 +211,10 @@ pub struct PlexiApp {
     /// Set to true on palette open; consumed on the first draw frame to reset
     /// the scroll area back to the top before egui can apply the stale offset.
     pub(crate) palette_scroll_reset: bool,
+    /// Last agent-pane count logged by the palette. The palette rebuilds its
+    /// rows every draw frame, so the collection trace fires only when the
+    /// count changes — never once per frame.
+    pub(crate) palette_agent_count_logged: Option<usize>,
     /// TTL cache for the cwd-derived fallback workspace root passed to
     /// `PlexiBehavior` each frame (#2023). The fallback
     /// (`config::active_workspace_root()`) stat-walks the filesystem from the
@@ -1320,6 +1324,7 @@ impl PlexiApp {
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
                     palette_scroll_reset: false,
+                    palette_agent_count_logged: None,
                     workspace_root_fallback_cache: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
@@ -1573,6 +1578,7 @@ impl PlexiApp {
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_scroll_reset: false,
+            palette_agent_count_logged: None,
             workspace_root_fallback_cache: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -2018,6 +2024,7 @@ impl PlexiApp {
                 palette_notes: Vec::new(),
                 palette_commands: Vec::new(),
                 palette_scroll_reset: false,
+                palette_agent_count_logged: None,
                 workspace_root_fallback_cache: None,
                 context_visit_history: Vec::new(),
                 renaming_pane: None,
