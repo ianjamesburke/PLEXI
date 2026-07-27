@@ -240,25 +240,30 @@ fn draw_pips(
             group.is_return_target
                 && (group.start..group.start + group.count).contains(&focused_idx)
         }) {
-            let cx = dot_centers[focused_idx];
-            let tip_y = (cy - PANE_DOT_RADIUS - 0.5).max(group_rect.min.y + 2.0);
-            let pin_color = with_alpha(
-                colors.text_primary,
-                if group.is_active {
-                    row_alpha
-                } else {
-                    0.78 * row_alpha
-                },
-            );
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    egui::pos2(cx - 2.5, group_rect.min.y + 1.5),
-                    egui::pos2(cx + 2.5, group_rect.min.y + 1.5),
-                    egui::pos2(cx, tip_y),
-                ],
-                pin_color,
-                egui::Stroke::NONE,
-            ));
+            // `focused_idx` indexes the full pane list, but `dot_centers` is
+            // capped at PANE_DOT_MAX. A focused pane past the cap has no dot in
+            // the strip — it is represented by the "+N" overflow label (which
+            // highlights via `overflow_color` below), so the pin is skipped.
+            if let Some(&cx) = dot_centers.get(focused_idx) {
+                let tip_y = (cy - PANE_DOT_RADIUS - 0.5).max(group_rect.min.y + 2.0);
+                let pin_color = with_alpha(
+                    colors.text_primary,
+                    if group.is_active {
+                        row_alpha
+                    } else {
+                        0.78 * row_alpha
+                    },
+                );
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(cx - 2.5, group_rect.min.y + 1.5),
+                        egui::pos2(cx + 2.5, group_rect.min.y + 1.5),
+                        egui::pos2(cx, tip_y),
+                    ],
+                    pin_color,
+                    egui::Stroke::NONE,
+                ));
+            }
         }
     }
     if dots.count > PANE_DOT_MAX {
@@ -579,5 +584,36 @@ impl ContextItem {
         };
 
         (action, response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: session restore can leave focus on a pane past PANE_DOT_MAX
+    /// (dot_centers len == 8, focused_idx == 8). The pin must be skipped, not
+    /// index out of bounds.
+    #[test]
+    fn draw_pips_focused_pane_past_dot_cap_does_not_panic() {
+        let dots = Some(PaneDots {
+            count: PANE_DOT_MAX + 1,
+            focused_idx: Some(PANE_DOT_MAX),
+            hidden_set: std::collections::HashSet::new(),
+            activities: vec![None; PANE_DOT_MAX + 1],
+            windows: vec![PaneDotWindow {
+                start: 0,
+                count: PANE_DOT_MAX + 1,
+                is_return_target: true,
+                is_active: true,
+            }],
+        });
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                draw_pips(ui, &dots, &colors, 1.0, false);
+            });
+        });
     }
 }
