@@ -4586,24 +4586,42 @@ impl PlexiApp {
             .collect();
         let inbox_count = entries.len();
 
-        let workspace_slug = crate::config::active_workspace_root()
-            .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-            .map(|n| n.to_string_lossy().into_owned());
-        let notes_dir = match workspace_slug {
-            Some(ref slug) => notes_base.join(slug),
-            None => notes_base,
-        };
-        entries.extend(
-            scan_dir(&notes_dir)
-                .iter()
-                .filter_map(|p| crate::notes::NotePickerEntry::load(p, false)),
+        // Kept notes are keyed per context root. Fold any legacy
+        // `notes/<workspace-slug>/` dirs into their context first — non-destructive
+        // and a no-op once there is nothing left to move.
+        crate::notes::migrate_legacy_workspace_notes(self.router.as_slice());
+
+        // Active context first, then every descendant context (path-component
+        // prefix match over the live context list, no filesystem discovery).
+        let scopes = crate::notes::context_notes_scopes(self.router.as_slice(), self.router.active());
+        for scope in &scopes {
+            entries.extend(scan_dir(&scope.dir).iter().filter_map(|p| {
+                crate::notes::NotePickerEntry::load(p, false)
+                    .map(|e| e.with_context_label(scope.label.clone()))
+            }));
+        }
+
+        // Belt and braces: a legacy dir whose migration could not complete stays
+        // readable for the context it belongs to rather than silently vanishing.
+        let legacy_dir = crate::notes::unambiguous_legacy_notes_dir(
+            self.router.as_slice(),
+            self.router.active(),
         );
+        if let Some(legacy_dir) = legacy_dir.filter(|d| d.is_dir()) {
+            log::warn!("notes_picker: reading un-migrated legacy dir {legacy_dir:?}");
+            entries.extend(
+                scan_dir(&legacy_dir)
+                    .iter()
+                    .filter_map(|p| crate::notes::NotePickerEntry::load(p, false)),
+            );
+        }
 
         log::info!(
-            "notes_picker: {} inbox + {} kept notes ({:?})",
+            "notes_picker: {} inbox + {} kept notes across {} context scope(s) ({:?})",
             inbox_count,
             entries.len() - inbox_count,
-            notes_dir
+            scopes.len(),
+            scopes.iter().map(|s| &s.dir).collect::<Vec<_>>()
         );
         crate::host::event_log::emit(crate::host::event_log::HostEvent::NotesPickerOpened {
             inbox_count,

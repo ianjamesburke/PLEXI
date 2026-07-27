@@ -351,8 +351,15 @@ impl PlexiApp {
                             } else {
                                 entry.preview.chars().take(50).collect()
                             };
+                            // Descendant-context notes carry their context name so
+                            // a root "master view" stays legible.
+                            let chip: &str = if entry.inbox {
+                                "inbox"
+                            } else {
+                                entry.context_label.as_deref().unwrap_or("note")
+                            };
                             let row_response = ListRow::new(&entry.title)
-                                .metadata_chips(if entry.inbox { &["inbox"] } else { &["note"] })
+                                .metadata_chips(std::slice::from_ref(&chip))
                                 .secondary(&secondary)
                                 .selected(is_selected)
                                 .show(ui, &colors);
@@ -415,6 +422,7 @@ mod tests {
             inbox: false,
             search_text: preview.to_lowercase(),
             path,
+            context_label: None,
         }
     }
 
@@ -538,6 +546,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Issue #2491's Done-When, end to end through `open_notes_picker`: a note
+    /// kept in a child context shows in the child's picker *and* the parent's,
+    /// a parent's note never leaks down into the child, and inbox is global.
+    #[test]
+    fn notes_picker_unions_active_context_with_descendants() {
+        let ctx = egui::Context::default();
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+        let profile = std::env::temp_dir()
+            .join(format!("plexi-notes-ctx-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        let notes = profile.join("notes");
+        std::fs::create_dir_all(notes.join("inbox")).expect("inbox");
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+
+        let parent_root = std::path::PathBuf::from("/tmp/plexi-ctx-scope/proj");
+        let child_root = parent_root.join("sub");
+        // Textual-prefix sibling that must never be aggregated.
+        let sibling_root = std::path::PathBuf::from("/tmp/plexi-ctx-scope/projx");
+
+        let seed = |root: &std::path::Path, title: &str| {
+            let dir = crate::notes::context_notes_dir(root);
+            std::fs::create_dir_all(&dir).expect("context notes dir");
+            std::fs::write(dir.join(format!("{title}.md")), format!("body of {title}"))
+                .expect("seed kept note");
+        };
+        seed(&parent_root, "parent-note");
+        seed(&child_root, "child-note");
+        seed(&sibling_root, "sibling-note");
+        std::fs::write(notes.join("inbox").join("inbox-note.md"), "captured")
+            .expect("seed inbox note");
+
+        let mk_ctx = |id: u64, name: &str, root: &std::path::Path, depth: u32| {
+            crate::host::context::Context {
+                name: name.to_string(),
+                path: root.to_path_buf(),
+                root: Some(root.to_path_buf()),
+                description: None,
+                context_id: id,
+                parent_id: (depth > 0).then_some(1),
+                depth,
+                parked: false,
+            }
+        };
+        // Slot 0 is the constructor's own context; append the three under test.
+        app.router.push(mk_ctx(10, "proj", &parent_root, 0));
+        app.router.push(mk_ctx(11, "sub", &child_root, 1));
+        app.router.push(mk_ctx(12, "projx", &sibling_root, 0));
+        let parent_idx = app.router.position(|c| c.context_id == 10).expect("parent");
+        let child_idx = app.router.position(|c| c.context_id == 11).expect("child");
+
+        let titles = |app: &PlexiApp| -> Vec<String> {
+            app.notes_picker_entries
+                .iter()
+                .map(|e| e.title.clone())
+                .collect()
+        };
+
+        app.router.set_active(parent_idx);
+        app.open_notes_picker();
+        let from_parent = titles(&app);
+        assert!(
+            from_parent.contains(&"body of parent-note".to_string()),
+            "parent sees its own note: {from_parent:?}"
+        );
+        assert!(
+            from_parent.contains(&"body of child-note".to_string()),
+            "parent aggregates the descendant context: {from_parent:?}"
+        );
+        assert!(
+            !from_parent.contains(&"body of sibling-note".to_string()),
+            "/projx is a textual prefix, not a descendant of /proj: {from_parent:?}"
+        );
+        assert!(from_parent.contains(&"captured".to_string()), "inbox is global");
+        assert_eq!(
+            app.notes_picker_entries
+                .iter()
+                .find(|e| e.title == "body of child-note")
+                .and_then(|e| e.context_label.clone()),
+            Some("sub".to_string()),
+            "descendant rows carry their context name for the master view"
+        );
+
+        app.router.set_active(child_idx);
+        app.open_notes_picker();
+        let from_child = titles(&app);
+        assert!(from_child.contains(&"body of child-note".to_string()));
+        assert!(
+            !from_child.contains(&"body of parent-note".to_string()),
+            "no ancestor walk in v1: {from_child:?}"
+        );
+        assert!(from_child.contains(&"captured".to_string()), "inbox is global");
+
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
     #[test]
     fn notes_picker_open_selected_lands_caret_at_document_end() {
         let ctx = egui::Context::default();
@@ -650,6 +755,7 @@ mod tests {
             preview: body.to_string(),
             inbox: false,
             search_text: format!("{title} {body}").to_lowercase(),
+            context_label: None,
         };
         app.notes_picker_entries = vec![
             mk("groceries", "milk and eggs"),
