@@ -2231,6 +2231,155 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_command_palette_metadata_lane.png");
     }
 
+    /// Visual review surface for stint 0565: the palette rendering an agent
+    /// fleet spread across two contexts, including a stint-0568-style squad
+    /// whose three panes share one title. Empty query shows the whole fleet;
+    /// the typed query proves the squad stays separable by agent name.
+    #[test]
+    fn screenshot_command_palette_agent_fleet() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        add_focused_pane(&mut h);
+        let browser_root = h.workspace.path().to_path_buf();
+
+        h.with_app_mut(|app| {
+            let ctx_idx = app.router.active_idx();
+            app.router.get_mut(ctx_idx).name = "plexi".to_string();
+
+            let agent_pane = |app: &mut crate::app::PlexiApp,
+                              pane_name: &str,
+                              agent: &str,
+                              state: crate::app_protocol::AgentState,
+                              detail: Option<&str>| {
+                let pane_id = app.host.alloc_pane_id();
+                let pane = Pane::App(Box::new(AppPane {
+                    pip_status: None,
+                    id: pane_id,
+                    runtime: AppRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    )),
+                    workspace_root: browser_root.clone(),
+                    permissions: AppPermissions::builtin(),
+                    manifest_id: "terminal".to_string(),
+                    name: pane_name.to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    hidden: false,
+                    agent: Some(crate::app_protocol::PaneAgentState {
+                        pane_id,
+                        state,
+                        agent: agent.to_string(),
+                        detail: detail.map(str::to_string),
+                        session_id: None,
+                    }),
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                }));
+                (pane_id, pane)
+            };
+
+            // One agent alongside the ordinary pane in the active context.
+            let (solo_id, solo) = agent_pane(
+                app,
+                "codex",
+                "reviewer",
+                crate::app_protocol::AgentState::Working,
+                Some("Read"),
+            );
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(solo_id, solo);
+            let solo_tile = win.tree.tiles.insert_pane(solo_id);
+            if let Some(first_tile) = win.tree.root {
+                let root = win
+                    .tree
+                    .tiles
+                    .insert_horizontal_tile(vec![first_tile, solo_tile]);
+                win.tree.root = Some(root);
+                win.focused_pane = Some(first_tile);
+            }
+
+            // A three-pane squad in its own subcontext, all panes titled
+            // "claude" — the stint 0568 shape this palette has to navigate.
+            let squad_ctx_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.router.push(crate::host::context::Context {
+                name: "squad-alpha".to_string(),
+                path: browser_root.clone(),
+                root: Some(browser_root.clone()),
+                description: None,
+                context_id: squad_ctx_id,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+
+            let squad: Vec<(u64, Pane)> = [
+                (
+                    "impl-a",
+                    crate::app_protocol::AgentState::Working,
+                    Some("Edit"),
+                ),
+                ("impl-b", crate::app_protocol::AgentState::Idle, None),
+                (
+                    "tester",
+                    crate::app_protocol::AgentState::Blocked,
+                    Some("Bash(just pr-install)"),
+                ),
+            ]
+            .into_iter()
+            .map(|(agent, state, detail)| agent_pane(app, "claude", agent, state, detail))
+            .collect();
+
+            let mut squad_panes = std::collections::HashMap::new();
+            let mut squad_tiles = egui_tiles::Tiles::default();
+            let mut squad_tile_ids = Vec::new();
+            for (pane_id, pane) in squad {
+                squad_panes.insert(pane_id, pane);
+                squad_tile_ids.push(squad_tiles.insert_pane(pane_id));
+            }
+            let squad_focused = squad_tile_ids[0];
+            let squad_root = squad_tiles.insert_horizontal_tile(squad_tile_ids);
+            let squad_window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(Window {
+                name: "squad-alpha".to_string(),
+                path: browser_root.clone(),
+                tree: egui_tiles::Tree::new("squad-alpha", squad_root, squad_tiles),
+                panes: squad_panes,
+                focused_pane: Some(squad_focused),
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: squad_window_id,
+                context_id: squad_ctx_id,
+            });
+            app.context_active_window
+                .insert(squad_ctx_id, squad_window_id);
+
+            app.show_command_palette = true;
+            app.palette_selected = 0;
+            app.sync_command_palette_focus();
+        });
+
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_command_palette_agent_fleet.png")
+            .expect("render failed");
+
+        h.with_app_mut(|app| {
+            app.palette_query = "claude".to_string();
+            app.palette_selected = 0;
+        });
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_command_palette_agent_fleet_query.png")
+            .expect("render failed");
+
+        assert!(
+            h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
+            "the palette should be open over all four agent panes"
+        );
+        println!("Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png");
+    }
+
     #[test]
     fn screenshot_catppuccin_latte_command_palette() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);

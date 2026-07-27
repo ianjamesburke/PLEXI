@@ -49,6 +49,21 @@ enum PaletteEntry {
         preview: String,
         search_text: String,
     },
+    /// A pane running an agent, anywhere in the host. Enter focuses it.
+    Agent {
+        win_idx: usize,
+        window_id: u64,
+        pane_id: u64,
+        /// Hook-reported agent name (`PaneAgentState::agent`).
+        agent_name: String,
+        /// Owning context, live state, and the active tool when reported.
+        secondary: String,
+        state: crate::app_protocol::AgentState,
+        /// True when this pane is the focused pane of its own window — drives
+        /// the state dot's focused/dim rendering, same as every other pip.
+        focused: bool,
+        search_text: String,
+    },
     /// A user-authored command from `commands.toml` or a global script,
     /// executed via `plexi run <name>` in a new terminal pane.
     UserCommand {
@@ -64,10 +79,25 @@ impl PaletteEntry {
     fn group_rank(&self) -> usize {
         match self {
             PaletteEntry::Context { .. } => 0,
-            PaletteEntry::Note { .. } => 1,
-            PaletteEntry::App { .. } | PaletteEntry::Builtin { .. } => 2,
-            PaletteEntry::Command { .. } => 3,
-            PaletteEntry::UserCommand { .. } => 4,
+            PaletteEntry::Agent { .. } => 1,
+            PaletteEntry::Note { .. } => 2,
+            PaletteEntry::App { .. } | PaletteEntry::Builtin { .. } => 3,
+            PaletteEntry::Command { .. } => 4,
+            PaletteEntry::UserCommand { .. } => 5,
+        }
+    }
+
+    /// Tie-break within an equal (query, group) rank: an agent waiting on a
+    /// human surfaces above an equally-scoring one that is not. This is the
+    /// only state-aware ordering in the palette.
+    fn state_rank(&self) -> usize {
+        match self {
+            PaletteEntry::Agent { state, .. }
+                if *state == crate::app_protocol::AgentState::Blocked =>
+            {
+                0
+            }
+            _ => 1,
         }
     }
 
@@ -78,6 +108,7 @@ impl PaletteEntry {
         let search_text = match self {
             PaletteEntry::Command { search_text, .. } => *search_text,
             PaletteEntry::Context { search_text, .. }
+            | PaletteEntry::Agent { search_text, .. }
             | PaletteEntry::App { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
             | PaletteEntry::Note { search_text, .. }
@@ -105,6 +136,7 @@ impl PaletteEntry {
         match self {
             PaletteEntry::Command { search_text, .. } => search_text.contains(query),
             PaletteEntry::Context { search_text, .. }
+            | PaletteEntry::Agent { search_text, .. }
             | PaletteEntry::App { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
             | PaletteEntry::Note { search_text, .. }
@@ -174,7 +206,13 @@ fn shell_single_quote(s: &str) -> String {
 }
 
 fn sort_palette_entries(entries: &mut [PaletteEntry], query: &str) {
-    entries.sort_by_key(|entry| (entry.query_rank(query), entry.group_rank()));
+    entries.sort_by_key(|entry| {
+        (
+            entry.query_rank(query),
+            entry.group_rank(),
+            entry.state_rank(),
+        )
+    });
 }
 
 #[cfg(test)]
@@ -420,6 +458,97 @@ fn palette_pane_rows_for_context(
     rows
 }
 
+/// One palette row per agent-bearing pane. Unlike the context rows, these are
+/// sourced from every window of every context — the fleet is addressable from
+/// wherever you happen to be standing.
+struct AgentRow {
+    win_idx: usize,
+    window_id: u64,
+    pane_id: u64,
+    agent_name: String,
+    pane_title: String,
+    context_name: String,
+    state: crate::app_protocol::AgentState,
+    detail: Option<String>,
+    focused: bool,
+}
+
+fn agent_state_label(state: &crate::app_protocol::AgentState) -> &'static str {
+    match state {
+        crate::app_protocol::AgentState::Working => "working",
+        crate::app_protocol::AgentState::Blocked => "blocked",
+        crate::app_protocol::AgentState::Idle => "idle",
+    }
+}
+
+/// Secondary line for an agent row: owning context, live state, and the
+/// hook-reported detail (the active tool) when there is one.
+fn agent_row_secondary(
+    context_name: &str,
+    state: &crate::app_protocol::AgentState,
+    detail: Option<&str>,
+) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if !context_name.is_empty() {
+        parts.push(context_name);
+    }
+    parts.push(agent_state_label(state));
+    if let Some(detail) = detail.filter(|d| !d.is_empty()) {
+        parts.push(detail);
+    }
+    parts.join(" · ")
+}
+
+fn palette_agent_rows(
+    windows: &[crate::host::context::Window],
+    context_names: &[(u64, String)],
+) -> Vec<AgentRow> {
+    let mut rows = Vec::new();
+    for (win_idx, win) in windows.iter().enumerate() {
+        let Some(root) = win.tree.root() else {
+            continue;
+        };
+        let context_name = context_names
+            .iter()
+            .find(|(id, _)| *id == win.context_id)
+            .map(|(_, name)| name.clone())
+            .unwrap_or_default();
+        let focused_pane_id =
+            win.focused_pane
+                .and_then(|tile_id| match win.tree.tiles.get(tile_id) {
+                    Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+                    _ => None,
+                });
+        for pane_id in crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, root) {
+            let Some(pane) = win.panes.get(&pane_id) else {
+                continue;
+            };
+            let Some(agent) = pane.agent() else {
+                continue;
+            };
+            let (pane_title, _) = pane_row_identity(pane, context_names);
+            // A hook that reports no agent name still gets a nameable row.
+            let agent_name = if agent.agent.is_empty() {
+                pane_title.clone()
+            } else {
+                agent.agent.clone()
+            };
+            rows.push(AgentRow {
+                win_idx,
+                window_id: win.window_id,
+                pane_id,
+                agent_name,
+                pane_title,
+                context_name: context_name.clone(),
+                state: agent.state.clone(),
+                detail: agent.detail.clone(),
+                focused: Some(pane_id) == focused_pane_id,
+            });
+        }
+    }
+    rows
+}
+
 /// Display name + type chip for a palette pane row.
 fn pane_row_identity(
     pane: &crate::host::pane::Pane,
@@ -492,6 +621,27 @@ impl PlexiApp {
 
         let mut entries: Vec<PaletteEntry> = Vec::new();
 
+        let context_names: Vec<(u64, String)> = self
+            .router
+            .iter()
+            .map(|c| (c.context_id, c.name.clone()))
+            .collect();
+
+        // ── Agent panes (every window, every context) ───────────────────────
+        // Collected fresh each frame, never snapshotted at open time: agent
+        // state arrives over pane IPC (`set_agent_state`) while the palette is
+        // up, and the rows must show it live.
+        let agent_rows = palette_agent_rows(&self.windows, &context_names);
+        if self.palette_agent_count_logged != Some(agent_rows.len()) {
+            self.palette_agent_count_logged = Some(agent_rows.len());
+            log::info!("palette: collected {} agent panes", agent_rows.len());
+        }
+        // An agent pane is represented once — by its agent row, which carries
+        // strictly more (agent name, live state, active tool) than the plain
+        // pane row would.
+        let agent_pane_ids: std::collections::HashSet<u64> =
+            agent_rows.iter().map(|row| row.pane_id).collect();
+
         let ctx_entries: Vec<PaletteEntry> = {
             // Context-scoped unpacking: the ACTIVE context expands to one row
             // per pane (each carrying a single status pip), while every OTHER
@@ -499,12 +649,6 @@ impl PlexiApp {
             // A non-empty query pierces the collapse — matching pane names
             // surface from inactive contexts so the palette stays a global
             // jump tool.
-            let context_names: Vec<(u64, String)> = self
-                .router
-                .iter()
-                .map(|c| (c.context_id, c.name.clone()))
-                .collect();
-
             // Non-parked contexts that own at least one window. The jump
             // target is context_active_window when it still belongs to the
             // context, else the context's first window.
@@ -560,6 +704,9 @@ impl PlexiApp {
                         active_focused_tile,
                         &self.pane_focus_history,
                     ) {
+                        if agent_pane_ids.contains(&row.pane_id) {
+                            continue;
+                        }
                         let search_text = searchable_text(&[row.name.as_str(), c.name.as_str()]);
                         if query.is_empty() || search_text.contains(&query) {
                             ctx_entries.push(PaletteEntry::Context {
@@ -606,6 +753,9 @@ impl PlexiApp {
                             active_focused_tile,
                             &self.pane_focus_history,
                         ) {
+                            if agent_pane_ids.contains(&row.pane_id) {
+                                continue;
+                            }
                             let search_text =
                                 searchable_text(&[row.name.as_str(), c.name.as_str()]);
                             if search_text.contains(&query) {
@@ -628,6 +778,33 @@ impl PlexiApp {
             ctx_entries
         };
         entries.extend(ctx_entries);
+
+        // Agent rows match on agent name, pane title, and context name through
+        // the same substring matcher every other result type uses.
+        for row in agent_rows {
+            let search_text = searchable_text(&[
+                row.agent_name.as_str(),
+                row.pane_title.as_str(),
+                row.context_name.as_str(),
+            ]);
+            if !query.is_empty() && !search_text.contains(&query) {
+                continue;
+            }
+            entries.push(PaletteEntry::Agent {
+                win_idx: row.win_idx,
+                window_id: row.window_id,
+                pane_id: row.pane_id,
+                secondary: agent_row_secondary(
+                    &row.context_name,
+                    &row.state,
+                    row.detail.as_deref(),
+                ),
+                agent_name: row.agent_name,
+                state: row.state,
+                focused: row.focused,
+                search_text,
+            });
+        }
 
         // ── Note entries ────────────────────────────────────────────────────
         for note in &self.palette_notes {
@@ -781,6 +958,12 @@ impl PlexiApp {
         enum Action {
             RunCommand(PaletteCommand),
             JumpContext(usize, u64, Option<u64>),
+            JumpAgent {
+                win_idx: usize,
+                window_id: u64,
+                pane_id: u64,
+                agent_name: String,
+            },
             LaunchApp(String),
             LaunchBuiltin(&'static str),
             OpenNote(std::path::PathBuf),
@@ -825,6 +1008,20 @@ impl PlexiApp {
                     }) => {
                         action = Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
                     }
+                    Some(PaletteEntry::Agent {
+                        win_idx,
+                        window_id,
+                        pane_id,
+                        agent_name,
+                        ..
+                    }) => {
+                        action = Some(Action::JumpAgent {
+                            win_idx: *win_idx,
+                            window_id: *window_id,
+                            pane_id: *pane_id,
+                            agent_name: agent_name.clone(),
+                        });
+                    }
                     Some(PaletteEntry::App { id, .. }) => {
                         action = Some(Action::LaunchApp(id.clone()));
                     }
@@ -860,6 +1057,17 @@ impl PlexiApp {
             }
             Some(Action::JumpContext(ctx_idx, context_id, pane_id)) => {
                 self.jump_to_context(ctx_idx, context_id, pane_id);
+                self.show_command_palette = false;
+                self.palette_query.clear();
+                return;
+            }
+            Some(Action::JumpAgent {
+                win_idx,
+                window_id,
+                pane_id,
+                agent_name,
+            }) => {
+                self.jump_to_agent_pane(win_idx, window_id, pane_id, &agent_name);
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 return;
@@ -942,6 +1150,7 @@ impl PlexiApp {
                 let mut hover_select: Option<usize> = None;
                 let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
                 let should_scroll = self.palette_selected != prev_selected;
+                let mut shown_agents_header = false;
                 let mut shown_apps_header = false;
                 let mut shown_notes_header = false;
                 let mut shown_commands_header = false;
@@ -1024,6 +1233,55 @@ impl PlexiApp {
                                 if row_response.row_clicked() {
                                     click_action =
                                         Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
+                                }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
+                                }
+                            }
+                            PaletteEntry::Agent {
+                                win_idx,
+                                window_id,
+                                pane_id,
+                                agent_name,
+                                secondary,
+                                state,
+                                focused,
+                                ..
+                            } => {
+                                if !shown_agents_header {
+                                    shown_agents_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("AGENTS")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
+                                }
+                                // The dot goes through the shared pip lane, so
+                                // palette, sidebar, and pane chrome can never
+                                // disagree about what a state looks like.
+                                let row_response = ListRow::new(agent_name.as_str())
+                                    .metadata_chips(&["agent"])
+                                    .secondary(secondary.as_str())
+                                    .pane_pips(ListRowPips {
+                                        count: 1,
+                                        focused_idx: focused.then_some(0),
+                                        hidden_indices: Vec::new(),
+                                        activities: vec![Some(state.clone())],
+                                    })
+                                    .selected(is_selected)
+                                    .show(ui, &colors);
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
+                                }
+                                if row_response.row_clicked() {
+                                    click_action = Some(Action::JumpAgent {
+                                        win_idx: *win_idx,
+                                        window_id: *window_id,
+                                        pane_id: *pane_id,
+                                        agent_name: agent_name.clone(),
+                                    });
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
@@ -1205,6 +1463,16 @@ impl PlexiApp {
                             self.show_command_palette = false;
                             self.palette_query.clear();
                         }
+                        Action::JumpAgent {
+                            win_idx,
+                            window_id,
+                            pane_id,
+                            agent_name,
+                        } => {
+                            self.jump_to_agent_pane(win_idx, window_id, pane_id, &agent_name);
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                        }
                         Action::LaunchApp(id) => {
                             self.show_command_palette = false;
                             self.palette_query.clear();
@@ -1298,6 +1566,21 @@ impl PlexiApp {
         let initial_cmd = format!("plexi run {}", shell_single_quote(name));
         self.split_focused(false, Some(&initial_cmd), false, false, cwd);
         self.save_workspace();
+    }
+
+    /// Focus an agent pane selected in the palette. Routes through the same
+    /// explicit-target navigation the context rows use — the target window
+    /// index and pane id are carried by the row, never read back out of
+    /// `active_window` or `router.active`.
+    fn jump_to_agent_pane(
+        &mut self,
+        win_idx: usize,
+        window_id: u64,
+        pane_id: u64,
+        agent_name: &str,
+    ) {
+        log::info!("palette: focusing agent pane {pane_id} (agent '{agent_name}')");
+        self.jump_to_context(win_idx, window_id, Some(pane_id));
     }
 
     /// Jump to a window by index, switching context if necessary.
@@ -1588,6 +1871,311 @@ mod tests {
             window_id,
             context_id,
         }
+    }
+
+    /// An app pane carrying hook-reported agent state.
+    fn test_agent_pane(
+        id: u64,
+        pane_name: &str,
+        agent: &str,
+        state: crate::app_protocol::AgentState,
+        detail: Option<&str>,
+    ) -> Pane {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
+
+        Pane::App(Box::new(AppPane {
+            pip_status: None,
+            id,
+            runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                std::env::temp_dir(),
+            ))),
+            workspace_root: std::env::temp_dir(),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "terminal".to_string(),
+            name: pane_name.to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: Some(crate::app_protocol::PaneAgentState {
+                pane_id: id,
+                state,
+                agent: agent.to_string(),
+                detail: detail.map(str::to_string),
+                session_id: None,
+            }),
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        }))
+    }
+
+    /// A window built from explicit panes, so a test can mix agent-bearing and
+    /// plain panes in one tree.
+    fn window_of(
+        context_id: u64,
+        window_id: u64,
+        panes_spec: Vec<(u64, Pane)>,
+        focused_idx: usize,
+    ) -> crate::host::context::Window {
+        let mut panes = std::collections::HashMap::new();
+        let mut tiles = egui_tiles::Tiles::default();
+        let mut tile_ids = Vec::new();
+        for (pane_id, pane) in panes_spec {
+            panes.insert(pane_id, pane);
+            tile_ids.push(tiles.insert_pane(pane_id));
+        }
+        let focused_pane = tile_ids.get(focused_idx).copied();
+        let root = match tile_ids.as_slice() {
+            [only] => *only,
+            _ => tiles.insert_horizontal_tile(tile_ids),
+        };
+        crate::host::context::Window {
+            name: "test".to_string(),
+            path: std::path::PathBuf::from("/tmp"),
+            tree: egui_tiles::Tree::new("test", root, tiles),
+            panes,
+            focused_pane,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id,
+            context_id,
+        }
+    }
+
+    #[test]
+    fn agent_rows_collect_from_every_window_and_context() {
+        use crate::app_protocol::AgentState;
+
+        let squad = window_of(
+            7,
+            70,
+            vec![
+                (
+                    10,
+                    test_agent_pane(10, "claude", "impl-a", AgentState::Working, Some("Bash")),
+                ),
+                (
+                    11,
+                    test_agent_pane(11, "claude", "tester", AgentState::Blocked, None),
+                ),
+                (12, test_pane(12, false)),
+            ],
+            1,
+        );
+        let other_ctx = window_of(
+            8,
+            80,
+            vec![(
+                20,
+                test_agent_pane(20, "codex", "reviewer", AgentState::Idle, None),
+            )],
+            0,
+        );
+        let names = vec![(7, "squad-alpha".to_string()), (8, "plexi".to_string())];
+
+        let rows = palette_agent_rows(&[squad, other_ctx], &names);
+
+        // The non-agent pane is skipped; both contexts contribute.
+        assert_eq!(
+            rows.iter().map(|r| r.pane_id).collect::<Vec<_>>(),
+            vec![10, 11, 20]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.agent_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["impl-a", "tester", "reviewer"]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.context_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["squad-alpha", "squad-alpha", "plexi"]
+        );
+        // win_idx/window_id must address the owning window, not the active one.
+        assert_eq!(rows[2].win_idx, 1);
+        assert_eq!(rows[2].window_id, 80);
+        // Focus is per-window: pane 11 in the squad, pane 20 in the other context.
+        assert_eq!(
+            rows.iter().map(|r| r.focused).collect::<Vec<_>>(),
+            vec![false, true, true]
+        );
+        assert_eq!(rows[0].detail.as_deref(), Some("Bash"));
+    }
+
+    #[test]
+    fn squad_panes_sharing_a_title_stay_separable_by_agent_name() {
+        use crate::app_protocol::AgentState;
+
+        // stint 0568 spawns N panes into one subcontext; their pane titles can
+        // all be the same, so the agent name has to carry the distinction.
+        let squad = window_of(
+            7,
+            70,
+            vec![
+                (
+                    10,
+                    test_agent_pane(10, "claude", "impl-a", AgentState::Working, None),
+                ),
+                (
+                    11,
+                    test_agent_pane(11, "claude", "impl-b", AgentState::Idle, None),
+                ),
+                (
+                    12,
+                    test_agent_pane(12, "claude", "tester", AgentState::Blocked, None),
+                ),
+            ],
+            0,
+        );
+        let names = vec![(7, "squad-alpha".to_string())];
+        let rows = palette_agent_rows(&[squad], &names);
+
+        let search: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                searchable_text(&[
+                    r.agent_name.as_str(),
+                    r.pane_title.as_str(),
+                    r.context_name.as_str(),
+                ])
+            })
+            .collect();
+
+        // The shared title matches all three; the agent name narrows to one.
+        assert_eq!(
+            search.iter().filter(|s| s.contains("claude")).count(),
+            3,
+            "the shared pane title must reach every squad member"
+        );
+        assert_eq!(
+            search.iter().filter(|s| s.contains("tester")).count(),
+            1,
+            "the agent name must isolate one squad member"
+        );
+        // The context name reaches the whole squad — jump by squad, then pick.
+        assert_eq!(
+            search.iter().filter(|s| s.contains("squad-alpha")).count(),
+            3
+        );
+    }
+
+    #[test]
+    fn blocked_agent_outranks_equally_scoring_agent() {
+        use crate::app_protocol::AgentState;
+
+        let agent = |agent_name: &str, state: AgentState| PaletteEntry::Agent {
+            win_idx: 0,
+            window_id: 1,
+            pane_id: 10,
+            agent_name: agent_name.to_string(),
+            secondary: String::new(),
+            state,
+            focused: false,
+            search_text: "claude squad-alpha".to_string(),
+        };
+
+        let mut entries = vec![
+            agent("idle-one", AgentState::Idle),
+            agent("working-one", AgentState::Working),
+            agent("blocked-one", AgentState::Blocked),
+        ];
+        sort_palette_entries(&mut entries, "claude");
+
+        match &entries[0] {
+            PaletteEntry::Agent { agent_name, .. } => assert_eq!(agent_name, "blocked-one"),
+            other => panic!("expected an agent row first, got {:?}", other.group_rank()),
+        }
+        // Non-blocked rows keep their relative order — the sort is stable and
+        // state only breaks exact ties.
+        match (&entries[1], &entries[2]) {
+            (
+                PaletteEntry::Agent {
+                    agent_name: second, ..
+                },
+                PaletteEntry::Agent {
+                    agent_name: third, ..
+                },
+            ) => {
+                assert_eq!(second, "idle-one");
+                assert_eq!(third, "working-one");
+            }
+            _ => panic!("expected agent rows"),
+        }
+    }
+
+    #[test]
+    fn agent_state_never_reorders_other_result_types() {
+        use crate::app_protocol::AgentState;
+
+        // A blocked agent must not jump ahead of a context row that scores the
+        // same — state ordering is scoped to the agent group.
+        let mut entries = vec![
+            PaletteEntry::Context {
+                ctx_idx: 0,
+                context_id: 1,
+                name: "claude-ctx".to_string(),
+                workspace_name: String::new(),
+                metadata_chip: "ctx",
+                pane_pips: None,
+                pane_id: None,
+                search_text: "claude-ctx".to_string(),
+            },
+            PaletteEntry::Agent {
+                win_idx: 0,
+                window_id: 1,
+                pane_id: 10,
+                agent_name: "blocked-one".to_string(),
+                secondary: String::new(),
+                state: AgentState::Blocked,
+                focused: false,
+                search_text: "claude-ctx".to_string(),
+            },
+        ];
+        sort_palette_entries(&mut entries, "claude");
+
+        assert!(matches!(entries[0], PaletteEntry::Context { .. }));
+        assert!(matches!(entries[1], PaletteEntry::Agent { .. }));
+    }
+
+    #[test]
+    fn agent_secondary_reads_context_state_and_active_tool() {
+        use crate::app_protocol::AgentState;
+
+        assert_eq!(
+            agent_row_secondary("squad-alpha", &AgentState::Working, Some("Bash")),
+            "squad-alpha · working · Bash"
+        );
+        assert_eq!(
+            agent_row_secondary("squad-alpha", &AgentState::Blocked, None),
+            "squad-alpha · blocked"
+        );
+        // An empty detail string is not a detail.
+        assert_eq!(
+            agent_row_secondary("plexi", &AgentState::Idle, Some("")),
+            "plexi · idle"
+        );
+        // A context with no resolvable name still yields a usable line.
+        assert_eq!(agent_row_secondary("", &AgentState::Idle, None), "idle");
+    }
+
+    #[test]
+    fn agent_row_falls_back_to_pane_title_when_the_hook_reports_no_name() {
+        use crate::app_protocol::AgentState;
+
+        let win = window_of(
+            7,
+            70,
+            vec![(
+                10,
+                test_agent_pane(10, "claude", "", AgentState::Idle, None),
+            )],
+            0,
+        );
+        let rows = palette_agent_rows(&[win], &[(7, "squad-alpha".to_string())]);
+        assert_eq!(rows[0].agent_name, "claude");
     }
 
     fn test_pane(id: u64, hidden: bool) -> Pane {
