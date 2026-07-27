@@ -77,7 +77,7 @@ pub struct Colors {
     pub pip_working: Color32,
     pub pip_idle: Color32,
     pub pip_blocked: Color32,
-    // Opacity multiplier for unfocused pips (default 0.45)
+    // Opacity multiplier for unfocused pips (default 0.72)
     pub pip_dim: f32,
     // Terminal fg/bg as bytes for dynamic colors
     pub terminal_fg_bytes: [u8; 3],
@@ -182,7 +182,7 @@ impl Colors {
                 &cfg.pip_blocked,
                 parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
             ),
-            pip_dim: cfg.pip_dim.unwrap_or(0.45),
+            pip_dim: cfg.pip_dim.unwrap_or(0.72),
             terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
             terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
         }
@@ -1152,7 +1152,7 @@ mod tests {
     use crate::config::ThemeConfig;
 
     /// pip_working/idle/blocked fall back to warning/success/danger when not set,
-    /// and use the override color when set. pip_dim defaults to 0.45.
+    /// and use the override color when set. pip_dim defaults to 0.72.
     #[test]
     fn pip_colors_fall_back_to_semantic_and_accept_overrides() {
         let default_cfg = ThemeConfig::default();
@@ -1160,7 +1160,7 @@ mod tests {
         assert_eq!(colors.pip_working, colors.warning);
         assert_eq!(colors.pip_idle, colors.success);
         assert_eq!(colors.pip_blocked, colors.danger);
-        assert!((colors.pip_dim - 0.45).abs() < f32::EPSILON);
+        assert!((colors.pip_dim - 0.72).abs() < f32::EPSILON);
 
         let override_cfg = ThemeConfig {
             pip_working: Some("#ff0000".to_string()),

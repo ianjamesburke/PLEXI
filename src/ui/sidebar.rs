@@ -163,13 +163,23 @@ impl PlexiApp {
                 (w.grid_y, w.grid_x)
             });
             let mut pane_ids: Vec<u64> = Vec::new();
+            let mut pane_windows = Vec::new();
             for &win_idx in &ctx_windows {
                 let w = &self.windows[win_idx];
+                let start = pane_ids.len();
                 if let Some(root) = w.tree.root() {
                     pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(
                         &w.tree.tiles,
                         root,
                     ));
+                }
+                let count = pane_ids.len() - start;
+                if count > 0 {
+                    pane_windows.push(crate::ui::sidebar_row::PaneDotWindow {
+                        start,
+                        count,
+                        is_active: is_active && self.active_window == win_idx,
+                    });
                 }
             }
             let pane_count = pane_ids.len();
@@ -210,6 +220,7 @@ impl PlexiApp {
                     focused_idx: focused_pane_idx,
                     hidden_set,
                     activities,
+                    windows: pane_windows,
                 })
             } else {
                 None
@@ -463,13 +474,23 @@ impl PlexiApp {
                         (w.grid_y, w.grid_x)
                     });
                     let mut pane_ids: Vec<u64> = Vec::new();
+                    let mut pane_windows = Vec::new();
                     for &win_idx in &ctx_windows {
                         let w = &self.windows[win_idx];
+                        let start = pane_ids.len();
                         if let Some(root) = w.tree.root() {
                             pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(
                                 &w.tree.tiles,
                                 root,
                             ));
+                        }
+                        let count = pane_ids.len() - start;
+                        if count > 0 {
+                            pane_windows.push(crate::ui::sidebar_row::PaneDotWindow {
+                                start,
+                                count,
+                                is_active: false,
+                            });
                         }
                     }
                     let pane_count = pane_ids.len();
@@ -493,6 +514,7 @@ impl PlexiApp {
                             focused_idx: None,
                             hidden_set,
                             activities,
+                            windows: pane_windows,
                         })
                     } else {
                         None

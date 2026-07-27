@@ -364,11 +364,10 @@ pub fn agent_hook_install_cli(claude_code: bool, codex: bool, pi: bool) -> i32 {
     }
     log::info!("agent_hook_install:cli: claude-code={claude_code} codex={codex} pi={pi}");
 
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "plexi".to_string());
-    let script_path = match write_agent_state_script(&binary) {
+    // Hooks are global but execute inside panes from every release channel.
+    // The bare shim honors the pane's PLEXI_SOCKET, while a channel-suffixed
+    // binary would report to whichever channel last installed hooks.
+    let script_path = match write_agent_state_script("plexi") {
         Ok(path) => path,
         Err(e) => {
             eprintln!("error: {e}");
@@ -924,5 +923,11 @@ mod agent_tests {
         assert!(pi.contains("PLEXI_AGENT_NAME: \"pi\""));
         assert!(pi.contains("pi.on(\"tool_call\""));
         assert!(pi.contains("pi.on(\"agent_end\""));
+    }
+
+    #[test]
+    fn channel_neutral_hook_script_uses_the_bare_plexi_shim() {
+        let shell = super::agent_state_script("plexi");
+        assert!(shell.contains("\"plexi\" \"${ARGS[@]}\""));
     }
 }

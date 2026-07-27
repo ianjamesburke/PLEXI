@@ -23,12 +23,12 @@ pub fn pip_color(
     if focused {
         base
     } else {
-        base.gamma_multiply(colors.pip_dim)
+        base.gamma_multiply(colors.pip_dim.max(0.72))
     }
 }
 
 /// Returns the color for a given agent state given an explicit `time` value.
-/// Working state pulses between 0.45–1.0 opacity on a ~2s sine cycle.
+/// Working state pulses between 0.65–1.0 opacity on a ~2s sine cycle.
 /// When Working, call `request_repaint_after(Duration::from_millis(100))` at
 /// the call site — never an unconditional `request_repaint()`, which is
 /// self-perpetuating and pins the whole window at display refresh.
@@ -41,8 +41,8 @@ pub fn dot_color_from_time(
     match state {
         AgentState::Working => {
             let stagger = pip_index as f64 * 0.35;
-            let alpha = 0.20
-                + 0.80 * (0.5 + 0.5 * ((time + stagger) * 1.2 * std::f64::consts::PI).sin()) as f32;
+            let alpha = 0.65
+                + 0.35 * (0.5 + 0.5 * ((time + stagger) * 1.2 * std::f64::consts::PI).sin()) as f32;
             let c = colors.pip_working;
             egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
         }

@@ -776,7 +776,7 @@ pub struct ThemeConfig {
     pub pip_working: Option<String>,
     pub pip_idle: Option<String>,
     pub pip_blocked: Option<String>,
-    // Opacity multiplier for unfocused pips. Default 0.45.
+    // Opacity multiplier for unfocused pips. Default 0.72.
     pub pip_dim: Option<f32>,
 }
 

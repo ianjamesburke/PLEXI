@@ -16,6 +16,9 @@ const ROW_PAD_V: f32 = 7.0;
 pub(crate) const PANE_DOT_RADIUS: f32 = 4.0;
 const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
+const WINDOW_GROUP_PAD_X: f32 = 3.0;
+const WINDOW_GROUP_PAD_Y: f32 = 3.0;
+const WINDOW_GROUP_GAP: f32 = 5.0;
 const SIDEBAR_BADGE_W: f32 = 26.0;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
@@ -64,6 +67,14 @@ pub struct PaneDots {
     pub hidden_set: std::collections::HashSet<usize>,
     /// Per-dot agent state (parallel to dot index). `None` means no agent.
     pub activities: Vec<Option<crate::app_protocol::AgentState>>,
+    /// Contiguous pane ranges, one per spatial window in this context.
+    pub windows: Vec<PaneDotWindow>,
+}
+
+pub struct PaneDotWindow {
+    pub start: usize,
+    pub count: usize,
+    pub is_active: bool,
 }
 
 pub struct ContextItem {
@@ -99,7 +110,15 @@ fn draw_pips(
         return;
     }
     let capped = dots.count.min(PANE_DOT_MAX);
-    let mut dot_area_width = (capped as f32) * PANE_DOT_SPACING;
+    let groups: Vec<&PaneDotWindow> = dots
+        .windows
+        .iter()
+        .filter(|group| group.count > 0 && group.start < capped)
+        .collect();
+    let group_count = groups.len().max(1);
+    let mut dot_area_width = (capped as f32) * PANE_DOT_SPACING
+        + (group_count as f32) * WINDOW_GROUP_PAD_X * 2.0
+        + (group_count.saturating_sub(1) as f32) * WINDOW_GROUP_GAP;
     if dots.count > PANE_DOT_MAX {
         dot_area_width += 20.0;
     }
@@ -119,8 +138,74 @@ fn draw_pips(
     }
     let painter = ui.painter();
     let cy = rect.center().y;
+    let mut dot_centers = vec![0.0; capped];
+    let mut cursor_x = rect.min.x;
+    if groups.is_empty() {
+        for (dot_i, center) in dot_centers.iter_mut().enumerate() {
+            *center = cursor_x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS;
+            cursor_x += PANE_DOT_SPACING;
+            if dot_i + 1 == capped {
+                let group_rect = egui::Rect::from_min_max(
+                    egui::pos2(rect.min.x, cy - PANE_DOT_RADIUS - WINDOW_GROUP_PAD_Y),
+                    egui::pos2(
+                        cursor_x - PANE_DOT_SPACING
+                            + PANE_DOT_RADIUS * 2.0
+                            + WINDOW_GROUP_PAD_X * 2.0,
+                        cy + PANE_DOT_RADIUS + WINDOW_GROUP_PAD_Y,
+                    ),
+                );
+                painter.rect_filled(
+                    group_rect,
+                    egui::CornerRadius::same(4),
+                    with_alpha(colors.bg_hover, 0.7 * row_alpha),
+                );
+            }
+        }
+    } else {
+        for (group_i, group) in groups.iter().enumerate() {
+            let start = group.start;
+            let end = (group.start + group.count).min(capped);
+            let group_width = (end - start - 1) as f32 * PANE_DOT_SPACING
+                + PANE_DOT_RADIUS * 2.0
+                + WINDOW_GROUP_PAD_X * 2.0;
+            let group_rect = egui::Rect::from_min_size(
+                egui::pos2(cursor_x, cy - PANE_DOT_RADIUS - WINDOW_GROUP_PAD_Y),
+                egui::vec2(
+                    group_width,
+                    PANE_DOT_RADIUS * 2.0 + WINDOW_GROUP_PAD_Y * 2.0,
+                ),
+            );
+            let fill = if group.is_active {
+                with_alpha(colors.accent, 0.16 * row_alpha)
+            } else {
+                with_alpha(colors.bg_hover, 0.7 * row_alpha)
+            };
+            let stroke = if group.is_active {
+                egui::Stroke::new(1.0_f32, with_alpha(colors.accent, row_alpha))
+            } else {
+                egui::Stroke::new(1.0_f32, with_alpha(colors.border, 0.9 * row_alpha))
+            };
+            painter.rect_filled(group_rect, egui::CornerRadius::same(4), fill);
+            painter.rect_stroke(
+                group_rect,
+                egui::CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            for dot_i in start..end {
+                dot_centers[dot_i] = cursor_x
+                    + WINDOW_GROUP_PAD_X
+                    + PANE_DOT_RADIUS
+                    + (dot_i - start) as f32 * PANE_DOT_SPACING;
+            }
+            cursor_x += group_width;
+            if group_i + 1 < groups.len() {
+                cursor_x += WINDOW_GROUP_GAP;
+            }
+        }
+    }
     for dot_i in 0..capped {
-        let cx = rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
+        let cx = dot_centers[dot_i];
         let is_hidden = dots.hidden_set.contains(&dot_i);
         let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
         let focused = dots.focused_idx == Some(dot_i);
@@ -137,7 +222,7 @@ fn draw_pips(
         }
     }
     if dots.count > PANE_DOT_MAX {
-        let overflow_x = rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
+        let overflow_x = cursor_x + PANE_DOT_RADIUS * 0.5;
         let overflow_color = if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
             with_alpha(colors.accent, row_alpha)
         } else {
