@@ -45,6 +45,8 @@ mod ui_tests;
 mod workspace;
 
 fn main() -> eframe::Result {
+    let boot_state = crate::workspace::consume_host_boot_state();
+
     fn exit_if_feature_disabled(feature: crate::release::ReleaseFeature) {
         if !crate::release::feature_enabled(feature) {
             eprintln!(
@@ -1296,7 +1298,7 @@ fn main() -> eframe::Result {
 
     log::info!("ui_stack: egui=0.34.3 renderer=wgpu");
 
-    let background = crate::workspace::background_session();
+    let background = boot_state.is_background();
     #[cfg(target_os = "macos")]
     let activation_policy = if background {
         "accessory"
