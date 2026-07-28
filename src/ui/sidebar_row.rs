@@ -92,8 +92,6 @@ pub struct ContextItem {
     pub subtitle: Option<String>,
     /// Dots rendered below the name row representing panes.
     pub pane_dots: Option<PaneDots>,
-    /// Nesting depth for subcontexts (0 = top-level).
-    pub indent: u32,
     /// Whether this row supports drag reordering. When false, hover shows
     /// PointingHand instead of Grab and drag actions are suppressed.
     pub draggable: bool,
@@ -296,9 +294,9 @@ impl ContextItem {
         // Reserve background shape slot before rendering content.
         let bg_idx = ui.painter().add(egui::Shape::Noop);
 
-        // 6px base + 16px per nesting level — keeps the gutter number close to
-        // the sidebar edge for top-level contexts.
-        let indent = 6.0 + 16.0 * self.indent as f32;
+        // Every sidebar row is a top-level context, so the gutter is a fixed
+        // 6px inset — there is no nesting level to indent for.
+        let indent = 6.0;
 
         let is_active = self.is_active;
         let is_dragging = self.is_dragging;

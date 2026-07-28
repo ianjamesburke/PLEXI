@@ -9,6 +9,15 @@
 use crate::host::context::Context;
 use egui_tiles::TileId;
 
+/// Where a sidebar reorder sends a top-level context within the active list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContextMove {
+    Top,
+    Up,
+    Down,
+    Bottom,
+}
+
 pub(crate) struct WorkspaceRouter {
     active: usize,
     contexts: Vec<Context>,
@@ -62,6 +71,66 @@ impl WorkspaceRouter {
 
     pub(crate) fn position<F: Fn(&Context) -> bool>(&self, f: F) -> Option<usize> {
         self.contexts.iter().position(f)
+    }
+
+    /// Indices of the contexts the sidebar is allowed to enumerate, in router
+    /// order. The sidebar is top-level navigation only: every slot is a
+    /// numbered, keyboard-addressable destination, so a context with a live
+    /// parent is never listed. Subcontexts are reached from inside their parent
+    /// via its Portal tile, which already carries their rolled-up state.
+    ///
+    /// A context whose `parent_id` names a context that no longer exists is an
+    /// orphan and *is* included — otherwise deleting a parent would strand its
+    /// children with no reachable entry point anywhere in the UI.
+    pub(crate) fn top_level_order(&self) -> Vec<usize> {
+        self.contexts
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| match c.parent_id {
+                None => true,
+                Some(pid) => !self.contexts.iter().any(|p| p.context_id == pid),
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Expand a top-level-only ordering into a full permutation of `0..len` by
+    /// emitting each entry followed by its descendants in router order.
+    ///
+    /// `apply_order` requires every index exactly once; a sidebar reorder only
+    /// ever knows about top-level rows, so it must re-inflate the hidden
+    /// subtrees before committing or the omitted subcontexts would be dropped
+    /// from the router entirely. Any index not reachable from `top_level` is
+    /// appended, so the result is a permutation for any input.
+    pub(crate) fn expand_subtrees(&self, top_level: &[usize]) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::with_capacity(self.contexts.len());
+        let mut seen = vec![false; self.contexts.len()];
+        for &idx in top_level {
+            self.push_subtree(idx, &mut out, &mut seen);
+        }
+        for (i, visited) in seen.iter_mut().enumerate() {
+            if !*visited {
+                out.push(i);
+                *visited = true;
+            }
+        }
+        out
+    }
+
+    /// Depth-first emit of `idx` and every descendant, guarding against the
+    /// cycles a corrupt `parent_id` chain could otherwise turn into recursion.
+    fn push_subtree(&self, idx: usize, out: &mut Vec<usize>, seen: &mut [bool]) {
+        if seen[idx] {
+            return;
+        }
+        seen[idx] = true;
+        out.push(idx);
+        let id = self.contexts[idx].context_id;
+        for child in 0..self.contexts.len() {
+            if self.contexts[child].parent_id == Some(id) {
+                self.push_subtree(child, out, seen);
+            }
+        }
     }
 
     // ── Structural mutation (create / delete) ────────────────────────────────
@@ -120,13 +189,46 @@ impl WorkspaceRouter {
     // ── Reorder ops (sidebar drag / move-to-top etc.) ────────────────────────
     // Each op maintains active coherence atomically.
 
-    pub(crate) fn swap_tracking_active(&mut self, a: usize, b: usize) {
-        self.contexts.swap(a, b);
-        if self.active == a {
-            self.active = b;
-        } else if self.active == b {
-            self.active = a;
+    /// Move a top-level context one slot (or to an end) within the sidebar's
+    /// active list, carrying its subtree with it. Returns `false` when the move
+    /// is a no-op — `idx` is parked, is a subcontext with no sidebar row, or is
+    /// already at the requested end.
+    ///
+    /// Reordering must go through the visible list, never through raw router
+    /// indices: subcontexts sit between top-level entries in `contexts` but have
+    /// no sidebar row, so an index-adjacent swap would trade places with an
+    /// invisible context and read as a dead menu item.
+    pub(crate) fn reorder_top_level(&mut self, idx: usize, mv: ContextMove) -> bool {
+        let top_level = self.top_level_order();
+        let mut active: Vec<usize> = top_level
+            .iter()
+            .copied()
+            .filter(|&i| !self.contexts[i].parked)
+            .collect();
+        let parked: Vec<usize> = top_level
+            .iter()
+            .copied()
+            .filter(|&i| self.contexts[i].parked)
+            .collect();
+        let Some(pos) = active.iter().position(|&i| i == idx) else {
+            return false;
+        };
+        let last = active.len() - 1;
+        let new_pos = match mv {
+            ContextMove::Top => 0,
+            ContextMove::Up => pos.saturating_sub(1),
+            ContextMove::Down => (pos + 1).min(last),
+            ContextMove::Bottom => last,
+        };
+        if new_pos == pos {
+            return false;
         }
+        active.remove(pos);
+        active.insert(new_pos, idx);
+        active.extend(parked);
+        let order = self.expand_subtrees(&active);
+        self.apply_order(&order);
+        true
     }
 
     /// Reorder the entire context vec to match `new_order`, a permutation of
@@ -155,27 +257,6 @@ impl WorkspaceRouter {
             .iter()
             .position(|c| c.context_id == active_id)
             .expect("apply_order: active context survives reorder");
-    }
-
-    pub(crate) fn move_to_front_tracking_active(&mut self, idx: usize) {
-        let ctx = self.contexts.remove(idx);
-        self.contexts.insert(0, ctx);
-        if self.active == idx {
-            self.active = 0;
-        } else if self.active < idx {
-            self.active += 1;
-        }
-    }
-
-    pub(crate) fn move_to_back_tracking_active(&mut self, idx: usize) {
-        let last = self.contexts.len() - 1;
-        let ctx = self.contexts.remove(idx);
-        self.contexts.push(ctx);
-        if self.active == idx {
-            self.active = last;
-        } else if self.active > idx {
-            self.active -= 1;
-        }
     }
 
     // ── Depth stack (fractal zoom navigation) ───────────────────────────────
@@ -220,6 +301,159 @@ mod tests {
             depth,
             parked: false,
         }
+    }
+
+    /// Stint 0241: the sidebar lists master contexts only. A context with a
+    /// live parent is never enumerated, so it can never be numbered or rendered.
+    #[test]
+    fn top_level_order_excludes_subcontexts() {
+        let router = WorkspaceRouter::new(
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(11, Some(10), 1),
+                make_ctx(12, Some(10), 1),
+                make_ctx(20, None, 0),
+            ],
+            0,
+        );
+        assert_eq!(router.top_level_order(), vec![0, 3]);
+    }
+
+    /// Numbering must not shift when subcontexts appear: ctx 20 stays the
+    /// second sidebar slot (Cmd+2) no matter how many children ctx 10 grows.
+    #[test]
+    fn top_level_order_numbering_is_stable_across_subcontexts() {
+        let without = WorkspaceRouter::new(vec![make_ctx(10, None, 0), make_ctx(20, None, 0)], 0);
+        let ids_without: Vec<u64> = without
+            .top_level_order()
+            .iter()
+            .map(|&i| without.get(i).context_id)
+            .collect();
+
+        let with = WorkspaceRouter::new(
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(11, Some(10), 1),
+                make_ctx(12, Some(10), 1),
+                make_ctx(13, Some(11), 2),
+                make_ctx(20, None, 0),
+            ],
+            0,
+        );
+        let ids_with: Vec<u64> = with
+            .top_level_order()
+            .iter()
+            .map(|&i| with.get(i).context_id)
+            .collect();
+
+        assert_eq!(ids_without, vec![10, 20]);
+        assert_eq!(
+            ids_with, ids_without,
+            "subcontexts must not shift top-level sidebar numbering"
+        );
+    }
+
+    /// A context whose parent was deleted has no portal to be reached through,
+    /// so it must fall back to a top-level row rather than become unreachable.
+    #[test]
+    fn top_level_order_includes_orphans_whose_parent_is_gone() {
+        let router =
+            WorkspaceRouter::new(vec![make_ctx(10, None, 0), make_ctx(11, Some(999), 1)], 0);
+        assert_eq!(router.top_level_order(), vec![0, 1]);
+    }
+
+    /// A sidebar reorder only knows top-level rows; expanding must re-inflate
+    /// the hidden subtrees so `apply_order` still gets a full permutation and
+    /// no subcontext is dropped from the router.
+    #[test]
+    fn expand_subtrees_reinflates_hidden_children() {
+        let router = WorkspaceRouter::new(
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(11, Some(10), 1),
+                make_ctx(20, None, 0),
+                make_ctx(21, Some(20), 1),
+            ],
+            0,
+        );
+        // Sidebar drag put ctx 20 above ctx 10.
+        let expanded = router.expand_subtrees(&[2, 0]);
+        assert_eq!(expanded, vec![2, 3, 0, 1]);
+        assert_eq!(
+            expanded.len(),
+            router.len(),
+            "expand_subtrees must produce a full permutation"
+        );
+    }
+
+    /// The end-to-end guard for the drop path: reordering top-level rows must
+    /// move each parent's children with it and never delete a subcontext.
+    #[test]
+    fn reorder_top_level_carries_subtree_and_preserves_all_contexts() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(11, Some(10), 1),
+                make_ctx(20, None, 0),
+                make_ctx(21, Some(20), 1),
+            ],
+            0,
+        );
+        assert!(router.reorder_top_level(2, ContextMove::Top));
+        let ids: Vec<u64> = router.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![20, 21, 10, 11]);
+        // Active context (ctx 10) tracked by identity through the reorder.
+        assert_eq!(router.active().context_id, 10);
+    }
+
+    /// An index-adjacent swap would have traded places with an invisible
+    /// subcontext; moving the *last* top-level row down must be a no-op even
+    /// though a subcontext sits after it in the router vec.
+    #[test]
+    fn reorder_top_level_down_at_end_is_noop_despite_trailing_subcontext() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(20, None, 0),
+                make_ctx(21, Some(20), 1),
+            ],
+            0,
+        );
+        assert!(!router.reorder_top_level(1, ContextMove::Down));
+        let ids: Vec<u64> = router.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![10, 20, 21]);
+    }
+
+    /// A subcontext has no sidebar row, so it has nothing to reorder.
+    #[test]
+    fn reorder_top_level_rejects_a_subcontext() {
+        let mut router =
+            WorkspaceRouter::new(vec![make_ctx(10, None, 0), make_ctx(11, Some(10), 1)], 0);
+        assert!(!router.reorder_top_level(1, ContextMove::Top));
+        let ids: Vec<u64> = router.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![10, 11]);
+    }
+
+    /// Parked contexts keep their own list; a move within the active list must
+    /// not drag a parked context into it.
+    #[test]
+    fn reorder_top_level_keeps_parked_contexts_in_their_section() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(20, None, 0),
+                make_ctx(30, None, 0),
+            ],
+            0,
+        );
+        router.get_mut(1).parked = true;
+        assert!(router.reorder_top_level(2, ContextMove::Top));
+        let ids: Vec<u64> = router.iter().map(|c| c.context_id).collect();
+        assert_eq!(
+            ids,
+            vec![30, 10, 20],
+            "parked ctx 20 stays after the active list"
+        );
     }
 
     #[test]

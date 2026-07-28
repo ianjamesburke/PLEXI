@@ -109,6 +109,7 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::ui::theme::{self, Colors};
+use crate::workspace::router::ContextMove;
 use crate::workspace::WorkspaceFile;
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
@@ -4228,39 +4229,17 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SwitchContext(n) => {
-                    // Map display position n (0-indexed) to the actual router index by
-                    // computing the same active display order the sidebar renders.
-                    let num = self.router.len();
-                    let mut display_order: Vec<usize> = Vec::with_capacity(num);
-                    for i in 0..num {
-                        if self.router.get(i).parent_id.is_none() {
-                            display_order.push(i);
-                            let ctx_id = self.router.get(i).context_id;
-                            for j in 0..num {
-                                if self.router.get(j).parent_id == Some(ctx_id) {
-                                    display_order.push(j);
-                                }
-                            }
-                        }
-                    }
-                    for i in 0..num {
-                        if !display_order.contains(&i) {
-                            display_order.push(i);
-                        }
-                    }
-                    let active_order: Vec<usize> = display_order
+                    // Map display position n (0-indexed) to the actual router
+                    // index through the same top-level order the sidebar
+                    // renders, so Cmd+1..9 stays pinned to the numbered rows
+                    // regardless of how many subcontexts exist.
+                    let active_order: Vec<usize> = self
+                        .router
+                        .top_level_order()
                         .into_iter()
                         .filter(|&i| !self.router.get(i).parked)
                         .collect();
                     if let Some(&router_idx) = active_order.get(n) {
-                        let target_parent = self.router.get(router_idx).parent_id;
-                        let current_ctx_id = self.router.active().context_id;
-                        if target_parent == Some(current_ctx_id) {
-                            let current_win_id = self.windows[self.active_window].window_id;
-                            let focused_tile = self.windows[self.active_window].focused_pane;
-                            self.router
-                                .push_depth(current_ctx_id, current_win_id, focused_tile);
-                        }
                         log::info!(
                             "SwitchContext: display_pos={} → router_idx={}",
                             n + 1,
@@ -4301,17 +4280,17 @@ impl eframe::App for PlexiApp {
                 }
                 Action::MoveContextUp => {
                     let active = self.router.active_idx();
-                    if active > 0 {
-                        self.router.swap_tracking_active(active, active - 1);
-                        log::info!("context: moved up — {} to {}", active, active - 1);
+                    let ctx_id = self.router.active().context_id;
+                    if self.router.reorder_top_level(active, ContextMove::Up) {
+                        log::info!("context: moved up — id={ctx_id}");
                         self.save_workspace();
                     }
                 }
                 Action::MoveContextDown => {
                     let active = self.router.active_idx();
-                    if active + 1 < self.router.len() {
-                        self.router.swap_tracking_active(active, active + 1);
-                        log::info!("context: moved down — {} to {}", active, active + 1);
+                    let ctx_id = self.router.active().context_id;
+                    if self.router.reorder_top_level(active, ContextMove::Down) {
+                        log::info!("context: moved down — id={ctx_id}");
                         self.save_workspace();
                     }
                 }

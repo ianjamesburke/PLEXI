@@ -2,6 +2,7 @@ use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
 use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
+use crate::workspace::router::ContextMove;
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
@@ -199,26 +200,10 @@ impl PlexiApp {
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
-        // Build display order: top-level contexts first, each followed by children.
-        // Separate into active (unparked) and parked lists.
-        let mut display_order: Vec<usize> = Vec::with_capacity(num_contexts);
-        for i in 0..num_contexts {
-            if self.router.get(i).parent_id.is_none() {
-                display_order.push(i);
-                let ctx_id = self.router.get(i).context_id;
-                for j in 0..num_contexts {
-                    if self.router.get(j).parent_id == Some(ctx_id) {
-                        display_order.push(j);
-                    }
-                }
-            }
-        }
-        // Catch orphans whose parent was deleted.
-        for i in 0..num_contexts {
-            if !display_order.contains(&i) {
-                display_order.push(i);
-            }
-        }
+        // Build display order: top-level contexts only. Subcontexts never appear
+        // in the sidebar — they are reached from inside their parent via its
+        // Portal tile — so they are never enumerated, numbered, or rendered.
+        let display_order: Vec<usize> = self.router.top_level_order();
 
         // Partition: active contexts render in the main list, parked ones below.
         let active_order: Vec<usize> = display_order
@@ -233,6 +218,7 @@ impl PlexiApp {
             .collect();
 
         // ── Active contexts ─────────────────────────────────────────────
+        let active_count = active_order.len();
         for (display_idx, &i) in active_order.iter().enumerate() {
             let is_active = i == self.router.active_idx();
             let is_renaming = self.renaming_window == Some(i);
@@ -324,7 +310,6 @@ impl PlexiApp {
                 .as_ref()
                 .map(|p| p.display().to_string());
 
-            let indent = self.router.get(i).depth;
             let (action, response) = ContextItem {
                 is_active,
                 is_dragging,
@@ -335,7 +320,6 @@ impl PlexiApp {
                 badge_count,
                 subtitle,
                 pane_dots,
-                indent,
                 draggable: true,
             }
             .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
@@ -366,7 +350,7 @@ impl PlexiApp {
                         ui.close();
                     }
                     ui.separator();
-                    if i > 0 {
+                    if display_idx > 0 {
                         if ui.button("Move to Top").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveToTop));
                             ui.close();
@@ -376,7 +360,7 @@ impl PlexiApp {
                             ui.close();
                         }
                     }
-                    if i < num_ctxs - 1 {
+                    if display_idx + 1 < active_count {
                         if ui.button("Move Down").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveDown));
                             ui.close();
@@ -475,7 +459,6 @@ impl PlexiApp {
                     let ctx_name = ctx.name.clone();
                     let ctx_id = ctx.context_id;
                     let subtitle = ctx.root.as_ref().map(|p| p.display().to_string());
-                    let indent = ctx.depth;
 
                     let pane_dots = self.sidebar_pane_dots(ctx_id, false);
 
@@ -489,7 +472,6 @@ impl PlexiApp {
                         badge_count: 0,
                         subtitle,
                         pane_dots,
-                        indent,
                         draggable: true,
                     }
                     .draw(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
@@ -609,6 +591,10 @@ impl PlexiApp {
                 self.router.get_mut(src).parked = drop.parked;
                 let mut new_order = new_active;
                 new_order.extend(new_parked);
+                // These lists hold top-level rows only; re-inflate each row's
+                // hidden subtree so `apply_order` receives a full permutation
+                // and the subcontexts travel with their parent.
+                let new_order = self.router.expand_subtrees(&new_order);
                 self.router.apply_order(&new_order);
                 self.renaming_window = None;
 
@@ -662,19 +648,19 @@ impl PlexiApp {
                 }
                 WindowMenuAction::MoveToTop => {
                     self.renaming_window = None;
-                    self.router.move_to_front_tracking_active(i);
+                    self.router.reorder_top_level(i, ContextMove::Top);
                 }
                 WindowMenuAction::MoveUp => {
                     self.renaming_window = None;
-                    self.router.swap_tracking_active(i, i - 1);
+                    self.router.reorder_top_level(i, ContextMove::Up);
                 }
                 WindowMenuAction::MoveDown => {
                     self.renaming_window = None;
-                    self.router.swap_tracking_active(i, i + 1);
+                    self.router.reorder_top_level(i, ContextMove::Down);
                 }
                 WindowMenuAction::MoveToBottom => {
                     self.renaming_window = None;
-                    self.router.move_to_back_tracking_active(i);
+                    self.router.reorder_top_level(i, ContextMove::Bottom);
                 }
                 WindowMenuAction::SetRoot(path) => {
                     log::info!(
@@ -722,14 +708,9 @@ impl PlexiApp {
         } else if let Some(i) = delete_context {
             self.delete_context(i);
         } else if let Some(i) = clicked_workspace {
-            let target_parent = self.router.get(i).parent_id;
-            let current_ctx_id = self.router.active().context_id;
-            if target_parent == Some(current_ctx_id) {
-                let current_win_id = self.windows[self.active_window].window_id;
-                let focused_tile = self.windows[self.active_window].focused_pane;
-                self.router
-                    .push_depth(current_ctx_id, current_win_id, focused_tile);
-            }
+            // Only top-level rows are rendered, so a click here is always a
+            // lateral move between master contexts — never a descent into a
+            // child, which is what the Portal tile is for. No depth push.
             self.switch_workspace(i);
         }
 
