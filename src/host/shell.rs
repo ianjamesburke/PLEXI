@@ -365,27 +365,41 @@ pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
     result
 }
 
-/// Executable name for `pid` — the kernel's `p_comm`, i.e. the basename of
-/// the path passed to `execve`, truncated to 16 bytes. This is deliberately
-/// not the resolved binary path (`proc_pidpath`): a Homebrew `codex` shim
-/// execs `codex-aarch64-apple-darwin`, but `p_comm` stays `codex`, and a
-/// shebang script keeps the script's own name — both are what the agent
-/// detector needs to match on.
+/// Invoked-command name for `pid` — the basename of the path the process was
+/// exec'd as. This is the name the agent detector must match on: it is the
+/// command word the shell's PATH lookup resolved, which survives symlinked
+/// installs.
+///
+/// On macOS every kernel-owned name (`proc_name`, `p_comm`, `proc_pidpath`)
+/// carries the RESOLVED target of a symlink: the Homebrew codex cask installs
+/// `codex -> codex-aarch64-apple-darwin`, and exec through that symlink names
+/// the process `codex-aarch64-apple-darwin` (verified live on codex 0.145.0).
+/// Only `KERN_PROCARGS2`'s saved exec path preserves the string actually
+/// passed to `execve` (`/opt/homebrew/bin/codex`), so its basename is the
+/// primary source; `proc_name` is the fallback for processes whose args block
+/// is unreadable (other-uid, zombies). Shebang scripts are named after their
+/// interpreter in every source including the args block — script-distributed
+/// agents (pi) stay hook-covered at boot instead.
 pub fn get_pid_name(pid: u32) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        let mut buf = [0u8; 64];
-        let n = unsafe {
-            libc::proc_name(
-                pid as libc::c_int,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len() as u32,
-            )
-        };
-        (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+        invoked_exec_basename(pid).or_else(|| {
+            let mut buf = [0u8; 64];
+            let n = unsafe {
+                libc::proc_name(
+                    pid as libc::c_int,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len() as u32,
+                )
+            };
+            (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+        })
     }
     #[cfg(target_os = "linux")]
     {
+        // Linux `comm` is set from the basename of the path as passed to
+        // execve — symlinks are NOT resolved — so it already is the invoked
+        // name (truncated to 15 bytes, which covers every known agent).
         std::fs::read_to_string(format!("/proc/{pid}/comm"))
             .ok()
             .map(|s| s.trim().to_string())
@@ -396,6 +410,51 @@ pub fn get_pid_name(pid: u32) -> Option<String> {
         let _ = pid;
         None
     }
+}
+
+/// Basename of the as-invoked exec path from `sysctl(KERN_PROCARGS2)`.
+/// Readable for same-uid processes only; `None` on any failure.
+#[cfg(target_os = "macos")]
+fn invoked_exec_basename(pid: u32) -> Option<String> {
+    let mut argmax: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            &mut argmax as *mut _ as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || argmax <= 0 {
+        log::warn!("invoked_exec_basename: KERN_ARGMAX sysctl failed (rc={rc})");
+        return None;
+    }
+    // Layout: [c_int argc][exec path NUL][NUL padding][argv[0] NUL]...
+    let mut buf = vec![0u8; argmax as usize];
+    let mut len = buf.len();
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || len <= std::mem::size_of::<libc::c_int>() {
+        return None;
+    }
+    let path = &buf[std::mem::size_of::<libc::c_int>()..len];
+    let end = path.iter().position(|&b| b == 0)?;
+    let path = std::str::from_utf8(&path[..end]).ok()?;
+    let base = path.rsplit('/').next()?;
+    (!base.is_empty()).then(|| base.to_string())
 }
 
 /// Map a foreground process name to the canonical agent name the lifecycle
@@ -648,8 +707,9 @@ mod tests {
         assert_eq!(known_agent_process("pi"), Some("pi"));
         assert_eq!(known_agent_process("zsh"), None);
         assert_eq!(known_agent_process("vim"), None);
-        // p_comm is the exec'd basename — a resolved Homebrew payload name
-        // must not match; the shim name (`codex`) is what the kernel records.
+        // Exact match on the INVOKED name only — `get_pid_name` owns
+        // normalizing a symlinked install back to its invoked basename, so
+        // a resolved payload name must never reach (or match) this table.
         assert_eq!(known_agent_process("codex-aarch64-apple-darwin"), None);
     }
 
@@ -663,6 +723,30 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(name.as_deref(), Some("sleep"));
+    }
+
+    /// The Homebrew codex cask is a symlink (`codex ->
+    /// codex-aarch64-apple-darwin`), and macOS names a process exec'd through
+    /// a symlink after the RESOLVED target — so identity must come from the
+    /// as-invoked path, not `proc_name`. This pins the exact failure that
+    /// made a booted Codex invisible to the agent detector (PR #2510 round 2).
+    #[cfg(unix)]
+    #[test]
+    fn get_pid_name_reports_the_invoked_name_through_a_symlink() {
+        let dir = std::env::temp_dir().join(format!("plexi-symlink-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let link = dir.join("codex");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink("/bin/sleep", &link).expect("symlink");
+        let mut child = std::process::Command::new(&link)
+            .arg("30")
+            .spawn()
+            .expect("spawn through symlink");
+        let name = get_pid_name(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(name.as_deref(), Some("codex"));
     }
 
     #[test]

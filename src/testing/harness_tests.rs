@@ -5244,16 +5244,21 @@ mod agent_boot {
     // prompt submission, so a freshly booted Codex never self-reports. The
     // shared detector therefore also recognizes a known agent binary in the
     // PTY foreground and derives idle from the output settle. These tests
-    // fake the agent with a real binary copied to the name `codex` — the
-    // detector keys on the exec'd process name, exactly as it does for the
-    // real Homebrew `codex` shim.
+    // reproduce the real Homebrew distribution shape — a payload binary
+    // reached through a `codex` symlink — because macOS names a process
+    // exec'd through a symlink after the RESOLVED target, and a fake that
+    // guarantees the name match cannot catch identity bugs (PR #2510 round 2).
 
-    /// A quiescent binary named `codex` (a copy of `sleep`) stands in for a
-    /// booted agent TUI sitting at its prompt.
+    /// A quiescent stand-in for a booted agent TUI sitting at its prompt,
+    /// shaped like the Homebrew cask: `codex` is a symlink to a payload
+    /// binary named `codex-aarch64-apple-darwin` (a copy of `sleep`), and the
+    /// pane execs the symlink path.
     fn fake_idle_codex(dir: &std::path::Path) -> String {
-        let fake = dir.join("codex");
-        std::fs::copy("/bin/sleep", &fake).expect("copy sleep");
-        format!("{} 60", fake.display())
+        let payload = dir.join("codex-aarch64-apple-darwin");
+        std::fs::copy("/bin/sleep", &payload).expect("copy sleep");
+        let link = dir.join("codex");
+        std::os::unix::fs::symlink(&payload, &link).expect("symlink codex");
+        format!("{} 60", link.display())
     }
 
     fn pane_info(h: &mut HostHarness, dir: &std::path::Path, pane_id: u64) -> serde_json::Value {
