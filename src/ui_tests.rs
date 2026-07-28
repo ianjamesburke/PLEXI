@@ -1317,6 +1317,116 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Stint 0241: the sidebar is master-context navigation only. Every slot is
+    /// a numbered, keyboard-addressable top-level destination, so a subcontext
+    /// is never rendered and never consumes a number — it is reached from
+    /// inside its parent through the Portal tile instead. Removing the row must
+    /// not remove the *signal*: the child's state still rolls up to the parent.
+    #[test]
+    fn sidebar_renders_and_numbers_master_contexts_only() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        let child_ctx_id = h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.router.get_mut(0).name = "master-one".to_string();
+            let parent_ctx_id = app.router.get(0).context_id;
+            let child_ctx_id = parent_ctx_id + 9_000;
+
+            // A subcontext of the first master, sitting *between* the two
+            // masters in router order — the position that used to shift the
+            // second master's sidebar number from 2 to 3.
+            app.router.push(crate::host::context::Context {
+                name: "child-of-one".to_string(),
+                path: std::env::temp_dir().join("child-of-one"),
+                root: None,
+                description: None,
+                context_id: child_ctx_id,
+                parent_id: Some(parent_ctx_id),
+                depth: 1,
+                parked: false,
+            });
+            app.router.push(crate::host::context::Context {
+                name: "master-two".to_string(),
+                path: std::env::temp_dir().join("master-two"),
+                root: None,
+                description: None,
+                context_id: 72_002,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+
+            // Give the child a window so it has real state to roll up.
+            let child_window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(Window {
+                name: "child window".to_string(),
+                path: std::env::temp_dir(),
+                tree: egui_tiles::Tree::empty("child window"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 1,
+                window_id: child_window_id,
+                context_id: child_ctx_id,
+            });
+            child_ctx_id
+        });
+        let child_window_idx = h.with_app(|app| app.windows.len() - 1);
+        add_focused_pane_to_window(&mut h, child_window_idx);
+        h.run_steps(2);
+
+        // Rendered sidebar: both masters present, the subcontext absent.
+        assert!(
+            h.host_has_label("master-one"),
+            "top-level contexts must render in the sidebar"
+        );
+        assert!(
+            h.host_has_label("master-two"),
+            "top-level contexts must render in the sidebar"
+        );
+        assert!(
+            !h.host_has_label("child-of-one"),
+            "a subcontext must never render a sidebar row"
+        );
+
+        h.with_app(|app| {
+            // Numbering: the sidebar enumerates only masters, so master-two
+            // holds slot 2 (Cmd+2) despite the subcontext preceding it.
+            let order = app.router.top_level_order();
+            let names: Vec<&str> = order
+                .iter()
+                .map(|&i| app.router.get(i).name.as_str())
+                .collect();
+            assert_eq!(
+                names,
+                vec!["master-one", "master-two"],
+                "subcontexts must not be enumerated or shift top-level numbering"
+            );
+
+            // Rollup intact: the child is still observable from its parent,
+            // which is what the Portal tile paints.
+            let parent_state = crate::host::context_state::ContextState::compute(
+                app.router.get(0).context_id,
+                app.router.as_slice(),
+                &app.windows,
+            );
+            let child_state = parent_state
+                .children
+                .iter()
+                .find(|c| c.context_id == child_ctx_id)
+                .expect("parent must still roll up its subcontext");
+            assert_eq!(child_state.label, "child-of-one");
+            assert_eq!(
+                child_state.pane_count, 1,
+                "child pane activity must still surface through the parent"
+            );
+        });
+
+        h.save_screenshot("/tmp/plexi-0241-sidebar-masters-only.png")
+            .expect("render failed");
+    }
+
     /// Notes triage overlay: renders a note, and emptying the inbox returns
     /// to the picker instead of closing outright.
     #[test]
