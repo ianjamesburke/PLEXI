@@ -169,6 +169,10 @@ check_pushed "$BETA_TREE" "beta" "beta"
 check_clean "$MAIN_TREE" "main worktree"
 [[ $(git -C "$MAIN_TREE" rev-parse --abbrev-ref HEAD) == "main" ]] || die "main worktree is not on 'main' branch"
 
+# Stable releases must ship a skill that documents this binary version.
+bash "$REPO_ROOT/scripts/check-skill-version.sh" "$BETA_TREE" \
+    || die "published agent skill is out of lockstep with the release version"
+
 version=$(grep '^version' "$BETA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
 echo "Promoting beta → main (v$version)..."

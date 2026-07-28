@@ -18,6 +18,16 @@ You'll be asked for your password. The script installs Plexi.app to /Application
 
 On first launch, Plexi will request Accessibility permission. This is required for context-aware features.
 
+## Teach Your Agent
+
+Plexi is built to be driven by coding agents. If you use Claude Code, Cursor, Codex, or any agent that supports [skills](https://skills.sh/), install the Plexi skill so your agent knows the CLI:
+
+```sh
+npx skills add ianjamesburke/plexi-skills
+```
+
+Run it in a project to install for that project, or add `-g` for a global install. The skill documents the `plexi` CLI surface — panes, apps, contexts, notifications — so your agent can drive Plexi without trial and error. To update it later, run `npx skills update`.
+
 ## Your First Session
 
 Plexi opens with a single terminal pane. From there:

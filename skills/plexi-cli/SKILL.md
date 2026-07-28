@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.0.0"
-plexi_version: "0.0.651"
-last_verified: "2026-06-07"
+skill_version: "4.1.0"
+plexi_version: "0.2.0"
+last_verified: "2026-07-28"
 ---
 
 # Plexi CLI
@@ -53,8 +53,9 @@ app open --mcp CMD...    Wrap a stdio MCP server in a Plexi pane.
 app open --cli BINARY    Wrap a CLI tool with a Plexi UI.
 app init NAME            Scaffold a new app. --lang python (default), --global, --no-open,
                          --from PANE_ID. Before building a canvas/on_render app, read
-                         docs/sdk-v2.md for the drawing API (rect stroke/glow/gradient,
-                         circle glow, arc_ring, theme tokens).
+                         the SDK reference at https://plexiapp.com/docs/sdk for the
+                         drawing API (rect stroke/glow/gradient, circle glow, arc_ring,
+                         theme tokens).
 app install [SPEC]       Install from path, github:owner/repo, or --pack core.
                          No args = install from .plexi/apps.toml. --version SEMVER to pin.
 app uninstall ID         Remove an installed app.
@@ -242,7 +243,7 @@ plexi app open snake -d --from $BALLS
 
 ```bash
 # 3 agents in their own sub-context, rooted at the current cwd.
-SQUAD=$(plexi context sub agentsquad --agents 3 --command cm)
+SQUAD=$(plexi context sub agentsquad --agents 3 --command claude)
 # Pane ids come back in the response — no follow-up `pane list` needed.
 for P in $(echo "$SQUAD" | jq -r '.panes[]'); do plexi pane name $P "squad-$P"; done
 ```
@@ -256,7 +257,7 @@ parent context's path rather than your cwd.
 
 ```bash
 LANE=$(plexi pane new -n "issue-42" -r --from $PLEXI_PANE_ID)
-plexi pane send $LANE "/implement-issue 42"
+plexi pane send $LANE "investigate and fix issue 42"
 plexi pane key $LANE enter
 ```
 
