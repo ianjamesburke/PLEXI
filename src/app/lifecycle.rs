@@ -2007,6 +2007,8 @@ impl PlexiApp {
                 on_dismiss,
                 response_file,
                 scope,
+                source_context_id,
+                source_pane_id,
                 ..
             } => {
                 let internal_id = format!(
@@ -2017,22 +2019,89 @@ impl PlexiApp {
                         .unwrap_or(0)
                 );
                 log::info!(
-                    "pane_ipc: kind=notify title={:?} choices={} scope={:?} response_file={:?}",
+                    "pane_ipc: kind=notify title={:?} choices={} scope={:?} source_context_id={:?} source_pane_id={:?} response_file={:?}",
                     title,
                     options.len(),
                     scope,
+                    source_context_id,
+                    source_pane_id,
                     response_file
                 );
+                // Caller identity comes from the command's own fields, never
+                // from dispatch-time active state — by dispatch, the active
+                // context may be one the sender has never seen, and stamping
+                // it can hide a context-scoped notification from everyone.
+                // The sending pane's live location is the ground truth (a
+                // pane can move between contexts after its env was stamped);
+                // the claimed context id covers callers whose pane is gone.
+                let pane_window_idx = source_pane_id
+                    .and_then(|pid| self.find_pane_in_any_window(pid))
+                    .map(|(win_idx, _)| win_idx);
+                let (caller_context_id, caller_window_id) = match pane_window_idx {
+                    Some(win_idx) => (
+                        Some(self.windows[win_idx].context_id),
+                        Some(self.windows[win_idx].window_id),
+                    ),
+                    None => match source_context_id
+                        .filter(|id| self.router.iter().any(|c| c.context_id == *id))
+                    {
+                        Some(ctx_id) => (
+                            Some(ctx_id),
+                            self.windows
+                                .iter()
+                                .find(|w| w.context_id == ctx_id)
+                                .map(|w| w.window_id),
+                        ),
+                        None => (None, None),
+                    },
+                };
+                // Unscoped `plexi notify` belongs to the context that produced
+                // it; `--scope global` is the opt-in. A context or window
+                // scope with no resolvable sender (outside-pane caller, or a
+                // stale identity) escalates to global: showing the
+                // notification everywhere is the only resolution that cannot
+                // hide it, and attaching it to some other context would
+                // fabricate provenance.
+                let effective_scope = match scope.unwrap_or_default() {
+                    crate::app_protocol::NotifyScope::Global => {
+                        crate::app_protocol::NotifyScope::Global
+                    }
+                    crate::app_protocol::NotifyScope::Context if caller_context_id.is_some() => {
+                        crate::app_protocol::NotifyScope::Context
+                    }
+                    crate::app_protocol::NotifyScope::Window if caller_window_id.is_some() => {
+                        crate::app_protocol::NotifyScope::Window
+                    }
+                    crate::app_protocol::NotifyScope::Window if caller_context_id.is_some() => {
+                        // The context resolved but has no live window (parked).
+                        // Narrow to the sender's own context — the least
+                        // widening that keeps the notification reachable;
+                        // global would expose it to every stranger's context.
+                        log::warn!(
+                            "pane_ipc: notify: window scope requested but context \
+                             {caller_context_id:?} has no live window — narrowing to context scope"
+                        );
+                        crate::app_protocol::NotifyScope::Context
+                    }
+                    unresolvable => {
+                        log::warn!(
+                            "pane_ipc: notify: scope {unresolvable:?} needs a caller identity but none resolved \
+                             (source_context_id={source_context_id:?} source_pane_id={source_pane_id:?}) — \
+                             escalating to global so the notification stays reachable"
+                        );
+                        crate::app_protocol::NotifyScope::Global
+                    }
+                };
                 self.enqueue_notification(
                     crate::app::notifications::NotifySource::Cli,
                     PendingNotification {
                         notify_id: internal_id,
                         sender_pane_id: 0,
-                        source_context_id: self.router.active().context_id,
-                        source_window_id: self.windows[self.active_window].window_id,
-                        // Unscoped `plexi notify` belongs to the context that
-                        // produced it. `--scope global` is the opt-in.
-                        scope: scope.unwrap_or_default(),
+                        // 0 = no context / no window, the same sentinel
+                        // host-internal notifications use. Real ids start at 1.
+                        source_context_id: caller_context_id.unwrap_or(0),
+                        source_window_id: caller_window_id.unwrap_or(0),
+                        scope: effective_scope,
                         level: level.clone(),
                         title: title.clone(),
                         body: body.clone(),

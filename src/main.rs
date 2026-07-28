@@ -708,6 +708,21 @@ fn main() -> eframe::Result {
                             "notify:cli: host_actions={} merged into choices",
                             host_actions.len()
                         );
+                        // The caller's own identity, stamped by the pane env.
+                        // A set-but-garbled value is corrupt state, not an
+                        // outside-pane caller — fail loudly, never reinterpret.
+                        let caller_env_id = |key: &str| match std::env::var(key) {
+                            Ok(s) => match s.parse::<u64>() {
+                                Ok(id) => Some(id),
+                                Err(_) => {
+                                    eprintln!("error: {key} is not a valid number: {s}");
+                                    std::process::exit(1);
+                                }
+                            },
+                            Err(_) => None,
+                        };
+                        let source_context_id = caller_env_id("PLEXI_CONTEXT_ID");
+                        let source_pane_id = caller_env_id("PLEXI_PANE_ID");
                         std::process::exit(cli::notify_cli(
                             &title,
                             &body,
@@ -716,6 +731,8 @@ fn main() -> eframe::Result {
                             !no_wait,
                             timeout,
                             parsed_scope,
+                            source_context_id,
+                            source_pane_id,
                         ));
                     }
                     Commands::Pane { cmd } => match cmd {

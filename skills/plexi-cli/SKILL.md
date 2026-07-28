@@ -92,6 +92,10 @@ notify --title TEXT      Required. --body TEXT, --level info|warn|error,
                          --timeout SECS (0=sticky), --scope window|context|global
                          (default context — stays in the sending context;
                          pass --scope global to surface everywhere).
+                         The sending context is the caller's own (PLEXI_CONTEXT_ID),
+                         never the currently active one. Outside a pane there is no
+                         sending context: --scope context|window errors, and an
+                         unscoped notify escalates to global.
                          --choice "key:Label" (repeatable, blocks until chosen).
                          --host-action "key:action_type:arg" (runs even after caller exits).
 ```

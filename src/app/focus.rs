@@ -1057,7 +1057,7 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.interrupt_threshold)
             .unwrap_or(100);
-        self.notifications_sound = fresh.notifications.as_ref().and_then(|n| n.sound.clone());
+        self.notifications_sound = fresh.notifications.as_ref().and_then(|n| n.cue_sound());
 
         self.focus_history_depth = fresh.focus_history_depth.unwrap_or(100);
 

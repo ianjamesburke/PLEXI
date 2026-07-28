@@ -1009,7 +1009,7 @@ impl PlexiApp {
         let notifications_sound = config
             .notifications
             .as_ref()
-            .and_then(|n| n.sound.clone());
+            .and_then(|n| n.cue_sound());
         let focus_history_depth = config.focus_history_depth.unwrap_or(100);
         log::info!("config: focus_history_depth={focus_history_depth}");
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);

@@ -131,7 +131,7 @@ interrupt_threshold = 100
 
 `interrupt_threshold` controls which app notifications open the modal immediately. 100 means high and critical notifications interrupt; normal and low notifications queue silently.
 
-`sound` is an optional path to an audio file (WAV, MP3, FLAC, OGG) played once when a notification arrives, so an agent waiting on input can pull you back while Plexi is in the background. Unset means no sound. `enabled = false` drops the notification before the cue ever runs, and `focus_mode = true` suppresses the cue — focus mode means nothing interrupts, and a sound is the most interrupting thing there is.
+`sound` is an optional path to an audio file (WAV, MP3, FLAC, OGG) played once when a notification arrives, so an agent waiting on input can pull you back while Plexi is in the background. Unset means no sound; `sound = ""` also means no sound, so a workspace overlay can silence a globally configured cue. The cue only fires for a notification that would also be allowed to open the modal: `enabled = false` drops the notification before the cue ever runs, `focus_mode = true` suppresses it, and a notification that is not visible in the active context or sits below `interrupt_threshold` arrives silently — the cue and the modal share one interruption decision, so nothing ever beeps with nothing on screen.
 
 ### Notification scope
 
@@ -142,6 +142,8 @@ Scope decides which contexts a notification is visible in: `window` (only the or
 1. An explicitly requested scope — `plexi notify --scope global|context|window`.
 2. For app panes, the app's own `manifest.toml` `[launch] notification_scope`, which is a per-app policy declared by the app author and defaults to `window`.
 3. Otherwise the shared default, `context`.
+
+A `context`- or `window`-scoped notification needs a sender to attach to. `plexi notify` stamps the caller's own identity (`PLEXI_CONTEXT_ID` / `PLEXI_PANE_ID`) onto the request; the host attaches the notification to that context — never to whichever context happens to be active when the request is handled. When the sender cannot support the requested scope, the host resolves to the nearest wider scope it can honor (logged): `window` with a resolvable context but no live window narrows to `context`; a caller with no resolvable identity at all (a script running outside any pane with `PLEXI_SOCKET` exported, or a stale id) has no home context, so an explicit `--scope context|window` fails with an error at the CLI and an unscoped notification escalates to `global` — reachable everywhere rather than attached to a context that never produced it.
 
 Host-raised config errors are the one deliberate exception: they are workspace-wide rather than a property of any one context, so they are explicitly `global`.
 

@@ -162,6 +162,22 @@ pub enum AppRequest {
         /// Omit to take `NotifyScope::default()`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<NotifyScope>,
+        /// CLI-only: the sender's own context id (`PLEXI_CONTEXT_ID`), stamped
+        /// by the CLI so the host never guesses provenance from whichever
+        /// context happens to be active at dispatch time. Absent when the
+        /// caller runs outside any Plexi pane. A scope the sender cannot
+        /// support resolves to the nearest wider one rather than attaching to
+        /// a context that never produced it: window scope with a resolvable
+        /// context but no live window narrows to context; no resolvable
+        /// sender at all escalates to global.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_context_id: Option<u64>,
+        /// CLI-only: the sender's own pane id (`PLEXI_PANE_ID`). When the pane
+        /// is still alive its live location is the ground truth for the
+        /// notification's window and context — a pane can move between
+        /// contexts after its env was stamped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_pane_id: Option<u64>,
     },
     /// Report agent state for a pane. Called by hook scripts via `plexi agent report`.
     SetAgentState {

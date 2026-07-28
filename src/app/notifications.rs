@@ -261,23 +261,12 @@ impl PlexiApp {
         });
 
         let is_visible = self.notification_is_visible(&notification);
+        let may_interrupt = self.notification_may_interrupt(&notification);
+        let cue_played = self.play_notification_cue(&notification);
         self.pending_notifications.push(notification);
         self.save_notifications();
 
-        let cue_played = self.play_notification_cue();
-
-        // Auto-open rules:
-        //   1. Visibility — Global always; Window/Context only when the source
-        //      matches the active window/context.
-        //   2. focus_mode off — the global mute gate.
-        //   3. priority >= interrupt_threshold — don't auto-open low-urgency
-        //      notifications like "note saved".
-        // If any gate fails the notification still queues (the badge ticks) but
-        // the modal does not pop.
-        let should_auto_open = is_visible
-            && !self.notifications_focus_mode
-            && priority >= self.notifications_interrupt_threshold;
-        if should_auto_open {
+        if may_interrupt {
             self.show_notification_modal = true;
             // Only pin the arrival as current when nothing is already pinned.
             // A low-priority passive notification never steals the front slot;
@@ -288,16 +277,35 @@ impl PlexiApp {
         }
 
         log::info!(
-            "notify: queued source={} id={} title={:?} priority={} visible={} auto_open={} cue={}",
+            "notify: queued source={} id={} title={:?} priority={} visible={} interrupt={} cue={}",
             source.as_str(),
             notify_id,
             title,
             priority,
             is_visible,
-            should_auto_open,
+            may_interrupt,
             cue_played
         );
         true
+    }
+
+    /// The one interruption decision for a notification, consumed by every
+    /// surface that interrupts the user: the modal auto-open, the audible cue,
+    /// and the snooze-wake reopen. They all answer the same question — "may
+    /// this notification pull the user's attention right now?" — and splitting
+    /// that predicate is exactly how the cue once fired for notifications the
+    /// user could not even see. Gates, in order:
+    ///   1. Visibility — Global always; Window/Context only when the source
+    ///      matches the active window/context (and the entry is not snoozed).
+    ///   2. focus_mode off — the global mute gate.
+    ///   3. priority >= interrupt_threshold — low-urgency arrivals like
+    ///      "note saved" stay passive.
+    /// A notification that fails any gate still queues (the badge ticks); it
+    /// just arrives silently.
+    pub(crate) fn notification_may_interrupt(&self, n: &PendingNotification) -> bool {
+        self.notification_is_visible(n)
+            && !self.notifications_focus_mode
+            && n.priority >= self.notifications_interrupt_threshold
     }
 
     /// The audible cue to play for an arriving notification, or `None` to stay
@@ -305,12 +313,16 @@ impl PlexiApp {
     /// and the parameters it resolves — are observable without touching an
     /// audio device.
     ///
-    /// Silent when no `[notifications] sound` is configured, and when
-    /// `focus_mode` is on: focus mode means nothing interrupts, and a sound is
-    /// the most interrupting thing there is. The `enabled = false` case never
-    /// reaches here — the master switch drops the notification first.
-    pub(crate) fn notification_cue_request(&self) -> Option<crate::media::audio::PlaybackRequest> {
-        if self.notifications_focus_mode {
+    /// Silent when no `[notifications] sound` is configured, and whenever
+    /// [`Self::notification_may_interrupt`] says the notification may not
+    /// interrupt — the cue never fires for a notification the modal would not
+    /// show. The `enabled = false` case never reaches here — the master switch
+    /// drops the notification first.
+    pub(crate) fn notification_cue_request(
+        &self,
+        notification: &PendingNotification,
+    ) -> Option<crate::media::audio::PlaybackRequest> {
+        if !self.notification_may_interrupt(notification) {
             return None;
         }
         let source = self.notifications_sound.as_ref()?;
@@ -325,8 +337,8 @@ impl PlexiApp {
     /// A cue that fails to play is logged and swallowed deliberately: a missing
     /// or undecodable sound file must never cost the user the notification
     /// itself.
-    fn play_notification_cue(&mut self) -> bool {
-        let Some(request) = self.notification_cue_request() else {
+    fn play_notification_cue(&mut self, notification: &PendingNotification) -> bool {
+        let Some(request) = self.notification_cue_request(notification) else {
             return false;
         };
         let source = request.source.clone();
@@ -460,22 +472,18 @@ impl PlexiApp {
     /// second from `update()`.
     pub(crate) fn tick_notification_timeouts(&mut self) {
         let now = std::time::Instant::now();
-        let threshold = self.notifications_interrupt_threshold;
-        let focus_mode = self.notifications_focus_mode;
         let mut expired_ids: Vec<String> = Vec::new();
-        let mut woken_priority_met = false;
+        let mut woken_ids: Vec<String> = Vec::new();
         // Single mutable pass: wake snoozed entries, collect expired ids.
         for n in &mut self.pending_notifications {
             if let Some(t) = n.deliver_after {
                 if t > now {
                     continue; // still snoozed — skip timeout check too
                 }
-                if !focus_mode && n.priority >= threshold {
-                    woken_priority_met = true;
-                }
                 log::info!("notify:snooze: woke notify_id={}", n.notify_id);
                 n.deliver_after = None;
                 n.enqueued_at = now;
+                woken_ids.push(n.notify_id.clone());
             }
             if let Some(timeout) = n.timeout_secs {
                 if n.enqueued_at.elapsed() >= std::time::Duration::from_secs(timeout) {
@@ -483,6 +491,14 @@ impl PlexiApp {
                 }
             }
         }
+        // A wake is a second arrival for interruption purposes, so it takes
+        // the same single decision as enqueue — a snoozed notification from an
+        // inactive context no longer reopens the modal where it isn't visible.
+        let woken_priority_met = self
+            .pending_notifications
+            .iter()
+            .filter(|n| woken_ids.contains(&n.notify_id))
+            .any(|n| self.notification_may_interrupt(n));
         if woken_priority_met {
             self.show_notification_modal = true;
             if self.current_notify_id.is_none() {

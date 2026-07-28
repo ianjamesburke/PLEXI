@@ -142,6 +142,8 @@ Post a notification. All three action_types must dispatch correctly (no TODO).
 | `required` | `boolean` | no |
 | `response_file` | `string?` | no |
 | `scope` | `variant` | no |
+| `source_context_id` | `integer?` | no |
+| `source_pane_id` | `integer?` | no |
 | `timeout_secs` | `integer?` | no |
 | `title` | `string` | yes |
 

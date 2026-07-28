@@ -622,6 +622,24 @@
               ],
               "description": "CLI-only: notification visibility scope. Apps never set this — their\nscope comes from `manifest.toml::[launch] notification_scope`.\nOmit to take `NotifyScope::default()`."
             },
+            "source_context_id": {
+              "description": "CLI-only: the sender's own context id (`PLEXI_CONTEXT_ID`), stamped\nby the CLI so the host never guesses provenance from whichever\ncontext happens to be active at dispatch time. Absent when the\ncaller runs outside any Plexi pane. A scope the sender cannot\nsupport resolves to the nearest wider one rather than attaching to\na context that never produced it: window scope with a resolvable\ncontext but no live window narrows to context; no resolvable\nsender at all escalates to global.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "source_pane_id": {
+              "description": "CLI-only: the sender's own pane id (`PLEXI_PANE_ID`). When the pane\nis still alive its live location is the ground truth for the\nnotification's window and context — a pane can move between\ncontexts after its env was stamped.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "timeout_secs": {
               "default": null,
               "description": "Auto-dismiss after this many seconds. On expiry, host delivers\n`PlexiEvent::NotifyAction` with `value = on_dismiss` (or \"timeout\" if\n`on_dismiss` is None). Omit for notifications that should persist.",
