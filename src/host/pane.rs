@@ -476,9 +476,15 @@ impl Pane {
         }
     }
 
+    /// The pane's agent state, from the shared detector's two signal sources:
+    /// hook-reported state (`SetAgentState`, authoritative) when any hook has
+    /// fired, else the host-observed synthesis from `tick_terminal_activity`
+    /// (known agent process in the PTY foreground + output-settle state).
+    /// Every consumer — `pane list`, `pane state`, the `pane new --agent`
+    /// boot predicate — reads through here, so they stay correct together.
     pub fn agent(&self) -> Option<&crate::app_protocol::PaneAgentState> {
         match self {
-            Pane::Terminal(t) => t.agent.as_ref(),
+            Pane::Terminal(t) => t.agent.as_ref().or(t.observed_agent.as_ref()),
             Pane::App(a) => a
                 .agent
                 .as_ref()
@@ -605,6 +611,15 @@ pub struct TerminalPane {
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
     pub agent: Option<crate::app_protocol::PaneAgentState>,
+    /// Host-observed agent state, synthesized in `tick_terminal_activity`
+    /// when a known agent binary holds the PTY foreground and no hook has
+    /// reported yet: identity from the foreground process name, state from
+    /// the PTY output settle (`last_pty_output_at`). Covers the boot window
+    /// for agents whose lifecycle hooks stay silent until first interaction
+    /// (Codex defers `session_start` to the first prompt submission). Cleared
+    /// permanently for the pane once `agent` is set — hook reports are the
+    /// authoritative source and never compete with the synthesis.
+    pub observed_agent: Option<crate::app_protocol::PaneAgentState>,
     /// Host-observed terminal activity (foreground process running, exited),
     /// polled via `tcgetpgrp` in `tick_terminal_activity`. Separate from
     /// `agent`, which is hook-reported; `agent` wins when both are present.
@@ -648,6 +663,7 @@ impl TerminalPane {
             outside_workspace_root: None,
             hidden: false,
             agent: None,
+            observed_agent: None,
             activity: None,
             slots: HashMap::new(),
             last_pty_output_at: None,

@@ -365,6 +365,55 @@ pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
     result
 }
 
+/// Executable name for `pid` — the kernel's `p_comm`, i.e. the basename of
+/// the path passed to `execve`, truncated to 16 bytes. This is deliberately
+/// not the resolved binary path (`proc_pidpath`): a Homebrew `codex` shim
+/// execs `codex-aarch64-apple-darwin`, but `p_comm` stays `codex`, and a
+/// shebang script keeps the script's own name — both are what the agent
+/// detector needs to match on.
+pub fn get_pid_name(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = [0u8; 64];
+        let n = unsafe {
+            libc::proc_name(
+                pid as libc::c_int,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len() as u32,
+            )
+        };
+        (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Map a foreground process name to the canonical agent name the lifecycle
+/// hooks report (`PLEXI_AGENT_NAME`). This is the identity half of the shared
+/// agent detector: hooks are authoritative once they fire, but not every
+/// agent CLI emits a hook at boot (Codex defers `session_start` to the first
+/// prompt submission), so the host also recognizes the agent by its process
+/// name. Best-effort by design — a wrapper script that hides the agent binary
+/// behind another name is simply not observed until its hooks report.
+pub fn known_agent_process(name: &str) -> Option<&'static str> {
+    match name {
+        "claude" => Some("claude-code"),
+        "codex" => Some("codex"),
+        "pi" => Some("pi"),
+        _ => None,
+    }
+}
+
 /// True when `pid` has at least one live child process. Used as one of the
 /// two terminal-activity signals (alongside the PTY foreground pgid): a
 /// shell with children is running something — a script, a server, a REPL.
@@ -590,5 +639,39 @@ mod tests {
         assert!(!is_shell_env_name("BAD-NAME"));
         assert!(!is_shell_env_name("BAD:NAME"));
         assert!(!is_shell_env_name("BAD NAME"));
+    }
+
+    #[test]
+    fn known_agent_process_maps_canonical_names() {
+        assert_eq!(known_agent_process("codex"), Some("codex"));
+        assert_eq!(known_agent_process("claude"), Some("claude-code"));
+        assert_eq!(known_agent_process("pi"), Some("pi"));
+        assert_eq!(known_agent_process("zsh"), None);
+        assert_eq!(known_agent_process("vim"), None);
+        // p_comm is the exec'd basename — a resolved Homebrew payload name
+        // must not match; the shim name (`codex`) is what the kernel records.
+        assert_eq!(known_agent_process("codex-aarch64-apple-darwin"), None);
+    }
+
+    #[test]
+    fn get_pid_name_reports_the_exec_basename() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .expect("spawn sleep");
+        let name = get_pid_name(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(name.as_deref(), Some("sleep"));
+    }
+
+    #[test]
+    fn get_pid_name_none_for_dead_pid() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("0")
+            .spawn()
+            .expect("spawn sleep");
+        let _ = child.wait();
+        assert_eq!(get_pid_name(child.id()), None);
     }
 }

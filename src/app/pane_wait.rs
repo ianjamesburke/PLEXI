@@ -77,6 +77,12 @@ const COLLAPSED_PASTE_HINT: &str = "paste again to expand";
 /// sub-second repaint rather than a single wake at expiry.
 const SUBMIT_SERVICE_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Frame cadence while an agent boot is parked. The host-observed boot signal
+/// (`tick_terminal_activity` synthesis) updates at most once per second and
+/// only when frames run, so the boot service keeps frames coming at half that
+/// period rather than sleeping until the timeout deadline.
+const AGENT_BOOT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 /// The single collapsed-paste retry, spent by moving it out of the
 /// [`PendingSubmit`].
 ///
@@ -291,12 +297,17 @@ impl PlexiApp {
         crate::rpc::write_json_response(rf, json);
     }
 
-    /// True once the pane's agent has self-reported idle — the boot predicate.
+    /// True once the pane's agent reports idle — the boot predicate.
     ///
-    /// Idle is the state both supported agent TUIs report from their
-    /// `SessionStart` hook, so it is the first observable moment the agent can
-    /// accept work. There is deliberately no PTY prompt-signature fallback:
-    /// the hook report is the single source of truth for agent liveness.
+    /// Reads the shared agent detector through `Pane::agent()`, which merges
+    /// its two signal sources: hook-reported state (authoritative once any
+    /// lifecycle hook fires — Claude Code's `SessionStart` lands ~1s after
+    /// boot) and the host-observed synthesis from `tick_terminal_activity`
+    /// (known agent process in the PTY foreground + output settle), which
+    /// covers agents whose hooks stay silent until first interaction — Codex
+    /// defers `session_start` to the first prompt submission. There is
+    /// deliberately no prompt-signature parsing anywhere in this predicate:
+    /// both sources live in the one detector that also feeds `pane list`.
     fn agent_reports_idle(&self, pane_id: u64) -> bool {
         self.windows
             .iter()
@@ -314,6 +325,19 @@ impl PlexiApp {
     /// frame instead of blocking for the full boot window on a pane that can
     /// never report.
     pub(crate) fn service_pending_agent_boots(&mut self, ctx: &egui::Context) {
+        if self.pending_agent_boots.is_empty() {
+            return;
+        }
+        // Level-triggered completion: the predicate may flip through the
+        // host-observed detector (`tick_terminal_activity` synthesis) rather
+        // than a hook report, and that path has no completion callback — so
+        // re-check every parked pane each pass instead of relying solely on
+        // the `SetAgentState` edge in `complete_agent_boots`.
+        let mut parked: Vec<u64> = self.pending_agent_boots.iter().map(|b| b.pane_id).collect();
+        parked.dedup();
+        for pane_id in parked {
+            self.complete_agent_boots(pane_id);
+        }
         if self.pending_agent_boots.is_empty() {
             return;
         }
@@ -373,16 +397,24 @@ impl PlexiApp {
         };
         let predicted_frame =
             std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
-        ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+        // A booted-but-quiet agent produces no PTY events, so nothing else
+        // drives frames between here and the boot deadline — and without
+        // frames the 1 Hz activity tick never runs the observed-agent
+        // synthesis the predicate above is waiting on. Poll at a bounded
+        // cadence while any boot is parked, capped by the timeout deadline.
+        let delay = crate::host::wasm_frame::repaint_delay_until(
             next_expiry,
             Instant::now(),
             predicted_frame,
-        ));
+        )
+        .min(AGENT_BOOT_POLL_INTERVAL);
+        ctx.request_repaint_after(delay);
     }
 
     /// Answer the parked spawn for `pane_id` if its agent now reports idle.
-    /// Called from the agent-report path, which is the only thing that can
-    /// change a pane's agent state through the host.
+    /// Called on the `SetAgentState` edge (a hook report lands) and from the
+    /// level-triggered re-check in `service_pending_agent_boots` (the
+    /// host-observed synthesis has no completion callback of its own).
     pub(crate) fn complete_agent_boots(&mut self, pane_id: u64) {
         if !self
             .pending_agent_boots

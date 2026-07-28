@@ -7,6 +7,14 @@ use super::PlexiApp;
 
 const MAX_SLOT_CONTENT_SIZE: usize = 10 * 1024 * 1024;
 
+/// Quiet window after which a foreground agent TUI with no hook report yet is
+/// considered idle by the host-observed detector. Measured against a real
+/// Codex boot: the banner draws in bursts with gaps under ~300ms and goes
+/// quiet within ~2.2s, so one full second of PTY silence cleanly separates
+/// "still drawing" from "sitting at the prompt" while staying far inside the
+/// 60s default boot window.
+const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+
 use crate::rpc::{write_json_response, write_response};
 
 fn slot_error(response_file: &str, message: impl Into<String>) {
@@ -2115,9 +2123,10 @@ impl PlexiApp {
                 }
                 if found {
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
-                    // The self-report is the only thing that changes a pane's
-                    // agent state, so it is where a parked `pane new --agent`
-                    // spawn is answered.
+                    // Fast path: answer a parked `pane new --agent` spawn the
+                    // frame the hook report lands. The host-observed detector
+                    // path is picked up by the level-triggered re-check in
+                    // `service_pending_agent_boots` instead.
                     self.complete_agent_boots(*pane_id);
                 } else {
                     log::warn!(
@@ -2833,6 +2842,14 @@ impl PlexiApp {
     /// called from the throttled block in the render loop). Working = a
     /// foreground process other than the shell holds the PTY (`tcgetpgrp`),
     /// Blocked = the shell exited, None = shell sitting at its prompt.
+    ///
+    /// The same pass synthesizes the host-observed half of the agent detector
+    /// (`TerminalPane::observed_agent`): when a known agent binary is the PTY
+    /// foreground-group leader and no lifecycle hook has reported yet, the
+    /// pane's agent identity comes from the process name and its state from
+    /// the PTY output settle. This is what makes a freshly booted Codex —
+    /// whose hooks stay silent until the first prompt submission — visible to
+    /// `pane list` and to the `pane new --agent` boot wait.
     pub(super) fn tick_terminal_activity(&mut self) {
         use crate::app_protocol::AgentState;
         for window in self.windows.iter_mut() {
@@ -2863,6 +2880,51 @@ impl PlexiApp {
                         fg
                     );
                     t.activity = new;
+                }
+
+                let observed = if t.agent.is_some() || t.exited {
+                    // A hook has reported (or the shell died): hooks own the
+                    // pane's agent state from the first report onward.
+                    None
+                } else {
+                    fg.filter(|fg| *fg != shell_pid as i32)
+                        .and_then(|fg| crate::host::shell::get_pid_name(fg as u32))
+                        .and_then(|name| crate::host::shell::known_agent_process(&name))
+                        .map(|agent| {
+                            // A TUI that has stopped redrawing is sitting at its
+                            // prompt; one that is still streaming (banner draw,
+                            // spinner animation) is not ready yet. Same physical
+                            // signal `pane send --submit` settles on.
+                            let settled = t
+                                .last_pty_output_at
+                                .is_some_and(|at| at.elapsed() >= OBSERVED_AGENT_SETTLE);
+                            crate::app_protocol::PaneAgentState {
+                                pane_id: *pane_id,
+                                state: if settled {
+                                    AgentState::Idle
+                                } else {
+                                    AgentState::Working
+                                },
+                                agent: agent.to_string(),
+                                detail: None,
+                                session_id: None,
+                            }
+                        })
+                };
+                let changed = match (&t.observed_agent, &observed) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => a.agent != b.agent || a.state != b.state,
+                    _ => true,
+                };
+                if changed {
+                    log::info!(
+                        "observed agent: pane {} {:?} -> {:?} (fg_pgid={:?})",
+                        pane_id,
+                        t.observed_agent.as_ref().map(|a| (&a.agent, &a.state)),
+                        observed.as_ref().map(|a| (&a.agent, &a.state)),
+                        fg
+                    );
+                    t.observed_agent = observed;
                 }
             }
         }

@@ -5237,6 +5237,176 @@ mod agent_boot {
             Some("agent_cmd is only supported for terminal spawns")
         );
     }
+
+    // -- host-observed boot detection ---------------------------------------
+    //
+    // Codex v0.145.0 defers its `session_start` hook until the first user
+    // prompt submission, so a freshly booted Codex never self-reports. The
+    // shared detector therefore also recognizes a known agent binary in the
+    // PTY foreground and derives idle from the output settle. These tests
+    // fake the agent with a real binary copied to the name `codex` — the
+    // detector keys on the exec'd process name, exactly as it does for the
+    // real Homebrew `codex` shim.
+
+    /// A quiescent binary named `codex` (a copy of `sleep`) stands in for a
+    /// booted agent TUI sitting at its prompt.
+    fn fake_idle_codex(dir: &std::path::Path) -> String {
+        let fake = dir.join("codex");
+        std::fs::copy("/bin/sleep", &fake).expect("copy sleep");
+        format!("{} 60", fake.display())
+    }
+
+    fn pane_info(h: &mut HostHarness, dir: &std::path::Path, pane_id: u64) -> serde_json::Value {
+        let response = temp_response(dir, "agent-info");
+        h.inject_ipc(AppRequest::GetPaneInfo {
+            pane_id,
+            response_file: response.clone(),
+        });
+        h.run_frames(1);
+        read_json_response(&response)
+    }
+
+    /// Pump visible or hidden frames until the response file exists, waiting
+    /// generously — the observed path needs real seconds: shell boot, the
+    /// typed command, a full settle window, and a 1 Hz detector tick.
+    fn pump_until_response(h: &mut HostHarness, response: &str, hidden: bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !std::path::Path::new(response).exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if hidden {
+                h.run_hidden_frames(1);
+            } else {
+                h.run_frames(1);
+            }
+        }
+    }
+
+    /// The tester's exact failure: a booted Codex never fires a hook, so the
+    /// spawn must complete from the host-observed detector alone.
+    #[test]
+    fn agent_spawn_completes_from_observed_codex_boot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let cmd = fake_idle_codex(tmp.path());
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, false);
+        assert_eq!(
+            read_json_response(&response)["pane_id"].as_u64(),
+            Some(pane_id),
+            "a settled foreground agent binary must complete the boot without any hook report"
+        );
+
+        // The same detector feeds `pane list`/`pane state`: the pane must
+        // report the observed agent, not `agent: null`.
+        let info = pane_info(&mut h, tmp.path(), pane_id);
+        assert_eq!(
+            info["agent"]["agent"].as_str(),
+            Some("codex"),
+            "observed identity must surface on the pane info: {info}"
+        );
+        assert_eq!(
+            info["agent"]["state"].as_str(),
+            Some("idle"),
+            "a settled agent must read idle: {info}"
+        );
+    }
+
+    /// The observed path lives in `App::logic` end to end (activity tick,
+    /// boot service) — an occluded host must still complete the boot.
+    #[test]
+    fn agent_spawn_observed_boot_completes_while_window_hidden() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let cmd = fake_idle_codex(tmp.path());
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(120.0));
+        h.run_hidden_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, true);
+        assert_eq!(
+            read_json_response(&response)["pane_id"].as_u64(),
+            Some(pane_id),
+            "the observed boot path must not depend on App::ui running"
+        );
+    }
+
+    /// A foreground agent that is still streaming output is booting or busy,
+    /// never idle — the settle window is what separates the two. A fake codex
+    /// that redraws continuously must ride out the whole boot window.
+    #[test]
+    fn agent_spawn_streaming_agent_is_not_reported_idle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let fake = tmp.path().join("codex");
+        std::fs::copy("/bin/zsh", &fake).expect("copy zsh");
+        let cmd = format!(
+            "{} -c 'while :; do echo streaming-banner; sleep 0.05; done'",
+            fake.display()
+        );
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(4.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, false);
+        let reply = read_json_response(&response);
+        assert_eq!(
+            reply["timeout"].as_bool(),
+            Some(true),
+            "a continuously streaming agent must never satisfy the boot predicate: {reply}"
+        );
+
+        h.inject_ipc(AppRequest::ClosePane { pane_id });
+        h.run_frames(1);
+    }
+
+    /// Hook reports are authoritative: once one lands, it both overrides the
+    /// observed state and permanently disables synthesis for the pane.
+    #[test]
+    fn hook_report_overrides_observed_agent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let cmd = fake_idle_codex(tmp.path());
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        pump_until_response(&mut h, &response, false);
+
+        report_agent(&mut h, pane_id, AgentState::Working);
+        h.run_frames(1);
+        let info = pane_info(&mut h, tmp.path(), pane_id);
+        assert_eq!(info["agent"]["agent"].as_str(), Some("claude-code"));
+        assert_eq!(info["agent"]["state"].as_str(), Some("working"));
+
+        // Ride past the next detector ticks: the settled fake codex is still
+        // in the foreground, but synthesis must stay off once hooks own the
+        // pane — the hook state must not flap back to observed idle.
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            h.run_frames(1);
+        }
+        let info = pane_info(&mut h, tmp.path(), pane_id);
+        assert_eq!(
+            info["agent"]["agent"].as_str(),
+            Some("claude-code"),
+            "a hook report must permanently supersede the observed agent: {info}"
+        );
+        assert_eq!(info["agent"]["state"].as_str(), Some("working"));
+    }
 }
 
 /// `plexi pane send --submit` (stint 0583): the host owns the whole
