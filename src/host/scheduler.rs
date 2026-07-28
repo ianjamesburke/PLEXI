@@ -441,18 +441,21 @@ fn is_due(
 }
 
 fn cron_matches(expr: &CronExpr, now: &chrono::DateTime<chrono::Local>) -> bool {
-    use chrono::{Datelike, Timelike};
-    let minute = now.minute();
-    let hour = now.hour();
-    let day = now.day();
-    let month = now.month();
+    cron_date_matches(expr, now.date_naive()) && cron_time_matches(expr, now.time())
+}
+
+fn cron_date_matches(expr: &CronExpr, date: chrono::NaiveDate) -> bool {
+    use chrono::Datelike;
     // chrono: weekday().num_days_from_monday() gives 0=Mon..6=Sun; cron 1=Mon..7=Sun
-    let weekday = now.weekday().num_days_from_monday() + 1;
-    field_matches(&expr.minute, minute)
-        && field_matches(&expr.hour, hour)
-        && field_matches(&expr.day_of_month, day)
-        && field_matches(&expr.month, month)
+    let weekday = date.weekday().num_days_from_monday() + 1;
+    field_matches(&expr.day_of_month, date.day())
+        && field_matches(&expr.month, date.month())
         && field_matches(&expr.day_of_week, weekday)
+}
+
+fn cron_time_matches(expr: &CronExpr, time: chrono::NaiveTime) -> bool {
+    use chrono::Timelike;
+    field_matches(&expr.minute, time.minute()) && field_matches(&expr.hour, time.hour())
 }
 
 fn field_matches(field: &CronField, value: u32) -> bool {
@@ -709,7 +712,14 @@ pub(crate) fn next_fire_description(
     schedule: &ParsedSchedule,
     last_fire: Option<&chrono::DateTime<chrono::Local>>,
 ) -> String {
-    let now = chrono::Local::now();
+    next_fire_description_at(schedule, last_fire, chrono::Local::now())
+}
+
+fn next_fire_description_at(
+    schedule: &ParsedSchedule,
+    last_fire: Option<&chrono::DateTime<chrono::Local>>,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
     match schedule {
         ParsedSchedule::Interval { secs } => match last_fire {
             None => format!("in {}s (never fired)", secs),
@@ -730,16 +740,51 @@ pub(crate) fn next_fire_description(
             }
         },
         ParsedSchedule::Cron(expr) => {
-            // Find the next minute that matches
-            use chrono::Duration;
-            let mut t = now + Duration::minutes(1);
-            for _ in 0..10080 {
-                // search up to 7 days
-                if cron_matches(expr, &t) {
-                    use chrono::Timelike;
-                    return format!("at {:02}:{:02}", t.hour(), t.minute());
+            // Walk days with the date half of the fire matcher, then take
+            // the earliest matching wall-clock slot of the first matching
+            // day — the same `cron_date_matches`/`cron_time_matches` pair
+            // `cron_matches` fires on, so the display can never disagree
+            // with an actual fire. The horizon must cover the sparsest
+            // reachable schedule: a leap-day cron across the 2100-style
+            // century gap (Feb 29 2096 → Feb 29 2104) is eight years out,
+            // so nine years of days bounds it. Anything unmatched by then
+            // is genuinely unreachable (e.g. `0 8 30 2 *`, Feb 30).
+            use chrono::{Duration, Timelike};
+            let day_slots: Vec<(u32, u32)> = (0..24u32)
+                .filter(|h| field_matches(&expr.hour, *h))
+                .flat_map(|h| {
+                    (0..60u32)
+                        .filter(|m| field_matches(&expr.minute, *m))
+                        .map(move |m| (h, m))
+                })
+                .collect();
+            if day_slots.is_empty() {
+                return "unknown".to_string();
+            }
+            const MAX_DAYS: i64 = 366 * 9;
+            for d in 0..=MAX_DAYS {
+                let date = now.date_naive() + Duration::days(d);
+                if !cron_date_matches(expr, date) {
+                    continue;
                 }
-                t = t + Duration::minutes(1);
+                // Today only counts slots strictly after the current minute.
+                let slot = if d == 0 {
+                    day_slots
+                        .iter()
+                        .copied()
+                        .find(|&(h, m)| (h, m) > (now.hour(), now.minute()))
+                } else {
+                    day_slots.first().copied()
+                };
+                let Some((h, m)) = slot else { continue };
+                let when = if d == 0 {
+                    String::new()
+                } else if d == 1 {
+                    "tomorrow ".to_string()
+                } else {
+                    format!("{date} ")
+                };
+                return format!("{when}at {h:02}:{m:02}");
             }
             "unknown".to_string()
         }
@@ -1093,5 +1138,80 @@ mod tests {
         assert_eq!(s.live_run_count(), 1);
         assert!(s.live_run(&root, "a").is_none());
         assert!(s.live_run(&root, "b").is_some());
+    }
+
+    fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, mo, d, h, mi, 0)
+            .single()
+            .expect("unambiguous local time")
+    }
+
+    fn next_desc(schedule: &str, now: chrono::DateTime<chrono::Local>) -> String {
+        let s = parse_schedule(schedule).expect("schedule parses");
+        next_fire_description_at(&s, None, now)
+    }
+
+    #[test]
+    fn next_fire_same_day_omits_date() {
+        assert_eq!(
+            next_desc("daily at 09:00", local(2026, 7, 28, 8, 0)),
+            "at 09:00"
+        );
+    }
+
+    #[test]
+    fn next_fire_next_day_says_tomorrow() {
+        assert_eq!(
+            next_desc("daily at 09:00", local(2026, 7, 28, 12, 0)),
+            "tomorrow at 09:00"
+        );
+    }
+
+    #[test]
+    fn next_fire_monthly_resolves_a_full_cycle_out() {
+        // 31 days out — beyond the old 7-day search window that returned
+        // "unknown" for `monthly on N` most of every month.
+        assert_eq!(
+            next_desc("monthly on 28 at 08:00", local(2026, 7, 28, 12, 0)),
+            "2026-08-28 at 08:00"
+        );
+    }
+
+    #[test]
+    fn next_fire_monthly_on_31_reaches_across_february() {
+        assert_eq!(
+            next_desc("monthly on 31 at 08:00", local(2026, 2, 1, 12, 0)),
+            "2026-03-31 at 08:00"
+        );
+    }
+
+    #[test]
+    fn next_fire_weekly_shows_the_date() {
+        // 2026-07-28 is a Tuesday; next Monday is 2026-08-03.
+        assert_eq!(
+            next_desc("weekly on monday at 09:00", local(2026, 7, 28, 12, 0)),
+            "2026-08-03 at 09:00"
+        );
+    }
+
+    #[test]
+    fn next_fire_leap_day_cron_resolves_across_years() {
+        let s = parse_schedule("0 8 29 2 *").expect("leap-day cron parses");
+        assert_eq!(
+            next_fire_description_at(&s, None, local(2026, 7, 28, 12, 0)),
+            "2028-02-29 at 08:00"
+        );
+    }
+
+    #[test]
+    fn next_fire_unreachable_cron_stays_unknown() {
+        // February 30th never exists.
+        let s = parse_schedule("0 8 30 2 *").expect("raw cron parses");
+        assert_eq!(
+            next_fire_description_at(&s, None, local(2026, 7, 28, 12, 0)),
+            "unknown"
+        );
     }
 }

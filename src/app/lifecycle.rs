@@ -2735,31 +2735,36 @@ impl PlexiApp {
                 )
             };
 
-            // Overlap guard: while the previous run's command is still going,
-            // skip — never stack panes. The skip does NOT stamp last_fire, so
-            // the routine fires on the next tick after the run finishes rather
-            // than waiting a full interval.
+            // Overlap guard: while the previous run's pane is alive (exists
+            // and its PTY child has not exited), skip — never stack panes.
+            // Ephemeral panes free the routine when the command exits (the
+            // pane auto-closes); a non-ephemeral pane frees it when its shell
+            // session ends or the pane is closed — an exited "[process
+            // exited]" placeholder never holds a routine hostage. The skip
+            // does NOT stamp last_fire, so the routine fires on the next
+            // tick after the run ends rather than waiting a full interval.
             if let Some(run) = self.scheduler.live_run(&source_root, &name) {
                 let pane_id = run.pane_id;
                 let skip_notified = run.skip_notified;
                 if self.routine_run_is_alive(pane_id) {
                     log::info!(
-                        "scheduler: routine '{name}' skipped — previous run (pane {pane_id}) still active"
+                        "scheduler: routine '{name}' skipped — previous run's pane {pane_id} is still open"
                     );
                     if !skip_notified {
                         self.notify_routine_issue(
                             &source_root,
                             &format!("Routine '{name}' skipped"),
                             &format!(
-                                "The previous run (pane {pane_id}) is still going; the routine will fire again once it finishes."
+                                "The previous run's pane ({pane_id}) is still running; the routine fires again once it exits or the pane is closed."
                             ),
                         );
                         self.scheduler.mark_skip_notified(&source_root, &name);
                     }
                     continue;
                 }
-                // Run finished (or its pane vanished through a path that
-                // skipped the close hook) — reap and fall through to fire.
+                // Run ended (PTY child exited, or the pane vanished through a
+                // path that skipped the close hook) — reap and fall through
+                // to fire.
                 self.scheduler.reap_run(&source_root, &name);
             }
 
@@ -2777,18 +2782,19 @@ impl PlexiApp {
         }
     }
 
-    /// True while a routine's spawned pane exists and its command is still
-    /// running (foreground process or children, as sampled by
-    /// `tick_terminal_activity`). A pane sitting at an idle shell — or gone
-    /// entirely — is not a live run.
+    /// True while a routine run's pane exists and its PTY child has not
+    /// exited. Liveness is this kernel fact (`PtyEvent::Exit` → `t.exited`)
+    /// and never the `activity` sampler: activity is a UI affordance whose
+    /// heuristics (fg pgid, child scan) go blind when the shell
+    /// exec-optimises a bare command into itself — an ephemeral run's
+    /// `zsh -c "sleep 30"` IS the sleep, has no children, and never moves
+    /// the fg pgid, so sampling it read live runs as finished and stacked
+    /// panes without bound.
     fn routine_run_is_alive(&self, pane_id: u64) -> bool {
         self.windows.iter().any(|w| {
-            w.panes.get(&pane_id).is_some_and(|p| {
-                p.as_terminal().is_some_and(|t| {
-                    !t.exited
-                        && matches!(t.activity, Some(crate::app_protocol::AgentState::Working))
-                })
-            })
+            w.panes
+                .get(&pane_id)
+                .is_some_and(|p| p.as_terminal().is_some_and(|t| !t.exited))
         })
     }
 

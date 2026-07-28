@@ -56,10 +56,6 @@ impl PlexiApp {
             let now = std::time::Instant::now();
             self.last_notify_poll = now;
             self.drain_spawn_queue();
-            // Activity must be sampled before the scheduler runs: the routine
-            // overlap guard reads each terminal's `activity` to decide whether
-            // a prior run is still going, and a stale pre-spawn sample would
-            // read as "finished" and stack a duplicate pane.
             self.tick_terminal_activity();
             self.tick_scheduler();
             self.tick_notification_timeouts();

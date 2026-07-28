@@ -127,6 +127,8 @@ context   = "work"   # optional: fires into this context wherever it is; skipped
 ephemeral = true     # optional: close the spawned pane when the command exits
 ```
 
+A routine never stacks panes: while the previous run's pane is still alive, due fires are skipped (with one notification per skip streak), and the routine fires again on the first tick after that run ends. Ephemeral panes close themselves when the command exits; a non-ephemeral pane holds its routine until its shell session ends or the pane is closed.
+
 ### Schedule formats
 
 | Format | Example |

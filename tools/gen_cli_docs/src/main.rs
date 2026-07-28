@@ -79,6 +79,15 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         );
         println!("```");
         println!();
+        println!(
+            "A routine never stacks panes: while the previous run's pane is still \
+             alive, due fires are skipped (with one notification per skip streak), \
+             and the routine fires again on the first tick after that run ends. \
+             Ephemeral panes close themselves when the command exits; a \
+             non-ephemeral pane holds its routine until its shell session ends or \
+             the pane is closed."
+        );
+        println!();
         println!("### Schedule formats");
         println!();
         println!("| Format | Example |");

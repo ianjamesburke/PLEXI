@@ -4439,15 +4439,10 @@ mod routine_firing {
         let run_pane = run_panes[0];
         assert_eq!(h.app.scheduler.live_run_count(), 1);
 
-        // Simulate the command still running (deterministic — no real pgrep
-        // timing): activity as sampled by tick_terminal_activity.
-        h.app.windows[0]
-            .panes
-            .get_mut(&run_pane)
-            .and_then(|p| p.as_terminal_mut())
-            .expect("terminal")
-            .activity = Some(crate::app_protocol::AgentState::Working);
-
+        // No state is faked here: a freshly spawned pane whose PTY child has
+        // not exited IS a live run — liveness is pane-existence + !exited,
+        // never the `activity` sampler (tester13, PR #2508: sampling read
+        // exec-optimised ephemeral runs as finished and stacked panes).
         let last_fire_before_skip = h.app.scheduler.entries[0].last_fire;
         rewind_last_fire(&mut h, "long-job", 3);
         let rewound = h.app.scheduler.entries[0].last_fire;
@@ -4490,13 +4485,6 @@ mod routine_firing {
         );
 
         // A new run means a new streak: a fresh skip notifies again.
-        let second_pane = terminal_pane_ids(&h, 0)[0];
-        h.app.windows[0]
-            .panes
-            .get_mut(&second_pane)
-            .and_then(|p| p.as_terminal_mut())
-            .expect("terminal")
-            .activity = Some(crate::app_protocol::AgentState::Working);
         rewind_last_fire(&mut h, "long-job", 3);
         h.app.tick_scheduler();
         assert_eq!(
@@ -4504,6 +4492,108 @@ mod routine_firing {
             2,
             "a new skip streak notifies once more"
         );
+    }
+
+    /// Regression guard for tester13's Bug 1 on PR #2508, at the exact spawn
+    /// shape that escaped the original 0575 suite: `ephemeral = true` passes
+    /// the bare command to the shell, zsh exec-optimises `zsh -c "sleep 30"`
+    /// into the sleep itself (no children, fg pgid == shell pid), so the
+    /// `activity` sampler never leaves `None`. Liveness keyed on that sampler
+    /// read the run as finished and stacked a pane every tick. Liveness must
+    /// come from pane-existence + !exited, so this pane — activity untouched,
+    /// exactly as a real idle-sampled host would see it — blocks the refire.
+    #[test]
+    fn ephemeral_bare_command_run_blocks_refire_without_activity_sample() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "eph"
+            command = "sleep 30"
+            schedule = "every 2 hours"
+            ephemeral = true
+        "#,
+        );
+
+        h.app.tick_scheduler();
+        let panes = terminal_pane_ids(&h, 0);
+        assert_eq!(panes.len(), 1, "first tick fires");
+        let run_pane = panes[0];
+        assert_eq!(
+            h.app.windows[0]
+                .panes
+                .get(&run_pane)
+                .and_then(|p| p.as_terminal())
+                .expect("terminal")
+                .activity,
+            None,
+            "precondition: the sampler has never seen this pane — the shape the bug lived in"
+        );
+
+        rewind_last_fire(&mut h, "eph", 3);
+        h.app.tick_scheduler();
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "a live ephemeral run with no activity sample must skip, not stack"
+        );
+        assert_eq!(h.app.scheduler.live_run_count(), 1);
+    }
+
+    /// A non-ephemeral pane whose PTY child exited (shows "[process exited]"
+    /// but stays open until a keypress) is a finished run: the next due tick
+    /// reaps it and fires a fresh pane alongside it.
+    #[test]
+    fn nonephemeral_exited_shell_reaps_and_refires() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "keeper"
+            command = "true"
+            schedule = "every 2 hours"
+        "#,
+        );
+
+        h.app.tick_scheduler();
+        let panes = terminal_pane_ids(&h, 0);
+        assert_eq!(panes.len(), 1, "first tick fires");
+        let first_pane = panes[0];
+
+        // The field PtyEvent::Exit sets when the PTY child dies.
+        h.app.windows[0]
+            .panes
+            .get_mut(&first_pane)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("terminal")
+            .exited = true;
+
+        rewind_last_fire(&mut h, "keeper", 3);
+        h.app.tick_scheduler();
+        let panes = terminal_pane_ids(&h, 0);
+        assert_eq!(
+            panes.len(),
+            2,
+            "an exited run must be reaped and the routine refired"
+        );
+        assert_eq!(h.app.scheduler.live_run_count(), 1, "only the new run is registered");
+        let new_run = h
+            .app
+            .scheduler
+            .live_run(root.path(), "keeper")
+            .expect("new live run")
+            .pane_id;
+        assert_ne!(new_run, first_pane, "the live run is the fresh pane");
     }
 
     #[test]
