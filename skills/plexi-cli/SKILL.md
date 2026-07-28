@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.0.0"
-plexi_version: "0.0.651"
-last_verified: "2026-06-07"
+skill_version: "4.2.0"
+plexi_version: "0.2.0"
+last_verified: "2026-07-28"
 ---
 
 # Plexi CLI
@@ -53,14 +53,17 @@ app open --mcp CMD...    Wrap a stdio MCP server in a Plexi pane.
 app open --cli BINARY    Wrap a CLI tool with a Plexi UI.
 app init NAME            Scaffold a new app. --lang python (default), --global, --no-open,
                          --from PANE_ID. Before building a canvas/on_render app, read
-                         docs/sdk-v2.md for the drawing API (rect stroke/glow/gradient,
-                         circle glow, arc_ring, theme tokens).
+                         the SDK reference at https://plexiapp.com/docs/sdk for the
+                         drawing API (rect stroke/glow/gradient, circle glow, arc_ring,
+                         theme tokens).
 app install [SPEC]       Install from path, github:owner/repo, or --pack core.
                          No args = install from .plexi/apps.toml. --version SEMVER to pin.
 app uninstall ID         Remove an installed app.
 app list                 Show all installed apps with versions.
 app info ID              Show app details: id, name, version, tools.
-app render ID            Render to PNG. --size WxH, --state FILE, --output FILE.
+app render APP           Render an app (installed id or local path, e.g. ".") without a
+                         running host. Default output is the JSON UI tree; --png for an
+                         image. --size WxH, --state FILE, --output FILE.
 app validate [PATH]      Check app dir for errors before publish/install.
 app freeze PATH          Export installed apps as TOML snapshot (like pip freeze).
 app publish              Stub for future marketplace publishing; confirm behavior with --help.
@@ -165,7 +168,7 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 
 - `pane new` is the canonical way to open a terminal pane
 - `app open TYPE_ID` opens installed apps -- never `pane send ID "app\n"`
-- `app render` takes an installed app **ID** (not a path) -- run `app list` first
+- `app render . --png` renders the app in the current dir with no running host; default output is JSON, not an image
 - `agent init` replaces the former `app init --agent` form
 - `pane command ID "text" --enter` = send + Enter in one step (terminal panes only)
 - `pane send` with `\n` submits in shell panes but does NOT submit Claude Code prompts -- use the two-step pattern below
@@ -242,7 +245,7 @@ plexi app open snake -d --from $BALLS
 
 ```bash
 # 3 agents in their own sub-context, rooted at the current cwd.
-SQUAD=$(plexi context sub agentsquad --agents 3 --command cm)
+SQUAD=$(plexi context sub agentsquad --agents 3 --command claude)
 # Pane ids come back in the response — no follow-up `pane list` needed.
 for P in $(echo "$SQUAD" | jq -r '.panes[]'); do plexi pane name $P "squad-$P"; done
 ```
@@ -256,7 +259,7 @@ parent context's path rather than your cwd.
 
 ```bash
 LANE=$(plexi pane new -n "issue-42" -r --from $PLEXI_PANE_ID)
-plexi pane send $LANE "/implement-issue 42"
+plexi pane send $LANE "investigate and fix issue 42"
 plexi pane key $LANE enter
 ```
 

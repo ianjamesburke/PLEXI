@@ -86,6 +86,15 @@ sdk_current=$(grep '^version' "$sdk_toml" | head -1 | sed 's/version = "\(.*\)"/
 sed -i '' "s/^version = \"$sdk_current\"/version = \"$new\"/" "$sdk_toml"
 echo "SDK: $sdk_current → $new"
 
+# ── stamp agent skill ─────────────────────────────────────────────────────────
+# plexi_version in the skill frontmatter must track Cargo.toml; the
+# skill_version_matches_binary test fails otherwise. See skills/AGENTS.md.
+
+skill_md="$TREE/skills/plexi-cli/SKILL.md"
+sed -i '' "s/^plexi_version: \".*\"/plexi_version: \"$new\"/" "$skill_md"
+grep -q "^plexi_version: \"$new\"" "$skill_md" || die "failed to stamp plexi_version in $skill_md"
+echo "Skill: plexi_version → $new"
+
 # ── update CHANGELOG via git-cliff ───────────────────────────────────────────
 
 echo "Generating changelog..."
@@ -102,7 +111,7 @@ echo "Regenerating CLI docs..."
 
 # ── commit ────────────────────────────────────────────────────────────────────
 
-git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md website/src/content/docs/cli.md sdk/python/pyproject.toml
+git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md website/src/content/docs/cli.md sdk/python/pyproject.toml skills/plexi-cli/SKILL.md
 git -C "$TREE" commit -m "chore: release v$new"
 git -C "$TREE" tag "$tag"
 

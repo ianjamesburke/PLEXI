@@ -169,6 +169,15 @@ check_pushed "$BETA_TREE" "beta" "beta"
 check_clean "$MAIN_TREE" "main worktree"
 [[ $(git -C "$MAIN_TREE" rev-parse --abbrev-ref HEAD) == "main" ]] || die "main worktree is not on 'main' branch"
 
+# Stable releases must ship a skill that documents this binary's actual CLI
+# surface. A version compare cannot detect drift (alpha carries the released
+# version number between releases), so run the surface gate against the beta
+# tree's own clap tree: every subcommand and flag the skill documents must
+# exist, and plexi_version must match Cargo.toml. See src/cli/skill_surface.rs.
+echo "Verifying agent skill against the release CLI surface..."
+(cd "$BETA_TREE" && cargo test --quiet --bin plexi skill_surface) \
+    || die "skill surface gate failed — the skill documents CLI surface this release does not have (src/cli/skill_surface.rs)"
+
 version=$(grep '^version' "$BETA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
 echo "Promoting beta → main (v$version)..."
@@ -191,6 +200,10 @@ if [[ "$do_release" == "release" || "$do_release" == "true" ]]; then
     fi
     echo "Publishing tag v$version for source-build updates..."
     git -C "$MAIN_TREE" push origin "v$version" --force
+    echo ""
+    echo "REMINDER: republish the agent-skill mirror from this release tree —"
+    echo "          copy $MAIN_TREE/skills/plexi-cli/SKILL.md to ianjamesburke/plexi-skills,"
+    echo "          push main, tag v$version. Steps: skills/AGENTS.md."
 else
     echo "Code promoted to main. Run 'just promote main release' to publish its source-build tag."
 fi
