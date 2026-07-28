@@ -202,9 +202,9 @@ pub fn workspace_secret_set(
     #[cfg(target_os = "macos")]
     {
         use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+            keychain_user_name, keychain_workspace_name, system_store,
         };
-        let store = MacKeychain::new();
+        let store = system_store();
 
         if global {
             let account = keychain_user_name(effective_friendly);
@@ -326,9 +326,9 @@ pub fn workspace_secret_list(global: bool) -> i32 {
     #[cfg(target_os = "macos")]
     {
         use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+            keychain_user_name, keychain_workspace_name, system_store,
         };
-        let store = MacKeychain::new();
+        let store = system_store();
         let user_prefix = keychain_user_name("");
         let (workspace_id, workspace_entries) = match &scope {
             SecretListScope::WorkspaceAndUser(workspace_id) => {
@@ -387,9 +387,9 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
     #[cfg(target_os = "macos")]
     {
         use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+            keychain_user_name, keychain_workspace_name, system_store,
         };
-        let store = MacKeychain::new();
+        let store = system_store();
 
         if global {
             let account = keychain_user_name(friendly);
@@ -454,9 +454,9 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
     #[cfg(target_os = "macos")]
     {
         use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+            keychain_user_name, keychain_workspace_name, system_store,
         };
-        let store = MacKeychain::new();
+        let store = system_store();
 
         if global {
             let account = keychain_user_name(friendly);

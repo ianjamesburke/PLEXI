@@ -23,7 +23,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use zeroize::Zeroizing;
 
 // ── Keychain naming ──────────────────────────────────────────────────────────
@@ -60,22 +60,43 @@ pub enum SecretError {
     Backend(String),
 }
 
-/// macOS Keychain backend via the `security` CLI.
+/// The process-wide secret store handle — the ONLY way to reach a store
+/// backend. Production builds return the real macOS Keychain; test builds
+/// ALWAYS return a process-local in-memory store, and the real backend type
+/// is not even compiled under `cfg(test)`, so a test that tries to name it
+/// does not build. Default-safe, opt-in-dangerous — except the opt-in does
+/// not exist inside a test binary.
+///
+/// Why (2026-07-28): macOS keychain ACLs are per-binary, so every freshly
+/// compiled test binary is a new unsigned app and each login-keychain value
+/// read from a test fires its own credential dialog — an unattended agent
+/// gate cannot click one, so a prompting test silently stalls automation.
+#[cfg(target_os = "macos")]
+pub fn system_store() -> &'static dyn SecretStore {
+    #[cfg(not(test))]
+    {
+        static STORE: MacKeychain = MacKeychain;
+        &STORE
+    }
+    #[cfg(test)]
+    {
+        static STORE: std::sync::OnceLock<InMemoryKeychain> = std::sync::OnceLock::new();
+        STORE.get_or_init(InMemoryKeychain::new)
+    }
+}
+
+/// macOS Keychain backend via `security-framework`.
 ///
 /// Maintains `~/.plexi-<channel>/secrets-index.json` so list operations work
 /// without invoking `security dump-keychain` (which triggers an invisible
 /// permission prompt). See DEV_LOG 2026-04-11.
-#[cfg(target_os = "macos")]
-pub struct MacKeychain;
+///
+/// Private, non-constructible outside this module, and absent from test
+/// builds entirely — [`system_store`] is the only handle.
+#[cfg(all(target_os = "macos", not(test)))]
+struct MacKeychain;
 
-#[cfg(target_os = "macos")]
-impl MacKeychain {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 impl SecretStore for MacKeychain {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
         use security_framework::passwords::get_generic_password;
@@ -127,12 +148,16 @@ impl SecretStore for MacKeychain {
 // account strings (`plexi:<scope>:<friendly>`) because that's the single
 // natural primary key — workspace_id is embedded in the account name.
 
-#[cfg(target_os = "macos")]
-fn index_path() -> PathBuf {
+// The whole index-file layer is compiled out under test: with `MacKeychain`
+// absent and the legacy migration stubbed, nothing in a test binary can reach
+// it (the compiler proves this — these go dead-code without the cfg), so a
+// test can never read or rewrite the user's real secrets-index.json.
+#[cfg(all(target_os = "macos", not(test)))]
+fn index_path() -> std::path::PathBuf {
     crate::config::config_dir().join("secrets-index.json")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn index_read() -> Vec<String> {
     let path = index_path();
     let raw = match std::fs::read_to_string(&path) {
@@ -173,7 +198,7 @@ fn index_read() -> Vec<String> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn index_write(entries: &[String]) {
     let path = index_path();
     if let Some(parent) = path.parent() {
@@ -192,7 +217,7 @@ fn index_write(entries: &[String]) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn index_add(account: &str) {
     let mut entries = index_read();
     if !entries.iter().any(|a| a == account) {
@@ -201,7 +226,7 @@ fn index_add(account: &str) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn index_remove(account: &str) {
     let mut entries = index_read();
     entries.retain(|a| a != account);
@@ -213,7 +238,13 @@ fn index_remove(account: &str) {
 /// `plexi:user:<key>` (the friendly name == the canonical name). Logs every
 /// migration. Idempotent — re-runs are no-ops once `secrets-index.json` is
 /// in the new flat-string form.
-#[cfg(target_os = "macos")]
+///
+/// `not(test)`: this body contains the only direct Security.framework value
+/// read (`get_generic_password`) outside `MacKeychain`. Compiling it out
+/// under test means a test binary contains ZERO keychain call sites — a
+/// credential prompt from `cargo test` is a compile-time impossibility, not
+/// an audit conclusion. (No test calls this; only `main()` does.)
+#[cfg(all(target_os = "macos", not(test)))]
 pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
     use security_framework::passwords::get_generic_password;
     let path = index_path();
@@ -254,7 +285,7 @@ pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
     migrated
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 pub fn migrate_legacy_global_secrets(_store: &dyn SecretStore) -> usize {
     0
 }

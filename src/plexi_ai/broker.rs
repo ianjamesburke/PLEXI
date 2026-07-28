@@ -332,12 +332,12 @@ fn resolve_openrouter_api_key(
 
     #[cfg(target_os = "macos")]
     {
-        let store = crate::workspace::secrets::MacKeychain::new();
+        let store = crate::workspace::secrets::system_store();
         match resolve_openrouter_api_key_from_store(
             api_key_env,
             workspace_root,
             process_env.as_deref(),
-            &store,
+            store,
         ) {
             Ok(Some(key)) => return Ok(key),
             Ok(None) => {}

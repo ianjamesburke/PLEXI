@@ -271,8 +271,8 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
             .and_then(crate::app::registry::resolve_workspace_root)
             .or_else(crate::config::active_workspace_root);
         if let Some(root) = workspace_root {
-            let store = crate::workspace::secrets::MacKeychain::new();
-            match crate::workspace::secrets::resolve_terminal_env(&root, &store) {
+            let store = crate::workspace::secrets::system_store();
+            match crate::workspace::secrets::resolve_terminal_env(&root, store) {
                 Ok(resolved) => {
                     log::info!(
                         "shell::build_env: resolved {} allowlisted terminal env secrets for workspace {}",

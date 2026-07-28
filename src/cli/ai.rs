@@ -241,8 +241,8 @@ fn probe_ollama() -> (bool, Vec<String>) {
 fn check_openrouter_configured() -> bool {
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
-        let store = MacKeychain::new();
+        use crate::workspace::secrets::{keychain_user_name, system_store};
+        let store = system_store();
         ["OPENROUTER_API_KEY", "openrouter-api-key"]
             .iter()
             .any(|name| store.get(&keychain_user_name(name)).is_some())

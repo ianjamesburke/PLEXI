@@ -6,6 +6,40 @@
 //!      `HostSnapshot` after each frame.
 //!   2. Pane/IPC injection for host-model behavior without a display server.
 
+/// Prompt-equals-infrastructure-fail, as a mechanism rather than a rule
+/// (2026-07-28 keychain incident): a pre-main constructor disables keychain
+/// user interaction for the WHOLE test process before any code — including
+/// anything outside a test body — can run. A keychain call that would have
+/// raised a macOS credential dialog now returns `errSecInteractionNotAllowed`
+/// and fails loudly instead. `__mod_init_func` is the macOS constructor
+/// section (what the `ctor` crate emits); no dependency needed. The returned
+/// lock is leaked deliberately — its `Drop` would re-enable interaction.
+///
+/// Defense in depth: under `cfg(test)` the crate already compiles with zero
+/// Security.framework call sites (see `src/workspace/secrets.rs`), so this
+/// guard exists to catch reintroductions and anything a future dependency
+/// does with the keychain, not a known caller.
+#[cfg(all(test, target_os = "macos"))]
+mod keychain_prompt_guard {
+    extern "C" fn disable_keychain_prompts() {
+        use security_framework::os::macos::keychain::SecKeychain;
+        match SecKeychain::disable_user_interaction() {
+            Ok(lock) => std::mem::forget(lock),
+            Err(e) => {
+                eprintln!(
+                    "FATAL: could not disable keychain user interaction for the test process \
+                     ({e}); refusing to run — a test that can prompt is an infrastructure failure"
+                );
+                std::process::abort();
+            }
+        }
+    }
+
+    #[used]
+    #[link_section = "__DATA,__mod_init_func"]
+    static GUARD: extern "C" fn() = disable_keychain_prompts;
+}
+
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
 use crate::app_protocol::AppRequest;
@@ -275,11 +309,7 @@ impl HostHarness {
             )),
             ..Default::default()
         };
-        input
-            .viewports
-            .entry(viewport_id)
-            .or_default()
-            .occluded = Some(true);
+        input.viewports.entry(viewport_id).or_default().occluded = Some(true);
         app.raw_input_hook(&self.ctx, &mut input);
         let full_output = self.ctx.run_ui(input, |ui| {
             app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());

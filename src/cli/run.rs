@@ -159,9 +159,9 @@ pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
         #[cfg(target_os = "macos")]
         {
             use crate::workspace::secrets::{
-                resolve, MacKeychain, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets,
+                resolve, system_store, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets,
             };
-            let store = MacKeychain::new();
+            let store = system_store();
             // Load workspace context once — fail early if secrets are required but workspace
             // is not initialised (missing workspace.toml or secrets.toml).
             let ws_root = crate::app::registry::resolve_workspace_root(&cwd);
@@ -212,7 +212,7 @@ pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
                 }
                 Some((ws_id, router)) => {
                     for key in &secret_keys {
-                        match resolve(&ws_id, APP_ID, key, &router, &store) {
+                        match resolve(&ws_id, APP_ID, key, &router, store) {
                             ResolveOutcome::Found(value) => {
                                 resolved.push((key.to_string(), value));
                             }
