@@ -157,10 +157,10 @@ pub struct TerminalBackend {
     #[cfg(unix)]
     master_fd: i32,
     pub lines_written: AtomicU64,
-    /// (prev_produced, oldest_row_snapshot) — grouped to avoid nested lock
-    /// acquisitions. `prev_produced` is `history_size + cursor.line`, the
-    /// prior call's absolute count of lines the terminal has produced.
-    capture_state: Mutex<(usize, String)>,
+    /// Capture accounting and the last atomic grid snapshot. Full-screen TUIs
+    /// redraw the alternate screen in place, so cursor-row movement alone
+    /// cannot account for every update.
+    capture_state: Mutex<CaptureState>,
     max_scroll_limit: usize,
     /// Diagnostic tap on the exact byte stream handed to the PTY writer.
     /// `None` in production (zero overhead); a test calls [`Self::enable_input_tap`]
@@ -169,6 +169,14 @@ pub struct TerminalBackend {
     /// terminal — without depending on a live child process echoing it back.
     /// Mirrors the cross-crate observation rationale of [`crate::diag`].
     input_tap: Mutex<Option<Vec<u8>>>,
+}
+
+#[derive(Default)]
+struct CaptureState {
+    prev_produced: usize,
+    oldest_row: String,
+    grid_snapshot: Vec<String>,
+    redraw_delta: Option<(u64, u64, Vec<String>)>,
 }
 
 impl TerminalBackend {
@@ -273,7 +281,7 @@ impl TerminalBackend {
             #[cfg(unix)]
             master_fd,
             lines_written: AtomicU64::new(0),
-            capture_state: Mutex::new((0usize, String::new())),
+            capture_state: Mutex::new(CaptureState::default()),
             max_scroll_limit: 10_000,
             input_tap: Mutex::new(None),
         })
@@ -478,13 +486,15 @@ impl TerminalBackend {
         let mut state = self.capture_state.lock().unwrap();
         let cursor_line = grid.cursor.point.line.0.max(0) as usize;
         let produced = history_size + cursor_line;
-        if produced > state.0 {
-            let delta = produced - state.0;
+        let previous_cursor = self.lines_written.load(Ordering::Relaxed);
+        let advanced_by_linefeed = produced > state.prev_produced;
+        if advanced_by_linefeed {
+            let delta = produced - state.prev_produced;
             self.lines_written
                 .fetch_add(delta as u64, Ordering::Relaxed);
         }
         // Always update prev_produced — handles resize and cursor jumps correctly.
-        state.0 = produced;
+        state.prev_produced = produced;
         // Saturation: history at max means oldest rows may scroll off without
         // changing `total`. Detect one scrolled line per call via row comparison.
         if history_size > 0 && history_size == self.max_scroll_limit {
@@ -492,11 +502,33 @@ impl TerminalBackend {
                 let row = &grid[Line(-(history_size as i32))];
                 (0..grid.columns()).map(|c| row[Column(c)].c).collect()
             };
-            if state.1 != oldest {
+            if state.oldest_row != oldest {
                 self.lines_written.fetch_add(1, Ordering::Relaxed);
-                state.1 = oldest;
+                state.oldest_row = oldest;
             }
         }
+
+        let snapshot = Self::capture_lines_from_grid(grid, _total);
+        if !advanced_by_linefeed
+            && !state.grid_snapshot.is_empty()
+            && snapshot != state.grid_snapshot
+        {
+            let changed: Vec<String> = snapshot
+                .iter()
+                .zip(&state.grid_snapshot)
+                .filter_map(|(current, previous)| {
+                    (current != previous).then(|| current.clone())
+                })
+                .collect();
+            if !changed.is_empty() {
+                let new_cursor = previous_cursor.saturating_add(changed.len() as u64);
+                self.lines_written.store(new_cursor, Ordering::Relaxed);
+                state.redraw_delta = Some((previous_cursor, new_cursor, changed));
+            }
+        } else {
+            state.redraw_delta = None;
+        }
+        state.grid_snapshot = snapshot;
     }
 
     fn capture_lines_from_grid(
@@ -593,6 +625,17 @@ impl TerminalBackend {
         let lines_written = self.lines_written.load(Ordering::Relaxed);
         if lines_written == 0 {
             return (Vec::new(), 0, false);
+        }
+        if let Some((redraw_cursor, new_cursor, lines)) = self
+            .capture_state
+            .lock()
+            .unwrap()
+            .redraw_delta
+            .as_ref()
+            .filter(|(redraw_cursor, _, _)| *redraw_cursor == cursor)
+        {
+            let _ = redraw_cursor;
+            return (lines.clone(), *new_cursor, false);
         }
 
         let oldest_available = lines_written.saturating_sub(total as u64);
@@ -1345,6 +1388,74 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("cursor-delta-exact")),
             "delta must include the newly written line, got: {lines:?}"
+        );
+    }
+
+    /// Stint 0586: full-screen TUIs redraw the alternate screen in place, so
+    /// the cursor can finish on the same row after producing an entirely new
+    /// frame. The capture cursor must advance for that redraw and the delta
+    /// must expose the changed frame instead of reporting an empty update.
+    #[test]
+    #[cfg(unix)]
+    fn capture_lines_since_reports_alternate_screen_in_place_redraw() {
+        use super::settings::BackendSettings;
+        use super::{BackendCommand, TerminalBackend};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        fn wait_for(backend: &TerminalBackend, needle: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if backend
+                    .capture_lines(200)
+                    .iter()
+                    .any(|line| line.contains(needle))
+                {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {needle:?} in alternate-screen pane"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let (tx, _rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/bin/sh".to_string(),
+            ..Default::default()
+        };
+        let mut backend =
+            TerminalBackend::new(1, ctx, tx, settings).expect("spawn backend");
+
+        backend.process_command(BackendCommand::Write(
+            b"stty -echo; printf '\\033[?1049h\\033[Hframe-one\\nstatus-one'\n".to_vec(),
+        ));
+        wait_for(&backend, "status-one");
+        let (_initial, cursor, missed) = backend.capture_lines_since(0);
+        assert!(!missed);
+        assert!(cursor > 0, "initial alternate-screen frame needs a cursor");
+
+        // A TUI paints the next frame at the same coordinates and leaves the
+        // terminal cursor on the same row. No shell-pane linefeed accounting
+        // signal changes, but the visible content is entirely new.
+        backend.process_command(BackendCommand::Write(
+            b"printf '\\033[Hframe-two\\nstatus-two'\n".to_vec(),
+        ));
+        wait_for(&backend, "status-two");
+
+        let (lines, new_cursor, missed) = backend.capture_lines_since(cursor);
+        assert!(!missed, "in-place redraw must not look like lost history");
+        assert!(
+            new_cursor > cursor,
+            "cursor must advance for an alternate-screen redraw (was {cursor}, now {new_cursor})"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("frame-two"))
+                && lines.iter().any(|line| line.contains("status-two")),
+            "delta must include the redrawn TUI frame, got: {lines:?}"
         );
     }
 }

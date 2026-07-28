@@ -953,6 +953,7 @@ pub fn pane_capture_cli(
     lines: usize,
     full_output: bool,
     from_cursor: Option<u64>,
+    plain: bool,
 ) -> i32 {
     let resolved_pane_id = match pane_id {
         Some(id) => id,
@@ -973,7 +974,7 @@ pub fn pane_capture_cli(
 
     let response_file = crate::rpc::response_file("pane-capture-response", "json");
 
-    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} response_file={response_file:?}");
+    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} plain={plain} response_file={response_file:?}");
 
     let mut req = serde_json::json!({
         "type": "capture_pane",
@@ -1003,6 +1004,45 @@ pub fn pane_capture_cli(
         // polluting the line stream.
         if let Some(cursor) = v.get("cursor").and_then(|c| c.as_u64()) {
             eprintln!("cursor={cursor}");
+        }
+        if plain {
+            let Some(lines) = v.get("lines").and_then(|lines| lines.as_array()) else {
+                eprintln!("error: pane capture response has no lines");
+                return 1;
+            };
+            for line in lines {
+                let Some(line) = line.as_str() else {
+                    eprintln!("error: pane capture response contains a non-text line");
+                    return 1;
+                };
+                println!("{line}");
+            }
+            return 0;
+        }
+    }
+    print_json_output(&content)
+}
+
+/// `plexi pane status <id>`
+pub fn pane_status_cli(pane_id: u64) -> i32 {
+    let response_file = crate::rpc::response_file("pane-status-response", "json");
+    log::info!("pane_status:cli: pane_id={pane_id} response_file={response_file:?}");
+    let code = send_to_socket(serde_json::json!({
+        "type": "pane_status",
+        "pane_id": pane_id,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    let content = match super::poll_rpc(&response_file, "pane status") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            eprintln!("error: {error}");
+            return 1;
         }
     }
     print_json_output(&content)

@@ -1965,6 +1965,46 @@ impl PlexiApp {
                 };
                 write_response(response_file, json_str.as_bytes());
             }
+            crate::app_protocol::AppRequest::PaneStatus {
+                pane_id,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=pane_status pane_id={pane_id} response_file={response_file:?}"
+                );
+                let result = self
+                    .windows
+                    .iter()
+                    .find_map(|window| window.panes.get(pane_id))
+                    .ok_or_else(|| format!("pane {pane_id} not found"))
+                    .and_then(|pane| {
+                        let terminal = pane
+                            .as_terminal()
+                            .ok_or_else(|| format!("pane {pane_id} is not a terminal pane"))?;
+                        let captured = terminal
+                            .backend
+                            .capture_lines(crate::app::pane_status::capture_depth());
+                        Ok(crate::app::pane_status::composite_status(
+                            pane.agent(),
+                            &captured,
+                        ))
+                    });
+                let json = match result {
+                    Ok(status) => {
+                        log::info!(
+                            "pane_ipc: pane_status: pane_id={pane_id} verdict={} confidence={}",
+                            status["verdict"],
+                            status["confidence"]
+                        );
+                        status
+                    }
+                    Err(error) => {
+                        log::warn!("pane_ipc: pane_status: {error}");
+                        serde_json::json!({"error": error})
+                    }
+                };
+                write_json_response(response_file, json);
+            }
             crate::app_protocol::AppRequest::Screenshot {
                 pane_id,
                 output_path,

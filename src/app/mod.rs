@@ -21,6 +21,7 @@ mod notifications;
 pub mod package;
 pub mod packs;
 pub(crate) mod pane_wait;
+pub(crate) mod pane_status;
 pub mod permissions;
 pub mod plexi_descriptor;
 pub(crate) mod python_env;

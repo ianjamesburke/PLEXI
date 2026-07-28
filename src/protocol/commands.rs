@@ -604,6 +604,10 @@ pub enum AppRequest {
         from_cursor: Option<u64>,
     },
 
+    /// Derive one auditable working/idle/blocked verdict from the pane's agent
+    /// detector, TUI status bar, and trailing terminal buffer.
+    PaneStatus { pane_id: u64, response_file: String },
+
     /// Query the last-rendered UI state of a pane. Sent by `plexi pane state`.
     /// For app panes: host writes a versioned `semantic` tree for every runtime.
     /// Process panes also retain the compatible `frame` RenderCommand array.

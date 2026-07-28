@@ -1097,6 +1097,14 @@ pub enum PaneCmd {
         /// previous capture response. When set, the response is always JSON object format.
         #[arg(long, value_name = "CURSOR")]
         from_cursor: Option<u64>,
+        /// Print only captured lines on stdout. The next cursor is printed to stderr.
+        #[arg(long)]
+        plain: bool,
+    },
+    /// Report one composite working, idle, blocked, or unknown verdict as JSON.
+    Status {
+        /// Pane id to inspect.
+        pane_id: u64,
     },
     /// Send a key press to a pane.
     ///

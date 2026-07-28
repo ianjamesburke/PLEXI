@@ -1,7 +1,12 @@
 use std::{
+    fs::OpenOptions,
     path::Path,
+    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use crate::app::ui_mailbox::UiMailbox;
 use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
@@ -176,6 +181,28 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn background_child_stdio_is_captured_and_session_is_detached() {
+        let dir =
+            std::env::temp_dir().join(format!("plexi-updater-stdio-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create updater test dir");
+        let log_path = dir.join("update.log");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "read ignored || true; printf 'child-out\\n'; printf 'child-err\\n' >&2; if test -t 0 || test -t 1 || test -t 2; then exit 9; fi; if printf tty >/dev/tty 2>/dev/null; then exit 10; fi",
+        ]);
+
+        let status =
+            run_logged_command(&mut command, &log_path, "stdio-test").expect("run child");
+        assert!(status.success(), "child inherited a terminal: {status}");
+        let log = std::fs::read_to_string(&log_path).expect("read update log");
+        assert!(log.contains("child-out"), "stdout missing from log: {log}");
+        assert!(log.contains("child-err"), "stderr missing from log: {log}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
@@ -231,47 +258,40 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     };
 
     let log_path = profile_dir.join("update.log");
+    std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;
 
     log::info!("background_build: fetching source for {tag}");
     if src_dir.join(".git").is_dir() {
-        let status = std::process::Command::new("git")
-            .args([
-                "-C",
-                &src_dir.to_string_lossy(),
-                "fetch",
-                "origin",
-                "--tags",
-                "--force",
-            ])
-            .status()
-            .map_err(|e| format!("git fetch: {e}"))?;
+        let mut command = Command::new("git");
+        command.args([
+            "-C",
+            &src_dir.to_string_lossy(),
+            "fetch",
+            "origin",
+            "--tags",
+            "--force",
+        ]);
+        let status = run_logged_command(&mut command, &log_path, "git fetch")?;
         if !status.success() {
             return Err("git fetch failed".to_string());
         }
     } else {
-        let status = std::process::Command::new("git")
-            .args(["clone", repo, &src_dir.to_string_lossy()])
-            .status()
-            .map_err(|e| format!("git clone: {e}"))?;
+        let mut command = Command::new("git");
+        command.args(["clone", repo, &src_dir.to_string_lossy()]);
+        let status = run_logged_command(&mut command, &log_path, "git clone")?;
         if !status.success() {
             return Err("git clone failed".to_string());
         }
     }
 
-    let status = std::process::Command::new("git")
-        .args(["-C", &src_dir.to_string_lossy(), "checkout", "--force", tag])
-        .status()
-        .map_err(|e| format!("git checkout: {e}"))?;
+    let mut checkout = Command::new("git");
+    checkout.args(["-C", &src_dir.to_string_lossy(), "checkout", "--force", tag]);
+    let status = run_logged_command(&mut checkout, &log_path, "git checkout")?;
     if !status.success() {
         return Err(format!("git checkout {tag} failed"));
     }
 
-    log::info!("background_build: running install.sh for {tag} channel={channel} (PLEXI_SKIP_BIN_INSTALL=1 — non-TTY, shim unchanged)");
-    let log_file =
-        std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;
-    let log_err = log_file
-        .try_clone()
-        .map_err(|e| format!("clone log handle: {e}"))?;
+    log::info!("background_build: running install.sh for {tag} channel={channel}; sudo/bin install skipped because PLEXI_SKIP_BIN_INSTALL=1 and the updater has no TTY");
 
     let install_cmd = format!(
         "PLEXI_INSTALL_TAG='{}' PLEXI_SKIP_BIN_INSTALL=1 bash '{}' '{}'",
@@ -279,13 +299,11 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
         src_dir.join("scripts/install.sh").display(),
         channel,
     );
-    let status = std::process::Command::new("bash")
+    let mut install = Command::new("bash");
+    install
         .args(["-l", "-c", &install_cmd])
-        .current_dir(&src_dir)
-        .stdout(log_file)
-        .stderr(log_err)
-        .status()
-        .map_err(|e| format!("install.sh: {e}"))?;
+        .current_dir(&src_dir);
+    let status = run_logged_command(&mut install, &log_path, "install.sh")?;
 
     if !status.success() {
         return Err(format!(
@@ -296,4 +314,39 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
 
     log::info!("background_build: install complete for {tag}");
     Ok(())
+}
+
+fn run_logged_command(
+    command: &mut Command,
+    log_path: &Path,
+    stage: &str,
+) -> Result<std::process::ExitStatus, String> {
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|error| format!("open update log for {stage}: {error}"))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|error| format!("clone update log for {stage}: {error}"))?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    log::info!(
+        "background_build: starting {stage}; stdin=/dev/null stdout/stderr={} session=isolated",
+        log_path.display()
+    );
+    command
+        .status()
+        .map_err(|error| format!("{stage}: {error}"))
 }
