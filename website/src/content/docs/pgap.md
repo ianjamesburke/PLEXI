@@ -242,7 +242,9 @@ Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps. Requires 
 
 | Field | Type | Required |
 |-------|------|----------|
+| `agent_cmd` | `string?` | no |
 | `args` | `string[]` | no |
+| `boot_timeout_secs` | `number?` | no |
 | `context_name` | `string?` | no |
 | `cwd` | `string?` | no |
 | `ephemeral` | `boolean` | no |
@@ -348,6 +350,18 @@ Read raw bytes from a named host-managed pane file slot.
 | `response_file` | `string` | yes |
 | `slot_name` | `string` | yes |
 
+### `slot_wait`
+
+Block until a named pane file slot's value matches `pattern`.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `pattern` | `string` | yes |
+| `response_file` | `string` | yes |
+| `slot_name` | `string` | yes |
+| `timeout_secs` | `number` | yes |
+
 ### `slot_list`
 
 List named host-managed pane file slots.
@@ -400,6 +414,7 @@ Write text to a running pane's PTY stdin. Sent by `plexi pane send`. `\n` in tex
 |-------|------|----------|
 | `pane_id` | `integer` | yes |
 | `response_file` | `string?` | no |
+| `submit` | `boolean` | no |
 | `text` | `string` | yes |
 
 ### `key_pane`

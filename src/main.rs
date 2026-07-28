@@ -460,6 +460,7 @@ fn main() -> eframe::Result {
                                         &mcp,
                                         &[],
                                         None,
+                                        None,
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
@@ -832,9 +833,11 @@ fn main() -> eframe::Result {
                             log::info!("pane_close:cli: pane_id={id}");
                             std::process::exit(cli::pane_close_cli(id));
                         }
-                        PaneCmd::Send { pane_id, text } => {
-                            std::process::exit(cli::pane_send_cli(pane_id, &text))
-                        }
+                        PaneCmd::Send {
+                            pane_id,
+                            text,
+                            submit,
+                        } => std::process::exit(cli::pane_send_cli(pane_id, &text, submit)),
                         PaneCmd::Command {
                             pane_id,
                             text,
@@ -845,7 +848,9 @@ fn main() -> eframe::Result {
                                 "pane_command:cli: pane_id={pane_id} len={} enter={enter}",
                                 payload.len()
                             );
-                            std::process::exit(cli::pane_send_cli(pane_id, &payload));
+                            // `pane command` is the type-only verb: it never
+                            // takes the host's submit path.
+                            std::process::exit(cli::pane_send_cli(pane_id, &payload, false));
                         }
                         PaneCmd::Key { pane_id, key } => {
                             std::process::exit(cli::pane_key_cli(pane_id, &key))
@@ -926,6 +931,14 @@ fn main() -> eframe::Result {
                             PaneSlotCmd::Read { name, pane_id } => {
                                 std::process::exit(cli::pane_slot_read_cli(&name, pane_id))
                             }
+                            PaneSlotCmd::Wait {
+                                name,
+                                pane_id,
+                                until,
+                                timeout,
+                            } => std::process::exit(cli::pane_slot_wait_cli(
+                                &name, pane_id, &until, timeout,
+                            )),
                             PaneSlotCmd::List { pane_id } => {
                                 std::process::exit(cli::pane_slot_list_cli(pane_id))
                             }
@@ -947,7 +960,13 @@ fn main() -> eframe::Result {
                             ephemeral,
                             no_focus,
                             cwd,
+                            agent,
+                            boot_timeout,
                         } => {
+                            let agent = agent.map(|command| cli::AgentBootRequest {
+                                command,
+                                timeout_secs: boot_timeout,
+                            });
                             let layout = if down {
                                 "split_v"
                             } else if left {
@@ -977,6 +996,7 @@ fn main() -> eframe::Result {
                                 &[],
                                 &[],
                                 None,
+                                agent.as_ref(),
                             ));
                         }
                     },

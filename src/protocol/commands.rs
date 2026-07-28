@@ -328,6 +328,17 @@ pub enum AppRequest {
         /// starts with a human-readable label instead of the default shell title.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// When set, the host types this shell command into the newly spawned
+        /// terminal and withholds the spawn response until the agent running
+        /// there reports itself idle. Sent by `plexi pane new --agent`, whose
+        /// contract is that a printed pane id means "ready for a brief".
+        /// Terminal spawns only; passed through to the shell verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_cmd: Option<String>,
+        /// How long the host waits for that first idle self-report before
+        /// answering with a typed timeout. Requires `agent_cmd`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        boot_timeout_secs: Option<f64>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -425,6 +436,21 @@ pub enum AppRequest {
         response_file: String,
     },
 
+    /// Block until a named pane file slot's value matches `pattern`.
+    ///
+    /// Level-triggered: a slot already matching at request time answers
+    /// immediately. The host parks the waiter otherwise and expires it after
+    /// `timeout_secs`, writing a `{"timeout": true}` reply to the
+    /// `<response_file>.err` sidecar so the caller sees the host's reason
+    /// rather than its own poll timeout.
+    SlotWait {
+        pane_id: u64,
+        slot_name: String,
+        pattern: String,
+        timeout_secs: f64,
+        response_file: String,
+    },
+
     /// List named host-managed pane file slots.
     SlotList { pane_id: u64, response_file: String },
 
@@ -450,9 +476,17 @@ pub enum AppRequest {
     /// Write text to a running pane's PTY stdin. Sent by `plexi pane send`.
     /// `\n` in text (literal backslash-n) is interpreted as Enter.
     /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
+    ///
+    /// With `submit`, the host owns the whole type-and-enter sequence for a
+    /// terminal pane: it waits for the pane's output to settle, presses Enter,
+    /// and holds the reply until it has confirmed the prompt left the input
+    /// line — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not
+    /// supported on app panes.
     SendToPane {
         pane_id: u64,
         text: String,
+        #[serde(default)]
+        submit: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },

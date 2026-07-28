@@ -1,6 +1,22 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::app_protocol::AppRequest;
+
+/// How long a `pane new --agent` spawn waits for the agent's first idle
+/// self-report when the caller does not say. Generous on purpose: a cold agent
+/// TUI can spend tens of seconds loading before it runs its `SessionStart` hook.
+pub(crate) const DEFAULT_AGENT_BOOT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A `pane new --agent` request folded into the launch spec.
+///
+/// The command is a shell expression Plexi does not parse or validate — the
+/// caller names a tier alias (`c-large`, `codex-small`) and Plexi types it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentBootSpec {
+    pub(crate) command: String,
+    pub(crate) timeout: Duration,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PaneLaunchTarget {
@@ -23,6 +39,7 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) target_context: Option<u64>,
     pub(crate) context_name: Option<String>,
     pub(crate) name: Option<String>,
+    pub(crate) agent: Option<AgentBootSpec>,
 }
 
 impl PaneLaunchSpec {
@@ -44,6 +61,7 @@ impl PaneLaunchSpec {
             target_context: None,
             context_name: None,
             name: None,
+            agent: None,
         })
     }
 
@@ -62,6 +80,8 @@ impl PaneLaunchSpec {
             target_context,
             context_name,
             name,
+            agent_cmd,
+            boot_timeout_secs,
             ..
         } = request
         else {
@@ -71,6 +91,40 @@ impl PaneLaunchSpec {
         if context_name.as_deref().is_some_and(|c| !c.is_empty()) && type_id != "terminal" {
             return Err("context_name is only supported for terminal spawns".to_string());
         }
+
+        let agent = match agent_cmd.as_deref().filter(|cmd| !cmd.is_empty()) {
+            Some(command) => {
+                if type_id != "terminal" {
+                    return Err("agent_cmd is only supported for terminal spawns".to_string());
+                }
+                let timeout = match boot_timeout_secs {
+                    // Bounded above MAX_WAIT_TIMEOUT_SECS: Duration::from_secs_f64
+                    // panics on finite values beyond Duration's range.
+                    Some(secs)
+                        if !secs.is_finite()
+                            || *secs <= 0.0
+                            || *secs > crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS =>
+                    {
+                        return Err(format!(
+                            "boot_timeout_secs must be a positive number of seconds at most {}, got {secs}",
+                            crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+                        ));
+                    }
+                    Some(secs) => Duration::from_secs_f64(*secs),
+                    None => DEFAULT_AGENT_BOOT_TIMEOUT,
+                };
+                Some(AgentBootSpec {
+                    command: command.to_string(),
+                    timeout,
+                })
+            }
+            None => {
+                if boot_timeout_secs.is_some() {
+                    return Err("boot_timeout_secs requires agent_cmd".to_string());
+                }
+                None
+            }
+        };
 
         let target = match (type_id.as_str(), path.as_deref()) {
             ("terminal", None) => PaneLaunchTarget::Terminal,
@@ -99,6 +153,7 @@ impl PaneLaunchSpec {
             target_context: *target_context,
             context_name: context_name.clone(),
             name: name.clone(),
+            agent,
         })
     }
 
@@ -144,6 +199,8 @@ impl PaneLaunchSpec {
             target_context: self.target_context,
             context_name: self.context_name.clone(),
             name: self.name.clone(),
+            agent_cmd: self.agent.as_ref().map(|agent| agent.command.clone()),
+            boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
         }
     }
 
@@ -158,7 +215,7 @@ impl PaneLaunchSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneLaunchSpec, PaneLaunchTarget};
+    use super::{PaneLaunchSpec, PaneLaunchTarget, DEFAULT_AGENT_BOOT_TIMEOUT};
     use crate::app_protocol::AppRequest;
 
     fn spawn_pane(type_id: &str, path: Option<&str>, args: &[&str]) -> AppRequest {
@@ -177,7 +234,75 @@ mod tests {
             target_context: None,
             context_name: None,
             name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
         }
+    }
+
+    fn agent_spawn(type_id: &str, agent_cmd: Option<&str>, timeout: Option<f64>) -> AppRequest {
+        let mut request = spawn_pane(type_id, None, &[]);
+        if let AppRequest::SpawnPane {
+            agent_cmd: slot,
+            boot_timeout_secs,
+            ..
+        } = &mut request
+        {
+            *slot = agent_cmd.map(str::to_string);
+            *boot_timeout_secs = timeout;
+        }
+        request
+    }
+
+    #[test]
+    fn from_spawn_pane_defaults_agent_boot_timeout() {
+        let spec = PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), None))
+            .expect("valid launch spec");
+
+        let agent = spec.agent.expect("agent boot spec");
+        assert_eq!(agent.command, "c-large");
+        assert_eq!(agent.timeout, DEFAULT_AGENT_BOOT_TIMEOUT);
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_agent_on_app_target() {
+        let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("snake", Some("c-large"), None))
+            .unwrap_err();
+
+        assert_eq!(err, "agent_cmd is only supported for terminal spawns");
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_boot_timeout_without_agent() {
+        let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", None, Some(30.0)))
+            .unwrap_err();
+
+        assert_eq!(err, "boot_timeout_secs requires agent_cmd");
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_non_positive_boot_timeout() {
+        let err =
+            PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(0.0)))
+                .unwrap_err();
+
+        assert!(
+            err.contains("must be a positive number of seconds"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_oversized_boot_timeout() {
+        // Finite values beyond Duration's range would panic in
+        // Duration::from_secs_f64 — must be a validation error instead.
+        let err =
+            PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(1e308)))
+                .unwrap_err();
+
+        assert!(
+            err.contains("at most"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

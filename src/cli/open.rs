@@ -26,6 +26,115 @@ pub(super) fn wait_for_response(response_file: &str) -> i32 {
     0
 }
 
+/// A `plexi pane new --agent` request: launch this shell command in the new
+/// pane and hold the reply until the agent there reports itself ready.
+pub struct AgentBootRequest {
+    /// Size-tier alias, or any shell command. Passed through verbatim.
+    pub command: String,
+    /// `--boot-timeout`, absent when the caller did not set it so the host
+    /// applies its own default.
+    pub timeout_secs: Option<f64>,
+}
+
+impl AgentBootRequest {
+    /// How long the CLI parks on the response file.
+    ///
+    /// Strictly longer than the host's deadline so the host's typed reason —
+    /// which names the pane id the caller must clean up — always arrives
+    /// before the client gives up with a generic timeout.
+    fn poll_timeout(&self) -> std::time::Duration {
+        const CLIENT_MARGIN: std::time::Duration = std::time::Duration::from_secs(10);
+        let host_deadline = match self.timeout_secs {
+            // Same bound the host enforces — an out-of-range value gets the
+            // host's typed error, so polling the default window suffices, and
+            // Duration::from_secs_f64 never sees a panicking input.
+            Some(secs)
+                if secs.is_finite()
+                    && secs > 0.0
+                    && secs <= crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS =>
+            {
+                std::time::Duration::from_secs_f64(secs)
+            }
+            _ => crate::app::launch_spec::DEFAULT_AGENT_BOOT_TIMEOUT,
+        };
+        host_deadline + CLIENT_MARGIN
+    }
+}
+
+/// What the caller should print and exit with, given the host's spawn reply.
+///
+/// Split out from the I/O so the stdout-purity rule — an id on stdout means
+/// "this pane is ready for a brief", and nothing else is ever printed there —
+/// is a testable property rather than a convention.
+#[derive(Debug, PartialEq)]
+pub struct AgentBootOutcome {
+    pub stdout: Option<String>,
+    pub stderr: Vec<String>,
+    pub exit_code: i32,
+}
+
+/// Map a host `spawn_pane` reply for an `--agent` spawn onto stdout/stderr/exit.
+///
+/// Exit codes: 0 booted, 2 boot timeout (the pane exists and the caller should
+/// close it), 1 anything else.
+pub fn agent_boot_outcome(response: &str) -> AgentBootOutcome {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(response) else {
+        return AgentBootOutcome {
+            stdout: None,
+            stderr: vec![format!("error: unreadable spawn response: {response}")],
+            exit_code: 1,
+        };
+    };
+    let pane_id = value.get("pane_id").and_then(serde_json::Value::as_u64);
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        let timed_out = value
+            .get("timeout")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let mut stderr = vec![format!("error: {error}")];
+        // The pane outlives a boot timeout, so the caller needs its id to
+        // close it. stdout stays empty either way.
+        if let Some(pane_id) = pane_id.filter(|_| timed_out) {
+            stderr.push(format!("pane id: {pane_id}"));
+        }
+        return AgentBootOutcome {
+            stdout: None,
+            stderr,
+            exit_code: if timed_out { 2 } else { 1 },
+        };
+    }
+    match pane_id {
+        Some(pane_id) => AgentBootOutcome {
+            stdout: Some(pane_id.to_string()),
+            stderr: Vec::new(),
+            exit_code: 0,
+        },
+        None => AgentBootOutcome {
+            stdout: None,
+            stderr: vec![format!(
+                "error: spawn response carried no pane id: {response}"
+            )],
+            exit_code: 1,
+        },
+    }
+}
+
+/// Wait out an agent boot and report it under the `--agent` stdout contract.
+fn wait_for_agent_boot(response_file: &str, agent: &AgentBootRequest) -> i32 {
+    let content = match super::poll_rpc_with(response_file, "pane", agent.poll_timeout()) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    let outcome = agent_boot_outcome(&content);
+    for line in &outcome.stderr {
+        eprintln!("{line}");
+    }
+    if let Some(line) = &outcome.stdout {
+        println!("{line}");
+    }
+    outcome.exit_code
+}
+
 /// Unified pane spawning. All CLI spawn paths funnel through here.
 /// `context_name` targets the named context wherever it is (terminal spawns
 /// only — the host resolves the name and errors back when it does not exist);
@@ -42,6 +151,7 @@ pub fn pane_new_cli(
     mcp: &[String],
     extra_args: &[String],
     context_name: Option<&str>,
+    agent: Option<&AgentBootRequest>,
 ) -> i32 {
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
@@ -102,12 +212,30 @@ pub fn pane_new_cli(
         if let Some(ctx) = context_name {
             payload["context_name"] = serde_json::Value::String(ctx.to_string());
         }
-        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} response_file={response_file:?}");
+        if let Some(agent) = agent {
+            payload["agent_cmd"] = serde_json::Value::String(agent.command.clone());
+            // Absent stays absent so the host resolves its own default.
+            if let Some(secs) = agent.timeout_secs {
+                payload["boot_timeout_secs"] = serde_json::json!(secs);
+            }
+        }
+        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?} response_file={response_file:?}", agent.map(|a| &a.command));
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
         }
-        return wait_for_response(&response_file);
+        return match agent {
+            Some(agent) => wait_for_agent_boot(&response_file, agent),
+            None => wait_for_response(&response_file),
+        };
+    }
+
+    // `--agent` never queues: its whole contract is that the printed pane id
+    // is a live, booted pane, and a queued spawn has no pane and no reply.
+    if agent.is_some() {
+        log::warn!("pane_new:cli: --agent requires PLEXI_SOCKET; refusing to queue");
+        eprintln!("error: --agent requires a running Plexi host (PLEXI_SOCKET)");
+        return 1;
     }
 
     // Fallback: spawn-queue (outside a Plexi pane). Only queue when a host is
@@ -268,6 +396,7 @@ fn open_descriptor_in_renderer(
         &[],
         &[path],
         None,
+        None,
     )
 }
 
@@ -323,6 +452,7 @@ pub fn open_mcp_by_name(
                 Some("mcp-renderer"),
                 &entry.command,
                 &[],
+                None,
                 None,
             )
         }
@@ -584,6 +714,7 @@ pub fn open_cli(
         &[],
         args,
         None,
+        None,
     )
 }
 
@@ -645,15 +776,16 @@ fn open_app_by_path(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let mut queue_payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
-        log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
-        serde_json::json!({
-            "type_id": "",
-            "path": abs_path,
-            "args": args,
-            "layout": layout,
-        })
-    });
+    let mut queue_payload =
+        serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
+            log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
+            serde_json::json!({
+                "type_id": "",
+                "path": abs_path,
+                "args": args,
+                "layout": layout,
+            })
+        });
     queue_payload["origin"] = serde_json::Value::String("open".to_string());
     queue_payload["queued_at_ms"] = crate::cli::spawn_queued_at_ms().into();
     let file = queue_dir.join(format!("{ts}.json"));
@@ -967,5 +1099,207 @@ mod tests {
     #[test]
     fn mcp_title_empty_args() {
         assert_eq!(mcp_pane_title(&[]), "mcp: mcp");
+    }
+}
+
+#[cfg(test)]
+mod agent_boot_tests {
+    use super::{agent_boot_outcome, pane_new_cli, AgentBootRequest};
+    use crate::cli::test_env::socket_env_guard;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    /// A booted agent prints its pane id and nothing else. Everything a caller
+    /// pipes into the next command depends on this line being alone.
+    #[test]
+    fn booted_agent_prints_only_the_pane_id() {
+        let outcome = agent_boot_outcome(r#"{"pane_id":42}"#);
+
+        assert_eq!(outcome.stdout.as_deref(), Some("42"));
+        assert!(outcome.stderr.is_empty());
+        assert_eq!(outcome.exit_code, 0);
+    }
+
+    /// A boot timeout leaves a live pane behind, so its id must reach the
+    /// caller — on stderr, where it cannot be mistaken for a success value.
+    #[test]
+    fn boot_timeout_exits_two_with_the_pane_id_on_stderr() {
+        let outcome =
+            agent_boot_outcome(r#"{"ok":false,"timeout":true,"pane_id":42,"error":"timed out"}"#);
+
+        assert_eq!(outcome.stdout, None, "stdout must stay empty on timeout");
+        assert_eq!(outcome.stderr, vec!["error: timed out", "pane id: 42"]);
+        assert_eq!(outcome.exit_code, 2);
+    }
+
+    /// A pane that vanished is not a timeout: there is nothing left to close,
+    /// so it takes the ordinary failure code.
+    #[test]
+    fn vanished_pane_exits_one_without_a_cleanup_id() {
+        let outcome = agent_boot_outcome(
+            r#"{"ok":false,"timeout":false,"pane_id":42,"error":"pane closed"}"#,
+        );
+
+        assert_eq!(outcome.stdout, None);
+        assert_eq!(outcome.stderr, vec!["error: pane closed"]);
+        assert_eq!(outcome.exit_code, 1);
+    }
+
+    #[test]
+    fn spawn_error_exits_one() {
+        let outcome = agent_boot_outcome(r#"{"error":"context 'x' does not exist"}"#);
+
+        assert_eq!(outcome.stdout, None);
+        assert_eq!(outcome.exit_code, 1);
+    }
+
+    /// A reply the CLI cannot read must never be mistaken for a pane id.
+    #[test]
+    fn unreadable_reply_exits_one_with_empty_stdout() {
+        let outcome = agent_boot_outcome("not json at all");
+
+        assert_eq!(outcome.stdout, None);
+        assert_eq!(outcome.exit_code, 1);
+    }
+
+    /// `--agent` is a live-host verb: the spawn queue has no pane to report
+    /// and no reply channel, so falling back to it would print nothing and
+    /// still exit 0.
+    #[test]
+    fn agent_without_socket_fails_instead_of_queueing() {
+        let env = socket_env_guard();
+        env.unset();
+
+        let agent = AgentBootRequest {
+            command: "c-large".to_string(),
+            timeout_secs: None,
+        };
+        let code = pane_new_cli(
+            None,
+            None,
+            Some("split_h"),
+            None,
+            None,
+            false,
+            false,
+            None,
+            &[],
+            &[],
+            None,
+            Some(&agent),
+        );
+
+        assert_eq!(code, 1);
+    }
+
+    /// End to end over a real socket: the flags reach the host as
+    /// `agent_cmd`/`boot_timeout_secs`, and the pane id the host answers with
+    /// is what the command exits on.
+    #[test]
+    fn agent_flags_reach_the_host_and_the_reply_sets_the_exit_code() {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind command socket");
+        env.set(&socket_path);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept spawn connection");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read spawn payload");
+            let payload: serde_json::Value =
+                serde_json::from_str(&line).expect("spawn payload json");
+            // Stand in for the host: answer the boot so the CLI can return.
+            let response_file = payload["response_file"]
+                .as_str()
+                .expect("spawn payload must carry a response file");
+            std::fs::write(response_file, r#"{"pane_id":7}"#).expect("write spawn reply");
+            tx.send(payload).ok();
+        });
+
+        let agent = AgentBootRequest {
+            command: "c-large".to_string(),
+            timeout_secs: Some(5.0),
+        };
+        let code = pane_new_cli(
+            None,
+            Some("worker"),
+            Some("split_h"),
+            None,
+            None,
+            false,
+            false,
+            None,
+            &[],
+            &[],
+            None,
+            Some(&agent),
+        );
+        let payload = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("spawn listener did not receive a connection within 5s");
+
+        assert_eq!(payload["type"], "spawn_pane");
+        assert_eq!(payload["type_id"], "terminal");
+        assert_eq!(payload["agent_cmd"], "c-large");
+        assert_eq!(payload["boot_timeout_secs"], 5.0);
+        assert_eq!(code, 0);
+    }
+
+    /// An omitted `--boot-timeout` must reach the host as absent so the host's
+    /// own default is the one that applies.
+    #[test]
+    fn omitted_boot_timeout_is_absent_on_the_wire() {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind command socket");
+        env.set(&socket_path);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept spawn connection");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read spawn payload");
+            let payload: serde_json::Value =
+                serde_json::from_str(&line).expect("spawn payload json");
+            let response_file = payload["response_file"].as_str().expect("response file");
+            std::fs::write(response_file, r#"{"pane_id":7}"#).expect("write spawn reply");
+            tx.send(payload).ok();
+        });
+
+        let agent = AgentBootRequest {
+            command: "codex-small".to_string(),
+            timeout_secs: None,
+        };
+        let code = pane_new_cli(
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            &[],
+            &[],
+            None,
+            Some(&agent),
+        );
+        let payload = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("spawn listener did not receive a connection within 5s");
+
+        assert_eq!(payload["agent_cmd"], "codex-small");
+        assert!(
+            payload.get("boot_timeout_secs").is_none(),
+            "an omitted --boot-timeout must not be sent: {payload}"
+        );
+        assert_eq!(code, 0);
     }
 }

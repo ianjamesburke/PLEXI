@@ -7,6 +7,14 @@ use super::PlexiApp;
 
 const MAX_SLOT_CONTENT_SIZE: usize = 10 * 1024 * 1024;
 
+/// Quiet window after which a foreground agent TUI with no hook report yet is
+/// considered idle by the host-observed detector. Measured against a real
+/// Codex boot: the banner draws in bursts with gaps under ~300ms and goes
+/// quiet within ~2.2s, so one full second of PTY silence cleanly separates
+/// "still drawing" from "sitting at the prompt" while staying far inside the
+/// 60s default boot window.
+const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+
 use crate::rpc::{write_json_response, write_response};
 
 fn slot_error(response_file: &str, message: impl Into<String>) {
@@ -589,6 +597,99 @@ impl PlexiApp {
                         "size": size,
                     }),
                 );
+                // The write path is the only thing that changes a slot's
+                // value, so it is where parked waiters are answered.
+                self.complete_slot_waits(*pane_id, slot_name);
+            }
+            crate::app_protocol::AppRequest::SlotWait {
+                pane_id,
+                slot_name,
+                pattern,
+                timeout_secs,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=slot_wait pane_id={pane_id} slot={slot_name:?} pattern={pattern:?} timeout_secs={timeout_secs}"
+                );
+                if let Err(msg) = validate_slot_name(slot_name) {
+                    slot_read_error(response_file, msg);
+                    return;
+                }
+                // Bounded above MAX_WAIT_TIMEOUT_SECS: Duration::from_secs_f64
+                // panics on finite values beyond Duration's range, and the
+                // host must never trust the client to have pre-validated.
+                if !timeout_secs.is_finite()
+                    || *timeout_secs < 0.0
+                    || *timeout_secs > crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+                {
+                    slot_read_error(
+                        response_file,
+                        format!(
+                            "--timeout must be a non-negative number of seconds at most {}, got {timeout_secs}",
+                            crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+                        ),
+                    );
+                    return;
+                }
+                let regex = match regex::Regex::new(pattern) {
+                    Ok(regex) => regex,
+                    Err(e) => {
+                        slot_read_error(
+                            response_file,
+                            format!("invalid --until pattern {pattern:?}: {e}"),
+                        );
+                        return;
+                    }
+                };
+                let Some(pane) = self.windows.iter().find_map(|win| win.panes.get(pane_id)) else {
+                    slot_read_error(response_file, format!("pane {pane_id} not found"));
+                    return;
+                };
+                if pane.slots().is_none() {
+                    slot_read_error(
+                        response_file,
+                        format!("pane {pane_id} does not support slots"),
+                    );
+                    return;
+                }
+                // Level-triggered: a value that already matches answers now.
+                // A caller cannot guarantee it armed the wait before the
+                // writer ran, so an edge-only wait would hang on a race it
+                // has no way to avoid.
+                if let Some(path) = self.tracked_slot_path(*pane_id, slot_name) {
+                    match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            if regex.is_match(&String::from_utf8_lossy(&bytes)) {
+                                log::info!(
+                                    "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern={pattern:?} already matched {} bytes",
+                                    bytes.len()
+                                );
+                                write_response(response_file, &bytes);
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            slot_read_error(
+                                response_file,
+                                format!("could not read slot '{slot_name}': {e}"),
+                            );
+                            return;
+                        }
+                    }
+                }
+                let expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_secs_f64(*timeout_secs);
+                log::info!(
+                    "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern={pattern:?} parked for {timeout_secs}s"
+                );
+                self.pending_slot_waits
+                    .push(crate::app::pane_wait::PendingSlotWait {
+                        pane_id: *pane_id,
+                        slot_name: slot_name.clone(),
+                        pattern: regex,
+                        response_file: response_file.clone(),
+                        expires_at,
+                    });
             }
             crate::app_protocol::AppRequest::SlotRead {
                 pane_id,
@@ -909,9 +1010,7 @@ impl PlexiApp {
                                 self.apply_inline_pane_name(response_pane_id, pane_name);
                             }
                         }
-                        if let Some(rf) = &spec.response_file {
-                            write_response(rf, format!("{{\"pane_id\":{response_pane_id}}}").as_bytes());
-                        }
+                        self.reply_spawn_pane(&spec, response_pane_id, &Ok(()));
                         return;
                     }
                     if layout_str == "new_window" {
@@ -1016,20 +1115,11 @@ impl PlexiApp {
                                                 }
                                             }
                                         }
-                                        if let Some(rf) = &spec.response_file {
-                                            let json = match &launch_result {
-                                                Ok(()) => {
-                                                    format!("{{\"pane_id\":{response_pane_id}}}")
-                                                }
-                                                Err(msg) => {
-                                                    format!(
-                                                        "{{\"error\":{}}}",
-                                                        serde_json::json!(msg)
-                                                    )
-                                                }
-                                            };
-                                            write_response(rf, json.as_bytes());
-                                        }
+                                        self.reply_spawn_pane(
+                                            &spec,
+                                            response_pane_id,
+                                            &launch_result,
+                                        );
                                         return;
                                     }
                                 }
@@ -1067,20 +1157,12 @@ impl PlexiApp {
                                 }
                             }
                             // Skip rest of split path
-                            if let Some(rf) = &spec.response_file {
-                                let json = match &launch_result {
-                                    Ok(()) => format!("{{\"pane_id\":{response_pane_id}}}"),
-                                    Err(msg) => {
-                                        format!("{{\"error\":{}}}", serde_json::json!(msg))
-                                    }
-                                };
-                                write_response(rf, json.as_bytes());
-                            }
+                            self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
                             return;
                         };
                         let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
                         log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} target_win={target_win} keep_focus={keep_focus}", spec.ephemeral);
-                        let _ = self.spawn_terminal_pane_at(
+                        response_pane_id = self.spawn_terminal_pane_at(
                             target_win,
                             target_tile,
                             vertical,
@@ -1205,27 +1287,19 @@ impl PlexiApp {
                         }
                     }
                 }
-                if let Some(rf) = &spec.response_file {
-                    let json = match &launch_result {
-                        Ok(()) => format!("{{\"pane_id\":{response_pane_id}}}"),
-                        Err(msg) => {
-                            log::warn!("pane_ipc: spawn_pane: launch failed, returning error to caller: {msg}");
-                            format!(
-                                "{{\"error\":{}}}",
-                                serde_json::to_string(msg).unwrap_or_else(|_| format!("\"{msg}\""))
-                            )
-                        }
-                    };
-                    write_response(rf, json.as_bytes());
-                }
+                self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
             }
             crate::app_protocol::AppRequest::SendToPane {
                 pane_id,
                 text,
+                submit,
                 response_file,
             } => {
-                log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} windows={} response_file={response_file:?}", text.len(), self.windows.len());
+                log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} submit={submit} windows={} response_file={response_file:?}", text.len(), self.windows.len());
                 let text_with_newlines = text.replace("\\n", "\n");
+                // Set when the reply is owed by `service_pending_submits`
+                // instead of by the write below.
+                let mut deferred = false;
                 let pane_kind = self.windows.iter().find_map(|win| {
                     win.panes.get(pane_id).map(|pane| {
                         if pane.as_terminal().is_some() {
@@ -1244,6 +1318,17 @@ impl PlexiApp {
                         );
                         Err(format!("pane {pane_id} not found"))
                     }
+                    Some("terminal") if *submit && self.submit_in_flight(*pane_id) => {
+                        // Refuse before typing anything. Two submits racing on
+                        // one input line interleave their enters, which is the
+                        // exact corruption this verb exists to prevent.
+                        log::warn!(
+                            "pane_submit: pane_id={pane_id} refused — a submit is already in flight"
+                        );
+                        Err(format!(
+                            "pane {pane_id} already has a `pane send --submit` in flight"
+                        ))
+                    }
                     Some("terminal") => {
                         match self
                             .windows
@@ -1256,10 +1341,24 @@ impl PlexiApp {
                                     .process_command(egui_term::BackendCommand::Write(
                                         text_with_newlines.into_bytes(),
                                     ));
+                                if *submit {
+                                    self.register_pending_submit(
+                                        *pane_id,
+                                        response_file.clone(),
+                                        text.chars().count(),
+                                    );
+                                    deferred = response_file.is_some();
+                                }
                                 Ok(())
                             }
                             None => Err(format!("pane {pane_id} changed while routing text")),
                         }
+                    }
+                    Some("app") if *submit => {
+                        log::warn!("pane_submit: pane_id={pane_id} refused — not a terminal pane");
+                        Err(format!(
+                            "pane {pane_id} is an app pane; --submit only applies to terminal panes"
+                        ))
                     }
                     Some("app") => {
                         if !self.pane_navigate(*pane_id) {
@@ -1281,7 +1380,7 @@ impl PlexiApp {
                     }
                     Some(_) => Err(format!("pane {pane_id} does not accept text input")),
                 };
-                if let Some(rf) = response_file {
+                if let Some(rf) = response_file.as_ref().filter(|_| !deferred) {
                     let json = match result {
                         Ok(()) => r#"{"ok":true}"#.to_string(),
                         Err(ref msg) => format!(
@@ -2024,6 +2123,11 @@ impl PlexiApp {
                 }
                 if found {
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
+                    // Fast path: answer a parked `pane new --agent` spawn the
+                    // frame the hook report lands. The host-observed detector
+                    // path is picked up by the level-triggered re-check in
+                    // `service_pending_agent_boots` instead.
+                    self.complete_agent_boots(*pane_id);
                 } else {
                     log::warn!(
                         "pane_ipc: set_agent_state: pane_id={pane_id} not found or not agent-addressable"
@@ -2738,6 +2842,14 @@ impl PlexiApp {
     /// called from the throttled block in the render loop). Working = a
     /// foreground process other than the shell holds the PTY (`tcgetpgrp`),
     /// Blocked = the shell exited, None = shell sitting at its prompt.
+    ///
+    /// The same pass synthesizes the host-observed half of the agent detector
+    /// (`TerminalPane::observed_agent`): when a known agent binary is the PTY
+    /// foreground-group leader and no lifecycle hook has reported yet, the
+    /// pane's agent identity comes from the process name and its state from
+    /// the PTY output settle. This is what makes a freshly booted Codex —
+    /// whose hooks stay silent until the first prompt submission — visible to
+    /// `pane list` and to the `pane new --agent` boot wait.
     pub(super) fn tick_terminal_activity(&mut self) {
         use crate::app_protocol::AgentState;
         for window in self.windows.iter_mut() {
@@ -2768,6 +2880,51 @@ impl PlexiApp {
                         fg
                     );
                     t.activity = new;
+                }
+
+                let observed = if t.agent.is_some() || t.exited {
+                    // A hook has reported (or the shell died): hooks own the
+                    // pane's agent state from the first report onward.
+                    None
+                } else {
+                    fg.filter(|fg| *fg != shell_pid as i32)
+                        .and_then(|fg| crate::host::shell::get_pid_name(fg as u32))
+                        .and_then(|name| crate::host::shell::known_agent_process(&name))
+                        .map(|agent| {
+                            // A TUI that has stopped redrawing is sitting at its
+                            // prompt; one that is still streaming (banner draw,
+                            // spinner animation) is not ready yet. Same physical
+                            // signal `pane send --submit` settles on.
+                            let settled = t
+                                .last_pty_output_at
+                                .is_some_and(|at| at.elapsed() >= OBSERVED_AGENT_SETTLE);
+                            crate::app_protocol::PaneAgentState {
+                                pane_id: *pane_id,
+                                state: if settled {
+                                    AgentState::Idle
+                                } else {
+                                    AgentState::Working
+                                },
+                                agent: agent.to_string(),
+                                detail: None,
+                                session_id: None,
+                            }
+                        })
+                };
+                let changed = match (&t.observed_agent, &observed) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => a.agent != b.agent || a.state != b.state,
+                    _ => true,
+                };
+                if changed {
+                    log::info!(
+                        "observed agent: pane {} {:?} -> {:?} (fg_pgid={:?})",
+                        pane_id,
+                        t.observed_agent.as_ref().map(|a| (&a.agent, &a.state)),
+                        observed.as_ref().map(|a| (&a.agent, &a.state)),
+                        fg
+                    );
+                    t.observed_agent = observed;
                 }
             }
         }
@@ -3055,6 +3212,11 @@ impl PlexiApp {
                 target_context: val["target_context"].as_u64(),
                 context_name: val["context_name"].as_str().map(str::to_string),
                 name: val["name"].as_str().map(str::to_string),
+                // Never from the queue: an agent boot owes its caller a reply
+                // on a response file, and a queued spawn has no live caller.
+                // `pane new --agent` requires PLEXI_SOCKET for this reason.
+                agent_cmd: None,
+                boot_timeout_secs: None,
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
             else {
@@ -3096,6 +3258,19 @@ impl PlexiApp {
         let mut panes_to_close: Vec<u64> = Vec::new();
 
         while let Ok((id, event)) = self.pty_event_rx.try_recv() {
+            // Every event on this channel — `Wakeup` above all, which fires
+            // whenever the terminal processes new PTY output — is evidence the
+            // pane is still producing. `pane send --submit` waits for a quiet
+            // window in this stamp before it presses Enter, so it must be taken
+            // for the whole event stream, not the two variants matched below.
+            if let Some(term) = self
+                .windows
+                .iter_mut()
+                .find_map(|win| win.panes.get_mut(&id))
+                .and_then(crate::host::pane::Pane::as_terminal_mut)
+            {
+                term.last_pty_output_at = Some(std::time::Instant::now());
+            }
             match &event {
                 PtyEvent::Exit => {
                     for win in &mut self.windows {

@@ -319,6 +319,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
         pane_id,
         text: "/settings".to_string(),
+        submit: false,
         response_file: Some(response_file.clone()),
     });
     assert_eq!(
@@ -585,6 +586,253 @@ fn pane_slot_read_preserves_error_like_json_content() {
     assert!(
         !std::path::PathBuf::from(format!("{read_file}.err")).exists(),
         "successful raw reads must not write the error sidecar"
+    );
+}
+
+/// Seed a slot with `content`, asserting the write succeeded.
+fn seed_slot(
+    h: &mut HostHarness,
+    tmp: &std::path::Path,
+    pane: crate::spatial::tiling::PaneId,
+    slot_name: &str,
+    content: &[u8],
+    replace: bool,
+) {
+    let write_file = temp_response(tmp, "slot-seed");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: slot_name.to_string(),
+        content: content.to_vec(),
+        append: false,
+        replace,
+        response_file: write_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(
+        read_json_response(&write_file)["ok"].as_bool(),
+        Some(true),
+        "seed write for slot {slot_name:?} must succeed"
+    );
+}
+
+#[test]
+fn slot_wait_returns_immediately_when_value_already_matches() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
+    let pane = h.add_test_pane();
+    seed_slot(&mut h, tmp.path(), pane, "status", b"done: ok", false);
+
+    let wait_file = temp_response(tmp.path(), "slot-wait-level");
+    h.inject_ipc(AppRequest::SlotWait {
+        pane_id: pane,
+        slot_name: "status".to_string(),
+        pattern: "^done".to_string(),
+        timeout_secs: 60.0,
+        response_file: wait_file.clone(),
+    });
+    h.run_frames(1);
+
+    assert_eq!(
+        std::fs::read(&wait_file).expect("wait response"),
+        b"done: ok",
+        "a slot already matching at call time must answer on the registering frame"
+    );
+    assert!(!std::path::PathBuf::from(format!("{wait_file}.err")).exists());
+}
+
+#[test]
+fn slot_wait_ignores_non_matching_write_then_completes_on_match() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
+    let pane = h.add_test_pane();
+    seed_slot(&mut h, tmp.path(), pane, "status", b"running", false);
+
+    let wait_file = temp_response(tmp.path(), "slot-wait-edge");
+    h.inject_ipc(AppRequest::SlotWait {
+        pane_id: pane,
+        slot_name: "status".to_string(),
+        pattern: r"^done:\s*(ok|fail)$".to_string(),
+        timeout_secs: 60.0,
+        response_file: wait_file.clone(),
+    });
+    h.run_frames(1);
+    assert!(
+        !std::path::Path::new(&wait_file).exists(),
+        "a non-matching current value must park the waiter"
+    );
+
+    seed_slot(&mut h, tmp.path(), pane, "status", b"still running", true);
+    h.run_frames(1);
+    assert!(
+        !std::path::Path::new(&wait_file).exists(),
+        "a non-matching write must not complete the waiter"
+    );
+
+    seed_slot(&mut h, tmp.path(), pane, "status", b"done: fail", true);
+    h.run_frames(1);
+    assert_eq!(
+        std::fs::read(&wait_file).expect("wait response"),
+        b"done: fail",
+        "the matching write must deliver the raw slot bytes"
+    );
+}
+
+#[test]
+fn slot_wait_completes_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
+    let pane = h.add_test_pane();
+
+    let wait_file = temp_response(tmp.path(), "slot-wait-hidden");
+    h.inject_ipc(AppRequest::SlotWait {
+        pane_id: pane,
+        slot_name: "status".to_string(),
+        pattern: "ready".to_string(),
+        timeout_secs: 60.0,
+        response_file: wait_file.clone(),
+    });
+    h.run_hidden_frames(1);
+
+    let write_file = temp_response(tmp.path(), "slot-wait-hidden-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "status".to_string(),
+        content: b"ready".to_vec(),
+        append: false,
+        replace: false,
+        response_file: write_file.clone(),
+    });
+    h.run_hidden_frames(1);
+
+    assert_eq!(read_json_response(&write_file)["ok"].as_bool(), Some(true));
+    assert_eq!(
+        std::fs::read(&wait_file).expect("wait response"),
+        b"ready",
+        "slot waits must be registered and completed from App::logic, which is \
+         the only pass an occluded host runs"
+    );
+}
+
+#[test]
+fn slot_wait_times_out_with_typed_timeout_reply() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
+    let pane = h.add_test_pane();
+
+    let wait_file = temp_response(tmp.path(), "slot-wait-timeout");
+    h.inject_ipc(AppRequest::SlotWait {
+        pane_id: pane,
+        slot_name: "status".to_string(),
+        pattern: "never".to_string(),
+        timeout_secs: 0.05,
+        response_file: wait_file.clone(),
+    });
+    // Hidden frames: expiry must also fire on an occluded host, which runs
+    // `App::logic` and never `App::ui`.
+    h.run_hidden_frames(1);
+
+    let error_file = format!("{wait_file}.err");
+    for _ in 0..40 {
+        if std::path::Path::new(&error_file).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.run_hidden_frames(1);
+    }
+
+    let response = read_json_response(&error_file);
+    assert_eq!(response["timeout"].as_bool(), Some(true));
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    assert!(
+        !std::path::Path::new(&wait_file).exists(),
+        "a timed-out wait must leave stdout empty"
+    );
+}
+
+#[test]
+fn slot_wait_invalid_regex_writes_typed_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
+    let pane = h.add_test_pane();
+
+    let wait_file = temp_response(tmp.path(), "slot-wait-bad-regex");
+    h.inject_ipc(AppRequest::SlotWait {
+        pane_id: pane,
+        slot_name: "status".to_string(),
+        pattern: "([unclosed".to_string(),
+        timeout_secs: 60.0,
+        response_file: wait_file.clone(),
+    });
+    h.run_frames(1);
+
+    let response = read_json_response(&format!("{wait_file}.err"));
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    assert_eq!(response["timeout"].as_bool(), None);
+    assert!(
+        response["error"]
+            .as_str()
+            .expect("error")
+            .contains("invalid --until pattern"),
+        "unexpected error: {response}"
+    );
+}
+
+#[test]
+fn slot_wait_oversized_timeout_writes_typed_error() {
+    // Finite f64 values beyond Duration's range panic in from_secs_f64; the
+    // host must reject them as usage errors, never trusting the client.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
+    let pane = h.add_test_pane();
+
+    let wait_file = temp_response(tmp.path(), "slot-wait-huge-timeout");
+    h.inject_ipc(AppRequest::SlotWait {
+        pane_id: pane,
+        slot_name: "status".to_string(),
+        pattern: "ready".to_string(),
+        timeout_secs: 1e308,
+        response_file: wait_file.clone(),
+    });
+    h.run_frames(1);
+
+    let response = read_json_response(&format!("{wait_file}.err"));
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    assert!(
+        response["error"].as_str().expect("error").contains("at most"),
+        "unexpected error: {response}"
+    );
+}
+
+#[test]
+fn slot_wait_unknown_pane_writes_typed_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
+
+    let wait_file = temp_response(tmp.path(), "slot-wait-no-pane");
+    h.inject_ipc(AppRequest::SlotWait {
+        pane_id: 999_999,
+        slot_name: "status".to_string(),
+        pattern: "ready".to_string(),
+        timeout_secs: 60.0,
+        response_file: wait_file.clone(),
+    });
+    h.run_frames(1);
+
+    let response = read_json_response(&format!("{wait_file}.err"));
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    assert!(
+        response["error"]
+            .as_str()
+            .expect("error")
+            .contains("pane 999999 not found"),
+        "unexpected error: {response}"
     );
 }
 
@@ -3124,6 +3372,7 @@ fn editor_gate_harness_matrix() {
                     GateHostInput::Text(text) => h.inject_ipc(AppRequest::SendToPane {
                         pane_id,
                         text,
+                        submit: false,
                         response_file: Some(response.clone()),
                     }),
                     GateHostInput::Key(key) => h.inject_ipc(AppRequest::KeyPane {
@@ -3298,6 +3547,7 @@ fn editor_gate_save_failure_reports_error_semantically() {
     h.inject_ipc(AppRequest::SendToPane {
         pane_id,
         text: "unsaveable".to_string(),
+        submit: false,
         response_file: Some(response.clone()),
     });
     h.run_frames(2);
@@ -3501,6 +3751,8 @@ fn blank_text_editor_open_acquires_input_focus() {
         target_context: None,
         context_name: None,
         name: None,
+        agent_cmd: None,
+        boot_timeout_secs: None,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
     // skips ui for an occluded window. At this point no text surface has
@@ -3514,6 +3766,7 @@ fn blank_text_editor_open_acquires_input_focus() {
     h.inject_ipc(AppRequest::SendToPane {
         pane_id,
         text: "hello".to_string(),
+        submit: false,
         response_file: Some(text_response.clone()),
     });
     h.hidden_frame();
@@ -4005,6 +4258,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
         pane_id,
         text: "QQ".to_string(),
+        submit: false,
         response_file: None,
     });
     run_blurred_frames(&mut h, 2);
@@ -4076,6 +4330,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
         pane_id: pane_b,
         text: "for-b-only".to_string(),
+        submit: false,
         response_file: Some(response_file.clone()),
     });
     h.run_frames(4);
@@ -4282,26 +4537,29 @@ mod routine_firing {
         let active_win_before = h.app.active_window;
         let main_panes_before = h.app.windows[0].panes.len();
         let response = temp_response(tmp.path(), "ctx-name-spawn");
-        h.app
-            .handle_pane_ipc_request(AppRequest::SpawnPane {
-                type_id: "terminal".to_string(),
-                layout: Some("split_h".to_string()),
-                args: vec!["true".to_string()],
-                from_pane_id: None,
-                request_id: None,
-                response_file: Some(response.clone()),
-                ephemeral: false,
-                cwd: None,
-                no_focus: false,
-                path: None,
-                workspace_root: None,
-                target_context: None,
-                context_name: Some("work".to_string()),
-                name: None,
-            });
+        h.app.handle_pane_ipc_request(AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec!["true".to_string()],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(response.clone()),
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: Some("work".to_string()),
+            name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
+        });
 
         let reply = read_json_response(&response);
-        let pane_id = reply["pane_id"].as_u64().expect("spawn must return pane_id");
+        let pane_id = reply["pane_id"]
+            .as_u64()
+            .expect("spawn must return pane_id");
         assert!(
             h.app.windows[work_win].panes.contains_key(&pane_id),
             "pane must land in the named context's window"
@@ -4326,23 +4584,24 @@ mod routine_firing {
         let panes_before = h.app.windows[0].panes.len();
 
         let response = temp_response(tmp.path(), "ctx-name-missing");
-        h.app
-            .handle_pane_ipc_request(AppRequest::SpawnPane {
-                type_id: "terminal".to_string(),
-                layout: Some("split_h".to_string()),
-                args: vec!["true".to_string()],
-                from_pane_id: None,
-                request_id: None,
-                response_file: Some(response.clone()),
-                ephemeral: false,
-                cwd: None,
-                no_focus: false,
-                path: None,
-                workspace_root: None,
-                target_context: None,
-                context_name: Some("ghost".to_string()),
-                name: None,
-            });
+        h.app.handle_pane_ipc_request(AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec!["true".to_string()],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(response.clone()),
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: Some("ghost".to_string()),
+            name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
+        });
 
         let reply = read_json_response(&response);
         let err = reply["error"].as_str().expect("must reply with an error");
@@ -4727,6 +4986,756 @@ mod routine_firing {
         assert!(
             h.app.scheduler.live_run_count() <= 1,
             "ephemeral run must be reaped on close"
+        );
+    }
+}
+
+// -- `pane new --agent`: spawn replies are held until the agent boots -------
+
+mod agent_boot {
+    use super::*;
+    use crate::app_protocol::{AgentState, AppRequest};
+
+    /// Spawn a terminal with `--agent` semantics and return its response file.
+    fn spawn_agent_pane(
+        h: &mut HostHarness,
+        dir: &std::path::Path,
+        agent_cmd: &str,
+        boot_timeout_secs: Option<f64>,
+    ) -> String {
+        let response = temp_response(dir, "agent-spawn");
+        h.inject_ipc(AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec![],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(response.clone()),
+            ephemeral: false,
+            cwd: Some(dir.to_string_lossy().into_owned()),
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: Some("agent".to_string()),
+            agent_cmd: Some(agent_cmd.to_string()),
+            boot_timeout_secs,
+        });
+        response
+    }
+
+    /// The id of the terminal the spawn just created. The spawn response is
+    /// deliberately withheld, so tests cannot read the id back from it.
+    fn spawned_terminal(h: &HostHarness) -> u64 {
+        h.app
+            .windows
+            .iter()
+            .flat_map(|win| win.panes.iter())
+            .find(|(_, pane)| pane.as_terminal().is_some())
+            .map(|(id, _)| *id)
+            .expect("spawn must have created a terminal pane")
+    }
+
+    fn report_agent(h: &mut HostHarness, pane_id: u64, state: AgentState) {
+        h.inject_ipc(AppRequest::SetAgentState {
+            pane_id,
+            state,
+            agent: "claude-code".to_string(),
+            detail: None,
+            session_id: None,
+        });
+    }
+
+    /// The core contract: a pane id on stdout means "ready for a brief". The
+    /// host must therefore withhold the spawn reply through every state that
+    /// is not the agent reporting itself idle.
+    #[test]
+    fn agent_spawn_defers_reply_until_agent_reports_idle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let response = spawn_agent_pane(&mut h, tmp.path(), "true", Some(120.0));
+        h.run_frames(1);
+        assert!(
+            !std::path::Path::new(&response).exists(),
+            "the spawn must not answer before the agent has booted"
+        );
+
+        let pane_id = spawned_terminal(&h);
+        report_agent(&mut h, pane_id, AgentState::Working);
+        h.run_frames(1);
+        assert!(
+            !std::path::Path::new(&response).exists(),
+            "a working report is not a boot signal"
+        );
+
+        report_agent(&mut h, pane_id, AgentState::Idle);
+        h.run_frames(1);
+        assert_eq!(
+            read_json_response(&response)["pane_id"].as_u64(),
+            Some(pane_id),
+            "the idle report must release the spawn reply with the real pane id"
+        );
+    }
+
+    /// The report arrives over IPC, which `App::logic` drains — so an occluded
+    /// host, which never runs `App::ui`, must still complete the boot.
+    #[test]
+    fn agent_spawn_completes_while_window_hidden() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let response = spawn_agent_pane(&mut h, tmp.path(), "true", Some(120.0));
+        h.run_hidden_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        report_agent(&mut h, pane_id, AgentState::Idle);
+        h.run_hidden_frames(1);
+
+        assert_eq!(
+            read_json_response(&response)["pane_id"].as_u64(),
+            Some(pane_id),
+            "agent boots must be registered and completed from App::logic"
+        );
+    }
+
+    /// A boot timeout leaves a live pane behind, so the reply has to name it:
+    /// the caller's only way to clean up is the id it never got on stdout.
+    #[test]
+    fn agent_spawn_boot_timeout_reports_pane_id() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let response = spawn_agent_pane(&mut h, tmp.path(), "sleep 30", Some(0.05));
+        h.run_hidden_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        for _ in 0..40 {
+            if std::path::Path::new(&response).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.run_hidden_frames(1);
+        }
+
+        let reply = read_json_response(&response);
+        assert_eq!(reply["ok"].as_bool(), Some(false));
+        assert_eq!(reply["timeout"].as_bool(), Some(true));
+        assert_eq!(reply["pane_id"].as_u64(), Some(pane_id));
+        assert!(
+            reply["error"].as_str().expect("error").contains("sleep 30"),
+            "the reason must name what failed to boot: {reply}"
+        );
+    }
+
+    /// A pane that closes can never report, so waiting out the full boot
+    /// window would strand the caller for nothing.
+    #[test]
+    fn agent_spawn_errors_when_pane_closes_before_boot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        // A long boot window: only the close, not the deadline, can end this.
+        let response = spawn_agent_pane(&mut h, tmp.path(), "sleep 30", Some(600.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        h.inject_ipc(AppRequest::ClosePane { pane_id });
+        h.run_frames(1);
+
+        let reply = read_json_response(&response);
+        assert_eq!(reply["ok"].as_bool(), Some(false));
+        assert_eq!(
+            reply["timeout"].as_bool(),
+            Some(false),
+            "a vanished pane is not a timeout — the caller has nothing to close"
+        );
+        assert_eq!(reply["pane_id"].as_u64(), Some(pane_id));
+        assert!(
+            reply["error"].as_str().expect("error").contains("closed"),
+            "unexpected error: {reply}"
+        );
+    }
+
+    /// The alias reaches the pane's shell as typed input, which is what makes
+    /// the agent start at all. Proven through the PTY, not through host state.
+    #[test]
+    fn agent_spawn_types_the_alias_into_the_pane() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let _response = spawn_agent_pane(&mut h, tmp.path(), "echo plexi-boot-marker", Some(600.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        let mut captured = String::new();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            h.run_frames(1);
+            let capture = temp_response(tmp.path(), "agent-capture");
+            h.inject_ipc(AppRequest::CapturePane {
+                pane_id,
+                lines: 50,
+                response_file: capture.clone(),
+                full_output: false,
+                from_cursor: None,
+            });
+            h.run_frames(1);
+            captured = read_json_response(&capture).to_string();
+            if captured.contains("plexi-boot-marker") {
+                break;
+            }
+        }
+        assert!(
+            captured.contains("plexi-boot-marker"),
+            "the alias must be written to the new pane's PTY; captured: {captured}"
+        );
+    }
+
+    /// An agent is a terminal affordance. Asking for one on an app pane is a
+    /// caller mistake and must fail loudly rather than spawn a silent app.
+    #[test]
+    fn agent_spawn_rejected_for_non_terminal_target() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+
+        let response = temp_response(tmp.path(), "agent-app-spawn");
+        h.inject_ipc(AppRequest::SpawnPane {
+            type_id: "text-editor".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec![],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(response.clone()),
+            ephemeral: false,
+            cwd: Some(tmp.path().to_string_lossy().into_owned()),
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: None,
+            agent_cmd: Some("c-large".to_string()),
+            boot_timeout_secs: None,
+        });
+        h.run_frames(1);
+
+        assert_eq!(
+            read_json_response(&response)["error"].as_str(),
+            Some("agent_cmd is only supported for terminal spawns")
+        );
+    }
+
+    // -- host-observed boot detection ---------------------------------------
+    //
+    // Codex v0.145.0 defers its `session_start` hook until the first user
+    // prompt submission, so a freshly booted Codex never self-reports. The
+    // shared detector therefore also recognizes a known agent binary in the
+    // PTY foreground and derives idle from the output settle. These tests
+    // reproduce the real Homebrew distribution shape — a payload binary
+    // reached through a `codex` symlink — because macOS names a process
+    // exec'd through a symlink after the RESOLVED target, and a fake that
+    // guarantees the name match cannot catch identity bugs (PR #2510 round 2).
+
+    /// A quiescent stand-in for a booted agent TUI sitting at its prompt,
+    /// shaped like the Homebrew cask: `codex` is a symlink to a payload
+    /// binary named `codex-aarch64-apple-darwin` (a copy of `sleep`), and the
+    /// pane execs the symlink path.
+    fn fake_idle_codex(dir: &std::path::Path) -> String {
+        let payload = dir.join("codex-aarch64-apple-darwin");
+        std::fs::copy("/bin/sleep", &payload).expect("copy sleep");
+        let link = dir.join("codex");
+        std::os::unix::fs::symlink(&payload, &link).expect("symlink codex");
+        format!("{} 60", link.display())
+    }
+
+    fn pane_info(h: &mut HostHarness, dir: &std::path::Path, pane_id: u64) -> serde_json::Value {
+        let response = temp_response(dir, "agent-info");
+        h.inject_ipc(AppRequest::GetPaneInfo {
+            pane_id,
+            response_file: response.clone(),
+        });
+        h.run_frames(1);
+        read_json_response(&response)
+    }
+
+    /// Pump visible or hidden frames until the response file exists, waiting
+    /// generously — the observed path needs real seconds: shell boot, the
+    /// typed command, a full settle window, and a 1 Hz detector tick.
+    fn pump_until_response(h: &mut HostHarness, response: &str, hidden: bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !std::path::Path::new(response).exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if hidden {
+                h.run_hidden_frames(1);
+            } else {
+                h.run_frames(1);
+            }
+        }
+    }
+
+    /// The tester's exact failure: a booted Codex never fires a hook, so the
+    /// spawn must complete from the host-observed detector alone.
+    #[test]
+    fn agent_spawn_completes_from_observed_codex_boot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let cmd = fake_idle_codex(tmp.path());
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, false);
+        assert_eq!(
+            read_json_response(&response)["pane_id"].as_u64(),
+            Some(pane_id),
+            "a settled foreground agent binary must complete the boot without any hook report"
+        );
+
+        // The same detector feeds `pane list`/`pane state`: the pane must
+        // report the observed agent, not `agent: null`.
+        let info = pane_info(&mut h, tmp.path(), pane_id);
+        assert_eq!(
+            info["agent"]["agent"].as_str(),
+            Some("codex"),
+            "observed identity must surface on the pane info: {info}"
+        );
+        assert_eq!(
+            info["agent"]["state"].as_str(),
+            Some("idle"),
+            "a settled agent must read idle: {info}"
+        );
+    }
+
+    /// The observed path lives in `App::logic` end to end (activity tick,
+    /// boot service) — an occluded host must still complete the boot.
+    #[test]
+    fn agent_spawn_observed_boot_completes_while_window_hidden() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let cmd = fake_idle_codex(tmp.path());
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(120.0));
+        h.run_hidden_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, true);
+        assert_eq!(
+            read_json_response(&response)["pane_id"].as_u64(),
+            Some(pane_id),
+            "the observed boot path must not depend on App::ui running"
+        );
+    }
+
+    /// A foreground agent that is still streaming output is booting or busy,
+    /// never idle — the settle window is what separates the two. A fake codex
+    /// that redraws continuously must ride out the whole boot window.
+    #[test]
+    fn agent_spawn_streaming_agent_is_not_reported_idle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let fake = tmp.path().join("codex");
+        std::fs::copy("/bin/zsh", &fake).expect("copy zsh");
+        let cmd = format!(
+            "{} -c 'while :; do echo streaming-banner; sleep 0.05; done'",
+            fake.display()
+        );
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(4.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, false);
+        let reply = read_json_response(&response);
+        assert_eq!(
+            reply["timeout"].as_bool(),
+            Some(true),
+            "a continuously streaming agent must never satisfy the boot predicate: {reply}"
+        );
+
+        h.inject_ipc(AppRequest::ClosePane { pane_id });
+        h.run_frames(1);
+    }
+
+    /// Hook reports are authoritative: once one lands, it both overrides the
+    /// observed state and permanently disables synthesis for the pane.
+    #[test]
+    fn hook_report_overrides_observed_agent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+
+        let cmd = fake_idle_codex(tmp.path());
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        pump_until_response(&mut h, &response, false);
+
+        report_agent(&mut h, pane_id, AgentState::Working);
+        h.run_frames(1);
+        let info = pane_info(&mut h, tmp.path(), pane_id);
+        assert_eq!(info["agent"]["agent"].as_str(), Some("claude-code"));
+        assert_eq!(info["agent"]["state"].as_str(), Some("working"));
+
+        // Ride past the next detector ticks: the settled fake codex is still
+        // in the foreground, but synthesis must stay off once hooks own the
+        // pane — the hook state must not flap back to observed idle.
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            h.run_frames(1);
+        }
+        let info = pane_info(&mut h, tmp.path(), pane_id);
+        assert_eq!(
+            info["agent"]["agent"].as_str(),
+            Some("claude-code"),
+            "a hook report must permanently supersede the observed agent: {info}"
+        );
+        assert_eq!(info["agent"]["state"].as_str(), Some("working"));
+    }
+}
+
+/// `plexi pane send --submit` (stint 0583): the host owns the whole
+/// type → settle → Enter → confirm sequence, so an agent driving a TUI pane
+/// gets one verb with an exit code it can branch on instead of a sleep and a
+/// hope. These run against a real PTY because the signals under test are real
+/// PTY signals: the quiet window comes from the pane's event stream, and the
+/// confirmation comes from the rendered grid.
+#[cfg(test)]
+mod pane_send_submit_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// How long a test will wait for a submit to resolve. Comfortably above the
+    /// host's own ceiling (settle + two confirm windows) so a failure here means
+    /// the host never answered, not that the test was impatient.
+    const RESOLVE_TIMEOUT: Duration = Duration::from_secs(25);
+
+    fn last_pty_output_at(h: &HostHarness, pane: PaneId) -> Option<Instant> {
+        h.app.windows[0]
+            .panes
+            .get(&pane)
+            .and_then(Pane::as_terminal)
+            .and_then(|term| term.last_pty_output_at)
+    }
+
+    fn tail(h: &mut HostHarness, pane: PaneId) -> Vec<String> {
+        h.terminal_backend(pane).capture_lines(40)
+    }
+
+    /// Pump frames until the pane stops producing, so a submit's settle window
+    /// measures the text we typed rather than the shell still printing its
+    /// prompt. Bails once the pane has produced nothing at all for a while —
+    /// a shell that never wrote anything is already as settled as it gets.
+    fn settle_terminal(h: &mut HostHarness, pane: PaneId) {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(10) {
+            h.run_frames(1);
+            match last_pty_output_at(h, pane) {
+                Some(at) if at.elapsed() >= Duration::from_millis(600) => return,
+                None if started.elapsed() >= Duration::from_secs(2) => return,
+                _ => {}
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("pane {pane} never stopped producing PTY output");
+    }
+
+    /// Pump frames until the pane's tail contains `needle`.
+    fn wait_for_output(h: &mut HostHarness, pane: PaneId, needle: &str) {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(10) {
+            h.run_frames(1);
+            if tail(h, pane).iter().any(|line| line.contains(needle)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "pane {pane} never printed {needle:?}; tail was {:?}",
+            tail(h, pane)
+        );
+    }
+
+    /// Pump frames until the host writes `path`. Frames are the clock: nothing
+    /// the host owes is answered outside a pass, so a fixed sleep would only
+    /// make this slower without making it more reliable. `hidden` runs
+    /// logic-only passes, the ones an occluded host is limited to.
+    fn resolve(h: &mut HostHarness, path: &str, hidden: bool) -> serde_json::Value {
+        let started = Instant::now();
+        while started.elapsed() < RESOLVE_TIMEOUT {
+            if hidden {
+                h.run_hidden_frames(1);
+            } else {
+                h.run_frames(1);
+            }
+            // `write_response` renames into place, so existence means complete.
+            if std::path::Path::new(path).exists() {
+                return read_json_response(path);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("submit at {path} was never answered within {RESOLVE_TIMEOUT:?}");
+    }
+
+    fn submit(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
+        h.inject_ipc(AppRequest::SendToPane {
+            pane_id: pane,
+            text: text.to_string(),
+            submit: true,
+            response_file,
+        });
+    }
+
+    fn type_only(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
+        h.inject_ipc(AppRequest::SendToPane {
+            pane_id: pane,
+            text: text.to_string(),
+            submit: false,
+            response_file,
+        });
+    }
+
+    /// The happy path end to end: the command runs, the host confirms it, and
+    /// exactly one Enter reaches the PTY. The byte-level assertion is the point
+    /// — a second Enter on a shell pane is a blank command, but on an agent TUI
+    /// it is a second turn.
+    #[test]
+    fn pane_send_submit_confirms_real_shell_command() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        h.terminal_backend(term).enable_input_tap();
+        let response = temp_response(tmp.path(), "submit-confirm");
+        submit(&h, term, "echo submit-proof", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, false);
+        assert_eq!(reply["ok"].as_bool(), Some(true), "reply was {reply}");
+        assert_eq!(
+            reply["retried"].as_bool(),
+            Some(false),
+            "a shell that submits on the first Enter must not report a retry: {reply}"
+        );
+
+        let written = h.terminal_backend(term).take_input_tap();
+        assert_eq!(
+            written,
+            b"echo submit-proof\r",
+            "the text must be followed by exactly one Enter, got {:?}",
+            String::from_utf8_lossy(&written)
+        );
+        wait_for_output(&mut h, term, "submit-proof");
+    }
+
+    /// The collapsed-paste heal, bounded. A pane whose tail keeps showing the
+    /// hint gets exactly one extra Enter — never a second retry, never a loop —
+    /// and then reports the submission unconfirmed with what it observed.
+    #[test]
+    fn pane_send_submit_retries_exactly_once_on_collapsed_paste_hint() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        // Park the hint on screen for good. This is what an agent TUI holding a
+        // collapsed paste looks like to the host: the marker never leaves the
+        // tail no matter how many enters arrive.
+        type_only(&h, term, "echo paste again to expand\n", None);
+        wait_for_output(&mut h, term, "paste again to expand");
+        settle_terminal(&mut h, term);
+
+        h.terminal_backend(term).enable_input_tap();
+        let response = temp_response(tmp.path(), "submit-collapsed");
+        submit(&h, term, "echo second", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, false);
+        assert!(
+            reply["ok"].as_bool().is_none(),
+            "a tail that never loses the collapsed-paste hint must not confirm: {reply}"
+        );
+        assert_eq!(
+            reply["retried"].as_bool(),
+            Some(true),
+            "the one retry must be reported: {reply}"
+        );
+        assert!(
+            !reply["input_line"]
+                .as_array()
+                .expect("unconfirmed reply must carry input_line")
+                .is_empty(),
+            "the caller needs the observed input line to branch on: {reply}"
+        );
+
+        let written = h.terminal_backend(term).take_input_tap();
+        let enters = written.iter().filter(|byte| **byte == b'\r').count();
+        assert_eq!(
+            enters,
+            2,
+            "the submit plus exactly one retry is two enters, never three; got {:?}",
+            String::from_utf8_lossy(&written)
+        );
+        assert_eq!(written, b"echo second\r\r");
+    }
+
+    /// A pane that shows nothing at all after Enter is the unconfirmed case,
+    /// and the caller is told what the input line actually held. `stty -echo`
+    /// plus a foreground `cat` gives a pane that swallows both the text and the
+    /// Enter without redrawing, which is precisely "typed but not submitted".
+    #[test]
+    fn pane_send_submit_unconfirmed_reports_observed_input_line() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        type_only(&h, term, "stty -echo; cat > /dev/null\n", None);
+        wait_for_output(&mut h, term, "cat > /dev/null");
+        settle_terminal(&mut h, term);
+        // The same read the host confirms against, so the assertion below is
+        // about the host's own view rather than a parallel reimplementation.
+        let before = h.app.pane_tail(term);
+
+        let response = temp_response(tmp.path(), "submit-unconfirmed");
+        submit(&h, term, "never-submitted", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, false);
+        assert!(
+            reply["ok"].as_bool().is_none(),
+            "an unchanged tail must not confirm: {reply}"
+        );
+        assert_eq!(
+            reply["retried"].as_bool(),
+            Some(false),
+            "the retry is scoped to the collapsed-paste hint, which never appeared: {reply}"
+        );
+        let observed: Vec<String> = reply["input_line"]
+            .as_array()
+            .expect("unconfirmed reply must carry input_line")
+            .iter()
+            .map(|line| line.as_str().expect("input_line entries are strings").to_string())
+            .collect();
+        assert!(
+            !observed.is_empty() && before.ends_with(observed.as_slice()),
+            "input_line must be the pane's own observed tail; observed={observed:?} tail={before:?}"
+        );
+    }
+
+    /// `--submit` is a terminal-pane verb. An app pane has no input line to
+    /// confirm, so it is refused with a typed error rather than silently
+    /// degrading to a plain text injection.
+    #[test]
+    fn pane_send_submit_rejects_app_pane() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+
+        let response = temp_response(tmp.path(), "submit-app-pane");
+        submit(&h, pane, "hello", Some(response.clone()));
+        h.run_frames(1);
+
+        assert_eq!(
+            read_json_response(&response)["error"].as_str(),
+            Some(
+                format!("pane {pane} is an app pane; --submit only applies to terminal panes")
+                    .as_str()
+            )
+        );
+        assert!(h.app.pending_submits.is_empty());
+    }
+
+    /// Two submits racing on one input line interleave their enters, so the
+    /// second is refused before it types anything.
+    #[test]
+    fn pane_send_submit_rejects_second_inflight_submit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        let first = temp_response(tmp.path(), "submit-first");
+        let second = temp_response(tmp.path(), "submit-second");
+        // Injected back to back so both drain in one pass, with the first still
+        // parked when the second is handled.
+        submit(&h, term, "echo first", Some(first));
+        submit(&h, term, "echo second", Some(second.clone()));
+        h.run_frames(1);
+
+        assert_eq!(
+            read_json_response(&second)["error"].as_str(),
+            Some(
+                format!("pane {term} already has a `pane send --submit` in flight").as_str()
+            ),
+            "a second submit must be refused, not queued"
+        );
+        assert_eq!(h.app.pending_submits.len(), 1);
+    }
+
+    /// The occluded-host guard. `App::ui` never runs while the window is hidden,
+    /// so a submit serviced from there would type the text and then never press
+    /// Enter — the caller blocking until its own timeout with the prompt sitting
+    /// unsent in the pane.
+    #[test]
+    fn pane_send_submit_completes_while_window_hidden() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        let response = temp_response(tmp.path(), "submit-hidden");
+        submit(&h, term, "echo hidden-proof", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, true);
+        assert_eq!(
+            reply["ok"].as_bool(),
+            Some(true),
+            "submits must settle, submit and confirm on logic-only passes: {reply}"
+        );
+    }
+
+    /// The default verb is unchanged: no Enter, no waiting, an answer on the
+    /// same pass.
+    #[test]
+    fn pane_send_without_submit_unchanged() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        h.terminal_backend(term).enable_input_tap();
+        let response = temp_response(tmp.path(), "send-plain");
+        type_only(&h, term, "echo plain", Some(response.clone()));
+        h.run_frames(1);
+
+        assert_eq!(read_json_response(&response)["ok"].as_bool(), Some(true));
+        assert!(
+            h.app.pending_submits.is_empty(),
+            "a plain send must never park a reply"
+        );
+        assert_eq!(
+            h.terminal_backend(term).take_input_tap(),
+            b"echo plain",
+            "a plain send must type the text and nothing else"
         );
     }
 }

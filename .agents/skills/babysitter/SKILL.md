@@ -122,6 +122,8 @@ Append `2>&1 | grep -v "sudo:"` to plexi commands run from your own Bash — the
 
 ### Progress channel — pane slots FIRST, capture is the fallback
 
+> **Deprecated syntax note (stint 0585).** The fixed-cadence polling below is superseded by `plexi pane slot wait <name> [pane_id] --until <REGEX> --timeout <SECS>` — a host-side blocking read (exit 0 = matched value on stdout, exit 2 = timeout, exit 1 = usage/plumbing) that is level-triggered, so an already-matching slot returns immediately. Use it only when the binary you are driving includes it; on older builds keep the polling loop below. Full recipe sweep is stint 0589.
+
 **The primary way you read a pane's progress is its typed slots, not its scrollback.** A slot read is ~3 tokens and unambiguous; a full TUI capture is ~700 tokens and semantically fragile (false idle/busy reads, marker-glyph guessing, truncation, locale-sensitive Unicode). Read the declared state; scrape the TUI only when a slot is empty or stale.
 
 **The pane-owned slot contract** (generic names — the slots belong to the pane; the babysitter is one reader). Worker and tester both honor it:
@@ -193,6 +195,8 @@ The failure mode this skill exists to prevent: send a key → capture comes back
 
 ### CRITICAL gotcha — send does not submit
 
+> **Deprecated syntax note (stint 0583).** This two-step (and its one-retry exception in ANTI-THRASH) is superseded by `plexi pane send <id> "<prompt>" --submit` — the host types, waits for the input line to settle, presses enter, confirms submission, and self-heals a collapsed paste with exactly one internal retry (exit 0 = confirmed, non-zero = typed-but-unconfirmed with the observed input line on stderr). Use it only when the binary you are driving includes it; on older builds keep the two-step below. Full recipe sweep is stint 0589.
+
 `plexi pane send`'s `\n` does **not** reliably auto-submit inside the agent TUI. Standing two-step, used dozens of times:
 
 ```
@@ -210,6 +214,8 @@ plexi pane capture <id> --from-cursor 0   # confirm it took; re-send enter ONCE 
 Before feeding anything, group the queue. **Fewer PRs is always better.** Small or related stints ship together in **one** PR — never one-PR-per-stint when they can combine. Parallelize implementation where stints don't share files, but collapse the result into the smallest number of PRs that makes sense. A **batch** is the unit of work below, not a single stint. Group by shared subsystem/files, small size, logical cohesion. When in doubt, combine.
 
 ## Spawning an agent pane
+
+> **Deprecated syntax note (stint 0584).** This spawn-then-poll recipe (and its BOOT RACE gotcha) is superseded by `plexi pane new --agent <tier-alias> [--boot-timeout <SECS>]` — one blocking call that spawns the pane, launches the alias, and prints the pane id on stdout only once the agent TUI has reported a booted idle prompt (boot timeout: exit 2 with the created pane id on stderr so you can close it). Use it only when the binary you are driving includes it; on older builds keep the recipe below. Full recipe sweep is stint 0589.
 
 Workers and testers are agent panes launched with a size-tier alias (tier table above) — the alias sets the model, so there is no post-boot `/model` step.
 
