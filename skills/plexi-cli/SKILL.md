@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.1.0"
+skill_version: "4.2.0"
 plexi_version: "0.2.0"
 last_verified: "2026-07-28"
 ---
@@ -61,7 +61,9 @@ app install [SPEC]       Install from path, github:owner/repo, or --pack core.
 app uninstall ID         Remove an installed app.
 app list                 Show all installed apps with versions.
 app info ID              Show app details: id, name, version, tools.
-app render ID            Render to PNG. --size WxH, --state FILE, --output FILE.
+app render APP           Render an app (installed id or local path, e.g. ".") without a
+                         running host. Default output is the JSON UI tree; --png for an
+                         image. --size WxH, --state FILE, --output FILE.
 app validate [PATH]      Check app dir for errors before publish/install.
 app freeze PATH          Export installed apps as TOML snapshot (like pip freeze).
 app publish              Stub for future marketplace publishing; confirm behavior with --help.
@@ -166,7 +168,7 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 
 - `pane new` is the canonical way to open a terminal pane
 - `app open TYPE_ID` opens installed apps -- never `pane send ID "app\n"`
-- `app render` takes an installed app **ID** (not a path) -- run `app list` first
+- `app render . --png` renders the app in the current dir with no running host; default output is JSON, not an image
 - `agent init` replaces the former `app init --agent` form
 - `pane command ID "text" --enter` = send + Enter in one step (terminal panes only)
 - `pane send` with `\n` submits in shell panes but does NOT submit Claude Code prompts -- use the two-step pattern below

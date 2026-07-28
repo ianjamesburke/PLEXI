@@ -115,11 +115,6 @@ check-cli-docs:
     fi
     echo "CLI docs are up to date."
 
-# Verify the published agent skill's plexi_version matches Cargo.toml.
-# promote.sh runs this on the beta→main path; mismatch fails the release.
-check-skill-version:
-    bash scripts/check-skill-version.sh .
-
 # Regenerate the config reference docs from the serde config structs.
 # Run after any change to src/config/mod.rs or scripts/default-config.toml.
 gen-config-docs:
