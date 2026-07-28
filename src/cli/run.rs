@@ -291,7 +291,7 @@ pub(super) fn routines_file() -> String {
     format!("{}/routines.toml", crate::config::workspace_channel_dir())
 }
 
-/// Parsed `.plexi/routines.toml` for CLI use
+/// Parsed `{workspace_channel_dir}/routines.toml` for CLI use
 #[derive(serde::Deserialize)]
 pub(super) struct RoutinesCliConfig {
     #[serde(default)]
@@ -309,7 +309,7 @@ pub(super) struct RoutineCliDef {
     pub(super) ephemeral: bool,
 }
 
-/// `plexi routine list` — list routines from .plexi/routines.toml
+/// `plexi routine list` — list routines from the workspace channel dir's routines.toml
 #[cfg(test)]
 mod command_parse_tests {
     use crate::cli::{CommandEntry, PlexiCommands};

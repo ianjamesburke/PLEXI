@@ -2707,7 +2707,7 @@ impl PlexiApp {
         }
     }
 
-    pub(super) fn tick_scheduler(&mut self) {
+    pub(crate) fn tick_scheduler(&mut self) {
         // Load routines from every context that has a root set
         let roots: Vec<std::path::PathBuf> = self
             .router
@@ -2715,33 +2715,148 @@ impl PlexiApp {
             .filter_map(|ctx| ctx.root.clone())
             .collect();
         for root in &roots {
-            self.scheduler.load_from_root(root);
+            let failures = self.scheduler.load_from_root(root);
+            for f in failures {
+                self.notify_routine_issue(root, &f.title, &f.body);
+            }
         }
 
         let now = chrono::Local::now();
         let due = self.scheduler.due_routines(now);
         for idx in due {
-            let (name, command, context_name, ephemeral) = {
+            let (name, command, context_name, ephemeral, source_root) = {
                 let entry = &self.scheduler.entries[idx];
                 (
                     entry.routine.name.clone(),
                     entry.routine.command.clone(),
                     entry.routine.context.clone(),
                     entry.routine.ephemeral,
+                    entry.source_root.clone(),
                 )
             };
+
+            // Overlap guard: while the previous run's command is still going,
+            // skip — never stack panes. The skip does NOT stamp last_fire, so
+            // the routine fires on the next tick after the run finishes rather
+            // than waiting a full interval.
+            if let Some(run) = self.scheduler.live_run(&source_root, &name) {
+                let pane_id = run.pane_id;
+                let skip_notified = run.skip_notified;
+                if self.routine_run_is_alive(pane_id) {
+                    log::info!(
+                        "scheduler: routine '{name}' skipped — previous run (pane {pane_id}) still active"
+                    );
+                    if !skip_notified {
+                        self.notify_routine_issue(
+                            &source_root,
+                            &format!("Routine '{name}' skipped"),
+                            &format!(
+                                "The previous run (pane {pane_id}) is still going; the routine will fire again once it finishes."
+                            ),
+                        );
+                        self.scheduler.mark_skip_notified(&source_root, &name);
+                    }
+                    continue;
+                }
+                // Run finished (or its pane vanished through a path that
+                // skipped the close hook) — reap and fall through to fire.
+                self.scheduler.reap_run(&source_root, &name);
+            }
+
             self.scheduler.mark_fired(idx, now);
-            self.fire_routine(&name, &command, &context_name, ephemeral);
+            if let Some(pane_id) =
+                self.fire_routine(&name, &command, &context_name, ephemeral, &source_root)
+            {
+                self.scheduler.register_run(&source_root, &name, pane_id);
+                let root_key = source_root.display();
+                self.scheduler
+                    .clear_failure(&format!("{root_key}|{name}|context-missing"));
+                self.scheduler
+                    .clear_failure(&format!("{root_key}|{name}|spawn-failed"));
+            }
         }
     }
 
-    pub(super) fn fire_routine(
+    /// True while a routine's spawned pane exists and its command is still
+    /// running (foreground process or children, as sampled by
+    /// `tick_terminal_activity`). A pane sitting at an idle shell — or gone
+    /// entirely — is not a live run.
+    fn routine_run_is_alive(&self, pane_id: u64) -> bool {
+        self.windows.iter().any(|w| {
+            w.panes.get(&pane_id).is_some_and(|p| {
+                p.as_terminal().is_some_and(|t| {
+                    !t.exited
+                        && matches!(t.activity, Some(crate::app_protocol::AgentState::Working))
+                })
+            })
+        })
+    }
+
+    /// Surface a routine problem as a user-visible notification, scoped to the
+    /// context that owns the routine's workspace root (global when no context
+    /// matches). Routed through the single notification choke point; passive
+    /// priority — never auto-opens the modal, never triggers the audible cue.
+    fn notify_routine_issue(&mut self, source_root: &std::path::Path, title: &str, body: &str) {
+        let ctx_id = self
+            .router
+            .iter()
+            .find(|c| c.root.as_deref() == Some(source_root))
+            .map(|c| c.context_id);
+        let (scope, source_context_id) = match ctx_id {
+            Some(id) => (crate::app_protocol::NotifyScope::Context, id),
+            None => (crate::app_protocol::NotifyScope::Global, 0),
+        };
+        // Millis alone can collide when two routine issues surface in the same
+        // tick; notify_id is an identity key, so disambiguate with a counter.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let queued = self.enqueue_notification(
+            crate::app::notifications::NotifySource::HostInternal,
+            crate::app::notifications::PendingNotification {
+                notify_id: format!("routine-{millis}-{seq}"),
+                sender_pane_id: 0,
+                source_context_id,
+                source_window_id: 0,
+                level: "warn".to_string(),
+                title: title.to_string(),
+                body: body.to_string(),
+                kind: crate::app_protocol::NotifyKind::Message,
+                options: vec![],
+                input_prompt: None,
+                required: false,
+                // Passive (below the default interrupt threshold of 100): a
+                // routine hiccup informs, it never steals focus.
+                priority: 50,
+                scope,
+                image_inline: None,
+                image_pipe_id: None,
+                response_file: None,
+                timeout_secs: None,
+                on_dismiss: None,
+                enqueued_at: std::time::Instant::now(),
+                tombstoned: false,
+                deliver_after: None,
+            },
+        );
+        log::info!("scheduler: routine notification queued={queued} title='{title}' body='{body}'");
+    }
+
+    /// Fire a routine into its target context. Returns the spawned pane id,
+    /// or `None` when the routine could not run (missing context, spawn
+    /// failure) — both surfaced as notifications on transition into the
+    /// failure state.
+    pub(crate) fn fire_routine(
         &mut self,
         name: &str,
         command: &str,
         context_name: &str,
         ephemeral: bool,
-    ) {
+        source_root: &std::path::Path,
+    ) -> Option<u64> {
         log::info!(
             "scheduler: routine '{}' fired context='{}' ephemeral={}",
             name,
@@ -2749,7 +2864,9 @@ impl PlexiApp {
             ephemeral
         );
 
-        // Find target context index
+        // Find target context index. A named context is a *target*, not a
+        // gate: the routine fires into it regardless of which context is
+        // active, and is skipped only when no context by that name exists.
         let target_ctx_idx = if context_name.is_empty() {
             self.router.active_idx()
         } else {
@@ -2761,7 +2878,17 @@ impl PlexiApp {
                         name,
                         context_name
                     );
-                    return;
+                    let key = format!("{}|{name}|context-missing", source_root.display());
+                    if self.scheduler.note_failure(key) {
+                        self.notify_routine_issue(
+                            source_root,
+                            &format!("Routine '{name}' skipped"),
+                            &format!(
+                                "Context '{context_name}' does not exist — the routine cannot fire until it does."
+                            ),
+                        );
+                    }
+                    return None;
                 }
             }
         };
@@ -2783,13 +2910,26 @@ impl PlexiApp {
         }
 
         let cwd = self.router.get(target_ctx_idx).root.clone();
-        self.split_focused(false, Some(command), ephemeral, false, cwd);
+        let spawned = self.split_focused(false, Some(command), ephemeral, false, cwd);
 
         // Restore original context
         if target_ctx_idx != original_ctx_idx {
             self.router.set_active(original_ctx_idx);
             self.active_window = original_active_win;
         }
+
+        if spawned.is_none() {
+            log::warn!("scheduler: routine '{name}' — failed to spawn a pane");
+            let key = format!("{}|{name}|spawn-failed", source_root.display());
+            if self.scheduler.note_failure(key) {
+                self.notify_routine_issue(
+                    source_root,
+                    &format!("Routine '{name}' failed"),
+                    "Could not spawn a pane for the routine's command.",
+                );
+            }
+        }
+        spawned
     }
 
     pub(super) fn drain_spawn_queue(&mut self) {

@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.2.0"
+skill_version: "4.2.1"
 plexi_version: "0.2.0"
 last_verified: "2026-07-28"
 ---
@@ -135,7 +135,7 @@ search for; keep `--detail` to the active tool.
 ```
 workspace init           Set up .plexi/ in current dir. NEVER run from ~.
 run [COMMAND]            Run a named command from .plexi/commands.toml. Omit to list.
-routine list             Show routines from .plexi/routines.toml with schedule/next fire.
+routine list             Show routines from the workspace channel dir's routines.toml with schedule/next fire.
 routine run NAME         Manually trigger a routine.
 ```
 

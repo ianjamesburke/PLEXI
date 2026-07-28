@@ -59,14 +59,21 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
 
     // Inject a hand-authored schedule reference block for `plexi routine`.
     if full_path == "plexi routine" {
-        println!("### Routine file format (`.plexi/routines.toml`)");
+        println!("### Routine file format (`{{workspace_channel_dir}}/routines.toml`)");
+        println!();
+        println!(
+            "The file lives in the workspace channel directory beside the rest of the \
+             workspace state — e.g. `.plexi-alpha/routines.toml` on the alpha channel."
+        );
         println!();
         println!("```toml");
         println!("[[routine]]");
         println!(r#"name      = "morning-sync""#);
         println!(r#"command   = "./scripts/sync.sh""#);
         println!(r#"schedule  = "daily at 09:00""#);
-        println!(r#"context   = "work"   # optional: only fires when this context is active"#);
+        println!(
+            r#"context   = "work"   # optional: fires into this context wherever it is; skipped if no context by that name exists"#
+        );
         println!(
             r#"ephemeral = true     # optional: close the spawned pane when the command exits"#
         );
@@ -76,13 +83,21 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         println!();
         println!("| Format | Example |");
         println!("|---|---|");
-        println!("| `every N seconds` | `every 30 seconds` |");
-        println!("| `every N minutes` | `every 5 minutes` |");
-        println!("| `every N hours`   | `every 2 hours` |");
+        println!("| `every N seconds` (or `Ns`) | `every 30 seconds` |");
+        println!("| `every N minutes` (or `Nm`) | `every 5 minutes` |");
+        println!("| `every N hours` (or `Nh`)   | `every 2 hours` |");
+        println!("| `every minute` / `every hour` | `every minute` |");
         println!("| `daily at HH:MM`  | `daily at 09:00` |");
+        println!("| `weekdays at HH:MM` | `weekdays at 09:00` |");
+        println!("| `weekends at HH:MM` | `weekends at 10:30am` |");
         println!("| `weekly on <day> at HH:MM` | `weekly on monday at 09:00` |");
         println!("| `monthly on N at HH:MM`    | `monthly on 1 at 08:00` |");
         println!("| 5-field cron `m h dom mon dow` | `0 9 * * 1-5` |");
+        println!();
+        println!(
+            "Singular unit names (`every 1 minute`) and am/pm times (`daily at 9am`) are \
+             accepted; day names take short or full spellings (`mon` / `monday`)."
+        );
         println!();
     }
 

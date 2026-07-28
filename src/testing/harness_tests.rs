@@ -4101,3 +4101,453 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
         "pane B must consume its queued text once it owns input"
     );
 }
+
+// -- Routine firing path (stint 0575) ---------------------------------------
+//
+// Integration coverage for `tick_scheduler` / `fire_routine`: context
+// targeting, focus restore, ephemeral teardown, the missing-context skip,
+// the 0573 overlap guard, and the persisted-last_fire startup behavior.
+
+mod routine_firing {
+    use super::*;
+    use crate::host::context::{Context, Window};
+    use crate::host::pane::{AppPane, AppRuntime, Pane};
+    use crate::spatial::tiling::PaneId;
+
+    /// Write `routines.toml` into `root`'s workspace channel dir.
+    fn write_routines(root: &std::path::Path, body: &str) {
+        let dir = root.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).expect("create channel dir");
+        std::fs::write(dir.join("routines.toml"), body).expect("write routines.toml");
+    }
+
+    /// Point the harness's default context at `root` so `tick_scheduler`
+    /// loads routines from it, and give it a stable name.
+    fn root_default_context(h: &mut HostHarness, root: &std::path::Path) {
+        let ctx = h.app.router.get_mut(0);
+        ctx.root = Some(root.to_path_buf());
+        ctx.name = "main".to_string();
+    }
+
+    /// Insert a builtin app pane (rooted at `root`, never a real machine dir)
+    /// into `win_idx` and focus it, so `split_focused` has a split target.
+    fn add_focused_app_pane(h: &mut HostHarness, win_idx: usize, root: &std::path::Path) -> PaneId {
+        let pane_id = h.app.host.alloc_pane_id();
+        let pane = AppPane {
+            pip_status: None,
+            id: pane_id,
+            runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                root.to_path_buf(),
+            ))),
+            workspace_root: root.to_path_buf(),
+            permissions: crate::app::permissions::AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test App".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        };
+        let win = &mut h.app.windows[win_idx];
+        win.panes.insert(pane_id, Pane::App(Box::new(pane)));
+        let tile_id = win.tree.tiles.insert_pane(pane_id);
+        if win.tree.root.is_none() {
+            win.tree.root = Some(tile_id);
+        }
+        win.focused_pane = Some(tile_id);
+        pane_id
+    }
+
+    /// Add a second context named `name` with its own window and a focused
+    /// pane, without going through the PTY-seeding production path. Returns
+    /// the new window's index.
+    fn add_secondary_context(h: &mut HostHarness, name: &str, root: &std::path::Path) -> usize {
+        let ctx_id = h.app.next_window_id;
+        h.app.next_window_id += 1;
+        let win_id = h.app.next_window_id;
+        h.app.next_window_id += 1;
+        h.app.windows.push(Window {
+            name: String::new(),
+            path: root.to_path_buf(),
+            tree: egui_tiles::Tree::empty("plexi"),
+            panes: std::collections::HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 1,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        let win_idx = h.app.windows.len() - 1;
+        add_focused_app_pane(h, win_idx, root);
+        h.app.router.push(Context {
+            name: name.to_string(),
+            path: root.to_path_buf(),
+            root: None, // no root: tick_scheduler must not load routines from here
+            description: None,
+            context_id: ctx_id,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
+        win_idx
+    }
+
+    fn terminal_pane_ids(h: &HostHarness, win_idx: usize) -> Vec<PaneId> {
+        h.app.windows[win_idx]
+            .panes
+            .iter()
+            .filter_map(|(id, p)| p.as_terminal().map(|_| *id))
+            .collect()
+    }
+
+    fn routine_notification_count(h: &HostHarness, needle: &str) -> usize {
+        h.app
+            .pending_notifications
+            .iter()
+            .filter(|n| n.title.contains(needle))
+            .count()
+    }
+
+    /// Rewind a routine's last_fire so it is due again without sleeping.
+    fn rewind_last_fire(h: &mut HostHarness, name: &str, hours: i64) {
+        for e in &mut h.app.scheduler.entries {
+            if e.routine.name == name {
+                e.last_fire = e
+                    .last_fire
+                    .map(|lf| lf - chrono::Duration::hours(hours))
+                    .or_else(|| Some(chrono::Local::now() - chrono::Duration::hours(hours)));
+            }
+        }
+    }
+
+    #[test]
+    fn routine_fires_into_named_context_and_restores_focus() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+        let work_root = tempfile::tempdir().expect("tempdir");
+        let work_win = add_secondary_context(&mut h, "work", work_root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "into-work"
+            command = "true"
+            schedule = "every 2 hours"
+            context = "work"
+        "#,
+        );
+
+        let active_ctx_before = h.app.router.active_idx();
+        let active_win_before = h.app.active_window;
+        let main_panes_before = h.app.windows[0].panes.len();
+        assert!(terminal_pane_ids(&h, work_win).is_empty());
+
+        h.app.tick_scheduler();
+
+        assert_eq!(
+            terminal_pane_ids(&h, work_win).len(),
+            1,
+            "routine pane must land in the named context's window"
+        );
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            main_panes_before,
+            "active context must not receive the pane"
+        );
+        assert_eq!(h.app.router.active_idx(), active_ctx_before);
+        assert_eq!(h.app.active_window, active_win_before);
+    }
+
+    #[test]
+    fn routine_empty_context_fires_into_active_context() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "here"
+            command = "true"
+            schedule = "every 2 hours"
+        "#,
+        );
+
+        h.app.tick_scheduler();
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "empty context field fires into the active context"
+        );
+    }
+
+    #[test]
+    fn routine_missing_context_skips_notifies_once() {
+        let mut h = HostHarness::new();
+        h.app.notifications_enabled = true; // harness default is off
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "ghost-run"
+            command = "true"
+            schedule = "every 2 hours"
+            context = "no-such-context"
+        "#,
+        );
+
+        h.app.tick_scheduler();
+        assert!(
+            terminal_pane_ids(&h, 0).is_empty(),
+            "missing context must not spawn a pane"
+        );
+        assert_eq!(
+            routine_notification_count(&h, "ghost-run"),
+            1,
+            "missing context surfaces one notification"
+        );
+
+        // Still-missing on the next due tick: no duplicate notification.
+        rewind_last_fire(&mut h, "ghost-run", 3);
+        h.app.tick_scheduler();
+        assert!(terminal_pane_ids(&h, 0).is_empty());
+        assert_eq!(
+            routine_notification_count(&h, "ghost-run"),
+            1,
+            "repeated observation of the same failure must not re-notify"
+        );
+    }
+
+    #[test]
+    fn startup_does_not_stampede_with_persisted_last_fire() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "sync"
+            command = "true"
+            schedule = "every 2 hours"
+        "#,
+        );
+        let state = format!(
+            "[last_fire]\nsync = \"{}\"\n",
+            chrono::Local::now().to_rfc3339()
+        );
+        std::fs::write(
+            root.path()
+                .join(crate::config::workspace_channel_dir())
+                .join("routine-state.toml"),
+            state,
+        )
+        .expect("write state");
+
+        h.app.tick_scheduler();
+        assert!(
+            terminal_pane_ids(&h, 0).is_empty(),
+            "a last_fire inside the interval must suppress the startup fire"
+        );
+    }
+
+    #[test]
+    fn startup_fires_when_persisted_last_fire_is_stale_or_absent() {
+        // Stale persisted state → fires once.
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "sync"
+            command = "true"
+            schedule = "every 2 hours"
+        "#,
+        );
+        let stale = chrono::Local::now() - chrono::Duration::hours(5);
+        std::fs::write(
+            root.path()
+                .join(crate::config::workspace_channel_dir())
+                .join("routine-state.toml"),
+            format!("[last_fire]\nsync = \"{}\"\n", stale.to_rfc3339()),
+        )
+        .expect("write state");
+        h.app.tick_scheduler();
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "an overdue routine fires once on launch"
+        );
+
+        // No state at all → fires (today's first-run behavior).
+        let mut h2 = HostHarness::new();
+        let root2 = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h2, root2.path());
+        add_focused_app_pane(&mut h2, 0, root2.path());
+        write_routines(
+            root2.path(),
+            r#"
+            [[routine]]
+            name = "sync"
+            command = "true"
+            schedule = "every 2 hours"
+        "#,
+        );
+        h2.app.tick_scheduler();
+        assert_eq!(terminal_pane_ids(&h2, 0).len(), 1);
+    }
+
+    #[test]
+    fn overlap_guard_skips_streaks_and_reaps_on_close() {
+        let mut h = HostHarness::new();
+        h.app.notifications_enabled = true; // harness default is off
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "long-job"
+            command = "true"
+            schedule = "every 2 hours"
+        "#,
+        );
+
+        h.app.tick_scheduler();
+        let run_panes = terminal_pane_ids(&h, 0);
+        assert_eq!(run_panes.len(), 1, "first tick fires");
+        let run_pane = run_panes[0];
+        assert_eq!(h.app.scheduler.live_run_count(), 1);
+
+        // Simulate the command still running (deterministic — no real pgrep
+        // timing): activity as sampled by tick_terminal_activity.
+        h.app.windows[0]
+            .panes
+            .get_mut(&run_pane)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("terminal")
+            .activity = Some(crate::app_protocol::AgentState::Working);
+
+        let last_fire_before_skip = h.app.scheduler.entries[0].last_fire;
+        rewind_last_fire(&mut h, "long-job", 3);
+        let rewound = h.app.scheduler.entries[0].last_fire;
+        assert_ne!(last_fire_before_skip, rewound);
+
+        h.app.tick_scheduler();
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "overlapping run must be skipped, not stacked"
+        );
+        assert_eq!(
+            h.app.scheduler.entries[0].last_fire, rewound,
+            "a skipped tick must NOT stamp last_fire"
+        );
+        assert_eq!(
+            routine_notification_count(&h, "long-job"),
+            1,
+            "one notification per skip streak"
+        );
+
+        // Second skip in the same streak: no new notification.
+        h.app.tick_scheduler();
+        assert_eq!(routine_notification_count(&h, "long-job"), 1);
+
+        // Close the run's pane → the reap hook must free the routine.
+        h.app.close_pane_by_id(run_pane);
+        assert_eq!(
+            h.app.scheduler.live_run_count(),
+            0,
+            "closing the pane must reap the live-run record"
+        );
+
+        // Still due (last_fire untouched) → fires again on the next tick.
+        h.app.tick_scheduler();
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "routine fires again after the previous run is reaped"
+        );
+
+        // A new run means a new streak: a fresh skip notifies again.
+        let second_pane = terminal_pane_ids(&h, 0)[0];
+        h.app.windows[0]
+            .panes
+            .get_mut(&second_pane)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("terminal")
+            .activity = Some(crate::app_protocol::AgentState::Working);
+        rewind_last_fire(&mut h, "long-job", 3);
+        h.app.tick_scheduler();
+        assert_eq!(
+            routine_notification_count(&h, "long-job"),
+            2,
+            "a new skip streak notifies once more"
+        );
+    }
+
+    #[test]
+    fn ephemeral_routine_pane_closes_on_exit_and_nonephemeral_stays() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+
+        write_routines(
+            root.path(),
+            r#"
+            [[routine]]
+            name = "flash"
+            command = "true"
+            schedule = "every 2 hours"
+            ephemeral = true
+
+            [[routine]]
+            name = "keeper"
+            command = "true"
+            schedule = "every 2 hours"
+        "#,
+        );
+
+        h.app.tick_scheduler();
+        assert_eq!(terminal_pane_ids(&h, 0).len(), 2, "both routines fire");
+
+        // The ephemeral pane closes when `true` exits; the other stays. PTY
+        // exit events are drained every frame, so pump frames until settled.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while terminal_pane_ids(&h, 0).len() > 1 && std::time::Instant::now() < deadline {
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "ephemeral routine pane must close when its command exits"
+        );
+        // Closing the ephemeral pane also reaped its live-run record.
+        assert!(
+            h.app.scheduler.live_run_count() <= 1,
+            "ephemeral run must be reaped on close"
+        );
+    }
+}
