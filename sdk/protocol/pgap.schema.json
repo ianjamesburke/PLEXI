@@ -215,17 +215,17 @@
           "oneOf": [
             {
               "const": "window",
-              "description": "Only visible when the source window is the active window. Default.\nIn the current single-window-per-context model this is equivalent to\n`Context`; the distinction matters when multi-window contexts land.",
+              "description": "Only visible when the source window is the active window.\nIn the current single-window-per-context model this is equivalent to\n`Context`; the distinction matters when multi-window contexts land.",
               "type": "string"
             },
             {
               "const": "context",
-              "description": "Visible whenever the source context is the active context (sidebar\nitem), regardless of which window page is showing.",
+              "description": "Visible whenever the source context is the active context (sidebar\nitem), regardless of which window page is showing.\n\nThe default for every surface that does not request a scope: a\nnotification belongs to the context that produced it, and following the\nuser into unrelated contexts is opt-in. Resolve an unset scope with\n`unwrap_or_default()` — never with a locally chosen fallback, or the\nsurfaces drift apart again. The rule is stated once in `docs/CONFIG.md`.",
               "type": "string"
             },
             {
               "const": "global",
-              "description": "Always visible regardless of which context is active.",
+              "description": "Always visible regardless of which context is active. Deliberate opt-in.",
               "type": "string"
             }
           ]
@@ -620,7 +620,25 @@
                   "type": "null"
                 }
               ],
-              "description": "CLI-only: notification visibility scope. Apps never set this — their\nscope comes from `manifest.toml::[launch] notification_scope`.\nOmit for backwards-compatible global behaviour."
+              "description": "CLI-only: notification visibility scope. Apps never set this — their\nscope comes from `manifest.toml::[launch] notification_scope`.\nOmit to take `NotifyScope::default()`."
+            },
+            "source_context_id": {
+              "description": "CLI-only: the sender's own context id (`PLEXI_CONTEXT_ID`), stamped\nby the CLI so the host never guesses provenance from whichever\ncontext happens to be active at dispatch time. Absent when the\ncaller runs outside any Plexi pane. A scope the sender cannot\nsupport resolves to the nearest wider one rather than attaching to\na context that never produced it: window scope with a resolvable\ncontext but no live window narrows to context; no resolvable\nsender at all escalates to global.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "source_pane_id": {
+              "description": "CLI-only: the sender's own pane id (`PLEXI_PANE_ID`). When the pane\nis still alive its live location is the ground truth for the\nnotification's window and context — a pane can move between\ncontexts after its env was stamped.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "timeout_secs": {
               "default": null,

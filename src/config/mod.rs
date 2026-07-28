@@ -758,6 +758,16 @@ pub struct NotificationsConfig {
     /// interrupt. Set to 0 to auto-open everything; set to 201 to match
     /// `focus_mode = true`.
     pub interrupt_threshold: Option<u32>,
+    /// Path to an audio file (WAV, MP3, FLAC, OGG) played once when a
+    /// notification arrives, so an agent waiting on input can pull a human
+    /// back while Plexi is in the background. Unset (the default) means no
+    /// sound; an explicitly empty string also means no sound, so a workspace
+    /// overlay can set `sound = ""` to silence a globally configured cue.
+    /// The cue only fires for a notification that may interrupt: `enabled =
+    /// false` drops it before the cue, `focus_mode = true` suppresses it, and
+    /// a notification that is invisible or below `interrupt_threshold`
+    /// arrives silently.
+    pub sound: Option<String>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -1681,6 +1691,17 @@ impl NotificationsConfig {
         if other.interrupt_threshold.is_some() {
             self.interrupt_threshold = other.interrupt_threshold;
         }
+        if other.sound.is_some() {
+            self.sound = other.sound;
+        }
+    }
+
+    /// The configured arrival-cue path, with `sound = ""` normalized to unset.
+    /// An explicitly empty value means "no sound" — never "open the empty path
+    /// and log a playback error on every notification". Every reader of the
+    /// cue path resolves it through here; nothing reads `sound` directly.
+    pub fn cue_sound(&self) -> Option<String> {
+        self.sound.clone().filter(|s| !s.is_empty())
     }
 }
 
@@ -1739,6 +1760,44 @@ pub fn active_workspace_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// Fix round 1 defect 3: a workspace overlay setting `[notifications]
+    /// sound` must override the global value, not be silently discarded.
+    #[test]
+    fn notifications_overlay_carries_sound() {
+        let mut base = NotificationsConfig {
+            sound: Some("/global/cue.wav".to_string()),
+            ..Default::default()
+        };
+        base.overlay(NotificationsConfig {
+            sound: Some("/workspace/cue.wav".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(base.sound.as_deref(), Some("/workspace/cue.wav"));
+
+        // An overlay that says nothing about sound keeps the global value.
+        base.overlay(NotificationsConfig::default());
+        assert_eq!(base.sound.as_deref(), Some("/workspace/cue.wav"));
+    }
+
+    /// `sound = ""` means "no sound" — never a `File::open("")` error logged
+    /// on every notification. A workspace overlay uses it to silence a
+    /// globally configured cue.
+    #[test]
+    fn empty_sound_normalizes_to_unset() {
+        let cfg = NotificationsConfig {
+            sound: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.cue_sound(), None);
+
+        let cfg = NotificationsConfig {
+            sound: Some("/tmp/cue.wav".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.cue_sound().as_deref(), Some("/tmp/cue.wav"));
+        assert_eq!(NotificationsConfig::default().cue_sound(), None);
+    }
 
     #[test]
     fn config_dir_name_bare_plexi() {

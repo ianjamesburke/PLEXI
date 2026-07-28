@@ -287,6 +287,13 @@ pub struct PlexiApp {
     /// Minimum priority that may auto-open the modal on arrival. Below this,
     /// notifications enter the queue silently (badge only). Defaults to 100.
     pub(crate) notifications_interrupt_threshold: u32,
+    /// Path to the audible cue played on notification arrival. `None` = silent.
+    pub(crate) notifications_sound: Option<String>,
+    /// Keeps the most recent cue audible. Dropping a `PlaybackSession` stops
+    /// playback, so a local binding inside `enqueue_notification` would cut the
+    /// sound off at end of scope. Replacing the field on the next cue — which
+    /// drops the previous session — is the intended behaviour.
+    pub(crate) notification_cue_playback: Option<crate::media::audio::PlaybackSession>,
     /// Input-focus stack. Top layer receives keyboard input; panes see an
     /// empty event buffer while a non-`Pane` layer is on top. See the
     /// `FocusKind` docs for the invariant.
@@ -999,6 +1006,10 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.interrupt_threshold)
             .unwrap_or(100); // PRIORITY_HIGH — only HIGH/CRITICAL interrupt by default
+        let notifications_sound = config
+            .notifications
+            .as_ref()
+            .and_then(|n| n.cue_sound());
         let focus_history_depth = config.focus_history_depth.unwrap_or(100);
         log::info!("config: focus_history_depth={focus_history_depth}");
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
@@ -1353,6 +1364,8 @@ impl PlexiApp {
                     notifications_enabled,
                     notifications_focus_mode,
                     notifications_interrupt_threshold,
+                    notifications_sound,
+                    notification_cue_playback: None,
                     focus_stack: Vec::new(),
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
@@ -1607,6 +1620,8 @@ impl PlexiApp {
             notifications_enabled,
             notifications_focus_mode,
             notifications_interrupt_threshold,
+            notifications_sound,
+            notification_cue_playback: None,
             focus_stack: Vec::new(),
             focus_history_depth,
             pane_focus_history: Vec::new(),
@@ -2051,6 +2066,8 @@ impl PlexiApp {
                 notifications_enabled: false,
                 notifications_focus_mode: false,
                 notifications_interrupt_threshold: 100,
+                notifications_sound: None,
+                notification_cue_playback: None,
                 focus_stack: Vec::new(),
                 focus_history_depth: 100,
                 pane_focus_history: Vec::new(),
@@ -2700,31 +2717,37 @@ impl eframe::App for PlexiApp {
                                 let source_context_id = self.windows[window_index].context_id;
                                 let source_window_id = self.windows[window_index].window_id;
                                 let notify_id = format!("wasm:{pane_id}:{}", uuid::Uuid::new_v4());
-                                self.pending_notifications.push(PendingNotification {
-                                    notify_id,
-                                    sender_pane_id: pane_id,
-                                    source_context_id,
-                                    source_window_id,
-                                    scope: crate::app_protocol::NotifyScope::Context,
-                                    level: "info".to_string(),
-                                    title,
-                                    body,
-                                    kind: crate::app_protocol::NotifyKind::Message,
-                                    options: vec![],
-                                    input_prompt: None,
-                                    required: false,
-                                    priority: 0,
-                                    image_inline: None,
-                                    image_pipe_id: None,
-                                    response_file: None,
-                                    timeout_secs: None,
-                                    on_dismiss: None,
-                                    enqueued_at: std::time::Instant::now(),
-                                    tombstoned: false,
-                                    deliver_after: None,
-                                });
                                 log::info!(
                                     "wasm effect: notify pane_id={pane_id} context_id={source_context_id} icon={icon:?}"
+                                );
+                                // `WasmHostEffect::Notify` carries no scope, so
+                                // a guest gets the shared default and cannot
+                                // request global; that needs a WIT change.
+                                self.enqueue_notification(
+                                    crate::app::notifications::NotifySource::Wasm,
+                                    PendingNotification {
+                                        notify_id,
+                                        sender_pane_id: pane_id,
+                                        source_context_id,
+                                        source_window_id,
+                                        scope: crate::app_protocol::NotifyScope::default(),
+                                        level: "info".to_string(),
+                                        title,
+                                        body,
+                                        kind: crate::app_protocol::NotifyKind::Message,
+                                        options: vec![],
+                                        input_prompt: None,
+                                        required: false,
+                                        priority: 0,
+                                        image_inline: None,
+                                        image_pipe_id: None,
+                                        response_file: None,
+                                        timeout_secs: None,
+                                        on_dismiss: None,
+                                        enqueued_at: std::time::Instant::now(),
+                                        tombstoned: false,
+                                        deliver_after: None,
+                                    },
                                 );
                                 Some(InputEvent::NotifyResult(Ok(())))
                             } else {
@@ -3430,14 +3453,6 @@ impl eframe::App for PlexiApp {
                     timeout_secs,
                     on_dismiss,
                 } => {
-                    if !self.notifications_enabled {
-                        // Silently drop — master switch off.
-                        continue;
-                    }
-                    let new_id = notify_id.clone();
-                    // Capture scope/source_context_id/source_window_id before they move into the struct.
-                    let notif_scope = scope;
-                    let notif_source_ctx = source_context_id;
                     let notif_source_win_id: u64 = if sender_pane_id != 0 {
                         self.find_pane_in_any_window(sender_pane_id)
                             .map(|(idx, _)| self.windows[idx].window_id)
@@ -3458,63 +3473,32 @@ impl eframe::App for PlexiApp {
                         }
                         opt
                     }).collect();
-                    self.pending_notifications.push(PendingNotification {
-                        notify_id,
-                        sender_pane_id,
-                        source_context_id,
-                        source_window_id: notif_source_win_id,
-                        level,
-                        title,
-                        body,
-                        kind,
-                        options,
-                        input_prompt,
-                        required,
-                        priority,
-                        scope,
-                        image_inline,
-                        image_pipe_id,
-                        response_file: None,
-                        timeout_secs,
-                        on_dismiss,
-                        enqueued_at: std::time::Instant::now(),
-                        tombstoned: false,
-                        deliver_after: None,
-                    });
-                    self.save_notifications();
-                    // Auto-open rules:
-                    //   1. Visibility — Global always; Window/Context only when
-                    //      source_context_id == active context id.
-                    //   2. focus_mode off — the global mute gate.
-                    //   3. priority >= interrupt_threshold — don't
-                    //      auto-open low-urgency notifications like
-                    //      "note saved".
-                    // If any gate fails, the notification still queues
-                    // (badge ticks) but the modal doesn't pop.
-                    let is_visible = match notif_scope {
-                        crate::app_protocol::NotifyScope::Global => true,
-                        crate::app_protocol::NotifyScope::Window => {
-                            notif_source_win_id == self.windows[self.active_window].window_id
-                        }
-                        crate::app_protocol::NotifyScope::Context => {
-                            notif_source_ctx == self.router.active().context_id
-                        }
-                    };
-                    let should_auto_open = is_visible
-                        && !self.notifications_focus_mode
-                        && priority >= self.notifications_interrupt_threshold;
-                    if should_auto_open {
-                        self.show_notification_modal = true;
-                    }
-                    // Only set the new notification as current if nothing is
-                    // already pinned AND the new notification is visible AND
-                    // it would auto-open. Low-priority passive notifications
-                    // shouldn't become the pinned front-most until the user
-                    // actually opens the modal (then the highest-priority
-                    // remaining is picked at modal-open time).
-                    if self.current_notify_id.is_none() && should_auto_open {
-                        self.current_notify_id = Some(new_id);
-                    }
+                    self.enqueue_notification(
+                        crate::app::notifications::NotifySource::App,
+                        PendingNotification {
+                            notify_id,
+                            sender_pane_id,
+                            source_context_id,
+                            source_window_id: notif_source_win_id,
+                            level,
+                            title,
+                            body,
+                            kind,
+                            options,
+                            input_prompt,
+                            required,
+                            priority,
+                            scope,
+                            image_inline,
+                            image_pipe_id,
+                            response_file: None,
+                            timeout_secs,
+                            on_dismiss,
+                            enqueued_at: std::time::Instant::now(),
+                            tombstoned: false,
+                            deliver_after: None,
+                        },
+                    );
                 }
                 AppCommand::DeliverNotifyAction {
                     pane_id,

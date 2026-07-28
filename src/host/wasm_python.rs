@@ -2675,7 +2675,9 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             input_prompt: None,
             required: false,
             priority: 0,
-            scope: crate::app_protocol::NotifyScope::Global,
+            // The bridge message carries no scope, so it takes the shared
+            // default rather than an invented one.
+            scope: crate::app_protocol::NotifyScope::default(),
             image_inline: None,
             image_pipe_id: None,
             timeout_secs: None,

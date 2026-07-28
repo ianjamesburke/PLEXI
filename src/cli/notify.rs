@@ -1,3 +1,23 @@
+/// Parse the `--scope` flag into an explicit wire scope.
+///
+/// `None` (flag absent) stays `None` so the host applies
+/// `NotifyScope::default()`. Every named scope — **including `global`** — maps
+/// to an explicit `Some`: relying on the host's fallback to mean "global"
+/// silently reinterprets `--scope global` whenever that default changes.
+pub fn parse_notify_scope(
+    scope: Option<&str>,
+) -> Result<Option<crate::app_protocol::NotifyScope>, String> {
+    match scope {
+        None => Ok(None),
+        Some("window") => Ok(Some(crate::app_protocol::NotifyScope::Window)),
+        Some("context") => Ok(Some(crate::app_protocol::NotifyScope::Context)),
+        Some("global") => Ok(Some(crate::app_protocol::NotifyScope::Global)),
+        Some(other) => Err(format!(
+            "error: --scope must be window, context, or global — got {other:?}"
+        )),
+    }
+}
+
 pub fn notify_cli(
     title: &str,
     body: &str,
@@ -6,7 +26,29 @@ pub fn notify_cli(
     wait_for_response: bool,
     timeout_secs: u64,
     scope: Option<crate::app_protocol::NotifyScope>,
+    source_context_id: Option<u64>,
+    source_pane_id: Option<u64>,
 ) -> i32 {
+    // An explicit context/window scope needs the caller's own identity on the
+    // wire — the host never guesses the sender from its active state, so
+    // without `PLEXI_CONTEXT_ID` there is no context to attach to.
+    if matches!(
+        scope,
+        Some(crate::app_protocol::NotifyScope::Window | crate::app_protocol::NotifyScope::Context)
+    ) && source_context_id.is_none()
+    {
+        let scope_name = if scope == Some(crate::app_protocol::NotifyScope::Window) {
+            "window"
+        } else {
+            "context"
+        };
+        eprintln!(
+            "error: --scope {scope_name} requires a caller context — PLEXI_CONTEXT_ID is not set; \
+             run this inside a Plexi pane or use --scope global"
+        );
+        return 1;
+    }
+
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
@@ -57,12 +99,22 @@ pub fn notify_cli(
         };
         payload["scope"] = serde_json::Value::String(s_str.to_string());
     }
+    // The caller's own identity, so the host attaches the notification to the
+    // context that actually produced it. Absent for outside-pane callers.
+    if let Some(ctx_id) = source_context_id {
+        payload["source_context_id"] = serde_json::Value::from(ctx_id);
+    }
+    if let Some(pane_id) = source_pane_id {
+        payload["source_pane_id"] = serde_json::Value::from(pane_id);
+    }
 
     log::info!(
-        "notify:cli: sending via socket choices={} wait_for_response={} scope={:?} response_file={:?}",
+        "notify:cli: sending via socket choices={} wait_for_response={} scope={:?} source_context_id={:?} source_pane_id={:?} response_file={:?}",
         choices.len(),
         wait_for_response,
         scope,
+        source_context_id,
+        source_pane_id,
         response_file_str
     );
 
@@ -162,7 +214,17 @@ mod notify_tests {
     fn notify_cli_no_socket_returns_one() {
         let env = socket_env_guard();
         env.unset();
-        let code = notify_cli("Test title", "Test body", "info", &[], true, 0, None);
+        let code = notify_cli(
+            "Test title",
+            "Test body",
+            "info",
+            &[],
+            true,
+            0,
+            None,
+            None,
+            None,
+        );
         assert_eq!(code, 1);
     }
 
@@ -176,7 +238,17 @@ mod notify_tests {
         )];
 
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("Ready", "Review tests", "info", &choices, false, 0, None)
+            notify_cli(
+                "Ready",
+                "Review tests",
+                "info",
+                &choices,
+                false,
+                0,
+                None,
+                None,
+                None,
+            )
         });
 
         assert_eq!(code, 0);
@@ -198,7 +270,17 @@ mod notify_tests {
         let _channel_guard = crate::config::set_test_channel("notify-test");
         let choices = vec![("talk".to_string(), "Talk".to_string(), None)];
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("Ready", "Review tests", "info", &choices, true, 1, None)
+            notify_cli(
+                "Ready",
+                "Review tests",
+                "info",
+                &choices,
+                true,
+                1,
+                None,
+                None,
+                None,
+            )
         });
         assert_eq!(code, 2, "timeout must exit 2");
         let rf = payload["response_file"]
@@ -245,7 +327,17 @@ mod notify_tests {
         });
 
         let choices = vec![("talk".to_string(), "Talk to Claude".to_string(), None)];
-        let code = notify_cli("Ready", "Review tests", "info", &choices, true, 1, None);
+        let code = notify_cli(
+            "Ready",
+            "Review tests",
+            "info",
+            &choices,
+            true,
+            1,
+            None,
+            None,
+            None,
+        );
         let payload = handle.join().expect("payload thread");
 
         assert_eq!(code, 0);
@@ -287,6 +379,48 @@ mod notify_tests {
             err.contains("5"),
             "error should mention segment count: {err}"
         );
+    }
+
+    /// Fix round 1 blocker 2: the CLI stamps the caller's own identity onto
+    /// the wire so the host never derives provenance from its active state.
+    #[test]
+    fn notify_cli_sends_caller_identity() {
+        let env = socket_env_guard();
+        let (code, payload) = capture_notify_payload(&env, || {
+            notify_cli("T", "B", "info", &[], false, 0, None, Some(7), Some(42))
+        });
+        assert_eq!(code, 0);
+        assert_eq!(payload["source_context_id"], 7);
+        assert_eq!(payload["source_pane_id"], 42);
+    }
+
+    /// An outside-pane caller has no identity — the fields must be absent, not
+    /// zero, so the host can tell "no sender" from "sender id 0".
+    #[test]
+    fn notify_cli_omits_identity_when_absent() {
+        let env = socket_env_guard();
+        let (code, payload) = capture_notify_payload(&env, || {
+            notify_cli("T", "B", "info", &[], false, 0, None, None, None)
+        });
+        assert_eq!(code, 0);
+        assert!(payload.get("source_context_id").is_none());
+        assert!(payload.get("source_pane_id").is_none());
+    }
+
+    /// An explicit `--scope context` from outside any pane fails fast at the
+    /// CLI with a message naming the missing identity — there is no context
+    /// for the host to attach the notification to.
+    #[test]
+    fn notify_cli_explicit_context_scope_without_identity_errors() {
+        let env = socket_env_guard();
+        env.unset();
+        for scope in [
+            crate::app_protocol::NotifyScope::Context,
+            crate::app_protocol::NotifyScope::Window,
+        ] {
+            let code = notify_cli("T", "B", "info", &[], false, 0, Some(scope), None, None);
+            assert_eq!(code, 1, "{scope:?} without a caller context must error");
+        }
     }
 
     #[test]

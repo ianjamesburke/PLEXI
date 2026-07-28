@@ -292,8 +292,10 @@ impl PlexiApp {
         for (context_id, pane_id, type_id, cmds) in per_pane {
             // Scope is a per-app user-facing policy declared in the app's
             // manifest.toml. Apps never set it — the host resolves it once
-            // per notification here. Defaults to `Context` when the manifest
-            // omits the field (safe default: don't interrupt across contexts).
+            // per notification here. An app that omits the field gets
+            // `DefaultNotifyScope`'s own default (`Window`, the most
+            // restrictive), which is a declared per-app policy and so does not
+            // go through `NotifyScope::default()`.
             let resolved_scope = self.registry.default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {

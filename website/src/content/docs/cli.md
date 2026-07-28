@@ -1031,7 +1031,7 @@ Send a notification to the Plexi UI
 | `--host-action` | string (repeatable) | no | Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`. Repeatable. The host runs this even after the process that sent the notification has exited |
 | `--no-wait` | flag | no | Queue choice buttons without waiting for a selected value |
 | `--timeout` | string | no | How many seconds before the notification disappears (0 = stays until dismissed) Default: `0`. |
-| `--scope` | string | no | Which panes see this notification: window, context, or global (default: global) Default: `global`. |
+| `--scope` | string | no | Which panes see this notification: window, context, or global (default: context — the notification stays in the context that sent it) |
 
 ## `plexi ai`
 
