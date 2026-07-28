@@ -672,6 +672,8 @@ impl PlexiApp {
             target_context: None,
             context_name: None,
             name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
         });
         let result = if let Some(created) = self
             .windows

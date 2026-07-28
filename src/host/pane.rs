@@ -610,6 +610,13 @@ pub struct TerminalPane {
     /// `agent`, which is hook-reported; `agent` wins when both are present.
     pub activity: Option<crate::app_protocol::AgentState>,
     pub slots: HashMap<String, PathBuf>,
+    /// When this pane last produced *any* PTY event, stamped in
+    /// `drain_pty_events`. `pane send --submit` settles on the absence of these:
+    /// a quiet window here means the program has finished redrawing and is ready
+    /// for Enter. This is deliberately not the capture cursor — an in-place TUI
+    /// redraw (Claude Code, Codex) never advances that counter, so it would
+    /// report a busy pane as idle.
+    pub last_pty_output_at: Option<std::time::Instant>,
 }
 
 impl TerminalPane {
@@ -643,6 +650,7 @@ impl TerminalPane {
             agent: None,
             activity: None,
             slots: HashMap::new(),
+            last_pty_output_at: None,
         })
     }
 }

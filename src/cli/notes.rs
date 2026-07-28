@@ -262,7 +262,7 @@ pub fn notes_open_cli() -> i32 {
         "selected=$(ls -t {globs} 2>/dev/null | fzf --header='Select note'); [ -n \"$selected\" ] && {editor} \"$selected\"\r"
     );
     log::info!("notes_open: injecting fzf picker into pane {pane_id}");
-    pane_send_cli(pane_id, &cmd)
+    pane_send_cli(pane_id, &cmd, false)
 }
 
 fn print_demo_divider() {

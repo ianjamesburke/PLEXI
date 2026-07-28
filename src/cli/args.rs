@@ -938,10 +938,12 @@ pub enum PaneCmd {
     ///   plexi pane new                          # empty terminal, split right
     ///   plexi pane new "npm run dev" -n "dev"   # terminal with command, named
     ///   plexi pane new -d                       # split below
+    ///   plexi pane new --agent c-large          # agent pane, id printed once it is ready
     ///
     /// For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
     New {
         /// Shell command to run in the new terminal
+        #[arg(conflicts_with = "agent")]
         cmd: Option<String>,
         /// Name the pane
         #[arg(long, short = 'n')]
@@ -972,7 +974,7 @@ pub enum PaneCmd {
         #[arg(long, value_name = "PANE_ID")]
         from: Option<u64>,
         /// Close the pane when the command finishes
-        #[arg(long, short = 'e')]
+        #[arg(long, short = 'e', conflicts_with = "agent")]
         ephemeral: bool,
         /// Keep focus on the current pane
         #[arg(long)]
@@ -980,6 +982,22 @@ pub enum PaneCmd {
         /// Working directory
         #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
+        /// Launch an agent in the new pane and block until it reports ready.
+        ///
+        /// The value is a shell command — normally a size-tier alias such as
+        /// `c-large` or `codex-small` — run in the new pane verbatim. The pane
+        /// id is printed only once the agent has booted, so a successful id on
+        /// stdout means the pane is ready to receive a brief. On boot timeout
+        /// the reason and the created pane id go to stderr, stdout stays
+        /// empty, and the exit code is 2 so the caller can close the pane.
+        ///
+        /// Requires a running Plexi host (PLEXI_SOCKET).
+        #[arg(long, value_name = "TIER_ALIAS")]
+        agent: Option<String>,
+        /// How long to wait for the agent to report ready, in seconds.
+        /// Defaults to 60 when omitted (the host owns the default).
+        #[arg(long, value_name = "SECS", requires = "agent")]
+        boot_timeout: Option<f64>,
     },
     /// Rename a pane.
     ///
@@ -1035,6 +1053,15 @@ pub enum PaneCmd {
         /// Text to type into the pane (use `\n` for Enter)
         #[arg(allow_hyphen_values = true)]
         text: String,
+        /// Press Enter for you and wait until the host confirms the prompt
+        /// left the pane's input line.
+        ///
+        /// The host settles the pane, submits, and re-sends Enter once if the
+        /// text is still parked as a collapsed paste. Exits 0 only when the
+        /// submission is confirmed; on an unconfirmed submit it exits non-zero
+        /// and prints the observed input line to stderr. Terminal panes only.
+        #[arg(long, short = 's')]
+        submit: bool,
     },
     /// Print the id of the pane you are currently in.
     ///
@@ -1217,6 +1244,22 @@ pub enum PaneSlotCmd {
         name: String,
         /// Pane id. Defaults to PLEXI_PANE_ID.
         pane_id: Option<u64>,
+    },
+    /// Block until a slot's value matches a pattern, then print it.
+    ///
+    /// Exits 0 on a match, 2 on timeout (nothing on stdout), 1 on error.
+    /// A slot whose current value already matches returns immediately.
+    Wait {
+        /// Slot name
+        name: String,
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        pane_id: Option<u64>,
+        /// Regex the slot value must match.
+        #[arg(long)]
+        until: String,
+        /// Seconds to wait before giving up.
+        #[arg(long, default_value_t = 300.0)]
+        timeout: f64,
     },
     /// List slots for a pane as JSON.
     List {
@@ -1720,11 +1763,45 @@ mod tests {
         let Some(Commands::Pane { cmd }) = cli.command else {
             panic!("expected pane command");
         };
-        let super::PaneCmd::Send { pane_id, text } = cmd else {
+        let super::PaneCmd::Send {
+            pane_id,
+            text,
+            submit,
+        } = cmd
+        else {
             panic!("expected pane send command");
         };
         assert_eq!(pane_id, 42);
         assert_eq!(text, "- ");
+        assert!(!submit, "plain `pane send` must stay type-only");
+    }
+
+    /// `--submit` must parse on either side of the hyphen-tolerant text
+    /// positional: `allow_hyphen_values` makes flag/positional ordering the
+    /// kind of thing that silently swallows a flag as text.
+    #[test]
+    fn pane_send_submit_parses_before_and_after_the_text() {
+        for argv in [
+            ["plexi", "pane", "send", "42", "hello", "--submit"],
+            ["plexi", "pane", "send", "42", "--submit", "hello"],
+            ["plexi", "pane", "send", "42", "hello", "-s"],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            let Some(Commands::Pane { cmd }) = cli.command else {
+                panic!("expected pane command for {argv:?}");
+            };
+            let super::PaneCmd::Send {
+                pane_id,
+                text,
+                submit,
+            } = cmd
+            else {
+                panic!("expected pane send command for {argv:?}");
+            };
+            assert_eq!(pane_id, 42);
+            assert_eq!(text, "hello", "text mis-parsed for {argv:?}");
+            assert!(submit, "--submit not seen for {argv:?}");
+        }
     }
 
     #[test]

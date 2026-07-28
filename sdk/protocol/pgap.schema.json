@@ -895,12 +895,27 @@
         {
           "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_h\", \"split_right\", \"split_v\", \"split_below\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\nA spawned child that needs to report completion back to its spawner does\nso over the event bus: it calls `EmitEvent` with `<app>::completed` and\nthe spawner reads it via `SubscribeAppEvents`. There is no JSON-pipe\nreply channel (the legacy `--pipe=<id>` coupling was removed in 0327).\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
           "properties": {
+            "agent_cmd": {
+              "description": "When set, the host types this shell command into the newly spawned\nterminal and withholds the spawn response until the agent running\nthere reports itself idle. Sent by `plexi pane new --agent`, whose\ncontract is that a printed pane id means \"ready for a brief\".\nTerminal spawns only; passed through to the shell verbatim.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "args": {
               "default": [],
               "items": {
                 "type": "string"
               },
               "type": "array"
+            },
+            "boot_timeout_secs": {
+              "description": "How long the host waits for that first idle self-report before\nanswering with a typed timeout. Requires `agent_cmd`.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "context_name": {
               "description": "When set, spawn the terminal into the context with this name,\nwherever it is — the host resolves the name and errors back when no\nsuch context exists. Sent by `plexi routine run` for routines that\ndeclare a `context`, matching the scheduler's fire targeting\n(stint 0574). Terminal spawns only.",
@@ -1228,6 +1243,42 @@
           "type": "object"
         },
         {
+          "description": "Block until a named pane file slot's value matches `pattern`.\n\nLevel-triggered: a slot already matching at request time answers\nimmediately. The host parks the waiter otherwise and expires it after\n`timeout_secs`, writing a `{\"timeout\": true}` reply to the\n`<response_file>.err` sidecar so the caller sees the host's reason\nrather than its own poll timeout.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pattern": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "slot_name": {
+              "type": "string"
+            },
+            "timeout_secs": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "slot_wait",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "slot_name",
+            "pattern",
+            "timeout_secs",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
           "description": "List named host-managed pane file slots.",
           "properties": {
             "pane_id": {
@@ -1337,7 +1388,7 @@
           "type": "object"
         },
         {
-          "description": "Write text to a running pane's PTY stdin. Sent by `plexi pane send`.\n`\\n` in text (literal backslash-n) is interpreted as Enter.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.",
+          "description": "Write text to a running pane's PTY stdin. Sent by `plexi pane send`.\n`\\n` in text (literal backslash-n) is interpreted as Enter.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on app panes.",
           "properties": {
             "pane_id": {
               "format": "uint64",
@@ -1349,6 +1400,10 @@
                 "string",
                 "null"
               ]
+            },
+            "submit": {
+              "default": false,
+              "type": "boolean"
             },
             "text": {
               "type": "string"

@@ -20,6 +20,7 @@ pub(crate) mod notification_image;
 mod notifications;
 pub mod package;
 pub mod packs;
+pub(crate) mod pane_wait;
 pub mod permissions;
 pub mod plexi_descriptor;
 pub(crate) mod python_env;
@@ -173,6 +174,16 @@ pub struct PlexiApp {
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `AppRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
+    /// `plexi pane slot wait` requests parked until the watched slot's
+    /// value matches, or their caller-supplied deadline passes (stint 0585).
+    pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
+    /// `plexi pane new --agent` spawns whose response is withheld until the
+    /// agent in the new pane self-reports idle (stint 0584).
+    pub(crate) pending_agent_boots: Vec<crate::app::pane_wait::PendingAgentBoot>,
+    /// `plexi pane send --submit` requests whose text is typed and whose reply
+    /// is owed once the host has settled, pressed Enter, and confirmed that the
+    /// prompt left the pane's input line (stint 0583).
+    pub(crate) pending_submits: Vec<crate::app::pane_wait::PendingSubmit>,
     /// Last window title sent via `ViewportCommand::Title`. egui's
     /// `send_viewport_cmd` unconditionally requests a repaint, so sending the
     /// title every frame creates a self-sustaining repaint loop (60fps
@@ -1321,6 +1332,9 @@ impl PlexiApp {
                     frame_tick,
                     frame_diag_window: None,
                     pending_screenshots: Vec::new(),
+                    pending_slot_waits: Vec::new(),
+                    pending_agent_boots: Vec::new(),
+                    pending_submits: Vec::new(),
                     last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
                     renaming_window: None,
@@ -1577,6 +1591,9 @@ impl PlexiApp {
             frame_tick,
             frame_diag_window: None,
             pending_screenshots: Vec::new(),
+            pending_slot_waits: Vec::new(),
+            pending_agent_boots: Vec::new(),
+            pending_submits: Vec::new(),
             last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
             renaming_window: None,
@@ -2020,6 +2037,9 @@ impl PlexiApp {
                 frame_tick,
                 frame_diag_window: None,
                 pending_screenshots: Vec::new(),
+                pending_slot_waits: Vec::new(),
+                pending_agent_boots: Vec::new(),
+                pending_submits: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir: {
                     let dir = std::env::temp_dir()
@@ -2494,6 +2514,20 @@ impl eframe::App for PlexiApp {
         // It follows `update_preamble` so a request arriving on this pass is
         // issued on this pass, not one frame later.
         self.service_pending_screenshots(ctx, frame.wgpu_render_state());
+
+        // Same reasoning for parked `pane slot wait` requests: an occluded
+        // host must still expire them on schedule, so the caller sees the
+        // host's typed timeout instead of its own (stint 0585).
+        self.service_pending_slot_waits(ctx);
+
+        // And for `pane new --agent`, whose reply is owed either an idle
+        // report, an expired deadline, or a pane that went away (stint 0584).
+        self.service_pending_agent_boots(ctx);
+
+        // And for `pane send --submit`, which drives its settle → Enter →
+        // confirm sequence from here: an occluded host must still press the
+        // Enter it promised and still read the grid to confirm it (stint 0583).
+        self.service_pending_submits(ctx);
 
         self.drain_app_subscription_replies();
         self.deliver_app_event_subscriptions();

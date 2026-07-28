@@ -750,7 +750,7 @@ Control panes — list, focus, send input, capture output, and more
 
 Open a new terminal pane.
 
-Examples: plexi pane new                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"   # terminal with command, named plexi pane new -d                       # split below
+Examples: plexi pane new                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"   # terminal with command, named plexi pane new -d                       # split below plexi pane new --agent c-large          # agent pane, id printed once it is ready
 
 For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 
@@ -769,6 +769,8 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 | `--ephemeral` / `-e` | flag | no | Close the pane when the command finishes |
 | `--no-focus` | flag | no | Keep focus on the current pane |
 | `--cwd` | string | no | Working directory |
+| `--agent` | string | no | Launch an agent in the new pane and block until it reports ready.  The value is a shell command — normally a size-tier alias such as `c-large` or `codex-small` — run in the new pane verbatim. The pane id is printed only once the agent has booted, so a successful id on stdout means the pane is ready to receive a brief. On boot timeout the reason and the created pane id go to stderr, stdout stays empty, and the exit code is 2 so the caller can close the pane.  Requires a running Plexi host (PLEXI_SOCKET). |
+| `--boot-timeout` | string | no | How long to wait for the agent to report ready, in seconds. Defaults to 60 when omitted (the host owns the default) |
 
 ### `plexi pane name`
 
@@ -821,6 +823,7 @@ Example: plexi pane send 42 "git status\n"
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to send text to (from `plexi pane list`) |
 | `<text>` | string | yes | Text to type into the pane (use `\n` for Enter) |
+| `--submit` / `-s` | flag | no | Press Enter for you and wait until the host confirms the prompt left the pane's input line.  The host settles the pane, submits, and re-sends Enter once if the text is still parked as a collapsed paste. Exits 0 only when the submission is confirmed; on an unconfirmed submit it exits non-zero and prints the observed input line to stderr. Terminal panes only. |
 
 ### `plexi pane self`
 
@@ -951,6 +954,7 @@ Manage host-managed named file slots for a pane
 |---|---|
 | `write` | Write bytes to a named pane slot. If content is omitted, stdin is read fully |
 | `read` | Print raw bytes from a named pane slot |
+| `wait` | Block until a slot's value matches a pattern, then print it |
 | `list` | List slots for a pane as JSON |
 | `delete` | Delete a named pane slot |
 
@@ -974,6 +978,19 @@ Print raw bytes from a named pane slot
 |---|---|---|---|
 | `<name>` | string | yes | Slot name |
 | `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+
+#### `plexi pane slot wait`
+
+Block until a slot's value matches a pattern, then print it.
+
+Exits 0 on a match, 2 on timeout (nothing on stdout), 1 on error. A slot whose current value already matches returns immediately.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Slot name |
+| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `--until` | string | yes | Regex the slot value must match |
+| `--timeout` | string | no | Seconds to wait before giving up Default: `300`. |
 
 #### `plexi pane slot list`
 

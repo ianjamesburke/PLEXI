@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.2.1"
+skill_version: "4.3.0"
 plexi_version: "0.2.0"
 last_verified: "2026-07-28"
 ---
@@ -29,11 +29,20 @@ You are running inside a Plexi pane. `PLEXI_SOCKET` is set automatically -- ever
 pane new [CMD]           Open a terminal pane. Flags: -n NAME, -d/--down, -l/--left, -u/--up,
                          -r/--right, --tab, --window, --overlay, --from PANE_ID, -e/--ephemeral,
                          --no-focus, --cwd DIR
+pane new --agent ALIAS   Spawn a pane, launch the agent alias, and BLOCK until the agent TUI
+                         reports a booted idle prompt; prints the pane id on stdout only then.
+                         --boot-timeout SECS (default 60). Exit 0 = id on stdout, ready for a
+                         brief. Exit 2 = boot timeout (created pane id on stderr — close it).
+                         Exit 1 = usage/plumbing. Combines with the placement flags above.
 pane name [ID] NAME      Rename. One arg = rename self. Two args = rename by ID.
 pane list [--context [ID]]  JSON array of panes. --context (no arg) = caller's context.
 pane focus ID            Move visible focus to a pane (does NOT move the agent).
 pane close [ID]          Close a pane. Omit ID = close self.
 pane send ID TEXT        Type text into a pane. Use \n for Enter.
+pane send ID TEXT -s     --submit/-s: host types the text, waits for the input line to settle,
+                         presses Enter, confirms submission, and self-heals a collapsed paste
+                         with exactly one internal retry. Exit 0 = confirmed submitted; exit 1 =
+                         typed but unconfirmed (observed input line on stderr). Terminal panes only.
 pane key ID KEY          Send a keypress. Named: enter, escape, space, up, down, left, right,
                          backspace. Chords: ctrl+c.
 pane command ID TEXT -e  Send text + Enter in one step (terminal panes only).
@@ -42,6 +51,17 @@ pane capture [ID]        Last N lines as JSON. --lines N (default 50), --from-cu
 pane self                Print current pane's ID.
 pane info                Print current pane details as JSON.
 pane state ID            App panes: L1 UiNode tree JSON. Terminal panes: simple status object.
+pane slot write NAME [CONTENT]  Write a named per-pane byte slot (stdin when CONTENT omitted).
+                         --pane-id ID (default: PLEXI_PANE_ID), --append or --replace for an
+                         existing slot.
+pane slot read NAME [PANE_ID]   Print a slot's raw bytes.
+pane slot wait NAME [PANE_ID]   Block until the slot's value matches --until REGEX; prints the
+                         matching value. --timeout SECS (default 300). Level-triggered: an
+                         already-matching value returns immediately. Exit 0 = match, exit 2 =
+                         timeout (nothing on stdout), exit 1 = usage/plumbing — branch on the
+                         exit code alone.
+pane slot list [PANE_ID]        List a pane's slots as JSON.
+pane slot delete NAME [PANE_ID] Delete a slot.
 ```
 
 ### app -- install, open, scaffold, inspect
@@ -176,13 +196,14 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 - `app render . --png` renders the app in the current dir with no running host; default output is JSON, not an image
 - `agent init` replaces the former `app init --agent` form
 - `pane command ID "text" --enter` = send + Enter in one step (terminal panes only)
-- `pane send` with `\n` submits in shell panes but does NOT submit Claude Code prompts -- use the two-step pattern below
+- `pane send` with `\n` submits in shell panes but does NOT submit Claude Code prompts -- use `pane send ID TEXT --submit` (or the legacy two-step pattern below on builds without it)
 - `app action` delivers structured semantic events; `pane command` sends raw keystrokes
 
 ## Footguns
 
 - **Never** run `workspace init` from `~` -- collides with profile dir at `~/.plexi/`
-- `pane send ID "text\n"` submits in **shell** panes but does **not** submit Claude Code prompts
+- `pane send ID "text\n"` submits in **shell** panes but does **not** submit Claude Code prompts -- `--submit` is the sanctioned path into an agent TUI
+- `pane slot wait` exits 2 on timeout and 0 on match -- branch on the exit code, never parse stderr
 - `pane state` returns L1 UiNode tree for app panes; returns a simple status object for terminal panes
 - `pane focus` moves what the user **sees**, not where the agent runs -- the agent stays in its own pane
 - `app open --mcp` and `--cli` are mutually exclusive with TYPE_ID
@@ -190,7 +211,13 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 
 ## Multi-Command Patterns
 
-### Send a message to a Claude Code pane (two steps required)
+### Send a message to an agent (Claude Code / Codex) pane
+
+```bash
+plexi pane send $TARGET "your message here" --submit
+```
+
+Exit 0 means the host observed the prompt leave the input line; non-zero means typed but unconfirmed (the observed input line is on stderr) -- do not blind-retry. Legacy two-step for builds without `--submit`:
 
 ```bash
 plexi pane send $TARGET "your message here"
@@ -263,9 +290,26 @@ parent context's path rather than your cwd.
 ### Named agent dispatch lane
 
 ```bash
+LANE=$(plexi pane new -n "issue-42" -r --from $PLEXI_PANE_ID --agent claude) || exit 1
+plexi pane send $LANE "investigate and fix issue 42" --submit
+```
+
+`--agent` prints the id only once the agent is booted and ready for a brief, so the send cannot race the TUI boot. Legacy form for builds without these flags:
+
+```bash
 LANE=$(plexi pane new -n "issue-42" -r --from $PLEXI_PANE_ID)
 plexi pane send $LANE "investigate and fix issue 42"
 plexi pane key $LANE enter
+```
+
+### Block on another pane's progress slot
+
+```bash
+if VERDICT=$(plexi pane slot wait verdict $LANE --until 'PASS|FAIL' --timeout 600); then
+  echo "tester says: $VERDICT"
+elif [ $? -eq 2 ]; then
+  echo "no verdict within 10 min -- escalate" >&2
+fi
 ```
 
 ### Semantic app action (no keystroke simulation)
