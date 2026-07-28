@@ -119,11 +119,33 @@ fn descend<'a>(
     (cmd, path, idx)
 }
 
-fn check_flags(cmd: &clap::Command, path: &[String], tokens: &[&str], errors: &mut Vec<String>) {
+/// Fence languages the extractor may legitimately skip: they can never carry
+/// CLI invocations. Anything else that isn't bare/bash/sh is an ERROR — a
+/// silent skip would let a markdown relabel hollow out the gate while it
+/// still reports ok (fix round 2). `text` is deliberately NOT inert: it is
+/// the natural relabel target for the reference blocks.
+const INERT_FENCE_LANGS: &[&str] = &["json", "toml", "rust"];
+
+/// Coverage floors: canaries against silent extraction collapse. The gate
+/// currently resolves ~85 command paths and checks ~82 flags; a legitimate
+/// skill edit moves these gradually, a broken extractor drops them off a
+/// cliff. Raise/lower deliberately when the skill genuinely grows or shrinks.
+const MIN_COMMANDS_RESOLVED: usize = 60;
+const MIN_FLAGS_CHECKED: usize = 50;
+
+#[derive(Default)]
+struct Report {
+    errors: Vec<String>,
+    commands_resolved: usize,
+    flags_checked: usize,
+}
+
+fn check_flags(cmd: &clap::Command, path: &[String], tokens: &[&str], report: &mut Report) {
     for tok in tokens {
         for flag in long_flags_in(tok) {
+            report.flags_checked += 1;
             if !has_long_flag(cmd, &flag) {
-                errors.push(format!(
+                report.errors.push(format!(
                     "`plexi {}` has no `--{flag}` flag, but the skill documents one",
                     path.join(" "),
                 ));
@@ -136,7 +158,7 @@ fn check_flags(cmd: &clap::Command, path: &[String], tokens: &[&str], errors: &m
 /// each unindented line starts with a subcommand path, and every leading
 /// lowercase token MUST resolve — a token that doesn't is a documented command
 /// the binary does not have. Indented lines continue the previous entry.
-fn check_reference_block(root: &clap::Command, block: &Block, errors: &mut Vec<String>) {
+fn check_reference_block(root: &clap::Command, block: &Block, report: &mut Report) {
     let mut entry: Option<Vec<String>> = None; // resolved path of the current entry
     let mut entry_cmd: Option<&clap::Command> = None;
     for line in &block.lines {
@@ -147,7 +169,7 @@ fn check_reference_block(root: &clap::Command, block: &Block, errors: &mut Vec<S
         if line.starts_with(char::is_whitespace) {
             // continuation of the current entry: flags only
             if let (Some(path), Some(cmd)) = (&entry, entry_cmd) {
-                check_flags(cmd, path, &tokens, errors);
+                check_flags(cmd, path, &tokens, report);
             }
             continue;
         }
@@ -163,7 +185,7 @@ fn check_reference_block(root: &clap::Command, block: &Block, errors: &mut Vec<S
                     idx += 1;
                 }
                 None => {
-                    errors.push(format!(
+                    report.errors.push(format!(
                         "skill documents subcommand `plexi {} {}`, which does not exist in this CLI",
                         path.join(" "),
                         tokens[idx],
@@ -175,7 +197,7 @@ fn check_reference_block(root: &clap::Command, block: &Block, errors: &mut Vec<S
         }
         if failed || path.is_empty() {
             if path.is_empty() && !failed {
-                errors.push(format!(
+                report.errors.push(format!(
                     "reference line does not start with a known subcommand: `{}`",
                     line.trim()
                 ));
@@ -184,7 +206,8 @@ fn check_reference_block(root: &clap::Command, block: &Block, errors: &mut Vec<S
             entry_cmd = None;
             continue;
         }
-        check_flags(cmd, &path, &tokens[idx..], errors);
+        report.commands_resolved += 1;
+        check_flags(cmd, &path, &tokens[idx..], report);
         entry = Some(path);
         entry_cmd = Some(cmd);
     }
@@ -194,7 +217,7 @@ fn check_reference_block(root: &clap::Command, block: &Block, errors: &mut Vec<S
 /// subcommand; deeper tokens descend while they resolve (positionals may be
 /// lowercase, so a non-resolving token ends the walk without error), and every
 /// `--flag` on the invocation must exist on the deepest resolved command.
-fn check_bash_block(root: &clap::Command, block: &Block, errors: &mut Vec<String>) {
+fn check_bash_block(root: &clap::Command, block: &Block, report: &mut Report) {
     for line in &block.lines {
         let normalized: String = line
             .replace("$(", " ")
@@ -219,13 +242,14 @@ fn check_bash_block(root: &clap::Command, block: &Block, errors: &mut Vec<String
             }
             let (cmd, path, idx) = descend(root, segment);
             if path.is_empty() {
-                errors.push(format!(
+                report.errors.push(format!(
                     "bash example invokes `plexi {}`, which is not a known subcommand (line: `{}`)",
                     segment[0],
                     line.trim(),
                 ));
             } else {
-                check_flags(cmd, &path, &segment[idx..], errors);
+                report.commands_resolved += 1;
+                check_flags(cmd, &path, &segment[idx..], report);
             }
             i = segment_end;
         }
@@ -236,19 +260,42 @@ fn check_bash_block(root: &clap::Command, block: &Block, errors: &mut Vec<String
 fn skill_surface_matches_cli() {
     let text = skill_text();
     let root = built_cli();
-    let mut errors = Vec::new();
+    let mut report = Report::default();
     for block in fenced_blocks(&text) {
         match block.lang.as_str() {
-            "" => check_reference_block(&root, &block, &mut errors),
-            "bash" | "sh" => check_bash_block(&root, &block, &mut errors),
-            _ => {}
+            "" => check_reference_block(&root, &block, &mut report),
+            "bash" | "sh" => check_bash_block(&root, &block, &mut report),
+            lang if INERT_FENCE_LANGS.contains(&lang) => {}
+            lang => report.errors.push(format!(
+                "fence language `{lang}` is not checkable by this gate — CLI-bearing blocks \
+                 must be bare (reference) or ```bash; genuinely inert languages go in \
+                 INERT_FENCE_LANGS in src/cli/skill_surface.rs, never a silent skip",
+            )),
         }
     }
+    println!(
+        "skill_surface: commands_resolved={} flags_checked={} errors={}",
+        report.commands_resolved,
+        report.flags_checked,
+        report.errors.len(),
+    );
     assert!(
-        errors.is_empty(),
+        report.errors.is_empty(),
         "skills/plexi-cli/SKILL.md documents CLI surface this binary does not have.\n\
          Fix the skill (or the CLI) in the same change — see skills/AGENTS.md.\n\n{}",
-        errors.join("\n"),
+        report.errors.join("\n"),
+    );
+    assert!(
+        report.commands_resolved >= MIN_COMMANDS_RESOLVED,
+        "extraction collapse: only {} command paths resolved (floor {MIN_COMMANDS_RESOLVED}) — \
+         the extractor is no longer seeing the skill's code blocks",
+        report.commands_resolved,
+    );
+    assert!(
+        report.flags_checked >= MIN_FLAGS_CHECKED,
+        "extraction collapse: only {} flags checked (floor {MIN_FLAGS_CHECKED}) — \
+         the extractor is no longer seeing the skill's code blocks",
+        report.flags_checked,
     );
 }
 
