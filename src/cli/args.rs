@@ -870,6 +870,11 @@ pub enum HostCmd {
         /// session.
         #[arg(long)]
         ephemeral: bool,
+        /// Launch without activating Plexi or taking focus. On macOS this uses
+        /// Accessory activation policy, so the host has no normal Dock or
+        /// menu-bar presence and should be driven through the CLI.
+        #[arg(long)]
+        background: bool,
     },
     /// Stop the running host for this channel.
     ///
@@ -1761,6 +1766,18 @@ mod tests {
         };
         assert!(ephemeral);
         assert_eq!(panes, ["cwd=/tmp"]);
+    }
+
+    #[test]
+    fn host_start_accepts_background_flag() {
+        let cli = Cli::try_parse_from(["plexi", "host", "start", "--background"]).unwrap();
+        let Some(Commands::Host { cmd }) = cli.command else {
+            panic!("expected host command");
+        };
+        let super::HostCmd::Start { background, .. } = cmd else {
+            panic!("expected host start command");
+        };
+        assert!(background);
     }
 
     #[test]

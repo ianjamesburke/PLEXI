@@ -645,11 +645,13 @@ fn main() -> eframe::Result {
                             panes,
                             timeout_secs,
                             ephemeral,
+                            background,
                         } => std::process::exit(cli::host_start_cli(
                             layout.as_deref(),
                             &panes,
                             timeout_secs,
                             ephemeral,
+                            background,
                         )),
                         HostCmd::Stop => std::process::exit(cli::host_stop_cli()),
                         HostCmd::Log { message, source } => {
@@ -1294,6 +1296,24 @@ fn main() -> eframe::Result {
 
     log::info!("ui_stack: egui=0.34.3 renderer=wgpu");
 
+    let background = crate::workspace::background_session();
+    #[cfg(target_os = "macos")]
+    let activation_policy = if background {
+        "accessory"
+    } else {
+        "bundle-default"
+    };
+    #[cfg(not(target_os = "macos"))]
+    let activation_policy = "platform-default";
+    #[cfg(target_os = "macos")]
+    let activate_ignoring_other_apps = if background { "false" } else { "bundle-default" };
+    #[cfg(not(target_os = "macos"))]
+    let activate_ignoring_other_apps = "not-applicable";
+    log::info!(
+        "host_startup: background={background} activation_policy={activation_policy} \
+         activate_ignoring_other_apps={activate_ignoring_other_apps}"
+    );
+
     let native_options = eframe::NativeOptions {
         // eframe 0.34 split root close into CloseRequested followed by Exit.
         // On macOS its run-on-demand loop can stall between those events after
@@ -1307,6 +1327,21 @@ fn main() -> eframe::Result {
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false),
         ..Default::default()
+    };
+
+    #[cfg(target_os = "macos")]
+    let native_options = if background {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+
+        let mut options = native_options;
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder
+                .with_activation_policy(ActivationPolicy::Accessory)
+                .with_activate_ignoring_other_apps(false);
+        }));
+        options
+    } else {
+        native_options
     };
 
     eframe::run_native(

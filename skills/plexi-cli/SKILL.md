@@ -184,6 +184,8 @@ notes open               Open note picker with fzf.
 demo                     Interactive keybinding tutorial (split, navigate).
 update                   Update Plexi binary.
 update apps              Update installed apps.
+host start --background  Launch without taking focus. On macOS the Accessory host has no normal
+                         Dock/menu-bar presence; drive it with pane/app/host CLI commands.
 completions SHELL        Print completion script (zsh, bash, fish).
 uninstall                Remove app bundle, CLI, completions. --keep-data, -y.
 ```
@@ -211,6 +213,7 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 - `pane status ID` is the single-call corroboration path when a pane slot is missing or stale; `unknown`/`low` means escalate instead of guessing
 - `pane state` returns L1 UiNode tree for app panes; returns a simple status object for terminal panes
 - `pane focus` moves what the user **sees**, not where the agent runs -- the agent stays in its own pane
+- A background Accessory host stays behind other apps: pane send/key/click and `pane focus` drive it internally but do not front it
 - `app open --mcp` and `--cli` are mutually exclusive with TYPE_ID
 - `notify` without `--choice` is fire-and-forget; with `--choice` it **blocks** until the user picks
 

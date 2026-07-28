@@ -98,6 +98,18 @@ fn ephemeral_session_from(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| !value.is_empty())
 }
 
+/// Boot-mode switch set only by an explicit `plexi host start --background`.
+/// It is process-local launch state, not persisted configuration.
+pub const BACKGROUND_SESSION_ENV: &str = "PLEXI_BACKGROUND_HOST";
+
+pub fn background_session() -> bool {
+    background_session_from(std::env::var_os(BACKGROUND_SESSION_ENV).as_deref())
+}
+
+fn background_session_from(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
 impl WorkspaceFile {
     pub fn save(&self) -> io::Result<()> {
         if ephemeral_session() {
@@ -284,6 +296,14 @@ mod tests {
         assert!(!super::ephemeral_session_from(None));
         assert!(!super::ephemeral_session_from(Some(OsStr::new(""))));
         assert!(super::ephemeral_session_from(Some(OsStr::new("1"))));
+    }
+
+    #[test]
+    fn background_session_predicate_requires_nonempty_value() {
+        use std::ffi::OsStr;
+        assert!(!super::background_session_from(None));
+        assert!(!super::background_session_from(Some(OsStr::new(""))));
+        assert!(super::background_session_from(Some(OsStr::new("1"))));
     }
 
     #[test]
