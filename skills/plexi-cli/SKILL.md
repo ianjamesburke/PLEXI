@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.4.0"
+skill_version: "4.4.1"
 plexi_version: "0.2.0"
 last_verified: "2026-07-28"
 ---
@@ -201,7 +201,7 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 - `app render . --png` renders the app in the current dir with no running host; default output is JSON, not an image
 - `agent init` replaces the former `app init --agent` form
 - `pane command ID "text" --enter` = send + Enter in one step (terminal panes only)
-- `pane send` with `\n` submits in shell panes but does NOT submit Claude Code prompts -- use `pane send ID TEXT --submit` (or the legacy two-step pattern below on builds without it)
+- `pane send` with `\n` submits in shell panes but does NOT submit Claude Code prompts -- use `pane send ID TEXT --submit`
 - `app action` delivers structured semantic events; `pane command` sends raw keystrokes
 
 ## Footguns
@@ -225,12 +225,7 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 plexi pane send $TARGET "your message here" --submit
 ```
 
-Exit 0 means the host observed the prompt leave the input line; non-zero means typed but unconfirmed (the observed input line is on stderr) -- do not blind-retry. Legacy two-step for builds without `--submit`:
-
-```bash
-plexi pane send $TARGET "your message here"
-plexi pane key $TARGET enter
-```
+Exit 0 means the host observed the prompt leave the input line; non-zero means typed but unconfirmed (the observed input line is on stderr) -- do not blind-retry. On an older installed build, inspect `plexi pane --help` and follow its available behavior rather than assuming these newer verbs exist.
 
 ### Check whether an agent pane is idle
 
@@ -301,13 +296,7 @@ LANE=$(plexi pane new -n "issue-42" -r --from $PLEXI_PANE_ID --agent claude) || 
 plexi pane send $LANE "investigate and fix issue 42" --submit
 ```
 
-`--agent` prints the id only once the agent is booted and ready for a brief, so the send cannot race the TUI boot. Legacy form for builds without these flags:
-
-```bash
-LANE=$(plexi pane new -n "issue-42" -r --from $PLEXI_PANE_ID)
-plexi pane send $LANE "investigate and fix issue 42"
-plexi pane key $LANE enter
-```
+`--agent` prints the id only once the agent is booted and ready for a brief, so the send cannot race the TUI boot.
 
 ### Block on another pane's progress slot
 
