@@ -670,6 +670,7 @@ impl PlexiApp {
             path: None,
             workspace_root: None,
             target_context: None,
+            context_name: None,
             name: None,
         });
         let result = if let Some(created) = self

@@ -285,31 +285,6 @@ pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
     }
 }
 
-// ── plexi routine subcommands ─────────────────────────────────────────────────
-
-pub(super) fn routines_file() -> String {
-    format!("{}/routines.toml", crate::config::workspace_channel_dir())
-}
-
-/// Parsed `{workspace_channel_dir}/routines.toml` for CLI use
-#[derive(serde::Deserialize)]
-pub(super) struct RoutinesCliConfig {
-    #[serde(default)]
-    pub(super) routine: Vec<RoutineCliDef>,
-}
-
-#[derive(serde::Deserialize)]
-pub(super) struct RoutineCliDef {
-    pub(super) name: String,
-    pub(super) command: String,
-    pub(super) schedule: String,
-    #[serde(default)]
-    pub(super) context: String,
-    #[serde(default)]
-    pub(super) ephemeral: bool,
-}
-
-/// `plexi routine list` — list routines from the workspace channel dir's routines.toml
 #[cfg(test)]
 mod command_parse_tests {
     use crate::cli::{CommandEntry, PlexiCommands};

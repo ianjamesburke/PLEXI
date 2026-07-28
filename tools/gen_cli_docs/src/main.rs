@@ -77,7 +77,16 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         println!(
             r#"ephemeral = true     # optional: close the spawned pane when the command exits"#
         );
+        println!(
+            r#"enabled   = false    # optional: keep the routine but never fire it (`plexi routine disable`)"#
+        );
         println!("```");
+        println!();
+        println!(
+            "`plexi routine add` / `remove` / `enable` / `disable` edit this file for \
+             you, validating the schedule against the same parser the scheduler uses \
+             and preserving hand-written comments."
+        );
         println!();
         println!(
             "A routine never stacks panes: while the previous run's pane is still \

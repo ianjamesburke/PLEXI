@@ -27,6 +27,9 @@ pub(super) fn wait_for_response(response_file: &str) -> i32 {
 }
 
 /// Unified pane spawning. All CLI spawn paths funnel through here.
+/// `context_name` targets the named context wherever it is (terminal spawns
+/// only — the host resolves the name and errors back when it does not exist);
+/// `None` keeps the caller-derived targeting.
 pub fn pane_new_cli(
     cmd: Option<&str>,
     name: Option<&str>,
@@ -38,6 +41,7 @@ pub fn pane_new_cli(
     app: Option<&str>,
     mcp: &[String],
     extra_args: &[String],
+    context_name: Option<&str>,
 ) -> i32 {
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
@@ -95,7 +99,10 @@ pub fn pane_new_cli(
         if let Some(n) = name {
             payload["name"] = serde_json::Value::String(n.to_string());
         }
-        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
+        if let Some(ctx) = context_name {
+            payload["context_name"] = serde_json::Value::String(ctx.to_string());
+        }
+        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} response_file={response_file:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -144,6 +151,9 @@ pub fn pane_new_cli(
     }
     if let Some(n) = name {
         queue_payload["name"] = serde_json::Value::String(n.to_string());
+    }
+    if let Some(ctx) = context_name {
+        queue_payload["context_name"] = serde_json::Value::String(ctx.to_string());
     }
     let file = queue_dir.join(format!("{id}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
@@ -257,6 +267,7 @@ fn open_descriptor_in_renderer(
         Some("cli-renderer"),
         &[],
         &[path],
+        None,
     )
 }
 
@@ -312,6 +323,7 @@ pub fn open_mcp_by_name(
                 Some("mcp-renderer"),
                 &entry.command,
                 &[],
+                None,
             )
         }
         None => {
@@ -571,6 +583,7 @@ pub fn open_cli(
         Some(type_id),
         &[],
         args,
+        None,
     )
 }
 

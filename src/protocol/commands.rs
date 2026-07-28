@@ -317,6 +317,13 @@ pub enum AppRequest {
         /// a descendant of the requesting app's context (#1518).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_context: Option<u64>,
+        /// When set, spawn the terminal into the context with this name,
+        /// wherever it is — the host resolves the name and errors back when no
+        /// such context exists. Sent by `plexi routine run` for routines that
+        /// declare a `context`, matching the scheduler's fire targeting
+        /// (stint 0574). Terminal spawns only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_name: Option<String>,
         /// Inline pane name — applied immediately after spawn so the pane
         /// starts with a human-readable label instead of the default shell title.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2573,6 +2580,40 @@ mod tests {
         assert!(
             !serialised_absent.contains("name"),
             "name should be omitted when None: {serialised_absent}"
+        );
+    }
+
+    #[test]
+    fn spawn_pane_context_name_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"terminal","context_name":"work"}"#;
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            AppRequest::SpawnPane { context_name, .. } => {
+                assert_eq!(context_name.as_deref(), Some("work"));
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""context_name":"work""#),
+            "context_name missing: {serialised}"
+        );
+
+        let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
+        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        match &cmd_absent {
+            AppRequest::SpawnPane { context_name, .. } => {
+                assert!(
+                    context_name.is_none(),
+                    "absent context_name must deserialise to None"
+                );
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised_absent = serde_json::to_string(&cmd_absent).expect("serialise absent");
+        assert!(
+            !serialised_absent.contains("context_name"),
+            "context_name should be omitted when None: {serialised_absent}"
         );
     }
 

@@ -125,7 +125,10 @@ command   = "./scripts/sync.sh"
 schedule  = "daily at 09:00"
 context   = "work"   # optional: fires into this context wherever it is; skipped if no context by that name exists
 ephemeral = true     # optional: close the spawned pane when the command exits
+enabled   = false    # optional: keep the routine but never fire it (`plexi routine disable`)
 ```
+
+`plexi routine add` / `remove` / `enable` / `disable` edit this file for you, validating the schedule against the same parser the scheduler uses and preserving hand-written comments.
 
 A routine never stacks panes: while the previous run's pane is still alive, due fires are skipped (with one notification per skip streak), and the routine fires again on the first tick after that run ends. Ephemeral panes close themselves when the command exits; a non-ephemeral pane holds its routine until its shell session ends or the pane is closed.
 
@@ -148,20 +151,65 @@ Singular unit names (`every 1 minute`) and am/pm times (`daily at 9am`) are acce
 
 | Subcommand | Description |
 |---|---|
-| `list` | List routines defined in the workspace channel dir's routines.toml with their schedule and next fire time |
-| `run` | Manually trigger a named routine from the workspace channel dir's routines.toml |
+| `list` | List routines defined in the workspace's routines.toml with their schedule and next fire time |
+| `run` | Manually trigger a named routine from the workspace's routines.toml |
+| `add` | Add a routine to the workspace's routines.toml |
+| `remove` | Remove a routine from the workspace's routines.toml |
+| `enable` | Re-enable a disabled routine (removes its `enabled = false` key) |
+| `disable` | Disable a routine without deleting it (sets `enabled = false`; it never fires until re-enabled) |
 
 ### `plexi routine list`
 
-List routines defined in the workspace channel dir's routines.toml with their schedule and next fire time
+List routines defined in the workspace's routines.toml with their schedule and next fire time
 
 ### `plexi routine run`
 
-Manually trigger a named routine from the workspace channel dir's routines.toml
+Manually trigger a named routine from the workspace's routines.toml.
+
+The routine fires exactly like a scheduled run: into its configured context when one is named (erroring if that context does not exist), otherwise into the caller's context.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Name of the routine to run |
+| `--force` | flag | no | Fire the routine even when it is disabled |
+
+### `plexi routine add`
+
+Add a routine to the workspace's routines.toml.
+
+The schedule is validated against the same parser the scheduler uses, so an accepted routine is guaranteed to fire. Hand-written comments elsewhere in the file are preserved.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Unique name for the routine |
+| `--command` | string | yes | Shell command the routine runs |
+| `--schedule` | string | yes | When to run — e.g. "every 30m", "daily at 09:00", "0 9 * * 1-5" |
+| `--context` | string | no | Context to fire into (default: the active context at fire time) |
+| `--ephemeral` | flag | no | Close the spawned pane when the command exits |
+
+### `plexi routine remove`
+
+Remove a routine from the workspace's routines.toml
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Name of the routine to remove |
+
+### `plexi routine enable`
+
+Re-enable a disabled routine (removes its `enabled = false` key)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Name of the routine to enable |
+
+### `plexi routine disable`
+
+Disable a routine without deleting it (sets `enabled = false`; it never fires until re-enabled)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Name of the routine to disable |
 
 ## `plexi agent`
 

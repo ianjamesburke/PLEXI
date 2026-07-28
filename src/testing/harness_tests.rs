@@ -3499,6 +3499,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         path: None,
         workspace_root: None,
         target_context: None,
+        context_name: None,
         name: None,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
@@ -4263,6 +4264,94 @@ mod routine_firing {
         );
         assert_eq!(h.app.router.active_idx(), active_ctx_before);
         assert_eq!(h.app.active_window, active_win_before);
+    }
+
+    /// `plexi routine run` parity (stint 0574): a spawn_pane request carrying
+    /// `context_name` lands in that context's window without touching the
+    /// active window — the same targeting `fire_routine` uses.
+    #[test]
+    fn spawn_pane_context_name_lands_in_named_context() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+        let work_root = tempfile::tempdir().expect("tempdir");
+        let work_win = add_secondary_context(&mut h, "work", work_root.path());
+
+        let active_win_before = h.app.active_window;
+        let main_panes_before = h.app.windows[0].panes.len();
+        let response = temp_response(tmp.path(), "ctx-name-spawn");
+        h.app
+            .handle_pane_ipc_request(AppRequest::SpawnPane {
+                type_id: "terminal".to_string(),
+                layout: Some("split_h".to_string()),
+                args: vec!["true".to_string()],
+                from_pane_id: None,
+                request_id: None,
+                response_file: Some(response.clone()),
+                ephemeral: false,
+                cwd: None,
+                no_focus: false,
+                path: None,
+                workspace_root: None,
+                target_context: None,
+                context_name: Some("work".to_string()),
+                name: None,
+            });
+
+        let reply = read_json_response(&response);
+        let pane_id = reply["pane_id"].as_u64().expect("spawn must return pane_id");
+        assert!(
+            h.app.windows[work_win].panes.contains_key(&pane_id),
+            "pane must land in the named context's window"
+        );
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            main_panes_before,
+            "active context must not receive the pane"
+        );
+        assert_eq!(h.app.active_window, active_win_before);
+    }
+
+    /// A `context_name` naming no live context is a hard error back to the
+    /// caller — never a silent fallback into the active context.
+    #[test]
+    fn spawn_pane_unknown_context_name_errors() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+        let panes_before = h.app.windows[0].panes.len();
+
+        let response = temp_response(tmp.path(), "ctx-name-missing");
+        h.app
+            .handle_pane_ipc_request(AppRequest::SpawnPane {
+                type_id: "terminal".to_string(),
+                layout: Some("split_h".to_string()),
+                args: vec!["true".to_string()],
+                from_pane_id: None,
+                request_id: None,
+                response_file: Some(response.clone()),
+                ephemeral: false,
+                cwd: None,
+                no_focus: false,
+                path: None,
+                workspace_root: None,
+                target_context: None,
+                context_name: Some("ghost".to_string()),
+                name: None,
+            });
+
+        let reply = read_json_response(&response);
+        let err = reply["error"].as_str().expect("must reply with an error");
+        assert!(err.contains("ghost"), "error must name the context: {err}");
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            panes_before,
+            "no pane may be spawned anywhere on a missing context"
+        );
     }
 
     #[test]
