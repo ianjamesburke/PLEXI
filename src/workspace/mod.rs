@@ -98,6 +98,47 @@ fn ephemeral_session_from(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| !value.is_empty())
 }
 
+/// Boot-mode switch set only by an explicit `plexi host start --background`.
+/// It is process-local launch state, not persisted configuration.
+pub const BACKGROUND_SESSION_ENV: &str = "PLEXI_BACKGROUND_HOST";
+
+/// Owned process boot state captured before launch-only environment markers
+/// are removed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostBootState {
+    background: bool,
+}
+
+impl HostBootState {
+    pub fn is_background(self) -> bool {
+        self.background
+    }
+}
+
+static HOST_BOOT_STATE: std::sync::OnceLock<HostBootState> = std::sync::OnceLock::new();
+
+/// Snapshot and consume launch-only host state exactly once.
+///
+/// Production must call this as the first action in `main`, before any thread
+/// can read or inherit the process environment. Removing an environment
+/// variable while another thread accesses the environment is not safe.
+pub fn consume_host_boot_state() -> HostBootState {
+    *HOST_BOOT_STATE.get_or_init(|| {
+        let background =
+            background_session_from(std::env::var_os(BACKGROUND_SESSION_ENV).as_deref());
+        // SAFETY: `main` calls this before config initialization, logging,
+        // shell probes, the heartbeat, or any other thread creation.
+        unsafe {
+            std::env::remove_var(BACKGROUND_SESSION_ENV);
+        }
+        HostBootState { background }
+    })
+}
+
+fn background_session_from(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
 impl WorkspaceFile {
     pub fn save(&self) -> io::Result<()> {
         if ephemeral_session() {
@@ -284,6 +325,55 @@ mod tests {
         assert!(!super::ephemeral_session_from(None));
         assert!(!super::ephemeral_session_from(Some(OsStr::new(""))));
         assert!(super::ephemeral_session_from(Some(OsStr::new("1"))));
+    }
+
+    #[test]
+    fn background_session_predicate_requires_nonempty_value() {
+        use std::ffi::OsStr;
+        assert!(!super::background_session_from(None));
+        assert!(!super::background_session_from(Some(OsStr::new(""))));
+        assert!(super::background_session_from(Some(OsStr::new("1"))));
+    }
+
+    #[test]
+    fn background_launch_marker_does_not_reach_descendants() {
+        const PROBE_ENV: &str = "PLEXI_TEST_BACKGROUND_MARKER_PROBE";
+
+        if std::env::var_os(PROBE_ENV).is_some() {
+            let boot_state = super::consume_host_boot_state();
+            assert!(boot_state.is_background());
+            let output = std::process::Command::new("/usr/bin/printenv")
+                .arg(super::BACKGROUND_SESSION_ENV)
+                .output()
+                .expect("run inherited-env probe");
+            assert!(
+                !output.status.success() && output.stdout.is_empty(),
+                "background marker leaked to child: status={:?} stdout={:?}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("resolve current test binary"),
+        )
+        .args([
+            "--exact",
+            "workspace::tests::background_launch_marker_does_not_reach_descendants",
+            "--test-threads=1",
+        ])
+        .env(PROBE_ENV, "1")
+        .env(super::BACKGROUND_SESSION_ENV, "1")
+        .output()
+        .expect("run isolated background marker probe");
+
+        assert!(
+            output.status.success(),
+            "isolated marker probe failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

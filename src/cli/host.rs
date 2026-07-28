@@ -143,6 +143,8 @@ const STRIP_VARS: &[&str] = &[
     // launch further ephemeral hosts. Re-added only for an explicit
     // `host start --ephemeral`.
     crate::workspace::EPHEMERAL_SESSION_ENV,
+    // Background mode is also an explicit launch choice, never ambient state.
+    crate::workspace::BACKGROUND_SESSION_ENV,
 ];
 
 /// Pure env-filter used to build the launched child's environment. Takes the
@@ -159,6 +161,30 @@ pub(crate) fn filter_child_env(
         .collect();
     if let Some(c) = channel {
         env.push(("PLEXI_CHANNEL".to_string(), c.to_string()));
+    }
+    env
+}
+
+/// Constructs launch env from explicit boot flags after stripping all
+/// inherited Plexi routing and boot-mode state.
+pub(crate) fn host_child_env(
+    parent_env: Vec<(String, String)>,
+    channel: Option<&str>,
+    ephemeral: bool,
+    background: bool,
+) -> Vec<(String, String)> {
+    let mut env = filter_child_env(parent_env, channel);
+    if ephemeral {
+        env.push((
+            crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
+            "1".to_string(),
+        ));
+    }
+    if background {
+        env.push((
+            crate::workspace::BACKGROUND_SESSION_ENV.to_string(),
+            "1".to_string(),
+        ));
     }
     env
 }
@@ -362,7 +388,7 @@ fn collect_pane_specs(
     Ok(specs)
 }
 
-/// `plexi host start [--layout <file>] [--pane <spec>]... [--timeout-secs <n>]`
+/// `plexi host start [--layout <file>] [--pane <spec>]... [--timeout-secs <n>] [--background]`
 ///
 /// Launches this channel's app bundle detached (survives the CLI process
 /// exiting), seeds any declared panes via the spawn-queue before launch, and
@@ -374,6 +400,7 @@ pub fn host_start_cli(
     panes: &[String],
     timeout_secs: Option<u64>,
     ephemeral: bool,
+    background: bool,
 ) -> i32 {
     let specs = match collect_pane_specs(layout_file, panes) {
         Ok(s) => s,
@@ -461,16 +488,14 @@ pub fn host_start_cli(
         }
     }
 
-    let mut child_env = filter_child_env(std::env::vars().collect(), channel.as_deref());
-    if ephemeral {
-        // Hermetic session (`--ephemeral`): the launched host skips workspace
-        // restore on boot and workspace save on shutdown. The env var is the
-        // single switch, honored by `WorkspaceFile::load`/`save`
-        // (src/workspace/mod.rs).
-        child_env.push((crate::workspace::EPHEMERAL_SESSION_ENV.to_string(), "1".to_string()));
-    }
+    let child_env = host_child_env(
+        std::env::vars().collect(),
+        channel.as_deref(),
+        ephemeral,
+        background,
+    );
     log::info!(
-        "host_start: child env constructed — {} vars retained, PLEXI_CHANNEL={:?}, ephemeral={ephemeral}",
+        "host_start: child env constructed — {} vars retained, PLEXI_CHANNEL={:?}, ephemeral={ephemeral}, background={background}",
         child_env.len(),
         channel
     );
@@ -928,11 +953,16 @@ mod tests {
                 crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
                 "1".to_string(), // must not cascade into later host starts
             ),
+            (
+                crate::workspace::BACKGROUND_SESSION_ENV.to_string(),
+                "1".to_string(), // must not cascade into later host starts
+            ),
             ("PATH".to_string(), "/usr/bin".to_string()),
         ];
         let env = filter_child_env(parent, Some("alpha"));
         let map: std::collections::HashMap<_, _> = env.into_iter().collect();
         assert_eq!(map.get(crate::workspace::EPHEMERAL_SESSION_ENV), None);
+        assert_eq!(map.get(crate::workspace::BACKGROUND_SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_SOCKET"), None);
         assert_eq!(map.get("PLEXI_PANE_ID"), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ID"), None);
@@ -949,6 +979,31 @@ mod tests {
         assert!(
             env.iter().all(|(k, _)| k != "PLEXI_CHANNEL"),
             "main channel must never inherit a stale PLEXI_CHANNEL: {env:?}"
+        );
+    }
+
+    #[test]
+    fn child_env_adds_background_only_when_explicit() {
+        let inherited = vec![(
+            crate::workspace::BACKGROUND_SESSION_ENV.to_string(),
+            "1".to_string(),
+        )];
+        let foreground = host_child_env(inherited.clone(), Some("alpha"), false, false);
+        assert!(
+            foreground
+                .iter()
+                .all(|(key, _)| key != crate::workspace::BACKGROUND_SESSION_ENV)
+        );
+
+        let background = host_child_env(inherited, Some("alpha"), false, true);
+        assert_eq!(
+            background
+                .iter()
+                .filter(|(key, value)| {
+                    key == crate::workspace::BACKGROUND_SESSION_ENV && value == "1"
+                })
+                .count(),
+            1
         );
     }
 

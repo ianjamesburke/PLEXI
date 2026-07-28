@@ -4078,6 +4078,7 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wgpu",
+ "winit",
  "zeroize",
 ]
 

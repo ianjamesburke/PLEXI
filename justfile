@@ -255,7 +255,8 @@ sdk-dev:
 sdk-smoke:
     uv run --python 3.12 --project sdk/python --with pytest --with pytest-asyncio pytest sdk/python/tests/test_v3_adapter.py sdk/python/tests/test_v3_runtime_regression.py -q
 
-# Build and install a PR's actual head as a testable PR build (cwd-independent).
+# Build and install a PR's actual head as a testable PR build (cwd-independent);
+# this does not boot it. Tester flows then run `plexi-pr-<N> host start --background`.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Resolves the PR head via gh and builds THAT tree — run from anywhere inside
 # the repo: just pr-install 123

@@ -101,6 +101,8 @@ sysinfo = "0.32"
 arboard = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Background hosts use winit's macOS event-loop activation policy hook.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 # Keychain access via Security.framework C API — no subprocess, distinct error
 # types for ItemNotFound vs AuthFailed (locked keychain). Replaces security CLI.
 security-framework = "3"

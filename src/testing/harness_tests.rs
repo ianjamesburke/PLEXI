@@ -116,6 +116,36 @@ fn pane_status_request_fails_loudly_for_unknown_pane() {
 }
 
 #[test]
+fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+    h.run_frames(2);
+
+    let response_file = temp_response(tmp.path(), "pane-state-builtin");
+    h.inject_ipc(AppRequest::GetPaneState {
+        pane_id,
+        response_file: response_file.clone(),
+    });
+    h.run_hidden_frames(1);
+
+    let response = read_json_response(&response_file);
+    assert_eq!(response["type"], "app");
+    assert!(
+        response["semantic"]["roots"]
+            .as_array()
+            .is_some_and(|roots| !roots.is_empty()),
+        "pane state must expose at least one semantic root; response={response}"
+    );
+    assert!(
+        response["semantic"]["nodes"]
+            .as_array()
+            .is_some_and(|nodes| !nodes.is_empty()),
+        "pane state must expose at least one semantic node; response={response}"
+    );
+}
+
+#[test]
 fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let note = tmp.path().join("note.md");
