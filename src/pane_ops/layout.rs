@@ -294,6 +294,9 @@ impl PlexiApp {
         }
     }
 
+    /// Split the focused pane and spawn a terminal in the new slot. Returns
+    /// the new pane's id, or `None` when nothing was spawned (no focused pane,
+    /// or terminal creation failed).
     pub(crate) fn split_focused(
         &mut self,
         vertical: bool,
@@ -301,11 +304,11 @@ impl PlexiApp {
         close_on_exit: bool,
         new_pane_first: bool,
         cwd_override: Option<std::path::PathBuf>,
-    ) {
+    ) -> Option<PaneId> {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
         let Some(focused) = self.windows[self.active_window].focused_pane else {
-            return;
+            return None;
         };
 
         let cmd = if vertical {
@@ -372,7 +375,7 @@ impl PlexiApp {
             self.default_font_size,
         ) else {
             log::error!("Failed to create new terminal pane");
-            return;
+            return None;
         };
         pane.ephemeral = close_on_exit;
         self.windows[self.active_window]
@@ -443,6 +446,7 @@ impl PlexiApp {
         }
 
         ctx.navigate_to(new_tile);
+        Some(new_id)
     }
 
     pub(crate) fn new_tab(
@@ -834,6 +838,7 @@ impl PlexiApp {
         };
 
         // Phase 3: Remove tile and extract pane — defer drop so background apps can be parked.
+        let mut closed_pane_id = None;
         let removed_pane = {
             let ctx = &mut self.windows[ctx_idx];
             if let Some(parent_id) = ctx.tree.tiles.parent_of(tile_id) {
@@ -848,6 +853,7 @@ impl PlexiApp {
                     pane_id,
                     timestamp: crate::host::event_log::now_timestamp(),
                 });
+                closed_pane_id = Some(pane_id);
                 ctx.panes.remove(&pane_id)
             } else {
                 None
@@ -880,7 +886,15 @@ impl PlexiApp {
             removed
         };
 
-        // ctx borrow is released — park background WASM app runtimes; drop everything else.
+        // ctx borrow is released — reap any routine live-run record for this
+        // pane (the destroy half of the overlap guard's register/reap pair;
+        // without it a closed run would block its routine forever), then park
+        // background WASM app runtimes; drop everything else.
+        if let Some(pane_id) = closed_pane_id {
+            for name in self.scheduler.reap_pane(pane_id) {
+                log::info!("scheduler: routine '{name}' run ended — pane {pane_id} closed");
+            }
+        }
         match removed_pane {
             Some(Pane::App(app_pane)) => {
                 let pane_id = app_pane.id;

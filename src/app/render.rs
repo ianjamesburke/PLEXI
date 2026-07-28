@@ -56,9 +56,9 @@ impl PlexiApp {
             let now = std::time::Instant::now();
             self.last_notify_poll = now;
             self.drain_spawn_queue();
+            self.tick_terminal_activity();
             self.tick_scheduler();
             self.tick_notification_timeouts();
-            self.tick_terminal_activity();
             if update_check_due(self.last_update_check, now) {
                 let config_dir = crate::config::config_dir();
                 if !crate::cli::updater::update_cache_fresh(&config_dir) {

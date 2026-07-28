@@ -74,7 +74,9 @@ pub enum Commands {
     },
     /// Manage workspace routines — scheduled shell commands.
     ///
-    /// Routines are declared in `.plexi/routines.toml` and run automatically on schedule.
+    /// Routines are declared in `routines.toml` inside the workspace channel directory —
+    /// `{workspace_channel_dir}/routines.toml`, e.g. `.plexi-alpha/routines.toml` on the
+    /// alpha channel — and run automatically on schedule.
     /// **Requires Plexi to be running** — there is no background daemon. Routines only fire
     /// while the host process is open.
     ///
@@ -1466,9 +1468,9 @@ pub fn normalize_config_scope_aliases(args: Vec<String>) -> Vec<String> {
 
 #[derive(Subcommand)]
 pub enum RoutineCmd {
-    /// List routines defined in .plexi/routines.toml with their schedule and next fire time.
+    /// List routines defined in the workspace channel dir's routines.toml with their schedule and next fire time.
     List,
-    /// Manually trigger a named routine from .plexi/routines.toml.
+    /// Manually trigger a named routine from the workspace channel dir's routines.toml.
     Run {
         /// Name of the routine to run
         name: String,

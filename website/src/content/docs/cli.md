@@ -110,45 +110,54 @@ Use --global to delete a globally-stored secret (one stored with `secret set --g
 
 Manage workspace routines — scheduled shell commands.
 
-Routines are declared in `.plexi/routines.toml` and run automatically on schedule. **Requires Plexi to be running** — there is no background daemon. Routines only fire while the host process is open.
+Routines are declared in `routines.toml` inside the workspace channel directory — `{workspace_channel_dir}/routines.toml`, e.g. `.plexi-alpha/routines.toml` on the alpha channel — and run automatically on schedule. **Requires Plexi to be running** — there is no background daemon. Routines only fire while the host process is open.
 
 Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
 
-### Routine file format (`.plexi/routines.toml`)
+### Routine file format (`{workspace_channel_dir}/routines.toml`)
+
+The file lives in the workspace channel directory beside the rest of the workspace state — e.g. `.plexi-alpha/routines.toml` on the alpha channel.
 
 ```toml
 [[routine]]
 name      = "morning-sync"
 command   = "./scripts/sync.sh"
 schedule  = "daily at 09:00"
-context   = "work"   # optional: only fires when this context is active
+context   = "work"   # optional: fires into this context wherever it is; skipped if no context by that name exists
 ephemeral = true     # optional: close the spawned pane when the command exits
 ```
+
+A routine never stacks panes: while the previous run's pane is still alive, due fires are skipped (with one notification per skip streak), and the routine fires again on the first tick after that run ends. Ephemeral panes close themselves when the command exits; a non-ephemeral pane holds its routine until its shell session ends or the pane is closed.
 
 ### Schedule formats
 
 | Format | Example |
 |---|---|
-| `every N seconds` | `every 30 seconds` |
-| `every N minutes` | `every 5 minutes` |
-| `every N hours`   | `every 2 hours` |
+| `every N seconds` (or `Ns`) | `every 30 seconds` |
+| `every N minutes` (or `Nm`) | `every 5 minutes` |
+| `every N hours` (or `Nh`)   | `every 2 hours` |
+| `every minute` / `every hour` | `every minute` |
 | `daily at HH:MM`  | `daily at 09:00` |
+| `weekdays at HH:MM` | `weekdays at 09:00` |
+| `weekends at HH:MM` | `weekends at 10:30am` |
 | `weekly on <day> at HH:MM` | `weekly on monday at 09:00` |
 | `monthly on N at HH:MM`    | `monthly on 1 at 08:00` |
 | 5-field cron `m h dom mon dow` | `0 9 * * 1-5` |
 
+Singular unit names (`every 1 minute`) and am/pm times (`daily at 9am`) are accepted; day names take short or full spellings (`mon` / `monday`).
+
 | Subcommand | Description |
 |---|---|
-| `list` | List routines defined in .plexi/routines.toml with their schedule and next fire time |
-| `run` | Manually trigger a named routine from .plexi/routines.toml |
+| `list` | List routines defined in the workspace channel dir's routines.toml with their schedule and next fire time |
+| `run` | Manually trigger a named routine from the workspace channel dir's routines.toml |
 
 ### `plexi routine list`
 
-List routines defined in .plexi/routines.toml with their schedule and next fire time
+List routines defined in the workspace channel dir's routines.toml with their schedule and next fire time
 
 ### `plexi routine run`
 
-Manually trigger a named routine from .plexi/routines.toml
+Manually trigger a named routine from the workspace channel dir's routines.toml
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
