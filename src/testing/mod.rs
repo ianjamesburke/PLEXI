@@ -15,10 +15,17 @@
 /// section (what the `ctor` crate emits); no dependency needed. The returned
 /// lock is leaked deliberately — its `Drop` would re-enable interaction.
 ///
-/// Defense in depth: under `cfg(test)` the crate already compiles with zero
-/// Security.framework call sites (see `src/workspace/secrets.rs`), so this
-/// guard exists to catch reintroductions and anything a future dependency
-/// does with the keychain, not a known caller.
+/// Honest scope: this suppresses UI, not access. Mechanism A (the
+/// `system_store()` seam in `src/workspace/secrets.rs`) removes every
+/// keychain ROUTE in our own code from test builds, and this guard removes
+/// PROMPTS — but the `security_framework` dependency itself is callable
+/// from any test in this crate (a same-crate test sees all dependencies;
+/// no cfg can hide one), and a deliberate direct call performs a real,
+/// silent, unprompted keychain operation. That is banned by contract
+/// (`src/workspace/AGENTS.md`) and is genuinely closed only by pointing the
+/// process's keychain search list at a throwaway keychain — stint 0603.
+/// This module is itself the one sanctioned `security_framework` call site
+/// in test builds.
 #[cfg(all(test, target_os = "macos"))]
 mod keychain_prompt_guard {
     extern "C" fn disable_keychain_prompts() {
