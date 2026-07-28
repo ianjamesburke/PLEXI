@@ -604,6 +604,10 @@ pub enum AppRequest {
         from_cursor: Option<u64>,
     },
 
+    /// Derive one auditable working/idle/blocked verdict from the pane's agent
+    /// detector, TUI status bar, and trailing terminal buffer.
+    PaneStatus { pane_id: u64, response_file: String },
+
     /// Query the last-rendered UI state of a pane. Sent by `plexi pane state`.
     /// For app panes: host writes a versioned `semantic` tree for every runtime.
     /// Process panes also retain the compatible `frame` RenderCommand array.
@@ -2955,6 +2959,27 @@ mod tests {
         assert!(
             serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without lines and response_file"
+        );
+    }
+
+    #[test]
+    fn pane_status_command_round_trips_serde() {
+        let json =
+            r#"{"type":"pane_status","pane_id":7,"response_file":"status.json"}"#;
+        let command: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &command {
+            AppRequest::PaneStatus {
+                pane_id,
+                response_file,
+            } => {
+                assert_eq!(*pane_id, 7);
+                assert_eq!(response_file, "status.json");
+            }
+            other => panic!("expected PaneStatus, got {other:?}"),
+        }
+        assert_eq!(
+            serde_json::to_value(command).expect("serialise")["type"],
+            "pane_status"
         );
     }
 

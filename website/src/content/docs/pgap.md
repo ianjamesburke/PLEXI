@@ -487,6 +487,15 @@ Read the last N lines from a terminal pane's PTY scrollback buffer. Sent by `ple
 | `pane_id` | `integer` | yes |
 | `response_file` | `string` | yes |
 
+### `pane_status`
+
+Derive one auditable working/idle/blocked verdict from the pane's agent detector, TUI status bar, and trailing termin...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pane_id` | `integer` | yes |
+| `response_file` | `string` | yes |
+
 ### `get_pane_state`
 
 Query the last-rendered UI state of a pane. Sent by `plexi pane state`. For app panes: host writes a versioned `seman...

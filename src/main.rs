@@ -903,12 +903,17 @@ fn main() -> eframe::Result {
                             lines,
                             full_output,
                             from_cursor,
+                            plain,
                         } => std::process::exit(cli::pane_capture_cli(
                             pane_id,
                             lines,
                             full_output,
                             from_cursor,
+                            plain,
                         )),
+                        PaneCmd::Status { pane_id } => {
+                            std::process::exit(cli::pane_status_cli(pane_id))
+                        }
                         PaneCmd::State { pane_id } => {
                             std::process::exit(cli::pane_state_cli(pane_id))
                         }

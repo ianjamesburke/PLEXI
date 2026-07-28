@@ -120,6 +120,8 @@ Known pre-existing bug (stint 0385): `--from-cursor <N>` deltas can return empty
 
 Append `2>&1 | grep -v "sudo:"` to plexi commands run from your own Bash — the background-updater bug (#2339) spews `sudo:` noise on stderr that otherwise dominates every output.
 
+> **Deprecated syntax notes (stints 0586 and 0588).** On builds that include them, use `plexi pane capture <id> --plain` for raw lines (with `cursor=<N>` on stderr) instead of `sed '1d' | jq -r '.lines[]'`; alternate-screen `--from-cursor` deltas now advance reliably, so the empty-delta fallback above is no longer doctrine. Those builds also isolate updater children, so run plexi commands without the `2>&1 | grep -v "sudo:"` filter. Keep the documented workarounds only for older builds. Full recipe sweep is stint 0589.
+
 ### Progress channel — pane slots FIRST, capture is the fallback
 
 > **Deprecated syntax note (stint 0585).** The fixed-cadence polling below is superseded by `plexi pane slot wait <name> [pane_id] --until <REGEX> --timeout <SECS>` — a host-side blocking read (exit 0 = matched value on stdout, exit 2 = timeout, exit 1 = usage/plumbing) that is level-triggered, so an already-matching slot returns immediately. Use it only when the binary you are driving includes it; on older builds keep the polling loop below. Full recipe sweep is stint 0589.
@@ -151,6 +153,8 @@ plexi pane slot read status <pane_id> 2>&1 | grep -v "sudo:"
 **Fallback to capture only when the slot is empty or its step token is stale.** The capture path (`--lines 20`, or full-buffer + `sed '1d' | jq -r '.lines[]'` chrome-strip for verdict parsing) is retained solely for that case and for reading a long verbatim report a slot can't hold.
 
 ### Reading whether a pane is busy
+
+> **Deprecated syntax note (stint 0587).** The screen-signal triangle below is superseded by `plexi pane status <id>`, which returns the host's machine-readable `working | idle | blocked | unknown` verdict, confidence, and raw evidence. Use it when the binary you are driving includes it; on older builds keep the corroborated fallback below. Full recipe sweep is stint 0589.
 
 Screen signals, and what each is actually worth:
 

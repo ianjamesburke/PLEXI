@@ -624,6 +624,7 @@ pub use pane::{
     pane_drop_cli, pane_focus_cli, pane_info_cli, pane_key_cli, pane_list_cli, pane_self_cli,
     pane_send_cli, pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli,
     pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli, pane_state_cli,
+    pane_status_cli,
 };
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};

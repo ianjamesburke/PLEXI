@@ -1675,6 +1675,29 @@
           "type": "object"
         },
         {
+          "description": "Derive one auditable working/idle/blocked verdict from the pane's agent\ndetector, TUI status bar, and trailing terminal buffer.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pane_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a versioned `semantic` tree for every runtime.\nProcess panes also retain the compatible `frame` RenderCommand array.\nFor terminal panes: host writes a simple status object.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
           "properties": {
             "pane_id": {
