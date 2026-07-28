@@ -37,8 +37,8 @@ struct LlmServerReport {
 fn check_openrouter() -> OpenRouterReport {
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
-        let store = MacKeychain::new();
+        use crate::workspace::secrets::{keychain_user_name, system_store};
+        let store = system_store();
         let key = ["OPENROUTER_API_KEY", "openrouter-api-key"]
             .iter()
             .find_map(|name| store.get(&keychain_user_name(name)));

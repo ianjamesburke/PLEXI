@@ -34,8 +34,8 @@ impl ManagedSecret {
 fn load_entries() -> Vec<ManagedSecret> {
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace::secrets::{MacKeychain, SecretStore};
-        MacKeychain::new()
+        use crate::workspace::secrets::system_store;
+        system_store()
             .list_with_prefix("plexi:")
             .into_iter()
             .filter_map(ManagedSecret::from_account)
@@ -157,8 +157,7 @@ impl SecretsApp {
         #[cfg(target_os = "macos")]
         {
             use crate::workspace::secrets::{
-                keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
-                WorkspaceConfig,
+                keychain_user_name, keychain_workspace_name, system_store, WorkspaceConfig,
             };
 
             // Resolve scope: workspace-scoped if cwd is inside an initialized workspace.
@@ -175,7 +174,7 @@ impl SecretsApp {
                 None => (keychain_user_name(&name), "global".to_string()),
             };
 
-            let store = MacKeychain::new();
+            let store = system_store();
             match store.set(&account, &value) {
                 Ok(()) => {
                     self.entries.retain(|e| e.account != account);
@@ -228,8 +227,8 @@ impl SecretsApp {
         if let Some(entry) = self.entries.get(self.selected).cloned() {
             #[cfg(target_os = "macos")]
             {
-                use crate::workspace::secrets::{MacKeychain, SecretStore};
-                let store = MacKeychain::new();
+                use crate::workspace::secrets::system_store;
+                let store = system_store();
                 match store.delete(&entry.account) {
                     Ok(()) => {
                         let name = entry.name.clone();
@@ -407,8 +406,8 @@ impl App for SecretsApp {
                 let name = entry.name.clone();
                 #[cfg(target_os = "macos")]
                 {
-                    use crate::workspace::secrets::{MacKeychain, SecretStore};
-                    match MacKeychain::new().get(&account) {
+                    use crate::workspace::secrets::system_store;
+                    match system_store().get(&account) {
                         Some(value) => {
                             ui.ctx().copy_text((*value).clone());
                             self.status_msg = Some(format!("'{name}' copied to clipboard."));
@@ -418,7 +417,7 @@ impl App for SecretsApp {
                             self.status_msg =
                                 Some(format!("Could not retrieve '{name}' — check logs."));
                             log::warn!(
-                                "secrets_manager: MacKeychain::get returned None for account='{account}'"
+                                "secrets_manager: secret store get returned None for account='{account}'"
                             );
                         }
                     }

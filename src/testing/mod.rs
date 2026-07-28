@@ -6,6 +6,52 @@
 //!      `HostSnapshot` after each frame.
 //!   2. Pane/IPC injection for host-model behavior without a display server.
 
+/// Prompt-equals-infrastructure-fail, as a mechanism rather than a rule
+/// (2026-07-28 keychain incident): a pre-main constructor disables keychain
+/// user interaction for the whole test process before `main`/libtest run —
+/// so it covers code outside test bodies too (ordering relative to other
+/// pre-main initializers is unspecified; none in this binary touch the
+/// keychain). A keychain call that would have raised a macOS credential
+/// dialog fails loudly instead of prompting: observed on the ACL value-read
+/// path as `errSecAuthFailed` (-25293), not the keychain-level
+/// `errSecInteractionNotAllowed` (-25308) the API name suggests — same
+/// error-not-dialog class, recorded errno from the live falsification.
+/// `__mod_init_func` is the macOS constructor section (what the `ctor`
+/// crate emits); no dependency needed. The returned lock is leaked
+/// deliberately — its `Drop` would re-enable interaction.
+///
+/// Honest scope: this suppresses UI, not access. Mechanism A (the
+/// `system_store()` seam in `src/workspace/secrets.rs`) removes every
+/// keychain ROUTE in our own code from test builds, and this guard removes
+/// PROMPTS — but the `security_framework` dependency itself is callable
+/// from any test in this crate (a same-crate test sees all dependencies;
+/// no cfg can hide one), and a deliberate direct call performs a real,
+/// silent, unprompted keychain operation. That is banned by contract
+/// (`src/workspace/AGENTS.md`) and is genuinely closed only by pointing the
+/// process's keychain search list at a throwaway keychain — stint 0603.
+/// This module is itself the one sanctioned `security_framework` call site
+/// in test builds.
+#[cfg(all(test, target_os = "macos"))]
+mod keychain_prompt_guard {
+    extern "C" fn disable_keychain_prompts() {
+        use security_framework::os::macos::keychain::SecKeychain;
+        match SecKeychain::disable_user_interaction() {
+            Ok(lock) => std::mem::forget(lock),
+            Err(e) => {
+                eprintln!(
+                    "FATAL: could not disable keychain user interaction for the test process \
+                     ({e}); refusing to run — a test that can prompt is an infrastructure failure"
+                );
+                std::process::abort();
+            }
+        }
+    }
+
+    #[used]
+    #[link_section = "__DATA,__mod_init_func"]
+    static GUARD: extern "C" fn() = disable_keychain_prompts;
+}
+
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
 use crate::app_protocol::AppRequest;
