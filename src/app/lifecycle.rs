@@ -848,6 +848,72 @@ impl PlexiApp {
                 ) {
                     let layout_str = spec.layout.as_deref().unwrap_or("split_h");
                     let initial_cmd = super::cmd_from_args(&spec.args);
+                    // Named-context targeting (stint 0574): `plexi routine run`
+                    // fires a routine into its configured context by name,
+                    // matching the scheduler's fire path. The context is a hard
+                    // target — a missing name errors back to the caller, and
+                    // the spawn never touches active_window or focus state.
+                    if let Some(ctx_name) = spec.context_name.as_deref().filter(|c| !c.is_empty()) {
+                        if layout_str == "new_window" || layout_str == "tab" {
+                            let msg = format!(
+                                "context_name does not support layout '{layout_str}' — use a split layout"
+                            );
+                            log::warn!("pane_ipc: spawn_pane rejected: {msg}");
+                            if let Some(rf) = &spec.response_file {
+                                write_json_response(rf, serde_json::json!({ "error": msg }));
+                            }
+                            return;
+                        }
+                        let Some(target_ctx_id) = self
+                            .router
+                            .iter()
+                            .find(|c| c.name == ctx_name)
+                            .map(|c| c.context_id)
+                        else {
+                            let msg = format!("context '{ctx_name}' does not exist");
+                            log::warn!("pane_ipc: spawn_pane: {msg}");
+                            if let Some(rf) = &spec.response_file {
+                                write_json_response(rf, serde_json::json!({ "error": msg }));
+                            }
+                            return;
+                        };
+                        let Some((target_win, target_tile)) =
+                            self.context_spawn_target(target_ctx_id)
+                        else {
+                            let msg = format!("context '{ctx_name}' has no pane to spawn beside");
+                            log::warn!("pane_ipc: spawn_pane: {msg}");
+                            if let Some(rf) = &spec.response_file {
+                                write_json_response(rf, serde_json::json!({ "error": msg }));
+                            }
+                            return;
+                        };
+                        let vertical =
+                            matches!(layout_str, "split_h" | "split_right" | "split_left");
+                        let new_pane_first = matches!(layout_str, "split_above" | "split_left");
+                        log::info!(
+                            "pane_ipc: spawn_pane terminal context_name='{ctx_name}' context_id={target_ctx_id} target_win={target_win} layout={layout_str} initial_cmd={initial_cmd:?} ephemeral={}",
+                            spec.ephemeral
+                        );
+                        response_pane_id = self.spawn_terminal_pane_at(
+                            target_win,
+                            target_tile,
+                            vertical,
+                            new_pane_first,
+                            initial_cmd.as_deref(),
+                            spec.ephemeral,
+                            cwd_override,
+                            spec.no_focus,
+                        );
+                        if let Some(ref pane_name) = spec.name {
+                            if !pane_name.is_empty() {
+                                self.apply_inline_pane_name(response_pane_id, pane_name);
+                            }
+                        }
+                        if let Some(rf) = &spec.response_file {
+                            write_response(rf, format!("{{\"pane_id\":{response_pane_id}}}").as_bytes());
+                        }
+                        return;
+                    }
                     if layout_str == "new_window" {
                         // Derive context from the calling pane's window; fall back to active.
                         let target_win_idx = spec
@@ -2851,6 +2917,25 @@ impl PlexiApp {
         log::info!("scheduler: routine notification queued={queued} title='{title}' body='{body}'");
     }
 
+    /// The pane a context-targeted terminal spawn splits beside: the first
+    /// window of `context_id`, and that window's focused pane (or tree root).
+    /// `None` when the context has no window or the window has no pane —
+    /// nothing to split, so the spawn fails rather than landing elsewhere.
+    /// Shared by the scheduler's `fire_routine` and the `context_name` spawn
+    /// path (`plexi routine run`), so both doors target identically.
+    pub(crate) fn context_spawn_target(
+        &self,
+        context_id: u64,
+    ) -> Option<(usize, egui_tiles::TileId)> {
+        let win_idx = self
+            .windows
+            .iter()
+            .position(|w| w.context_id == context_id)?;
+        let win = &self.windows[win_idx];
+        let tile = win.focused_pane.or(win.tree.root)?;
+        Some((win_idx, tile))
+    }
+
     /// Fire a routine into its target context. Returns the spawned pane id,
     /// or `None` when the routine could not run (missing context, spawn
     /// failure) — both surfaced as notifications on transition into the
@@ -2899,30 +2984,16 @@ impl PlexiApp {
             }
         };
 
-        let original_ctx_idx = self.router.active_idx();
-        let original_active_win = self.active_window;
-
-        // Temporarily switch to target context's window if different from current
-        if target_ctx_idx != original_ctx_idx {
-            self.router.set_active(target_ctx_idx);
-            let target_ctx_id = self.router.get(target_ctx_idx).context_id;
-            if let Some(win_idx) = self
-                .windows
-                .iter()
-                .position(|w| w.context_id == target_ctx_id)
-            {
-                self.active_window = win_idx;
-            }
-        }
-
+        // Explicit-target spawn: never steer through router.set_active /
+        // active_window — the target is a parameter, not ambient focus state
+        // (stint 0574; "Don't switch global state to thread data" trap).
+        let target_ctx_id = self.router.get(target_ctx_idx).context_id;
         let cwd = self.router.get(target_ctx_idx).root.clone();
-        let spawned = self.split_focused(false, Some(command), ephemeral, false, cwd);
-
-        // Restore original context
-        if target_ctx_idx != original_ctx_idx {
-            self.router.set_active(original_ctx_idx);
-            self.active_window = original_active_win;
-        }
+        let spawned = self.context_spawn_target(target_ctx_id).map(|(win, tile)| {
+            // vertical=true → side-by-side, matching the previous
+            // split_focused(false, ..) behavior (its LinearDir is inverted).
+            self.spawn_terminal_pane_at(win, tile, true, false, Some(command), ephemeral, cwd, false)
+        });
 
         if spawned.is_none() {
             log::warn!("scheduler: routine '{name}' — failed to spawn a pane");
@@ -2982,6 +3053,7 @@ impl PlexiApp {
                 path: path_target,
                 workspace_root: val["workspace_root"].as_str().map(str::to_string),
                 target_context: val["target_context"].as_u64(),
+                context_name: val["context_name"].as_str().map(str::to_string),
                 name: val["name"].as_str().map(str::to_string),
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)

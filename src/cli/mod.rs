@@ -626,7 +626,7 @@ pub use pane::{
     pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli, pane_slot_read_cli,
     pane_slot_write_cli, pane_state_cli,
 };
-pub use routine::{routine_list, routine_run};
+pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;
 pub use workspace::{

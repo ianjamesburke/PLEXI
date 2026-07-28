@@ -135,8 +135,13 @@ search for; keep `--detail` to the active tool.
 ```
 workspace init           Set up .plexi/ in current dir. NEVER run from ~.
 run [COMMAND]            Run a named command from .plexi/commands.toml. Omit to list.
-routine list             Show routines from the workspace channel dir's routines.toml with schedule/next fire.
-routine run NAME         Manually trigger a routine.
+routine list             Show the workspace's routines with schedule/next fire. Resolves routines.toml from the workspace root (works from any subdirectory).
+routine run NAME         Manually trigger a routine. Fires into its configured context like a scheduled run; --force fires a disabled routine.
+routine add NAME --command CMD --schedule SPEC [--context CTX] [--ephemeral]
+                         Append a routine. Schedule is validated by the scheduler's own parser; comments in the file are preserved.
+routine remove NAME      Delete a routine from routines.toml.
+routine enable NAME      Re-enable a disabled routine (removes enabled = false).
+routine disable NAME     Keep the routine but never fire it (sets enabled = false).
 ```
 
 ### ai, config, doctor, notes, demo, update, uninstall

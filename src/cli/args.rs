@@ -1468,11 +1468,54 @@ pub fn normalize_config_scope_aliases(args: Vec<String>) -> Vec<String> {
 
 #[derive(Subcommand)]
 pub enum RoutineCmd {
-    /// List routines defined in the workspace channel dir's routines.toml with their schedule and next fire time.
+    /// List routines defined in the workspace's routines.toml with their schedule and next fire time.
     List,
-    /// Manually trigger a named routine from the workspace channel dir's routines.toml.
+    /// Manually trigger a named routine from the workspace's routines.toml.
+    ///
+    /// The routine fires exactly like a scheduled run: into its configured context
+    /// when one is named (erroring if that context does not exist), otherwise into
+    /// the caller's context.
     Run {
         /// Name of the routine to run
+        name: String,
+        /// Fire the routine even when it is disabled
+        #[arg(long)]
+        force: bool,
+    },
+    /// Add a routine to the workspace's routines.toml.
+    ///
+    /// The schedule is validated against the same parser the scheduler uses, so an
+    /// accepted routine is guaranteed to fire. Hand-written comments elsewhere in
+    /// the file are preserved.
+    Add {
+        /// Unique name for the routine
+        name: String,
+        /// Shell command the routine runs
+        #[arg(long)]
+        command: String,
+        /// When to run — e.g. "every 30m", "daily at 09:00", "0 9 * * 1-5"
+        #[arg(long)]
+        schedule: String,
+        /// Context to fire into (default: the active context at fire time)
+        #[arg(long)]
+        context: Option<String>,
+        /// Close the spawned pane when the command exits
+        #[arg(long)]
+        ephemeral: bool,
+    },
+    /// Remove a routine from the workspace's routines.toml.
+    Remove {
+        /// Name of the routine to remove
+        name: String,
+    },
+    /// Re-enable a disabled routine (removes its `enabled = false` key).
+    Enable {
+        /// Name of the routine to enable
+        name: String,
+    },
+    /// Disable a routine without deleting it (sets `enabled = false`; it never fires until re-enabled).
+    Disable {
+        /// Name of the routine to disable
         name: String,
     },
 }

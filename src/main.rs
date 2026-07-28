@@ -255,7 +255,31 @@ fn main() -> eframe::Result {
                     },
                     Commands::Routine { cmd } => match cmd {
                         RoutineCmd::List => std::process::exit(cli::routine_list()),
-                        RoutineCmd::Run { name } => std::process::exit(cli::routine_run(&name)),
+                        RoutineCmd::Run { name, force } => {
+                            std::process::exit(cli::routine_run(&name, force))
+                        }
+                        RoutineCmd::Add {
+                            name,
+                            command,
+                            schedule,
+                            context,
+                            ephemeral,
+                        } => std::process::exit(cli::routine_add(
+                            &name,
+                            &command,
+                            &schedule,
+                            context.as_deref(),
+                            ephemeral,
+                        )),
+                        RoutineCmd::Remove { name } => {
+                            std::process::exit(cli::routine_remove(&name))
+                        }
+                        RoutineCmd::Enable { name } => {
+                            std::process::exit(cli::routine_set_enabled(&name, true))
+                        }
+                        RoutineCmd::Disable { name } => {
+                            std::process::exit(cli::routine_set_enabled(&name, false))
+                        }
                     },
                     Commands::Agent { cmd } => match cmd {
                         AgentCmd::Init { name, from } => {
@@ -435,6 +459,7 @@ fn main() -> eframe::Result {
                                         Some("mcp-renderer"),
                                         &mcp,
                                         &[],
+                                        None,
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
@@ -951,6 +976,7 @@ fn main() -> eframe::Result {
                                 None,
                                 &[],
                                 &[],
+                                None,
                             ));
                         }
                     },

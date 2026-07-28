@@ -243,6 +243,7 @@ Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps. Requires 
 | Field | Type | Required |
 |-------|------|----------|
 | `args` | `string[]` | no |
+| `context_name` | `string?` | no |
 | `cwd` | `string?` | no |
 | `ephemeral` | `boolean` | no |
 | `from_pane_id` | `integer?` | no |

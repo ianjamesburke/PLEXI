@@ -902,6 +902,13 @@
               },
               "type": "array"
             },
+            "context_name": {
+              "description": "When set, spawn the terminal into the context with this name,\nwherever it is — the host resolves the name and errors back when no\nsuch context exists. Sent by `plexi routine run` for routines that\ndeclare a `context`, matching the scheduler's fire targeting\n(stint 0574). Terminal spawns only.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",

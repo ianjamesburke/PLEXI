@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-fn routines_file() -> String {
+/// Workspace-relative path of the routines file. Single owner — the CLI
+/// (`plexi routine`) and the scheduler must always resolve the same file.
+pub(crate) fn routines_file() -> String {
     format!("{}/routines.toml", crate::config::workspace_channel_dir())
 }
 
@@ -41,6 +43,14 @@ pub(crate) struct Routine {
     pub context: String,
     #[serde(default)]
     pub ephemeral: bool,
+    /// Disabled routines stay in the file but never fire. Defaults to true so
+    /// the key only appears once a routine has been disabled (stint 0572).
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Clone)]
@@ -184,6 +194,15 @@ impl Scheduler {
         let count = config.routine.len();
         let mut new_failures = Vec::new();
         for routine in config.routine {
+            // Disabled routines are fully inert: no SchedulerEntry, no schedule
+            // validation, no failure notifications (stint 0572).
+            if !routine.enabled {
+                log::info!(
+                    "scheduler: routine '{}' is disabled, skipping",
+                    routine.name
+                );
+                continue;
+            }
             // A schedule edit resolves the routine's previous bad-schedule
             // state whether or not the new string parses; a *different* bad
             // string is a new failure and notifies again.
@@ -511,6 +530,11 @@ pub(crate) fn parse_schedule(s: &str) -> Option<ParsedSchedule> {
         };
         let n: u64 = n_str.parse().ok()?;
         let secs = n.checked_mul(interval_unit_secs(unit)?)?;
+        // A zero-length interval would be due on every tick — an uncontrolled
+        // fire loop, never a meaningful schedule.
+        if secs == 0 {
+            return None;
+        }
         return Some(ParsedSchedule::Interval { secs });
     }
 
@@ -859,6 +883,8 @@ mod tests {
         assert!(parse_schedule("garbage schedule").is_none());
         assert!(parse_schedule("").is_none());
         assert!(parse_schedule("every 30 parsecs").is_none());
+        assert!(parse_schedule("every 0 seconds").is_none());
+        assert!(parse_schedule("every 0m").is_none());
         assert!(parse_schedule("every fast").is_none());
         assert!(parse_schedule("weekly on funday at 9am").is_none());
         assert!(parse_schedule("weekly on monday").is_none());

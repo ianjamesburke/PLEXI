@@ -21,6 +21,7 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) no_focus: bool,
     pub(crate) workspace_root: Option<PathBuf>,
     pub(crate) target_context: Option<u64>,
+    pub(crate) context_name: Option<String>,
     pub(crate) name: Option<String>,
 }
 
@@ -41,6 +42,7 @@ impl PaneLaunchSpec {
             no_focus: false,
             workspace_root: None,
             target_context: None,
+            context_name: None,
             name: None,
         })
     }
@@ -58,12 +60,17 @@ impl PaneLaunchSpec {
             path,
             workspace_root,
             target_context,
+            context_name,
             name,
             ..
         } = request
         else {
             return Err("expected spawn_pane request".to_string());
         };
+
+        if context_name.as_deref().is_some_and(|c| !c.is_empty()) && type_id != "terminal" {
+            return Err("context_name is only supported for terminal spawns".to_string());
+        }
 
         let target = match (type_id.as_str(), path.as_deref()) {
             ("terminal", None) => PaneLaunchTarget::Terminal,
@@ -90,6 +97,7 @@ impl PaneLaunchSpec {
             no_focus: *no_focus,
             workspace_root: workspace_root.as_deref().map(PathBuf::from),
             target_context: *target_context,
+            context_name: context_name.clone(),
             name: name.clone(),
         })
     }
@@ -134,6 +142,7 @@ impl PaneLaunchSpec {
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
             target_context: self.target_context,
+            context_name: self.context_name.clone(),
             name: self.name.clone(),
         }
     }
@@ -166,6 +175,7 @@ mod tests {
             path: path.map(str::to_string),
             workspace_root: None,
             target_context: None,
+            context_name: None,
             name: None,
         }
     }
