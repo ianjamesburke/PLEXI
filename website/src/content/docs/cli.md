@@ -1363,6 +1363,7 @@ Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
 | `--pane` | string (repeatable) | no | A pane to seed: 'cwd=<dir>[,cmd=<command>][,tab|window]'. Repeatable |
 | `--timeout-secs` | string | no | Seconds to wait for the host to confirm readiness (default 15) |
 | `--ephemeral` | flag | no | Boot a hermetic session: skip workspace restore on start and skip workspace save on shutdown. For automated runs (scene runners, release gates) that must never see or clobber the channel's saved session |
+| `--background` | flag | no | Launch without activating Plexi or taking focus. On macOS this uses Accessory activation policy, so the host has no normal Dock or menu-bar presence and should be driven through the CLI |
 
 ### `plexi host stop`
 
