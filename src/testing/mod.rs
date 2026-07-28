@@ -8,12 +8,17 @@
 
 /// Prompt-equals-infrastructure-fail, as a mechanism rather than a rule
 /// (2026-07-28 keychain incident): a pre-main constructor disables keychain
-/// user interaction for the WHOLE test process before any code — including
-/// anything outside a test body — can run. A keychain call that would have
-/// raised a macOS credential dialog now returns `errSecInteractionNotAllowed`
-/// and fails loudly instead. `__mod_init_func` is the macOS constructor
-/// section (what the `ctor` crate emits); no dependency needed. The returned
-/// lock is leaked deliberately — its `Drop` would re-enable interaction.
+/// user interaction for the whole test process before `main`/libtest run —
+/// so it covers code outside test bodies too (ordering relative to other
+/// pre-main initializers is unspecified; none in this binary touch the
+/// keychain). A keychain call that would have raised a macOS credential
+/// dialog fails loudly instead of prompting: observed on the ACL value-read
+/// path as `errSecAuthFailed` (-25293), not the keychain-level
+/// `errSecInteractionNotAllowed` (-25308) the API name suggests — same
+/// error-not-dialog class, recorded errno from the live falsification.
+/// `__mod_init_func` is the macOS constructor section (what the `ctor`
+/// crate emits); no dependency needed. The returned lock is leaked
+/// deliberately — its `Drop` would re-enable interaction.
 ///
 /// Honest scope: this suppresses UI, not access. Mechanism A (the
 /// `system_store()` seam in `src/workspace/secrets.rs`) removes every
@@ -316,7 +321,11 @@ impl HostHarness {
             )),
             ..Default::default()
         };
-        input.viewports.entry(viewport_id).or_default().occluded = Some(true);
+        input
+            .viewports
+            .entry(viewport_id)
+            .or_default()
+            .occluded = Some(true);
         app.raw_input_hook(&self.ctx, &mut input);
         let full_output = self.ctx.run_ui(input, |ui| {
             app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());

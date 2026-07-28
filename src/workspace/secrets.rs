@@ -239,11 +239,13 @@ fn index_remove(account: &str) {
 /// migration. Idempotent — re-runs are no-ops once `secrets-index.json` is
 /// in the new flat-string form.
 ///
-/// `not(test)`: this body contains the only direct Security.framework value
-/// read (`get_generic_password`) outside `MacKeychain`. Compiling it out
-/// under test means a test binary contains ZERO keychain call sites — a
-/// credential prompt from `cargo test` is a compile-time impossibility, not
-/// an audit conclusion. (No test calls this; only `main()` does.)
+/// `not(test)`: this body holds the only direct Security.framework value
+/// read (`get_generic_password`) outside `MacKeychain` in OUR code, so
+/// compiling it out removes every keychain route our code offers a test
+/// binary. That is a routing guarantee, not an access impossibility: any
+/// test can still call the `security_framework` dependency directly (see
+/// `src/workspace/AGENTS.md` — contract-banned; stint 0603 owns the real
+/// close). (No test calls this; only `main()` does.)
 #[cfg(all(target_os = "macos", not(test)))]
 pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
     use security_framework::passwords::get_generic_password;
