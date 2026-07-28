@@ -2363,6 +2363,10 @@ impl HeadlessBackend {
                 Ok(None)
             }
             Step::SeedNotification { seed_notification } => {
+                // Deliberately bypasses `enqueue_notification`: this is a
+                // screenshot fixture, not a notification surface. It force-opens
+                // the modal at priority 0 so scenes can photograph it, which the
+                // real auto-open policy would (correctly) refuse to do.
                 let title = seed_notification.title.clone();
                 let body = seed_notification.body.clone();
                 let id = self.h.with_app_mut(|app| {

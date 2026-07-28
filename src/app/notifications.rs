@@ -196,7 +196,153 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
     restored
 }
 
+/// Which surface a notification entered the host through. Recorded on the
+/// arrival trace so the log names the door, not just the notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotifySource {
+    /// `plexi notify` over the command socket.
+    Cli,
+    /// An app pane's `ShowNotification` command.
+    App,
+    /// A WASM guest's `Notify` host effect.
+    Wasm,
+    /// Raised by the host itself (config errors and the like).
+    HostInternal,
+}
+
+impl NotifySource {
+    fn as_str(self) -> &'static str {
+        match self {
+            NotifySource::Cli => "cli",
+            NotifySource::App => "app",
+            NotifySource::Wasm => "wasm",
+            NotifySource::HostInternal => "host",
+        }
+    }
+}
+
 impl PlexiApp {
+    /// The single choke point for every notification entering the host.
+    ///
+    /// Owns, in one place, the policy that used to be re-decided at each of the
+    /// four call sites: the `notifications_enabled` master switch, the push
+    /// onto the queue, persistence, the audible cue, the auto-open decision,
+    /// and the `NotificationPosted` event-log emit. Call sites contribute only
+    /// the notification's own data — none of them may keep a local copy of any
+    /// of the above, and a fifth surface cannot skip the gate without deleting
+    /// code here.
+    ///
+    /// Returns `true` when the notification was queued, `false` when the master
+    /// switch dropped it.
+    pub(crate) fn enqueue_notification(
+        &mut self,
+        source: NotifySource,
+        notification: PendingNotification,
+    ) -> bool {
+        if !self.notifications_enabled {
+            log::info!(
+                "notify: dropped source={} title={:?} — notifications disabled",
+                source.as_str(),
+                notification.title
+            );
+            return false;
+        }
+
+        let notify_id = notification.notify_id.clone();
+        let priority = notification.priority;
+        let level = notification.level.clone();
+        let title = notification.title.clone();
+
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::NotificationPosted {
+            id: notify_id.clone(),
+            title: title.clone(),
+            urgency: level,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
+
+        let is_visible = self.notification_is_visible(&notification);
+        self.pending_notifications.push(notification);
+        self.save_notifications();
+
+        let cue_played = self.play_notification_cue();
+
+        // Auto-open rules:
+        //   1. Visibility — Global always; Window/Context only when the source
+        //      matches the active window/context.
+        //   2. focus_mode off — the global mute gate.
+        //   3. priority >= interrupt_threshold — don't auto-open low-urgency
+        //      notifications like "note saved".
+        // If any gate fails the notification still queues (the badge ticks) but
+        // the modal does not pop.
+        let should_auto_open = is_visible
+            && !self.notifications_focus_mode
+            && priority >= self.notifications_interrupt_threshold;
+        if should_auto_open {
+            self.show_notification_modal = true;
+            // Only pin the arrival as current when nothing is already pinned.
+            // A low-priority passive notification never steals the front slot;
+            // the highest-priority remaining is picked at modal-open time.
+            if self.current_notify_id.is_none() {
+                self.current_notify_id = Some(notify_id.clone());
+            }
+        }
+
+        log::info!(
+            "notify: queued source={} id={} title={:?} priority={} visible={} auto_open={} cue={}",
+            source.as_str(),
+            notify_id,
+            title,
+            priority,
+            is_visible,
+            should_auto_open,
+            cue_played
+        );
+        true
+    }
+
+    /// The audible cue to play for an arriving notification, or `None` to stay
+    /// silent. Split out from [`Self::enqueue_notification`] so the decision —
+    /// and the parameters it resolves — are observable without touching an
+    /// audio device.
+    ///
+    /// Silent when no `[notifications] sound` is configured, and when
+    /// `focus_mode` is on: focus mode means nothing interrupts, and a sound is
+    /// the most interrupting thing there is. The `enabled = false` case never
+    /// reaches here — the master switch drops the notification first.
+    pub(crate) fn notification_cue_request(&self) -> Option<crate::media::audio::PlaybackRequest> {
+        if self.notifications_focus_mode {
+            return None;
+        }
+        let source = self.notifications_sound.as_ref()?;
+        Some(crate::media::audio::PlaybackRequest {
+            source: source.clone(),
+            volume: 1.0,
+        })
+    }
+
+    /// Play the configured arrival cue, if any. Returns whether a sound started.
+    ///
+    /// A cue that fails to play is logged and swallowed deliberately: a missing
+    /// or undecodable sound file must never cost the user the notification
+    /// itself.
+    fn play_notification_cue(&mut self) -> bool {
+        let Some(request) = self.notification_cue_request() else {
+            return false;
+        };
+        let source = request.source.clone();
+        match crate::media::audio::start_playback(request) {
+            Ok(session) => {
+                // Held on the app: dropping the session stops playback.
+                self.notification_cue_playback = Some(session);
+                true
+            }
+            Err(error) => {
+                log::warn!("notify: cue playback failed source={source}: {error}");
+                false
+            }
+        }
+    }
+
     /// Persist current pending notifications to `config_dir()/notifications.json`.
     pub(crate) fn save_notifications(&self) {
         save_pending_notifications_to(

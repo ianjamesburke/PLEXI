@@ -696,21 +696,14 @@ fn main() -> eframe::Result {
                             eprintln!("{msg}");
                             std::process::exit(1);
                         }
-                        let parsed_scope: Option<crate::app_protocol::NotifyScope> =
-                            match scope.as_deref() {
-                                None | Some("global") => None,
-                                Some("window") => Some(crate::app_protocol::NotifyScope::Window),
-                                Some("context") => Some(crate::app_protocol::NotifyScope::Context),
-                                Some(other) => {
-                                    let msg = format!(
-                                    "error: --scope must be window, context, or global — got {:?}",
-                                    other
-                                );
-                                    log::warn!("notify:cli: {msg}");
-                                    eprintln!("{msg}");
-                                    std::process::exit(1);
-                                }
-                            };
+                        let parsed_scope = match cli::parse_notify_scope(scope.as_deref()) {
+                            Ok(parsed) => parsed,
+                            Err(msg) => {
+                                log::warn!("notify:cli: {msg}");
+                                eprintln!("{msg}");
+                                std::process::exit(1);
+                            }
+                        };
                         log::info!(
                             "notify:cli: host_actions={} merged into choices",
                             host_actions.len()

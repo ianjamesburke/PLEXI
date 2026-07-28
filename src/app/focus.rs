@@ -963,36 +963,35 @@ impl PlexiApp {
                     .map(|d| d.as_millis())
                     .unwrap_or(0)
             );
-            self.pending_notifications.push(PendingNotification {
-                notify_id: notify_id.clone(),
-                sender_pane_id: 0,
-                source_context_id: 0,
-                source_window_id: 0,
-                level: "error".to_string(),
-                title: "Config Error".to_string(),
-                body: error_msg,
-                kind: crate::app_protocol::NotifyKind::Message,
-                options: vec![],
-                input_prompt: None,
-                required: false,
-                priority: 100,
-                scope: crate::app_protocol::NotifyScope::Global,
-                image_inline: None,
-                image_pipe_id: None,
-                response_file: None,
-                timeout_secs: None,
-                on_dismiss: None,
-                enqueued_at: std::time::Instant::now(),
-                tombstoned: false,
-                deliver_after: None,
-            });
-            self.save_notifications();
-            if !self.notifications_focus_mode {
-                self.show_notification_modal = true;
-                if self.current_notify_id.is_none() {
-                    self.current_notify_id = Some(notify_id);
-                }
-            }
+            self.enqueue_notification(
+                crate::app::notifications::NotifySource::HostInternal,
+                PendingNotification {
+                    notify_id,
+                    sender_pane_id: 0,
+                    source_context_id: 0,
+                    source_window_id: 0,
+                    level: "error".to_string(),
+                    title: "Config Error".to_string(),
+                    body: error_msg,
+                    kind: crate::app_protocol::NotifyKind::Message,
+                    options: vec![],
+                    input_prompt: None,
+                    required: false,
+                    priority: 100,
+                    // A broken config is not a property of one context — it
+                    // affects the whole workspace, so this stays the explicit
+                    // global case rather than taking the shared default.
+                    scope: crate::app_protocol::NotifyScope::Global,
+                    image_inline: None,
+                    image_pipe_id: None,
+                    response_file: None,
+                    timeout_secs: None,
+                    on_dismiss: None,
+                    enqueued_at: std::time::Instant::now(),
+                    tombstoned: false,
+                    deliver_after: None,
+                },
+            );
             return;
         }
 
@@ -1058,6 +1057,7 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.interrupt_threshold)
             .unwrap_or(100);
+        self.notifications_sound = fresh.notifications.as_ref().and_then(|n| n.sound.clone());
 
         self.focus_history_depth = fresh.focus_history_depth.unwrap_or(100);
 

@@ -2009,10 +2009,6 @@ impl PlexiApp {
                 scope,
                 ..
             } => {
-                if !self.notifications_enabled {
-                    log::info!("pane_ipc: notify dropped — notifications disabled");
-                    return;
-                }
                 let internal_id = format!(
                     "__host__:{}",
                     std::time::SystemTime::now()
@@ -2027,46 +2023,34 @@ impl PlexiApp {
                     scope,
                     response_file
                 );
-                crate::host::event_log::emit(
-                    crate::host::event_log::HostEvent::NotificationPosted {
-                        id: internal_id.clone(),
+                self.enqueue_notification(
+                    crate::app::notifications::NotifySource::Cli,
+                    PendingNotification {
+                        notify_id: internal_id,
+                        sender_pane_id: 0,
+                        source_context_id: self.router.active().context_id,
+                        source_window_id: self.windows[self.active_window].window_id,
+                        // Unscoped `plexi notify` belongs to the context that
+                        // produced it. `--scope global` is the opt-in.
+                        scope: scope.unwrap_or_default(),
+                        level: level.clone(),
                         title: title.clone(),
-                        urgency: level.clone(),
-                        timestamp: crate::host::event_log::now_timestamp(),
+                        body: body.clone(),
+                        kind: kind.clone(),
+                        options: options.clone(),
+                        input_prompt: input_prompt.clone(),
+                        required: *required,
+                        priority: *priority,
+                        image_inline: image_inline.clone(),
+                        image_pipe_id: image_pipe_id.clone(),
+                        response_file: response_file.clone(),
+                        timeout_secs: *timeout_secs,
+                        on_dismiss: on_dismiss.clone(),
+                        enqueued_at: std::time::Instant::now(),
+                        tombstoned: false,
+                        deliver_after: None,
                     },
                 );
-                self.pending_notifications.push(PendingNotification {
-                    notify_id: internal_id.clone(),
-                    sender_pane_id: 0,
-                    source_context_id: self.router.active().context_id,
-                    source_window_id: self.windows[self.active_window].window_id,
-                    scope: scope.unwrap_or(crate::app_protocol::NotifyScope::Global),
-                    level: level.clone(),
-                    title: title.clone(),
-                    body: body.clone(),
-                    kind: kind.clone(),
-                    options: options.clone(),
-                    input_prompt: input_prompt.clone(),
-                    required: *required,
-                    priority: *priority,
-                    image_inline: image_inline.clone(),
-                    image_pipe_id: image_pipe_id.clone(),
-                    response_file: response_file.clone(),
-                    timeout_secs: *timeout_secs,
-                    on_dismiss: on_dismiss.clone(),
-                    enqueued_at: std::time::Instant::now(),
-                    tombstoned: false,
-                    deliver_after: None,
-                });
-                self.save_notifications();
-                let should_auto_open = !self.notifications_focus_mode
-                    && *priority >= self.notifications_interrupt_threshold;
-                if should_auto_open {
-                    self.show_notification_modal = true;
-                    if self.current_notify_id.is_none() {
-                        self.current_notify_id = Some(internal_id);
-                    }
-                }
             }
             crate::app_protocol::AppRequest::CreateContext {
                 root,

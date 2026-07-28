@@ -758,6 +758,13 @@ pub struct NotificationsConfig {
     /// interrupt. Set to 0 to auto-open everything; set to 201 to match
     /// `focus_mode = true`.
     pub interrupt_threshold: Option<u32>,
+    /// Path to an audio file (WAV, MP3, FLAC, OGG) played once when a
+    /// notification arrives, so an agent waiting on input can pull a human
+    /// back while Plexi is in the background. Unset (the default) means no
+    /// sound. `enabled = false` drops the notification before the cue, and
+    /// `focus_mode = true` suppresses the cue — a sound is the most
+    /// interrupting thing there is.
+    pub sound: Option<String>,
 }
 
 #[derive(Deserialize, Default, Clone)]

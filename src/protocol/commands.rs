@@ -159,7 +159,7 @@ pub enum AppRequest {
         response_file: Option<String>,
         /// CLI-only: notification visibility scope. Apps never set this — their
         /// scope comes from `manifest.toml::[launch] notification_scope`.
-        /// Omit for backwards-compatible global behaviour.
+        /// Omit to take `NotifyScope::default()`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<NotifyScope>,
     },
@@ -1243,17 +1243,24 @@ pub enum ArtifactOpenMode {
 /// Host-side enum. Apps do NOT emit this on the wire — scope is a per-app
 /// user-facing policy declared in `manifest.toml::[launch] notification_scope`,
 /// resolved by the host at dispatch time. Apps never think about it.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyScope {
-    /// Only visible when the source window is the active window. Default.
+    /// Only visible when the source window is the active window.
     /// In the current single-window-per-context model this is equivalent to
     /// `Context`; the distinction matters when multi-window contexts land.
     Window,
     /// Visible whenever the source context is the active context (sidebar
     /// item), regardless of which window page is showing.
+    ///
+    /// The default for every surface that does not request a scope: a
+    /// notification belongs to the context that produced it, and following the
+    /// user into unrelated contexts is opt-in. Resolve an unset scope with
+    /// `unwrap_or_default()` — never with a locally chosen fallback, or the
+    /// surfaces drift apart again. The rule is stated once in `docs/CONFIG.md`.
+    #[default]
     Context,
-    /// Always visible regardless of which context is active.
+    /// Always visible regardless of which context is active. Deliberate opt-in.
     Global,
 }
 

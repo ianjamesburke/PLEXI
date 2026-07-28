@@ -89,7 +89,9 @@ context push [NAME]      Push a pane into a new sub-context. --pane-id ID (defau
 
 ```
 notify --title TEXT      Required. --body TEXT, --level info|warn|error,
-                         --timeout SECS (0=sticky), --scope window|context|global.
+                         --timeout SECS (0=sticky), --scope window|context|global
+                         (default context — stays in the sending context;
+                         pass --scope global to surface everywhere).
                          --choice "key:Label" (repeatable, blocks until chosen).
                          --host-action "key:action_type:arg" (runs even after caller exits).
 ```

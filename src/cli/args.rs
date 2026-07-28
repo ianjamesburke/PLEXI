@@ -165,8 +165,9 @@ pub enum Commands {
         /// How many seconds before the notification disappears (0 = stays until dismissed)
         #[arg(long, default_value = "0")]
         timeout: u64,
-        /// Which panes see this notification: window, context, or global (default: global)
-        #[arg(long, value_name = "SCOPE", default_value = "global", value_parser = ["window", "context", "global"])]
+        /// Which panes see this notification: window, context, or global
+        /// (default: context — the notification stays in the context that sent it)
+        #[arg(long, value_name = "SCOPE", value_parser = ["window", "context", "global"])]
         scope: Option<String>,
     },
 

@@ -1,3 +1,23 @@
+/// Parse the `--scope` flag into an explicit wire scope.
+///
+/// `None` (flag absent) stays `None` so the host applies
+/// `NotifyScope::default()`. Every named scope — **including `global`** — maps
+/// to an explicit `Some`: relying on the host's fallback to mean "global"
+/// silently reinterprets `--scope global` whenever that default changes.
+pub fn parse_notify_scope(
+    scope: Option<&str>,
+) -> Result<Option<crate::app_protocol::NotifyScope>, String> {
+    match scope {
+        None => Ok(None),
+        Some("window") => Ok(Some(crate::app_protocol::NotifyScope::Window)),
+        Some("context") => Ok(Some(crate::app_protocol::NotifyScope::Context)),
+        Some("global") => Ok(Some(crate::app_protocol::NotifyScope::Global)),
+        Some(other) => Err(format!(
+            "error: --scope must be window, context, or global — got {other:?}"
+        )),
+    }
+}
+
 pub fn notify_cli(
     title: &str,
     body: &str,

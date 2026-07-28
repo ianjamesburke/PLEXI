@@ -33,6 +33,7 @@ ghost_opacity = 0.75
 # enabled = true
 # focus_mode = false
 # interrupt_threshold = 100    # 0=LOW 50=NORMAL 100=HIGH 200=CRITICAL
+# sound = "/System/Library/Sounds/Ping.aiff"   # cue played on arrival; unset = silent
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
