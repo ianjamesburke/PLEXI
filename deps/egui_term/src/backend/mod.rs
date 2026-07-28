@@ -478,17 +478,18 @@ impl TerminalBackend {
     fn advance_cursor(
         &self,
         grid: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>,
-        _total: usize,
+        total: usize,
         _screen_lines: usize,
         history_size: usize,
+        is_alt_screen: bool,
     ) {
         use alacritty_terminal::index::{Column, Line};
         let mut state = self.capture_state.lock().unwrap();
+        let previous_cursor = self.lines_written.load(Ordering::Relaxed);
         let cursor_line = grid.cursor.point.line.0.max(0) as usize;
         let produced = history_size + cursor_line;
-        let previous_cursor = self.lines_written.load(Ordering::Relaxed);
-        let advanced_by_linefeed = produced > state.prev_produced;
-        if advanced_by_linefeed {
+        let advanced_by_stream = produced > state.prev_produced;
+        if advanced_by_stream {
             let delta = produced - state.prev_produced;
             self.lines_written
                 .fetch_add(delta as u64, Ordering::Relaxed);
@@ -508,11 +509,8 @@ impl TerminalBackend {
             }
         }
 
-        let snapshot = Self::capture_lines_from_grid(grid, _total);
-        if !advanced_by_linefeed
-            && !state.grid_snapshot.is_empty()
-            && snapshot != state.grid_snapshot
-        {
+        let snapshot = Self::capture_lines_from_grid(grid, total);
+        if is_alt_screen && !state.grid_snapshot.is_empty() && snapshot != state.grid_snapshot {
             let changed: Vec<String> = snapshot
                 .iter()
                 .zip(&state.grid_snapshot)
@@ -521,9 +519,12 @@ impl TerminalBackend {
                 })
                 .collect();
             if !changed.is_empty() {
-                let new_cursor = previous_cursor.saturating_add(changed.len() as u64);
+                let stream_cursor = self.lines_written.load(Ordering::Relaxed);
+                let redraw_cursor = previous_cursor.saturating_add(changed.len() as u64);
+                let new_cursor = stream_cursor.max(redraw_cursor);
                 self.lines_written.store(new_cursor, Ordering::Relaxed);
-                state.redraw_delta = Some((previous_cursor, new_cursor, changed));
+                state.redraw_delta =
+                    Some((previous_cursor, new_cursor, changed));
             }
         } else {
             state.redraw_delta = None;
@@ -601,7 +602,14 @@ impl TerminalBackend {
         let screen_lines = grid.screen_lines();
         let history_size = grid.history_size();
         let total = screen_lines + history_size;
-        self.advance_cursor(&grid, total, screen_lines, history_size);
+        let is_alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
+        self.advance_cursor(
+            &grid,
+            total,
+            screen_lines,
+            history_size,
+            is_alt_screen,
+        );
         let lw = self.lines_written.load(Ordering::Relaxed);
         let captured = Self::capture_last_content_lines(grid, n);
         (captured, lw)
@@ -621,12 +629,19 @@ impl TerminalBackend {
         let screen_lines = grid.screen_lines();
         let history_size = grid.history_size();
         let total = screen_lines + history_size;
-        self.advance_cursor(&grid, total, screen_lines, history_size);
+        let is_alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
+        self.advance_cursor(
+            &grid,
+            total,
+            screen_lines,
+            history_size,
+            is_alt_screen,
+        );
         let lines_written = self.lines_written.load(Ordering::Relaxed);
         if lines_written == 0 {
             return (Vec::new(), 0, false);
         }
-        if let Some((redraw_cursor, new_cursor, lines)) = self
+        if let Some((_, new_cursor, lines)) = self
             .capture_state
             .lock()
             .unwrap()
@@ -634,8 +649,19 @@ impl TerminalBackend {
             .as_ref()
             .filter(|(redraw_cursor, _, _)| *redraw_cursor == cursor)
         {
-            let _ = redraw_cursor;
             return (lines.clone(), *new_cursor, false);
+        }
+        if is_alt_screen && cursor > 0 && cursor < lines_written {
+            // Alternate-screen redraws do not enter scrollback. If another
+            // capture consumer advanced the snapshot beyond this cursor, the
+            // exact delta is no longer reconstructable; return the full
+            // visible frame and say so instead of silently reporting a
+            // scrollback-shaped partial delta.
+            return (
+                Self::capture_last_content_lines(grid, total),
+                lines_written,
+                true,
+            );
         }
 
         let oldest_available = lines_written.saturating_sub(total as u64);
@@ -1431,7 +1457,7 @@ mod tests {
             TerminalBackend::new(1, ctx, tx, settings).expect("spawn backend");
 
         backend.process_command(BackendCommand::Write(
-            b"stty -echo; printf '\\033[?1049h\\033[Hframe-one\\nstatus-one'\n".to_vec(),
+            b"stty -echo; printf '\\033[?1049h\\033[Hframe-one\\nstatus-one'; read _; printf '\\033[Hframe-two\\nstatus-two'; read _; printf '\\033[2;1Hstatus-three'; read _; printf '\\033[1;1Hframe-four\\033[3;1Hstatus-four'; read _; printf '\\033[Hframe-five'; read _; printf '\\033[Hframe-six'; sleep 5\n".to_vec(),
         ));
         wait_for(&backend, "status-one");
         let (_initial, cursor, missed) = backend.capture_lines_since(0);
@@ -1441,9 +1467,7 @@ mod tests {
         // A TUI paints the next frame at the same coordinates and leaves the
         // terminal cursor on the same row. No shell-pane linefeed accounting
         // signal changes, but the visible content is entirely new.
-        backend.process_command(BackendCommand::Write(
-            b"printf '\\033[Hframe-two\\nstatus-two'\n".to_vec(),
-        ));
+        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
         wait_for(&backend, "status-two");
 
         let (lines, new_cursor, missed) = backend.capture_lines_since(cursor);
@@ -1456,6 +1480,54 @@ mod tests {
             lines.iter().any(|line| line.contains("frame-two"))
                 && lines.iter().any(|line| line.contains("status-two")),
             "delta must include the redrawn TUI frame, got: {lines:?}"
+        );
+
+        // The returned redraw cursor must itself round-trip. A later repaint
+        // that changes only one status row returns only that row, rather than
+        // the whole alternate screen or another empty delta.
+        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
+        wait_for(&backend, "status-three");
+        let (next_lines, final_cursor, missed) =
+            backend.capture_lines_since(new_cursor);
+        assert!(!missed);
+        assert!(final_cursor > new_cursor);
+        assert_eq!(
+            next_lines,
+            vec!["status-three".to_string()],
+            "repeated in-place redraw must return exactly its changed row"
+        );
+
+        // A redraw can also leave the cursor on a different row. That cursor
+        // motion must not suppress the changed-grid delta.
+        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
+        wait_for(&backend, "status-four");
+        let (moved_lines, moved_cursor, missed) =
+            backend.capture_lines_since(final_cursor);
+        assert!(!missed);
+        assert!(moved_cursor > final_cursor);
+        assert_eq!(
+            moved_lines,
+            vec!["frame-four".to_string(), "status-four".to_string()],
+            "cursor motion must preserve all repainted rows"
+        );
+
+        // Another capture consumer may advance through more than one redraw
+        // before this cursor is polled. Alternate-screen history cannot
+        // reconstruct those intermediate frames, so return the current full
+        // frame with `missed=true` rather than a silent partial delta.
+        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
+        wait_for(&backend, "frame-five");
+        let _ = backend.capture_lines_with_cursor(200);
+        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
+        wait_for(&backend, "frame-six");
+        let _ = backend.capture_lines_with_cursor(200);
+        let (stale_lines, stale_new_cursor, missed) =
+            backend.capture_lines_since(moved_cursor);
+        assert!(missed);
+        assert!(stale_new_cursor > moved_cursor);
+        assert!(
+            stale_lines.iter().any(|line| line.contains("frame-six")),
+            "stale alternate-screen cursor must receive the current full frame"
         );
     }
 }

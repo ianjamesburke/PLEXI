@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.3.0"
+skill_version: "4.4.0"
 plexi_version: "0.2.0"
 last_verified: "2026-07-28"
 ---
@@ -47,7 +47,10 @@ pane key ID KEY          Send a keypress. Named: enter, escape, space, up, down,
                          backspace. Chords: ctrl+c.
 pane command ID TEXT -e  Send text + Enter in one step (terminal panes only).
 pane capture [ID]        Last N lines as JSON. --lines N (default 50), --from-cursor CURSOR,
-                         --full-output.
+                         --full-output. --plain prints raw lines only on stdout and the next
+                         cursor on stderr; --plain and --from-cursor compose.
+pane status ID           One host-derived JSON verdict: working, idle, blocked, or unknown,
+                         with high/low confidence and raw agent/status-bar/buffer evidence.
 pane self                Print current pane's ID.
 pane info                Print current pane details as JSON.
 pane state ID            App panes: L1 UiNode tree JSON. Terminal panes: simple status object.
@@ -204,6 +207,8 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 - **Never** run `workspace init` from `~` -- collides with profile dir at `~/.plexi/`
 - `pane send ID "text\n"` submits in **shell** panes but does **not** submit Claude Code prompts -- `--submit` is the sanctioned path into an agent TUI
 - `pane slot wait` exits 2 on timeout and 0 on match -- branch on the exit code, never parse stderr
+- `pane capture --plain` reserves stdout for captured text; read `cursor=N` from stderr when advancing a delta loop
+- `pane status ID` is the single-call corroboration path when a pane slot is missing or stale; `unknown`/`low` means escalate instead of guessing
 - `pane state` returns L1 UiNode tree for app panes; returns a simple status object for terminal panes
 - `pane focus` moves what the user **sees**, not where the agent runs -- the agent stays in its own pane
 - `app open --mcp` and `--cli` are mutually exclusive with TYPE_ID
@@ -224,26 +229,25 @@ plexi pane send $TARGET "your message here"
 plexi pane key $TARGET enter
 ```
 
-### Wait for idle (scrollback stops changing)
+### Check whether an agent pane is idle
 
 ```bash
-PREV=""
-until [ -n "$PREV" ] && [ "$PREV" = "$(plexi pane capture $TARGET --lines 3)" ]; do
-  PREV=$(plexi pane capture $TARGET --lines 3)
-  sleep 3
-done
-plexi pane capture $TARGET --lines 80
+plexi pane status "$TARGET"
 ```
 
-Start capture at `--lines 80`. Step up to `--lines 150` only if the response is clearly truncated. Never go higher.
+Trust `idle` only with `high` confidence. Treat `unknown` or `low` confidence as an escalation signal, not permission to guess from repeated captures.
 
 ### Cursor-based incremental capture
 
 ```bash
-FIRST=$(plexi pane capture $TARGET --lines 1)
+CURSOR_FILE=$(mktemp)
+plexi pane capture "$TARGET" --lines 1 --plain 2>"$CURSOR_FILE"
+CURSOR=$(sed -n 's/^cursor=//p' "$CURSOR_FILE")
 # ... wait for new output ...
-plexi pane capture $TARGET --from-cursor "$CURSOR_FROM_PREVIOUS"
+plexi pane capture "$TARGET" --from-cursor "$CURSOR" --plain 2>"$CURSOR_FILE"
 ```
+
+Captured text is stdout. The next `cursor=N` marker is stderr; strip the prefix before passing it to the next `--from-cursor`.
 
 ### Blocking notification (waits for user choice)
 

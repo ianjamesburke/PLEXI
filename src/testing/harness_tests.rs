@@ -66,6 +66,56 @@ fn read_json_response(path: &str) -> serde_json::Value {
 }
 
 #[test]
+fn pane_status_request_routes_through_host_and_returns_composite_evidence() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_focused_terminal();
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane_id)
+        .expect("terminal pane")
+        .set_agent(Some(crate::app_protocol::PaneAgentState {
+            pane_id,
+            state: crate::app_protocol::AgentState::Working,
+            agent: "codex".to_string(),
+            detail: Some("Bash(cargo test)".to_string()),
+            session_id: None,
+        }));
+
+    let response_file = temp_response(tmp.path(), "pane-status");
+    h.inject_ipc(AppRequest::PaneStatus {
+        pane_id,
+        response_file: response_file.clone(),
+    });
+    h.run_frames(1);
+
+    let response = read_json_response(&response_file);
+    assert_eq!(response["verdict"], "working");
+    assert_eq!(response["confidence"], "high");
+    assert_eq!(response["agent_state"], "working");
+    assert_eq!(response["detail"], "Bash(cargo test)");
+    assert!(response.get("status_bar").is_some());
+    assert!(response.get("status_bar_truncated").is_some());
+    assert!(response.get("last_buffer_line").is_some());
+}
+
+#[test]
+fn pane_status_request_fails_loudly_for_unknown_pane() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let response_file = temp_response(tmp.path(), "pane-status-missing");
+    h.inject_ipc(AppRequest::PaneStatus {
+        pane_id: u64::MAX,
+        response_file: response_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(
+        read_json_response(&response_file)["error"],
+        format!("pane {} not found", u64::MAX)
+    );
+}
+
+#[test]
 fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let note = tmp.path().join("note.md");

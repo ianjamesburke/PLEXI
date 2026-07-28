@@ -738,6 +738,7 @@ Control panes — list, focus, send input, capture output, and more
 | `self` | Print the id of the pane you are currently in |
 | `info` | Print details about the current pane (or the previously focused pane) as JSON |
 | `capture` | Capture the last N lines of a pane's output as a JSON array |
+| `status` | Report one composite working, idle, blocked, or unknown verdict as JSON |
 | `key` | Send a key press to a pane |
 | `drop` | Drop a local file or image URL onto a pane |
 | `click` | Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation |
@@ -853,6 +854,15 @@ Example: plexi pane capture --lines 50 42
 | `--lines` | string | no | How many lines to read from the end of the output Default: `50`. |
 | `--full-output` | flag | no | Preserve trailing empty lines (by default they are stripped) |
 | `--from-cursor` | string | no | Read only lines written after this cursor value. Get the cursor from a previous capture response. When set, the response is always JSON object format |
+| `--plain` | flag | no | Print only captured lines on stdout. The next cursor is printed to stderr |
+
+### `plexi pane status`
+
+Report one composite working, idle, blocked, or unknown verdict as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id to inspect |
 
 ### `plexi pane key`
 

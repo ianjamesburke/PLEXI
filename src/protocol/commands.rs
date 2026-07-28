@@ -2963,6 +2963,27 @@ mod tests {
     }
 
     #[test]
+    fn pane_status_command_round_trips_serde() {
+        let json =
+            r#"{"type":"pane_status","pane_id":7,"response_file":"status.json"}"#;
+        let command: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &command {
+            AppRequest::PaneStatus {
+                pane_id,
+                response_file,
+            } => {
+                assert_eq!(*pane_id, 7);
+                assert_eq!(response_file, "status.json");
+            }
+            other => panic!("expected PaneStatus, got {other:?}"),
+        }
+        assert_eq!(
+            serde_json::to_value(command).expect("serialise")["type"],
+            "pane_status"
+        );
+    }
+
+    #[test]
     fn set_context_description_round_trips_serde() {
         let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
         let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");

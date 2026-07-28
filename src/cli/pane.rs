@@ -995,32 +995,45 @@ pub fn pane_capture_cli(
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-            eprintln!("error: {err}");
+    let parsed = match parse_capture_reply(&content) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("error: {error}");
             return 1;
         }
-        // Print cursor to stderr so callers can capture it without
-        // polluting the line stream.
-        if let Some(cursor) = v.get("cursor").and_then(|c| c.as_u64()) {
-            eprintln!("cursor={cursor}");
-        }
-        if plain {
-            let Some(lines) = v.get("lines").and_then(|lines| lines.as_array()) else {
-                eprintln!("error: pane capture response has no lines");
-                return 1;
-            };
-            for line in lines {
-                let Some(line) = line.as_str() else {
-                    eprintln!("error: pane capture response contains a non-text line");
-                    return 1;
-                };
-                println!("{line}");
-            }
-            return 0;
-        }
+    };
+    // The cursor is metadata, so it always stays off stdout. In `--plain`
+    // mode stdout is exactly the raw line stream; default JSON is unchanged.
+    eprintln!("cursor={}", parsed.cursor);
+    if plain {
+        print!("{}", plain_capture_body(&parsed.lines));
+        return 0;
     }
     print_json_output(&content)
+}
+
+#[derive(serde::Deserialize)]
+struct CaptureReply {
+    lines: Vec<String>,
+    cursor: u64,
+}
+
+fn parse_capture_reply(content: &str) -> Result<CaptureReply, String> {
+    let value: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("invalid pane capture response: {error}"))?;
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        return Err(error.to_string());
+    }
+    serde_json::from_value(value).map_err(|error| format!("invalid pane capture response: {error}"))
+}
+
+fn plain_capture_body(lines: &[String]) -> String {
+    let mut body = String::new();
+    for line in lines {
+        body.push_str(line);
+        body.push('\n');
+    }
+    body
 }
 
 /// `plexi pane status <id>`
@@ -1039,13 +1052,32 @@ pub fn pane_status_cli(pane_id: u64) -> i32 {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
-            eprintln!("error: {error}");
-            return 1;
-        }
+    if let Err(error) = validate_status_reply(&content) {
+        eprintln!("error: {error}");
+        return 1;
     }
     print_json_output(&content)
+}
+
+fn validate_status_reply(content: &str) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("invalid pane status response: {error}"))?;
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        return Err(error.to_string());
+    }
+    for field in [
+        "verdict",
+        "confidence",
+        "agent_state",
+        "status_bar",
+        "status_bar_truncated",
+        "last_buffer_line",
+    ] {
+        if value.get(field).is_none() {
+            return Err(format!("invalid pane status response: missing {field}"));
+        }
+    }
+    Ok(())
 }
 
 /// `plexi pane state <id>`
@@ -1240,19 +1272,131 @@ mod slot_write_tests {
 
     #[test]
     fn ack_replace_reports_byte_count() {
-        assert_eq!(slot_write_ack("status", 4, false), "slot \"status\" <- 4 bytes");
+        assert_eq!(
+            slot_write_ack("status", 4, false),
+            "slot \"status\" <- 4 bytes"
+        );
     }
 
     #[test]
     fn ack_append_uses_append_arrow() {
-        assert_eq!(slot_write_ack("status", 12, true), "slot \"status\" +<- 12 bytes");
+        assert_eq!(
+            slot_write_ack("status", 12, true),
+            "slot \"status\" +<- 12 bytes"
+        );
     }
 
     #[test]
     fn empty_slot_name_exits_nonzero() {
         // Must fail before any socket contact — no PLEXI_PANE_ID needed.
         assert_eq!(pane_slot_write_cli("", Some("x"), false, true, Some(7)), 1);
-        assert_eq!(pane_slot_write_cli("   ", Some("x"), false, true, Some(7)), 1);
+        assert_eq!(
+            pane_slot_write_cli("   ", Some("x"), false, true, Some(7)),
+            1
+        );
+    }
+}
+
+#[cfg(test)]
+mod capture_and_status_tests {
+    use super::*;
+    use crate::cli::test_env::socket_env_guard;
+    use std::io::{BufRead as _, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    fn capture_payload_and_answer(
+        response: serde_json::Value,
+        run_cli: impl FnOnce() -> i32,
+    ) -> (i32, serde_json::Value) {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind socket");
+        env.set(&socket_path);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read payload");
+            let payload: serde_json::Value = serde_json::from_str(&line).expect("payload json");
+            crate::rpc::write_json_response(
+                payload["response_file"].as_str().expect("response_file"),
+                response,
+            );
+            tx.send(payload).ok();
+        });
+        let code = run_cli();
+        let payload = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("listener never received payload");
+        handle.join().expect("listener thread");
+        (code, payload)
+    }
+
+    #[test]
+    fn plain_body_is_only_raw_lines() {
+        let lines = vec!["alpha".to_string(), String::new(), "{not json}".to_string()];
+        assert_eq!(plain_capture_body(&lines), "alpha\n\n{not json}\n");
+        assert!(!plain_capture_body(&lines).contains(r#""lines""#));
+    }
+
+    #[test]
+    fn capture_plain_composes_with_from_cursor_in_one_request() {
+        let (code, payload) = capture_payload_and_answer(
+            serde_json::json!({
+                "lines": ["delta-one", "delta-two"],
+                "cursor": 44,
+                "missed": false,
+            }),
+            || pane_capture_cli(Some(42), 50, false, Some(39), true),
+        );
+        assert_eq!(code, 0);
+        assert_eq!(payload["type"], "capture_pane");
+        assert_eq!(payload["pane_id"], 42);
+        assert_eq!(payload["from_cursor"], 39);
+        assert_eq!(payload["full_output"], false);
+    }
+
+    #[test]
+    fn capture_host_error_exits_one() {
+        let (code, _) =
+            capture_payload_and_answer(serde_json::json!({"error": "pane 42 not found"}), || {
+                pane_capture_cli(Some(42), 50, false, None, true)
+            });
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn status_payload_and_success_shape_match_contract() {
+        let (code, payload) = capture_payload_and_answer(
+            serde_json::json!({
+                "verdict": "working",
+                "confidence": "high",
+                "agent_state": "working",
+                "detail": null,
+                "status_bar": "esc to interrupt",
+                "status_bar_truncated": false,
+                "last_buffer_line": "⏺ Bash(cargo test)",
+            }),
+            || pane_status_cli(42),
+        );
+        assert_eq!(code, 0);
+        assert_eq!(payload["type"], "pane_status");
+        assert_eq!(payload["pane_id"], 42);
+    }
+
+    #[test]
+    fn status_host_and_malformed_errors_exit_one() {
+        let (host_error, _) =
+            capture_payload_and_answer(serde_json::json!({"error": "pane 42 not found"}), || {
+                pane_status_cli(42)
+            });
+        assert_eq!(host_error, 1);
+        assert!(validate_status_reply("{}")
+            .expect_err("missing fields")
+            .contains("missing verdict"));
     }
 }
 

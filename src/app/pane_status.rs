@@ -36,21 +36,21 @@ pub(crate) fn composite_status(
     });
     let detail = agent.and_then(|state| state.detail.clone());
 
-    let (verdict, confidence) = if last_buffer_line
-        .as_deref()
-        .is_some_and(is_tool_call_tail)
-    {
+    let (verdict, confidence) = if last_buffer_line.as_deref().is_some_and(is_tool_call_tail) {
         ("working", "high")
     } else {
         match agent.map(|state| &state.state) {
             Some(AgentState::Working) => ("working", "high"),
-            Some(AgentState::Blocked) if detail.as_deref().is_some_and(command_detail) => {
+            Some(AgentState::Blocked)
+                if detail
+                    .as_deref()
+                    .is_some_and(|detail| !detail.trim().is_empty()) =>
+            {
                 ("blocked", "high")
             }
             Some(AgentState::Idle)
                 if status_bar.as_deref().is_some_and(|bar| {
-                    !status_bar_truncated
-                        && !bar.to_ascii_lowercase().contains("esc to interrupt")
+                    !status_bar_truncated && !bar.to_ascii_lowercase().contains("esc to interrupt")
                 }) && last_buffer_line
                     .as_deref()
                     .is_some_and(completed_reply_tail) =>
@@ -81,23 +81,39 @@ fn is_status_bar(line: &str) -> bool {
 
 fn is_tool_call_tail(line: &str) -> bool {
     let line = line.trim();
-    (line.starts_with('⏺') || line.starts_with('●') || line.starts_with('•'))
-        && line.contains('(')
-}
-
-fn command_detail(detail: &str) -> bool {
-    let detail = detail.trim();
-    !detail.is_empty()
-        && (detail.contains(' ')
-            || detail.contains('/')
-            || detail.contains('`')
-            || detail.contains('('))
+    let Some(body) = line
+        .strip_prefix('⏺')
+        .or_else(|| line.strip_prefix('●'))
+        .or_else(|| line.strip_prefix('•'))
+        .map(str::trim_start)
+    else {
+        return false;
+    };
+    const TOOL_PREFIXES: &[&str] = &[
+        "Bash(",
+        "Read(",
+        "Edit(",
+        "Write(",
+        "Grep(",
+        "Glob(",
+        "Task(",
+        "Skill(",
+        "WebFetch(",
+        "WebSearch(",
+        "TodoWrite(",
+        "Ran ",
+        "Running ",
+        "Called ",
+    ];
+    TOOL_PREFIXES.iter().any(|prefix| body.starts_with(prefix))
 }
 
 fn completed_reply_tail(line: &str) -> bool {
     let line = line.trim();
     !line.is_empty()
         && !line.starts_with('❯')
+        && !line.starts_with('›')
+        && !line.starts_with('⏵')
         && !line.starts_with('>')
         && !is_tool_call_tail(line)
         && !line.contains("Press up to edit queued messages")
@@ -166,6 +182,15 @@ mod tests {
         );
         assert_eq!(result["verdict"], "working");
         assert_eq!(result["confidence"], "high");
+
+        let codex = composite_status(
+            Some(&state),
+            &[
+                "bypass permissions on (shift+tab)".into(),
+                "• Ran cargo test --bin plexi".into(),
+            ],
+        );
+        assert_eq!(codex["verdict"], "working");
     }
 
     #[test]

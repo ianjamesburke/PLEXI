@@ -195,8 +195,7 @@ mod tests {
             "read ignored || true; printf 'child-out\\n'; printf 'child-err\\n' >&2; if test -t 0 || test -t 1 || test -t 2; then exit 9; fi; if printf tty >/dev/tty 2>/dev/null; then exit 10; fi",
         ]);
 
-        let status =
-            run_logged_command(&mut command, &log_path, "stdio-test").expect("run child");
+        let status = run_logged_command(&mut command, &log_path, "stdio-test").expect("run child");
         assert!(status.success(), "child inherited a terminal: {status}");
         let log = std::fs::read_to_string(&log_path).expect("read update log");
         assert!(log.contains("child-out"), "stdout missing from log: {log}");
