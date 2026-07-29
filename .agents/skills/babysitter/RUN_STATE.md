@@ -1,16 +1,17 @@
 # Babysitter run state — overwritten at each merge boundary
 
-updated: 2026-07-29T12:55Z (babysitter-18, Claude cm, pane 470)
-mode: stints 0624 0629 0608 0610 0611 0607 0605 0600 0604 0630 0615 0616 0617 0577
+updated: 2026-07-29T14:30Z (babysitter-19, Claude cm, pane 473)
+mode: stints 0629 0608 0610 0611 0607 0605 0600 0604 0630 0615 0616 0617 0577
 auto_merge: yes (RUN_CONFIG [authorization].auto_merge = true)
 
 merged: batch1 (0561+0563+0564) -> PR #2514. batch2 (0562) -> #2515. batch3 (0632) -> #2516.
-batch4 (0618+0619+0620+0621) -> #2517 as e89b796d. batch5 (0627) -> #2518 as 5c67bc5b,
-MERGED 11:42Z; 0627 verified done. batch5 = brief 11:45Z -> merge 11:42Z UTC (~1h),
-1 tester round, 0 fix rounds. Chore commit dcd525d9. Follow-up stint 0634 filed.
-active: none. worker-5 (471) and tester-10 (472) closed. Tree clean at dcd525d9/5c67bc5b.
+batch4 (0618+0619+0620+0621) -> #2517 as e89b796d. batch5 (0627) -> #2518 as 5c67bc5b. batch6 (0624) -> #2519 as ef8f4905,
+MERGED 12:26Z; 0624 verified done. batch6 = brief 13:05Z -> merge 12:26Z UTC (~55m),
+1 tester round, 0 fix rounds, no human check needed (all 7 scope items driven LIVE).
+batch5 (0627) merged 11:42Z, 1 tester round. Chore commit dcd525d9. Stint 0634 filed.
+active: none. worker-6 (474) and tester-11 (475) closed. Tree clean at ef8f4905.
 
-next: batch6 = 0624 SOLO (host-owned pane heartbeat; task-body tests). Then 0629. Then
+next: batch7 = 0629 SOLO. Then
 0608+0610+0611 (0609 may join ONLY if that worker proves it separable and it does not
 widen the batch). Then 0607. Then 0605+0600+0604+0630 (0630 = pane id badge missing when
 a window has only one pane, p2/S, repro-first). Then 0615+0616+0617. Then 0577.
@@ -45,4 +46,7 @@ enter often only settles the paste. A head bash loop that waits for pane-idle tr
 momentary idle between Codex tool calls; require idle twice ~20s apart, or use the slot.
 Codex rejects slash-form skill invocation; worker briefs name the Worker Mode contract in
 prose. The codex footer's "medium" is reasoning effort, NOT model tier — col IS large.
+new_capability: 0624 landed on alpha (ef8f4905) — `plexi pane heartbeat <id> --every <dur>
+--text "cycle"` is host-owned and idle-gated. NOT yet in the live beta binary; usable once
+beta rebuilds. It replaces the operator-as-clock half of RUN_CONFIG [cadence].
 quota: 88% of weekly Claude limit used as of 09:43Z, resets Jul 30 2pm America/Detroit.
