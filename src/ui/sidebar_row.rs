@@ -619,8 +619,8 @@ mod tests {
         });
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
                 draw_pips(ui, &dots, &colors, 1.0, false);
             });
         });
