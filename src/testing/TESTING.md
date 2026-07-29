@@ -6,6 +6,18 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 
 **If you'd assert on observable state (pane tree, app UI, pixels) → write a TOML scene. If you'd assert on a return value or internal invariant → write a Rust test.** Two layers, no overlap.
 
+## Wall-clock budgets
+
+Default `cargo test --bin plexi` proves correctness, not idle-machine speed.
+Any test that waits for a real subprocess, GPU readback, or host response must
+use `crate::testing::load_aware_timeout`: it scales the one-minute load average
+against available CPUs and caps the multiplier, so fleet contention does not
+look like a product failure while a genuine hang remains bounded. Tests that
+assert a frame-time or throughput ceiling are performance gates: name them
+`perf_gate_*`, mark them `#[ignore = "perf-gate: ..."]`, and run them explicitly
+on a quiet machine. Keep a non-ignored correctness counterpart that proves the
+operation eventually completes.
+
 | Layer | Tool | Lives in | Runs |
 |---|---|---|---|
 | Pure logic | `#[test]` unit tests | next to the code | `cargo test --bin plexi` |

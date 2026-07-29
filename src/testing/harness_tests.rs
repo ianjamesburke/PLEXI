@@ -1979,7 +1979,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "canvas-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2058,7 +2058,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "app did not report the click's canvas-space coordinate in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2113,7 +2113,7 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "canvas-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2186,7 +2186,7 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "app did not report a completed drag in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2242,7 +2242,7 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "canvas-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2314,7 +2314,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "event-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2335,7 +2335,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
         .wait_for_app_event(
             "probe.tick",
             Some("\"count\":1"),
-            std::time::Duration::from_secs(30),
+            crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
         )
         .expect("probe.tick event recorded on the timeline");
     assert_eq!(record.event, "probe.tick");
@@ -2389,7 +2389,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "node-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2484,7 +2484,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "app did not reflect the node-targeted click's mutation in time (last seen: {observed_count:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2630,7 +2630,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "key-event-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2681,7 +2681,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "app did not reflect the key event's mutation in time (last seen: {observed_count:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2726,7 +2726,7 @@ fn bare_escape_closes_focused_python_wasm_pane() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "key-event-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2810,7 +2810,7 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "node-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2875,7 +2875,7 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "click queued before a hot-reload relaunch must still land once the \
              relaunched pane is ready again (last seen count: {observed_count:?})"
         );
@@ -3285,7 +3285,7 @@ fn wait_for_text_label(h: &mut HostHarness, pane_id: PaneId, prefix: &str, expec
             return;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "timed out waiting for label '{expected}' (last seen: {seen:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -3330,7 +3330,7 @@ fn focused_text_input_receives_typing_and_enter_submits() {
             break;
         }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "text-input-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -5277,7 +5277,8 @@ mod routine_firing {
 
         // The ephemeral pane closes when `true` exits; the other stays. PTY
         // exit events are drained every frame, so pump frames until settled.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(15));
         while terminal_pane_ids(&h, 0).len() > 1 && std::time::Instant::now() < deadline {
             h.run_frames(1);
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -5629,7 +5630,8 @@ mod agent_boot {
     /// generously — the observed path needs real seconds: shell boot, the
     /// typed command, a full settle window, and a 1 Hz detector tick.
     fn pump_until_response(h: &mut HostHarness, response: &str, hidden: bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
         while !std::path::Path::new(response).exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));
             if hidden {
@@ -5878,7 +5880,9 @@ mod pane_send_submit_tests {
     /// How long a test will wait for a submit to resolve. Comfortably above the
     /// host's own ceiling (settle + two confirm windows) so a failure here means
     /// the host never answered, not that the test was impatient.
-    const RESOLVE_TIMEOUT: Duration = Duration::from_secs(25);
+    fn resolve_timeout() -> Duration {
+        crate::testing::load_aware_timeout(Duration::from_secs(25))
+    }
 
     fn last_pty_output_at(h: &HostHarness, pane: PaneId) -> Option<Instant> {
         h.app.windows[0]
@@ -5898,7 +5902,7 @@ mod pane_send_submit_tests {
     /// a shell that never wrote anything is already as settled as it gets.
     fn settle_terminal(h: &mut HostHarness, pane: PaneId) {
         let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(10) {
+        while started.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(10)) {
             h.run_frames(1);
             match last_pty_output_at(h, pane) {
                 Some(at) if at.elapsed() >= Duration::from_millis(600) => return,
@@ -5913,7 +5917,7 @@ mod pane_send_submit_tests {
     /// Pump frames until the pane's tail contains `needle`.
     fn wait_for_output(h: &mut HostHarness, pane: PaneId, needle: &str) {
         let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(10) {
+        while started.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(10)) {
             h.run_frames(1);
             if tail(h, pane).iter().any(|line| line.contains(needle)) {
                 return;
@@ -5932,7 +5936,8 @@ mod pane_send_submit_tests {
     /// logic-only passes, the ones an occluded host is limited to.
     fn resolve(h: &mut HostHarness, path: &str, hidden: bool) -> serde_json::Value {
         let started = Instant::now();
-        while started.elapsed() < RESOLVE_TIMEOUT {
+        let timeout = resolve_timeout();
+        while started.elapsed() < timeout {
             if hidden {
                 h.run_hidden_frames(1);
             } else {
@@ -5944,7 +5949,7 @@ mod pane_send_submit_tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("submit at {path} was never answered within {RESOLVE_TIMEOUT:?}");
+        panic!("submit at {path} was never answered within {timeout:?}");
     }
 
     fn submit(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {

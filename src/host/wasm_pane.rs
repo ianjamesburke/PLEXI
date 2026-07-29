@@ -3957,6 +3957,32 @@ mod tests {
     // default 480x360 size so a regression back to synchronous readback gets
     // caught before it lands.
     #[test]
+    fn async_readback_arrives_with_load_aware_budget() -> wasmtime::Result<()> {
+        let mut p = pong_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        let (w, h) = p.surface_size().expect("surface allocated after init");
+        let deadline = Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+
+        p.request_surface_readback()
+            .expect("queue async surface readback");
+        let img = loop {
+            if let Some(result) = p.take_surface_readback() {
+                break result.expect("async surface readback succeeds");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "async surface readback did not arrive by {deadline:?} at {w}x{h}"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(img.width(), w);
+        assert_eq!(img.height(), h);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "perf-gate: run explicitly on a quiet machine"]
     fn perf_gate_async_readback_within_budget() -> wasmtime::Result<()> {
         let mut p = pong_pane();
         p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
