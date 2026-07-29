@@ -1,0 +1,58 @@
+# Babysitter run configuration — THE single place for run-invariant settings.
+# Read on invocation and re-read at every worker/tester spawn. RUN_STATE.md is
+# pure per-run state (queue position, PRs, lessons); dispatch briefs carry only
+# the queue and true one-off overlays. Nothing below gets restated anywhere.
+
+[engines]
+# codex-first | claude-first. Workers AND heads. Fallback on usage-limit boot
+# error: respawn same brief on the other family's same tier, log it, stay
+# there for the rest of the run (re-probe next day).
+policy = "codex-first"          # workers and testers
+# HEADS RUN CLAUDE (cm) — stated loudly, ruled with Ian 2026-07-29 ~02:00:
+# the head role REQUIRES self-scheduling (ScheduleWakeup) and Codex has no
+# scheduler; a Codex head dies at every turn boundary and needs an external
+# heartbeat, which makes the operator a single point of failure (proven twice
+# tonight). This is a mechanics exception to codex-first, not a preference,
+# and it dissolves when stint 0628 (host-owned job supervisor) makes head
+# liveness a host invariant instead of an agent capability.
+head_engine = "claude"
+head_tier = "medium"
+
+[authorization]
+# Standing pre-authorization from Ian (2026-07-28). A run needs no per-dispatch
+# auto-merge grant. Flip to false to force per-merge approval.
+auto_merge = true
+
+[reservations]
+# Never queued unattended, no exceptions. Ian runs these attended.
+attended_only = ["0601", "0439"]
+
+[hazards]
+# Standing, run-independent. Every head enforces; briefs need not restate.
+# - NEVER set [notifications] sound in any config, any profile (audible-cue ban).
+# - Agent-run `security` commands against the login keychain: BANNED outright.
+#   `cargo test --bin plexi` is safe (InMemoryKeychain since #2504); pr-binaries,
+#   live hosts, and `plexi secret` calls are NOT covered — testers must not run them.
+# - Overnight == Ian may be asleep: no action that produces sound or dialogs.
+notes = "see comments above; comments are the contract"
+
+[briefing]
+# Codex heads/workers: no slash commands. First line of a worker brief:
+#   "Read .agents/skills/implement-stint/SKILL.md and follow its Worker Mode
+#    section as your contract. Batch these stints into ONE worktree and ONE PR: <ids>."
+# Send briefs via a file:  plexi pane send <id> "$(cat brief.txt)"  — inline
+# multiline text hits the collapsed-paste non-submit.
+style = "file-form, no slash commands for codex"
+
+[cadence]
+# Head liveness differs by engine — this is a CONTRACT, learned 2026-07-29 01:20
+# when a Codex head died at an idle prompt for 19 minutes:
+#   claude heads: self-schedule with ScheduleWakeup, ~15 min cycles.
+#   codex heads: CANNOT self-schedule. They end each check cycle's turn normally
+#     (status block + slot write) and go idle; the OPERATOR LOOP (the me-session
+#     watching the run) prompts "cycle" every 15 min — that heartbeat is the clock.
+#     Never poll to stay alive (context-kills the head); never blocking-sleep to
+#     idle (the turn still ends eventually and the loop dies silently).
+# Either engine: relay early when context feels heavy — baton to a fresh head.
+check_interval_seconds = 900
+codex_head_clock = "external-heartbeat"  # operator loop prompts 'cycle'

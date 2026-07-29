@@ -24,14 +24,9 @@ You are the **HEAD AGENT — a router and coordinator, not a coder.** You never 
 
 The tier is chosen at launch: pass the alias to `plexi pane new --agent` — there is no post-boot `/model` step. Judge difficulty from the stint bodies before spawning; when unsure, use medium, not small. `/model` exists solely for mid-run escalation on a warm pane. **Every fix round runs on the large tier** — see step 4.
 
-### Engine policy — which family a fresh worker/tester gets
+### Run configuration — `RUN_CONFIG.toml` is the single source
 
-Read `ENGINE_POLICY` (one line, next to this skill) **at every worker/tester spawn**, not once per run:
-
-- `codex-first` (the standing default): spawn Codex aliases (`cos`/`com`/`col`). If the pane boots into a usage/rate-limit error instead of a live prompt, close it, respawn the same brief on the Claude alias of the same tier, and log the fallback in `LOG.md` — that is expected degradation, not an incident. Once one Codex spawn has hit the limit, go straight to Claude for the rest of the run (re-probe Codex only on a new day).
-- `claude-first`: the mirror image — Claude aliases first, Codex as the fallback.
-
-The head itself stays on `cm` per "Model tiers" regardless of policy — continuity of the loop matters more than engine parity. A missing `ENGINE_POLICY` file means `codex-first`. Ian flips the policy by editing the file's one word; never hardcode an engine choice in a brief.
+**`RUN_CONFIG.toml` (next to this skill) owns every run-invariant setting**: engine policy (workers AND heads, with the usage-limit fallback rule), head tier, auto-merge authorization, attended-only reservations, standing hazards, and codex briefing conventions. Read it on invocation and re-read it at every worker/tester spawn. Never hardcode any of its values in a brief, and never restate its hazards in RUN_STATE.md — `RUN_STATE.md` is pure per-run state (queue position, batches, PRs, lessons), and dispatch briefs carry only the queue plus true one-off overlays. If `RUN_CONFIG.toml` is missing, stop and ask rather than assuming defaults. (The old one-word `ENGINE_POLICY` file is absorbed by `[engines].policy`; delete it when no live run still references it.)
 
 **Panes are single-use — NEVER recycle a worker or a tester across tasks.** A tester validates exactly one thing (one PR, or one re-check of a fix) and is then done. A worker owns exactly one batch, from brief through merge, and is then done. For the next task or validation, **close the old pane and open a brand-new one** — a warm transcript biases the read, bloats context, and silently degrades the agent. (`/compact` mid-batch during a fix round is fine — that's the same task; carrying a pane into a *new* task is not.)
 
