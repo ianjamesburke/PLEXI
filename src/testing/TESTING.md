@@ -9,14 +9,22 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 ## Wall-clock budgets
 
 Default `cargo test --bin plexi` proves correctness, not idle-machine speed.
-Any test that waits for a real subprocess, GPU readback, or host response must
-use `crate::testing::load_aware_timeout`: it scales the one-minute load average
-against available CPUs and caps the multiplier, so fleet contention does not
-look like a product failure while a genuine hang remains bounded. Tests that
-assert a frame-time or throughput ceiling are performance gates: name them
-`perf_gate_*`, mark them `#[ignore = "perf-gate: ..."]`, and run them explicitly
-on a quiet machine. Keep a non-ignored correctness counterpart that proves the
-operation eventually completes.
+Any test that waits for a real subprocess, filesystem watcher, GPU readback, or
+host response must route its bound through `crate::testing::load_aware_timeout`.
+It scales the one-minute load average against available CPUs and caps the
+multiplier, so fleet contention does not look like a product failure while a
+genuine hang remains bounded. This does not apply to a deliberately tiny timeout
+that is an input to a pure unit test; assert its returned error, not how quickly
+the scheduler ran it. Tests that assert a frame-time or throughput ceiling are
+performance gates: name them `perf_gate_*`, mark them
+`#[ignore = "perf-gate: ..."]`, and run only those gates on a quiet machine:
+
+```bash
+cargo test --bin plexi perf_gate_ -- --ignored
+```
+
+Keep a non-ignored correctness counterpart that proves the operation eventually
+completes.
 
 | Layer | Tool | Lives in | Runs |
 |---|---|---|---|

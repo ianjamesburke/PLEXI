@@ -4481,7 +4481,8 @@ mod tests {
             .send(&json!({"type": "render", "frame_id": 1}))
             .expect("send render");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(30));
         let mut messages = Vec::new();
         while std::time::Instant::now() < deadline {
             messages.extend(runtime.drain_messages().expect("valid runtime JSON"));

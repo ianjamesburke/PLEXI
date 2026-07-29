@@ -1085,7 +1085,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
 
     #[test]
     #[ignore = "perf-gate: run explicitly on a quiet machine"]
-    fn g11_gpu_render_pass_executes_on_device() -> Result<(), String> {
+    fn perf_gate_gpu_render_pass_executes_on_device() -> Result<(), String> {
         use gpu::Host;
         let mut ctx = gpu_ctx();
 

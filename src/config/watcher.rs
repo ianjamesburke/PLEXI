@@ -125,8 +125,8 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    fn poll_for_signal(rx: &MailboxReceiver<()>, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+    fn poll_for_signal(rx: &MailboxReceiver<()>, base_timeout: Duration) -> bool {
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(base_timeout);
         while Instant::now() < deadline {
             if rx.try_recv().is_ok() {
                 return true;
@@ -144,7 +144,9 @@ mod tests {
 
         let wake = Arc::new(RecordingWake::new());
         let (watcher, rx) = start(config.clone(), wake.clone()).expect("watcher should start");
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            150,
+        )));
 
         fs::write(&config, "# v2\n").unwrap();
         assert!(
@@ -167,7 +169,9 @@ mod tests {
         let (watcher, rx) =
             start(config, Arc::new(RecordingWake::new())).expect("watcher should start");
         // Drain any initial FSEvents from the config.toml creation above.
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            500,
+        )));
         while rx.try_recv().is_ok() {}
 
         fs::write(dir.path().join("other.txt"), "noise\n").unwrap();
@@ -186,7 +190,9 @@ mod tests {
 
         let (_watcher, rx) =
             start(config.clone(), Arc::new(RecordingWake::new())).expect("watcher should start");
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            150,
+        )));
 
         for i in 0..5 {
             fs::write(&config, format!("# v{i}\n")).unwrap();
@@ -196,7 +202,8 @@ mod tests {
         assert!(poll_for_signal(&rx, Duration::from_secs(3)));
 
         let mut extras = 0;
-        let deadline = Instant::now() + Duration::from_millis(500);
+        let deadline =
+            Instant::now() + crate::testing::load_aware_timeout(Duration::from_millis(500));
         while Instant::now() < deadline {
             if rx.try_recv().is_ok() {
                 extras += 1;
