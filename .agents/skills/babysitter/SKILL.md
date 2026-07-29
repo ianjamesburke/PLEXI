@@ -1,6 +1,6 @@
 ---
 name: babysitter
-description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude or Codex, launched via size-tier aliases) in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Checks in every 10 min. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
+description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude or Codex, launched via size-tier aliases) in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Waits for pane state event-driven. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
 source: local
 date_added: "2026-07-11"
 ---
@@ -22,7 +22,7 @@ You are the **HEAD AGENT — a router and coordinator, not a coder.** You never 
 | Medium | `cm` | `com` | most batches — the standard worker tier |
 | Large | `cl` | `col` | hard/ambiguous batches, any pane that is fumbling or looping, every fix round |
 
-The tier is chosen at launch: pass the alias as the shell command in `plexi pane command` — there is no post-boot `/model` step. Judge difficulty from the stint bodies before spawning; when unsure, use medium, not small. `/model` exists solely for mid-run escalation on a warm pane. **Every fix round runs on the large tier** — see step 4.
+The tier is chosen at launch: pass the alias to `plexi pane new --agent` — there is no post-boot `/model` step. Judge difficulty from the stint bodies before spawning; when unsure, use medium, not small. `/model` exists solely for mid-run escalation on a warm pane. **Every fix round runs on the large tier** — see step 4.
 
 ### Engine policy — which family a fresh worker/tester gets
 
@@ -135,7 +135,7 @@ Block on the primary status slot instead of polling it:
 plexi pane slot wait status <pane_id> --until ':(done|blocked|needs-input|failed)$' --timeout 600
 ```
 
-**Panes write; the head only reads.** The exact write syntax lives in one place — the pane-slot write contract in `.agents/skills/implement-stint/SKILL.md` (Worker Mode); point any pane there rather than restating it. The head's read verb is `plexi pane slot read <name> [pane_id]` — note its argument shape is *not* the write verb's.
+**Workers and testers write; the head reads.** A successor head also writes its own `head:working` takeover acknowledgement. The exact write syntax lives in one place — the pane-slot write contract in `.agents/skills/implement-stint/SKILL.md` (Worker Mode); point any pane there rather than restating it. The head's read verb is `plexi pane slot read <name> [pane_id]` — note its argument shape is *not* the write verb's.
 
 **Freshness rule.** A slot value is only trustworthy if it names the current step. Two enforcement mechanisms — workers get theirs from the Worker Mode contract; every tester brief must pick one:
 - Stamp a step/generation token into `status` on write (`step4:blocked`, `batch3-test:working`), OR
@@ -227,7 +227,7 @@ For each **batch**, in order:
    state: nominal — no fix rounds, next check ~13:02
    ```
 
-   Line 1: current local time + done/total for THIS run's queue. Line 2: what is mid-flight (batch, phase, who) and what is queued next. Line 3: one plain-English clause on health — `nominal`, or the active incident (`pane spawn outage — sub-agent workaround`), plus when the next check fires. Emit it even on a nothing-changed wake; skip it only on turns that are pure verdict-routing between wakes.
+   Line 1: current local time + done/total for THIS run's queue. Line 2: what is mid-flight (batch, phase, who) and what is queued next. Line 3: one plain-English clause on health — `nominal`, or the active incident (`pane spawn outage — sub-agent workaround`), plus the state being awaited. Emit it after each wait result; skip it only on turns that are pure verdict-routing.
 
    **EXCEPTION — a pane blocked on a permission prompt cannot update its own slot.** It is frozen mid-tool-call, so its last-written value (`…:working`) stays fresh-looking. After a timeout, query `pane status`; a `blocked` verdict with a Bash detail names a permission prompt. Approve once only after confirming the path is a self-created `/tmp` scratch dir. Codex aliases bypass most permissions but can still prompt on `rm -rf`.
 
@@ -270,7 +270,7 @@ For each **batch**, in order:
    - Full loop reference: `.agents/skills/drive-host/SKILL.md`.
    If a tester pane starts calling `screencapture` or a permission dialog shows up in its transcript, that's a sign it's improvising instead of following this brief — correct it immediately with the primitives above.
 
-4. **Route the verdict.** Check the tester the same 10-min way (direct `--lines 20` read; sub-agent only for a long report).
+4. **Route the verdict.** Wait on the tester's `verdict` slot; use a direct `--lines 20` read only as the fallback for an empty or stale slot, and a sub-agent only for a long report.
    - **Near-pass FAIL** ("gate incomplete, not a regression" — the tester's own findings pass but one check couldn't run, was driven against the wrong artifact, or a trace was expected-absent) → do **not** open a fix round. Spawn a fresh **micro-check tester** scoped to exactly the unfinished check. A fix round on a near-pass burns a compact + escalation + full re-validation for a bug that does not exist (proven live).
    - **Brief-induced false FAIL — YOUR bug, not the tester's.** When a tester reports FAIL *and* says the substance is correct ("the new prose correctly describes the implementation, **but** it violates the specified criterion"), you wrote a bad criterion. **Never write a mechanical proxy — a grep returning nothing, an exact string absence, a line count — as the pass criterion for a semantic requirement.** (Proven live: a grep-returns-nothing criterion failed a correct fix that legitimately kept the string inside a fenced example.) **Resolution: read the artifact yourself, overrule the FAIL on the record, log it as your error, and merge — do not open a fix round and do not make the worker satisfy a criterion you got wrong.** State the requirement semantically instead ("the header must not claim a nonexistent *authored manifest* key; showing the generated field is correct").
    - **Bugs found** → run the **fix-round protocol** on the worker, in order, before relaying anything:
@@ -349,11 +349,11 @@ The full sprint queue is never carried in context or in the baton — sprint-que
 1. Overwrite `RUN_STATE.md` per the template.
 2. Spawn the successor: `plexi pane new -n "babysitter-<N+1>" --agent cm` (the head's default tier).
 3. Send `/babysitter resume` once with `plexi pane send <id> "/babysitter resume" --submit`.
-4. **Wait for the takeover ack: poll `LOG.md`** (not the successor's screen) for its takeover line — the successor's first duty on resume is appending `HH:MM babysitter-<N+1> took over (after batch <N>, PR #<M>)` to `LOG.md`. File-poll beats screen-scrape: unambiguous, ~0 tokens.
-5. Ack seen → stop scheduling wakeups; if you are running in a pane, `plexi pane close <own pane id>` as your final act. If you are the initial head running in a user session (not a pane), just report the successor's pane id and end the loop on your side.
+4. **Wait for the takeover ack:** `plexi pane slot wait status <successor-id> --until '^head:working$' --timeout 180`. The successor writes that state as its first resume duty; the blocking, level-triggered read is the acknowledgement.
+5. Ack seen → stop waiting; if you are running in a pane, `plexi pane close <own pane id>` as your final act. If you are the initial head running in a user session (not a pane), just report the successor's pane id and end the loop on your side.
 6. **No ack within ~3 minutes** → inspect the successor once with `pane status`; if it is dead or wedged, close it, keep the run yourself, and retry the relay once at the next boundary. **Never close yourself before the ack** — an unconfirmed handoff orphans the run.
 
-**On `/babysitter resume` (you are the successor):** read `RUN_STATE.md`; append your takeover line to `LOG.md` (this is the ack — do it first); re-resolve the queue (`stint sprint show` for sprint mode, the `mode:` list otherwise); prune checked items from `HUMAN_CHECKS.md`; continue the loop at `next:`. Do not re-verify prior merges beyond what `RUN_STATE.md` claims — your predecessor already verified them with `gh`/`stint`; trust the baton, it exists so you start clean.
+**On `/babysitter resume` (you are the successor):** read `RUN_STATE.md`; write `status` = `head:working` with the pane-slot write contract (this is the ack — do it first), then append your takeover line to `LOG.md`; re-resolve the queue (`stint sprint show` for sprint mode, the `mode:` list otherwise); prune checked items from `HUMAN_CHECKS.md`; continue the loop at `next:`. Do not re-verify prior merges beyond what `RUN_STATE.md` claims — your predecessor already verified them with `gh`/`stint`; trust the baton, it exists so you start clean.
 
 ## Human-check queue — `HUMAN_CHECKS.md` (next to this SKILL.md)
 
@@ -403,7 +403,7 @@ Format (keep entries terse):
 
 When a pane reports it has hit a usage limit, parse the reset time and branch:
 
-- **Reset < 1 hour away** → wait. `ScheduleWakeup` for just past the reset, then resume that pane's task (send `enter` or re-send the prompt) and capture to confirm it picked back up.
+- **Reset < 1 hour away** → wait until just past the reset, then send a short resume prompt with `pane send --submit`; use its exit code as the submission confirmation.
 - **Reset ≥ 1 hour away** → don't idle the queue. Report the wall to the user with the reset time and ask how to proceed; they may want to switch accounts, drop to a cheaper model via `/model`, or pause the run.
 
 Applies to whichever pane hit the wall — worker or tester.
@@ -441,4 +441,4 @@ If `plexi pane send --help` does not list `--submit`, you are on a pre-build; us
 - **The run's state lives on disk, never only in context.** `RUN_STATE.md` (baton), `LOG.md` (telemetry), `HUMAN_CHECKS.md` (pending human validations), `.stint/` (the queue). Any head must be replaceable at any moment by `/babysitter resume`.
 - **Log as you go.** Timestamped events into `LOG.md` next to this skill; sprint recap at each sprint boundary (see Run log).
 - Verify state with `gh`/`stint`, not any pane's self-report.
-- Keep the 10-min cadence via `ScheduleWakeup`; nudge rather than wait passively.
+- Use `pane slot wait` for state transitions; on timeout, inspect `pane status` before nudging.
