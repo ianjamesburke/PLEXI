@@ -200,9 +200,9 @@ pub mod crawl;
 pub mod help;
 pub mod registry;
 pub mod setup;
-pub mod subprocess;
 #[cfg(test)]
 mod skill_surface;
+pub mod subprocess;
 #[cfg(test)]
 pub mod test_env;
 
@@ -439,7 +439,12 @@ pub(super) fn require_spawn_servicing_host(intent: &str) -> Result<(), i32> {
     if spawn_socket_accepting(&socket) {
         return Ok(());
     }
-    let channel = channel_label_from(crate::config::config_dir().file_name().and_then(|n| n.to_str()).unwrap_or(""));
+    let channel = channel_label_from(
+        crate::config::config_dir()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(""),
+    );
     log::warn!(
         "spawn_gate: refused '{intent}' — host not servicing pane spawns on channel {channel} (socket {socket:?})"
     );
@@ -523,7 +528,9 @@ const SOCKET_TRANSPORT_DEADLINE: std::time::Duration = std::time::Duration::from
 enum SocketTransportError {
     ConnectTimeout,
     Connect(std::io::Error),
-    WriteTimeout { bytes_written: usize },
+    WriteTimeout {
+        bytes_written: usize,
+    },
     Write {
         source: std::io::Error,
         bytes_written: usize,
@@ -561,9 +568,7 @@ fn wait_for_socket(
     }
 }
 
-fn classify_connect_wait(
-    result: std::io::Result<bool>,
-) -> Result<(), SocketTransportError> {
+fn classify_connect_wait(result: std::io::Result<bool>) -> Result<(), SocketTransportError> {
     match result {
         Ok(true) => Ok(()),
         Ok(false) => Err(SocketTransportError::ConnectTimeout),
@@ -596,8 +601,7 @@ fn connect_unix_deadline(
         target_os = "dragonfly"
     ))]
     {
-        addr.sun_len =
-            (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1) as u8;
+        addr.sun_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1) as u8;
     }
     for (dst, src) in addr.sun_path.iter_mut().zip(path.iter().copied()) {
         *dst = src as libc::c_char;
@@ -738,11 +742,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
     };
     let line = format!("{}\n", payload);
     let started = std::time::Instant::now();
-    match send_line_to_socket(
-        &socket_path,
-        line.as_bytes(),
-        SOCKET_TRANSPORT_DEADLINE,
-    ) {
+    match send_line_to_socket(&socket_path, line.as_bytes(), SOCKET_TRANSPORT_DEADLINE) {
         Ok(()) => {
             log::info!(
                 "cli: socket transport complete path={socket_path:?} bytes={} elapsed_ms={}",
@@ -814,9 +814,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
 
 #[cfg(test)]
 mod transport_deadline_tests {
-    use super::{
-        connect_unix_deadline, send_line_to_socket, SocketTransportError,
-    };
+    use super::{connect_unix_deadline, send_line_to_socket, SocketTransportError};
     use std::io::{BufRead as _, BufReader};
     use std::os::unix::net::UnixListener;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -907,7 +905,10 @@ mod transport_deadline_tests {
         });
         let payload = b"{\"type\":\"transport_exactly_once\"}\n";
         send_line_to_socket(&socket, payload, Duration::from_secs(1)).expect("send");
-        assert_eq!(handle.join().expect("listener"), String::from_utf8_lossy(payload));
+        assert_eq!(
+            handle.join().expect("listener"),
+            String::from_utf8_lossy(payload)
+        );
     }
 }
 
@@ -985,10 +986,9 @@ pub use open::{
 };
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
-    pane_drop_cli, pane_focus_cli, pane_info_cli, pane_key_cli, pane_list_cli, pane_self_cli,
-    pane_send_cli, pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli,
-    pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli, pane_state_cli,
-    pane_status_cli,
+    pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,
+    pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli,
+    pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli, pane_state_cli, pane_status_cli,
 };
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};

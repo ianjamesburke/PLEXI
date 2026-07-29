@@ -279,6 +279,7 @@ impl PlexiApp {
                             "cwd": cwd,
                             "agent": pane.agent(),
                             "slots": pane_slots_json(pane),
+                            "heartbeat": self.pane_heartbeat_json(*pane_id),
                         }));
                     }
                 }
@@ -348,6 +349,7 @@ impl PlexiApp {
                                     "cwd": cwd,
                                     "agent": agent,
                                     "slots": pane_slots_json(pane),
+                                    "heartbeat": self.pane_heartbeat_json(*pane_id),
                                 })
                             }
                             crate::host::pane::Pane::App(a) => {
@@ -362,6 +364,7 @@ impl PlexiApp {
                                     "manifest_id": a.manifest_id.clone(),
                                     "agent": agent,
                                     "slots": pane_slots_json(pane),
+                                    "heartbeat": self.pane_heartbeat_json(*pane_id),
                                 })
                             }
                             crate::host::pane::Pane::Portal(p) => {
@@ -459,7 +462,9 @@ impl PlexiApp {
                         log::warn!(
                             "pane_ipc: get_previous_pane_info: fewer than {steps} valid panes in history (found {hits})"
                         );
-                        format!("{{\"error\":\"not enough pane history (requested step {steps}, found {hits} valid entries)\"}}")
+                        format!(
+                            "{{\"error\":\"not enough pane history (requested step {steps}, found {hits} valid entries)\"}}"
+                        )
                     }
                 };
                 write_response(response_file, json_str.as_bytes());
@@ -1030,7 +1035,8 @@ impl PlexiApp {
                         let new_x = max_x.map(|x| x + 1).unwrap_or(1);
                         log::info!(
                             "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} target_win_idx={target_win_idx} context={ws_id} grid=({new_x},{active_y}) response_pane_id={response_pane_id} cwd={cwd_override:?} initial_cmd={initial_cmd:?} ephemeral={}",
-                            spec.from_pane_id, spec.ephemeral
+                            spec.from_pane_id,
+                            spec.ephemeral
                         );
                         self.create_page_at(
                             new_x,
@@ -1052,7 +1058,9 @@ impl PlexiApp {
                         let original_focused = self.windows[target_win_idx].focused_pane;
                         log::info!(
                             "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={target_win_idx} window_id={} response_pane_id={response_pane_id} cwd={cwd_override:?} initial_cmd={initial_cmd:?} ephemeral={}",
-                            spec.from_pane_id, self.windows[target_win_idx].window_id, spec.ephemeral
+                            spec.from_pane_id,
+                            self.windows[target_win_idx].window_id,
+                            spec.ephemeral
                         );
                         self.new_tab(
                             target_win_idx,
@@ -1076,11 +1084,16 @@ impl PlexiApp {
                         let (target_win, target_tile) = if let Some(from_id) = spec.from_pane_id {
                             match self.find_pane_in_any_window(from_id) {
                                 Some(loc) => {
-                                    log::info!("pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}", loc.0);
+                                    log::info!(
+                                        "pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}",
+                                        loc.0
+                                    );
                                     loc
                                 }
                                 None => {
-                                    log::warn!("pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane");
+                                    log::warn!(
+                                        "pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane"
+                                    );
                                     if let Some(tile) = self.windows[active]
                                         .focused_pane
                                         .or(self.windows[active].tree.root)
@@ -1090,7 +1103,9 @@ impl PlexiApp {
                                         // Active window is empty (windowless boot):
                                         // split_focused would no-op, so seed a root
                                         // pane in place instead of dropping the spawn.
-                                        log::info!("pane_ipc: spawn_pane terminal layout={layout_str} (empty active window — seeding root)");
+                                        log::info!(
+                                            "pane_ipc: spawn_pane terminal layout={layout_str} (empty active window — seeding root)"
+                                        );
                                         match self.seed_root_pane(
                                             initial_cmd.as_deref(),
                                             spec.ephemeral,
@@ -1161,7 +1176,10 @@ impl PlexiApp {
                             return;
                         };
                         let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
-                        log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} target_win={target_win} keep_focus={keep_focus}", spec.ephemeral);
+                        log::info!(
+                            "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
+                            spec.ephemeral
+                        );
                         response_pane_id = self.spawn_terminal_pane_at(
                             target_win,
                             target_tile,
@@ -1184,14 +1202,18 @@ impl PlexiApp {
                     {
                         match self.find_pane_in_any_window(from_id) {
                             Some((fw, ft)) => {
-                                log::info!("pane_ipc: spawn_pane path: targeting from_pane_id={from_id} win_idx={fw}");
+                                log::info!(
+                                    "pane_ipc: spawn_pane path: targeting from_pane_id={from_id} win_idx={fw}"
+                                );
                                 let saved = self.windows[fw].focused_pane;
                                 self.active_window = fw;
                                 self.set_window_focused_pane(fw, ft);
                                 (fw, saved)
                             }
                             None => {
-                                log::warn!("pane_ipc: spawn_pane path: from_pane_id={from_id} not found, using focused pane");
+                                log::warn!(
+                                    "pane_ipc: spawn_pane path: from_pane_id={from_id} not found, using focused pane"
+                                );
                                 (active, self.windows[active].focused_pane)
                             }
                         }
@@ -1229,14 +1251,18 @@ impl PlexiApp {
                     {
                         match self.find_pane_in_any_window(from_id) {
                             Some((fw, ft)) => {
-                                log::info!("pane_ipc: spawn_pane app: targeting from_pane_id={from_id} win_idx={fw}");
+                                log::info!(
+                                    "pane_ipc: spawn_pane app: targeting from_pane_id={from_id} win_idx={fw}"
+                                );
                                 let saved = self.windows[fw].focused_pane;
                                 self.active_window = fw;
                                 self.set_window_focused_pane(fw, ft);
                                 (fw, saved)
                             }
                             None => {
-                                log::warn!("pane_ipc: spawn_pane app: from_pane_id={from_id} not found, using focused pane");
+                                log::warn!(
+                                    "pane_ipc: spawn_pane app: from_pane_id={from_id} not found, using focused pane"
+                                );
                                 (active, self.windows[active].focused_pane)
                             }
                         }
@@ -1295,7 +1321,11 @@ impl PlexiApp {
                 submit,
                 response_file,
             } => {
-                log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} submit={submit} windows={} response_file={response_file:?}", text.len(), self.windows.len());
+                log::info!(
+                    "pane_ipc: kind=send_to_pane pane_id={pane_id} len={} submit={submit} windows={} response_file={response_file:?}",
+                    text.len(),
+                    self.windows.len()
+                );
                 let text_with_newlines = text.replace("\\n", "\n");
                 // Set when the reply is owed by `service_pending_submits`
                 // instead of by the write below.
@@ -1389,6 +1419,63 @@ impl PlexiApp {
                         ),
                     };
                     write_response(rf, json.as_bytes());
+                }
+            }
+            crate::app_protocol::AppRequest::PaneHeartbeat {
+                pane_id,
+                every_ms,
+                text,
+                while_idle_only,
+                off,
+                response_file,
+            } => {
+                let result: Result<serde_json::Value, String> = (|| {
+                    if *off {
+                        self.pane_heartbeats.remove(pane_id);
+                        self.save_workspace();
+                        log::info!("pane_heartbeat: pane_id={pane_id} disabled");
+                        Ok(serde_json::json!({"ok": true, "heartbeat": null}))
+                    } else {
+                        let every_ms = every_ms
+                            .ok_or_else(|| "--every is required unless --off is set".to_string())?;
+                        let text = text
+                            .clone()
+                            .ok_or_else(|| "--text is required unless --off is set".to_string())?;
+                        if every_ms == 0 {
+                            Err("--every must be greater than zero".to_string())
+                        } else if !self.windows.iter().any(|window| {
+                            window
+                                .panes
+                                .get(pane_id)
+                                .and_then(crate::host::pane::Pane::as_terminal)
+                                .is_some()
+                        }) {
+                            Err(format!("pane {pane_id} is not a terminal pane"))
+                        } else {
+                            let while_idle_only = while_idle_only.unwrap_or(true);
+                            self.pane_heartbeats.insert(
+                                *pane_id,
+                                crate::app::PaneHeartbeat {
+                                    every: std::time::Duration::from_millis(every_ms),
+                                    text,
+                                    while_idle_only,
+                                    next_fire: std::time::Instant::now()
+                                        + std::time::Duration::from_millis(every_ms),
+                                },
+                            );
+                            self.save_workspace();
+                            log::info!(
+                                "pane_heartbeat: pane_id={pane_id} configured every_ms={every_ms} while_idle_only={while_idle_only}"
+                            );
+                            Ok(self.pane_heartbeat_json(*pane_id))
+                        }
+                    }
+                })();
+                if let Some(response_file) = response_file {
+                    write_json_response(
+                        response_file,
+                        result.unwrap_or_else(|error| serde_json::json!({"error": error})),
+                    );
                 }
             }
             crate::app_protocol::AppRequest::KeyPane {
@@ -1631,13 +1718,12 @@ impl PlexiApp {
                                 modifiers: egui::Modifiers::default(),
                             },
                         ];
-                        self.pending_pane_inputs
-                            .entry(*pane_id)
-                            .or_default()
-                            .push(egui::RawInput {
+                        self.pending_pane_inputs.entry(*pane_id).or_default().push(
+                            egui::RawInput {
                                 events,
                                 ..Default::default()
-                            });
+                            },
+                        );
                     } else {
                         // Canvas/Python panes: the render branch
                         // (`wasm_render.rs`) picks the queued click up against
@@ -1777,8 +1863,7 @@ impl PlexiApp {
                             (Some([x, y]), None) => Ok(pane_rect.min + egui::vec2(*x, *y)),
                             (None, Some(node_id)) => {
                                 let state = app_pane.semantic_state();
-                                let Some(node) =
-                                    state.nodes.iter().find(|n| &n.id == node_id)
+                                let Some(node) = state.nodes.iter().find(|n| &n.id == node_id)
                                 else {
                                     return Err(format!(
                                         "drag {which}: node {node_id} not found in this pane's current tree"
@@ -1836,9 +1921,9 @@ impl PlexiApp {
                         frames.push_back(press(from_abs, true));
                         for i in 1..=steps {
                             frames.push_back(egui::RawInput {
-                                events: vec![egui::Event::PointerMoved(
-                                    lerp(i as f32 / (steps + 1) as f32),
-                                )],
+                                events: vec![egui::Event::PointerMoved(lerp(
+                                    i as f32 / (steps + 1) as f32,
+                                ))],
                                 ..Default::default()
                             });
                         }
@@ -1891,7 +1976,10 @@ impl PlexiApp {
                 full_output,
                 from_cursor,
             } => {
-                log::info!("pane_ipc: kind=capture_pane pane_id={pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} response_file={:?}", response_file);
+                log::info!(
+                    "pane_ipc: kind=capture_pane pane_id={pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} response_file={:?}",
+                    response_file
+                );
                 let result: Result<serde_json::Value, String> = match self
                     .windows
                     .iter()
@@ -1901,61 +1989,61 @@ impl PlexiApp {
                         log::warn!("pane_ipc: capture_pane: pane_id={pane_id} not found");
                         Err(format!("pane {pane_id} not found"))
                     }
-                    Some(pane) => {
-                        match pane.as_terminal() {
-                            None => {
-                                log::warn!("pane_ipc: capture_pane: pane_id={pane_id} is not a terminal pane");
-                                Err(format!("pane {pane_id} is not a terminal pane"))
-                            }
-                            Some(term) => {
-                                if let Some(cursor) = from_cursor {
-                                    let (mut captured_lines, new_cursor, missed) =
-                                        term.backend.capture_lines_since(*cursor);
-                                    if !full_output {
-                                        let trimmed = captured_lines
-                                            .iter()
-                                            .rposition(|l| !l.trim().is_empty())
-                                            .map(|pos| pos + 1)
-                                            .unwrap_or(0);
-                                        captured_lines.truncate(trimmed);
-                                    }
-                                    log::info!(
+                    Some(pane) => match pane.as_terminal() {
+                        None => {
+                            log::warn!(
+                                "pane_ipc: capture_pane: pane_id={pane_id} is not a terminal pane"
+                            );
+                            Err(format!("pane {pane_id} is not a terminal pane"))
+                        }
+                        Some(term) => {
+                            if let Some(cursor) = from_cursor {
+                                let (mut captured_lines, new_cursor, missed) =
+                                    term.backend.capture_lines_since(*cursor);
+                                if !full_output {
+                                    let trimmed = captured_lines
+                                        .iter()
+                                        .rposition(|l| !l.trim().is_empty())
+                                        .map(|pos| pos + 1)
+                                        .unwrap_or(0);
+                                    captured_lines.truncate(trimmed);
+                                }
+                                log::info!(
                                     "pane_ipc: capture_pane: cursor={cursor} new_cursor={new_cursor} missed={missed} lines={}",
                                     captured_lines.len()
                                 );
-                                    Ok(serde_json::json!({
-                                        "lines": captured_lines,
-                                        "cursor": new_cursor,
-                                        "missed": missed,
-                                    }))
-                                } else {
-                                    let (mut captured, lw) =
-                                        term.backend.capture_lines_with_cursor(*lines);
-                                    if !full_output {
-                                        let trimmed = captured
-                                            .iter()
-                                            .rposition(|l| !l.trim().is_empty())
-                                            .map(|pos| pos + 1)
-                                            .unwrap_or(0);
-                                        captured.truncate(trimmed);
-                                        log::info!(
+                                Ok(serde_json::json!({
+                                    "lines": captured_lines,
+                                    "cursor": new_cursor,
+                                    "missed": missed,
+                                }))
+                            } else {
+                                let (mut captured, lw) =
+                                    term.backend.capture_lines_with_cursor(*lines);
+                                if !full_output {
+                                    let trimmed = captured
+                                        .iter()
+                                        .rposition(|l| !l.trim().is_empty())
+                                        .map(|pos| pos + 1)
+                                        .unwrap_or(0);
+                                    captured.truncate(trimmed);
+                                    log::info!(
                                         "pane_ipc: capture_pane: stripped trailing empty lines, result len={}",
                                         captured.len()
                                     );
-                                    }
-                                    log::info!(
-                                        "pane_ipc: capture_pane: lines={} cursor={lw}",
-                                        captured.len()
-                                    );
-                                    Ok(serde_json::json!({
-                                        "lines": captured,
-                                        "cursor": lw,
-                                        "missed": false,
-                                    }))
                                 }
+                                log::info!(
+                                    "pane_ipc: capture_pane: lines={} cursor={lw}",
+                                    captured.len()
+                                );
+                                Ok(serde_json::json!({
+                                    "lines": captured,
+                                    "cursor": lw,
+                                    "missed": false,
+                                }))
                             }
                         }
-                    }
+                    },
                 };
                 let json_str = match result {
                     Ok(v) => serde_json::to_string(&v).unwrap_or_else(|_| {
@@ -1984,10 +2072,10 @@ impl PlexiApp {
                         let captured = terminal
                             .backend
                             .capture_lines(crate::app::pane_status::capture_depth());
-                        Ok(crate::app::pane_status::composite_status(
-                            pane.agent(),
-                            &captured,
-                        ))
+                        let mut status =
+                            crate::app::pane_status::composite_status(pane.agent(), &captured);
+                        status["heartbeat"] = self.pane_heartbeat_json(*pane_id);
+                        Ok(status)
                     });
                 let json = match result {
                     Ok(status) => {
@@ -2039,7 +2127,9 @@ impl PlexiApp {
                 pane_id,
                 response_file,
             } => {
-                log::info!("pane_ipc: kind=get_pane_state pane_id={pane_id} response_file={response_file:?}");
+                log::info!(
+                    "pane_ipc: kind=get_pane_state pane_id={pane_id} response_file={response_file:?}"
+                );
                 let json_str = match self.windows.iter().find_map(|win| win.panes.get(pane_id)) {
                     None => {
                         log::warn!("pane_ipc: get_pane_state: pane_id={pane_id} not found");
@@ -2106,7 +2196,9 @@ impl PlexiApp {
                 args,
                 response_file,
             } => {
-                log::info!("pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} args={args:?}");
+                log::info!(
+                    "pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} args={args:?}"
+                );
                 let result = match self
                     .windows
                     .iter_mut()
@@ -3220,7 +3312,16 @@ impl PlexiApp {
         let spawned = self.context_spawn_target(target_ctx_id).map(|(win, tile)| {
             // vertical=true → side-by-side, matching the previous
             // split_focused(false, ..) behavior (its LinearDir is inverted).
-            self.spawn_terminal_pane_at(win, tile, true, false, Some(command), ephemeral, cwd, false)
+            self.spawn_terminal_pane_at(
+                win,
+                tile,
+                true,
+                false,
+                Some(command),
+                ephemeral,
+                cwd,
+                false,
+            )
         });
 
         if spawned.is_none() {
@@ -3431,7 +3532,9 @@ impl PlexiApp {
                 }
             }
         }
-        log::warn!("pane_ipc: spawn_pane: could not apply name to pane_id={pane_id} (not found or not a terminal)");
+        log::warn!(
+            "pane_ipc: spawn_pane: could not apply name to pane_id={pane_id} (not found or not a terminal)"
+        );
     }
 }
 
@@ -3454,7 +3557,9 @@ fn launched_pairs<'a>(pane_ids: &[u64], commands: &'a [Option<String>]) -> Vec<(
 /// `None` when the file predates the stamp (written by an older CLI) or the
 /// clock went backwards.
 fn spawn_file_age_secs(queued_at_ms: Option<u64>, now_ms: u64) -> Option<u64> {
-    queued_at_ms.and_then(|q| now_ms.checked_sub(q)).map(|ms| ms / 1000)
+    queued_at_ms
+        .and_then(|q| now_ms.checked_sub(q))
+        .map(|ms| ms / 1000)
 }
 
 #[cfg(test)]

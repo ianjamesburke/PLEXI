@@ -59,6 +59,15 @@ pub struct SavedPane {
     pub app_state: Option<serde_json::Value>,
     #[serde(default)]
     pub hidden: bool,
+    #[serde(default)]
+    pub heartbeat: Option<SavedPaneHeartbeat>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct SavedPaneHeartbeat {
+    pub every_ms: u64,
+    pub text: String,
+    pub while_idle_only: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq, Debug)]
@@ -445,13 +454,15 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("read JSON"))
                 .expect("prior workspace remains loadable");
         assert_eq!(loaded.version, 2);
-        assert!(std::fs::read_dir(directory.path())
-            .expect("read workspace directory")
-            .all(|entry| !entry
-                .expect("directory entry")
-                .file_name()
-                .to_string_lossy()
-                .contains(".tmp-")));
+        assert!(
+            std::fs::read_dir(directory.path())
+                .expect("read workspace directory")
+                .all(|entry| !entry
+                    .expect("directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp-"))
+        );
     }
 
     /// `SavedPaneKind` must serialise every Pane variant produced by mirror-split
@@ -470,6 +481,7 @@ mod tests {
                 app_id: matches!(kind, SavedPaneKind::App).then(|| "snake".to_string()),
                 app_state: None,
                 hidden: false,
+                heartbeat: None,
             };
             let json = serde_json::to_string(&pane).expect("serialize");
             let restored: SavedPane = serde_json::from_str(&json).expect("deserialize");
@@ -486,6 +498,7 @@ mod tests {
             app_id: None,
             app_state: None,
             hidden: false,
+            heartbeat: None,
         };
         let json = serde_json::to_string(&portal_pane).expect("serialize portal");
         let restored: SavedPane = serde_json::from_str(&json).expect("deserialize portal");

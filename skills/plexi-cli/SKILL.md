@@ -53,6 +53,9 @@ pane capture [ID]        Last N lines as JSON. --lines N (default 50), --from-cu
                          cursor on stderr; --plain and --from-cursor compose.
 pane status ID           One host-derived JSON verdict: working, idle, blocked, or unknown,
                          with high/low confidence and raw agent/status-bar/buffer evidence.
+pane heartbeat ID --every 5m --text "cycle"
+                         Host-owned recurring prompt; defaults to firing only when the agent is idle.
+pane heartbeat ID --off  Disable that pane's recurring prompt.
 pane self                Print current pane's ID.
 pane info                Print current pane details as JSON.
 pane state ID            App panes: L1 UiNode tree JSON. Terminal panes: simple status object.
@@ -213,6 +216,7 @@ Before writing any config key, run `plexi config list` to discover valid keys, t
 - `pane slot wait` exits 2 on timeout and 0 on match -- branch on the exit code, never parse stderr
 - `pane capture --plain` reserves stdout for captured text; read `cursor=N` from stderr when advancing a delta loop
 - `pane status ID` is the single-call corroboration path when a pane slot is missing or stale; `unknown`/`low` means escalate instead of guessing
+- `pane heartbeat ID --every 5m --text "cycle"` is host-owned and persists across host restart; use `--off` to remove it
 - `pane state` returns L1 UiNode tree for app panes; returns a simple status object for terminal panes
 - `pane focus` moves what the user **sees**, not where the agent runs -- the agent stays in its own pane
 - A background Accessory host stays behind other apps: pane send/key/click and `pane focus` drive it internally but do not front it

@@ -491,6 +491,21 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
 
+    /// Configure or disable a host-owned recurring terminal prompt.
+    PaneHeartbeat {
+        pane_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        every_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        while_idle_only: Option<bool>,
+        #[serde(default)]
+        off: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Deliver a synthetic key event to any pane. Sent by `plexi pane key`.
     /// For terminal panes, the key is translated to PTY bytes.
     /// For PGAP app panes, a `PlexiEvent::Key` is delivered.
@@ -2722,7 +2737,7 @@ mod tests {
         assert!(is_reserved_shortcut("h"));
         assert!(is_reserved_shortcut("l"));
         assert!(is_reserved_shortcut("J")); // case-insensitive
-                                            // Digit-select keys — reserved
+        // Digit-select keys — reserved
         assert!(is_reserved_shortcut("1"));
         assert!(is_reserved_shortcut("9"));
         // 0 is NOT reserved (1-9 only)
@@ -2964,8 +2979,7 @@ mod tests {
 
     #[test]
     fn pane_status_command_round_trips_serde() {
-        let json =
-            r#"{"type":"pane_status","pane_id":7,"response_file":"status.json"}"#;
+        let json = r#"{"type":"pane_status","pane_id":7,"response_file":"status.json"}"#;
         let command: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &command {
             AppRequest::PaneStatus {

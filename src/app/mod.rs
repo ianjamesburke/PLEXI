@@ -20,8 +20,8 @@ pub(crate) mod notification_image;
 mod notifications;
 pub mod package;
 pub mod packs;
-pub(crate) mod pane_wait;
 pub(crate) mod pane_status;
+pub(crate) mod pane_wait;
 pub mod permissions;
 pub mod plexi_descriptor;
 pub(crate) mod python_env;
@@ -137,6 +137,14 @@ pub(crate) struct ClickFlash {
     pub(crate) started_at: std::time::Instant,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PaneHeartbeat {
+    pub every: std::time::Duration,
+    pub text: String,
+    pub while_idle_only: bool,
+    pub next_fire: std::time::Instant,
+}
+
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
@@ -185,6 +193,8 @@ pub struct PlexiApp {
     /// is owed once the host has settled, pressed Enter, and confirmed that the
     /// prompt left the pane's input line (stint 0583).
     pub(crate) pending_submits: Vec<crate::app::pane_wait::PendingSubmit>,
+    /// Host-owned recurring prompts, keyed by terminal pane id.
+    pub(crate) pane_heartbeats: HashMap<PaneId, PaneHeartbeat>,
     /// Last window title sent via `ViewportCommand::Title`. egui's
     /// `send_viewport_cmd` unconditionally requests a repaint, so sending the
     /// title every frame creates a self-sustaining repaint loop (60fps
@@ -500,7 +510,10 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
 
 /// Handle one newline-delimited JSON line from the notify socket: parse the
 /// `AppRequest` and queue it on the pane-IPC mailbox (which owns the UI wake).
-fn handle_socket_line(line: &str, mailbox: &ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>) {
+fn handle_socket_line(
+    line: &str,
+    mailbox: &ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
+) {
     match serde_json::from_str::<crate::app_protocol::AppRequest>(line) {
         Ok(cmd) => {
             if mailbox.send(cmd).is_ok() {
@@ -537,7 +550,9 @@ fn read_socket_frame(reader: &mut impl std::io::BufRead) -> std::io::Result<Opti
 
 fn spawn_socket_listener(
     mailbox: ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
-    subscribe_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostSubscribeRequest>,
+    subscribe_mailbox: ui_mailbox::UiMailbox<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >,
     publish_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
 ) {
     use std::os::unix::net::UnixListener;
@@ -579,7 +594,9 @@ fn spawn_socket_listener(
 fn handle_socket_connection(
     stream: std::os::unix::net::UnixStream,
     mailbox: ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
-    subscribe_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostSubscribeRequest>,
+    subscribe_mailbox: ui_mailbox::UiMailbox<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >,
     publish_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
 ) {
     use std::io::{BufRead, BufReader};
@@ -1051,10 +1068,7 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.interrupt_threshold)
             .unwrap_or(100); // PRIORITY_HIGH — only HIGH/CRITICAL interrupt by default
-        let notifications_sound = config
-            .notifications
-            .as_ref()
-            .and_then(|n| n.cue_sound());
+        let notifications_sound = config.notifications.as_ref().and_then(|n| n.cue_sound());
         let focus_history_depth = config.focus_history_depth.unwrap_or(100);
         log::info!("config: focus_history_depth={focus_history_depth}");
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
@@ -1148,6 +1162,7 @@ impl PlexiApp {
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut windows = Vec::new();
+            let mut restored_heartbeats = HashMap::new();
             let ctx_name_map: std::collections::HashMap<u64, String> = ws
                 .contexts
                 .iter()
@@ -1171,6 +1186,18 @@ impl PlexiApp {
             for saved_win in ws.windows {
                 let mut panes = HashMap::new();
                 for saved_pane in &saved_win.panes {
+                    if let Some(heartbeat) = &saved_pane.heartbeat {
+                        restored_heartbeats.insert(
+                            saved_pane.id,
+                            PaneHeartbeat {
+                                every: std::time::Duration::from_millis(heartbeat.every_ms),
+                                text: heartbeat.text.clone(),
+                                while_idle_only: heartbeat.while_idle_only,
+                                next_fire: std::time::Instant::now()
+                                    + std::time::Duration::from_millis(heartbeat.every_ms),
+                            },
+                        );
+                    }
                     let cwd = if saved_pane.cwd.is_dir() {
                         Some(saved_pane.cwd.clone())
                     } else if saved_win.path.is_dir() {
@@ -1369,6 +1396,7 @@ impl PlexiApp {
                     pending_slot_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
+                    pane_heartbeats: restored_heartbeats,
                     last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
                     renaming_window: None,
@@ -1628,6 +1656,7 @@ impl PlexiApp {
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
+            pane_heartbeats: HashMap::new(),
             last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
             renaming_window: None,
@@ -1976,10 +2005,7 @@ impl PlexiApp {
     pub fn new_for_test(
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
-    ) -> (
-        Self,
-        ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
-    ) {
+    ) -> (Self, ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>) {
         let config = config::PlexiConfig::default();
         let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
@@ -1999,11 +2025,12 @@ impl PlexiApp {
                 std::sync::Arc::clone(&ui_wake),
                 "pane_ipc",
             );
-        let (_event_subscribe_tx, event_subscribe_rx) =
-            ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostSubscribeRequest>::channel(
-                std::sync::Arc::clone(&ui_wake),
-                "events_subscribe",
-            );
+        let (_event_subscribe_tx, event_subscribe_rx) = ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostSubscribeRequest,
+        >::channel(
+            std::sync::Arc::clone(&ui_wake),
+            "events_subscribe",
+        );
         let (_event_publish_tx, event_publish_rx) =
             ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostPublishRequest>::channel(
                 std::sync::Arc::clone(&ui_wake),
@@ -2074,6 +2101,7 @@ impl PlexiApp {
                 pending_slot_waits: Vec::new(),
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
+                pane_heartbeats: HashMap::new(),
                 last_sent_window_title: None,
                 permission_store_dir: {
                     let dir = std::env::temp_dir()
@@ -2562,6 +2590,7 @@ impl eframe::App for PlexiApp {
         // confirm sequence from here: an occluded host must still press the
         // Enter it promised and still read the grid to confirm it (stint 0583).
         self.service_pending_submits(ctx);
+        self.service_pane_heartbeats(ctx);
 
         self.drain_app_subscription_replies();
         self.deliver_app_event_subscriptions();
@@ -4638,7 +4667,8 @@ impl PlexiApp {
 
         // Active context first, then every descendant context (path-component
         // prefix match over the live context list, no filesystem discovery).
-        let scopes = crate::notes::context_notes_scopes(self.router.as_slice(), self.router.active());
+        let scopes =
+            crate::notes::context_notes_scopes(self.router.as_slice(), self.router.active());
         for scope in &scopes {
             entries.extend(scan_dir(&scope.dir).iter().filter_map(|p| {
                 crate::notes::NotePickerEntry::load(p, false)
