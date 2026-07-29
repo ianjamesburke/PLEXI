@@ -179,6 +179,16 @@ pub enum AppRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pane_id: Option<u64>,
     },
+    /// Remove a notification posted by the caller. The host verifies the
+    /// caller identity against the notification's stamped provenance.
+    DismissNotification {
+        notify_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_context_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_pane_id: Option<u64>,
+        response_file: String,
+    },
     /// Report agent state for a pane. Called by hook scripts via `plexi agent report`.
     SetAgentState {
         pane_id: u64,

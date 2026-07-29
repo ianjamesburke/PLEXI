@@ -24,7 +24,8 @@ pub fn notify_cli(
     level: &str,
     choices: &[(String, String, Option<String>)],
     wait_for_response: bool,
-    timeout_secs: u64,
+    display_timeout_secs: u64,
+    wait_timeout_secs: u64,
     scope: Option<crate::app_protocol::NotifyScope>,
     source_context_id: Option<u64>,
     source_pane_id: Option<u64>,
@@ -79,8 +80,14 @@ pub fn notify_cli(
         None
     };
 
+    let notify_id = format!(
+        "cli:{}:{}",
+        source_pane_id.unwrap_or(0),
+        uuid::Uuid::new_v4()
+    );
     let mut payload = serde_json::json!({
         "type": "notify",
+        "notify_id": notify_id,
         "level": level,
         "title": title,
         "body": body,
@@ -88,6 +95,9 @@ pub fn notify_cli(
         "options": options_json,
         "priority": 50,
     });
+    if display_timeout_secs > 0 {
+        payload["timeout_secs"] = serde_json::Value::from(display_timeout_secs);
+    }
     if let Some(ref rf) = response_file_str {
         payload["response_file"] = serde_json::Value::String(rf.clone());
     }
@@ -140,17 +150,13 @@ pub fn notify_cli(
 
     // Fire-and-forget path — command is delivered, nothing to wait for.
     let Some(response_file) = response_file_str else {
-        if timeout_secs > 0 {
-            eprintln!(
-                "warning: --timeout only limits waiting for a choice response; notification queued"
-            );
-        }
-        println!("notification queued");
+        println!("{notify_id}");
         return 0;
     };
     log::info!("notify:cli: polling for response at {response_file:?}");
 
-    let timeout = (timeout_secs > 0).then(|| std::time::Duration::from_secs(timeout_secs));
+    let timeout =
+        (wait_timeout_secs > 0).then(|| std::time::Duration::from_secs(wait_timeout_secs));
     match crate::rpc::poll_string(&response_file, timeout) {
         Ok(key) => {
             log::info!("notify:cli: response received {:?}", key.trim());
@@ -158,12 +164,60 @@ pub fn notify_cli(
             0
         }
         Err(crate::rpc::PollError::TimedOut) => {
-            log::info!("notify:cli: timed out after {timeout_secs}s");
+            log::info!("notify:cli: choice wait timed out after {wait_timeout_secs}s");
             2
         }
         Err(e) => {
             log::warn!("notify:cli: {e}");
             eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+pub fn dismiss_notify_cli(
+    notify_id: &str,
+    source_context_id: Option<u64>,
+    source_pane_id: Option<u64>,
+) -> i32 {
+    let (Some(source_context_id), Some(source_pane_id)) = (source_context_id, source_pane_id)
+    else {
+        eprintln!("error: notify dismiss requires a caller pane and context");
+        return 1;
+    };
+    let Some(socket_path) = super::resolve_command_socket() else {
+        eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+        return 1;
+    };
+    let response_file = crate::rpc::response_file("notify-dismiss", "txt");
+    let payload = serde_json::json!({
+        "type": "dismiss_notification",
+        "notify_id": notify_id,
+        "source_context_id": source_context_id,
+        "source_pane_id": source_pane_id,
+        "response_file": response_file,
+    });
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(stream) => stream,
+        Err(e) => {
+            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = stream.write_all(format!("{payload}\n").as_bytes()) {
+        eprintln!("error: could not write to socket: {e}");
+        return 1;
+    }
+    match crate::rpc::poll_string(&response_file, Some(std::time::Duration::from_secs(30))) {
+        Ok(result) if result.trim() == "dismissed" => 0,
+        Ok(result) => {
+            eprintln!("error: {}", result.trim());
+            1
+        }
+        Err(e) => {
+            eprintln!("error: notify dismiss: {e}");
             1
         }
     }
@@ -221,6 +275,7 @@ mod notify_tests {
             &[],
             true,
             0,
+            0,
             None,
             None,
             None,
@@ -245,6 +300,7 @@ mod notify_tests {
                 &choices,
                 false,
                 0,
+                0,
                 None,
                 None,
                 None,
@@ -262,6 +318,31 @@ mod notify_tests {
         assert_eq!(payload["options"][0]["host_action"], "pane_focus:188");
     }
 
+    #[test]
+    fn notify_cli_timeout_is_sent_as_display_lifetime() {
+        let env = socket_env_guard();
+        let (code, payload) = capture_notify_payload(&env, || {
+            notify_cli(
+                "Expiry",
+                "body",
+                "info",
+                &[],
+                false,
+                30,
+                0,
+                None,
+                None,
+                None,
+            )
+        });
+
+        assert_eq!(code, 0);
+        assert_eq!(payload["timeout_secs"], 30);
+        assert!(payload["notify_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("cli:0:")));
+    }
+
     /// The stint 0536 leak fix: a blocking choice that times out must exit 2
     /// and must not leave a response file behind in the profile's rpc/ dir.
     #[test]
@@ -276,6 +357,7 @@ mod notify_tests {
                 "info",
                 &choices,
                 true,
+                1,
                 1,
                 None,
                 None,
@@ -334,6 +416,7 @@ mod notify_tests {
             &choices,
             true,
             1,
+            1,
             None,
             None,
             None,
@@ -387,7 +470,7 @@ mod notify_tests {
     fn notify_cli_sends_caller_identity() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("T", "B", "info", &[], false, 0, None, Some(7), Some(42))
+            notify_cli("T", "B", "info", &[], false, 0, 0, None, Some(7), Some(42))
         });
         assert_eq!(code, 0);
         assert_eq!(payload["source_context_id"], 7);
@@ -400,7 +483,7 @@ mod notify_tests {
     fn notify_cli_omits_identity_when_absent() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("T", "B", "info", &[], false, 0, None, None, None)
+            notify_cli("T", "B", "info", &[], false, 0, 0, None, None, None)
         });
         assert_eq!(code, 0);
         assert!(payload.get("source_context_id").is_none());
@@ -418,7 +501,7 @@ mod notify_tests {
             crate::app_protocol::NotifyScope::Context,
             crate::app_protocol::NotifyScope::Window,
         ] {
-            let code = notify_cli("T", "B", "info", &[], false, 0, Some(scope), None, None);
+            let code = notify_cli("T", "B", "info", &[], false, 0, 0, Some(scope), None, None);
             assert_eq!(code, 1, "{scope:?} without a caller context must error");
         }
     }

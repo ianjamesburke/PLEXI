@@ -817,6 +817,121 @@ fn cli_notify_request(
     }
 }
 
+/// 0608: a parked app has no sender window. Window-scoped delivery must stay
+/// in its stamped context rather than inheriting whatever window is active at
+/// dispatch.
+#[test]
+fn parked_app_window_notification_narrows_without_active_window_provenance() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let context_id = h.app.router.active().context_id;
+    let (scope, source_window_id) = h
+        .app
+        .resolve_app_notification_provenance(0, crate::app_protocol::NotifyScope::Window);
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::App,
+        PendingNotification {
+            notify_id: "parked-window-scope".into(),
+            sender_pane_id: 0,
+            source_context_id: context_id,
+            source_window_id,
+            level: "info".into(),
+            title: "Parked".into(),
+            body: "body".into(),
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            priority: 50,
+            scope,
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: None,
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now(),
+            tombstoned: false,
+            deliver_after: None,
+        },
+    );
+
+    let notification = &h.app.pending_notifications[0];
+    assert_eq!(
+        notification.scope,
+        crate::app_protocol::NotifyScope::Context
+    );
+    assert_eq!(notification.source_window_id, 0);
+    assert_eq!(notification.source_context_id, context_id);
+}
+
+/// 0610/0611: the CLI's display timeout reaches the host payload, while a
+/// sticky CLI notification can be removed only by its posting pane.
+#[test]
+fn cli_notification_timeout_and_sender_scoped_dismissal() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let owner_pane_id = h.add_test_pane();
+    let foreign_pane_id = h.add_test_pane();
+    let context_id = h.app.router.active().context_id;
+    let response_dir = tempfile::tempdir().expect("tempdir");
+    let response_file = response_dir.path().join("dismiss-response");
+
+    h.inject_ipc(crate::app_protocol::AppRequest::Notify {
+        level: "info".into(),
+        title: "sticky".into(),
+        body: "body".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        actions: vec![],
+        notify_id: Some(format!("cli:{owner_pane_id}:sticky")),
+        priority: 50,
+        image_inline: None,
+        image_pipe_id: None,
+        timeout_secs: Some(30),
+        on_dismiss: None,
+        response_file: None,
+        scope: None,
+        source_context_id: Some(context_id),
+        source_pane_id: Some(owner_pane_id),
+    });
+    h.run_frames(2);
+
+    let posted = &h.app.pending_notifications[0];
+    assert_eq!(posted.notify_id, format!("cli:{owner_pane_id}:sticky"));
+    assert_eq!(posted.timeout_secs, Some(30));
+    assert_eq!(
+        posted.sender_pane_id, 0,
+        "CLI notifications must not auto-dismiss with their focused terminal"
+    );
+
+    h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
+        notify_id: format!("cli:{owner_pane_id}:sticky"),
+        source_context_id: Some(context_id),
+        source_pane_id: Some(foreign_pane_id),
+        response_file: response_file.to_string_lossy().into_owned(),
+    });
+    h.run_frames(2);
+    assert_eq!(
+        h.app.pending_notifications.len(),
+        1,
+        "foreign pane must not dismiss"
+    );
+
+    h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
+        notify_id: format!("cli:{owner_pane_id}:sticky"),
+        source_context_id: Some(context_id),
+        source_pane_id: Some(owner_pane_id),
+        response_file: response_file.to_string_lossy().into_owned(),
+    });
+    h.run_frames(2);
+    assert!(
+        h.app.pending_notifications.is_empty(),
+        "owner dismissal removes sticky notification"
+    );
+}
+
 /// 0569: an unscoped `plexi notify` from inside a pane is context-local, not
 /// global. Drives the real CLI surface end to end through pane_ipc, carrying
 /// the caller identity the CLI stamps from `PLEXI_CONTEXT_ID`.

@@ -979,7 +979,7 @@ pub use install::{
 pub use list::{freeze_cli, parse_notify_choice};
 pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
 pub use notes::{notes_list_cli, notes_open_cli};
-pub use notify::{notify_cli, parse_notify_scope};
+pub use notify::{dismiss_notify_cli, notify_cli, parse_notify_scope};
 pub use open::{
     app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
     parse_prefix, AgentBootRequest, OpenPrefix,

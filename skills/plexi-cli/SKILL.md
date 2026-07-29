@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.4.2"
+skill_version: "4.4.3"
 plexi_version: "0.2.0"
 last_verified: "2026-07-29"
 ---
@@ -127,7 +127,10 @@ notify --title TEXT      Required. --body TEXT, --level info|warn|error,
                          never the currently active one. Outside a pane there is no
                          sending context: --scope context|window errors, and an
                          unscoped notify escalates to global.
-                         --choice "key:Label" (repeatable, blocks until chosen).
+                         Prints a notification id; use `notify dismiss ID` from the
+                         posting pane to remove it. --choice "key:Label" (repeatable,
+                         blocks until chosen). --wait-timeout SECS bounds only that choice wait
+                         (0 = wait indefinitely); --timeout always controls display lifetime.
                          --host-action "key:action_type:arg" (runs even after caller exits).
 ```
 

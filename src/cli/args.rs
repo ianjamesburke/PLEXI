@@ -1,7 +1,7 @@
 use clap::{
-    Args, Parser, Subcommand,
-    builder::ValueHint,
     builder::styling::{AnsiColor, Effects, Styles},
+    builder::ValueHint,
+    Args, Parser, Subcommand,
 };
 
 fn plexi_styles() -> Styles {
@@ -143,34 +143,10 @@ pub enum Commands {
     },
     /// Send a notification to the Plexi UI.
     Notify {
-        /// Notification title (required)
-        #[arg(long)]
-        title: String,
-        /// Notification body text
-        #[arg(long, default_value = "")]
-        body: String,
-        /// Severity level: info, warn, or error
-        #[arg(long, default_value = "info", value_parser = ["info", "warn", "error"])]
-        level: String,
-        /// Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or
-        /// `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked).
-        /// Repeatable.
-        #[arg(long = "choice")]
-        choices: Vec<String>,
-        /// Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`.
-        /// Repeatable. The host runs this even after the process that sent the notification has exited.
-        #[arg(long = "host-action")]
-        host_actions: Vec<String>,
-        /// Queue choice buttons without waiting for a selected value
-        #[arg(long)]
-        no_wait: bool,
-        /// How many seconds before the notification disappears (0 = stays until dismissed)
-        #[arg(long, default_value = "0")]
-        timeout: u64,
-        /// Which panes see this notification: window, context, or global
-        /// (default: context — the notification stays in the context that sent it)
-        #[arg(long, value_name = "SCOPE", value_parser = ["window", "context", "global"])]
-        scope: Option<String>,
+        #[command(subcommand)]
+        cmd: Option<NotifyCmd>,
+        #[command(flatten)]
+        post: NotifyPostArgs,
     },
 
     // ── AI ────────────────────────────────────────────────────────────────────
@@ -279,6 +255,50 @@ pub enum Commands {
     /// List run completions (hidden, used by shell completions)
     #[command(hide = true, name = "_complete-run")]
     CompleteRun,
+}
+
+#[derive(Subcommand)]
+pub enum NotifyCmd {
+    /// Remove a notification previously posted by this pane.
+    Dismiss {
+        /// Notification id printed by `plexi notify`.
+        notify_id: String,
+    },
+}
+
+#[derive(Args)]
+pub struct NotifyPostArgs {
+    /// Notification title (required when posting)
+    #[arg(long)]
+    pub title: Option<String>,
+    /// Notification body text
+    #[arg(long, default_value = "")]
+    pub body: String,
+    /// Severity level: info, warn, or error
+    #[arg(long, default_value = "info", value_parser = ["info", "warn", "error"])]
+    pub level: String,
+    /// Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or
+    /// `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked).
+    /// Repeatable.
+    #[arg(long = "choice")]
+    pub choices: Vec<String>,
+    /// Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`.
+    /// Repeatable. The host runs this even after the process that sent the notification has exited.
+    #[arg(long = "host-action")]
+    pub host_actions: Vec<String>,
+    /// Queue choice buttons without waiting for a selected value
+    #[arg(long)]
+    pub no_wait: bool,
+    /// How many seconds before the notification disappears (0 = stays until dismissed)
+    #[arg(long, default_value = "0")]
+    pub timeout: u64,
+    /// How many seconds to wait for a choice response (0 = wait indefinitely)
+    #[arg(long, default_value = "0")]
+    pub wait_timeout: u64,
+    /// Which panes see this notification: window, context, or global
+    /// (default: context — the notification stays in the context that sent it)
+    #[arg(long, value_name = "SCOPE", value_parser = ["window", "context", "global"])]
+    pub scope: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1768,9 +1788,32 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppCmd, Cli, Commands, ConfigCmd, ConfigScope, SecretCmd, normalize_config_scope_aliases,
+        normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
+        SecretCmd,
     };
     use clap::Parser;
+
+    #[test]
+    fn notify_preserves_post_flags_and_exposes_dismiss_subcommand() {
+        let post = Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--timeout", "30"])
+            .expect("notify post parses");
+        let Some(Commands::Notify { cmd: None, post }) = post.command else {
+            panic!("expected notify post");
+        };
+        assert_eq!(post.title.as_deref(), Some("Done"));
+        assert_eq!(post.timeout, 30);
+
+        let dismiss = Cli::try_parse_from(["plexi", "notify", "dismiss", "cli:42:abc"])
+            .expect("notify dismiss parses");
+        let Some(Commands::Notify {
+            cmd: Some(NotifyCmd::Dismiss { notify_id }),
+            ..
+        }) = dismiss.command
+        else {
+            panic!("expected notify dismiss");
+        };
+        assert_eq!(notify_id, "cli:42:abc");
+    }
 
     #[test]
     fn host_start_accepts_ephemeral_flag() {
