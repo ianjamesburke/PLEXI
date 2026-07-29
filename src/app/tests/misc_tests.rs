@@ -216,6 +216,55 @@ fn socket_line_parse_error_queues_nothing() {
     );
 }
 
+fn run_socket_connection(
+    payload: &[u8],
+) -> crate::app::ui_mailbox::MailboxReceiver<crate::app_protocol::AppRequest> {
+    use std::io::Write as _;
+
+    let ctx = egui::Context::default();
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
+    let (mailbox, rx) =
+        crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+            wake.clone(),
+            "pane_ipc",
+        );
+    let (subscribe_mailbox, _subscribe_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >::channel(wake.clone(), "event_subscribe");
+    let (publish_mailbox, _publish_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostPublishRequest,
+    >::channel(wake, "event_publish");
+    let (server, mut client) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+    client.write_all(payload).expect("write payload");
+    client
+        .shutdown(std::net::Shutdown::Write)
+        .expect("close write half");
+    handle_socket_connection(server, mailbox, subscribe_mailbox, publish_mailbox);
+    rx
+}
+
+#[test]
+fn socket_connection_discards_valid_json_without_newline_frame() {
+    let rx = run_socket_connection(br#"{"type":"wake"}"#);
+    assert!(
+        rx.try_recv().is_err(),
+        "EOF-terminated JSON without a newline is an incomplete frame"
+    );
+}
+
+#[test]
+fn socket_connection_dispatches_newline_framed_json_once() {
+    let rx = run_socket_connection(b"{\"type\":\"wake\"}\n");
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(crate::app_protocol::AppRequest::Wake)
+    ));
+    assert!(
+        rx.try_recv().is_err(),
+        "one complete frame must dispatch exactly once"
+    );
+}
+
 /// `AppRequest::Wake` through the host handler is a pure no-op: no panic,
 /// no window/pane state change.
 #[test]

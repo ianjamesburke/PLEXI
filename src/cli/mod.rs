@@ -517,6 +517,217 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     socket
 }
 
+const SOCKET_TRANSPORT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[derive(Debug)]
+enum SocketTransportError {
+    ConnectTimeout,
+    Connect(std::io::Error),
+    WriteTimeout { bytes_written: usize },
+    Write {
+        source: std::io::Error,
+        bytes_written: usize,
+    },
+}
+
+fn wait_for_socket(
+    fd: std::os::fd::RawFd,
+    events: libc::c_short,
+    deadline: std::time::Instant,
+) -> std::io::Result<bool> {
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(false);
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let timeout_ms = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
+        let mut poll_fd = libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        };
+        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+        if rc > 0 {
+            return Ok(true);
+        }
+        if rc == 0 {
+            return Ok(false);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn classify_connect_wait(
+    result: std::io::Result<bool>,
+) -> Result<(), SocketTransportError> {
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(SocketTransportError::ConnectTimeout),
+        Err(error) => Err(SocketTransportError::Connect(error)),
+    }
+}
+
+fn connect_unix_deadline(
+    socket_path: &std::path::Path,
+    deadline: std::time::Instant,
+) -> Result<std::os::fd::OwnedFd, SocketTransportError> {
+    use std::os::fd::FromRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = socket_path.as_os_str().as_bytes();
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if path.len() >= addr.sun_path.len() {
+        return Err(SocketTransportError::Connect(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Unix socket path is too long",
+        )));
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    {
+        addr.sun_len =
+            (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1) as u8;
+    }
+    for (dst, src) in addr.sun_path.iter_mut().zip(path.iter().copied()) {
+        *dst = src as libc::c_char;
+    }
+
+    let raw_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if raw_fd < 0 {
+        return Err(SocketTransportError::Connect(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) };
+    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(SocketTransportError::Connect(
+            std::io::Error::last_os_error(),
+        ));
+    }
+
+    let addr_len =
+        (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1) as libc::socklen_t;
+    let rc = unsafe {
+        libc::connect(
+            raw_fd,
+            &addr as *const libc::sockaddr_un as *const libc::sockaddr,
+            addr_len,
+        )
+    };
+    if rc == 0 {
+        return Ok(fd);
+    }
+    let error = std::io::Error::last_os_error();
+    if !error.raw_os_error().is_some_and(|code| {
+        code == libc::EINPROGRESS || code == libc::EAGAIN || code == libc::EWOULDBLOCK
+    }) {
+        return Err(SocketTransportError::Connect(error));
+    }
+    classify_connect_wait(wait_for_socket(raw_fd, libc::POLLOUT, deadline))?;
+    let mut socket_error: libc::c_int = 0;
+    let mut socket_error_len = std::mem::size_of_val(&socket_error) as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            raw_fd,
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            &mut socket_error as *mut _ as *mut libc::c_void,
+            &mut socket_error_len,
+        )
+    };
+    if rc < 0 {
+        return Err(SocketTransportError::Connect(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    if socket_error != 0 {
+        return Err(SocketTransportError::Connect(
+            std::io::Error::from_raw_os_error(socket_error),
+        ));
+    }
+    Ok(fd)
+}
+
+fn send_line_to_socket(
+    socket_path: &std::path::Path,
+    line: &[u8],
+    timeout: std::time::Duration,
+) -> Result<(), SocketTransportError> {
+    use std::os::fd::AsRawFd as _;
+
+    let deadline = std::time::Instant::now() + timeout;
+    let fd = connect_unix_deadline(socket_path, deadline)?;
+    let raw_fd = fd.as_raw_fd();
+    let mut written = 0;
+    while written < line.len() {
+        if std::time::Instant::now() >= deadline {
+            return Err(SocketTransportError::WriteTimeout {
+                bytes_written: written,
+            });
+        }
+        let rc = unsafe {
+            libc::write(
+                raw_fd,
+                line[written..].as_ptr() as *const libc::c_void,
+                line.len() - written,
+            )
+        };
+        if rc > 0 {
+            written += rc as usize;
+            continue;
+        }
+        if rc == 0 {
+            return Err(SocketTransportError::Write {
+                source: std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "socket accepted zero bytes",
+                ),
+                bytes_written: written,
+            });
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if error
+            .raw_os_error()
+            .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)
+        {
+            match wait_for_socket(raw_fd, libc::POLLOUT, deadline) {
+                Ok(true) => continue,
+                Ok(false) => {
+                    return Err(SocketTransportError::WriteTimeout {
+                        bytes_written: written,
+                    });
+                }
+                Err(source) => {
+                    return Err(SocketTransportError::Write {
+                        source,
+                        bytes_written: written,
+                    });
+                }
+            }
+        }
+        return Err(SocketTransportError::Write {
+            source: error,
+            bytes_written: written,
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
     let socket_path = match resolve_command_socket() {
         Some(path) => path,
@@ -525,26 +736,179 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
             return 1;
         }
     };
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+    let line = format!("{}\n", payload);
+    let started = std::time::Instant::now();
+    match send_line_to_socket(
+        &socket_path,
+        line.as_bytes(),
+        SOCKET_TRANSPORT_DEADLINE,
+    ) {
+        Ok(()) => {
+            log::info!(
+                "cli: socket transport complete path={socket_path:?} bytes={} elapsed_ms={}",
+                line.len(),
+                started.elapsed().as_millis()
+            );
+            0
+        }
+        Err(SocketTransportError::Connect(e))
+            if e.kind() == std::io::ErrorKind::ConnectionRefused =>
+        {
             let _ = std::fs::remove_file(&socket_path);
             eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
-            return 1;
+            1
         }
-        Err(e) => {
+        Err(SocketTransportError::ConnectTimeout) => {
+            log::warn!(
+                "cli: socket connect timed out path={socket_path:?} deadline_ms={}",
+                SOCKET_TRANSPORT_DEADLINE.as_millis()
+            );
+            eprintln!(
+                "error: timed out connecting to PLEXI_SOCKET {socket_path:?}; request was not delivered"
+            );
+            1
+        }
+        Err(SocketTransportError::Connect(e)) => {
+            log::warn!("cli: socket connect failed path={socket_path:?}: {e}");
             eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            return 1;
+            1
         }
-    };
-    let line = format!("{}\n", payload);
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
+        Err(SocketTransportError::WriteTimeout { bytes_written }) => {
+            log::warn!(
+                "cli: socket write timed out path={socket_path:?} bytes_written={bytes_written} payload_bytes={} deadline_ms={}",
+                line.len(),
+                SOCKET_TRANSPORT_DEADLINE.as_millis()
+            );
+            if bytes_written == 0 {
+                eprintln!(
+                    "error: timed out writing request to PLEXI_SOCKET {socket_path:?}; the incomplete frame was not delivered and is safe to retry"
+                );
+            } else {
+                eprintln!(
+                    "error: timed out writing request to PLEXI_SOCKET {socket_path:?} after {bytes_written}/{} bytes; the incomplete frame was not delivered and is safe to retry",
+                    line.len()
+                );
+            }
+            1
+        }
+        Err(SocketTransportError::Write {
+            source,
+            bytes_written,
+        }) => {
+            log::warn!(
+                "cli: socket write failed path={socket_path:?} bytes_written={bytes_written} payload_bytes={}: {source}",
+                line.len()
+            );
+            if bytes_written == 0 {
+                eprintln!("error: could not write request to socket: {source}");
+            } else {
+                eprintln!(
+                    "error: socket write failed after {bytes_written}/{} bytes: {source}; the incomplete frame was not delivered and is safe to retry",
+                    line.len()
+                );
+            }
+            1
+        }
     }
-    0
+}
+
+#[cfg(test)]
+mod transport_deadline_tests {
+    use super::{
+        connect_unix_deadline, send_line_to_socket, SocketTransportError,
+    };
+    use std::io::{BufRead as _, BufReader};
+    use std::os::unix::net::UnixListener;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    fn unique_socket_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pxt-{label}-{}-{:x}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                & 0xffff_ffff
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn stalled_write_returns_with_phase_and_partial_byte_count() {
+        let dir = unique_socket_dir("write");
+        let socket = dir.join("notify.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let peer = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept");
+            std::thread::sleep(Duration::from_millis(500));
+        });
+
+        let started = Instant::now();
+        let line = vec![b'x'; 32 * 1024 * 1024];
+        let error = send_line_to_socket(&socket, &line, Duration::from_millis(100))
+            .expect_err("stalled write must time out");
+        let elapsed = started.elapsed();
+        peer.join().expect("peer");
+
+        assert!(matches!(
+            error,
+            SocketTransportError::WriteTimeout { bytes_written } if bytes_written > 0
+        ));
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "write exceeded strict deadline: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn saturated_listener_returns_connect_phase_within_deadline() {
+        let dir = unique_socket_dir("connect");
+        let socket = dir.join("notify.sock");
+        let _listener = UnixListener::bind(&socket).expect("bind");
+        let mut queued = Vec::new();
+        let started = Instant::now();
+        let error = loop {
+            match connect_unix_deadline(&socket, Instant::now() + Duration::from_millis(25)) {
+                Ok(fd) => queued.push(fd),
+                Err(error) => break error,
+            }
+            assert!(queued.len() < 512, "listener backlog did not saturate");
+        };
+        assert!(matches!(
+            error,
+            SocketTransportError::ConnectTimeout | SocketTransportError::Connect(_)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "connect saturation probe exceeded bound"
+        );
+    }
+
+    #[test]
+    fn connect_poll_expiry_is_typed_as_connect_timeout() {
+        let error = super::classify_connect_wait(Ok(false)).expect_err("timeout");
+        assert!(matches!(error, SocketTransportError::ConnectTimeout));
+    }
+
+    #[test]
+    fn normal_listener_receives_exact_payload_once() {
+        let dir = unique_socket_dir("exact");
+        let socket = dir.join("notify.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read request");
+            line
+        });
+        let payload = b"{\"type\":\"transport_exactly_once\"}\n";
+        send_line_to_socket(&socket, payload, Duration::from_secs(1)).expect("send");
+        assert_eq!(handle.join().expect("listener"), String::from_utf8_lossy(payload));
+    }
 }
 
 /// Best-effort wake of a running instance after a spawn-queue file write.

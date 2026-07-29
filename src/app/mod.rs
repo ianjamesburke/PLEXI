@@ -513,6 +513,28 @@ fn handle_socket_line(line: &str, mailbox: &ui_mailbox::UiMailbox<crate::app_pro
     }
 }
 
+/// Read one complete newline-delimited request frame. EOF without a newline is
+/// an incomplete transport write, even when its bytes happen to form valid
+/// JSON, and must never be dispatched.
+fn read_socket_frame(reader: &mut impl std::io::BufRead) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line)?;
+    if bytes == 0 {
+        return Ok(None);
+    }
+    if !line.ends_with('\n') {
+        log::warn!(
+            "pane_ipc: discarded EOF-terminated partial frame bytes={bytes}; request was not dispatched"
+        );
+        return Ok(None);
+    }
+    line.pop();
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    Ok(Some(line))
+}
+
 fn spawn_socket_listener(
     mailbox: ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
     subscribe_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostSubscribeRequest>,
@@ -570,10 +592,14 @@ fn handle_socket_connection(
             return;
         }
     };
-    let reader = BufReader::new(stream);
-    let mut lines = reader.lines();
-    let Some(Ok(first)) = lines.next() else {
-        return;
+    let mut reader = BufReader::new(stream);
+    let first = match read_socket_frame(&mut reader) {
+        Ok(Some(first)) => first,
+        Ok(None) => return,
+        Err(error) => {
+            log::warn!("pane_ipc: socket read failed: {error}");
+            return;
+        }
     };
     let first = first.trim().to_owned();
     if first.is_empty() {
@@ -585,7 +611,7 @@ fn handle_socket_connection(
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
         match val.get("type").and_then(|t| t.as_str()) {
             Some("events_subscribe") => {
-                handle_events_subscribe(write_half, lines, val, &subscribe_mailbox);
+                handle_events_subscribe(write_half, reader.lines(), val, &subscribe_mailbox);
                 return;
             }
             Some("events_list") => {
@@ -601,8 +627,15 @@ fn handle_socket_connection(
     }
     // Normal path: first line plus any remaining lines as AppRequests.
     handle_socket_line(&first, &mailbox);
-    for line in lines {
-        let Ok(line) = line else { break };
+    loop {
+        let line = match read_socket_frame(&mut reader) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                log::warn!("pane_ipc: socket read failed: {error}");
+                break;
+            }
+        };
         let line = line.trim().to_owned();
         if line.is_empty() {
             continue;
