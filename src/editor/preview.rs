@@ -80,6 +80,8 @@ pub enum LinkKind {
     Markdown,
     /// `<https://…>` or a bare autolink.
     Autolink,
+    /// A bare `http://` or `https://` URL detected only for live rendering.
+    BareUrl,
     /// `[[note name]]` wiki-style note link (not cmark syntax; scanned here).
     Wiki,
 }
@@ -141,7 +143,7 @@ pub struct StyleSpan {
 pub struct MarkdownLayout {
     pub blocks: Vec<Block>,
     pub inlines: Vec<InlineSpan>,
-    /// All links in source order (Markdown, autolink, wiki).
+    /// All links in source order (Markdown, autolink, bare URL, wiki).
     pub links: Vec<LinkTarget>,
     /// All inline image references in source order.
     pub images: Vec<ImageSpan>,
@@ -220,7 +222,9 @@ impl MarkdownLayout {
         if line_text.is_empty() {
             return Vec::new();
         }
-        let kind = self.block_at_line(line).map_or(BlockKind::Fallback, |b| b.kind);
+        let kind = self
+            .block_at_line(line)
+            .map_or(BlockKind::Fallback, |b| b.kind);
         let base = match kind {
             BlockKind::Heading(level) => MdStyle::Heading(level),
             BlockKind::CodeFence => MdStyle::Code,
@@ -248,8 +252,8 @@ impl MarkdownLayout {
         // Overlay inline emphasis intersecting this line, dimming the
         // delimiter bytes at the span edges. Skip inside code blocks.
         if kind != BlockKind::CodeFence {
-            let line_range = self.line_byte_start(line)
-                ..self.line_byte_start(line) + line_text.len();
+            let line_range =
+                self.line_byte_start(line)..self.line_byte_start(line) + line_text.len();
             for span in &self.inlines {
                 let start = span.bytes.start.max(line_range.start);
                 let end = span.bytes.end.min(line_range.end);
@@ -290,7 +294,11 @@ impl MarkdownLayout {
 fn compress_spans(text: &str, styles: &[MdStyle]) -> Vec<StyleSpan> {
     let mut spans: Vec<StyleSpan> = Vec::new();
     let mut start = 0usize;
-    for (i, _) in text.char_indices().skip(1).chain(std::iter::once((text.len(), ' '))) {
+    for (i, _) in text
+        .char_indices()
+        .skip(1)
+        .chain(std::iter::once((text.len(), ' ')))
+    {
         // A span breaks where the style of the char starting at `i` differs
         // from the style at `start`.
         if i == text.len() || styles[i] != styles[start] {
@@ -404,8 +412,9 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
             Event::Start(tag) => {
                 if depth == 0 {
                     match &tag {
-                        Tag::Heading { level, .. } => raw_blocks
-                            .push((BlockKind::Heading(*level as u8), range.clone())),
+                        Tag::Heading { level, .. } => {
+                            raw_blocks.push((BlockKind::Heading(*level as u8), range.clone()))
+                        }
                         Tag::Paragraph => {
                             raw_blocks.push((BlockKind::Paragraph, range.clone()));
                         }
@@ -534,6 +543,31 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
             kind: InlineKind::Link,
         });
     }
+    // Bare http(s) URLs are a render-time affordance: unlike Markdown links,
+    // they do not change the document. Skip parser-owned links and code so a
+    // URL is never double-styled or clickable inside literal source.
+    let mut excluded = excluded;
+    excluded.extend(links.iter().map(|link| link.bytes.clone()));
+    excluded.extend(images.iter().map(|image| image.bytes.clone()));
+    for range in scan_bare_http_urls(text) {
+        if excluded
+            .iter()
+            .any(|ex| range.start < ex.end && ex.start < range.end)
+        {
+            continue;
+        }
+        let url = text[range.clone()].to_string();
+        links.push(LinkTarget {
+            kind: LinkKind::BareUrl,
+            bytes: range.clone(),
+            dest: url.clone(),
+            display: url,
+        });
+        inlines.push(InlineSpan {
+            bytes: range,
+            kind: InlineKind::Link,
+        });
+    }
     links.sort_by_key(|l| l.bytes.start);
 
     if fallback_seen {
@@ -614,7 +648,60 @@ fn scan_wiki_links(text: &str) -> Vec<(Range<usize>, String)> {
     found
 }
 
-/// All links in `text` (Markdown, autolink, `[[wiki]]`), in source order.
+/// Finds bare http(s) URLs without consuming adjacent prose punctuation.
+/// Markdown/parser-owned ranges are filtered by the caller.
+fn scan_bare_http_urls(text: &str) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut offset = 0;
+    while offset < text.len() {
+        let tail = &text[offset..];
+        let start_rel = match (tail.find("http://"), tail.find("https://")) {
+            (Some(http), Some(https)) => http.min(https),
+            (Some(start), None) | (None, Some(start)) => start,
+            (None, None) => break,
+        };
+        let start = offset + start_rel;
+        let prefix_ok = start == 0
+            || !text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/'));
+        let mut end = text[start..]
+            .find(char::is_whitespace)
+            .map_or(text.len(), |end_rel| start + end_rel);
+        while end > start && trailing_url_punctuation(&text[start..end]) {
+            end -= text[..end]
+                .chars()
+                .next_back()
+                .expect("nonempty URL suffix")
+                .len_utf8();
+        }
+        if prefix_ok && end > start + "http://".len() {
+            found.push(start..end);
+        }
+        offset = (end.max(start + 1)).min(text.len());
+    }
+    found
+}
+
+fn trailing_url_punctuation(url: &str) -> bool {
+    match url.chars().next_back() {
+        Some('.' | ',' | '!' | '?' | ':' | ';' | ']' | '}' | '*' | '_' | '`' | '>') => true,
+        Some(')') => {
+            let opens = url.chars().filter(|&c| c == '(').count();
+            let closes = url.chars().filter(|&c| c == ')').count();
+            closes > opens
+        }
+        _ => false,
+    }
+}
+
+/// Whether `text` is exactly one pasteable bare http(s) URL.
+pub(crate) fn is_bare_http_url(text: &str) -> bool {
+    matches!(scan_bare_http_urls(text).as_slice(), [range] if range.start == 0 && range.end == text.len())
+}
+
+/// All links in `text` (Markdown, autolink, bare URL, `[[wiki]]`), in source order.
 /// Byte ranges are delimiter-inclusive.
 #[must_use]
 pub fn link_targets(text: &str) -> Vec<LinkTarget> {
@@ -719,7 +806,7 @@ mod tests {
         assert_eq!(layout.active_lines(0, 0), 0..1); // heading only
         assert_eq!(layout.active_lines(10, 10), 10..13); // whole fence
         assert_eq!(layout.active_lines(0, 2), 0..3); // heading → paragraph
-        // Reversed order works the same.
+                                                     // Reversed order works the same.
         assert_eq!(layout.active_lines(2, 0), 0..3);
     }
 
@@ -745,14 +832,32 @@ mod tests {
     fn heading_list_quote_markers_are_dimmed() {
         let layout = parse_markdown_layout(MIXED);
         let spans = layout.line_style_spans(0, "# Title");
-        assert_eq!(spans[0], StyleSpan { range: 0..2, style: MdStyle::Marker });
+        assert_eq!(
+            spans[0],
+            StyleSpan {
+                range: 0..2,
+                style: MdStyle::Marker
+            }
+        );
         assert_eq!(spans[1].style, MdStyle::Heading(1));
 
         let spans = layout.line_style_spans(5, "- [x] task done");
-        assert_eq!(spans[0], StyleSpan { range: 0..6, style: MdStyle::Marker });
+        assert_eq!(
+            spans[0],
+            StyleSpan {
+                range: 0..6,
+                style: MdStyle::Marker
+            }
+        );
 
         let spans = layout.line_style_spans(8, "> a quote line");
-        assert_eq!(spans[0], StyleSpan { range: 0..2, style: MdStyle::Marker });
+        assert_eq!(
+            spans[0],
+            StyleSpan {
+                range: 0..2,
+                style: MdStyle::Marker
+            }
+        );
         assert_eq!(spans[1].style, MdStyle::Quote);
     }
 
@@ -761,13 +866,7 @@ mod tests {
         let layout = parse_markdown_layout(MIXED);
         let line = "Some **bold** and *italic* text.";
         let spans = layout.line_style_spans(2, line);
-        let style_at = |pos: usize| {
-            spans
-                .iter()
-                .find(|s| s.range.contains(&pos))
-                .unwrap()
-                .style
-        };
+        let style_at = |pos: usize| spans.iter().find(|s| s.range.contains(&pos)).unwrap().style;
         let bold = line.find("bold").unwrap();
         let italic = line.find("italic").unwrap();
         assert_eq!(style_at(bold), MdStyle::Strong);
@@ -824,9 +923,15 @@ mod tests {
         let mut cache = MarkdownLayoutCache::default();
         let a = cache.layout_for(&TextBuffer::from_string("# a"), 1).clone();
         // Same revision: buffer is ignored, cached layout returned.
-        assert_eq!(cache.layout_for(&TextBuffer::from_string("# CHANGED"), 1), &a);
+        assert_eq!(
+            cache.layout_for(&TextBuffer::from_string("# CHANGED"), 1),
+            &a
+        );
         // New revision reparses.
-        assert_ne!(cache.layout_for(&TextBuffer::from_string("plain now"), 2), &a);
+        assert_ne!(
+            cache.layout_for(&TextBuffer::from_string("plain now"), 2),
+            &a
+        );
     }
 
     #[test]
@@ -853,13 +958,39 @@ mod tests {
     }
 
     #[test]
+    fn bare_urls_linkify_only_outside_code_and_trim_prose_punctuation() {
+        let text = "go https://example.test/a, then http://x.test/z. See https://example.test/Foo_(bar). **https://bold.test/path** `https://code.test` ![](https://image.test/p.png)\n```\nhttps://fence.test\n```";
+        let links = link_targets(text);
+        let bare: Vec<_> = links
+            .iter()
+            .filter(|link| link.kind == LinkKind::BareUrl)
+            .collect();
+        assert_eq!(bare.len(), 4);
+        assert_eq!(&text[bare[0].bytes.clone()], "https://example.test/a");
+        assert_eq!(&text[bare[1].bytes.clone()], "http://x.test/z");
+        assert_eq!(
+            &text[bare[2].bytes.clone()],
+            "https://example.test/Foo_(bar)"
+        );
+        assert_eq!(&text[bare[3].bytes.clone()], "https://bold.test/path");
+        let spans = parse_markdown_layout(text).line_style_spans(0, text.lines().next().unwrap());
+        assert_eq!(
+            spans
+                .iter()
+                .find(|span| span.range.contains(&text.find("https").unwrap()))
+                .unwrap()
+                .style,
+            MdStyle::Link
+        );
+        assert!(is_bare_http_url("https://example.test/a"));
+        assert!(!is_bare_http_url("https://example.test/a,"));
+    }
+
+    #[test]
     fn wiki_links_scan_with_exact_ranges_and_skip_code() {
         let text = "a [[trip ideas]] b `[[not this]]` c\n```\n[[nor this]]\n```\n[[second]]";
         let links = link_targets(text);
-        let wikis: Vec<_> = links
-            .iter()
-            .filter(|l| l.kind == LinkKind::Wiki)
-            .collect();
+        let wikis: Vec<_> = links.iter().filter(|l| l.kind == LinkKind::Wiki).collect();
         assert_eq!(wikis.len(), 2);
         assert_eq!(&text[wikis[0].bytes.clone()], "[[trip ideas]]");
         assert_eq!(wikis[0].dest, "trip ideas");
@@ -871,7 +1002,10 @@ mod tests {
         let text = "before\n\n![alt text](assets/pic.png)\n\n![](https://x.test/i.jpg)";
         let images = image_spans(text);
         assert_eq!(images.len(), 2);
-        assert_eq!(&text[images[0].bytes.clone()], "![alt text](assets/pic.png)");
+        assert_eq!(
+            &text[images[0].bytes.clone()],
+            "![alt text](assets/pic.png)"
+        );
         assert_eq!(images[0].dest, "assets/pic.png");
         assert_eq!(images[0].alt, "alt text");
         assert_eq!(images[1].dest, "https://x.test/i.jpg");
@@ -904,9 +1038,7 @@ mod tests {
         let text = "go [Plexi](https://plexiapp.com) and [[wiki page]] now";
         let layout = parse_markdown_layout(text);
         let spans = layout.line_style_spans(0, text);
-        let style_at = |pos: usize| {
-            spans.iter().find(|s| s.range.contains(&pos)).unwrap().style
-        };
+        let style_at = |pos: usize| spans.iter().find(|s| s.range.contains(&pos)).unwrap().style;
         assert_eq!(style_at(text.find("Plexi").unwrap()), MdStyle::Link);
         assert_eq!(style_at(text.find("wiki").unwrap()), MdStyle::Link);
         assert_eq!(style_at(0), MdStyle::Plain);

@@ -1,6 +1,7 @@
 use crate::ui::list::{paint_selection, paint_text_centered};
 use crate::ui::style;
 use crate::ui::theme::Colors;
+use egui::emath::GuiRounding;
 use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
 
 pub const ACTION_ZONE_WIDTH: f32 = 30.0;
@@ -16,8 +17,8 @@ const ROW_PAD_V: f32 = 7.0;
 pub(crate) const PANE_DOT_RADIUS: f32 = 4.0;
 const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
-const WINDOW_GROUP_PAD_X: f32 = 3.0;
-const WINDOW_GROUP_PAD_Y: f32 = 3.0;
+const WINDOW_GROUP_PAD_X: f32 = 5.0;
+const WINDOW_GROUP_PAD_Y: f32 = 4.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
 const SIDEBAR_BADGE_W: f32 = 26.0;
 
@@ -138,13 +139,17 @@ fn draw_pips(
             .request_repaint_after(std::time::Duration::from_millis(100));
     }
     let painter = ui.painter();
-    let cy = rect.center().y;
+    let cy = rect
+        .center()
+        .y
+        .round_to_pixel_center(painter.pixels_per_point());
     let mut dot_centers = vec![0.0; capped];
     let mut group_rects = Vec::with_capacity(groups.len());
     let mut cursor_x = rect.min.x;
     if groups.is_empty() {
         for (dot_i, center) in dot_centers.iter_mut().enumerate() {
-            *center = cursor_x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS;
+            *center = (cursor_x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS)
+                .round_to_pixel_center(painter.pixels_per_point());
             cursor_x += PANE_DOT_SPACING;
             if dot_i + 1 == capped {
                 let group_rect = egui::Rect::from_min_max(
@@ -155,7 +160,8 @@ fn draw_pips(
                             + WINDOW_GROUP_PAD_X * 2.0,
                         cy + PANE_DOT_RADIUS + WINDOW_GROUP_PAD_Y,
                     ),
-                );
+                )
+                .round_to_pixels(painter.pixels_per_point());
                 painter.rect_filled(
                     group_rect,
                     egui::CornerRadius::same(4),
@@ -176,7 +182,8 @@ fn draw_pips(
                     group_width,
                     PANE_DOT_RADIUS * 2.0 + WINDOW_GROUP_PAD_Y * 2.0,
                 ),
-            );
+            )
+            .round_to_pixels(painter.pixels_per_point());
             let fill = if group.is_active {
                 with_alpha(colors.accent, 0.16 * row_alpha)
             } else {
@@ -189,7 +196,10 @@ fn draw_pips(
             } else if group.is_return_target {
                 egui::Stroke::new(
                     1.5_f32,
-                    with_alpha(colors.text_secondary(colors.bg_sidebar), row_alpha),
+                    // `border` is the theme's quiet structural outline; the
+                    // previous high-contrast text color made this capsule
+                    // compete with the context name and activity dots.
+                    with_alpha(colors.border, row_alpha),
                 )
             } else {
                 egui::Stroke::new(1.0_f32, with_alpha(colors.text_dim, 0.72 * row_alpha))
@@ -203,10 +213,11 @@ fn draw_pips(
             );
             group_rects.push((group, group_rect));
             for dot_i in start..end {
-                dot_centers[dot_i] = cursor_x
+                dot_centers[dot_i] = (cursor_x
                     + WINDOW_GROUP_PAD_X
                     + PANE_DOT_RADIUS
-                    + (dot_i - start) as f32 * PANE_DOT_SPACING;
+                    + (dot_i - start) as f32 * PANE_DOT_SPACING)
+                    .round_to_pixel_center(painter.pixels_per_point());
             }
             cursor_x += group_width;
             if group_i + 1 < groups.len() {
@@ -224,7 +235,7 @@ fn draw_pips(
         if is_dragging && agent_state.is_none() && !focused {
             color = color.gamma_multiply(0.4);
         }
-        let center = egui::pos2(cx, cy);
+        let center = egui::pos2(cx, cy).round_to_pixel_center(painter.pixels_per_point());
         if is_hidden {
             painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0_f32, color));
         } else {

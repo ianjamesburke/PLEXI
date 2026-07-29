@@ -16,7 +16,7 @@ use super::cursor::Cursor;
 use super::highlight::{SpanProvider, TokenKind};
 use super::mode::EditorMode;
 use super::movement::line_text;
-use super::preview::{LinkTarget, MarkdownLayoutCache, MdStyle};
+use super::preview::{is_bare_http_url, LinkTarget, MarkdownLayoutCache, MdStyle};
 use super::view::ViewState;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -434,7 +434,23 @@ impl<'a> EditorWidget<'a> {
             for event in &events {
                 match event {
                     Event::Text(text) => commands.push(EditorCommand::InsertText(text.clone())),
-                    Event::Paste(text) => commands.push(EditorCommand::InsertText(text.clone())),
+                    Event::Paste(text) => {
+                        let replacement = if self.mode.is_markdown()
+                            && self.doc.selection().is_range()
+                            && is_bare_http_url(text)
+                        {
+                            let label = self
+                                .doc
+                                .selected_text()
+                                .replace('\\', "\\\\")
+                                .replace('[', "\\[")
+                                .replace(']', "\\]");
+                            format!("[{label}]({text})")
+                        } else {
+                            text.clone()
+                        };
+                        commands.push(EditorCommand::InsertText(replacement));
+                    }
                     Event::Copy => copy_requested = true,
                     Event::Cut => cut_requested = true,
                     Event::Key {
@@ -443,6 +459,9 @@ impl<'a> EditorWidget<'a> {
                         modifiers,
                         ..
                     } => {
+                        if *key == Key::Backspace && modifiers.command {
+                            log::info!("editor: received Cmd+Backspace key event");
+                        }
                         if let Some(cmd) = translate_key(*key, *modifiers, page_rows, &self.mode) {
                             commands.push(cmd);
                         }
@@ -479,10 +498,7 @@ impl<'a> EditorWidget<'a> {
         let mut link_activation: Option<LinkTarget> = None;
         if let Some(pos) = response.interact_pointer_pos() {
             let cursor = self.hit_test(ui, &font_id, rect, gutter_width, pos);
-            if response.clicked()
-                && ui.input(|i| i.modifiers.command)
-                && self.mode.is_markdown()
-            {
+            if response.clicked() && ui.input(|i| i.modifiers.command) && self.mode.is_markdown() {
                 if let Some(cache) = self.md_cache.as_deref_mut() {
                     let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
                     let text = line_text(self.doc.buffer(), cursor.line);
@@ -547,8 +563,9 @@ impl<'a> EditorWidget<'a> {
             self.view.scroll_to_line(caret.line, line_count);
             // Keep the caret horizontally visible on unwrapped long lines.
             let text = line_text(self.doc.buffer(), caret.line);
-            let galley =
-                ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE));
+            let galley = ui.fonts_mut(|f| {
+                f.layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE)
+            });
             let caret_x = galley
                 .pos_from_cursor(CCursor::new(caret.column.min(text.chars().count())))
                 .left();
@@ -691,7 +708,8 @@ impl<'a> EditorWidget<'a> {
         let y = pos.y - content_top + scroll_y;
         let line = self.view.line_at_y(y, line_count);
         let text = line_text(self.doc.buffer(), line);
-        let galley = ui.fonts_mut(|f| f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE));
+        let galley =
+            ui.fonts_mut(|f| f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE));
         let ccursor = galley.cursor_from_pos(Vec2::new(pos.x - content_left + scroll_x, 0.0));
         Cursor::new(line, ccursor.index)
     }
@@ -782,10 +800,8 @@ impl<'a> EditorWidget<'a> {
             .unwrap_or_else(|| CodeTheme::from_visuals(visuals));
         // Text clips at the gutter edge so horizontal scroll never paints
         // under the line numbers.
-        let text_rect = Rect::from_min_max(
-            egui::pos2(rect.left() + gutter_width, rect.top()),
-            rect.max,
-        );
+        let text_rect =
+            Rect::from_min_max(egui::pos2(rect.left() + gutter_width, rect.top()), rect.max);
         let painter = ui.painter_at(text_rect);
         let selection_color = visuals.selection.bg_fill.linear_multiply(0.5);
         let caret_color = visuals.selection.stroke.color;
@@ -835,9 +851,8 @@ impl<'a> EditorWidget<'a> {
                     font_id.clone(),
                     code_theme.gutter_text,
                 );
-                let number_pos =
-                    egui::pos2(content_left - GUTTER_PAD - number.size().x, top)
-                        .round_to_pixels(ppp);
+                let number_pos = egui::pos2(content_left - GUTTER_PAD - number.size().x, top)
+                    .round_to_pixels(ppp);
                 gutter_painter.galley(number_pos, number, code_theme.gutter_text);
             }
 
@@ -912,8 +927,7 @@ impl<'a> EditorWidget<'a> {
             let rendered = galley.text();
             if !rendered.is_empty() {
                 let node_id = egui::Id::new((widget_id, "editor_rendered_row", line));
-                let node_rect =
-                    Rect::from_min_size(egui::pos2(origin.x, top), galley.size());
+                let node_rect = Rect::from_min_size(egui::pos2(origin.x, top), galley.size());
                 ui.ctx().accesskit_node_builder(node_id, |node| {
                     node.set_role(egui::accesskit::Role::Paragraph);
                     node.set_value(rendered);
@@ -976,9 +990,9 @@ impl<'a> EditorWidget<'a> {
                     if extra <= 0.0 {
                         continue;
                     }
-                    let strip_top =
-                        content_top + self.view.line_top(*line) - scroll_y + self.view.line_height
-                            + IMAGE_PAD;
+                    let strip_top = content_top + self.view.line_top(*line) - scroll_y
+                        + self.view.line_height
+                        + IMAGE_PAD;
                     let height = extra - 2.0 * IMAGE_PAD;
                     let left = content_left + IMAGE_PAD - scroll_x;
                     match cache.get(ui.ctx(), base, dest) {
@@ -1016,8 +1030,7 @@ impl<'a> EditorWidget<'a> {
                                 egui::Stroke::new(1.0_f32, weak),
                                 egui::StrokeKind::Inside,
                             );
-                            let label_galley =
-                                painter.layout_no_wrap(label, font_id.clone(), weak);
+                            let label_galley = painter.layout_no_wrap(label, font_id.clone(), weak);
                             let label_pos = egui::pos2(
                                 strip_rect.left() + 8.0,
                                 strip_rect.center().y - label_galley.size().y / 2.0,
@@ -1067,9 +1080,7 @@ fn translate_key(
             Key::Tab if modifiers.shift => return Some(EditorCommand::MarkdownOutdent),
             Key::Tab if modifiers.is_none() => return Some(EditorCommand::MarkdownIndent),
             Key::Enter if modifiers.is_none() => return Some(EditorCommand::MarkdownNewline),
-            Key::Backspace if modifiers.is_none() => {
-                return Some(EditorCommand::MarkdownBackspace)
-            }
+            Key::Backspace if modifiers.is_none() => return Some(EditorCommand::MarkdownBackspace),
             _ => {}
         }
     }
@@ -1090,6 +1101,9 @@ fn translate_key(
         Key::ArrowDown => mv(Movement::Down),
         Key::Home => mv(Movement::LineStart),
         Key::End => mv(Movement::LineEnd),
+        Key::Backspace if modifiers.command && !modifiers.shift && !modifiers.alt => {
+            Some(EditorCommand::KillToLineStart)
+        }
         Key::Backspace => Some(EditorCommand::Backspace),
         Key::Delete => Some(EditorCommand::DeleteForward),
         Key::Enter => Some(EditorCommand::InsertNewline),
@@ -1243,8 +1257,8 @@ mod tests {
         };
         egui_kittest::Harness::new_ui_state(
             |ui, state: &mut ModeState| {
-                let mut widget = EditorWidget::new(&mut state.doc, &mut state.view)
-                    .mode(state.mode.clone());
+                let mut widget =
+                    EditorWidget::new(&mut state.doc, &mut state.view).mode(state.mode.clone());
                 if let Some(h) = &mut state.highlighter {
                     widget = widget.span_provider(h);
                 }
@@ -1301,7 +1315,9 @@ mod tests {
         // the document (text, selection, undo history, IME) may change.
         for mode in [
             EditorMode::PlainText,
-            EditorMode::Markdown { live_preview: false },
+            EditorMode::Markdown {
+                live_preview: false,
+            },
             EditorMode::Markdown { live_preview: true },
             EditorMode::Code {
                 language: "py".into(),
@@ -1329,7 +1345,10 @@ mod tests {
         let mode = EditorMode::Code {
             language: "not-a-language".into(),
         };
-        assert!(mode.language().and_then(crate::editor::SyntaxHighlighter::new).is_none());
+        assert!(mode
+            .language()
+            .and_then(crate::editor::SyntaxHighlighter::new)
+            .is_none());
         // The widget still renders and edits without a provider.
         let mut h = mode_harness("some text", mode);
         h.event(Event::Text("!".into()));
@@ -1380,7 +1399,10 @@ mod tests {
         // Undo through the shared history, unchanged by preview rendering.
         h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         h.step();
-        assert_eq!(h.state().doc.text(), "# Title\n\npara **bold** text\n\n- item");
+        assert_eq!(
+            h.state().doc.text(),
+            "# Title\n\npara **bold** text\n\n- item"
+        );
         // Cross-block select-all + copy path still sees the full source.
         h.key_press_modifiers(Modifiers::COMMAND, Key::A);
         h.step();
@@ -1420,6 +1442,49 @@ mod tests {
         h.event(Event::Paste("XY".into()));
         h.step();
         assert_eq!(semantic(&h).text, "aXYb");
+    }
+
+    #[test]
+    fn command_backspace_reaches_editor_and_kills_to_line_start() {
+        let mut h = harness("one\nsecond");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
+        h.step();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Backspace);
+        h.step();
+        assert_eq!(semantic(&h).text, "one\n");
+        assert_eq!(
+            translate_key(
+                Key::Backspace,
+                Modifiers::COMMAND,
+                1,
+                &EditorMode::PlainText
+            ),
+            Some(EditorCommand::KillToLineStart)
+        );
+    }
+
+    #[test]
+    fn markdown_url_paste_over_selection_wraps_once_and_other_pastes_do_not() {
+        let mut h = preview_harness("Plexi");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.step();
+        h.event(Event::Paste("https://plexiapp.com".into()));
+        h.step();
+        assert_eq!(h.state().doc.text(), "[Plexi](https://plexiapp.com)");
+        h.state_mut().doc.apply(EditorCommand::Undo);
+        h.event(Event::Paste("not a URL".into()));
+        h.step();
+        assert_eq!(h.state().doc.text(), "not a URL");
+
+        let mut h = preview_harness("foo]bar\\baz");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.step();
+        h.event(Event::Paste("https://plexiapp.com".into()));
+        h.step();
+        assert_eq!(
+            h.state().doc.text(),
+            "[foo\\]bar\\\\baz](https://plexiapp.com)"
+        );
     }
 
     #[test]
