@@ -147,8 +147,8 @@ impl PlexiApp {
         focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
     ) {
         let ctx = ui.ctx().clone();
-        // Taken by the CentralPanel's tiling behavior below; rebind as `mut`
-        // so it can be `.take()`n into the behavior for the focused terminal.
+        // Taken exactly once by whichever production path renders the focused
+        // terminal this frame: the tiling behavior or the zoom overlay.
         let mut focused_terminal_input = focused_terminal_input;
         // Toolbar
         egui::Panel::top("toolbar")
@@ -464,6 +464,15 @@ impl PlexiApp {
                 ctx.assert_focus_invariants();
 
                 let zoomed_pane = ctx.zoomed_pane;
+                // The tiled tree intentionally paints only placeholders while
+                // zoomed, so retain the ownership-transferred keyboard buffer
+                // for the overlay's direct TerminalView instead of handing it
+                // to a behavior that cannot consume it.
+                let mut zoomed_terminal_input = if zoomed_pane.is_some() {
+                    focused_terminal_input.take()
+                } else {
+                    None
+                };
                 let tab_info = ctx.compute_tab_info();
                 let pane_names: HashMap<PaneId, String> = ctx
                     .panes
@@ -898,6 +907,16 @@ impl PlexiApp {
                                                     crate::ui::focus::SurfaceKey::Pane(pane_id),
                                                     egui_term::terminal_widget_id(pane_id),
                                                 );
+                                                let terminal_input =
+                                                    zoomed_terminal_input.take().unwrap_or_else(
+                                                        || {
+                                                            crate::render::terminal_pane::TerminalInput {
+                                                                keyboard_events: Vec::new(),
+                                                                modifiers: ui
+                                                                    .input(|input| input.modifiers),
+                                                            }
+                                                        },
+                                                    );
                                                 let terminal = TerminalView::new(ui, &mut t.backend)
                                                     .set_focus(owner_pane == Some(pane_id))
                                                     .set_theme(self.theme.clone())
@@ -905,7 +924,11 @@ impl PlexiApp {
                                                     .set_size(Vec2::new(
                                                         ui.available_width(),
                                                         ui.available_height(),
-                                                    ));
+                                                    ))
+                                                    .with_input(
+                                                        terminal_input.keyboard_events,
+                                                        terminal_input.modifiers,
+                                                    );
                                                 ui.add(terminal);
                                                 log::debug!("[DRAG] zoom overlay: TerminalView render done");
                                             }

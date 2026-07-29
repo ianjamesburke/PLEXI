@@ -3810,6 +3810,91 @@ fn note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
         .expect("notes semantics")
 }
 
+// -- stint 0627: fullscreen terminal input -----------------------------------
+
+fn zoom_focused_pane_through_shortcut(h: &mut HostHarness, pane_id: PaneId) {
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+
+    let tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&pane_id)
+        .expect("focused pane must have a tile");
+    assert_eq!(
+        h.app.windows[0].zoomed_pane,
+        Some(tile),
+        "Cmd+Enter must fullscreen the focused pane through ToggleZoom"
+    );
+}
+
+fn type_x_through_raw_input(h: &mut HostHarness) {
+    let input =
+        crate::app::key_str_to_egui_raw_input("x").expect("printable key must map to RawInput");
+    h.frame(input);
+}
+
+/// Passing control for stint 0627: physical printable-key input reaches a
+/// focused terminal while it remains in the ordinary tiled layout.
+#[test]
+fn fullscreen_input_conjunction_tiled_terminal_reaches_pty() {
+    let mut h = HostHarness::new();
+    let terminal = h.add_focused_terminal();
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "control must remain tiled"
+    );
+
+    h.terminal_backend(terminal).enable_input_tap();
+    type_x_through_raw_input(&mut h);
+
+    assert_eq!(
+        h.terminal_backend(terminal).take_input_tap(),
+        b"x",
+        "tiled terminal must receive printable-key bytes"
+    );
+}
+
+/// Failing repro for stint 0627: the same physical printable-key input and
+/// terminal backend used by the tiled control must still reach the PTY after
+/// production Cmd+Enter fullscreening.
+#[test]
+fn fullscreen_input_conjunction_fullscreen_terminal_reaches_pty() {
+    let mut h = HostHarness::new();
+    let terminal = h.add_focused_terminal();
+    zoom_focused_pane_through_shortcut(&mut h, terminal);
+
+    h.terminal_backend(terminal).enable_input_tap();
+    type_x_through_raw_input(&mut h);
+
+    assert_eq!(
+        h.terminal_backend(terminal).take_input_tap(),
+        b"x",
+        "fullscreen terminal must receive the same printable-key bytes as tiled"
+    );
+}
+
+/// Passing control for stint 0627: fullscreen itself does not suppress input;
+/// a fullscreened editor receives the identical production RawInput and
+/// updates its observable document semantics.
+#[test]
+fn fullscreen_input_conjunction_fullscreen_editor_updates_body() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let editor = open_focused_note(&mut h, tmp.path(), "");
+    zoom_focused_pane_through_shortcut(&mut h, editor);
+
+    type_x_through_raw_input(&mut h);
+
+    assert_eq!(
+        note_semantics(&h, editor)["source_text"],
+        "x",
+        "fullscreen editor must consume the same printable-key RawInput"
+    );
+}
+
 /// A fresh scratch editor opened while the host is occluded still owns input
 /// once it becomes visible: pane text waits for the editor's first focusable
 /// render instead of being discarded by that render's preamble.
