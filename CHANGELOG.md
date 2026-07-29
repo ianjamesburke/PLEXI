@@ -1,6 +1,29 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.1] — 2026-07-29
+
+### Changes
+- Notification lifecycle controls (#2521)
+- feat(host): add pane heartbeat timer (#2519)
+- fix(host): restore fullscreen terminal input (#2518)
+- fix: harden agent lifecycle and CLI transport (#2517)
+- Fix scene-live warning-gated build (#2516)
+- feat(editor): add soft wrapping for notes (#2515)
+- feat: polish editor links and sidebar dots (#2514)
+- host: guard pane state and add background launch mode (#2512)
+- feat(cli): retire pane orchestration workarounds (#2511)
+- feat(cli): agent orchestration verbs — pane send --submit, pane new --agent, pane slot wait (#2510)
+- feat(routines): write-side CLI verbs, single schema, routine run context parity (#2509)
+- fix(routines): schedule parser accepts documented syntax; lifecycle hardening; firing-path tests (#2508)
+- distribution: publish plexi-cli skill via npx skills, version-lockstep release gate (#2507)
+- feat(host/notifications): one enqueue choke point, audible cue, context-by-default scope (#2506)
+- feat(ui/sidebar): subcontexts have no sidebar presence (#2505)
+- fix(testing): test processes route away from the login keychain; would-be prompts become errors (#2504)
+- feat(palette): agent panes as command palette results (#2502)
+- feat(cli): plexi context sub — one command, N agent panes in a subcontext (#2500)
+- feat(ai): local OpenAI-compatible broker backend for Meridian testing (#2501)
+- feat(assistant): host.net.fetch URL-fetch tool behind net.http (#2498)
 ## [0.2.0] — 2026-07-23
 
 ### Changes
