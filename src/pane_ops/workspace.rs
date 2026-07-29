@@ -675,9 +675,17 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        // Push an empty window, then seed its base root pane in place through the
-        // shared installer. `active_window` still points at the previous window
-        // here, preserving `create_single_pane_tree`'s historical env context.
+        let ctx_name = format!("Context {}", self.router.len() + 1);
+        let context_env = super::create::PaneContextEnv {
+            context_id: ctx_id,
+            name: ctx_name.clone(),
+            description: String::new(),
+            root: Some(cwd.clone()),
+            depth: 0,
+        };
+
+        // Push an empty window, then seed its base root pane with the new
+        // context's identity before it is registered in the router.
         self.windows.push(Window {
             name: String::new(),
             path: cwd.clone(),
@@ -692,7 +700,7 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         if self
-            .seed_window_root_pane(new_idx, cwd.clone(), None, false)
+            .seed_window_root_pane(new_idx, &context_env, cwd.clone(), None, false)
             .is_none()
         {
             log::error!("new_context_empty: failed to seed root pane — aborting new context");
@@ -700,7 +708,6 @@ impl PlexiApp {
             return;
         }
 
-        let ctx_name = format!("Context {}", self.router.len() + 1);
         self.router.push(crate::host::context::Context {
             name: ctx_name,
             path: cwd.clone(),
@@ -743,34 +750,8 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        // Push an empty window, then seed its base root pane in place through the
-        // shared installer (see `new_context_empty` for the active_window note).
-        self.windows.push(Window {
-            name: String::new(),
-            path: path.clone(),
-            tree: egui_tiles::Tree::empty("plexi"),
-            panes: HashMap::new(),
-            focused_pane: None,
-            zoomed_pane: None,
-            grid_x: 0,
-            grid_y: 0,
-            window_id: win_id,
-            context_id: ctx_id,
-        });
-        let new_idx = self.windows.len() - 1;
-        if self
-            .seed_window_root_pane(new_idx, path.clone(), None, false)
-            .is_none()
-        {
-            log::error!(
-                "new_context_at_path: failed to seed root pane for {} — aborting new context",
-                path.display()
-            );
-            self.windows.pop();
-            return;
-        }
-
-        // Check for anchor defaults from .plexi/workspace.toml [context] section.
+        // Resolve the identity before spawning: the root pane starts before this
+        // context is registered in the router.
         let anchor = crate::host::anchor::Anchor::detect(&path);
         let (ctx_name, ctx_description) =
             match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
@@ -795,6 +776,40 @@ impl PlexiApp {
                     (name, None)
                 }
             };
+        let context_env = super::create::PaneContextEnv {
+            context_id: ctx_id,
+            name: ctx_name.clone(),
+            description: ctx_description.clone().unwrap_or_default(),
+            root: Some(path.clone()),
+            depth: 0,
+        };
+
+        // Push an empty window, then seed its base root pane in place with the
+        // context identity resolved above.
+        self.windows.push(Window {
+            name: String::new(),
+            path: path.clone(),
+            tree: egui_tiles::Tree::empty("plexi"),
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        let new_idx = self.windows.len() - 1;
+        if self
+            .seed_window_root_pane(new_idx, &context_env, path.clone(), None, false)
+            .is_none()
+        {
+            log::error!(
+                "new_context_at_path: failed to seed root pane for {} — aborting new context",
+                path.display()
+            );
+            self.windows.pop();
+            return;
+        }
 
         self.router.push(crate::host::context::Context {
             name: ctx_name,
@@ -855,9 +870,13 @@ impl PlexiApp {
             "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
             cwd.display()
         );
-        let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
-        else {
+        let context_env = self.pane_context_env_for_context(context_id);
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(
+            &context_env,
+            Some(cwd.clone()),
+            initial_cmd,
+            close_on_exit,
+        ) else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
         };
@@ -903,12 +922,13 @@ impl PlexiApp {
     pub(crate) fn seed_window_root_pane(
         &mut self,
         win_idx: usize,
+        context: &super::create::PaneContextEnv,
         cwd: PathBuf,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
         let (tree, panes, root_tile) =
-            self.create_single_pane_tree(Some(cwd), initial_cmd, close_on_exit)?;
+            self.create_single_pane_tree(context, Some(cwd), initial_cmd, close_on_exit)?;
         let pane_id = *panes
             .keys()
             .next()
@@ -944,8 +964,9 @@ impl PlexiApp {
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         let active = self.active_window;
+        let context = self.pane_context_env_for_window(active);
         let Some((pane_id, _root_tile)) =
-            self.seed_window_root_pane(active, cwd, initial_cmd, close_on_exit)
+            self.seed_window_root_pane(active, &context, cwd, initial_cmd, close_on_exit)
         else {
             log::error!("seed_root_pane: failed to create terminal for empty active window");
             return None;
@@ -964,7 +985,9 @@ impl PlexiApp {
             cwd.display(),
             self.router.active().root
         );
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd), None, false)
+        let context = self.pane_context_env_for_window(self.active_window);
+        let Some((tree, panes, root_tile)) =
+            self.create_single_pane_tree(&context, Some(cwd), None, false)
         else {
             log::error!("Failed to create terminal for reset context");
             return;

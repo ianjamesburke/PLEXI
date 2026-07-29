@@ -1762,8 +1762,9 @@ impl PlexiApp {
         // workspace path returns earlier and is untouched. The welcome screen
         // still renders for any genuinely-empty window elsewhere.
         let seed_cwd = app.windows[0].path.clone();
+        let seed_context = app.pane_context_env_for_window(0);
         if app
-            .seed_window_root_pane(0, seed_cwd, None, false)
+            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false)
             .is_some()
         {
             log::info!("first boot: seeded base root pane in context 1");

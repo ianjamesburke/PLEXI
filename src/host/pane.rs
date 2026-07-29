@@ -669,6 +669,9 @@ pub struct TerminalPane {
     /// redraw (Claude Code, Codex) never advances that counter, so it would
     /// report a busy pane as idle.
     pub last_pty_output_at: Option<std::time::Instant>,
+    /// Test-only copy of the environment handed to the PTY constructor.
+    #[cfg(test)]
+    pub spawn_env: HashMap<String, String>,
 }
 
 impl TerminalPane {
@@ -679,6 +682,8 @@ impl TerminalPane {
         settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
+        #[cfg(test)]
+        let spawn_env = settings.env.clone();
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
             Ok(b) => b,
             Err(e) => {
@@ -705,6 +710,8 @@ impl TerminalPane {
             activity: None,
             slots: HashMap::new(),
             last_pty_output_at: None,
+            #[cfg(test)]
+            spawn_env,
         })
     }
 }

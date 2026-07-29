@@ -183,6 +183,26 @@ pub(crate) fn restore_assistant_pane(
 }
 
 impl PlexiApp {
+    /// Resolve the environment identity for a pane owned by `win_idx`.
+    ///
+    /// The caller supplies the target window explicitly; this must never use
+    /// `active_window` or `router.active()`, since a command can create panes
+    /// outside the currently visible context.
+    pub(crate) fn pane_context_env_for_window(&self, win_idx: usize) -> PaneContextEnv {
+        let context_id = self.windows[win_idx].context_id;
+        self.pane_context_env_for_context(context_id)
+    }
+
+    /// Resolve a registered context's identity for a pane about to spawn.
+    pub(crate) fn pane_context_env_for_context(&self, context_id: u64) -> PaneContextEnv {
+        PaneContextEnv {
+            context_id,
+            name: self.context_name_for(context_id),
+            description: self.context_description_for(context_id),
+            root: self.context_root_for(context_id),
+            depth: self.context_depth_for(context_id),
+        }
+    }
     /// Convert a manifest-declared share fraction (0.0..1.0 exclusive) to a `ShareRatio`.
     /// Validates the range and falls back to 0.5 (1:1) on invalid input, logging a warning.
     fn share_ratio_from_fraction(app_id: &str, fraction: Option<f32>) -> ShareRatio {
@@ -920,30 +940,21 @@ impl PlexiApp {
 
     pub(super) fn create_single_pane_tree(
         &mut self,
+        context: &PaneContextEnv,
         cwd: Option<PathBuf>,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
-
-        let ctx_id = self
-            .windows
-            .get(self.active_window)
-            .map(|w| w.context_id)
-            .unwrap_or(0);
-        let ctx_name = self.context_name_for(ctx_id);
-        let ctx_desc = self.context_description_for(ctx_id);
-        let ctx_root = self.context_root_for(ctx_id);
-        let ctx_depth = self.context_depth_for(ctx_id);
         let mut settings = Self::make_backend_settings(
             new_id,
             cwd,
             &self.colors,
-            ctx_id,
-            &ctx_name,
-            &ctx_desc,
-            ctx_root.as_ref(),
-            ctx_depth,
+            context.context_id,
+            &context.name,
+            &context.description,
+            context.root.as_ref(),
+            context.depth,
         );
         if let Some(cmd) = initial_cmd {
             log::info!(
@@ -986,11 +997,7 @@ impl PlexiApp {
         keep_focus: bool,
     ) -> crate::spatial::tiling::PaneId {
         let new_id = self.host.alloc_pane_id();
-        let ctx_id = self.windows[win_idx].context_id;
-        let ctx_name = self.context_name_for(ctx_id);
-        let ctx_desc = self.context_description_for(ctx_id);
-        let ctx_root = self.context_root_for(ctx_id);
-        let ctx_depth = self.context_depth_for(ctx_id);
+        let context = self.pane_context_env_for_window(win_idx);
         let cwd = cwd_override.or_else(|| self.windows[win_idx].get_focused_pane_cwd(target_tile));
         log::info!(
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
@@ -1000,11 +1007,11 @@ impl PlexiApp {
             new_id,
             cwd,
             &self.colors,
-            ctx_id,
-            &ctx_name,
-            &ctx_desc,
-            ctx_root.as_ref(),
-            ctx_depth,
+            context.context_id,
+            &context.name,
+            &context.description,
+            context.root.as_ref(),
+            context.depth,
         );
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
