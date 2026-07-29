@@ -14,6 +14,7 @@ use egui::{Color32, Event, ImeEvent, Key, Modifiers, Rect, Sense, Ui, Vec2};
 use super::commands::{Document, EditorCommand, Movement};
 use super::cursor::Cursor;
 use super::highlight::{SpanProvider, TokenKind};
+use super::layout::{DisplayLayout, LineLayout};
 use super::mode::EditorMode;
 use super::movement::line_text;
 use super::preview::{is_bare_http_url, LinkTarget, MarkdownLayoutCache, MdStyle};
@@ -21,6 +22,7 @@ use super::view::ViewState;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Horizontal padding on each side of the gutter's line numbers.
 const GUTTER_PAD: f32 = 6.0;
@@ -49,6 +51,118 @@ fn caret_blink_visible(elapsed_since_activity: f64, interval: f64) -> bool {
 fn caret_blink_next_toggle(elapsed_since_activity: f64, interval: f64) -> f64 {
     let elapsed = elapsed_since_activity.max(0.0);
     interval - (elapsed % interval)
+}
+
+fn galley_range_rects(galley: &egui::Galley, range: std::ops::Range<usize>) -> Vec<Rect> {
+    if range.is_empty() {
+        return Vec::new();
+    }
+    let mut row_start = 0;
+    let mut rects = Vec::new();
+    for row in &galley.rows {
+        let row_end = row_start + row.char_count_excluding_newline();
+        let from = range.start.max(row_start);
+        let to = range.end.min(row_end);
+        if from < to {
+            let x0 = row.pos.x + row.x_offset(from - row_start);
+            let x1 = row.pos.x + row.x_offset(to - row_start);
+            rects.push(Rect::from_min_max(
+                egui::pos2(x0, row.rect().top()),
+                egui::pos2(x1, row.rect().bottom()),
+            ));
+        }
+        row_start = row_end;
+    }
+    rects
+}
+
+#[derive(Clone)]
+struct DisplayGalley {
+    galley: std::sync::Arc<egui::Galley>,
+    display_to_source: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct GeometryCache {
+    revision: u64,
+    width_bits: u32,
+    pixels_per_point_bits: u32,
+    soft_wrap: bool,
+    font_id: egui::FontId,
+    galleys: Vec<DisplayGalley>,
+}
+
+fn prepared_display_text(
+    ui: &Ui,
+    font_id: &egui::FontId,
+    source: &str,
+    wrap_width: f32,
+) -> (String, Vec<usize>) {
+    if !wrap_width.is_finite() {
+        return (source.to_string(), (0..=source.chars().count()).collect());
+    }
+    let mut display = String::new();
+    let mut display_to_source = vec![0];
+    let mut source_column = 0;
+    for segment in source.split_inclusive(char::is_whitespace) {
+        let segment_width = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(segment.to_string(), font_id.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        });
+        let add_grapheme_breaks = segment_width > wrap_width;
+        for (index, grapheme) in segment.graphemes(true).enumerate() {
+            if add_grapheme_breaks && index > 0 {
+                display.push(' ');
+                display_to_source.push(source_column);
+            }
+            for ch in grapheme.chars() {
+                display.push(ch);
+                source_column += 1;
+                display_to_source.push(source_column);
+            }
+        }
+    }
+    (display, display_to_source)
+}
+
+fn prepare_layout_job(
+    mut source_job: LayoutJob,
+    display_text: &str,
+    display_to_source: &[usize],
+) -> LayoutJob {
+    if source_job.text == display_text {
+        return source_job;
+    }
+    let source_text = std::mem::take(&mut source_job.text);
+    let source_char_bytes: Vec<usize> = source_text
+        .char_indices()
+        .map(|(byte, _)| byte)
+        .chain(std::iter::once(source_text.len()))
+        .collect();
+    let mut job = LayoutJob::default();
+    job.wrap = source_job.wrap;
+    for (display_column, ch) in display_text.chars().enumerate() {
+        let source_column =
+            display_to_source[display_column].min(source_char_bytes.len().saturating_sub(1));
+        let source_byte = source_char_bytes[source_column];
+        let mut format = source_job
+            .sections
+            .iter()
+            .find(|section| {
+                section.byte_range.contains(&source_byte)
+                    || (source_byte == source_text.len()
+                        && section.byte_range.end == source_text.len())
+            })
+            .map_or_else(TextFormat::default, |section| section.format.clone());
+        if display_to_source[display_column] == display_to_source[display_column + 1] {
+            format.font_id.size = 0.01;
+            format.extra_letter_spacing = 0.0;
+        }
+        job.append(&ch.to_string(), 0.0, format);
+    }
+    job
 }
 
 /// Theme colors for code-mode chrome and syntax token kinds. Callers build
@@ -410,9 +524,29 @@ impl<'a> EditorWidget<'a> {
         self.view.line_height = line_height;
         self.view.viewport_height = rect.height();
         self.view.viewport_width = rect.width() - gutter_width;
+        let soft_wrap = !self.mode.is_code();
+        if soft_wrap {
+            self.view.scroll_x = 0.0;
+            let logged_id = id.with("soft_wrap_logged");
+            let already_logged =
+                ui.memory(|memory| memory.data.get_temp::<bool>(logged_id).unwrap_or(false));
+            if !already_logged {
+                log::info!(
+                    "editor: soft wrap active mode={} width={:.1}",
+                    self.mode.describe(),
+                    self.view.viewport_width
+                );
+                ui.memory_mut(|memory| memory.data.insert_temp(logged_id, true));
+            }
+        }
+        let geometry_cache_id = id.with("display_geometry");
+        let mut line_galleys =
+            self.cached_geometry_galleys(ui, &font_id, soft_wrap, geometry_cache_id);
+        self.update_display_layout(&line_galleys);
         let page_rows = ((rect.height() / line_height).floor().max(1.0)) as usize;
 
         let mut commands: Vec<EditorCommand> = Vec::new();
+        let revision_before_commands = self.doc.revision();
         let mut copy_requested = false;
         let mut cut_requested = false;
 
@@ -496,8 +630,9 @@ impl<'a> EditorWidget<'a> {
         // over a link span activates the link instead of moving the caret;
         // every other click keeps ordinary caret semantics.
         let mut link_activation: Option<LinkTarget> = None;
+        let mut pointer_visual_row: Option<usize> = None;
         if let Some(pos) = response.interact_pointer_pos() {
-            let cursor = self.hit_test(ui, &font_id, rect, gutter_width, pos);
+            let (cursor, hit_row) = self.hit_test(ui, rect, gutter_width, pos, &line_galleys);
             if response.clicked() && ui.input(|i| i.modifiers.command) && self.mode.is_markdown() {
                 if let Some(cache) = self.md_cache.as_deref_mut() {
                     let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
@@ -516,20 +651,118 @@ impl<'a> EditorWidget<'a> {
                 } else if response.double_clicked() {
                     commands.push(EditorCommand::SelectWordAt(cursor));
                 } else if response.drag_started() || response.clicked() {
+                    pointer_visual_row = Some(hit_row);
                     if ui.input(|i| i.modifiers.shift) {
                         commands.push(EditorCommand::ExtendTo(cursor));
                     } else {
                         commands.push(EditorCommand::SetCursor(cursor));
                     }
                 } else if response.dragged() {
+                    pointer_visual_row = Some(hit_row);
                     commands.push(EditorCommand::ExtendTo(cursor));
                 }
             }
         }
 
         let edited = !commands.is_empty();
+        let visual_goal_id = id.with("visual_goal_x");
+        let visual_row_id = id.with("visual_row");
+        let mut visual_goal_x = ui.memory(|memory| memory.data.get_temp::<f32>(visual_goal_id));
+        let mut visual_row = ui.memory(|memory| memory.data.get_temp::<usize>(visual_row_id));
         for command in commands {
-            self.doc.apply(command);
+            match command {
+                EditorCommand::Move { movement, extend }
+                    if soft_wrap
+                        && matches!(
+                            movement,
+                            Movement::Up
+                                | Movement::Down
+                                | Movement::VisualLineStart
+                                | Movement::VisualLineEnd
+                                | Movement::PageUp(_)
+                                | Movement::PageDown(_)
+                        ) =>
+                {
+                    let head = self.doc.cursor();
+                    let current_row =
+                        visual_row.unwrap_or_else(|| self.view.layout.display_row_for_cursor(head));
+                    let vertical = matches!(
+                        movement,
+                        Movement::Up | Movement::Down | Movement::PageUp(_) | Movement::PageDown(_)
+                    );
+                    let goal = if vertical {
+                        *visual_goal_x.get_or_insert_with(|| {
+                            self.cursor_display_x(head, &line_galleys, Some(current_row))
+                        })
+                    } else {
+                        visual_goal_x = None;
+                        0.0
+                    };
+                    let cursor = self.visual_movement_cursor(
+                        head,
+                        movement,
+                        goal,
+                        &line_galleys,
+                        Some(current_row),
+                    );
+                    visual_row = Some(match movement {
+                        Movement::Up => current_row.saturating_sub(1),
+                        Movement::Down => (current_row + 1)
+                            .min(self.view.layout.display_row_count().saturating_sub(1)),
+                        Movement::PageUp(rows) => current_row.saturating_sub(rows.max(1)),
+                        Movement::PageDown(rows) => (current_row + rows.max(1))
+                            .min(self.view.layout.display_row_count().saturating_sub(1)),
+                        _ => current_row,
+                    });
+                    self.doc.apply(if extend {
+                        EditorCommand::ExtendTo(cursor)
+                    } else {
+                        EditorCommand::SetCursor(cursor)
+                    });
+                }
+                other => {
+                    if !matches!(
+                        other,
+                        EditorCommand::Move {
+                            movement: Movement::Up | Movement::Down,
+                            ..
+                        }
+                    ) {
+                        visual_goal_x = None;
+                        visual_row = None;
+                    }
+                    self.doc.apply(other);
+                }
+            }
+        }
+        if let Some(row) = pointer_visual_row {
+            visual_row = Some(row);
+        }
+        ui.memory_mut(|memory| {
+            if let Some(goal) = visual_goal_x {
+                memory.data.insert_temp(visual_goal_id, goal);
+            } else {
+                memory.data.remove::<f32>(visual_goal_id);
+            }
+            if let Some(row) = visual_row {
+                memory.data.insert_temp(visual_row_id, row);
+            } else {
+                memory.data.remove::<usize>(visual_row_id);
+            }
+        });
+
+        // Edits can change row breaks. Rebuild before viewport/caret geometry
+        // and painting; source remains authoritative throughout.
+        if self.doc.revision() != revision_before_commands {
+            line_galleys = self.geometry_galleys(ui, &font_id, soft_wrap);
+            self.store_geometry_cache(
+                ui,
+                &font_id,
+                soft_wrap,
+                geometry_cache_id,
+                line_galleys.clone(),
+            );
+            self.update_display_layout(&line_galleys);
         }
 
         // Live Preview: the blocks intersecting the selection reveal raw
@@ -554,22 +787,19 @@ impl<'a> EditorWidget<'a> {
             let scroll = ui.input(|i| i.smooth_scroll_delta);
             if scroll != egui::Vec2::ZERO {
                 self.view.scroll_y -= scroll.y;
-                self.view.scroll_x = (self.view.scroll_x - scroll.x).max(0.0);
+                if !soft_wrap {
+                    self.view.scroll_x = (self.view.scroll_x - scroll.x).max(0.0);
+                }
             }
         }
         self.view.clamp_scroll(line_count);
         if edited {
             let caret = self.doc.cursor();
-            self.view.scroll_to_line(caret.line, line_count);
-            // Keep the caret horizontally visible on unwrapped long lines.
-            let text = line_text(self.doc.buffer(), caret.line);
-            let galley = ui.fonts_mut(|f| {
-                f.layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE)
-            });
-            let caret_x = galley
-                .pos_from_cursor(CCursor::new(caret.column.min(text.chars().count())))
-                .left();
-            self.view.scroll_to_x(caret_x);
+            self.view.scroll_to_cursor(caret, line_count);
+            if !soft_wrap {
+                self.view
+                    .scroll_to_x(self.cursor_display_x(caret, &line_galleys, None));
+            }
         }
 
         // Blinking caret (only while this widget owns input). Any command this
@@ -610,12 +840,216 @@ impl<'a> EditorWidget<'a> {
             gutter_width,
             md_active,
             &image_rows,
+            &line_galleys,
+            visual_row,
             caret_visible,
         );
         EditorOutput {
             response,
             link_activation,
         }
+    }
+
+    fn geometry_galleys(
+        &self,
+        ui: &Ui,
+        font_id: &egui::FontId,
+        soft_wrap: bool,
+    ) -> Vec<DisplayGalley> {
+        let wrap_width = if soft_wrap {
+            self.view.viewport_width.max(1.0)
+        } else {
+            f32::INFINITY
+        };
+        (0..self.doc.buffer().line_count())
+            .map(|line| {
+                let text = line_text(self.doc.buffer(), line);
+                let (display_text, display_to_source) =
+                    prepared_display_text(ui, font_id, &text, wrap_width);
+                let source_job =
+                    LayoutJob::simple_singleline(text, font_id.clone(), egui::Color32::WHITE);
+                let mut job = prepare_layout_job(source_job, &display_text, &display_to_source);
+                job.wrap.max_width = wrap_width;
+                // Prefer Unicode line-break opportunities. Egui still breaks
+                // an individually overlong word to keep the width bound.
+                job.wrap.break_anywhere = false;
+                DisplayGalley {
+                    galley: ui.fonts_mut(|fonts| fonts.layout_job(job)),
+                    display_to_source,
+                }
+            })
+            .collect()
+    }
+
+    fn cached_geometry_galleys(
+        &self,
+        ui: &Ui,
+        font_id: &egui::FontId,
+        soft_wrap: bool,
+        cache_id: egui::Id,
+    ) -> Vec<DisplayGalley> {
+        let revision = self.doc.revision();
+        let width_bits = self.view.viewport_width.to_bits();
+        let pixels_per_point_bits = ui.ctx().pixels_per_point().to_bits();
+        if let Some(cache) = ui.memory(|memory| memory.data.get_temp::<GeometryCache>(cache_id)) {
+            if cache.revision == revision
+                && cache.width_bits == width_bits
+                && cache.pixels_per_point_bits == pixels_per_point_bits
+                && cache.soft_wrap == soft_wrap
+                && cache.font_id == *font_id
+            {
+                return cache.galleys;
+            }
+        }
+        let galleys = self.geometry_galleys(ui, font_id, soft_wrap);
+        self.store_geometry_cache(ui, font_id, soft_wrap, cache_id, galleys.clone());
+        galleys
+    }
+
+    fn store_geometry_cache(
+        &self,
+        ui: &Ui,
+        font_id: &egui::FontId,
+        soft_wrap: bool,
+        cache_id: egui::Id,
+        galleys: Vec<DisplayGalley>,
+    ) {
+        let pixels_per_point_bits = ui.ctx().pixels_per_point().to_bits();
+        ui.memory_mut(|memory| {
+            memory.data.insert_temp(
+                cache_id,
+                GeometryCache {
+                    revision: self.doc.revision(),
+                    width_bits: self.view.viewport_width.to_bits(),
+                    pixels_per_point_bits,
+                    soft_wrap,
+                    font_id: font_id.clone(),
+                    galleys,
+                },
+            );
+        });
+    }
+
+    fn update_display_layout(&mut self, galleys: &[DisplayGalley]) {
+        let lines = galleys
+            .iter()
+            .enumerate()
+            .map(|(source_line, galley)| {
+                let row_counts: Vec<usize> = galley
+                    .galley
+                    .rows
+                    .iter()
+                    .map(|row| row.char_count_excluding_newline())
+                    .collect();
+                if galley
+                    .display_to_source
+                    .iter()
+                    .enumerate()
+                    .all(|(display, source)| display == *source)
+                {
+                    LineLayout::identity(source_line, galley.galley.text().to_string(), &row_counts)
+                } else {
+                    LineLayout::mapped(
+                        source_line,
+                        galley.galley.text().to_string(),
+                        galley.display_to_source.clone(),
+                        &row_counts,
+                    )
+                }
+            })
+            .collect();
+        self.view.layout = DisplayLayout::new(lines);
+    }
+
+    fn cursor_display_x(
+        &self,
+        cursor: Cursor,
+        galleys: &[DisplayGalley],
+        preferred_row: Option<usize>,
+    ) -> f32 {
+        let Some(line_layout) = self.view.layout.line(cursor.line) else {
+            return 0.0;
+        };
+        let Some(galley) = galleys.get(cursor.line) else {
+            return 0.0;
+        };
+        let display_column = line_layout.display_column_for_source(cursor.column);
+        if let Some(display_row) = preferred_row {
+            let row_in_line =
+                display_row.saturating_sub(self.view.layout.first_display_row(cursor.line));
+            if let (Some(row), Some(mapped_row)) = (
+                galley.galley.rows.get(row_in_line),
+                line_layout.rows.get(row_in_line),
+            ) {
+                return row.x_offset(
+                    display_column
+                        .saturating_sub(mapped_row.display.start)
+                        .min(row.char_count_excluding_newline()),
+                );
+            }
+        }
+        let prefer_next_row = line_layout
+            .rows
+            .iter()
+            .any(|row| row.display.start == display_column && display_column != 0);
+        galley
+            .galley
+            .pos_from_cursor(CCursor {
+                index: display_column,
+                prefer_next_row,
+            })
+            .left()
+    }
+
+    fn visual_movement_cursor(
+        &self,
+        cursor: Cursor,
+        movement: Movement,
+        goal_x: f32,
+        galleys: &[DisplayGalley],
+        preferred_row: Option<usize>,
+    ) -> Cursor {
+        let display_row =
+            preferred_row.unwrap_or_else(|| self.view.layout.display_row_for_cursor(cursor));
+        if matches!(
+            movement,
+            Movement::VisualLineStart | Movement::VisualLineEnd
+        ) {
+            return self
+                .view
+                .layout
+                .cursor_at_display_row_boundary(display_row, movement == Movement::VisualLineEnd);
+        }
+
+        let target_row = match movement {
+            Movement::Up => display_row.saturating_sub(1),
+            Movement::Down => {
+                (display_row + 1).min(self.view.layout.display_row_count().saturating_sub(1))
+            }
+            Movement::PageUp(rows) => display_row.saturating_sub(rows.max(1)),
+            Movement::PageDown(rows) => (display_row + rows.max(1))
+                .min(self.view.layout.display_row_count().saturating_sub(1)),
+            _ => display_row,
+        };
+        let target_line = self.view.layout.source_line_at_display_row(target_row);
+        let Some(line_layout) = self.view.layout.line(target_line) else {
+            return cursor;
+        };
+        let Some(galley) = galleys.get(target_line) else {
+            return cursor;
+        };
+        let row_in_line = target_row - self.view.layout.first_display_row(target_line);
+        let Some(row) = galley.galley.rows.get(row_in_line) else {
+            return cursor;
+        };
+        let Some(mapped_row) = line_layout.rows.get(row_in_line) else {
+            return cursor;
+        };
+        let display_column = mapped_row.display.start + row.char_at(goal_x - row.pos.x);
+        Cursor::new(
+            target_line,
+            line_layout.source_column_for_display(display_column),
+        )
     }
 
     /// Reserves per-line extra height for inline image strips (Live Preview
@@ -695,11 +1129,11 @@ impl<'a> EditorWidget<'a> {
     fn hit_test(
         &self,
         ui: &Ui,
-        font_id: &egui::FontId,
         rect: Rect,
         gutter_width: f32,
         pos: egui::Pos2,
-    ) -> Cursor {
+        galleys: &[DisplayGalley],
+    ) -> (Cursor, usize) {
         let line_count = self.doc.buffer().line_count();
         // Invert the same snapped offsets `paint` renders with so a click maps
         // to the row the user actually sees.
@@ -707,11 +1141,25 @@ impl<'a> EditorWidget<'a> {
             self.snapped_offsets(ui, rect, gutter_width);
         let y = pos.y - content_top + scroll_y;
         let line = self.view.line_at_y(y, line_count);
-        let text = line_text(self.doc.buffer(), line);
-        let galley =
-            ui.fonts_mut(|f| f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE));
-        let ccursor = galley.cursor_from_pos(Vec2::new(pos.x - content_left + scroll_x, 0.0));
-        Cursor::new(line, ccursor.index)
+        let local_y = y - self.view.line_top(line);
+        let Some(galley) = galleys.get(line) else {
+            return (Cursor::new(line, 0), 0);
+        };
+        let display_cursor = galley
+            .galley
+            .cursor_from_pos(Vec2::new(pos.x - content_left + scroll_x, local_y));
+        let source_column = self
+            .view
+            .layout
+            .line(line)
+            .map_or(display_cursor.index, |layout| {
+                layout.source_column_for_display(display_cursor.index)
+            });
+        let row_in_line = galley.galley.layout_from_cursor(display_cursor).row;
+        (
+            Cursor::new(line, source_column),
+            self.view.layout.first_display_row(line) + row_in_line,
+        )
     }
 
     /// Lays out one line's galley: syntax-colored via the span provider in
@@ -726,6 +1174,8 @@ impl<'a> EditorWidget<'a> {
         text_color: Color32,
         theme: &CodeTheme,
         md_active: Option<&std::ops::Range<usize>>,
+        wrap_width: f32,
+        display: &DisplayGalley,
     ) -> std::sync::Arc<egui::Galley> {
         // Markdown Live Preview: inactive blocks render styled per-line
         // LayoutJobs; the active block (and everything in source mode) shows
@@ -741,7 +1191,8 @@ impl<'a> EditorWidget<'a> {
                 let spans = layout.line_style_spans(line, text);
                 if !spans.is_empty() {
                     let mut job = LayoutJob::default();
-                    job.wrap.max_width = f32::INFINITY;
+                    job.wrap.max_width = wrap_width;
+                    job.wrap.break_anywhere = false;
                     for span in &spans {
                         let (color, italics, underline) =
                             md_theme.format_for(span.style, text_color);
@@ -752,7 +1203,13 @@ impl<'a> EditorWidget<'a> {
                         }
                         job.append(&text[span.range.clone()], 0.0, format);
                     }
-                    return ui.fonts_mut(|f| f.layout_job(job));
+                    return ui.fonts_mut(|f| {
+                        f.layout_job(prepare_layout_job(
+                            job,
+                            display.galley.text(),
+                            &display.display_to_source,
+                        ))
+                    });
                 }
             }
         }
@@ -763,11 +1220,21 @@ impl<'a> EditorWidget<'a> {
             _ => &[],
         };
         if spans.is_empty() {
-            return ui
-                .fonts_mut(|f| f.layout_no_wrap(text.to_string(), font_id.clone(), text_color));
+            let mut job =
+                LayoutJob::simple_singleline(text.to_string(), font_id.clone(), text_color);
+            job.wrap.max_width = wrap_width;
+            job.wrap.break_anywhere = false;
+            return ui.fonts_mut(|f| {
+                f.layout_job(prepare_layout_job(
+                    job,
+                    display.galley.text(),
+                    &display.display_to_source,
+                ))
+            });
         }
         let mut job = LayoutJob::default();
-        job.wrap.max_width = f32::INFINITY;
+        job.wrap.max_width = wrap_width;
+        job.wrap.break_anywhere = false;
         for span in spans {
             let (start, end) = (span.start.min(text.len()), span.end.min(text.len()));
             if start >= end {
@@ -779,7 +1246,13 @@ impl<'a> EditorWidget<'a> {
                 TextFormat::simple(font_id.clone(), theme.color_for(span.kind, text_color)),
             );
         }
-        ui.fonts_mut(|f| f.layout_job(job))
+        ui.fonts_mut(|f| {
+            f.layout_job(prepare_layout_job(
+                job,
+                display.galley.text(),
+                &display.display_to_source,
+            ))
+        })
     }
 
     fn paint(
@@ -791,6 +1264,8 @@ impl<'a> EditorWidget<'a> {
         gutter_width: f32,
         md_active: Option<std::ops::Range<usize>>,
         image_rows: &[(usize, String)],
+        geometry_galleys: &[DisplayGalley],
+        caret_visual_row: Option<usize>,
         caret_visible: bool,
     ) {
         let visuals = ui.visuals();
@@ -815,12 +1290,20 @@ impl<'a> EditorWidget<'a> {
         let mut caret_rect: Option<Rect> = None;
         let gutter_painter = ui.painter_at(rect);
         let show_code_chrome = self.mode.is_code();
+        let wrap_width = if show_code_chrome {
+            f32::INFINITY
+        } else {
+            self.view.viewport_width.max(1.0)
+        };
 
         for line in self.view.visible_lines(line_count) {
             // On-grid by construction: snapped origin + quantized line metric
             // minus a snapped scroll offset.
             let top = content_top + self.view.line_top(line) - scroll_y;
             let text = line_text(self.doc.buffer(), line);
+            let Some(display) = geometry_galleys.get(line) else {
+                continue;
+            };
             let galley = self.line_galley(
                 ui,
                 font_id,
@@ -829,6 +1312,8 @@ impl<'a> EditorWidget<'a> {
                 text_color,
                 &code_theme,
                 md_active.as_ref(),
+                wrap_width,
+                display,
             );
             let origin = egui::pos2(content_left - scroll_x, top);
 
@@ -838,7 +1323,7 @@ impl<'a> EditorWidget<'a> {
                     painter.rect_filled(
                         Rect::from_min_max(
                             egui::pos2(text_rect.left(), top),
-                            egui::pos2(rect.right(), top + self.view.line_height),
+                            egui::pos2(rect.right(), top + self.view.line_text_height(line)),
                         ),
                         0.0,
                         code_theme.current_line_bg,
@@ -867,21 +1352,17 @@ impl<'a> EditorWidget<'a> {
                     }
                     let from = hs.saturating_sub(line_start).min(char_count);
                     let to = (he - line_start).min(char_count);
-                    let x0 = galley.pos_from_cursor(CCursor::new(from)).left();
-                    let x1 = galley.pos_from_cursor(CCursor::new(to)).left();
                     let bg = if Some(i) == self.current_highlight {
                         self.current_highlight_bg
                     } else {
                         self.highlight_bg
                     };
-                    painter.rect_filled(
-                        Rect::from_min_max(
-                            egui::pos2(origin.x + x0, top),
-                            egui::pos2(origin.x + x1, top + self.view.line_height),
-                        ),
-                        0.0,
-                        bg,
-                    );
+                    let display_range = self.view.layout.line(line).map_or(from..to, |layout| {
+                        layout.display_column_for_source(from)..layout.display_column_for_source(to)
+                    });
+                    for range_rect in galley_range_rects(&galley, display_range) {
+                        painter.rect_filled(range_rect.translate(origin.to_vec2()), 0.0, bg);
+                    }
                 }
             }
 
@@ -899,19 +1380,27 @@ impl<'a> EditorWidget<'a> {
                 } else {
                     (char_count, true)
                 };
-                let x0 = galley.pos_from_cursor(CCursor::new(from)).left();
-                let mut x1 = galley.pos_from_cursor(CCursor::new(to)).left();
+                let display_range = self.view.layout.line(line).map_or(from..to, |layout| {
+                    layout.display_column_for_source(from)..layout.display_column_for_source(to)
+                });
+                let mut rects = galley_range_rects(&galley, display_range);
                 if extend_newline {
-                    x1 += self.view.line_height * 0.5;
+                    if let Some(last) = rects.last_mut() {
+                        last.max.x += self.view.line_height * 0.5;
+                    } else if let Some(row) = galley.rows.last() {
+                        rects.push(Rect::from_min_size(
+                            egui::pos2(row.rect().right(), row.rect().top()),
+                            Vec2::new(self.view.line_height * 0.5, row.rect().height()),
+                        ));
+                    }
                 }
-                painter.rect_filled(
-                    Rect::from_min_max(
-                        egui::pos2(origin.x + x0, top),
-                        egui::pos2(origin.x + x1, top + self.view.line_height),
-                    ),
-                    0.0,
-                    selection_color,
-                );
+                for range_rect in rects {
+                    painter.rect_filled(
+                        range_rect.translate(origin.to_vec2()),
+                        0.0,
+                        selection_color,
+                    );
+                }
             }
 
             painter.galley(origin, galley.clone(), text_color);
@@ -920,17 +1409,30 @@ impl<'a> EditorWidget<'a> {
             // directly (no egui text widgets), so without this the pane's
             // accesskit tree — and therefore `plexi pane state` and the scene
             // runner's `rendered_text_contains` evaluator — carries no
-            // rendered text at all. One node per visible rendered row, value
-            // = exactly what the galley shows this frame (including any
-            // Live Preview styling transforms), bounds = the painted rect.
+            // rendered text at all. One node per visible display row, with
+            // display-only wrap characters removed through the source map.
             // No-op when accesskit is off.
-            let rendered = galley.text();
-            if !rendered.is_empty() {
-                let node_id = egui::Id::new((widget_id, "editor_rendered_row", line));
-                let node_rect = Rect::from_min_size(egui::pos2(origin.x, top), galley.size());
+            for (row_index, row) in galley.rows.iter().enumerate() {
+                let rendered: String = self
+                    .view
+                    .layout
+                    .line(line)
+                    .and_then(|layout| layout.rows.get(row_index))
+                    .map(|mapped_row| {
+                        text.chars()
+                            .skip(mapped_row.source.start)
+                            .take(mapped_row.source.end - mapped_row.source.start)
+                            .collect()
+                    })
+                    .unwrap_or_else(|| row.text());
+                if rendered.is_empty() {
+                    continue;
+                }
+                let node_id = egui::Id::new((widget_id, "editor_rendered_row", line, row_index));
+                let node_rect = row.rect().translate(origin.to_vec2());
                 ui.ctx().accesskit_node_builder(node_id, |node| {
                     node.set_role(egui::accesskit::Role::Paragraph);
-                    node.set_value(rendered);
+                    node.set_value(rendered.as_str());
                     node.set_bounds(egui::accesskit::Rect {
                         x0: f64::from(node_rect.left()),
                         y0: f64::from(node_rect.top()),
@@ -941,12 +1443,48 @@ impl<'a> EditorWidget<'a> {
             }
 
             if self.active && line == caret.line {
-                let x = galley
-                    .pos_from_cursor(CCursor::new(caret.column.min(text.chars().count())))
-                    .left();
+                let preferred_row_in_line = caret_visual_row
+                    .and_then(|display_row| {
+                        let first = self.view.layout.first_display_row(line);
+                        (display_row >= first
+                            && display_row < first + self.view.layout.row_count(line))
+                        .then_some(display_row - first)
+                    })
+                    .or_else(|| {
+                        self.view
+                            .layout
+                            .line(line)
+                            .map(|layout| layout.row_for_source_column(caret.column))
+                    });
+                let caret_pos = preferred_row_in_line
+                    .and_then(|row_index| {
+                        let layout = self.view.layout.line(line)?;
+                        let mapped_row = layout.rows.get(row_index)?;
+                        let row = galley.rows.get(row_index)?;
+                        let display_column = (mapped_row.display.start..=mapped_row.display.end)
+                            .find(|column| {
+                                layout.source_column_for_display(*column) == caret.column
+                            })?;
+                        let x = row.pos.x + row.x_offset(display_column - mapped_row.display.start);
+                        Some(Rect::from_min_max(
+                            egui::pos2(x, row.rect().top()),
+                            egui::pos2(x, row.rect().bottom()),
+                        ))
+                    })
+                    .unwrap_or_else(|| {
+                        let display_column = self
+                            .view
+                            .layout
+                            .line(line)
+                            .map_or(caret.column.min(text.chars().count()), |layout| {
+                                layout.display_column_for_source(caret.column)
+                            });
+                        galley.pos_from_cursor(CCursor::new(display_column))
+                    });
                 // Caret and preedit sit on the pixel grid so the 1pt bar never
                 // smears across two physical columns.
-                let caret_x = (origin.x + x).round_to_pixels(ppp);
+                let caret_x = (origin.x + caret_pos.left()).round_to_pixels(ppp);
+                let caret_top = origin.y + caret_pos.top();
 
                 // IME preedit paints as underlined overlay text at the caret.
                 if let Some(preedit) = self.doc.ime().preedit().filter(|p| !p.is_empty()) {
@@ -954,21 +1492,21 @@ impl<'a> EditorWidget<'a> {
                         f.layout_no_wrap(preedit.to_string(), font_id.clone(), text_color)
                     });
                     let width = preedit_galley.size().x;
-                    painter.galley(egui::pos2(caret_x, top), preedit_galley, text_color);
+                    painter.galley(egui::pos2(caret_x, caret_top), preedit_galley, text_color);
                     painter.line_segment(
                         [
-                            egui::pos2(caret_x, top + self.view.line_height - 1.0),
-                            egui::pos2(caret_x + width, top + self.view.line_height - 1.0),
+                            egui::pos2(caret_x, caret_top + self.view.line_height - 1.0),
+                            egui::pos2(caret_x + width, caret_top + self.view.line_height - 1.0),
                         ],
                         egui::Stroke::new(1.0_f32, text_color),
                     );
                     caret_rect = Some(Rect::from_min_size(
-                        egui::pos2(caret_x + width, top),
+                        egui::pos2(caret_x + width, caret_top),
                         Vec2::new(1.0, self.view.line_height),
                     ));
                 } else {
                     caret_rect = Some(Rect::from_min_size(
-                        egui::pos2(caret_x, top),
+                        egui::pos2(caret_x, caret_top),
                         Vec2::new(1.0, self.view.line_height),
                     ));
                 }
@@ -991,7 +1529,7 @@ impl<'a> EditorWidget<'a> {
                         continue;
                     }
                     let strip_top = content_top + self.view.line_top(*line) - scroll_y
-                        + self.view.line_height
+                        + self.view.line_text_height(*line)
                         + IMAGE_PAD;
                     let height = extra - 2.0 * IMAGE_PAD;
                     let left = content_left + IMAGE_PAD - scroll_x;
@@ -1099,8 +1637,8 @@ fn translate_key(
         Key::ArrowUp => mv(Movement::Up),
         Key::ArrowDown if line => mv(Movement::DocEnd),
         Key::ArrowDown => mv(Movement::Down),
-        Key::Home => mv(Movement::LineStart),
-        Key::End => mv(Movement::LineEnd),
+        Key::Home => mv(Movement::VisualLineStart),
+        Key::End => mv(Movement::VisualLineEnd),
         Key::Backspace if modifiers.command && !modifiers.shift && !modifiers.alt => {
             Some(EditorCommand::KillToLineStart)
         }
@@ -1123,16 +1661,21 @@ mod tests {
     struct TestState {
         doc: Document,
         view: ViewState,
+        rect: Rect,
     }
 
     fn harness(text: &str) -> egui_kittest::Harness<'static, TestState> {
         let state = TestState {
             doc: Document::new(text),
             view: ViewState::default(),
+            rect: Rect::NOTHING,
         };
         egui_kittest::Harness::new_ui_state(
             |ui, state: &mut TestState| {
-                EditorWidget::new(&mut state.doc, &mut state.view).show(ui);
+                state.rect = EditorWidget::new(&mut state.doc, &mut state.view)
+                    .show(ui)
+                    .response
+                    .rect;
             },
             state,
         )
@@ -1164,6 +1707,141 @@ mod tests {
         h.step();
         assert_eq!(semantic(&h).text, "hello\nworld");
         assert!(semantic(&h).can_redo);
+    }
+
+    #[test]
+    fn soft_wrap_breaks_overlong_tokens_only_at_grapheme_boundaries() {
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let family = "👨\u{200D}👩\u{200D}👧";
+        let text = family.repeat(12);
+        let mut h = harness(&text);
+        h.set_size(Vec2::new(120.0, 240.0));
+        h.step();
+
+        let line = h.state().view.layout.line(0).expect("line layout");
+        assert!(line.rows.len() > 1, "long token should wrap");
+        let grapheme_boundaries: Vec<usize> = std::iter::once(0)
+            .chain(
+                text.grapheme_indices(true)
+                    .map(|(byte, grapheme)| text[..byte + grapheme.len()].chars().count()),
+            )
+            .collect();
+        for row in &line.rows {
+            assert!(
+                grapheme_boundaries.contains(&row.source.start)
+                    && grapheme_boundaries.contains(&row.source.end),
+                "row {:?} split a grapheme cluster",
+                row.source
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_home_end_and_up_down_use_visual_rows_with_selection_extension() {
+        let text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut h = harness(text);
+        h.set_size(Vec2::new(120.0, 240.0));
+        h.step();
+        assert!(h.state().view.layout.line(0).unwrap().rows.len() >= 3);
+
+        let second = h.state().view.layout.line(0).unwrap().rows[1]
+            .source
+            .clone();
+        h.state_mut()
+            .doc
+            .apply(EditorCommand::SetCursor(Cursor::new(0, second.start + 2)));
+        h.key_press(Key::End);
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, second.end));
+
+        h.key_press(Key::Home);
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, second.start));
+        let painted_caret = h
+            .output()
+            .platform_output
+            .ime
+            .as_ref()
+            .expect("active editor IME anchor")
+            .cursor_rect;
+        assert!(
+            painted_caret.top() >= h.state().rect.top() + h.state().view.line_height,
+            "visual-row start caret painted on previous row: {painted_caret:?}"
+        );
+
+        h.key_press(Key::ArrowDown);
+        h.step();
+        let third = h.state().view.layout.line(0).unwrap().rows[2]
+            .source
+            .clone();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, third.start));
+
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowUp);
+        h.step();
+        assert_eq!(
+            h.state().doc.selection().anchor,
+            Cursor::new(0, third.start)
+        );
+        assert_eq!(h.state().doc.selection().head, Cursor::new(0, second.start));
+    }
+
+    #[test]
+    fn wrapped_command_arrows_stay_logical_and_page_keys_count_display_rows() {
+        let text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(3);
+        let mut h = harness(&text);
+        h.set_size(Vec2::new(120.0, 70.0));
+        h.step();
+        let second = h.state().view.layout.line(0).unwrap().rows[1]
+            .source
+            .clone();
+        h.state_mut()
+            .doc
+            .apply(EditorCommand::SetCursor(Cursor::new(0, second.start + 2)));
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowLeft);
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, 0));
+
+        h.key_press(Key::PageDown);
+        h.step();
+        let page_rows = (h.state().view.viewport_height / h.state().view.line_height)
+            .floor()
+            .max(1.0) as usize;
+        let expected = h.state().view.layout.line(0).unwrap().rows[page_rows]
+            .source
+            .start;
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, expected));
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowRight);
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, text.chars().count()));
+    }
+
+    #[test]
+    fn wrapped_pointer_hit_on_later_display_row_maps_to_source_cursor() {
+        let text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut h = harness(text);
+        h.set_size(Vec2::new(120.0, 240.0));
+        h.step();
+        let third = h.state().view.layout.line(0).unwrap().rows[2]
+            .source
+            .clone();
+        let line_height = h.state().view.line_height;
+
+        let pos = egui::pos2(
+            h.state().rect.left() + 4.0,
+            h.state().rect.top() + line_height * 2.5,
+        );
+        h.drag_at(pos);
+        h.drop_at(pos);
+        h.step();
+        let cursor = h.state().doc.cursor();
+        assert_eq!(cursor.line, 0);
+        assert!(
+            third.contains(&cursor.column) || cursor.column == third.end,
+            "later-row hit returned {cursor:?}, outside {third:?}"
+        );
     }
 
     #[test]
@@ -1217,6 +1895,7 @@ mod tests {
         let state = TestState {
             doc: Document::new(text),
             view: ViewState::default(),
+            rect: Rect::NOTHING,
         };
         egui_kittest::Harness::new_ui_state(
             |ui, state: &mut TestState| {
