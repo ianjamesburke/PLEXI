@@ -1,6 +1,9 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.2] — 2026-07-29
+
+### Changes
 ## [0.2.1] — 2026-07-29
 
 ### Changes
