@@ -423,10 +423,10 @@ When the user asks for a report, status, or "is the loop running", the deliverab
 If `plexi pane send --help` does not list `--submit`, you are on a pre-build; use these fallbacks only for that build. Keep the new verbs above as the normal path.
 
 - **Submit:** `plexi pane send <id> "<text>"`, then `plexi pane key <id> enter` once. Do not use this sequence to confirm delivery or repeatedly press Enter.
-- **Spawn agent:** `plexi pane new -n "<label>"`, then `plexi pane command <id> "<tier alias>" --enter`; wait for the booted prompt before sending the brief.
-- **Wait for a slot:** poll `plexi pane slot read <name> <pane_id>` on the existing wake cadence; a terminal state needs an explicit `read`, not a host-side wait.
-- **Capture raw output:** capture JSON and extract `.lines[]` after its envelope; do not treat an empty `--from-cursor` delta as proof that a command failed.
-- **Determine pane status:** use the corroborated `pane list` agent state, untruncated status bar, and trailing buffer activity; never infer idle from one absent screen marker.
+- **Spawn agent:** `NEWID=$(plexi pane new -n "<label>")`, then `plexi pane command "$NEWID" "<tier alias>" --enter`. Wait in bounded four-second pauses and run `plexi pane capture "$NEWID" --from-cursor 0` until the booted prompt/model footer appears before sending the brief.
+- **Wait for a slot:** older-build-only cadence: schedule `ScheduleWakeup` with `delaySeconds: 600`; on each wake run `plexi pane slot read <name> <pane_id>`. If its value ends in `:done`, `:blocked`, `:needs-input`, or `:failed`, read the other slots and act; otherwise schedule the next 600-second wake. This is polling, not a host-side wait.
+- **Capture raw output:** `RAW=$(plexi pane capture <id> --from-cursor <CURSOR>)`; then `printf '%s\\n' "$RAW" | sed '1d' | jq -r '.lines[]'`. Use `CURSOR=0` for the full buffer and `CURSOR=$(printf '%s\\n' "$RAW" | sed '1d' | jq -r '.cursor')` for the next delta. Do not treat an empty delta as proof that a command failed.
+- **Determine pane status:** run `plexi pane list` and `plexi pane capture <id> --lines 16`. Treat a pane as idle only when `agent.state` is idle, the untruncated status bar lacks `esc to interrupt`, and the trailing buffer is a completed reply; a tool call or `agent.state=working` means working. Never infer idle from one absent screen marker.
 - **Updater stderr:** `sudo:` lines can be background-updater noise when the command exits 0; filter them with `2>&1 | grep -v "sudo:"` only when that noise obstructs the read, and never retry solely because of it.
 
 ## Rules
