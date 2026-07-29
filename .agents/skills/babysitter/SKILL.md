@@ -1,6 +1,6 @@
 ---
 name: babysitter
-description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude or Codex, launched via size-tier aliases) in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Checks in every 10 min. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
+description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude or Codex, launched via size-tier aliases) in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Waits for pane state event-driven. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
 source: local
 date_added: "2026-07-11"
 ---
@@ -12,7 +12,7 @@ You are the **HEAD AGENT — a router and coordinator, not a coder.** You never 
 - **Worker** — a pane that implements the batch and opens the PR.
 - **Tester** — a *separate, fresh* pane that installs the PR build, drives the app to verify it, and reports bugs back to you.
 
-**Panes launch Claude or Codex through the size-tier aliases — `cs`/`cm`/`cl` (Claude small/medium/large) and `cos`/`com`/`col` (Codex equivalents) — all bypass permissions.** Never use bare `claude`/`codex`. The tier→model mapping lives only in the user's zshrc — pick a tier by alias, never by model id (ids go stale). The two TUIs drive identically for this loop: same send/enter two-step, same `/compact`. The one divergence: fresh-conversation reset is `/clear` in Claude, `/new` in Codex. Examples below use Codex aliases; substitute the Claude ones freely.
+**Panes launch Claude or Codex through the size-tier aliases — `cs`/`cm`/`cl` (Claude small/medium/large) and `cos`/`com`/`col` (Codex equivalents) — all bypass permissions.** Never use bare `claude`/`codex`. The tier→model mapping lives only in the user's zshrc — pick a tier by alias, never by model id (ids go stale). The two TUIs use the same `pane send --submit` path and `/compact`. The one divergence: fresh-conversation reset is `/clear` in Claude, `/new` in Codex. Examples below use Codex aliases; substitute the Claude ones freely.
 
 ### Model tiers — medium (`cm`) is the worker default
 
@@ -22,7 +22,7 @@ You are the **HEAD AGENT — a router and coordinator, not a coder.** You never 
 | Medium | `cm` | `com` | most batches — the standard worker tier |
 | Large | `cl` | `col` | hard/ambiguous batches, any pane that is fumbling or looping, every fix round |
 
-The tier is chosen at launch: pass the alias as the shell command in `plexi pane command` — there is no post-boot `/model` step. Judge difficulty from the stint bodies before spawning; when unsure, use medium, not small. `/model` exists solely for mid-run escalation on a warm pane. **Every fix round runs on the large tier** — see step 4.
+The tier is chosen at launch: pass the alias to `plexi pane new --agent` — there is no post-boot `/model` step. Judge difficulty from the stint bodies before spawning; when unsure, use medium, not small. `/model` exists solely for mid-run escalation on a warm pane. **Every fix round runs on the large tier** — see step 4.
 
 ### Engine policy — which family a fresh worker/tester gets
 
@@ -53,10 +53,10 @@ You are the wire between them: Worker → PR → Tester → (bugs) → you → W
 **The head runs the medium tier (`cm`) by default.** Routing, slot reads, and brief relaying do not need the large tier — the hard reasoning happens in worker panes, which get their own tier per batch. If the head itself hits a genuine judgment call (ambiguous pre-existing-bug ruling, a stop-condition decision), note it in `RUN_STATE.md` for the record and escalate yourself for that one decision rather than running the whole loop on the large tier.
 
 First action:
-- **No pane handed (default):** spawn worker-1 yourself — `plexi pane new -n "worker-1"`, launch the tier alias, poll for the booted prompt (see "Spawning an agent pane").
+- **No pane handed (default):** spawn worker-1 yourself with `plexi pane new -n "worker-1" --agent com` (see "Spawning an agent pane").
 - **Pane handed:** confirm it is real and idle, and label it.
   ```
-  plexi pane capture <PANE_ID> --from-cursor 0
+  plexi pane capture <PANE_ID> --from-cursor 0 --plain
   plexi pane name <PANE_ID> "worker-1"
   ```
   If it isn't a live agent prompt, don't stall the run — tell the user, then spawn a fresh worker-1 yourself and proceed.
@@ -67,19 +67,18 @@ Exact forms confirmed in live runs. Use them; don't invent variants.
 
 | Need | Command |
 |---|---|
-| **Is the agent busy or idle?** | No single signal is trustworthy — use the "cheap triangle" below. Never gate a decision on one flag. |
+| **Is the agent busy or idle?** | `plexi pane status <id>` — use its host-derived verdict and confidence; `unknown`/`low` means escalate, not guess. |
 | **Read a pane's progress slot (PRIMARY status channel)** | `plexi pane slot read <name> <pane_id>` — contract names: `status`, `pr`, `verdict`, `last_error`, `issue` |
 | **Write a slot (the pane itself does this, never the head)** | Pane-slot write contract in `.agents/skills/implement-stint/SKILL.md` (Worker Mode) — the single home of the write syntax |
 | **Read the last N lines (default read)** | `plexi pane capture <id> --lines 20` |
-| Read full pane buffer (verdict parsing only) | `plexi pane capture <id> --from-cursor 0` |
-| Read only *new* output (delta) | `plexi pane capture <id> --from-cursor <CURSOR>` |
+| Read full pane buffer (verdict parsing only) | `plexi pane capture <id> --from-cursor 0 --plain` |
+| Read only *new* output (delta) | `plexi pane capture <id> --from-cursor <CURSOR> --plain` |
 | Pane UI state as JSON | `plexi pane state <id>` |
-| Type a prompt into the pane's TUI | `plexi pane send <id> "<text>"` |
-| **Submit** the prompt | `plexi pane key <id> enter` |
+| Send and submit a prompt into the pane's TUI | `plexi pane send <id> "<text>" --submit` |
 | Interrupt the agent | `plexi pane key <id> ctrl+c` |
 | Open a new terminal pane | `plexi pane new -n "<label>"` |
-| Launch an agent in a shell pane | `plexi pane command <id> "com" --enter` — the tier alias (`cs`/`cm`/`cl`, `cos`/`com`/`col`) picks the model |
-| Escalate a warm pane's model mid-run (only use of `/model`) | `plexi pane send <id> "/model <name>"` then `key enter` |
+| Launch a ready agent pane | `plexi pane new -n "<label>" --agent com` — the tier alias (`cs`/`cm`/`cl`, `cos`/`com`/`col`) picks the model |
+| Escalate a warm pane's model mid-run (only use of `/model`) | `plexi pane send <id> "/model <name>" --submit` |
 | Rename / label a pane | `plexi pane name <id> "<label>"` |
 | List panes (alive? find by name) | `plexi pane list` |
 | Close a pane | `plexi pane close <id>` |
@@ -113,18 +112,10 @@ configure a real build. Never echo or paste the value.
 Since stint 0383 (PR #2390), `capture --lines N` returns the last N real content lines on full-screen TUIs. Cost order, cheapest first:
 
 - `plexi pane capture <id> --lines 20` → bounded tail. **Default for every status check** — it answers "what is the agent's last message" in ~20 lines.
-- `plexi pane capture <id> --from-cursor <CURSOR>` → delta since a known cursor.
-- `plexi pane capture <id> --from-cursor 0` → full buffer. Only when parsing a long verdict/report whose start you'd otherwise miss. Prefer narrowing it with `grep`/`sed` over dumping the whole thing; delegate to a sub-agent only when the report is genuinely too long to narrow.
-
-Known pre-existing bug (stint 0385): `--from-cursor <N>` deltas can return empty on a live pane. If a delta comes back empty, fall back to `--lines`, not to a full-buffer dump.
-
-Append `2>&1 | grep -v "sudo:"` to plexi commands run from your own Bash — the background-updater bug (#2339) spews `sudo:` noise on stderr that otherwise dominates every output.
-
-> **Deprecated syntax notes (stints 0586 and 0588).** On builds that include them, use `plexi pane capture <id> --plain` for raw lines (with `cursor=<N>` on stderr) instead of `sed '1d' | jq -r '.lines[]'`; alternate-screen `--from-cursor` deltas now advance reliably, so the empty-delta fallback above is no longer doctrine. Those builds also isolate updater children, so run plexi commands without the `2>&1 | grep -v "sudo:"` filter. Keep the documented workarounds only for older builds. Full recipe sweep is stint 0589.
+- `plexi pane capture <id> --from-cursor <CURSOR> --plain` → raw delta since a known cursor; stdout is only captured text and stderr carries the next `cursor=<N>`.
+- `plexi pane capture <id> --from-cursor 0 --plain` → raw full buffer. Only when parsing a long verdict/report whose start you'd otherwise miss. Prefer narrowing it with `grep`/`sed` over dumping the whole thing; delegate to a sub-agent only when the report is genuinely too long to narrow.
 
 ### Progress channel — pane slots FIRST, capture is the fallback
-
-> **Deprecated syntax note (stint 0585).** The fixed-cadence polling below is superseded by `plexi pane slot wait <name> [pane_id] --until <REGEX> --timeout <SECS>` — a host-side blocking read (exit 0 = matched value on stdout, exit 2 = timeout, exit 1 = usage/plumbing) that is level-triggered, so an already-matching slot returns immediately. Use it only when the binary you are driving includes it; on older builds keep the polling loop below. Full recipe sweep is stint 0589.
 
 **The primary way you read a pane's progress is its typed slots, not its scrollback.** A slot read is ~3 tokens and unambiguous; a full TUI capture is ~700 tokens and semantically fragile (false idle/busy reads, marker-glyph guessing, truncation, locale-sensitive Unicode). Read the declared state; scrape the TUI only when a slot is empty or stale.
 
@@ -138,80 +129,39 @@ Append `2>&1 | grep -v "sudo:"` to plexi commands run from your own Bash — the
 | `last_error` | Short reason string when `status` is `blocked`/`failed`. |
 | `issue` | Stint/issue id(s) the pane is working. |
 
-Read the primary status slot on every check:
+Block on the primary status slot instead of polling it:
 
 ```
-plexi pane slot read status <pane_id> 2>&1 | grep -v "sudo:"
+plexi pane slot wait status <pane_id> --until ':(done|blocked|needs-input|failed)$' --timeout 600
 ```
 
-**Panes write; the head only reads.** The exact write syntax lives in one place — the pane-slot write contract in `.agents/skills/implement-stint/SKILL.md` (Worker Mode); point any pane there rather than restating it. The head's read verb is `plexi pane slot read <name> [pane_id]` — note its argument shape is *not* the write verb's.
+**Workers and testers write; the head reads.** A successor head also writes its own `head:working` takeover acknowledgement. The exact write syntax lives in one place — the pane-slot write contract in `.agents/skills/implement-stint/SKILL.md` (Worker Mode); point any pane there rather than restating it. The head's read verb is `plexi pane slot read <name> [pane_id]` — note its argument shape is *not* the write verb's.
 
 **Freshness rule.** A slot value is only trustworthy if it names the current step. Two enforcement mechanisms — workers get theirs from the Worker Mode contract; every tester brief must pick one:
 - Stamp a step/generation token into `status` on write (`step4:blocked`, `batch3-test:working`), OR
 - `plexi pane slot delete status <pane_id>` at each step's start, so a stale value reads as *empty* (→ fall back to capture) rather than as current.
 
-**Fallback to capture only when the slot is empty or its step token is stale.** The capture path (`--lines 20`, or full-buffer + `sed '1d' | jq -r '.lines[]'` chrome-strip for verdict parsing) is retained solely for that case and for reading a long verbatim report a slot can't hold.
+**Fallback to capture only when the slot is empty or its step token is stale.** The capture path (`--lines 20`, or full-buffer `--plain` for verdict parsing) is retained solely for that case and for reading a long verbatim report a slot can't hold.
 
 ### Reading whether a pane is busy
 
-> **Deprecated syntax note (stint 0587).** The screen-signal triangle below is superseded by `plexi pane status <id>`, which returns the host's machine-readable `working | idle | blocked | unknown` verdict, confidence, and raw evidence. Use it when the binary you are driving includes it; on older builds keep the corroborated fallback below. Full recipe sweep is stint 0589.
-
-Screen signals, and what each is actually worth:
-
-| Screen signal | Meaning |
-|---|---|
-| status bar contains `esc to interrupt` | **busy** — a task is running |
-| status bar, un-truncated, with no `esc to interrupt` | **idle** — at prompt / done |
-| status bar ending in `…` | **unknown.** The line is elided; `esc to interrupt` may be present but cut off. Read another signal. |
-| `❯ Press up to edit queued messages` | your prompt is **queued** behind something in-flight; send `escape` ONCE to clear, never `enter` again |
-| `paste again to expand` | a long brief pasted as a collapsed block and was **not submitted**; send `enter` ONCE |
-| a bare `❯` | **nothing.** This is just the empty input line. It is not an idle signal — a bare `❯` appears while the agent is busy too. Do not read it. |
-
-**Neither signal is reliable alone. Both have observed failure modes — always corroborate with a second one.**
-
-| Signal | How it fails |
-|---|---|
-| `agent.state` | Reads `idle` on a genuinely busy pane — observed for minutes with a brief queued behind a stuck `/compact`. Acting on that `idle` is the thrash trap: you conclude ready, re-send, loop. |
-| status bar | **Truncates on narrow panes.** A skinny pane elides it to `⏵⏵ bypass permissions on (shift+tab to · …` — `esc to interrupt` is present but cut off, so grepping for it returns 0 and a busy pane reads as idle. |
-
-**The robust check is the cheap triangle** — run it when a pane's state actually gates a decision:
-
-```
-plexi pane list          # agent.state
-plexi pane capture <id> --lines 16   # status bar AND recent buffer activity
-```
-
-Then judge: a trailing `⏺ Bash(...)` / tool call in the buffer means it is working regardless of what either flag says. If `agent.state` says `working`, believe it — its false-negative mode is claiming *idle*, not claiming busy. If `agent.state` says `idle` **and** the status bar is un-truncated **and** shows no `esc to interrupt` **and** the last buffer line is a completed reply, only then is the pane genuinely idle.
-
-Never grep the status bar for `esc to interrupt` and treat absence as proof of idle without checking whether the line ends in `…`.
-
-Machine-readable progress lives in the pane's **slots** (`status`, `pr`, `verdict`, `last_error`, `issue`) — read them with `plexi pane slot read <name> <pane_id>` (see the slot-contract section above), not scrollback. The busy/idle screen-signal reads below are the *fallback* for when a slot is empty or its step token is stale.
+Use `plexi pane status <id>`. It returns the host's `working`, `idle`, `blocked`, or `unknown` verdict, confidence, and raw evidence in one response. Act on `working` or a high-confidence `idle`; treat `blocked`, `unknown`, or low confidence as an escalation signal. Machine-readable progress still lives in the pane's slots (`status`, `pr`, `verdict`, `last_error`, `issue`); use status when that state is missing or stale.
 
 ### ANTI-THRASH — never re-fire a command to "confirm" it landed
 
-The failure mode this skill exists to prevent: send a key → capture comes back empty → assume it didn't land → re-send → loop forever. **Banned.**
+The failure mode this skill exists to prevent: submit a prompt → capture comes back empty → assume it did not land → submit again → loop forever. **Banned.**
 
-- Send a prompt/keystroke **once**. To verify it registered, use the cheap triangle above (`agent.state` + status bar + trailing buffer activity) — **never** by re-sending. Corroborate two signals before concluding a pane is idle; each one alone has a known false reading.
-- **One exception, and only one:** if the status bar shows the pane is idle *and* the input line shows `Press up to edit queued messages` or `paste again to expand`, your prompt was typed but never submitted. Send `enter` **once** more. If that still does not take, send `escape` to clear the queue — do not send a third `enter`.
-- If a capture is empty or a cursor is unchanged, that tells you nothing. Do **not** act on it and do **not** repeat the command. Fall back to `pane list` / slot files.
+- Send a prompt once with `plexi pane send <id> "<prompt>" --submit`. Its exit code is the submission confirmation; never re-send it to check.
+- If a capture is empty or a cursor is unchanged, that tells you nothing. Do **not** act on it and do **not** repeat the command. Fall back to `pane status` / slot state.
 - If you catch yourself about to run the exact same command a **second** time in a row, STOP. Something is wrong with your read path, not the pane. Re-orient via `pane list`.
-- `sudo: a terminal is required to read the password` lines are the background-updater bug (#2339). They are **noise**, not a command failure — the `plexi` command itself still returned `exit 0`. Never retry because of them.
 
-### CRITICAL gotcha — send does not submit
-
-> **Deprecated syntax note (stint 0583).** This two-step (and its one-retry exception in ANTI-THRASH) is superseded by `plexi pane send <id> "<prompt>" --submit` — the host types, waits for the input line to settle, presses enter, confirms submission, and self-heals a collapsed paste with exactly one internal retry (exit 0 = confirmed, non-zero = typed-but-unconfirmed with the observed input line on stderr). Use it only when the binary you are driving includes it; on older builds keep the two-step below. Full recipe sweep is stint 0589.
-
-`plexi pane send`'s `\n` does **not** reliably auto-submit inside the agent TUI. Standing two-step, used dozens of times:
+### Prompt submission
 
 ```
-plexi pane send <id> "<prompt text>"
-sleep 1
-plexi pane key <id> enter
-sleep 3
-plexi pane capture <id> --from-cursor 0   # confirm it took; re-send enter ONCE if not
+plexi pane send <id> "<prompt text>" --submit
 ```
 
-(This is for typing into a pane's *TUI*. Launching the agent at the *shell* level in a fresh pane uses `plexi pane command <id> "<tier alias>" --enter`.)
+The host settles the input, presses Enter, confirms submission, and self-heals one collapsed paste. Exit 0 is confirmed; a non-zero result is typed-but-unconfirmed with the observed input line on stderr. This is for a pane's *TUI*; use `pane command ... --enter` only for ordinary shell commands.
 
 ## Batch into as few PRs as possible (hard rule)
 
@@ -219,19 +169,13 @@ Before feeding anything, group the queue. **Fewer PRs is always better.** Small 
 
 ## Spawning an agent pane
 
-> **Deprecated syntax note (stint 0584).** This spawn-then-poll recipe (and its BOOT RACE gotcha) is superseded by `plexi pane new --agent <tier-alias> [--boot-timeout <SECS>]` — one blocking call that spawns the pane, launches the alias, and prints the pane id on stdout only once the agent TUI has reported a booted idle prompt (boot timeout: exit 2 with the created pane id on stderr so you can close it). Use it only when the binary you are driving includes it; on older builds keep the recipe below. Full recipe sweep is stint 0589.
-
 Workers and testers are agent panes launched with a size-tier alias (tier table above) — the alias sets the model, so there is no post-boot `/model` step.
 
 ```
-plexi pane new -n "worker-<N>"          # or tester-<N>
-# grab the new pane id from the command output (fall back to `plexi pane list`)
-plexi pane command <newid> "com" --enter   # tier alias: cs/cm/cl or cos/com/col
-sleep 4
-plexi pane capture <newid> --from-cursor 0   # confirm the agent booted to its prompt
+NEWID=$(plexi pane new -n "worker-<N>" --agent com)  # or tester-<N>; tier aliases: cs/cm/cl or cos/com/col
 ```
 
-**GOTCHA: BOOT RACE. Never fire a brief back-to-back on a just-launched agent pane.** Both TUIs take a few seconds to boot to their prompt. If a brief lands before the prompt is up, input is lost or mangled. Fix: after `plexi pane command <id> "<tier alias>" --enter`, poll `plexi pane capture <id> --from-cursor 0` until you see the booted prompt (the input line with the model footer, e.g. `gpt-...` for Codex) **before** sending the work brief.
+The command blocks until the agent reports a booted idle prompt and prints its pane id only then. Exit 2 means boot timeout; the created pane id is on stderr so close it before retrying. Send the brief only after exit 0.
 
 ## Model selection per pane
 
@@ -265,15 +209,15 @@ For each **batch**, in order:
 
    **But green ≠ reviewed.** `CodeRabbit` currently reports "Review skipped: automatic reviews are disabled" on every PR, and `claude` skips on Rust-only diffs — neither is actually reading the code. The real gate for a Rust PR is the worker's local `cargo test --bin plexi` summary (Worker Mode makes it paste one), the pre-push Codex review in `/implement-stint` Phase 4, and the tester round. Never tell a user a diff was "reviewed by CI."
 
-   Send → `key enter` **once**. Confirm it registered by polling the **status bar** (`plexi pane capture <id> --lines 3`) until `esc to interrupt` appears — not by re-sending. A long brief often pastes as a collapsed block (`paste again to expand`) and needs exactly one more `enter` to submit; that is the only sanctioned re-send.
+   Send the brief once with `plexi pane send <id> "<brief>" --submit`. Its exit code confirms submission; do not re-send to infer delivery.
 
-2. **Check in every 10 min — cheaply.** `ScheduleWakeup` `delaySeconds: 600`. On each wake, the default check is **one slot read** (~3 tokens):
+2. **Wait for progress — cheaply.** Arm one host-side wait for the current worker state:
 
    ```
-   plexi pane slot read status <id> 2>&1 | grep -v "sudo:"   # e.g. batch3-impl:working
+   plexi pane slot wait status <id> --until ':(done|blocked|needs-input|failed)$' --timeout 600
    ```
 
-   Branch on the state token: `working` → reschedule, done. `done`/`blocked`/`needs-input`/`failed` → read `pr`/`verdict`/`last_error` for the details and act. **The slot is the source of truth when its step token is current.**
+   Exit 0 prints the matched value; exit 2 is a timeout, so arm another wait; exit 1 is usage/plumbing. On a terminal state, read `pr`/`verdict`/`last_error` for details and act. **The slot is the source of truth when its step token is current.**
 
    **PROGRESS BLOCK — end every wake-up's final message with it.** The user glances at this instead of reconstructing state from tool calls. Three lines, always the same shape (`date +%H:%M` for the LOCAL time — never UTC; counts from your own distilled state, verified against `stint show` at merge boundaries):
 
@@ -283,30 +227,30 @@ For each **batch**, in order:
    state: nominal — no fix rounds, next check ~13:02
    ```
 
-   Line 1: current local time + done/total for THIS run's queue. Line 2: what is mid-flight (batch, phase, who) and what is queued next. Line 3: one plain-English clause on health — `nominal`, or the active incident (`pane spawn outage — sub-agent workaround`), plus when the next check fires. Emit it even on a nothing-changed wake; skip it only on turns that are pure verdict-routing between wakes.
+   Line 1: current local time + done/total for THIS run's queue. Line 2: what is mid-flight (batch, phase, who) and what is queued next. Line 3: one plain-English clause on health — `nominal`, or the active incident (`pane spawn outage — sub-agent workaround`), plus the state being awaited. Emit it after each wait result; skip it only on turns that are pure verdict-routing.
 
-   **EXCEPTION — a pane blocked on a permission prompt cannot update its own slot.** It is frozen mid-tool-call, so its last-written value (`…:working`) stays fresh-looking *and* passes the step-token freshness test forever. Slot-only polling waits indefinitely; the stale-token defence does not cover this at all. **So: if `status` reads the identical value on ~3 consecutive checks (roughly 30 min), stop trusting it and run the cheap triangle.** `agent.state: blocked` with a `detail` naming a Bash command is a permission prompt — the fix is **one `enter`**, not a nudge and not a re-brief. (Proven live: a tester sat blocked on removing its own `mktemp` scratch dir while its slot still read `working`.) Note the Codex aliases bypass most permissions but **still prompt on `rm -rf`**, and testers routinely mktemp/rm scratch dirs — expect this specific prompt in tester panes, and approve once you have confirmed the path is a self-created `/tmp` scratch dir.
+   **EXCEPTION — a pane blocked on a permission prompt cannot update its own slot.** It is frozen mid-tool-call, so its last-written value (`…:working`) stays fresh-looking. After a timeout, query `pane status`; a `blocked` verdict with a Bash detail names a permission prompt. Approve once only after confirming the path is a self-created `/tmp` scratch dir. Codex aliases bypass most permissions but can still prompt on `rm -rf`.
 
-   **Only fall back to capture when the slot is empty or its step token is stale** (the pane hasn't adopted the contract, or crashed before writing). Then the old two-command read applies:
+   **Only fall back to capture when the slot is empty or its step token is stale** (the pane hasn't adopted the contract, or crashed before writing). Use the host verdict and bounded tail:
 
    ```
-   plexi pane list 2>&1 | grep -v "sudo:"           # agent.state: working or idle
-   plexi pane capture <id> --lines 20 2>&1 | grep -v "sudo:"   # agent's last message
+   plexi pane status <id>
+   plexi pane capture <id> --lines 20   # agent's last message
    ```
 
    The 20-line tail almost always contains the verdict/reply/blocker; act on it directly.
 
    **Escalate to a sub-agent only when the tail is not enough** — a long tester report whose numbered bug list scrolled past 20 lines, or evidence that must be quoted verbatim from deep in the buffer. Sub-agent brief (pass the pane id):
-   > "Inspect Plexi pane `<id>` for status only — do not touch it. Run `plexi pane list` for its `agent.state`, then `plexi pane capture <id> --from-cursor 0` and read the END of the buffer. Report ≤8 lines: (a) task/PR + phase, (b) working / idle / blocked / usage-limited, (c) verdict or bug list verbatim if present, (d) any question verbatim. Never re-send a command to force output. Ignore 'sudo:' noise lines."
+   > "Inspect Plexi pane `<id>` for status only — do not touch it. Run `plexi pane status <id>`, then `plexi pane capture <id> --from-cursor 0 --plain` and read the end of the buffer. Report ≤8 lines: (a) task/PR + phase, (b) working / idle / blocked / usage-limited, (c) verdict or bug list verbatim if present, (d) any question verbatim. Never re-send a command to force output."
 
-   Act: progressing → reschedule 10 min. Idle-at-prompt / question / blocked → answer or nudge (send + enter). Errored / looping → `ctrl+c`, re-orient. Detect "done" by an explicit signal (PR number, "merged"), never by silence. **A worker idle with unfinished work gets nudged immediately, not next cycle.**
+   Act: progressing → arm another wait. Idle-at-prompt / question / blocked → answer or nudge with `pane send --submit`. Errored / looping → `ctrl+c`, re-orient. Detect "done" by an explicit signal (PR number, "merged"), never by silence. **A worker idle with unfinished work gets nudged immediately, not next cycle.**
 
    **Waiting on a merge or any single external state change:** don't poll with wakeups or sub-agents — arm one background watch and act when it fires:
    ```
    Bash (run_in_background): until [ "$(gh pr view <PR#> --json state --jq .state)" != "OPEN" ]; do sleep 15; done; gh pr view <PR#> --json state,mergedAt
    ```
 
-3. **Spawn the Tester (always a brand-new pane) once the PR is open.** Open a fresh pane with the tester's tier alias (medium — `cm`/`com`), labeled `tester-<N>`, boot it (poll for the booted prompt), then brief it. **Never reuse an existing tester pane** — every validation and every re-check gets its own new pane; the old one is closed once its verdict is read. First gate on the diff — judge from `gh pr diff <PR#> --name-only`:
+3. **Spawn the Tester (always a brand-new pane) once the PR is open.** Open a fresh pane with the tester's tier alias (medium — `cm`/`com`) using `pane new -n "tester-<N>" --agent <alias>`, then brief it after it returns the ready pane id. **Never reuse an existing tester pane** — every validation and every re-check gets its own new pane; the old one is closed once its verdict is read. First gate on the diff — judge from `gh pr diff <PR#> --name-only`:
 
    - **Docs/scripts/manifests-only, no runtime behavior change** → the tester does a diff review only and skips both the install and the suites. There is nothing to live-drive and the worker already ran the suites pre-push; re-running them here duplicates that.
    - **Pure library/model crate with no host wiring yet** (a new `crates/*` edit model, a `cfg(test)`-only core, anything the host does not call yet) → **explicitly tell the tester NOT to `pr-install` and NOT to boot a host**, and brief *adversarial API + invariant validation* instead. There is no installed-build surface, so a live-drive brief manufactures a false FAIL for "no live surface" (proven live, more than once). What to demand instead: **prove the gate is not vacuous** by deliberately breaking an invariant in a scratch copy and confirming the fuzzer/gate catches it (an invariant suite that passes on a knowingly-broken model is the most likely defect in this shape); undo/redo round-trips byte-identical, including a destructive command and interleaved undo-then-new to check redo invalidation; and **the command enum is the only mutation path** — any `pub` field or setter that bypasses the command log silently breaks undo and every downstream consumer.
@@ -326,11 +270,11 @@ For each **batch**, in order:
    - Full loop reference: `.agents/skills/drive-host/SKILL.md`.
    If a tester pane starts calling `screencapture` or a permission dialog shows up in its transcript, that's a sign it's improvising instead of following this brief — correct it immediately with the primitives above.
 
-4. **Route the verdict.** Check the tester the same 10-min way (direct `--lines 20` read; sub-agent only for a long report).
+4. **Route the verdict.** Wait on the tester's `verdict` slot; use a direct `--lines 20` read only as the fallback for an empty or stale slot, and a sub-agent only for a long report.
    - **Near-pass FAIL** ("gate incomplete, not a regression" — the tester's own findings pass but one check couldn't run, was driven against the wrong artifact, or a trace was expected-absent) → do **not** open a fix round. Spawn a fresh **micro-check tester** scoped to exactly the unfinished check. A fix round on a near-pass burns a compact + escalation + full re-validation for a bug that does not exist (proven live).
    - **Brief-induced false FAIL — YOUR bug, not the tester's.** When a tester reports FAIL *and* says the substance is correct ("the new prose correctly describes the implementation, **but** it violates the specified criterion"), you wrote a bad criterion. **Never write a mechanical proxy — a grep returning nothing, an exact string absence, a line count — as the pass criterion for a semantic requirement.** (Proven live: a grep-returns-nothing criterion failed a correct fix that legitimately kept the string inside a fenced example.) **Resolution: read the artifact yourself, overrule the FAIL on the record, log it as your error, and merge — do not open a fix round and do not make the worker satisfy a criterion you got wrong.** State the requirement semantically instead ("the header must not claim a nonexistent *authored manifest* key; showing the generated field is correct").
    - **Bugs found** → run the **fix-round protocol** on the worker, in order, before relaying anything:
-     1. **Compact:** send `/compact` (two-step, then poll until it finishes) — the worker is about to reason hard and its implement transcript is dead weight.
+     1. **Compact:** send `/compact` with `pane send --submit`, then wait for its terminal slot state — the worker is about to reason hard and its implement transcript is dead weight.
      2. **Escalate the model:** if the worker isn't already on the large tier, `/model` it to the large-tier model — the one the `cl`/`col` alias launches. Resolve the name when you need it: `grep -E "alias (cl|col)=" ~/dotfiles/zshrc` shows the `--model`/`-m` value.
      3. **Relay the tester report verbatim, wrapped in the no-quick-fix directive.** The Worker Mode contract still governs the fix round (headless gate, evidence, slots, no yields) — reference it, never restate it:
      > "Tester found these on PR #`<PR#>`: <bug list>. **Do NOT quick-fix patch this.** A failure that survived your own gate is a high-level symptom of a lower-level problem — investigate the root cause first, and ask whether this reveals a chance to design the system so this *category* of bug is impossible in the future, not just this instance. Never reach for a hacky workaround because it's faster; time spent is not a constraint — optimize for long-term robustness, elegant system design, and current best practices. If the right fix is a real refactor, propose it to me before patching. Then: determine whether each bug is caused by your change or pre-existing on alpha (prove pre-existing with a baseline repro before claiming it). Verify the fix with the closest automated/headless repro of the tester's finding (the live re-check stays the tester's), satisfy the Worker Mode gate again, push, reply with the commit and a one-line root-cause statement."
@@ -371,9 +315,7 @@ For each **batch**, in order:
 
    ```
    plexi pane close <worker-id>
-   plexi pane new -n "worker-<N+1>"
-   plexi pane command <newid> "com" --enter   # tier alias picks the model
-   # poll for the booted prompt, then send a self-contained brief
+   plexi pane new -n "worker-<N+1>" --agent com   # tier alias picks the model; stdout is a ready pane id
    ```
 
    The information the next worker needs is **not** the old scrollback — it is a good self-contained brief. You already hold the distilled state (PR numbers, merge results, decisions, gotchas); put that in the brief and throw the transcript away. Never rely on "warm repo knowledge" as a reason to keep a pane alive.
@@ -405,13 +347,13 @@ The full sprint queue is never carried in context or in the baton — sprint-que
 **The relay, at each merge boundary (after step 6):**
 
 1. Overwrite `RUN_STATE.md` per the template.
-2. Spawn the successor: `plexi pane new -n "babysitter-<N+1>"`, launch `cm` (the head's default tier), poll for the booted prompt.
-3. Send `/babysitter resume` (two-step, once).
-4. **Wait for the takeover ack: poll `LOG.md`** (not the successor's screen) for its takeover line — the successor's first duty on resume is appending `HH:MM babysitter-<N+1> took over (after batch <N>, PR #<M>)` to `LOG.md`. File-poll beats screen-scrape: unambiguous, ~0 tokens.
-5. Ack seen → stop scheduling wakeups; if you are running in a pane, `plexi pane close <own pane id>` as your final act. If you are the initial head running in a user session (not a pane), just report the successor's pane id and end the loop on your side.
-6. **No ack within ~3 minutes** → capture the successor pane once; if the prompt never submitted, one more `enter` (the sanctioned re-send); if the pane is dead or wedged, close it, keep the run yourself, and retry the relay once at the next boundary. **Never close yourself before the ack** — an unconfirmed handoff orphans the run.
+2. Spawn the successor: `plexi pane new -n "babysitter-<N+1>" --agent cm` (the head's default tier).
+3. Send `/babysitter resume` once with `plexi pane send <id> "/babysitter resume" --submit`.
+4. **Wait for the takeover ack:** `plexi pane slot wait status <successor-id> --until '^head:working$' --timeout 180`. The successor writes that state as its first resume duty; the blocking, level-triggered read is the acknowledgement.
+5. Ack seen → stop waiting; if you are running in a pane, `plexi pane close <own pane id>` as your final act. If you are the initial head running in a user session (not a pane), just report the successor's pane id and end the loop on your side.
+6. **No ack within ~3 minutes** → inspect the successor once with `pane status`; if it is dead or wedged, close it, keep the run yourself, and retry the relay once at the next boundary. **Never close yourself before the ack** — an unconfirmed handoff orphans the run.
 
-**On `/babysitter resume` (you are the successor):** read `RUN_STATE.md`; append your takeover line to `LOG.md` (this is the ack — do it first); re-resolve the queue (`stint sprint show` for sprint mode, the `mode:` list otherwise); prune checked items from `HUMAN_CHECKS.md`; continue the loop at `next:`. Do not re-verify prior merges beyond what `RUN_STATE.md` claims — your predecessor already verified them with `gh`/`stint`; trust the baton, it exists so you start clean.
+**On `/babysitter resume` (you are the successor):** read `RUN_STATE.md`; write `status` = `head:working` with the pane-slot write contract (this is the ack — do it first), then append your takeover line to `LOG.md`; re-resolve the queue (`stint sprint show` for sprint mode, the `mode:` list otherwise); prune checked items from `HUMAN_CHECKS.md`; continue the loop at `next:`. Do not re-verify prior merges beyond what `RUN_STATE.md` claims — your predecessor already verified them with `gh`/`stint`; trust the baton, it exists so you start clean.
 
 ## Human-check queue — `HUMAN_CHECKS.md` (next to this SKILL.md)
 
@@ -461,7 +403,7 @@ Format (keep entries terse):
 
 When a pane reports it has hit a usage limit, parse the reset time and branch:
 
-- **Reset < 1 hour away** → wait. `ScheduleWakeup` for just past the reset, then resume that pane's task (send `enter` or re-send the prompt) and capture to confirm it picked back up.
+- **Reset < 1 hour away** → wait until just past the reset, then send a short resume prompt with `pane send --submit`; use its exit code as the submission confirmation.
 - **Reset ≥ 1 hour away** → don't idle the queue. Report the wall to the user with the reset time and ask how to proceed; they may want to switch accounts, drop to a cheaper model via `/model`, or pause the run.
 
 Applies to whichever pane hit the wall — worker or tester.
@@ -476,6 +418,17 @@ Applies to whichever pane hit the wall — worker or tester.
 
 When the user asks for a report, status, or "is the loop running", the deliverable is a written summary, not tool output — they can see your tool calls; don't make them parse JSON. Answer in prose, lead with the current state: what's merged (PR# → stints), what's in flight (batch, PR, which pane is doing what, how long), any incidents, and what remains in the queue. Keep it under ~8 lines.
 
+## Compatibility — pre-build fallback
+
+If `plexi pane send --help` does not list `--submit`, you are on a pre-build; use these fallbacks only for that build. Keep the new verbs above as the normal path.
+
+- **Submit:** `plexi pane send <id> "<text>"`, then `plexi pane key <id> enter` once. Do not use this sequence to confirm delivery or repeatedly press Enter.
+- **Spawn agent:** `NEWID=$(plexi pane new -n "<label>")`, then `plexi pane command "$NEWID" "<tier alias>" --enter`. Wait in bounded four-second pauses and run `plexi pane capture "$NEWID" --from-cursor 0` until the booted prompt/model footer appears before sending the brief.
+- **Wait for a slot:** older-build-only cadence: schedule `ScheduleWakeup` with `delaySeconds: 600`; on each wake run `plexi pane slot read <name> <pane_id>`. If its value ends in `:done`, `:blocked`, `:needs-input`, or `:failed`, read the other slots and act; otherwise schedule the next 600-second wake. This is polling, not a host-side wait.
+- **Capture raw output:** `RAW=$(plexi pane capture <id> --from-cursor <CURSOR>)`; then `printf '%s\\n' "$RAW" | sed '1d' | jq -r '.lines[]'`. Use `CURSOR=0` for the full buffer and `CURSOR=$(printf '%s\\n' "$RAW" | sed '1d' | jq -r '.cursor')` for the next delta. Do not treat an empty delta as proof that a command failed.
+- **Determine pane status:** run `plexi pane list` and `plexi pane capture <id> --lines 16`. Treat a pane as idle only when `agent.state` is idle, the untruncated status bar lacks `esc to interrupt`, and the trailing buffer is a completed reply; a tool call or `agent.state=working` means working. Never infer idle from one absent screen marker.
+- **Updater stderr:** `sudo:` lines can be background-updater noise when the command exits 0; filter them with `2>&1 | grep -v "sudo:"` only when that noise obstructs the read, and never retry solely because of it.
+
 ## Rules
 
 - You never write code, run git, or merge yourself. You spawn, label, route messages, and observe. All work is the agent panes'.
@@ -488,4 +441,4 @@ When the user asks for a report, status, or "is the loop running", the deliverab
 - **The run's state lives on disk, never only in context.** `RUN_STATE.md` (baton), `LOG.md` (telemetry), `HUMAN_CHECKS.md` (pending human validations), `.stint/` (the queue). Any head must be replaceable at any moment by `/babysitter resume`.
 - **Log as you go.** Timestamped events into `LOG.md` next to this skill; sprint recap at each sprint boundary (see Run log).
 - Verify state with `gh`/`stint`, not any pane's self-report.
-- Keep the 10-min cadence via `ScheduleWakeup`; nudge rather than wait passively.
+- Use `pane slot wait` for state transitions; on timeout, inspect `pane status` before nudging.
