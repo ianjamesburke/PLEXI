@@ -10,13 +10,16 @@ batch7 (0629) -> #2520 as 955c9b2f, MERGED 14:17:51Z, stint 0629 verified done 1
 batch7 = brief 14:45Z -> merge 14:18Z (~2h35m across 3 tester rounds, 2 fix rounds).
 active: none. worker-7 (477) still open pending the follow-up stint; testers 478/479/480 closed.
 
-RUN BLOCKED ON DISK — read before briefing anything:
-/System/Volumes/Data at 423 MiB free of 926 GiB (100%). pr-install is a multi-GB Rust build,
-so NO tester round can run and batch8 CANNOT start. I reaped ~19 GB of agent scratch
-checkouts under /tmp and the free figure did not move, so the pressure is not only ours.
-Known large: PLEXI/target 33G, ~/Library/Caches 27G, ~/.cargo 2.6G, 12 stale ~/.plexi-pr-*
-profiles (oldest 16 Jun). Those are Ian's call, not an agent's. Surfaced to Ian 10:16 local
-with a recommendation to cargo clean the 33G target first. DO NOT RESUME until he clears it.
+DISK INCIDENT — RESOLVED 2026-07-29 ~11:00 local. Do not re-hold on it.
+Hit 423 MiB free of 926 GiB mid-batch7 (a tester died on ENOSPC). Cleared in three steps:
+head reaped ~19 GB of /tmp agent scratch checkouts, operator deleted ~13 GB of worktree
+build caches, then cargo clean in the PLEXI root freed 46 GB (57644 files). NOW 41 GiB free.
+CONSEQUENCE: the next worker faces a FULL cold Rust rebuild — its first gate will be much
+slower than the ~75s steady-state runs; that is expected, not a hang.
+Two reporting traps proven here: (1) APFS free-space reporting lags deletes by minutes — never
+conclude a delete failed from an immediate df; (2) do not hold on a free-space THRESHOLD
+guess, hold only on an actual ENOSPC failure. Still deferred to Ian: ~/Library/Caches 27G,
+12 stale ~/.plexi-pr-* profiles (oldest 16 Jun). Machine-level cleanup is his call.
 
 CAUSE + standing rule change: the "never rm -rf, leave scratch behind" clause in every brief
 is what filled the disk (four agent scratch checkouts alone = 19 GB). That clause exists to
