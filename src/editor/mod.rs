@@ -26,6 +26,7 @@ pub mod grapheme;
 pub mod highlight;
 pub mod history;
 pub mod ime;
+pub mod layout;
 pub mod markdown;
 pub mod mode;
 pub mod movement;

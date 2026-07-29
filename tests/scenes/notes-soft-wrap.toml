@@ -1,0 +1,24 @@
+# Notes soft-wrap surface: realistic Markdown plus an unbroken Unicode token
+# must stay inside the editor width without losing source-coherent links.
+size = [720.0, 520.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-soft-wrap.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "# Field notes\n\nThe upload identifier below is intentionally unbroken:\n\nrelease-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\nReview [the deployment guide](https://plexiapp.com) before publishing, then leave a short summary for the next person." }
+
+[[steps]]
+expect = { target = "notes", visible_link_target = "https://plexiapp.com" }
+
+[[steps]]
+shot = "notes-soft-wrap.png"
+
+[[steps]]
+close = "notes"

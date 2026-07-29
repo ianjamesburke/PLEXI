@@ -27,6 +27,10 @@ pub enum Movement {
     WordRight,
     LineStart,
     LineEnd,
+    /// Start of the current visual row when soft wrapping is active.
+    VisualLineStart,
+    /// End of the current visual row when soft wrapping is active.
+    VisualLineEnd,
     DocStart,
     DocEnd,
     /// One viewport page up; carries the page size in lines.
@@ -563,6 +567,8 @@ impl Document {
             Movement::WordRight => movement::word_right(&self.buffer, head),
             Movement::LineStart => movement::line_start(head),
             Movement::LineEnd => movement::line_end(&self.buffer, head),
+            Movement::VisualLineStart => movement::line_start(head),
+            Movement::VisualLineEnd => movement::line_end(&self.buffer, head),
             Movement::DocStart => movement::doc_start(),
             Movement::DocEnd => movement::doc_end(&self.buffer),
             Movement::PageUp(rows) => movement::page_up(&self.buffer, head, goal, rows),

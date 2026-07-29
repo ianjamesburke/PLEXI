@@ -2,24 +2,26 @@
 //!
 //! Adapted from Ferrite <https://github.com/OlaProeis/Ferrite>
 //! @ 3ba085c561670342d72c560efbf6b0b92b5c0b46 (view.rs), MIT.
-//! Diverges from upstream: no soft-wrap; uniform base line height plus
-//! optional per-line extra height (`line_extras`) for lines that render an
-//! inline attachment strip below their text (Live Preview images, 0478).
+//! Diverges from upstream: source lines may occupy multiple display rows;
+//! optional per-line extra height (`line_extras`) follows the final display
+//! row for inline attachment strips (Live Preview images, 0478).
 
 use std::ops::Range;
+
+use super::cursor::Cursor;
+use super::layout::DisplayLayout;
 
 /// Extra lines laid out above/below the viewport so partially visible rows
 /// paint fully during scroll.
 const OVERSCAN_LINES: usize = 1;
 
-/// Scroll/viewport state for a uniform-line-height document view.
+/// Scroll/viewport state for a uniform-display-row-height document view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewState {
     /// Vertical scroll offset in points (0 = top).
     pub scroll_y: f32,
-    /// Horizontal scroll offset in points (0 = left). Lines are laid out
-    /// unwrapped; this keeps the caret reachable on lines wider than the
-    /// viewport.
+    /// Horizontal scroll offset in points (0 = left). Wrapped note modes pin
+    /// this to zero; code mode uses it for unwrapped long lines.
     pub scroll_x: f32,
     /// Visible height in points.
     pub viewport_height: f32,
@@ -27,6 +29,8 @@ pub struct ViewState {
     pub viewport_width: f32,
     /// Height of one line in points.
     pub line_height: f32,
+    /// Source-line to display-row mapping for the current width/presentation.
+    pub layout: DisplayLayout,
     /// Extra height below specific lines (sorted by line index, no
     /// duplicates): reserved for inline attachment strips rendered under the
     /// line's text. Set each frame by the widget; empty for uniform layout.
@@ -41,6 +45,7 @@ impl Default for ViewState {
             viewport_height: 0.0,
             viewport_width: 0.0,
             line_height: 16.0,
+            layout: DisplayLayout::default(),
             line_extras: Vec::new(),
         }
     }
@@ -68,7 +73,12 @@ impl ViewState {
     /// Total content height for `line_count` lines.
     #[must_use]
     pub fn content_height(&self, line_count: usize) -> f32 {
-        line_count as f32 * self.line_height
+        let row_count = if self.layout.source_line_count() == line_count {
+            self.layout.display_row_count()
+        } else {
+            line_count
+        };
+        row_count as f32 * self.line_height
             + self
                 .line_extras
                 .iter()
@@ -86,17 +96,23 @@ impl ViewState {
         let y = y.max(0.0);
         let mut acc = 0.0_f32;
         for &(l, e) in &self.line_extras {
-            let top = l as f32 * self.line_height + acc;
+            let top = self.line_text_top(l) + self.line_text_height(l) + acc;
             if y < top {
-                break; // y is in the uniform region before line `l`
+                break;
             }
-            if y < top + self.line_height + e {
+            if y < top + e {
                 return l.min(line_count.saturating_sub(1));
             }
             acc += e;
         }
-        ((((y - acc) / self.line_height).floor()).max(0.0) as usize)
-            .min(line_count.saturating_sub(1))
+        let display_row = (((y - acc) / self.line_height).floor()).max(0.0) as usize;
+        if self.layout.source_line_count() == line_count {
+            self.layout.source_line_at_display_row(
+                display_row.min(self.layout.display_row_count().saturating_sub(1)),
+            )
+        } else {
+            display_row.min(line_count.saturating_sub(1))
+        }
     }
 
     /// The window of lines to lay out, with overscan, clamped to the document.
@@ -115,7 +131,27 @@ impl ViewState {
     /// Top y-offset of `line` relative to the content origin.
     #[must_use]
     pub fn line_top(&self, line: usize) -> f32 {
-        line as f32 * self.line_height + self.extra_before(line)
+        self.line_text_top(line) + self.extra_before(line)
+    }
+
+    fn line_text_top(&self, line: usize) -> f32 {
+        let row = if self.layout.source_line_count() > line {
+            self.layout.first_display_row(line)
+        } else {
+            line
+        };
+        row as f32 * self.line_height
+    }
+
+    /// Height occupied by a source line's display rows.
+    #[must_use]
+    pub fn line_text_height(&self, line: usize) -> f32 {
+        let rows = if self.layout.source_line_count() > line {
+            self.layout.row_count(line)
+        } else {
+            1
+        };
+        rows as f32 * self.line_height
     }
 
     /// Clamps `scroll_y` to the scrollable range for `line_count` lines.
@@ -138,10 +174,27 @@ impl ViewState {
         }
     }
 
-    /// Adjusts `scroll_y` minimally so `line` is fully visible.
+    /// Adjusts `scroll_y` minimally so a source line is fully visible.
     pub fn scroll_to_line(&mut self, line: usize, line_count: usize) {
         let top = self.line_top(line);
-        let bottom = top + self.line_height + self.line_extra(line);
+        let bottom = top + self.line_text_height(line) + self.line_extra(line);
+        if top < self.scroll_y {
+            self.scroll_y = top;
+        } else if bottom > self.scroll_y + self.viewport_height {
+            self.scroll_y = bottom - self.viewport_height;
+        }
+        self.clamp_scroll(line_count);
+    }
+
+    /// Adjusts `scroll_y` minimally so the cursor's display row is visible.
+    pub fn scroll_to_cursor(&mut self, cursor: Cursor, line_count: usize) {
+        let display_row = if self.layout.source_line_count() == line_count {
+            self.layout.display_row_for_cursor(cursor)
+        } else {
+            cursor.line
+        };
+        let top = display_row as f32 * self.line_height + self.extra_before(cursor.line);
+        let bottom = top + self.line_height;
         if top < self.scroll_y {
             self.scroll_y = top;
         } else if bottom > self.scroll_y + self.viewport_height {
@@ -154,6 +207,7 @@ impl ViewState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::layout::LineLayout;
 
     fn view() -> ViewState {
         ViewState {
@@ -202,6 +256,7 @@ mod tests {
         v.scroll_y = 1e9;
         v.clamp_scroll(50);
         assert_eq!(v.scroll_y, 400.0); // 500 content - 100 viewport
+
         // Content shorter than viewport pins to 0.
         v.clamp_scroll(5);
         assert_eq!(v.scroll_y, 0.0);
@@ -242,6 +297,28 @@ mod tests {
         for line in 0..10 {
             assert_eq!(v.line_at_y(v.line_top(line), 10), line);
         }
+    }
+
+    #[test]
+    fn wrapped_rows_drive_height_y_mapping_and_extras_follow_final_row() {
+        let mut v = view();
+        v.layout = DisplayLayout::new(vec![
+            LineLayout::identity(0, "abcdefgh".into(), &[3, 3, 2]),
+            LineLayout::identity(1, "xy".into(), &[2]),
+        ]);
+        v.line_extras = vec![(0, 20.0)];
+
+        assert_eq!(v.line_text_height(0), 30.0);
+        assert_eq!(v.line_top(1), 50.0);
+        assert_eq!(v.content_height(2), 60.0);
+        assert_eq!(v.line_at_y(25.0, 2), 0);
+        assert_eq!(v.line_at_y(40.0, 2), 0);
+        assert_eq!(v.line_at_y(50.0, 2), 1);
+
+        v.scroll_y = 0.0;
+        v.viewport_height = 10.0;
+        v.scroll_to_cursor(Cursor::new(0, 7), 2);
+        assert_eq!(v.scroll_y, 20.0);
     }
 
     #[test]

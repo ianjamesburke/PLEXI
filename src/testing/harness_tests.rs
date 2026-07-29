@@ -3313,6 +3313,8 @@ fn gate_movement_key(
         Movement::WordRight => "alt+right",
         Movement::LineStart => "cmd+left",
         Movement::LineEnd => "cmd+right",
+        Movement::VisualLineStart => "home",
+        Movement::VisualLineEnd => "end",
         Movement::DocStart => "cmd+up",
         Movement::DocEnd => "cmd+down",
         Movement::PageUp(_) | Movement::PageDown(_) => return None,
