@@ -116,6 +116,120 @@ fn pane_status_request_fails_loudly_for_unknown_pane() {
 }
 
 #[test]
+fn pane_heartbeat_off_removes_configured_state() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let response = temp_response(tmp.path(), "heartbeat-off");
+    h.inject_ipc(AppRequest::PaneHeartbeat {
+        pane_id: pane,
+        every_ms: Some(60_000),
+        text: Some("cycle".into()),
+        while_idle_only: None,
+        off: false,
+        response_file: Some(response.clone()),
+    });
+    h.run_frames(1);
+    assert!(h.app.pane_heartbeats.contains_key(&pane));
+    h.inject_ipc(AppRequest::PaneHeartbeat {
+        pane_id: pane,
+        every_ms: None,
+        text: None,
+        while_idle_only: None,
+        off: true,
+        response_file: Some(response),
+    });
+    h.run_frames(1);
+    assert!(!h.app.pane_heartbeats.contains_key(&pane));
+}
+
+#[test]
+fn pane_heartbeat_skips_when_working() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    h.app.pane_heartbeats.insert(
+        pane,
+        crate::app::PaneHeartbeat {
+            every: std::time::Duration::from_secs(60),
+            text: "cycle".into(),
+            while_idle_only: true,
+            next_fire: std::time::Instant::now(),
+        },
+    );
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .expect("pane")
+        .set_agent(Some(crate::app_protocol::PaneAgentState {
+            pane_id: pane,
+            state: crate::app_protocol::AgentState::Working,
+            agent: "codex".into(),
+            detail: None,
+            session_id: None,
+        }));
+    h.run_frames(1);
+    assert!(h.app.pending_submits.is_empty());
+}
+
+#[test]
+fn pane_heartbeat_fires_when_idle() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    h.app.pane_heartbeats.insert(
+        pane,
+        crate::app::PaneHeartbeat {
+            every: std::time::Duration::from_secs(60),
+            text: "cycle".into(),
+            while_idle_only: true,
+            next_fire: std::time::Instant::now(),
+        },
+    );
+    h.app
+        .windows[0]
+        .panes
+        .get_mut(&pane)
+        .expect("pane")
+        .set_agent(Some(crate::app_protocol::PaneAgentState {
+            pane_id: pane,
+            state: crate::app_protocol::AgentState::Idle,
+            agent: "codex".into(),
+            detail: None,
+            session_id: None,
+        }));
+    h.run_frames(1);
+    assert_eq!(h.app.pending_submits.len(), 1);
+}
+
+#[test]
+fn pane_heartbeat_persists_with_pane_state() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let response = temp_response(tmp.path(), "heartbeat-persistence");
+    h.inject_ipc(AppRequest::PaneHeartbeat {
+        pane_id: pane,
+        every_ms: Some(300_000),
+        text: Some("cycle".into()),
+        while_idle_only: None,
+        off: false,
+        response_file: Some(response),
+    });
+    h.run_frames(1);
+
+    let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
+    let heartbeat = saved
+        .windows
+        .iter()
+        .flat_map(|window| &window.panes)
+        .find(|saved_pane| saved_pane.id == pane)
+        .and_then(|saved_pane| saved_pane.heartbeat.as_ref())
+        .expect("heartbeat persisted with pane");
+    assert_eq!(heartbeat.every_ms, 300_000);
+    assert_eq!(heartbeat.text, "cycle");
+    assert!(heartbeat.while_idle_only);
+}
+
+#[test]
 fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
@@ -174,9 +288,11 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let response = read_json_response(&response);
     assert!(response.get("ok").is_none());
     // 0478: drops are validated by decodable content — fake PNG bytes reject.
-    assert!(response["error"]
-        .as_str()
-        .is_some_and(|error| error.contains("not a decodable image")));
+    assert!(
+        response["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not a decodable image"))
+    );
     let app = h.app.windows[0]
         .panes
         .get(&pane_id)
@@ -198,9 +314,7 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
 fn click_pane_moves_notes_caret_through_real_pointer_events() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let note = tmp.path().join("note.md");
-    let body: String = (0..40)
-        .map(|i| format!("line number {i}\n"))
-        .collect();
+    let body: String = (0..40).map(|i| format!("line number {i}\n")).collect();
     std::fs::write(&note, &body).expect("seed note");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
@@ -254,10 +368,12 @@ fn drop_rejects_apps_without_a_production_handler_observably() {
         response_file: response.clone(),
     });
     h.run_frames(1);
-    assert!(read_json_response(&response)["error"]
-        .as_str()
-        .unwrap()
-        .contains("does not accept"));
+    assert!(
+        read_json_response(&response)["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not accept")
+    );
 }
 
 #[derive(Default)]
@@ -884,7 +1000,10 @@ fn slot_wait_oversized_timeout_writes_typed_error() {
     let response = read_json_response(&format!("{wait_file}.err"));
     assert_eq!(response["ok"].as_bool(), Some(false));
     assert!(
-        response["error"].as_str().expect("error").contains("at most"),
+        response["error"]
+            .as_str()
+            .expect("error")
+            .contains("at most"),
         "unexpected error: {response}"
     );
 }
@@ -938,10 +1057,12 @@ fn pane_slot_read_errors_use_sidecar_file() {
     let error_file = format!("{read_file}.err");
     let response = read_json_response(&error_file);
     assert_eq!(response["ok"].as_bool(), Some(false));
-    assert!(response["error"]
-        .as_str()
-        .expect("error")
-        .contains("slot 'missing' not found"));
+    assert!(
+        response["error"]
+            .as_str()
+            .expect("error")
+            .contains("slot 'missing' not found")
+    );
 }
 
 #[test]
@@ -1372,8 +1493,8 @@ fn palette_close_surrenders_focus_before_pane_close() {
 
 #[test]
 fn notification_modal_handle_key_returns_consumed() {
-    use crate::app::app_trait::KeyDisposition;
     use crate::app::FocusKind;
+    use crate::app::app_trait::KeyDisposition;
     let mut h = HostHarness::new();
     h.app.push_focus_layer(FocusKind::NotificationModal);
     let ctx = h.app.ctx.clone();
@@ -2020,12 +2141,7 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
     let content_h = declared_h * scale;
     let local_origin_x = (pane_rect.width() - content_w) / 2.0;
     let local_origin_y = (pane_rect.height() - content_h) / 2.0;
-    let to_pane = |cx: f32, cy: f32| {
-        (
-            local_origin_x + cx * scale,
-            local_origin_y + cy * scale,
-        )
-    };
+    let to_pane = |cx: f32, cy: f32| (local_origin_x + cx * scale, local_origin_y + cy * scale);
     let (from_canvas_x, from_canvas_y) = (90.0_f32, 40.0_f32);
     let (to_canvas_x, to_canvas_y) = (270.0_f32, 220.0_f32);
     let steps = 6u32;
@@ -2146,7 +2262,14 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
 
     // Node absent from the current tree entirely.
     let response_file = temp_response(tmp.path(), "drag-node-missing");
-    h.inject_node_drag(pane_id, "9999", "9999", 4, "left", Some(response_file.clone()));
+    h.inject_node_drag(
+        pane_id,
+        "9999",
+        "9999",
+        4,
+        "left",
+        Some(response_file.clone()),
+    );
     h.run_frames(1);
     let response = read_json_response(&response_file);
     let error = response["error"].as_str().unwrap_or_default();
@@ -2167,8 +2290,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/event-probe");
+    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/event-probe");
     h.app
         .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
         .expect("launch event-probe");
@@ -3299,10 +3421,7 @@ enum GateHostInput {
     Key(String),
 }
 
-fn gate_movement_key(
-    movement: crate::editor::commands::Movement,
-    extend: bool,
-) -> Option<String> {
+fn gate_movement_key(movement: crate::editor::commands::Movement, extend: bool) -> Option<String> {
     use crate::editor::commands::Movement;
     let base = match movement {
         Movement::Left => "left",
@@ -3588,7 +3707,10 @@ fn editor_gate_host_surfaces() {
         "image drop must be accepted: {drop_response:?}"
     );
     let state = gate_note_semantics(&h, pane_id);
-    assert_eq!(state["last_drop_result"]["result"].as_str(), Some("accepted"));
+    assert_eq!(
+        state["last_drop_result"]["result"].as_str(),
+        Some("accepted")
+    );
     assert!(
         state["source_text"]
             .as_str()
@@ -3606,11 +3728,16 @@ fn editor_gate_host_surfaces() {
         response_file: response.clone(),
     });
     h.run_frames(2);
-    assert!(read_json_response(&response)["error"]
-        .as_str()
-        .is_some_and(|error| error.contains("not a decodable image")));
+    assert!(
+        read_json_response(&response)["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not a decodable image"))
+    );
     let state = gate_note_semantics(&h, pane_id);
-    assert_eq!(state["last_drop_result"]["result"].as_str(), Some("rejected"));
+    assert_eq!(
+        state["last_drop_result"]["result"].as_str(),
+        Some("rejected")
+    );
 }
 
 /// Save failure must surface through the host path: Cmd+S against a note
@@ -3682,7 +3809,6 @@ fn host_log_marker_dispatches_and_acknowledges() {
     });
     assert_eq!(read_json_response(&response)["ok"], true);
 }
-
 
 // -- Stint 0505: focused-terminal keyboard ownership --------------------------
 //
@@ -4042,7 +4168,9 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::file_browser::FileBrowserApp::new(tmp.path().to_path_buf())),
+        Box::new(crate::file_browser::FileBrowserApp::new(
+            tmp.path().to_path_buf(),
+        )),
         crate::app::permissions::AppPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
@@ -4120,8 +4248,11 @@ fn pending_pane_inputs_survive_hidden_passes() {
     h.focus_pane(pane);
     h.run_frames(1);
 
-    h.app.pending_pane_inputs.entry(pane).or_default().push(
-        egui::RawInput {
+    h.app
+        .pending_pane_inputs
+        .entry(pane)
+        .or_default()
+        .push(egui::RawInput {
             events: vec![egui::Event::Key {
                 key: egui::Key::Enter,
                 physical_key: None,
@@ -4130,8 +4261,7 @@ fn pending_pane_inputs_survive_hidden_passes() {
                 modifiers: egui::Modifiers::NONE,
             }],
             ..Default::default()
-        },
-    );
+        });
     h.run_hidden_frames(3);
     assert!(
         h.app
@@ -4199,7 +4329,11 @@ fn screenshot_without_viewport_delivery_replies_with_typed_error() {
     h.run_frames(1);
 
     let response_file = temp_response(tmp.path(), "stalled-screenshot");
-    let output_path = tmp.path().join("stalled.png").to_string_lossy().into_owned();
+    let output_path = tmp
+        .path()
+        .join("stalled.png")
+        .to_string_lossy()
+        .into_owned();
     h.inject_ipc(AppRequest::Screenshot {
         pane_id: None,
         output_path: output_path.clone(),
@@ -5101,7 +5235,11 @@ mod routine_firing {
             2,
             "an exited run must be reaped and the routine refired"
         );
-        assert_eq!(h.app.scheduler.live_run_count(), 1, "only the new run is registered");
+        assert_eq!(
+            h.app.scheduler.live_run_count(),
+            1,
+            "only the new run is registered"
+        );
         let new_run = h
             .app
             .scheduler
@@ -5945,7 +6083,11 @@ mod pane_send_submit_tests {
             .as_array()
             .expect("unconfirmed reply must carry input_line")
             .iter()
-            .map(|line| line.as_str().expect("input_line entries are strings").to_string())
+            .map(|line| {
+                line.as_str()
+                    .expect("input_line entries are strings")
+                    .to_string()
+            })
             .collect();
         assert!(
             !observed.is_empty() && before.ends_with(observed.as_slice()),
@@ -5995,9 +6137,7 @@ mod pane_send_submit_tests {
 
         assert_eq!(
             read_json_response(&second)["error"].as_str(),
-            Some(
-                format!("pane {term} already has a `pane send --submit` in flight").as_str()
-            ),
+            Some(format!("pane {term} already has a `pane send --submit` in flight").as_str()),
             "a second submit must be refused, not queued"
         );
         assert_eq!(h.app.pending_submits.len(), 1);

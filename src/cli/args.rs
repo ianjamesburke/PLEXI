@@ -1,7 +1,7 @@
 use clap::{
-    builder::styling::{AnsiColor, Effects, Styles},
-    builder::ValueHint,
     Args, Parser, Subcommand,
+    builder::ValueHint,
+    builder::styling::{AnsiColor, Effects, Styles},
 };
 
 fn plexi_styles() -> Styles {
@@ -1040,6 +1040,25 @@ pub enum PaneCmd {
         /// Pane id to focus (from `plexi pane list`)
         pane_id: u64,
     },
+    /// Configure a host-owned recurring prompt for a terminal pane.
+    ///
+    /// Example: plexi pane heartbeat 42 --every 5m --text "cycle"
+    Heartbeat {
+        /// Pane id to prompt (from `plexi pane list`)
+        pane_id: u64,
+        /// Interval such as 30s, 5m, or 1h.
+        #[arg(long, conflicts_with = "off")]
+        every: Option<String>,
+        /// Prompt text submitted on each beat.
+        #[arg(long, conflicts_with = "off")]
+        text: Option<String>,
+        /// Only submit when the shared agent detector reports idle (default).
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        while_idle_only: bool,
+        /// Disable the pane heartbeat.
+        #[arg(long, conflicts_with_all = ["every", "text", "while_idle_only"])]
+        off: bool,
+    },
     /// Close a pane. Omit the pane id to close the pane you are currently in.
     Close {
         /// Pane id to close (from `plexi pane list`). Defaults to the current pane if not given.
@@ -1749,19 +1768,28 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, SecretCmd,
+        AppCmd, Cli, Commands, ConfigCmd, ConfigScope, SecretCmd, normalize_config_scope_aliases,
     };
     use clap::Parser;
 
     #[test]
     fn host_start_accepts_ephemeral_flag() {
-        let cli =
-            Cli::try_parse_from(["plexi", "host", "start", "--ephemeral", "--pane", "cwd=/tmp"])
-                .unwrap();
+        let cli = Cli::try_parse_from([
+            "plexi",
+            "host",
+            "start",
+            "--ephemeral",
+            "--pane",
+            "cwd=/tmp",
+        ])
+        .unwrap();
         let Some(Commands::Host { cmd }) = cli.command else {
             panic!("expected host command");
         };
-        let super::HostCmd::Start { ephemeral, panes, .. } = cmd else {
+        let super::HostCmd::Start {
+            ephemeral, panes, ..
+        } = cmd
+        else {
             panic!("expected host start command");
         };
         assert!(ephemeral);

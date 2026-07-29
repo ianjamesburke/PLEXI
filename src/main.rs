@@ -918,6 +918,9 @@ fn main() -> eframe::Result {
                         PaneCmd::Status { pane_id } => {
                             std::process::exit(cli::pane_status_cli(pane_id))
                         }
+                        PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
+                            std::process::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
+                        }
                         PaneCmd::State { pane_id } => {
                             std::process::exit(cli::pane_state_cli(pane_id))
                         }

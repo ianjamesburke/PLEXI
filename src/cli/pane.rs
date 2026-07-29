@@ -7,7 +7,9 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
             let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
                 Ok(v) => v,
                 Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or provide a pane ID");
+                    eprintln!(
+                        "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or provide a pane ID"
+                    );
                     return 1;
                 }
             };
@@ -83,7 +85,9 @@ fn resolve_pane_id(pane_id: Option<u64>) -> Result<u64, i32> {
             let raw = match std::env::var("PLEXI_PANE_ID") {
                 Ok(v) => v,
                 Err(_) => {
-                    eprintln!("error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID");
+                    eprintln!(
+                        "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
+                    );
                     return Err(1);
                 }
             };
@@ -640,6 +644,65 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
     0
 }
 
+pub fn pane_heartbeat_cli(
+    pane_id: u64,
+    every: Option<&str>,
+    text: Option<&str>,
+    while_idle_only: Option<bool>,
+    off: bool,
+) -> i32 {
+    let every_ms = match every.map(parse_heartbeat_duration) {
+        Some(Ok(duration)) => Some(duration.as_millis() as u64),
+        Some(Err(error)) => {
+            eprintln!("error: invalid --every: {error}");
+            return 1;
+        }
+        None => None,
+    };
+    let response_file = crate::rpc::response_file("pane-heartbeat-response", "json");
+    let code = send_to_socket(
+        serde_json::json!({"type":"pane_heartbeat", "pane_id":pane_id, "every_ms":every_ms, "text":text, "while_idle_only":while_idle_only, "off":off, "response_file":response_file}),
+    );
+    if code != 0 {
+        return code;
+    }
+    match super::poll_rpc(&response_file, "pane heartbeat") {
+        Ok(content) => {
+            if let Some(error) = serde_json::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_string))
+            {
+                eprintln!("error: {error}");
+                1
+            } else {
+                print_json_output(&content)
+            }
+        }
+        Err(code) => code,
+    }
+}
+
+fn parse_heartbeat_duration(value: &str) -> Result<std::time::Duration, String> {
+    let (number, suffix) = value
+        .trim()
+        .chars()
+        .position(|c| !c.is_ascii_digit())
+        .map_or((value.trim(), "s"), |index| value.trim().split_at(index));
+    let number: u64 = number
+        .parse()
+        .map_err(|_| "expected a positive integer followed by ms, s, m, or h".to_string())?;
+    let duration = match suffix {
+        "ms" => std::time::Duration::from_millis(number),
+        "s" => std::time::Duration::from_secs(number),
+        "m" => std::time::Duration::from_secs(number.saturating_mul(60)),
+        "h" => std::time::Duration::from_secs(number.saturating_mul(3600)),
+        _ => return Err("expected ms, s, m, or h".to_string()),
+    };
+    (!duration.is_zero())
+        .then_some(duration)
+        .ok_or_else(|| "must be greater than zero".to_string())
+}
+
 /// Client-side poll window for `pane send --submit`. Strictly above the host's
 /// own settle + confirm + retry-confirm ceiling.
 const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(25);
@@ -674,7 +737,9 @@ impl SubmitOutcome {
         match self {
             SubmitOutcome::Confirmed { retried } => {
                 if *retried {
-                    print_tip("the prompt was still parked as a collapsed paste; a second Enter submitted it");
+                    print_tip(
+                        "the prompt was still parked as a collapsed paste; a second Enter submitted it",
+                    );
                 }
             }
             SubmitOutcome::Unconfirmed {
@@ -966,7 +1031,9 @@ pub fn pane_capture_cli(
                 }
             },
             Err(_) => {
-                eprintln!("error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID");
+                eprintln!(
+                    "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
+                );
                 return 1;
             }
         },
@@ -974,7 +1041,9 @@ pub fn pane_capture_cli(
 
     let response_file = crate::rpc::response_file("pane-capture-response", "json");
 
-    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} plain={plain} response_file={response_file:?}");
+    log::info!(
+        "pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} plain={plain} response_file={response_file:?}"
+    );
 
     let mut req = serde_json::json!({
         "type": "capture_pane",
@@ -1394,9 +1463,11 @@ mod capture_and_status_tests {
                 pane_status_cli(42)
             });
         assert_eq!(host_error, 1);
-        assert!(validate_status_reply("{}")
-            .expect_err("missing fields")
-            .contains("missing verdict"));
+        assert!(
+            validate_status_reply("{}")
+                .expect_err("missing fields")
+                .contains("missing verdict")
+        );
     }
 }
 

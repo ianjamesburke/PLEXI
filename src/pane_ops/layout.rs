@@ -3,7 +3,7 @@
 
 use crate::app::PlexiApp;
 use crate::host::command::{HostAction, Placement};
-use crate::host::context::{replace_child, Window};
+use crate::host::context::{Window, replace_child};
 use crate::host::effect::HostEffect;
 use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
@@ -891,6 +891,9 @@ impl PlexiApp {
         // without it a closed run would block its routine forever), then park
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
+            if self.pane_heartbeats.remove(&pane_id).is_some() {
+                log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");
+            }
             for name in self.scheduler.reap_pane(pane_id) {
                 log::info!("scheduler: routine '{name}' run ended — pane {pane_id} closed");
             }

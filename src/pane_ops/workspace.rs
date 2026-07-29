@@ -424,7 +424,9 @@ impl PlexiApp {
                 })),
             );
         } else {
-            log::warn!("new_child_context: parent ctx_id={parent_id} has no window — child context has no Portal tile");
+            log::warn!(
+                "new_child_context: parent ctx_id={parent_id} has no window — child context has no Portal tile"
+            );
         }
 
         // 3. Register the child context + window.
@@ -849,7 +851,10 @@ impl PlexiApp {
             })
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
-        log::info!("create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display());
+        log::info!(
+            "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
+            cwd.display()
+        );
         let Some((tree, panes, root_tile)) =
             self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
         else {
@@ -1811,6 +1816,17 @@ impl PlexiApp {
                         app_id: None,
                         app_state: None,
                         hidden: pane_hidden,
+                        heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
+                            crate::workspace::SavedPaneHeartbeat {
+                                every_ms: heartbeat
+                                    .every
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(u64::MAX),
+                                text: heartbeat.text.clone(),
+                                while_idle_only: heartbeat.while_idle_only,
+                            }
+                        }),
                     });
                 } else if let Some(a) = pane.as_app() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -1821,6 +1837,17 @@ impl PlexiApp {
                         app_id: Some(a.runtime.type_id().to_string()),
                         app_state: a.runtime.serialize_state(),
                         hidden: pane_hidden,
+                        heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
+                            crate::workspace::SavedPaneHeartbeat {
+                                every_ms: heartbeat
+                                    .every
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(u64::MAX),
+                                text: heartbeat.text.clone(),
+                                while_idle_only: heartbeat.while_idle_only,
+                            }
+                        }),
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -1833,6 +1860,17 @@ impl PlexiApp {
                         app_id: None,
                         app_state: None,
                         hidden: pane_hidden,
+                        heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
+                            crate::workspace::SavedPaneHeartbeat {
+                                every_ms: heartbeat
+                                    .every
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(u64::MAX),
+                                text: heartbeat.text.clone(),
+                                while_idle_only: heartbeat.while_idle_only,
+                            }
+                        }),
                     });
                 }
             }
@@ -1884,6 +1922,7 @@ mod tests {
                     app_id: Some("test".to_string()),
                     app_state: None,
                     hidden: false,
+                    heartbeat: None,
                 })
                 .collect(),
             focused_pane: None,

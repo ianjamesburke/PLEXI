@@ -149,6 +149,68 @@ pub(crate) struct PendingAgentBoot {
 }
 
 impl PlexiApp {
+    pub(crate) fn pane_heartbeat_json(&self, pane_id: u64) -> serde_json::Value {
+        self.pane_heartbeats
+            .get(&pane_id)
+            .map_or(serde_json::Value::Null, |heartbeat| {
+                serde_json::json!({
+                    "every_ms": heartbeat.every.as_millis(),
+                    "text": heartbeat.text,
+                    "while_idle_only": heartbeat.while_idle_only,
+                })
+            })
+    }
+
+    /// Fire due host-owned prompts from logic so hidden hosts remain wakeable.
+    pub(crate) fn service_pane_heartbeats(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .pane_heartbeats
+            .iter()
+            .filter_map(|(&pane_id, heartbeat)| (now >= heartbeat.next_fire).then_some(pane_id))
+            .collect();
+        for pane_id in due {
+            let idle = self.agent_reports_idle(pane_id);
+            let submit_in_flight = self.submit_in_flight(pane_id);
+            let Some(heartbeat) = self.pane_heartbeats.get_mut(&pane_id) else {
+                continue;
+            };
+            heartbeat.next_fire = now + heartbeat.every;
+            if heartbeat.while_idle_only && !idle {
+                log::info!("pane_heartbeat: pane_id={pane_id} skipped reason=working");
+                continue;
+            }
+            let text = heartbeat.text.clone();
+            let Some(term) = self
+                .windows
+                .iter_mut()
+                .find_map(|window| window.panes.get_mut(&pane_id))
+                .and_then(crate::host::pane::Pane::as_terminal_mut)
+            else {
+                self.pane_heartbeats.remove(&pane_id);
+                log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");
+                continue;
+            };
+            if submit_in_flight {
+                log::info!("pane_heartbeat: pane_id={pane_id} skipped reason=submit_in_flight");
+                continue;
+            }
+            term.backend
+                .process_command(egui_term::BackendCommand::Write(text.clone().into_bytes()));
+            self.register_pending_submit(pane_id, None, text.chars().count());
+            log::info!("pane_heartbeat: pane_id={pane_id} fired");
+        }
+        if let Some(next) = self
+            .pane_heartbeats
+            .values()
+            .map(|heartbeat| heartbeat.next_fire)
+            .min()
+        {
+            let remaining = next.saturating_duration_since(Instant::now());
+            let predicted = Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+            ctx.request_repaint_after(remaining + predicted);
+        }
+    }
     /// Path the host currently tracks for `slot_name` on `pane_id`.
     ///
     /// The tracked path is authoritative: a slot may live outside the default
