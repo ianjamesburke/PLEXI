@@ -131,13 +131,22 @@ fn poll_until<T>(
 fn poll_live_until<T>(
     base_timeout: Duration,
     interval: Duration,
-    observe: impl FnMut() -> Option<T>,
+    mut observe: impl FnMut(Duration) -> Result<Option<T>, SceneError>,
 ) -> Result<T, SceneError> {
-    poll_until(
-        crate::testing::load_aware_timeout(base_timeout),
-        interval,
-        observe,
-    )
+    let started = Instant::now();
+    let deadline = started + crate::testing::load_aware_timeout(base_timeout);
+    loop {
+        if let Some(value) = observe(started.elapsed())? {
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            return Err(SceneError::new(
+                "eventual_timeout",
+                "eventual assertion did not pass before timeout",
+            ));
+        }
+        std::thread::sleep(interval);
+    }
 }
 
 fn live_context_count(contexts: Option<&serde_json::Value>, panes: &[serde_json::Value]) -> usize {
@@ -1179,10 +1188,11 @@ impl LiveBackend {
                 )
             })?;
         }
-        poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
-            self.json(&["host", "status", "--json"])
+        poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+            Ok(self
+                .json(&["host", "status", "--json"])
                 .ok()
-                .filter(|status| host_seed_ready(status, 1))
+                .filter(|status| host_seed_ready(status, 1)))
         })
         .map_err(|_| {
             SceneError::new(
@@ -1214,11 +1224,12 @@ impl LiveBackend {
         }
         self.teardown.attempted = true;
         let stopped = self.command(&["host".into(), "stop".into()], false).is_ok();
-        let gone = poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
-            self.command(&["host".into(), "status".into(), "--json".into()], false)
+        let gone = poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+            Ok(self
+                .command(&["host".into(), "status".into(), "--json".into()], false)
                 .ok()
                 .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
-                .filter(|status| classify_host_status(status) == HostStatusClass::Stopped)
+                .filter(|status| classify_host_status(status) == HostStatusClass::Stopped))
         })
         .is_ok();
         self.teardown.ok = stopped && gone;
@@ -1251,14 +1262,14 @@ impl LiveBackend {
         timeout: Duration,
     ) -> Result<serde_json::Value, SceneError> {
         let mut previous = None;
-        poll_live_until(timeout, LIVE_POLL_INTERVAL, || {
+        poll_live_until(timeout, LIVE_POLL_INTERVAL, |_| {
             if let Ok(state) = self.pane_state(pane_id) {
                 if previous.as_ref() == Some(&state) {
-                    return Some(state);
+                    return Ok(Some(state));
                 }
                 previous = Some(state);
             }
-            None
+            Ok(None)
         })
     }
 
@@ -1425,15 +1436,15 @@ impl LiveBackend {
             Step::Focus { focus } => {
                 let pane_id = self.handles.resolve(focus)?;
                 self.command(&["pane".into(), "focus".into(), pane_id.to_string()], true)?;
-                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
-                    self.json(&["pane", "list"]).ok().and_then(|value| {
+                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+                    Ok(self.json(&["pane", "list"]).ok().and_then(|value| {
                         value.as_array()?.iter().find_map(|pane| {
                             (pane.get("id").and_then(serde_json::Value::as_u64) == Some(pane_id)
                                 && pane.get("focused").and_then(serde_json::Value::as_bool)
                                     == Some(true))
                             .then_some(())
                         })
-                    })
+                    }))
                 })?;
                 log::info!(
                     "scene_live: step=focus channel={} handle={} pane_id={pane_id}",
@@ -1447,8 +1458,8 @@ impl LiveBackend {
             Step::Close { close } => {
                 let pane_id = self.handles.resolve(close)?;
                 self.command(&["pane".into(), "close".into(), pane_id.to_string()], true)?;
-                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
-                    self.json(&["pane", "list"]).ok().and_then(|value| {
+                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+                    Ok(self.json(&["pane", "list"]).ok().and_then(|value| {
                         value
                             .as_array()?
                             .iter()
@@ -1456,7 +1467,7 @@ impl LiveBackend {
                                 pane.get("id").and_then(serde_json::Value::as_u64) != Some(pane_id)
                             })
                             .then_some(())
-                    })
+                    }))
                 })?;
                 log::info!(
                     "scene_live: step=close channel={} handle={} pane_id={pane_id}",
@@ -1485,8 +1496,7 @@ impl LiveBackend {
                     &assert_label.target,
                     "semantic label assertion",
                 )?;
-                let deadline = Instant::now() + Duration::from_secs(5);
-                loop {
+                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
                     let state = self.pane_state(pane_id)?;
                     let matched = state
                         .pointer("/semantic/nodes")
@@ -1500,23 +1510,27 @@ impl LiveBackend {
                             })
                         });
                     if matched {
-                        return Ok(Some(StepDetail::LabelMatched {
+                        return Ok(Some(Some(StepDetail::LabelMatched {
                             target: assert_label.target.clone(),
                             pane_id: Some(pane_id),
                             label: assert_label.label.clone(),
-                        }));
+                        })));
                     }
-                    if Instant::now() >= deadline {
-                        return Err(SceneError::new(
+                    Ok(None)
+                })
+                .map_err(|error| {
+                    if error.code == "eventual_timeout" {
+                        SceneError::new(
                             "label_not_found",
                             format!(
                                 "assert_label: {:?} not found in live pane {}",
                                 assert_label.label, pane_id
                             ),
-                        ));
+                        )
+                    } else {
+                        error
                     }
-                    std::thread::sleep(LIVE_POLL_INTERVAL);
-                }
+                })
             }
             Step::Assert { assert } => self.check_eventually(assert).map(|()| None),
             Step::Expect { expect } => self.expect(expect),
@@ -1548,8 +1562,8 @@ impl LiveBackend {
                     &["context".into(), "zoom".into(), context_id.to_string()],
                     true,
                 )?;
-                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
-                    self.json(&["context", "list"]).ok().and_then(|value| {
+                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+                    Ok(self.json(&["context", "list"]).ok().and_then(|value| {
                         value
                             .as_array()?
                             .iter()
@@ -1561,7 +1575,7 @@ impl LiveBackend {
                                 entry.get("is_active").and_then(serde_json::Value::as_bool)
                             })
                             .filter(|active| *active)
-                    })
+                    }))
                 })?;
                 Ok(None)
             }
@@ -1587,10 +1601,11 @@ impl LiveBackend {
                     ],
                     true,
                 )?;
-                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
-                    self.json(&["context", "list"])
+                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+                    Ok(self
+                        .json(&["context", "list"])
                         .ok()
-                        .and_then(|value| (value.as_array()?.len() > before).then_some(()))
+                        .and_then(|value| (value.as_array()?.len() > before).then_some(())))
                 })?;
                 Ok(None)
             }
@@ -1761,11 +1776,8 @@ impl LiveBackend {
     }
 
     fn check_eventually(&self, spec: &AssertSpec) -> Result<(), SceneError> {
-        poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
-            match self.check(spec) {
-                Ok(()) => Some(()),
-                Err(_) => None,
-            }
+        poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+            Ok(self.check(spec).ok())
         })
     }
 
@@ -1801,43 +1813,46 @@ impl LiveBackend {
                 true,
             )?;
         }
-        let started = Instant::now();
-        let deadline = started + Duration::from_secs_f32(spec.timeout_s);
         let mut history = Vec::new();
-        loop {
-            let state = self.pane_state(pane_id)?;
-            history.push(PollSample {
-                timestamp_ms: started.elapsed().as_millis(),
-                observed: state.clone(),
-            });
-            let changed = spec
-                .node_changes
-                .as_ref()
-                .is_none_or(|needle| state.to_string().contains(needle) && state != before);
-            let contains = spec
-                .tree_contains
-                .as_ref()
-                .is_none_or(|needle| state.to_string().contains(needle));
-            if changed && contains && notes_expectations_match(spec, &state) {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(SceneError::new(
-                    if spec.after_key.is_some() || spec.after_text.is_some() {
-                        "input_no_effect"
-                    } else {
-                        "eventual_timeout"
-                    },
-                    format!(
-                        "expect target '{}' did not satisfy semantic predicate; before={before}",
-                        spec.target
-                    ),
-                )
-                .with_poll_history(history));
-            }
-            std::thread::sleep(LIVE_POLL_INTERVAL);
+        let result = poll_live_until(
+            Duration::from_secs_f32(spec.timeout_s),
+            LIVE_POLL_INTERVAL,
+            |elapsed| {
+                let state = self.pane_state(pane_id)?;
+                history.push(PollSample {
+                    timestamp_ms: elapsed.as_millis(),
+                    observed: state.clone(),
+                });
+                let changed = spec
+                    .node_changes
+                    .as_ref()
+                    .is_none_or(|needle| state.to_string().contains(needle) && state != before);
+                let contains = spec
+                    .tree_contains
+                    .as_ref()
+                    .is_none_or(|needle| state.to_string().contains(needle));
+                if changed && contains && notes_expectations_match(spec, &state) {
+                    return Ok(Some(()));
+                }
+                Ok(None)
+            },
+        );
+        match result {
+            Ok(()) => Ok(None),
+            Err(error) if error.code == "eventual_timeout" => Err(SceneError::new(
+                if spec.after_key.is_some() || spec.after_text.is_some() {
+                    "input_no_effect"
+                } else {
+                    "eventual_timeout"
+                },
+                format!(
+                    "expect target '{}' did not satisfy semantic predicate; before={before}",
+                    spec.target
+                ),
+            )
+            .with_poll_history(history)),
+            Err(error) => Err(error),
         }
-        Ok(None)
     }
 }
 
@@ -3141,6 +3156,32 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, "eventual_timeout");
+    }
+
+    #[test]
+    fn live_backend_real_host_polls_use_the_central_boundary() {
+        let source = include_str!("scenes.rs");
+        let start = source
+            .find("impl LiveBackend {")
+            .expect("LiveBackend implementation exists");
+        let end = source[start..]
+            .find("\n}\n\nfn geometry_failures")
+            .map(|offset| start + offset)
+            .expect("LiveBackend implementation has a stable end marker");
+        let live_backend = &source[start..end];
+
+        assert!(
+            !live_backend.contains("Instant::now"),
+            "LiveBackend host polling must use poll_live_until, never a raw deadline"
+        );
+        assert!(
+            !live_backend.contains("poll_until("),
+            "LiveBackend host polling must use load-aware poll_live_until"
+        );
+        assert!(
+            !live_backend.contains("std::thread::sleep(LIVE_POLL_INTERVAL)"),
+            "LiveBackend host polling must let poll_live_until own poll cadence"
+        );
     }
 
     #[test]
