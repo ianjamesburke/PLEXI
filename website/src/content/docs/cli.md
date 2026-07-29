@@ -733,6 +733,7 @@ Control panes — list, focus, send input, capture output, and more
 | `name` | Rename a pane |
 | `list` | List all open panes as a JSON array |
 | `focus` | Move the visible focus to a specific pane |
+| `heartbeat` | Configure a host-owned recurring prompt for a terminal pane |
 | `close` | Close a pane. Omit the pane id to close the pane you are currently in |
 | `send` | Type text into another pane as if it came from the keyboard |
 | `self` | Print the id of the pane you are currently in |
@@ -803,6 +804,20 @@ This moves what the user sees on screen — it does not change which pane an age
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to focus (from `plexi pane list`) |
+
+### `plexi pane heartbeat`
+
+Configure a host-owned recurring prompt for a terminal pane.
+
+Example: plexi pane heartbeat 42 --every 5m --text "cycle"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id to prompt (from `plexi pane list`) |
+| `--every` | string | no | Interval such as 30s, 5m, or 1h |
+| `--text` | string | no | Prompt text submitted on each beat |
+| `--while-idle-only` | flag | no | Only submit when the shared agent detector reports idle (default) |
+| `--off` | flag | no | Disable the pane heartbeat |
 
 ### `plexi pane close`
 
