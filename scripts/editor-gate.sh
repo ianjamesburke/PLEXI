@@ -60,6 +60,27 @@ run_bounded() {
     return "$code"
 }
 
+# Screenshot collection is evidence, not a release condition. Under fleet load
+# the host can miss one client deadline while still being healthy, so retry a
+# bounded request with backoff and leave a load diagnostic for the tester.
+capture_screenshot_with_retry() {
+    local output="$1"
+    local log_file="$2"
+    local attempt
+    for attempt in 1 2 3; do
+        if run_bounded 20 "$plexi_bin" host screenshot --output "$output" >> "$log_file" 2>&1; then
+            return 0
+        fi
+        {
+            echo "editor-gate: screenshot attempt $attempt/3 failed; machine load diagnostic:"
+            uptime || true
+            sysctl -n vm.loadavg 2>/dev/null || true
+        } >> "$log_file"
+        [[ $attempt -lt 3 ]] && sleep "$attempt"
+    done
+    return 1
+}
+
 # Host log marker (FIX: the installed run's start/finish summary must reach
 # the channel's plexi.log, whose logger the host process owns). Bounded and
 # warn-only: a marker failure never changes the gate result.
@@ -140,10 +161,8 @@ for scene in "${scenes[@]}"; do
     # Best-effort pixel evidence. `plexi host screenshot` can silently stall
     # (pre-existing host bug, tracked separately) — bound it hard and never
     # let it affect the gate result.
-    if ! run_bounded 20 "$plexi_bin" host screenshot \
-        --output "$scene_out/host-after.png" \
-        > "$scene_out/screenshot.log" 2>&1; then
-        echo "editor-gate: warning: screenshot after scene $name failed or timed out (best-effort, gate unaffected)" \
+    if ! capture_screenshot_with_retry "$scene_out/host-after.png" "$scene_out/screenshot.log"; then
+        echo "editor-gate: warning: screenshot after scene $name failed after retries; see load diagnostics (best-effort, gate unaffected)" \
             | tee -a "$scene_out/screenshot.log" >&2
     fi
     [[ -n "$scene_entries" ]] && scene_entries+=","

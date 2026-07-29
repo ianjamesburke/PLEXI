@@ -1084,7 +1084,8 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
     }
 
     #[test]
-    fn g11_gpu_render_pass_executes_on_device() -> Result<(), String> {
+    #[ignore = "perf-gate: run explicitly on a quiet machine"]
+    fn perf_gate_gpu_render_pass_executes_on_device() -> Result<(), String> {
         use gpu::Host;
         let mut ctx = gpu_ctx();
 
@@ -1151,6 +1152,63 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
             "warmed render pass submit should be < 5ms, was {elapsed:?}"
         );
 
+        let img = ctx.gpu.as_ref().unwrap().read_texture(surface)?;
+        let px = img.get_pixel(32, 32);
+        assert!(
+            px[0] < 40 && px[1] > 200 && px[2] < 40,
+            "surface should be the uniform green, got {px:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn g11_gpu_render_pass_renders_uniform_color() -> Result<(), String> {
+        use gpu::Host;
+        let mut ctx = gpu_ctx();
+
+        let surface = ctx.gpu.as_mut().unwrap().alloc_surface(64, 64);
+        let view = ctx.create_surface_view(surface)?;
+        let ubuf = ctx.create_buffer(
+            "color".to_string(),
+            16,
+            gpu::BufferUsage::UNIFORM | gpu::BufferUsage::COPY_DST,
+        )?;
+        let green: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+        let green_bytes: Vec<u8> = green.iter().flat_map(|f| f.to_le_bytes()).collect();
+        ctx.write_buffer(ubuf, 0, green_bytes)?;
+        let pipeline = ctx.create_render_pipeline(
+            "uniform".to_string(),
+            UNIFORM_WGSL.to_string(),
+            gpu::RenderPipelineDesc {
+                vs_entry: "vs_main".to_string(),
+                fs_entry: "fs_main".to_string(),
+                vertex_stride: 0,
+                attrs: vec![],
+                output_format: gpu::TextureFormat::Rgba8Unorm,
+                blend_alpha: false,
+            },
+        )?;
+        let bind = ctx.create_bind_group(
+            pipeline,
+            vec![gpu::BindingEntry {
+                binding: 0,
+                resource_ref: gpu::BindingResource::Buffer(ubuf),
+            }],
+        )?;
+        ctx.submit_render_pass(gpu::RenderPassDesc {
+            target: view,
+            clear_color: Some((0.0, 0.0, 0.0, 1.0)),
+            pipeline,
+            vertex_buffer: None,
+            index_buffer: None,
+            bind_groups: vec![(0, bind)],
+            draws: vec![gpu::DrawCall {
+                vertices: 3,
+                instances: 1,
+                first_vertex: 0,
+                first_instance: 0,
+            }],
+        })?;
         let img = ctx.gpu.as_ref().unwrap().read_texture(surface)?;
         let px = img.get_pixel(32, 32);
         assert!(

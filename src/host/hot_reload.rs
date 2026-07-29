@@ -240,9 +240,9 @@ mod tests {
 
     fn poll_for_reload(
         rx: &MailboxReceiver<ReloadRequest>,
-        timeout: Duration,
+        base_timeout: Duration,
     ) -> Option<ReloadRequest> {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(base_timeout);
         while Instant::now() < deadline {
             if let Ok(req) = rx.try_recv() {
                 return Some(req);
@@ -263,7 +263,9 @@ mod tests {
         watcher.watch(42, dir.path());
 
         // Give FSEvents a moment to arm before mutating.
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            150,
+        )));
         fs::write(&file, "print('v2')\n").unwrap();
 
         let got = poll_for_reload(&rx, Duration::from_secs(3));
@@ -286,7 +288,9 @@ mod tests {
 
         let (mut watcher, rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
         watcher.watch(7, dir.path());
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            150,
+        )));
 
         // Fire a tight burst — every write within ~10ms.
         for i in 0..6 {
@@ -302,7 +306,8 @@ mod tests {
         // debounce the burst should coalesce — at most one extra is OK
         // (FSEvents occasionally splits a burst across two windows).
         let mut extras = 0;
-        let deadline = Instant::now() + Duration::from_millis(600);
+        let deadline =
+            Instant::now() + crate::testing::load_aware_timeout(Duration::from_millis(600));
         while Instant::now() < deadline {
             if rx.try_recv().is_ok() {
                 extras += 1;
@@ -324,11 +329,15 @@ mod tests {
 
         let (mut watcher, rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
         watcher.watch(11, dir.path());
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            150,
+        )));
 
         watcher.unwatch(11);
         // Drain any in-flight event from before the unwatch.
-        thread::sleep(Duration::from_millis(400));
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            400,
+        )));
         while rx.try_recv().is_ok() {}
 
         // Subsequent edits should never produce a ReloadRequest.
