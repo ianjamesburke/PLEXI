@@ -93,9 +93,10 @@ impl PlexiApp {
     /// If the focused pane in the active window is a terminal and no overlay
     /// owns keyboard input, take this frame's input-intent events out of `ctx`
     /// and return them for the focused terminal (stint 0387). The caller threads
-    /// the result into `render_panels` → the tiling behavior → the focused
-    /// `TerminalView`, so the events reach the terminal without egui's
-    /// render-time widget machinery getting a chance to consume them first.
+    /// the result into `render_panels`, where whichever pane path is active
+    /// (tiled or zoomed) passes it to the focused `TerminalView`, so the events
+    /// reach the terminal without egui's render-time widget machinery getting
+    /// a chance to consume them first.
     ///
     /// Returns `None` (leaving `ctx` untouched) unless the frame's derived
     /// [`crate::app::input_owner::InputOwner`] is a terminal pane. The single
