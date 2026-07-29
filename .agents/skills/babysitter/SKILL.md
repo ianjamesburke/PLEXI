@@ -56,7 +56,7 @@ First action:
 - **No pane handed (default):** spawn worker-1 yourself with `plexi pane new -n "worker-1" --agent com` (see "Spawning an agent pane").
 - **Pane handed:** confirm it is real and idle, and label it.
   ```
-  plexi pane capture <PANE_ID> --from-cursor 0
+  plexi pane capture <PANE_ID> --from-cursor 0 --plain
   plexi pane name <PANE_ID> "worker-1"
   ```
   If it isn't a live agent prompt, don't stall the run — tell the user, then spawn a fresh worker-1 yourself and proceed.
@@ -113,7 +113,7 @@ Since stint 0383 (PR #2390), `capture --lines N` returns the last N real content
 
 - `plexi pane capture <id> --lines 20` → bounded tail. **Default for every status check** — it answers "what is the agent's last message" in ~20 lines.
 - `plexi pane capture <id> --from-cursor <CURSOR> --plain` → raw delta since a known cursor; stdout is only captured text and stderr carries the next `cursor=<N>`.
-- `plexi pane capture <id> --from-cursor 0` → full buffer. Only when parsing a long verdict/report whose start you'd otherwise miss. Prefer narrowing it with `grep`/`sed` over dumping the whole thing; delegate to a sub-agent only when the report is genuinely too long to narrow.
+- `plexi pane capture <id> --from-cursor 0 --plain` → raw full buffer. Only when parsing a long verdict/report whose start you'd otherwise miss. Prefer narrowing it with `grep`/`sed` over dumping the whole thing; delegate to a sub-agent only when the report is genuinely too long to narrow.
 
 ### Progress channel — pane slots FIRST, capture is the fallback
 
