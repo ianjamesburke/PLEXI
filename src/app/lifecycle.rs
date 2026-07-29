@@ -2295,6 +2295,7 @@ impl PlexiApp {
                 write_response(response_file, json_str.as_bytes());
             }
             crate::app_protocol::AppRequest::Notify {
+                notify_id,
                 level,
                 title,
                 body,
@@ -2313,13 +2314,15 @@ impl PlexiApp {
                 source_pane_id,
                 ..
             } => {
-                let internal_id = format!(
-                    "__host__:{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0)
-                );
+                let internal_id = notify_id.clone().unwrap_or_else(|| {
+                    format!(
+                        "__host__:{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0)
+                    )
+                });
                 log::info!(
                     "pane_ipc: kind=notify title={:?} choices={} scope={:?} source_context_id={:?} source_pane_id={:?} response_file={:?}",
                     title,
@@ -2422,6 +2425,28 @@ impl PlexiApp {
                         deliver_after: None,
                     },
                 );
+            }
+            crate::app_protocol::AppRequest::DismissNotification {
+                notify_id,
+                source_context_id,
+                source_pane_id,
+                response_file,
+            } => {
+                let result = match (source_context_id, source_pane_id) {
+                    (Some(_), Some(pane_id)) => self
+                        .dismiss_notification_from_sender(notify_id, *pane_id)
+                        .map(|()| "dismissed"),
+                    _ => Err("notify dismiss requires caller pane and context"),
+                };
+                match result {
+                    Ok(message) => {
+                        write_response(response_file, message.as_bytes());
+                    }
+                    Err(message) => {
+                        log::warn!("pane_ipc: notify dismiss id={notify_id:?}: {message}");
+                        write_response(response_file, message.as_bytes());
+                    }
+                }
             }
             crate::app_protocol::AppRequest::CreateContext {
                 root,

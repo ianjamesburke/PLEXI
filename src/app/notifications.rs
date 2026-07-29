@@ -222,6 +222,69 @@ impl NotifySource {
 }
 
 impl PlexiApp {
+    /// Resolve app-notification provenance without consulting focus. A live
+    /// sender pane supplies its window; a parked or gone sender has only the
+    /// context stamped on the command, so window visibility narrows to that
+    /// context rather than borrowing the currently active window.
+    pub(crate) fn resolve_app_notification_provenance(
+        &self,
+        sender_pane_id: u64,
+        scope: crate::app_protocol::NotifyScope,
+    ) -> (crate::app_protocol::NotifyScope, u64) {
+        if let Some((window_index, _)) = (sender_pane_id != 0)
+            .then(|| self.find_pane_in_any_window(sender_pane_id))
+            .flatten()
+        {
+            return (scope, self.windows[window_index].window_id);
+        }
+        if scope == crate::app_protocol::NotifyScope::Window {
+            log::info!(
+                "notify: app sender pane_id={} has no live window — narrowing window scope to context",
+                sender_pane_id
+            );
+            return (crate::app_protocol::NotifyScope::Context, 0);
+        }
+        (scope, 0)
+    }
+
+    /// Remove a CLI notification only when the caller owns its stamped pane.
+    /// This is deliberately a queue mutation rather than
+    /// a UI-only close so sticky entries cannot survive a CLI dismissal.
+    pub(crate) fn dismiss_notification_from_sender(
+        &mut self,
+        notify_id: &str,
+        source_pane_id: u64,
+    ) -> Result<(), &'static str> {
+        let expected_owner = notify_id
+            .strip_prefix("cli:")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(pane_id, _)| pane_id.parse::<u64>().ok());
+        if expected_owner != Some(source_pane_id) {
+            return Err("notification not found or not owned by caller");
+        }
+        let Some(position) = self
+            .pending_notifications
+            .iter()
+            .position(|n| n.notify_id == notify_id)
+        else {
+            return Err("notification not found or not owned by caller");
+        };
+        self.pending_notifications.remove(position);
+        if self.current_notify_id.as_deref() == Some(notify_id) {
+            self.current_notify_id = None;
+        }
+        if self.pending_notifications.is_empty() {
+            self.show_notification_modal = false;
+        }
+        self.save_notifications();
+        log::info!(
+            "notify: dismissed id={} source_pane_id={}",
+            notify_id,
+            source_pane_id
+        );
+        Ok(())
+    }
+
     /// The single choke point for every notification entering the host.
     ///
     /// Owns, in one place, the policy that used to be re-decided at each of the

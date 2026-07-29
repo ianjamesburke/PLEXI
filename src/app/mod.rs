@@ -3550,13 +3550,8 @@ impl eframe::App for PlexiApp {
                     timeout_secs,
                     on_dismiss,
                 } => {
-                    let notif_source_win_id: u64 = if sender_pane_id != 0 {
-                        self.find_pane_in_any_window(sender_pane_id)
-                            .map(|(idx, _)| self.windows[idx].window_id)
-                            .unwrap_or_else(|| self.windows[self.active_window].window_id)
-                    } else {
-                        self.windows[self.active_window].window_id
-                    };
+                    let (scope, notif_source_win_id) =
+                        self.resolve_app_notification_provenance(sender_pane_id, scope);
                     // Strip any per-option shortcut that conflicts with navigation keys.
                     let options: Vec<crate::app_protocol::NotifyOption> = options.into_iter().map(|mut opt| {
                         if let Some(ref sc) = opt.shortcut.clone() {

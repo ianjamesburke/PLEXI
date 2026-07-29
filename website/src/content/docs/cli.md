@@ -1121,16 +1121,17 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 Send a notification to the Plexi UI
 
+| Subcommand | Description |
+|---|---|
+| `dismiss` | Remove a notification previously posted by this pane |
+
+### `plexi notify dismiss`
+
+Remove a notification previously posted by this pane
+
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--title` | string | yes | Notification title (required) |
-| `--body` | string | no | Notification body text |
-| `--level` | string | no | Severity level: info, warn, or error Default: `info`. |
-| `--choice` | string (repeatable) | no | Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked). Repeatable |
-| `--host-action` | string (repeatable) | no | Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`. Repeatable. The host runs this even after the process that sent the notification has exited |
-| `--no-wait` | flag | no | Queue choice buttons without waiting for a selected value |
-| `--timeout` | string | no | How many seconds before the notification disappears (0 = stays until dismissed) Default: `0`. |
-| `--scope` | string | no | Which panes see this notification: window, context, or global (default: context — the notification stays in the context that sent it) |
+| `<notify_id>` | string | yes | Notification id printed by `plexi notify` |
 
 ## `plexi ai`
 

@@ -229,8 +229,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
-        EventsCmd, HookAction, HostCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd,
-        SecretCmd, UpdateCmd, WorkspaceCmd,
+        EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, RegistryCmd,
+        RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -664,16 +664,41 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::host_screenshot_cli(pane, output.as_deref()))
                         }
                     },
-                    Commands::Notify {
-                        title,
-                        body,
-                        level,
-                        choices,
-                        host_actions,
-                        no_wait,
-                        timeout,
-                        scope,
-                    } => {
+                    Commands::Notify { cmd, post } => {
+                        // The caller's own identity, stamped by the pane env.
+                        // A set-but-garbled value is corrupt state, not an
+                        // outside-pane caller — fail loudly, never reinterpret.
+                        let caller_env_id = |key: &str| match std::env::var(key) {
+                            Ok(s) => match s.parse::<u64>() {
+                                Ok(id) => Some(id),
+                                Err(_) => {
+                                    eprintln!("error: {key} is not a valid number: {s}");
+                                    std::process::exit(1);
+                                }
+                            },
+                            Err(_) => None,
+                        };
+                        let source_context_id = caller_env_id("PLEXI_CONTEXT_ID");
+                        let source_pane_id = caller_env_id("PLEXI_PANE_ID");
+                        if let Some(NotifyCmd::Dismiss { notify_id }) = cmd {
+                            std::process::exit(cli::dismiss_notify_cli(
+                                &notify_id,
+                                source_context_id,
+                                source_pane_id,
+                            ));
+                        }
+                        let Some(title) = post.title else {
+                            eprintln!("error: --title is required when posting a notification");
+                            std::process::exit(1);
+                        };
+                        let body = post.body;
+                        let level = post.level;
+                        let choices = post.choices;
+                        let host_actions = post.host_actions;
+                        let no_wait = post.no_wait;
+                        let timeout = post.timeout;
+                        let wait_timeout = post.wait_timeout;
+                        let scope = post.scope;
                         // Parse --host-action flags into a key → "action_type:action_arg" map.
                         let mut host_action_map: std::collections::HashMap<String, String> =
                             std::collections::HashMap::new();
@@ -738,21 +763,6 @@ fn main() -> eframe::Result {
                             "notify:cli: host_actions={} merged into choices",
                             host_actions.len()
                         );
-                        // The caller's own identity, stamped by the pane env.
-                        // A set-but-garbled value is corrupt state, not an
-                        // outside-pane caller — fail loudly, never reinterpret.
-                        let caller_env_id = |key: &str| match std::env::var(key) {
-                            Ok(s) => match s.parse::<u64>() {
-                                Ok(id) => Some(id),
-                                Err(_) => {
-                                    eprintln!("error: {key} is not a valid number: {s}");
-                                    std::process::exit(1);
-                                }
-                            },
-                            Err(_) => None,
-                        };
-                        let source_context_id = caller_env_id("PLEXI_CONTEXT_ID");
-                        let source_pane_id = caller_env_id("PLEXI_PANE_ID");
                         std::process::exit(cli::notify_cli(
                             &title,
                             &body,
@@ -760,6 +770,7 @@ fn main() -> eframe::Result {
                             &parsed_choices,
                             !no_wait,
                             timeout,
+                            wait_timeout,
                             parsed_scope,
                             source_context_id,
                             source_pane_id,
