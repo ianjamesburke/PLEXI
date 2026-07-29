@@ -2941,11 +2941,11 @@ mod tests {
 
     /// Stints 0528/0530 evidence: sidebar with seeded contexts (active +
     /// inactive names, path subtitles) and the spatial minimap overlay with a
-    /// workspace name, at ppp 2.0. Review: inactive context names must meet
-    /// the contrast floor, minimap name galley must sit on the pixel grid.
-    #[test]
-    fn screenshot_sidebar_and_minimap_typography_ppp2() {
-        let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, 2.0);
+    /// workspace name, at 1x and 2x. Review: inactive context names must meet
+    /// the contrast floor, minimap name galley and status-dot capsules must
+    /// sit on the pixel grid.
+    fn render_sidebar_pane_dots_pixel_grid(ppp: f32, out: &str) {
+        let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, ppp);
         h.step();
         add_focused_pane(&mut h);
         let inactive_ctx_id = h.with_app_mut(|app| {
@@ -3019,14 +3019,28 @@ mod tests {
         });
         // Index 2 is the inactive PLEXI context's only window: indexes 0 and
         // 1 are the active context's two spatial windows seeded above.
+        // The active context's first two windows each need a pane so its
+        // sidebar capsule draws the multi-window dot grouping this test
+        // exists to review.
+        add_focused_pane_to_window(&mut h, 1);
         add_focused_pane_to_window(&mut h, 2);
         h.with_app_mut(|app| {
             assert_eq!(app.windows[2].context_id, inactive_ctx_id);
         });
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi-0528-sidebar-minimap-ppp2.png")
+        h.save_screenshot(out)
             .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi-0528-sidebar-minimap-ppp2.png");
+        println!("Screenshot saved to {out}");
+    }
+
+    #[test]
+    fn screenshot_sidebar_pane_dots_pixel_grid_ppp1() {
+        render_sidebar_pane_dots_pixel_grid(1.0, "/tmp/plexi-0564-sidebar-pips-ppp1.png");
+    }
+
+    #[test]
+    fn screenshot_sidebar_pane_dots_pixel_grid_ppp2() {
+        render_sidebar_pane_dots_pixel_grid(2.0, "/tmp/plexi-0564-sidebar-pips-ppp2.png");
     }
 
     /// Stint 0528 evidence: file browser rows + preview panel at ppp 2.0 —

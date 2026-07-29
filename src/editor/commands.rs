@@ -43,9 +43,15 @@ pub enum EditorCommand {
     InsertNewline,
     /// Delete selection, or one grapheme left of the caret.
     Backspace,
+    /// Delete selection, or every grapheme from the caret back to the start
+    /// of the current line. This is the macOS Cmd+Backspace behavior.
+    KillToLineStart,
     /// Delete selection, or one grapheme right of the caret.
     DeleteForward,
-    Move { movement: Movement, extend: bool },
+    Move {
+        movement: Movement,
+        extend: bool,
+    },
     /// Tab: indent every selected line (or insert one indent at the caret)
     /// as one undoable transaction.
     Indent,
@@ -180,6 +186,7 @@ impl Document {
             EditorCommand::InsertText(text) => self.insert_text(&text, true),
             EditorCommand::InsertNewline => self.insert_newline(),
             EditorCommand::Backspace => self.delete(true),
+            EditorCommand::KillToLineStart => self.kill_to_line_start(),
             EditorCommand::DeleteForward => self.delete(false),
             EditorCommand::Move { movement, extend } => self.do_move(movement, extend),
             EditorCommand::Indent => self.indent(),
@@ -369,6 +376,27 @@ impl Document {
             let b = movement::cursor_to_char(&self.buffer, caret);
             (a.min(b), a.max(b))
         };
+        if start_char == end_char {
+            return;
+        }
+        let ops = vec![EditOperation::Delete {
+            pos: start_char,
+            text: self.buffer.slice(start_char, end_char),
+        }];
+        self.commit(ops, selection_before, start_char, false);
+    }
+
+    /// Cmd+Backspace: delete the selection, or the current line prefix. At a
+    /// line start it is intentionally a no-op rather than joining lines.
+    fn kill_to_line_start(&mut self) {
+        if self.selection.is_range() {
+            self.delete(true);
+            return;
+        }
+        let selection_before = self.selection;
+        let caret = movement::clamp(&self.buffer, self.selection.head);
+        let start_char = self.buffer.line_to_char(caret.line);
+        let end_char = movement::cursor_to_char(&self.buffer, caret);
         if start_char == end_char {
             return;
         }
@@ -622,6 +650,26 @@ mod tests {
         d.apply(EditorCommand::Backspace);
         assert_eq!(d.text(), "abcd");
         assert_eq!(d.cursor(), Cursor::new(0, 2));
+    }
+
+    #[test]
+    fn kill_to_line_start_is_atomic_grapheme_safe_and_does_not_join_lines() {
+        let mut d = doc("first\npre café👨\u{200d}👩 tail");
+        d.apply(EditorCommand::SetCursor(Cursor::new(1, 12)));
+        d.apply(EditorCommand::KillToLineStart);
+        assert_eq!(d.text(), "first\ntail");
+        assert_eq!(d.cursor(), Cursor::new(1, 0));
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "first\npre café👨\u{200d}👩 tail");
+
+        d.apply(EditorCommand::SetCursor(Cursor::new(1, 0)));
+        d.apply(EditorCommand::KillToLineStart);
+        assert_eq!(d.text(), "first\npre café👨\u{200d}👩 tail");
+
+        d.apply(EditorCommand::SetCursor(Cursor::new(1, 4)));
+        d.apply(EditorCommand::ExtendTo(Cursor::new(1, 11)));
+        d.apply(EditorCommand::KillToLineStart);
+        assert_eq!(d.text(), "first\npre  tail");
     }
 
     #[test]
@@ -1026,7 +1074,11 @@ mod tests {
         let mut d = doc(text);
         d.apply(EditorCommand::SetCursor(Cursor::new(1, 12)));
         d.apply(EditorCommand::MarkdownNewline);
-        assert_eq!(d.text(), "```\n- not a list\n\n```", "plain newline in fence");
+        assert_eq!(
+            d.text(),
+            "```\n- not a list\n\n```",
+            "plain newline in fence"
+        );
 
         // Tab in a fence is a plain caret indent, not a line indent.
         let mut d = doc(text);

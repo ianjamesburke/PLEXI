@@ -481,7 +481,7 @@ impl TextEditorApp {
                     Some(i) => link.bytes.start + i + 2..link.bytes.end - 1,
                     None => link.bytes.clone(),
                 },
-                LinkKind::Autolink => link.bytes.clone(),
+                LinkKind::Autolink | LinkKind::BareUrl => link.bytes.clone(),
             };
             self.select_byte_range(&dest_range);
             log::info!("notes_editor: link edit — selected destination of {:?}", link.dest);
@@ -555,6 +555,7 @@ impl TextEditorApp {
         let kind = match link.kind {
             LinkKind::Markdown => "markdown",
             LinkKind::Autolink => "autolink",
+            LinkKind::BareUrl => "bare_url",
             LinkKind::Wiki => "wiki",
         };
         let (outcome, detail) = if link.dest.contains("://") {
@@ -1591,6 +1592,7 @@ impl App for TextEditorApp {
                     "kind": match l.kind {
                         LinkKind::Markdown => "markdown",
                         LinkKind::Autolink => "autolink",
+                        LinkKind::BareUrl => "bare_url",
                         LinkKind::Wiki => "wiki",
                     },
                     "target": l.dest,
