@@ -83,11 +83,17 @@ Ground truth comes from the host, never from what you expect to have happened:
 
 ```bash
 plexi-pr-<N> pane state <pane-id>     # app panes: normalized semantic tree; terminals: status
-plexi-pr-<N> pane capture <pane-id> --lines 80
+CAPTURE_META=$(mktemp /tmp/plexi-capture-meta.XXXXXX)
+plexi-pr-<N> pane capture <pane-id> --lines 80 --plain 2>"$CAPTURE_META"
+CAPTURE_CURSOR=$(sed -n 's/^cursor=//p' "$CAPTURE_META")
+# Later: print only output/redraw deltas and advance the cursor again.
+NEXT_CAPTURE_META=$(mktemp /tmp/plexi-capture-meta.XXXXXX)
+plexi-pr-<N> pane capture <pane-id> --plain --from-cursor "$CAPTURE_CURSOR" \
+  2>"$NEXT_CAPTURE_META"
 tail -100 ~/.plexi-pr-<N>/plexi.log
 ```
 
-`pane state` exposes the last committed normalized semantic tree for process, native builtin, and WASM app panes — assert against `semantic.nodes`, not against a screenshot you eyeballed. Process panes also retain their compatible `frame` field. `pane capture` returns terminal output as a JSON array; use `--from-cursor <n>` to read only lines written since a prior capture. The channel log (`~/.plexi-pr-<N>/plexi.log`) is the source for anything the drive commands can't surface — every feature ships an `info` trace, so grep it for the behavior you seeded.
+`pane state` exposes the last committed normalized semantic tree for process, native builtin, and WASM app panes — assert against `semantic.nodes`, not against a screenshot you eyeballed. Process panes also retain their compatible `frame` field. `pane capture --plain` keeps stdout byte-clean for terminal assertions and writes `cursor=<N>` to stderr; feed that cursor to `--from-cursor` for the next changed-row delta. The channel log (`~/.plexi-pr-<N>/plexi.log`) is the source for anything the drive commands can't surface — every feature ships an `info` trace, so grep it for the behavior you seeded.
 
 ### 4. Teardown
 

@@ -82,6 +82,7 @@ const SUBMIT_SERVICE_INTERVAL: Duration = Duration::from_millis(50);
 /// only when frames run, so the boot service keeps frames coming at half that
 /// period rather than sleeping until the timeout deadline.
 const AGENT_BOOT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const AGENT_BOOT_INTERPRETER_STABLE: Duration = Duration::from_secs(1);
 
 /// The single collapsed-paste retry, spent by moving it out of the
 /// [`PendingSubmit`].
@@ -316,6 +317,46 @@ impl PlexiApp {
             .is_some_and(|agent| agent.state == AgentState::Idle)
     }
 
+    fn unsupported_interpreter_boot(
+        &self,
+        pane_id: u64,
+        agent_cmd: &str,
+    ) -> Option<(String, Option<String>)> {
+        let requested = agent_cmd.split_whitespace().next()?;
+        let requested_name = std::path::Path::new(requested)
+            .file_name()
+            .and_then(|name| name.to_str())?;
+        // An unknown custom command may still have a valid lifecycle hook.
+        // Fail fast only when the caller explicitly requested a built-in
+        // known agent identity but the stable interpreter argv contradicts
+        // our ability to observe that identity.
+        crate::host::shell::known_agent_process(requested_name)?;
+        let terminal = self
+            .windows
+            .iter()
+            .find_map(|window| window.panes.get(&pane_id))
+            .and_then(crate::host::pane::Pane::as_terminal)?;
+        if !terminal
+            .last_pty_output_at
+            .is_some_and(|at| at.elapsed() >= AGENT_BOOT_INTERPRETER_STABLE)
+        {
+            return None;
+        }
+        let shell_pid = terminal.backend.child_pid();
+        let foreground = terminal
+            .backend
+            .foreground_pid()
+            .filter(|pid| *pid != shell_pid as i32)?;
+        match crate::host::shell::get_pid_agent_probe(foreground as u32) {
+            crate::host::shell::AgentProcessProbe::UnsupportedInterpreter {
+                interpreter,
+                script,
+            } => Some((interpreter, script)),
+            crate::host::shell::AgentProcessProbe::Known(_)
+            | crate::host::shell::AgentProcessProbe::Unknown => None,
+        }
+    }
+
     /// Fail every parked boot whose pane is gone, expire the overdue ones, and
     /// keep frames coming until the next deadline.
     ///
@@ -337,6 +378,48 @@ impl PlexiApp {
         parked.dedup();
         for pane_id in parked {
             self.complete_agent_boots(pane_id);
+        }
+        if self.pending_agent_boots.is_empty() {
+            return;
+        }
+        let unsupported: Vec<_> = self
+            .pending_agent_boots
+            .iter()
+            .filter_map(|boot| {
+                self.unsupported_interpreter_boot(boot.pane_id, &boot.agent_cmd)
+                    .map(|reason| (boot.pane_id, reason))
+            })
+            .collect();
+        for (pane_id, (interpreter, script)) in unsupported {
+            let (failed, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_boots)
+                .into_iter()
+                .partition(|boot| boot.pane_id == pane_id);
+            self.pending_agent_boots = live;
+            for boot in failed {
+                let script_detail = script
+                    .as_deref()
+                    .map(|path| format!(" script {path:?}"))
+                    .unwrap_or_else(|| " an unreadable script argv".to_string());
+                let error = format!(
+                    "`{}` is running under interpreter `{interpreter}` with{script_detail}, which does not identify a known agent; readiness cannot be observed at boot",
+                    boot.agent_cmd
+                );
+                log::warn!(
+                    "pane_agent_boot: pane_id={} agent_cmd={:?} fail-fast unsupported interpreter={interpreter:?} script={script:?}",
+                    boot.pane_id,
+                    boot.agent_cmd
+                );
+                crate::rpc::write_json_response(
+                    &boot.response_file,
+                    serde_json::json!({
+                        "ok": false,
+                        "timeout": false,
+                        "unsupported_interpreter": true,
+                        "pane_id": boot.pane_id,
+                        "error": error,
+                    }),
+                );
+            }
         }
         if self.pending_agent_boots.is_empty() {
             return;

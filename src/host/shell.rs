@@ -462,8 +462,8 @@ fn invoked_exec_basename(pid: u32) -> Option<String> {
 /// agent detector: hooks are authoritative once they fire, but not every
 /// agent CLI emits a hook at boot (Codex defers `session_start` to the first
 /// prompt submission), so the host also recognizes the agent by its process
-/// name. Best-effort by design — a wrapper script that hides the agent binary
-/// behind another name is simply not observed until its hooks report.
+/// name. Interpreter-launched agents are resolved by [`get_pid_agent_probe`],
+/// which applies this same table to their script argv.
 pub fn known_agent_process(name: &str) -> Option<&'static str> {
     match name {
         "claude" => Some("claude-code"),
@@ -471,6 +471,149 @@ pub fn known_agent_process(name: &str) -> Option<&'static str> {
         "pi" => Some("pi"),
         _ => None,
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AgentProcessProbe {
+    Known(&'static str),
+    UnsupportedInterpreter {
+        interpreter: String,
+        script: Option<String>,
+    },
+    Unknown,
+}
+
+pub fn get_pid_agent_probe(pid: u32) -> AgentProcessProbe {
+    let Some(process_name) = get_pid_name(pid) else {
+        return AgentProcessProbe::Unknown;
+    };
+    if let Some(agent) = known_agent_process(&process_name) {
+        return AgentProcessProbe::Known(agent);
+    }
+    if !known_agent_interpreter(&process_name) {
+        return AgentProcessProbe::Unknown;
+    }
+    let args = get_pid_argv(pid).unwrap_or_default();
+    let script = args
+        .iter()
+        .find(|arg| {
+            let base = std::path::Path::new(arg)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(arg);
+            !arg.starts_with('-')
+                && base != process_name
+                && !known_agent_interpreter(base)
+                && base != "env"
+        })
+        .cloned();
+    if let Some(agent) = script.as_deref().and_then(known_agent_script) {
+        return AgentProcessProbe::Known(agent);
+    }
+    AgentProcessProbe::UnsupportedInterpreter {
+        interpreter: process_name,
+        script,
+    }
+}
+
+fn known_agent_interpreter(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(name.as_str(), "node" | "nodejs" | "python" | "python3")
+        || name
+            .strip_prefix("python")
+            .is_some_and(|suffix| suffix.starts_with(|c: char| c.is_ascii_digit()))
+}
+
+fn known_agent_script(script: &str) -> Option<&'static str> {
+    let path = std::path::Path::new(script);
+    let base = path.file_stem()?.to_str()?;
+    if let Some(agent) = known_agent_process(base) {
+        return Some(agent);
+    }
+    let normalized = script.replace('\\', "/");
+    if normalized.contains("/pi-coding-agent/") {
+        Some("pi")
+    } else if normalized.contains("/claude-code/") || normalized.contains("/@anthropic-ai/") {
+        Some("claude-code")
+    } else if normalized.contains("/@openai/codex/") {
+        Some("codex")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
+    let mut argmax: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    if unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            &mut argmax as *mut _ as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+        || argmax <= 0
+    {
+        return None;
+    }
+    let mut buf = vec![0u8; argmax as usize];
+    let mut len = buf.len();
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    if unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+        || len <= std::mem::size_of::<libc::c_int>()
+    {
+        return None;
+    }
+    let argc =
+        libc::c_int::from_ne_bytes(buf[..std::mem::size_of::<libc::c_int>()].try_into().ok()?);
+    if argc <= 0 {
+        return None;
+    }
+    let bytes = &buf[std::mem::size_of::<libc::c_int>()..len];
+    let exec_end = bytes.iter().position(|byte| *byte == 0)?;
+    let mut cursor = exec_end + 1;
+    while cursor < bytes.len() && bytes[cursor] == 0 {
+        cursor += 1;
+    }
+    let mut args = Vec::with_capacity(argc as usize);
+    while args.len() < argc as usize && cursor < bytes.len() {
+        let end = bytes[cursor..].iter().position(|byte| *byte == 0)? + cursor;
+        args.push(String::from_utf8_lossy(&bytes[cursor..end]).into_owned());
+        cursor = end + 1;
+    }
+    Some(args)
+}
+
+#[cfg(target_os = "linux")]
+fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
+    let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(
+        bytes
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect(),
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
+    let _ = pid;
+    None
 }
 
 /// True when `pid` has at least one live child process. Used as one of the
@@ -711,6 +854,48 @@ mod tests {
         // normalizing a symlinked install back to its invoked basename, so
         // a resolved payload name must never reach (or match) this table.
         assert_eq!(known_agent_process("codex-aarch64-apple-darwin"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interpreter_script_argv_identifies_agent_through_shebang_symlink() {
+        let dir = std::env::temp_dir().join(format!(
+            "plexi-interpreter-agent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let script = dir.join("cli.py");
+        std::fs::write(
+            &script,
+            "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
+        )
+        .expect("write script");
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let alias = dir.join("pi");
+        std::os::unix::fs::symlink(&script, &alias).expect("symlink");
+
+        let mut child = std::process::Command::new(&alias)
+            .spawn()
+            .expect("spawn interpreter-shaped agent");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let probe = get_pid_agent_probe(child.id());
+        let process_name = get_pid_name(child.id());
+        let argv = get_pid_argv(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(
+            probe,
+            AgentProcessProbe::Known("pi"),
+            "process_name={process_name:?} argv={argv:?}"
+        );
     }
 
     #[test]

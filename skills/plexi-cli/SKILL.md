@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.4.1"
+skill_version: "4.4.2"
 plexi_version: "0.2.0"
-last_verified: "2026-07-28"
+last_verified: "2026-07-29"
 ---
 
 # Plexi CLI
@@ -11,6 +11,8 @@ last_verified: "2026-07-28"
 You are running inside a Plexi pane. `PLEXI_SOCKET` is set automatically -- every `plexi` command routes to the correct running instance.
 
 **Before using any subcommand**, run `plexi <noun> --help` to confirm it exists and check its flags. Subcommands change across releases -- never assume.
+
+Socket transport failures explicitly reported as an incomplete frame were not dispatched and are safe to retry. A host response timeout happens after transport success and does not prove non-delivery; do not retry it blindly.
 
 ## Env Vars (set automatically in every pane)
 

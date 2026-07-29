@@ -2885,11 +2885,10 @@ impl PlexiApp {
     ///
     /// The same pass synthesizes the host-observed half of the agent detector
     /// (`TerminalPane::observed_agent`): when a known agent binary is the PTY
-    /// foreground-group leader and no lifecycle hook has reported yet, the
-    /// pane's agent identity comes from the process name and its state from
-    /// the PTY output settle. This is what makes a freshly booted Codex —
-    /// whose hooks stay silent until the first prompt submission — visible to
-    /// `pane list` and to the `pane new --agent` boot wait.
+    /// foreground-group leader, the pane's agent identity comes from the
+    /// process name (or an interpreter's script argv) and its state from the
+    /// PTY output settle. This covers both a hook-silent boot and a stale hook
+    /// Idle that contradicts sustained fresh PTY activity.
     pub(super) fn tick_terminal_activity(&mut self) {
         use crate::app_protocol::AgentState;
         for window in self.windows.iter_mut() {
@@ -2922,14 +2921,19 @@ impl PlexiApp {
                     t.activity = new;
                 }
 
-                let observed = if t.agent.is_some() || t.exited {
-                    // A hook has reported (or the shell died): hooks own the
-                    // pane's agent state from the first report onward.
+                let observed = if t.exited {
                     None
                 } else {
                     fg.filter(|fg| *fg != shell_pid as i32)
-                        .and_then(|fg| crate::host::shell::get_pid_name(fg as u32))
-                        .and_then(|name| crate::host::shell::known_agent_process(&name))
+                        .and_then(
+                            |fg| match crate::host::shell::get_pid_agent_probe(fg as u32) {
+                                crate::host::shell::AgentProcessProbe::Known(agent) => Some(agent),
+                                crate::host::shell::AgentProcessProbe::UnsupportedInterpreter {
+                                    ..
+                                }
+                                | crate::host::shell::AgentProcessProbe::Unknown => None,
+                            },
+                        )
                         .map(|agent| {
                             // A TUI that has stopped redrawing is sitting at its
                             // prompt; one that is still streaming (banner draw,
@@ -2951,6 +2955,24 @@ impl PlexiApp {
                             }
                         })
                 };
+                let was_stale_idle_fallback = t.agent.as_ref().is_some_and(|hook| {
+                    hook.state == AgentState::Idle
+                        && t.agent_reported_at.is_some_and(|reported| {
+                            reported.elapsed() >= crate::host::pane::HOOK_AGENT_FRESHNESS
+                        })
+                        && t.observed_agent.as_ref().is_some_and(|observed| {
+                            observed.agent == hook.agent && observed.state == AgentState::Working
+                        })
+                });
+                let is_stale_idle_fallback = t.agent.as_ref().is_some_and(|hook| {
+                    hook.state == AgentState::Idle
+                        && t.agent_reported_at.is_some_and(|reported| {
+                            reported.elapsed() >= crate::host::pane::HOOK_AGENT_FRESHNESS
+                        })
+                        && observed.as_ref().is_some_and(|observed| {
+                            observed.agent == hook.agent && observed.state == AgentState::Working
+                        })
+                });
                 let changed = match (&t.observed_agent, &observed) {
                     (None, None) => false,
                     (Some(a), Some(b)) => a.agent != b.agent || a.state != b.state,
@@ -2964,6 +2986,15 @@ impl PlexiApp {
                         observed.as_ref().map(|a| (&a.agent, &a.state)),
                         fg
                     );
+                    if is_stale_idle_fallback && !was_stale_idle_fallback {
+                        log::info!(
+                            "observed agent: pane {pane_id} stale hook idle yielded to corroborated working"
+                        );
+                    } else if was_stale_idle_fallback && !is_stale_idle_fallback {
+                        log::info!(
+                            "observed agent: pane {pane_id} corroborated working settled; returning to hook idle"
+                        );
+                    }
                     t.observed_agent = observed;
                 }
             }

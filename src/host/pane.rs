@@ -400,6 +400,35 @@ pub enum Pane {
     Portal(Box<PortalPane>),
 }
 
+/// A hook report owns the state unconditionally for this long. Afterward,
+/// host-observed Working may corroborate activity that contradicts a stale
+/// hook Idle; fresh hook reports and hook Working always remain authoritative.
+pub(crate) const HOOK_AGENT_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn select_terminal_agent<'a>(
+    hook: Option<&'a crate::app_protocol::PaneAgentState>,
+    hook_reported_at: Option<std::time::Instant>,
+    observed: Option<&'a crate::app_protocol::PaneAgentState>,
+    now: std::time::Instant,
+) -> Option<&'a crate::app_protocol::PaneAgentState> {
+    let Some(hook) = hook else {
+        return observed;
+    };
+    if hook.state != crate::app_protocol::AgentState::Idle {
+        return Some(hook);
+    }
+    let hook_is_stale = hook_reported_at
+        .is_some_and(|reported| now.saturating_duration_since(reported) >= HOOK_AGENT_FRESHNESS);
+    let contradicts_idle = observed.is_some_and(|observed| {
+        observed.agent == hook.agent && observed.state == crate::app_protocol::AgentState::Working
+    });
+    if hook_is_stale && contradicts_idle {
+        observed
+    } else {
+        Some(hook)
+    }
+}
+
 /// A portal pane points at a child context and caches its rolled-up state.
 pub struct PortalPane {
     pub pane_id: PaneId,
@@ -477,14 +506,21 @@ impl Pane {
     }
 
     /// The pane's agent state, from the shared detector's two signal sources:
-    /// hook-reported state (`SetAgentState`, authoritative) when any hook has
-    /// fired, else the host-observed synthesis from `tick_terminal_activity`
-    /// (known agent process in the PTY foreground + output-settle state).
+    /// hook-reported state (`SetAgentState`, authoritative while fresh and
+    /// whenever Working) plus the host-observed synthesis from
+    /// `tick_terminal_activity` (known agent process in the PTY foreground +
+    /// output-settle state). A stale hook Idle may yield to corroborated
+    /// observed Working until the output settles again.
     /// Every consumer — `pane list`, `pane state`, the `pane new --agent`
     /// boot predicate — reads through here, so they stay correct together.
     pub fn agent(&self) -> Option<&crate::app_protocol::PaneAgentState> {
         match self {
-            Pane::Terminal(t) => t.agent.as_ref().or(t.observed_agent.as_ref()),
+            Pane::Terminal(t) => select_terminal_agent(
+                t.agent.as_ref(),
+                t.agent_reported_at,
+                t.observed_agent.as_ref(),
+                std::time::Instant::now(),
+            ),
             Pane::App(a) => a
                 .agent
                 .as_ref()
@@ -528,6 +564,7 @@ impl Pane {
     pub fn set_agent(&mut self, agent: Option<crate::app_protocol::PaneAgentState>) -> bool {
         match self {
             Pane::Terminal(t) => {
+                t.agent_reported_at = agent.as_ref().map(|_| std::time::Instant::now());
                 t.agent = agent;
                 true
             }
@@ -611,14 +648,14 @@ pub struct TerminalPane {
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
     pub agent: Option<crate::app_protocol::PaneAgentState>,
+    /// Receipt time of the latest lifecycle hook report. Used only to bound
+    /// how long hook Idle suppresses contradictory host-observed Working.
+    pub(crate) agent_reported_at: Option<std::time::Instant>,
     /// Host-observed agent state, synthesized in `tick_terminal_activity`
-    /// when a known agent binary holds the PTY foreground and no hook has
-    /// reported yet: identity from the foreground process name, state from
-    /// the PTY output settle (`last_pty_output_at`). Covers the boot window
-    /// for agents whose lifecycle hooks stay silent until first interaction
-    /// (Codex defers `session_start` to the first prompt submission). Cleared
-    /// permanently for the pane once `agent` is set — hook reports are the
-    /// authoritative source and never compete with the synthesis.
+    /// when a known agent binary holds the PTY foreground: identity from the
+    /// foreground process name or interpreter script argv, state from the PTY
+    /// output settle (`last_pty_output_at`). Covers both the pre-hook boot
+    /// window and stale hook-Idle gaps.
     pub observed_agent: Option<crate::app_protocol::PaneAgentState>,
     /// Host-observed terminal activity (foreground process running, exited),
     /// polled via `tcgetpgrp` in `tick_terminal_activity`. Separate from
@@ -663,11 +700,76 @@ impl TerminalPane {
             outside_workspace_root: None,
             hidden: false,
             agent: None,
+            agent_reported_at: None,
             observed_agent: None,
             activity: None,
             slots: HashMap::new(),
             last_pty_output_at: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod agent_source_tests {
+    use super::*;
+    use crate::app_protocol::{AgentState, PaneAgentState};
+    use std::time::{Duration, Instant};
+
+    fn state(state: AgentState) -> PaneAgentState {
+        PaneAgentState {
+            pane_id: 7,
+            state,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn fresh_hook_idle_remains_authoritative_over_observed_working() {
+        let now = Instant::now();
+        let hook = state(AgentState::Idle);
+        let observed = state(AgentState::Working);
+        let selected = select_terminal_agent(
+            Some(&hook),
+            Some(now - Duration::from_millis(100)),
+            Some(&observed),
+            now,
+        )
+        .expect("agent");
+        assert_eq!(selected.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn stale_hook_idle_yields_to_observed_working_then_returns_idle() {
+        let now = Instant::now();
+        let hook = state(AgentState::Idle);
+        let working = state(AgentState::Working);
+        let idle = state(AgentState::Idle);
+        let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
+
+        let selected =
+            select_terminal_agent(Some(&hook), Some(stale_at), Some(&working), now).expect("agent");
+        assert_eq!(selected.state, AgentState::Working);
+
+        let selected =
+            select_terminal_agent(Some(&hook), Some(stale_at), Some(&idle), now).expect("agent");
+        assert_eq!(selected.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn hook_working_is_never_overridden() {
+        let now = Instant::now();
+        let hook = state(AgentState::Working);
+        let observed = state(AgentState::Idle);
+        let selected = select_terminal_agent(
+            Some(&hook),
+            Some(now - HOOK_AGENT_FRESHNESS - Duration::from_secs(1)),
+            Some(&observed),
+            now,
+        )
+        .expect("agent");
+        assert_eq!(selected.state, AgentState::Working);
     }
 }
 

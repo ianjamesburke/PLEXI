@@ -5343,6 +5343,55 @@ mod agent_boot {
         format!("{} 60", link.display())
     }
 
+    fn persistent_agent_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "plexi-{label}-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                & 0xffff_ffff
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn interpreter_script_alias(dir: &std::path::Path, alias: &str) -> String {
+        let script = dir.join("cli.py");
+        std::fs::write(
+            &script,
+            "#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n",
+        )
+        .expect("write script");
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let link = dir.join(alias);
+        std::os::unix::fs::symlink(&script, &link).expect("symlink");
+        link.to_string_lossy().into_owned()
+    }
+
+    fn unmapped_interpreter_agent(dir: &std::path::Path) -> String {
+        let worker = dir.join("worker.py");
+        std::fs::write(&worker, "import time\ntime.sleep(60)\n").expect("write worker");
+        let launcher = dir.join("pi");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nexec /usr/bin/env python3 '{}'\n",
+                worker.display()
+            ),
+        )
+        .expect("write launcher");
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&launcher).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&launcher, perms).unwrap();
+        launcher.to_string_lossy().into_owned()
+    }
+
     fn pane_info(h: &mut HostHarness, dir: &std::path::Path, pane_id: u64) -> serde_json::Value {
         let response = temp_response(dir, "agent-info");
         h.inject_ipc(AppRequest::GetPaneInfo {
@@ -5404,6 +5453,54 @@ mod agent_boot {
         );
     }
 
+    #[test]
+    fn agent_spawn_completes_from_interpreter_script_identity() {
+        let dir = persistent_agent_dir("interpreter-agent");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+
+        let command = interpreter_script_alias(&dir, "pi");
+        let response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, false);
+        let reply = read_json_response(&response);
+        assert_eq!(
+            reply["pane_id"].as_u64(),
+            Some(pane_id),
+            "interpreter script argv must feed the shared detector: {reply}"
+        );
+        let info = pane_info(&mut h, &dir, pane_id);
+        assert_eq!(info["agent"]["agent"].as_str(), Some("pi"));
+        assert_eq!(info["agent"]["state"].as_str(), Some("idle"));
+    }
+
+    #[test]
+    fn agent_spawn_fails_fast_for_unmapped_interpreter_script() {
+        let dir = persistent_agent_dir("interpreter-unsupported");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+
+        let command = unmapped_interpreter_agent(&dir);
+        let response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+
+        pump_until_response(&mut h, &response, false);
+        let reply = read_json_response(&response);
+        assert_eq!(reply["ok"].as_bool(), Some(false));
+        assert_eq!(reply["timeout"].as_bool(), Some(false));
+        assert_eq!(reply["unsupported_interpreter"].as_bool(), Some(true));
+        assert_eq!(reply["pane_id"].as_u64(), Some(pane_id));
+        assert!(
+            reply["error"].as_str().expect("error").contains(&command),
+            "fail-fast reason must name requested agent command: {reply}"
+        );
+    }
+
     /// The observed path lives in `App::logic` end to end (activity tick,
     /// boot service) — an occluded host must still complete the boot.
     #[test]
@@ -5458,8 +5555,7 @@ mod agent_boot {
         h.run_frames(1);
     }
 
-    /// Hook reports are authoritative: once one lands, it both overrides the
-    /// observed state and permanently disables synthesis for the pane.
+    /// Hook Working is authoritative even while the observed process settles.
     #[test]
     fn hook_report_overrides_observed_agent() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -5480,8 +5576,7 @@ mod agent_boot {
         assert_eq!(info["agent"]["state"].as_str(), Some("working"));
 
         // Ride past the next detector ticks: the settled fake codex is still
-        // in the foreground, but synthesis must stay off once hooks own the
-        // pane — the hook state must not flap back to observed idle.
+        // in the foreground, but a hook Working must not flap to observed idle.
         for _ in 0..30 {
             std::thread::sleep(std::time::Duration::from_millis(50));
             h.run_frames(1);
@@ -5493,6 +5588,56 @@ mod agent_boot {
             "a hook report must permanently supersede the observed agent: {info}"
         );
         assert_eq!(info["agent"]["state"].as_str(), Some("working"));
+    }
+
+    #[test]
+    fn stale_hook_idle_yields_to_observed_working_and_settles_back() {
+        let dir = persistent_agent_dir("stale-hook");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+        let command = fake_idle_codex(&dir);
+        let response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        pump_until_response(&mut h, &response, false);
+
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|pane| pane.as_terminal_mut())
+            .expect("terminal");
+        terminal.agent = Some(crate::app_protocol::PaneAgentState {
+            pane_id,
+            state: AgentState::Idle,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        });
+        terminal.agent_reported_at =
+            Some(std::time::Instant::now() - crate::host::pane::HOOK_AGENT_FRESHNESS);
+        terminal.observed_agent = Some(crate::app_protocol::PaneAgentState {
+            pane_id,
+            state: AgentState::Working,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        });
+
+        let info = pane_info(&mut h, &dir, pane_id);
+        assert_eq!(info["agent"]["state"].as_str(), Some("working"));
+
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|pane| pane.as_terminal_mut())
+            .expect("terminal")
+            .observed_agent
+            .as_mut()
+            .expect("observed")
+            .state = AgentState::Idle;
+        let info = pane_info(&mut h, &dir, pane_id);
+        assert_eq!(info["agent"]["state"].as_str(), Some("idle"));
     }
 }
 
