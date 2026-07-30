@@ -133,26 +133,33 @@ Preview unreleased commits without committing anything:
 just changelog
 ```
 
+`just promote` moves code between branches; `just release` cuts and publishes
+the tag. They're deliberately separate: moving code to beta or main is
+reversible and local, publishing a tag is not — other machines on that
+channel auto-update to it. Never bundled into one command.
+
 Standard release batch:
 
 ```sh
 just bump                          # bump Cargo.toml, write CHANGELOG, commit + tag locally
-just promote beta release          # alpha→beta + publish vX.Y.Z-beta.N source-build tag
-just promote main release          # beta→main + publish vX.Y.Z source-build tag
+just promote beta                  # alpha→beta
+just release beta                  # publish vX.Y.Z-beta.N source-build tag, trigger CI
+just promote main                  # beta→main
+just release main                  # publish vX.Y.Z source-build tag, trigger CI
 ```
 
-Promote code only (no CI tag, test locally first):
+Promote code only and stop there (test locally before publishing):
 
 ```sh
 just promote beta                  # alpha→beta, no tag
 just promote main                  # beta→main, no tag
 ```
 
-Add `install` anywhere to build and install that channel after promoting:
+Add `install` to `promote` to build and install that channel after promoting:
 
 ```sh
-just promote beta install release
-just promote main install release
+just promote beta install
+just promote main install
 ```
 
 ## Channel Update Policy

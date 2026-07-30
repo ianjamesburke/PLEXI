@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Plexi channel promotion pipeline.
-# Usage: promote.sh [beta|main] [install] [release]
+# Plexi channel promotion pipeline. Moves code between branches — never cuts
+# or publishes a release tag. For that, run `just release beta|main` once
+# you're satisfied with what landed here.
+# Usage: promote.sh [beta|main] [install]
 #   No argument: auto-detects current branch and prompts for confirmation.
 #   install: build and install the target channel after promoting.
-#   release: cut and push a prerelease tag (beta) or stable tag (main) for source-build updates.
 #
 # Run `just bump` on alpha before promoting if you haven't already.
 set -euo pipefail
@@ -75,12 +76,10 @@ check_pushed() {
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 to="${1:-}"
 do_install=""
-do_release=""
 for arg in "${@:2}"; do
     case "$arg" in
         install) do_install="install" ;;
-        release) do_release="release" ;;
-        *) die "unknown flag '$arg' — valid flags: install, release" ;;
+        *) die "unknown flag '$arg' — valid flags: install" ;;
     esac
 done
 
@@ -131,28 +130,14 @@ if [[ "$to" == "beta" ]]; then
 
     version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
-    if [[ "$do_release" == "release" || "$do_release" == "true" ]]; then
-        base=$(echo "$version" | sed 's/-.*//')
-        git -C "$ALPHA_TREE" fetch origin --tags --quiet 2>/dev/null || true
-        highest=$(git -C "$ALPHA_TREE" tag -l "v${base}-beta.*" --sort=-v:refname | head -1)
-        if [[ -n "$highest" ]]; then
-            n=$(echo "$highest" | sed 's/.*-beta\.//')
-            next=$((n + 1))
-        else
-            next=1
-        fi
-        tag="v${base}-beta.${next}"
-        echo "Cutting $tag on alpha..."
-        git -C "$ALPHA_TREE" tag "$tag"
-        git -C "$ALPHA_TREE" push origin "$tag"
-        echo "Published $tag for source-build updates."
-    fi
-
-    if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
+    if [[ "$do_install" == "install" ]]; then
         echo ""
         echo "Installing beta (v$version)..."
         (cd "$BETA_TREE" && just install)
     fi
+
+    echo ""
+    echo "Code promoted to beta. Run 'just release beta' to publish its source-build tag."
     exit 0
 fi
 
@@ -186,33 +171,11 @@ git push origin beta:main
 echo "Syncing main worktree..."
 git -C "$MAIN_TREE" pull origin main
 
-if [[ "$do_release" == "release" || "$do_release" == "true" ]]; then
-    main_commit=$(git -C "$MAIN_TREE" rev-parse HEAD)
-    if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
-        tagged_commit=$(git -C "$MAIN_TREE" rev-list -n 1 "v$version")
-        if [[ "$tagged_commit" != "$main_commit" ]]; then
-            echo "info: tag v$version points at an older commit — re-tagging at main HEAD..."
-            git -C "$MAIN_TREE" tag -f "v$version" "$main_commit"
-        fi
-    else
-        echo "Creating tag v$version at main HEAD..."
-        git -C "$MAIN_TREE" tag "v$version"
-    fi
-    echo "Publishing tag v$version for source-build updates..."
-    git -C "$MAIN_TREE" push origin "v$version" --force
-    echo ""
-    echo "REMINDER: republish the agent-skill mirror from this release tree —"
-    echo "          copy $MAIN_TREE/skills/plexi-cli/SKILL.md to ianjamesburke/plexi-skills,"
-    echo "          push main, tag v$version. Steps: skills/AGENTS.md."
-else
-    echo "Code promoted to main. Run 'just promote main release' to publish its source-build tag."
-fi
-
-if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
+if [[ "$do_install" == "install" ]]; then
     echo ""
     echo "Installing main (v$version)..."
     (cd "$MAIN_TREE" && just install)
 fi
 
 echo ""
-echo "v$version is on main."
+echo "v$version is on main. Run 'just release main' to publish its source-build tag."
