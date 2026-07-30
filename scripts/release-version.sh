@@ -59,6 +59,17 @@ command -v git-cliff >/dev/null 2>&1 || die "git-cliff not found — brew instal
 
 current=$(grep '^version' "$TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 base=$(echo "$current" | sed 's/-.*//')
+
+# ── refuse an empty bump ──────────────────────────────────────────────────────
+# Cargo.toml's current version is the last release commit's tag. If nothing has
+# landed on alpha since that tag, bumping again produces a version + changelog
+# entry with no changes (see v0.2.2).
+
+if git -C "$TREE" rev-parse -q --verify "refs/tags/v$current" >/dev/null; then
+    unreleased=$(git -C "$TREE" log "v$current..HEAD" --oneline | wc -l | tr -d ' ')
+    [[ "$unreleased" -gt 0 ]] || die "no commits since v$current — nothing to release"
+fi
+
 IFS='.' read -r major minor patch <<< "$base"
 
 case "$bump" in
