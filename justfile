@@ -409,18 +409,24 @@ changelog:
 bump bump="patch":
     bash scripts/release-version.sh "{{bump}}"
 
-# Promote to the next channel. Run `just bump` first if cutting a new version.
-# Flags (order-independent after `to`): install, release
+# Promote to the next channel. Code only — never tags or publishes.
+# Run `just bump` first if cutting a new version; run `just release` after,
+# once you're ready to make the promoted commit live for that channel.
+# Flags (order-independent after `to`): install
 #   just promote              — auto-detect alpha→beta or beta→main, prompt
-#   just promote beta         — promote alpha→beta (code only)
-#   just promote main         — promote beta→main (code only)
+#   just promote beta         — promote alpha→beta
+#   just promote main         — promote beta→main
 #   just promote beta install — promote + install beta
 #   just promote main install — promote + install main
-#   just promote beta release — promote + cut vX.Y.Z-beta.N tag + trigger CI
-#   just promote main release — promote + cut vX.Y.Z tag + trigger CI
-#   just promote main install release — promote + install + tag + trigger CI
 promote to="" *flags="":
     bash scripts/promote.sh "{{to}}" {{flags}}
+
+# Cut and publish the source-build release tag for a channel already
+# promoted to its target branch. Never moves code — that's `just promote`.
+#   just release beta — cut vX.Y.Z-beta.N at beta HEAD, publish, trigger CI
+#   just release main — cut/retag vX.Y.Z at main HEAD, publish, trigger CI
+release channel="":
+    bash scripts/release-tag.sh "{{channel}}"
 
 # Remove a Plexi channel and its profile dir, app bundle, and CLI binary.
 # Defaults to removing all channels plus shell integration and completions.

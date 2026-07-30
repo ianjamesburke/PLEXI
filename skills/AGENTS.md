@@ -42,7 +42,7 @@ by construction. Publishing the alpha copy mid-cycle is forbidden: it would
 document unreleased surface under the released version number, which is exactly
 the failure this contract exists to prevent.
 
-Publish flow (manual; `promote.sh main release` prints this reminder):
+Publish flow (manual; `just release main` prints this reminder):
 
 1. From the release tree, copy `skills/plexi-cli/SKILL.md` — that single file,
    never a directory glob — into the mirror repo at

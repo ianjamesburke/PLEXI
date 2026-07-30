@@ -2,7 +2,7 @@
 # Bump version, regenerate CHANGELOG via git-cliff, commit, and tag the release commit.
 # Usage: scripts/release-version.sh [patch|minor|major]   — called by `just bump`
 # Default: patch
-# After bumping: just promote beta release → just promote main release
+# After bumping: just promote beta → just release beta → just promote main → just release main
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
@@ -47,7 +47,7 @@ if [[ -n "$prekind" ]]; then
     git -C "$TREE" tag "$tag"
     echo ""
     echo "$tag tagged locally on alpha."
-    echo "Next: just promote beta release"
+    echo "Next: just promote beta (then just release beta)"
     exit 0
 fi
 
@@ -128,4 +128,4 @@ git -C "$TREE" tag "$tag"
 
 echo ""
 echo "$tag committed and tagged locally on alpha."
-echo "Next: just promote beta release"
+echo "Next: just promote beta (then just release beta)"
