@@ -56,3 +56,11 @@ style = "file-form, no slash commands for codex"
 # Either engine: relay early when context feels heavy — baton to a fresh head.
 check_interval_seconds = 900
 codex_head_clock = "external-heartbeat"  # operator loop prompts 'cycle'
+
+[worker-postgate]
+# After gates pass and before reporting impl:done, the worker runs
+# `cargo build --release` in its own worktree. Cost: minutes it was going to
+# spend idle anyway. Effect: the tester's pr-install in the same worktree
+# becomes an incremental build — the single biggest cycle-time cut available
+# (Ian spotted it 2026-07-29). Provenance contract unchanged.
+prewarm_release_build = true
