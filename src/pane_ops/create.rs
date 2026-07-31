@@ -473,6 +473,11 @@ impl PlexiApp {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
         config.workspace_root = workspace_root.clone();
+        config.superseded_orphan_policy =
+            crate::config::PlexiConfig::load_with_workspace(Some(&workspace_root))
+                .app_state
+                .and_then(|app_state| app_state.superseded_orphans)
+                .unwrap_or_default();
         config.launch_args = launch_args;
         config.capabilities = permissions
             .capabilities

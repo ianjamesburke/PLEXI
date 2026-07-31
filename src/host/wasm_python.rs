@@ -330,6 +330,9 @@ pub struct PythonLaunchConfig {
     pub workspace_root: PathBuf,
     pub capabilities: Vec<String>,
     pub allowed_hosts: Vec<String>,
+    /// Disposal of channel orphans that lose the state reclaim — see
+    /// `[app_state] superseded_orphans` in config.
+    pub superseded_orphan_policy: crate::config::SupersededOrphanPolicy,
 }
 
 impl PythonLaunchConfig {
@@ -376,6 +379,7 @@ impl PythonLaunchConfig {
             workspace_root: app_dir.to_path_buf(),
             capabilities: manifest.app.capabilities.capabilities,
             allowed_hosts: manifest.app.capabilities.allowed_hosts,
+            superseded_orphan_policy: Default::default(),
         }))
     }
 }
@@ -1347,19 +1351,149 @@ fn copy_python_state_orphan_no_clobber(
     Ok(destination_file)
 }
 
-fn adopt_python_state_orphan(
+/// Reconcile the complete set of channel orphans beneath `search_root` against
+/// the canonical `destination`. When the destination does not exist, the
+/// newest orphan is adopted into it (verified copy, source removed). Every
+/// remaining orphan is superseded by the canonical state and is disposed of
+/// per `superseded_orphan_policy` so no stale copy is left looking live.
+fn reclaim_python_state_orphans(
     config: &PythonLaunchConfig,
     search_root: &Path,
     destination: &Path,
-) -> Result<bool, WasmPythonError> {
-    let Some(source) = discover_python_state_orphans_beneath(config, search_root)?
-        .into_iter()
-        .next()
-    else {
-        return Ok(false);
+) -> Result<(), WasmPythonError> {
+    let mut orphans = discover_python_state_orphans_beneath(config, search_root)?;
+    if orphans.is_empty() {
+        return Ok(());
+    }
+    let destination_missing = matches!(
+        std::fs::symlink_metadata(destination),
+        Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    if destination_missing {
+        let chosen = orphans.remove(0);
+        adopt_python_state_orphan(config, &chosen, destination)?;
+    }
+    for orphan in &orphans {
+        supersede_python_state_orphan(config, orphan, destination);
+    }
+    Ok(())
+}
+
+/// Dispose of an orphan that lost the reclaim to the canonical `destination`.
+/// Never fails the load: an orphan left in place is retried on the next
+/// launch, so every error degrades to a logged warn. Two invariants hold
+/// regardless of policy: bytes are deleted only when proven identical to the
+/// canonical state, and the destination is never touched.
+fn supersede_python_state_orphan(
+    config: &PythonLaunchConfig,
+    orphan: &Path,
+    destination: &Path,
+) {
+    if config.superseded_orphan_policy == crate::config::SupersededOrphanPolicy::Remove {
+        let identical = match (std::fs::read(orphan), std::fs::read(destination)) {
+            (Ok(orphan_bytes), Ok(destination_bytes)) => orphan_bytes == destination_bytes,
+            (Err(error), _) | (_, Err(error)) => {
+                log::warn!(
+                    "app::{}: compare superseded orphan {} against {}: {error}; archiving instead of removing",
+                    config.app_id,
+                    orphan.display(),
+                    destination.display()
+                );
+                false
+            }
+        };
+        if identical {
+            match std::fs::remove_file(orphan) {
+                Ok(()) => log::info!(
+                    "app::{}: removed superseded orphan state {} (byte-identical to {})",
+                    config.app_id,
+                    orphan.display(),
+                    destination.display()
+                ),
+                Err(error) => log::warn!(
+                    "app::{}: remove superseded orphan state {}: {error}; leaving in place",
+                    config.app_id,
+                    orphan.display()
+                ),
+            }
+            return;
+        }
+        log::info!(
+            "app::{}: superseded orphan {} diverges from canonical {}; archiving instead of removing",
+            config.app_id,
+            orphan.display(),
+            destination.display()
+        );
+    }
+    archive_python_state_orphan(config, orphan);
+}
+
+/// Rename `orphan` to an inert `<name>.superseded[.N]` sibling so nothing
+/// mistakes it for live state, without ever clobbering an earlier archive.
+/// Hard-link-then-remove instead of rename: the link fails on an existing
+/// archive name and the source is removed only once the link provably exists.
+fn archive_python_state_orphan(config: &PythonLaunchConfig, orphan: &Path) {
+    const MAX_ARCHIVE_CANDIDATES: u32 = 16;
+    let Some(file_name) = orphan.file_name().and_then(|name| name.to_str()) else {
+        log::warn!(
+            "app::{}: superseded orphan {} has no file name; leaving in place",
+            config.app_id,
+            orphan.display()
+        );
+        return;
     };
+    for attempt in 0..MAX_ARCHIVE_CANDIDATES {
+        let candidate_name = if attempt == 0 {
+            format!("{file_name}.superseded")
+        } else {
+            format!("{file_name}.superseded.{}", attempt + 1)
+        };
+        let candidate = orphan.with_file_name(candidate_name);
+        match std::fs::hard_link(orphan, &candidate) {
+            Ok(()) => {
+                if let Err(error) = std::fs::remove_file(orphan) {
+                    log::warn!(
+                        "app::{}: archived superseded orphan to {} but could not remove live-looking source {}: {error}",
+                        config.app_id,
+                        candidate.display(),
+                        orphan.display()
+                    );
+                    return;
+                }
+                log::info!(
+                    "app::{}: archived superseded orphan state {} to {}",
+                    config.app_id,
+                    orphan.display(),
+                    candidate.display()
+                );
+                return;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                log::warn!(
+                    "app::{}: archive superseded orphan state {} to {}: {error}; leaving in place",
+                    config.app_id,
+                    orphan.display(),
+                    candidate.display()
+                );
+                return;
+            }
+        }
+    }
+    log::warn!(
+        "app::{}: no free archive name for superseded orphan state {} after {MAX_ARCHIVE_CANDIDATES} candidates; leaving in place",
+        config.app_id,
+        orphan.display()
+    );
+}
+
+fn adopt_python_state_orphan(
+    config: &PythonLaunchConfig,
+    source: &Path,
+    destination: &Path,
+) -> Result<(), WasmPythonError> {
     let adoption_error = |reason: String| WasmPythonError::AdoptState {
-        source_path: source.clone(),
+        source_path: source.to_path_buf(),
         destination: destination.to_path_buf(),
         reason,
     };
@@ -1392,7 +1526,7 @@ fn adopt_python_state_orphan(
                 source.display(),
                 destination.display()
             );
-            return Ok(true);
+            return Ok(());
         }
         Err(link_error) => {
             log::warn!(
@@ -1410,7 +1544,7 @@ fn adopt_python_state_orphan(
                         source.display(),
                         destination.display()
                     );
-                    return Ok(true);
+                    return Ok(());
                 }
                 Err(error) => {
                     return Err(adoption_error(format!(
@@ -1441,7 +1575,7 @@ fn adopt_python_state_orphan(
             source.display(),
             destination.display()
         );
-        return Ok(true);
+        return Ok(());
     }
     if let Err(error) = std::fs::remove_file(&source) {
         return Err(adoption_error(format!(
@@ -1454,7 +1588,7 @@ fn adopt_python_state_orphan(
         source.display(),
         destination.display()
     );
-    Ok(true)
+    Ok(())
 }
 
 fn verify_python_state_adoption(
@@ -1589,49 +1723,39 @@ fn load_python_state(
 ) -> Result<serde_json::Map<String, Value>, WasmPythonError> {
     ensure_python_state_gitignore(config);
     let workspace_path = python_state_path(config);
+    reclaim_python_state_orphans(config, &config.workspace_root, &workspace_path)?;
     let bytes = match read_python_state_bytes(&workspace_path)? {
         Some(bytes) => (workspace_path, bytes),
         None => {
-            adopt_python_state_orphan(config, &config.workspace_root, &workspace_path)?;
-            match read_python_state_bytes(&workspace_path)? {
-                Some(bytes) => (workspace_path, bytes),
-                None => {
-                    let config_dir = crate::config::config_dir();
-                    let Some(profile_parent) = config_dir.parent() else {
-                        log::warn!(
-                            "app::{}: channel profile path has no parent for global state fallback: {}",
-                            config.app_id,
-                            config_dir.display()
-                        );
-                        return Ok(serde_json::Map::new());
-                    };
-                    let global_path = profile_parent
-                        .join(".plexi")
-                        .join("app_states")
-                        .join(format!("{}.json", config.app_id));
-                    if global_path == workspace_path {
-                        return Ok(serde_json::Map::new());
-                    }
-                    if let Err(error) =
-                        crate::workspace::secrets::ensure_app_state_gitignore(profile_parent)
-                    {
-                        log::warn!(
-                            "app::{}: could not ensure {}/.plexi/.gitignore covers global app_states/: {error}",
-                            config.app_id,
-                            profile_parent.display()
-                        );
-                    }
-                    match read_python_state_bytes(&global_path)? {
-                        Some(bytes) => (global_path, bytes),
-                        None => {
-                            adopt_python_state_orphan(config, profile_parent, &global_path)?;
-                            match read_python_state_bytes(&global_path)? {
-                                Some(bytes) => (global_path, bytes),
-                                None => return Ok(serde_json::Map::new()),
-                            }
-                        }
-                    }
-                }
+            let config_dir = crate::config::config_dir();
+            let Some(profile_parent) = config_dir.parent() else {
+                log::warn!(
+                    "app::{}: channel profile path has no parent for global state fallback: {}",
+                    config.app_id,
+                    config_dir.display()
+                );
+                return Ok(serde_json::Map::new());
+            };
+            let global_path = profile_parent
+                .join(".plexi")
+                .join("app_states")
+                .join(format!("{}.json", config.app_id));
+            if global_path == workspace_path {
+                return Ok(serde_json::Map::new());
+            }
+            if let Err(error) =
+                crate::workspace::secrets::ensure_app_state_gitignore(profile_parent)
+            {
+                log::warn!(
+                    "app::{}: could not ensure {}/.plexi/.gitignore covers global app_states/: {error}",
+                    config.app_id,
+                    profile_parent.display()
+                );
+            }
+            reclaim_python_state_orphans(config, profile_parent, &global_path)?;
+            match read_python_state_bytes(&global_path)? {
+                Some(bytes) => (global_path, bytes),
+                None => return Ok(serde_json::Map::new()),
             }
         }
     };
@@ -4353,7 +4477,17 @@ mod tests {
             workspace_root: workspace_root.to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
+            superseded_orphan_policy: Default::default(),
         }
+    }
+
+    fn set_mtime(path: &Path, seconds: u64) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open for mtime")
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+            .expect("set mtime");
     }
 
     #[test]
@@ -4396,7 +4530,12 @@ mod tests {
             std::fs::read(&canonical).expect("canonical bytes"),
             br#"{"version":"new"}"#
         );
-        assert!(orphan.exists(), "unchosen orphan must remain recoverable");
+        assert!(!orphan.exists(), "superseded orphan must not stay live-looking");
+        assert_eq!(
+            std::fs::read(orphan.with_file_name("todo.json.superseded"))
+                .expect("archived orphan bytes remain recoverable"),
+            br#"{"version":"old"}"#
+        );
     }
 
     #[test]
@@ -4459,35 +4598,109 @@ mod tests {
         assert!(!orphan.exists());
     }
 
+    /// The tester repro for the multi-orphan finding: two channel orphans,
+    /// only the newest may be adopted, and the older must not be left in
+    /// place looking live. Closing and reopening (the second load) must not
+    /// change the canonical state and must leave no live orphan behind.
     #[test]
-    fn python_state_migration_prefers_newest_orphan_and_preserves_others() {
+    fn python_state_reclaims_every_orphan_adopting_only_newest() {
         let workspace = tempdir().expect("workspace");
         let config = state_test_config(workspace.path(), "todo");
         let older = workspace.path().join(".plexi-beta/app_states/todo.json");
-        let newer = workspace.path().join(".plexi-pr-456/app_states/todo.json");
+        let newer = workspace.path().join(".plexi-pr-999/app_states/todo.json");
         for path in [&older, &newer] {
             std::fs::create_dir_all(path.parent().expect("orphan parent")).expect("mkdir");
         }
         std::fs::write(&older, br#"{"source":"beta"}"#).expect("seed older");
         std::fs::write(&newer, br#"{"source":"pr"}"#).expect("seed newer");
-        std::fs::File::options()
-            .write(true)
-            .open(&older)
-            .expect("open older")
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(10))
-            .expect("set older mtime");
-        std::fs::File::options()
-            .write(true)
-            .open(&newer)
-            .expect("open newer")
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(20))
-            .expect("set newer mtime");
+        set_mtime(&older, 10);
+        set_mtime(&newer, 20);
 
-        let state = load_python_state(&config).expect("migrate newest");
+        let state = load_python_state(&config).expect("reclaim full orphan set");
 
         assert_eq!(state["source"], "pr");
-        assert!(older.exists(), "unchosen orphan remains recoverable");
         assert!(!newer.exists(), "chosen and verified source is removed");
+        assert!(!older.exists(), "superseded orphan must not stay live-looking");
+        assert_eq!(
+            std::fs::read(older.with_file_name("todo.json.superseded"))
+                .expect("superseded orphan archived, bytes intact"),
+            br#"{"source":"beta"}"#
+        );
+
+        let reopened = load_python_state(&config).expect("second load");
+        assert_eq!(reopened["source"], "pr");
+        assert_eq!(
+            std::fs::read(python_state_path(&config)).expect("canonical bytes"),
+            br#"{"source":"pr"}"#,
+            "reopen must not change canonical state"
+        );
+    }
+
+    /// Remove policy: a superseded orphan is deleted only when byte-identical
+    /// to the canonical state (proven copied); a divergent one is archived
+    /// even under `remove` — unproven-copied data is never deleted.
+    #[test]
+    fn python_state_remove_policy_deletes_only_proven_copies() {
+        let workspace = tempdir().expect("workspace");
+        let mut config = state_test_config(workspace.path(), "todo");
+        config.superseded_orphan_policy = crate::config::SupersededOrphanPolicy::Remove;
+        let newest = workspace.path().join(".plexi-pr-7/app_states/todo.json");
+        let duplicate = workspace.path().join(".plexi-alpha/app_states/todo.json");
+        let divergent = workspace.path().join(".plexi-beta/app_states/todo.json");
+        for path in [&newest, &duplicate, &divergent] {
+            std::fs::create_dir_all(path.parent().expect("orphan parent")).expect("mkdir");
+        }
+        std::fs::write(&newest, br#"{"gen":3}"#).expect("seed newest");
+        std::fs::write(&duplicate, br#"{"gen":3}"#).expect("seed duplicate");
+        std::fs::write(&divergent, br#"{"gen":1}"#).expect("seed divergent");
+        set_mtime(&divergent, 10);
+        set_mtime(&duplicate, 20);
+        set_mtime(&newest, 30);
+
+        let state = load_python_state(&config).expect("reclaim under remove policy");
+
+        assert_eq!(state["gen"], 3);
+        assert!(!newest.exists(), "chosen source removed after verified adoption");
+        assert!(!duplicate.exists(), "byte-identical superseded orphan removed");
+        assert!(
+            !duplicate.with_file_name("todo.json.superseded").exists(),
+            "identical orphan is deleted, not archived"
+        );
+        assert!(!divergent.exists(), "divergent orphan must not stay live-looking");
+        assert_eq!(
+            std::fs::read(divergent.with_file_name("todo.json.superseded"))
+                .expect("divergent orphan archived despite remove policy"),
+            br#"{"gen":1}"#
+        );
+    }
+
+    /// Archiving never clobbers an earlier archive: a second superseded copy
+    /// of the same app lands on a numbered sibling.
+    #[test]
+    fn python_state_archive_never_clobbers_prior_archive() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let canonical = python_state_path(&config);
+        std::fs::create_dir_all(canonical.parent().expect("canonical parent")).expect("mkdir");
+        std::fs::write(&canonical, br#"{"live":true}"#).expect("seed canonical");
+        let orphan = workspace.path().join(".plexi-beta/app_states/todo.json");
+        std::fs::create_dir_all(orphan.parent().expect("orphan parent")).expect("mkdir");
+        let prior_archive = orphan.with_file_name("todo.json.superseded");
+        std::fs::write(&prior_archive, br#"{"round":1}"#).expect("seed prior archive");
+        std::fs::write(&orphan, br#"{"round":2}"#).expect("seed orphan");
+
+        load_python_state(&config).expect("canonical state");
+
+        assert!(!orphan.exists(), "second orphan archived");
+        assert_eq!(
+            std::fs::read(&prior_archive).expect("prior archive untouched"),
+            br#"{"round":1}"#
+        );
+        assert_eq!(
+            std::fs::read(orphan.with_file_name("todo.json.superseded.2"))
+                .expect("second archive on numbered sibling"),
+            br#"{"round":2}"#
+        );
     }
 
     #[test]
@@ -5256,6 +5469,7 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
+            superseded_orphan_policy: Default::default(),
         };
         let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
         runtime
@@ -5322,6 +5536,7 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
+            superseded_orphan_policy: Default::default(),
         };
         let err = run_headless_frame(&config, (480.0, 320.0), None)
             .expect_err("an entry that raises at import must fail the headless probe");
