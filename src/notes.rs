@@ -1130,3 +1130,17 @@ hidden = true
         assert!(actions[0].hidden);
     }
 }
+
+// CI-gate falsifiability probe — intentional defects; this branch is never merged.
+pub fn ci_gate_probe_lint() -> u32 {
+    let x = &1_u32;
+    x.clone()
+}
+
+#[cfg(test)]
+mod ci_gate_probe {
+    #[test]
+    fn ci_gate_probe_failing_test() {
+        assert_eq!(1_u32 + 1, 3, "intentional red: proves the test job can fail");
+    }
+}
