@@ -452,6 +452,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `install` | Install an app from a local path, a remote source, or a pack file |
 | `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps with their versions |
+| `prune` | Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines |
 | `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
 | `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
 | `test` | Run an app's AppHarness tests with `uv run pytest tests/` |
@@ -526,6 +527,14 @@ Example: plexi app uninstall github-tree
 ### `plexi app list`
 
 Show all installed apps with their versions
+
+### `plexi app prune`
+
+Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--dry-run` | flag | no | Show candidates without removing anything |
 
 ### `plexi app render`
 

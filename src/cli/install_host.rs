@@ -823,6 +823,119 @@ pub fn core_pack_ids() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
+/// First-party apps deliberately retired before the v3 SDK migration. An app
+/// is a quarantine candidate only when its stable former-first-party id is in
+/// this set *and* its source still imports the removed v2 App/RenderContext
+/// surface. The intersection is intentional: a user or marketplace app with
+/// an unfamiliar id is never removed merely because it is not in core.
+const RETIRED_PRE_V3_FIRST_PARTY_APP_IDS: &[&str] = &[
+    "assistant",
+    "audio-recorder",
+    "bluesky",
+    "calendar",
+    "chess",
+    "context-notifier-poc",
+    "descriptor-renderer",
+    "dev-here",
+    "gh-projects",
+    "github-tree",
+    "image-loader",
+    "image-render-poc",
+    "image-url-poc",
+    "input-inspector",
+    "layout-demo",
+    "mcp-demo",
+    "mind-map",
+    "node-canvas",
+    "notification-tester",
+    "permission-test",
+    "quick-note",
+    "screen-time",
+    "secrets-routing-tester",
+    "snake-race",
+    "timer",
+    "typing-tutor",
+    "ui-playground",
+    "workspace",
+];
+
+/// Return app directories identified as former first-party pre-v3 installs.
+/// This is side-effect free so `plexi app prune --dry-run` can report exactly
+/// what a launch-time reconciliation would remove.
+pub fn orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
+    let core_ids = core_pack_ids();
+    let mut candidates = Vec::new();
+    let Ok(entries) = std::fs::read_dir(target_root) else {
+        return candidates;
+    };
+    for entry in entries.flatten() {
+        let app_dir = entry.path();
+        if !app_dir.is_dir() {
+            continue;
+        }
+        let Some(id) = app_dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if core_ids.contains(id) || !RETIRED_PRE_V3_FIRST_PARTY_APP_IDS.contains(&id) {
+            continue;
+        }
+        if has_pre_v3_app_imports(&app_dir) {
+            candidates.push(app_dir);
+        }
+    }
+    candidates.sort();
+    candidates
+}
+
+/// Quarantine only candidates returned by [`orphaned_pre_v3_first_party_apps`].
+/// The hidden profile directory keeps ambiguous legacy content recoverable while
+/// removing it from normal app discovery. Re-running is a no-op.
+pub fn reconcile_orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
+    let candidates = orphaned_pre_v3_first_party_apps(target_root);
+    let quarantine = target_root.join(".plexi-quarantine-pre-v3");
+    for path in &candidates {
+        let Some(name) = path.file_name() else { continue };
+        let destination = quarantine.join(name);
+        match std::fs::create_dir_all(&quarantine).and_then(|()| std::fs::rename(path, &destination)) {
+            Ok(()) => log::info!("install: quarantined orphaned pre-v3 app {}", path.display()),
+            Err(error) => log::warn!(
+                "install: could not quarantine orphaned pre-v3 app {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|path| !path.exists())
+        .collect()
+}
+
+fn has_pre_v3_app_imports(app_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(app_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            return false;
+        };
+        if file_type.is_symlink() {
+            return false;
+        }
+        if file_type.is_dir() {
+            return has_pre_v3_app_imports(&path);
+        }
+        if !file_type.is_file() || path.extension().is_none_or(|extension| extension != "py") {
+            return false;
+        }
+        std::fs::read_to_string(path).is_ok_and(|source| {
+            source.contains("from plexi_sdk import")
+                && source.contains("App")
+                && source.contains("RenderContext")
+        })
+    })
+}
+
 /// Returns the set of app IDs defined in the bundled examples pack.
 pub fn examples_pack_ids() -> std::collections::HashSet<String> {
     Pack::from_toml_str(EXAMPLES_PACK_TOML)
@@ -1390,6 +1503,72 @@ mod pack_export_tests {
 mod core_pack_tests {
     use super::test_support::MockCloner;
     use super::*;
+
+    fn plant_python_app(root: &Path, id: &str, source: &str) -> PathBuf {
+        let app_dir = root.join(id);
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("manifest.toml"),
+            format!(
+                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.1.0\"\nentry = \"main.py\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(app_dir.join("main.py"), source).unwrap();
+        app_dir
+    }
+
+    #[test]
+    fn reconcile_quarantines_only_identified_orphaned_pre_v3_first_party_apps() {
+        let target = tempfile::tempdir().unwrap();
+        let legacy = "from plexi_sdk import App, RenderContext\nclass Old(App): pass\n";
+        let stale_quick_note = plant_python_app(target.path(), "quick-note", legacy);
+        let stale_timer = plant_python_app(target.path(), "timer", legacy);
+        let live_core = plant_python_app(target.path(), "balls", legacy);
+        let user_app = plant_python_app(target.path(), "my-private-app", legacy);
+        let marketplace_app = plant_python_app(target.path(), "marketplace-legacy", legacy);
+        let current_v3 = plant_python_app(
+            target.path(),
+            "calendar",
+            "from plexi_sdk import log, state\nstate.get('today')\n",
+        );
+
+        let candidates = orphaned_pre_v3_first_party_apps(target.path());
+        assert_eq!(
+            candidates,
+            vec![stale_quick_note.clone(), stale_timer.clone()]
+        );
+        let removed = reconcile_orphaned_pre_v3_first_party_apps(target.path());
+        assert_eq!(removed, vec![stale_quick_note.clone(), stale_timer.clone()]);
+        assert!(!stale_quick_note.exists());
+        assert!(!stale_timer.exists());
+        assert!(target.path().join(".plexi-quarantine-pre-v3/quick-note").exists());
+        assert!(target.path().join(".plexi-quarantine-pre-v3/timer").exists());
+        for preserved in [&live_core, &user_app, &marketplace_app, &current_v3] {
+            assert!(preserved.exists(), "must preserve {}", preserved.display());
+        }
+        assert!(
+            reconcile_orphaned_pre_v3_first_party_apps(target.path()).is_empty(),
+            "a second reconcile must be idempotent"
+        );
+    }
+
+    #[test]
+    fn orphaned_pre_v3_dry_run_candidates_leave_directories_unchanged() {
+        let target = tempfile::tempdir().unwrap();
+        let stale = plant_python_app(
+            target.path(),
+            "quick-note",
+            "from plexi_sdk import App, RenderContext\nclass Old(App): pass\n",
+        );
+        let candidates = orphaned_pre_v3_first_party_apps(target.path());
+        assert_eq!(candidates, vec![stale.clone()]);
+        assert!(
+            stale.exists(),
+            "candidate discovery must not delete anything"
+        );
+        assert!(stale.join("main.py").exists());
+    }
 
     #[test]
     fn core_pack_always_installs_missing_apps() {

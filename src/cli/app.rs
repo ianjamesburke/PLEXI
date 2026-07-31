@@ -1419,6 +1419,35 @@ pub fn app_list() -> i32 {
     super::list::list_cli()
 }
 
+/// `plexi app prune --dry-run` reports precisely the legacy installs that a
+/// normal launch will reconcile. The no-flag form performs the same safe,
+/// positively-identified reconciliation for users repairing a stopped profile.
+pub fn app_prune_cli(dry_run: bool) -> i32 {
+    let apps_dir = crate::app::registry::apps_dir();
+    let candidates = crate::cli::install_host::orphaned_pre_v3_first_party_apps(&apps_dir);
+    log::info!(
+        "app_prune: {} candidate(s) at {} dry_run={dry_run}",
+        candidates.len(),
+        apps_dir.display()
+    );
+    if dry_run {
+        for candidate in candidates {
+            println!("would quarantine {}", candidate.display());
+        }
+        return 0;
+    }
+    let removed = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
+    let all_removed = removed.len() == candidates.len();
+    for path in removed {
+        println!("quarantined {}", path.display());
+    }
+    if !all_removed {
+        eprintln!("error: one or more orphaned pre-v3 apps could not be quarantined");
+        return 1;
+    }
+    0
+}
+
 /// `plexi app render <app> --size WxH [--state state.json] [--output path] [--png]`
 /// Renders an app headlessly. `app` may be an installed app ID or a local directory path.
 /// Default output: JSON frame tree. With --png: PNG image.

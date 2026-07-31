@@ -738,6 +738,10 @@ pub struct LivePythonPane {
     /// instead of discarding it, so it survives to the next frame that
     /// actually reaches the render call.
     pending_click_carry: Option<crate::host::pane::PendingPaneClick>,
+    /// Line-buffered, traceback-aware classifier over this guest's stderr.
+    /// Lives on the pane because a traceback spans several `drain_stderr`
+    /// calls and its state must survive between them.
+    stderr_classifier: GuestStderrClassifier,
 }
 
 #[derive(Debug, Clone)]
@@ -1248,6 +1252,7 @@ impl LivePythonPane {
             granted_fs_roots: Vec::new(),
             pending_commands: Vec::new(),
             pending_click_carry: None,
+            stderr_classifier: GuestStderrClassifier::new(),
         })
     }
 
@@ -1556,19 +1561,41 @@ impl LivePythonPane {
             }
         }
         let stderr = self.runtime.drain_stderr();
-        if !stderr.trim().is_empty() {
-            if is_benign_cpython_wasi_stderr(&stderr) {
-                log::debug!(
-                    "app::{} CPython WASM stderr (benign WASI startup noise): {}",
-                    self.app_id,
-                    stderr.trim()
-                );
-            } else {
-                log::error!(
-                    "app::{} CPython WASM stderr: {}",
-                    self.app_id,
-                    stderr.trim()
-                );
+        let mut records = self.stderr_classifier.push(&stderr);
+        if self.runtime.is_finished() {
+            // Nothing more will terminate a half-line, so report it now
+            // rather than losing the last line of a crash.
+            records.extend(self.stderr_classifier.flush());
+        }
+        for record in records {
+            self.log_guest_stderr(&record);
+        }
+    }
+
+    /// One host record per guest stderr line, each carrying the `app::<id>`
+    /// prefix so the whole traceback is greppable by app (stint 0643).
+    fn log_guest_stderr(&self, record: &GuestStderrRecord) {
+        match record.kind {
+            GuestStderrKind::BenignWasiStartup => log::debug!(
+                "app::{} CPython WASM stderr (benign WASI startup noise): {}",
+                self.app_id,
+                record.line
+            ),
+            GuestStderrKind::TracebackException => log::error!(
+                "app::{} CPython WASM stderr exception: {}",
+                self.app_id,
+                record.line
+            ),
+            GuestStderrKind::TracebackExceptionDetail => log::error!(
+                "app::{} CPython WASM stderr exception (cont): {}",
+                self.app_id,
+                record.line
+            ),
+            GuestStderrKind::Payload
+            | GuestStderrKind::TracebackHeader
+            | GuestStderrKind::TracebackFrame
+            | GuestStderrKind::TracebackChainSeparator => {
+                log::error!("app::{} CPython WASM stderr: {}", self.app_id, record.line)
             }
         }
     }
@@ -2139,6 +2166,10 @@ impl LivePythonPane {
         self.timers.clear();
         self.pending_timer_events.clear();
         self.viewport_size = None;
+        // A fresh runtime is a fresh stderr stream: carrying the old guest's
+        // half-line or traceback state into it would misclassify the new
+        // guest's first lines.
+        self.stderr_classifier = GuestStderrClassifier::new();
         if let Some(dropped) = self.pending_click_carry.take() {
             // A node-targeted click's arena id belongs to the tree it was
             // resolved against — that tree is gone after relaunch, so
@@ -2192,16 +2223,163 @@ fn python_semantic_state(tree: Option<&PythonUiTree>) -> crate::host::pane::Sema
 /// libraries <exec_prefix>` to stderr on every guest boot even when the
 /// runtime starts and runs fine — WASI has no real filesystem layout for
 /// CPython's `sysconfig` probe to find. Logging that line at ERROR trains
-/// agents and humans to ignore real guest tracebacks in the same stream.
-/// Returns true only when *every* non-empty line matches a known-benign
-/// pattern; any unrecognized line (a real traceback) keeps the ERROR level.
-fn is_benign_cpython_wasi_stderr(stderr: &str) -> bool {
-    const BENIGN_SUBSTRINGS: &[&str] = &["Could not find platform dependent libraries"];
-    stderr
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .all(|line| BENIGN_SUBSTRINGS.iter().any(|needle| line.contains(needle)))
+/// agents and humans to ignore real guest tracebacks in the same stream, so
+/// it is demoted to DEBUG per line.
+const BENIGN_WASI_STARTUP_SUBSTRINGS: &[&str] = &["Could not find platform dependent libraries"];
+const TRACEBACK_HEADER: &str = "Traceback (most recent call last):";
+/// The two sentences CPython prints between a chained pair of tracebacks.
+/// Each is followed by a fresh `Traceback` header, so they close the block
+/// they follow rather than continuing it.
+const TRACEBACK_CHAIN_SEPARATORS: &[&str] = &[
+    "During handling of the above exception, another exception occurred:",
+    "The above exception was the direct cause of the following exception:",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuestStderrKind {
+    BenignWasiStartup,
+    Payload,
+    TracebackHeader,
+    TracebackFrame,
+    TracebackChainSeparator,
+    /// The line carrying the exception type and message — what a reader is
+    /// actually looking for, and the only kind that gets the `exception:`
+    /// marker in the log.
+    TracebackException,
+    /// Continuation lines of a multi-line exception message. Attributed to
+    /// the exception but deliberately not marked as one: an exception has
+    /// exactly one `exception:` line, however many lines its message spans.
+    TracebackExceptionDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuestStderrRecord {
+    kind: GuestStderrKind,
+    line: String,
+}
+
+/// Longest unterminated stderr fragment held back waiting for its newline.
+const MAX_BUFFERED_STDERR_LINE: usize = 64 * 1024;
+
+/// Where the stderr stream currently sits inside a CPython traceback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TracebackState {
+    Outside,
+    /// Inside the indented frame block that follows a `Traceback` header.
+    Frames,
+    /// Past the exception line, consuming the rest of its message.
+    ExceptionMessage,
+}
+
+/// Classifies a guest's stderr into one host log record per line.
+///
+/// Streaming and stateful on purpose. `drain_stderr` hands back whatever bytes
+/// happen to have arrived, so a single traceback routinely spans several
+/// drains and a drain can even split a line mid-way. Any rule that reads a
+/// drain as a self-contained block — "the exception is the last line I can
+/// see" — therefore marks whichever frame line ended the *chunk*, and the real
+/// exception arrives later unmarked. Roles are decided from each line's own
+/// shape against carried-over state instead: a frame line is indented, an
+/// exception line is not, which is what structurally distinguishes them.
+struct GuestStderrClassifier {
+    /// Bytes after the last newline, held until the rest of the line arrives.
+    partial: String,
+    state: TracebackState,
+}
+
+impl GuestStderrClassifier {
+    fn new() -> Self {
+        Self {
+            partial: String::new(),
+            state: TracebackState::Outside,
+        }
+    }
+
+    /// Classify every complete line in `chunk`, holding back a trailing
+    /// unterminated one for the next drain.
+    fn push(&mut self, chunk: &str) -> Vec<GuestStderrRecord> {
+        self.partial.push_str(chunk);
+        let mut records = Vec::new();
+        while let Some(newline) = self.partial.find('\n') {
+            let line: String = self.partial.drain(..=newline).collect();
+            if let Some(record) = self.classify(line.trim_end()) {
+                records.push(record);
+            }
+        }
+        // A guest writing without newlines must not buffer forever: flush the
+        // oversized fragment as its own record rather than holding the log
+        // hostage to a line that never terminates.
+        if self.partial.len() > MAX_BUFFERED_STDERR_LINE {
+            records.extend(self.flush());
+        }
+        records
+    }
+
+    /// Emit the buffered unterminated line. Called once the guest is gone, so
+    /// a crash whose last line lacks a trailing newline is still reported.
+    fn flush(&mut self) -> Option<GuestStderrRecord> {
+        let line = std::mem::take(&mut self.partial);
+        self.classify(line.trim_end())
+    }
+
+    fn classify(&mut self, line: &str) -> Option<GuestStderrRecord> {
+        if line.trim().is_empty() {
+            // A blank line closes a traceback block — CPython separates a
+            // chained traceback from the next with one. It carries nothing a
+            // reader needs, so it steers state and is never logged.
+            if self.state == TracebackState::ExceptionMessage {
+                self.state = TracebackState::Outside;
+            }
+            return None;
+        }
+        let trimmed = line.trim();
+        let indented = line.starts_with([' ', '\t']);
+        let kind = if BENIGN_WASI_STARTUP_SUBSTRINGS
+            .iter()
+            .any(|needle| trimmed.contains(needle))
+        {
+            GuestStderrKind::BenignWasiStartup
+        } else if trimmed == TRACEBACK_HEADER {
+            self.state = TracebackState::Frames;
+            GuestStderrKind::TracebackHeader
+        } else if TRACEBACK_CHAIN_SEPARATORS.contains(&trimmed) {
+            self.state = TracebackState::Outside;
+            GuestStderrKind::TracebackChainSeparator
+        } else {
+            match self.state {
+                // The frame block ends at the first line that is not indented,
+                // and in CPython's format that line is the exception. Shape,
+                // not position: `File "x.py", line 1, in f` and the source and
+                // caret lines under it are indented, `RuntimeError: boom` is
+                // not — which also lands a bare `KeyboardInterrupt` correctly.
+                TracebackState::Frames if !indented => {
+                    self.state = TracebackState::ExceptionMessage;
+                    GuestStderrKind::TracebackException
+                }
+                TracebackState::Frames => GuestStderrKind::TracebackFrame,
+                TracebackState::ExceptionMessage => GuestStderrKind::TracebackExceptionDetail,
+                // A compile-time `SyntaxError` has no `Traceback` header at
+                // all: it opens straight into an indented `File` line. Keying
+                // on the frame shape picks that up, and picks a traceback up
+                // mid-stream if its header was already consumed.
+                TracebackState::Outside if indented && is_traceback_frame_line(trimmed) => {
+                    self.state = TracebackState::Frames;
+                    GuestStderrKind::TracebackFrame
+                }
+                TracebackState::Outside => GuestStderrKind::Payload,
+            }
+        };
+        Some(GuestStderrRecord {
+            kind,
+            line: trimmed.to_string(),
+        })
+    }
+}
+
+/// `File "<path>", line <n>[, in <name>]` — the one shape every CPython
+/// traceback frame opens with, quoted path or angle-bracketed frozen module.
+fn is_traceback_frame_line(trimmed: &str) -> bool {
+    trimmed.starts_with("File ") && trimmed.contains(", line ")
 }
 
 fn python_key_name(key: egui::Key) -> String {
@@ -3995,33 +4173,220 @@ mod tests {
         );
     }
 
-    /// Stint 0417: the benign CPython WASI startup line must classify as
-    /// non-error so it doesn't drown real guest tracebacks in the log.
-    #[test]
-    fn is_benign_cpython_wasi_stderr_recognizes_known_benign_line() {
-        assert!(is_benign_cpython_wasi_stderr(
-            "Could not find platform dependent libraries <exec_prefix>\n"
-        ));
-        // Repeated/whitespace-padded — still benign.
-        assert!(is_benign_cpython_wasi_stderr(
-            "  Could not find platform dependent libraries <exec_prefix>  \n\
-             Could not find platform dependent libraries <exec_prefix>\n"
-        ));
-        // Empty stderr trivially has no non-benign lines.
-        assert!(is_benign_cpython_wasi_stderr(""));
-        assert!(is_benign_cpython_wasi_stderr("\n\n"));
+    /// Feed stderr through one classifier the way the pane does — one call
+    /// per `drain_stderr` — then flush the trailing partial line.
+    fn classify_stderr(chunks: &[&str]) -> Vec<GuestStderrRecord> {
+        let mut classifier = GuestStderrClassifier::new();
+        let mut records: Vec<_> = chunks
+            .iter()
+            .flat_map(|chunk| classifier.push(chunk))
+            .collect();
+        records.extend(classifier.flush());
+        records
     }
 
+    fn exception_lines(records: &[GuestStderrRecord]) -> Vec<&str> {
+        records
+            .iter()
+            .filter(|record| record.kind == GuestStderrKind::TracebackException)
+            .map(|record| record.line.as_str())
+            .collect()
+    }
+
+    /// Stint 0417: the benign CPython WASI startup line classifies as noise so
+    /// it doesn't drown real guest tracebacks — but only that line, and never
+    /// at the cost of the traceback it is concatenated in front of.
     #[test]
-    fn is_benign_cpython_wasi_stderr_keeps_real_tracebacks_at_error() {
-        assert!(!is_benign_cpython_wasi_stderr(
-            "Traceback (most recent call last):\n  File \"logs.py\", line 10\nNameError: x"
-        ));
-        // A benign line mixed with a real traceback must not be swallowed.
-        assert!(!is_benign_cpython_wasi_stderr(
-            "Could not find platform dependent libraries <exec_prefix>\n\
-             Traceback (most recent call last):\n  ZeroDivisionError"
-        ));
+    fn guest_stderr_isolates_benign_wasi_startup_noise_from_the_payload() {
+        let records = classify_stderr(&[
+            "  Could not find platform dependent libraries <exec_prefix>  \n\
+             Could not find platform dependent libraries <exec_prefix>\n\
+             \n\
+             Traceback (most recent call last):\n\
+             \x20 File \"logs.py\", line 10, in <module>\n\
+             NameError: x\n",
+        ]);
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.kind == GuestStderrKind::BenignWasiStartup)
+                .count(),
+            2
+        );
+        assert_eq!(exception_lines(&records), vec!["NameError: x"]);
+        // Every record is one physical line: a continuation with no host
+        // prefix is exactly what stint 0643 exists to prevent.
+        assert!(records.iter().all(|record| !record.line.contains('\n')));
+    }
+
+    /// Stint 0643 regression. The marker must land on the exception, not on
+    /// whichever frame line happened to end a drain. Real repro shape: a
+    /// `RuntimeError` under the `runpy` bootstrap frames, arriving in the two
+    /// chunks the pane actually saw — the header and first frame in one
+    /// drain, the rest in the next.
+    #[test]
+    fn guest_stderr_marks_the_exception_not_the_first_frame_across_drains() {
+        let records = classify_stderr(&[
+            "Traceback (most recent call last):\n\
+             \x20 File \"<frozen runpy>\", line 198, in _run_module_as_main\n",
+            "  File \"<frozen runpy>\", line 88, in _run_code\n\
+             \x20 File \"/app/main.py\", line 7, in <module>\n\
+             \x20   raise RuntimeError(\"PR2530_TRACEBACK_SENTINEL\")\n\
+             RuntimeError: PR2530_TRACEBACK_SENTINEL\n",
+        ]);
+        assert_eq!(
+            exception_lines(&records),
+            vec!["RuntimeError: PR2530_TRACEBACK_SENTINEL"]
+        );
+        assert!(records
+            .iter()
+            .filter(|record| record.line.starts_with("File "))
+            .all(|record| record.kind == GuestStderrKind::TracebackFrame));
+    }
+
+    /// A chained traceback has two exceptions and must mark both — and must
+    /// not mark the sentence between them.
+    #[test]
+    fn guest_stderr_marks_both_halves_of_a_chained_traceback() {
+        let records = classify_stderr(&["Traceback (most recent call last):\n\
+             \x20 File \"/app/main.py\", line 3, in <module>\n\
+             \x20   1 / 0\n\
+             ZeroDivisionError: division by zero\n\
+             \n\
+             During handling of the above exception, another exception occurred:\n\
+             \n\
+             Traceback (most recent call last):\n\
+             \x20 File \"/app/main.py\", line 5, in <module>\n\
+             \x20   raise RuntimeError(\"PR2530_TRACEBACK_SENTINEL\")\n\
+             RuntimeError: PR2530_TRACEBACK_SENTINEL\n"]);
+        assert_eq!(
+            exception_lines(&records),
+            vec![
+                "ZeroDivisionError: division by zero",
+                "RuntimeError: PR2530_TRACEBACK_SENTINEL",
+            ]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.kind == GuestStderrKind::TracebackChainSeparator)
+                .map(|record| record.line.as_str())
+                .collect::<Vec<_>>(),
+            vec!["During handling of the above exception, another exception occurred:"]
+        );
+    }
+
+    /// `raise ... from ...` uses the other separator sentence.
+    #[test]
+    fn guest_stderr_marks_both_halves_of_a_direct_cause_chain() {
+        let records = classify_stderr(&["Traceback (most recent call last):\n\
+             \x20 File \"/app/main.py\", line 3, in <module>\n\
+             KeyError: 'token'\n\
+             \n\
+             The above exception was the direct cause of the following exception:\n\
+             \n\
+             Traceback (most recent call last):\n\
+             \x20 File \"/app/main.py\", line 5, in <module>\n\
+             RuntimeError: config load failed\n"]);
+        assert_eq!(
+            exception_lines(&records),
+            vec!["KeyError: 'token'", "RuntimeError: config load failed"]
+        );
+    }
+
+    /// A multi-line exception message is one exception: the first line is the
+    /// exception, the rest are its detail, and no detail line steals the mark.
+    #[test]
+    fn guest_stderr_keeps_a_multi_line_exception_message_as_one_exception() {
+        let records = classify_stderr(&["Traceback (most recent call last):\n\
+             \x20 File \"/app/main.py\", line 9, in <module>\n\
+             ValueError: manifest is invalid:\n\
+             missing key: name\n\
+             missing key: version\n"]);
+        assert_eq!(
+            exception_lines(&records),
+            vec!["ValueError: manifest is invalid:"]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.kind == GuestStderrKind::TracebackExceptionDetail)
+                .map(|record| record.line.as_str())
+                .collect::<Vec<_>>(),
+            vec!["missing key: name", "missing key: version"]
+        );
+    }
+
+    /// A compile-time `SyntaxError` prints no `Traceback` header at all, and
+    /// its caret line is part of the frame, not the exception.
+    #[test]
+    fn guest_stderr_marks_a_headerless_syntax_error_block() {
+        let records = classify_stderr(&["  File \"/app/main.py\", line 2\n\
+             \x20   def broken(:\n\
+             \x20              ^\n\
+             SyntaxError: invalid syntax\n"]);
+        assert_eq!(
+            exception_lines(&records),
+            vec!["SyntaxError: invalid syntax"]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.kind == GuestStderrKind::TracebackFrame)
+                .count(),
+            3
+        );
+    }
+
+    /// A bare `KeyboardInterrupt` has no `: message` and is still the
+    /// exception — the frame block ended at it.
+    #[test]
+    fn guest_stderr_marks_a_bare_keyboard_interrupt() {
+        let records = classify_stderr(&["Traceback (most recent call last):\n\
+             \x20 File \"/app/main.py\", line 12, in <module>\n\
+             \x20   sleep(60)\n\
+             KeyboardInterrupt\n"]);
+        assert_eq!(exception_lines(&records), vec!["KeyboardInterrupt"]);
+    }
+
+    /// `drain_stderr` splits on byte boundaries, not line boundaries: a line
+    /// cut in half must be rejoined before it is classified, never logged as
+    /// two fragments.
+    #[test]
+    fn guest_stderr_rejoins_a_line_split_mid_drain() {
+        let records = classify_stderr(&[
+            "Traceback (most recent call last):\n  File \"/app/main.py\", line 7, in <mod",
+            "ule>\nRuntimeError: PR2530_TRAC",
+            "EBACK_SENTINEL",
+        ]);
+        assert_eq!(
+            exception_lines(&records),
+            vec!["RuntimeError: PR2530_TRACEBACK_SENTINEL"]
+        );
+        assert_eq!(records.len(), 3);
+    }
+
+    /// A guest that never writes a newline must still reach the log.
+    #[test]
+    fn guest_stderr_flushes_an_unterminated_line_past_the_buffer_cap() {
+        let mut classifier = GuestStderrClassifier::new();
+        assert!(classifier
+            .push(&"x".repeat(MAX_BUFFERED_STDERR_LINE))
+            .is_empty());
+        let records = classifier.push("y");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].kind, GuestStderrKind::Payload);
+        assert_eq!(records[0].line.len(), MAX_BUFFERED_STDERR_LINE + 1);
+    }
+
+    /// Ordinary guest stderr with no traceback in it stays ordinary.
+    #[test]
+    fn guest_stderr_leaves_plain_output_unmarked() {
+        let records = classify_stderr(&["warning one\nwarning two\n"]);
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|record| record.kind == GuestStderrKind::Payload));
     }
 
     #[test]

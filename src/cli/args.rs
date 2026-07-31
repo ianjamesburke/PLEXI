@@ -590,6 +590,12 @@ pub enum AppCmd {
     },
     /// Show all installed apps with their versions.
     List,
+    /// Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines.
+    Prune {
+        /// Show candidates without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Render an app headlessly (JSON frame tree by default, or PNG with --png).
     Render {
         /// App id or local path to render (e.g. "calc" or "./my-app")
