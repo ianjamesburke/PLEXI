@@ -8,15 +8,23 @@ Plexi runs on macOS (Apple Silicon or Intel, macOS 12 Monterey or later).
 
 ## Install
 
+Plexi needs Git and a Rust toolchain. If Rust is missing, the installer first
+asks whether to install it with rustup. A cold build takes several minutes.
+
 Open Terminal and run:
 
 ```sh
 curl -fsSL https://plexiapp.com/install | sh
 ```
 
-You'll be asked for your password. The script installs Plexi.app to /Applications, sets up the `plexi` CLI in /usr/local/bin, and adds shell completions. Launch Plexi from Applications or Spotlight.
+The installer clones Plexi into `~/.plexi-src`, builds it on your Mac, copies
+Plexi.app to `/Applications`, installs the `plexi` CLI in `/usr/local/bin`, and
+adds shell completions. It may ask for your password to write the CLI. Launch
+Plexi from Applications or Spotlight.
 
-On first launch, Plexi will request Accessibility permission. This is required for context-aware features.
+Plexi does not request Accessibility permission on first launch. Its app bundle
+declares camera and microphone permissions for video rooms, which macOS requests
+only when a feature uses them.
 
 ## Teach Your Agent
 
