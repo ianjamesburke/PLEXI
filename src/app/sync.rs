@@ -7,8 +7,10 @@ use crate::plexi_ai::broker::PaneContext;
 impl PlexiApp {
     /// Synchronize app panes that join the `cwd` pane group with any terminal's
     /// working directory. Prefers the focused terminal; falls back to any terminal
-    /// in the active context. This way PathChanged fires even when an app pane
-    /// (like the file browser) is the egui-focused tile.
+    /// in the active context, so the sync still happens when an app pane (like
+    /// the file browser) is the egui-focused tile. Synchronization is a direct
+    /// `workspace_root` reassignment plus `AppRuntime::sync_cwd`; no event is
+    /// emitted, and `sync_cwd` is a no-op for Python and WASM panes.
     pub(super) fn sync_app_cwd(&mut self) {
         let active = self.active_window;
 

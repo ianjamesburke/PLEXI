@@ -17,7 +17,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "c8e7bb495c67e43348c27269d56399f4ee1876f94a2f77111a35f509aac9200c"
+      "checksum": "67ea5a821a74d2345126f67c897804caca2aeba4b9db66cdfae7640f985f4430"
     },
     {
       "id": "logs",
@@ -26,7 +26,7 @@
       "description": "Live tail of the Plexi host log, color-coded by level, with level/app/search filters.",
       "publisher": "plexi",
       "capabilities": [
-        "fs.read",
+        "logs.read",
         "timer"
       ],
       "tags": [
@@ -38,7 +38,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "ef29fdf788940a4b3577c60eadd977055523be89f6e9272a6b93ea62d84e17d0"
+      "checksum": "e0502bebd5734103ac64477d6257da8da947747556662a0ba873fdfc3e3f2c22"
     },
     {
       "id": "permissions",
@@ -58,13 +58,13 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "cb0e52406c5f44b6e17b941780bd6573a65927b3b9e4ffa7e3cfee51f72d07c0"
+      "checksum": "e047d850434b58d9115e12a37743a37cee66cae8ffcbc71dedc93c0e7f0b6dd0"
     },
     {
       "id": "todo",
       "name": "Todo",
       "version": "0.1.0",
-      "description": "Simple todo list persisted to <workspace_root>/.plexi/todos.json.",
+      "description": "Simple todo list. Items persist across relaunches in host-owned app state.",
       "publisher": "plexi",
       "capabilities": [
         "fs.read",
@@ -79,12 +79,12 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "1f0e47be2b0005fdf01d30d04ac048dc592338bab520e01af3aaa603eb3eb086"
+      "checksum": "7f3c0e5a436a1428afd024de4ebb5a6a2426ab0aa1844423a3625c3165c60410"
     },
     {
       "id": "wikipedia",
       "name": "Wikipedia",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Search Wikipedia and browse article summaries.",
       "publisher": "plexi",
       "capabilities": [
@@ -99,7 +99,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "4d4a8160248cda6cb31fca43fbf41728ca286f4e4a802b9d39758e44745525b6"
+      "checksum": "fdf20e5c217b7cd0e1fd8e8374a283e140f2f284ad1488ff04d40a471819e52c"
     }
   ]
 }

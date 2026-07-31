@@ -280,9 +280,15 @@ pub struct WasmCapabilityReview {
 /// and keyboard capture when the host spawns this app. All fields optional.
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct LaunchSection {
-    /// Pane group this app joins at spawn. When any pane in the group reports
-    /// a CWD change, every member receives `PlexiEvent::PathChanged { cwd }`.
-    /// Convention: "cwd" for generic directory-synced apps.
+    /// Pane group this app joins at spawn. Convention: "cwd" for generic
+    /// directory-synced apps.
+    ///
+    /// **Builtin apps only.** `group_for` is consulted on the builtin branch of
+    /// `launch_app_by_id_with_layout`; Python and WASM panes are constructed
+    /// with `pane_group: None` and never read this key. Group members are
+    /// synchronized by `sync_app_cwd` reassigning `workspace_root` and calling
+    /// `AppRuntime::sync_cwd`, which is a no-op for every non-builtin arm.
+    /// Declaring it on a Python or WASM app is inert.
     #[serde(default)]
     pub join_group: Option<String>,
     /// If true, this app captures all keyboard input when focused. Host
@@ -1199,6 +1205,135 @@ mod tests {
             assert_eq!(manifest.app.manifest_type, ManifestType::Wasm, "{name}");
             assert_eq!(manifest.app.entry, expected_entry, "{name}");
         }
+    }
+
+    /// Read every top-level app manifest (the exemplar set — `apps/dev/` and
+    /// `apps/examples/` hold no manifest at that level and are skipped).
+    fn shipped_app_manifests() -> Vec<(PathBuf, AppManifest)> {
+        let apps_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps");
+        let mut found = Vec::new();
+        for entry in fs::read_dir(&apps_dir).expect("apps/ must be readable") {
+            let path = entry.expect("apps/ entry must be readable").path().join("manifest.toml");
+            if !path.is_file() {
+                continue;
+            }
+            let raw = fs::read_to_string(&path).expect("manifest must be readable");
+            let manifest: AppManifest = toml::from_str(&raw)
+                .unwrap_or_else(|error| panic!("{} must parse: {error}", path.display()));
+            found.push((path, manifest));
+        }
+        assert!(
+            !found.is_empty(),
+            "no top-level app manifests found under {}",
+            apps_dir.display()
+        );
+        found
+    }
+
+    /// Shipped apps are the de facto documentation — an author copies whatever
+    /// the exemplars declare. A description that names a state path is a claim
+    /// the app cannot keep: the host owns path construction, so an app has no
+    /// way to guarantee the file it advertises is the one that gets written.
+    /// Todo shipped `<workspace_root>/.plexi/todos.json` while persisting
+    /// through `PersistState` to `app_states/todo.json` (stint 0646).
+    #[test]
+    fn shipped_app_descriptions_do_not_claim_a_host_owned_state_path() {
+        for (path, manifest) in shipped_app_manifests() {
+            let description = &manifest.app.description;
+            assert!(
+                !description.contains("workspace_root"),
+                "{}: description names a host-owned state path ({description:?}) — \
+                 describe the behaviour, not the path",
+                path.display()
+            );
+        }
+    }
+
+    /// `website/public/registry/v1/index.json` is a generated copy of each
+    /// manifest's user-facing fields. It drifts silently — todo kept publishing
+    /// a false state path, `logs` published a capability it no longer declares,
+    /// and `wikipedia` published a stale version. This catches the next drift
+    /// at test time instead of on the live catalog.
+    #[test]
+    fn published_registry_entries_match_shipped_manifests() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let raw = fs::read_to_string(repo_root.join("website/public/registry/v1/index.json"))
+            .expect("published registry index must be readable");
+        let index: serde_json::Value =
+            serde_json::from_str(&raw).expect("published registry index must parse");
+        let entries = index["apps"]
+            .as_array()
+            .expect("published registry index must list apps");
+
+        let mut matched = 0usize;
+        for entry in entries {
+            let id = entry["id"]
+                .as_str()
+                .expect("every registry entry must carry an id");
+            let manifest_path = repo_root.join("apps").join(id).join("manifest.toml");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let manifest: AppManifest =
+                toml::from_str(&fs::read_to_string(&manifest_path).expect("manifest readable"))
+                    .unwrap_or_else(|error| panic!("{id} manifest must parse: {error}"));
+            let drifted = |field: &str| {
+                format!(
+                    "{id}: published registry `{field}` has drifted from \
+                     apps/{id}/manifest.toml — rerun `just website-registry`"
+                )
+            };
+            assert_eq!(
+                entry["name"].as_str().unwrap_or_default(),
+                manifest.app.name,
+                "{}",
+                drifted("name")
+            );
+            assert_eq!(
+                entry["version"].as_str().unwrap_or_default(),
+                manifest.app.version,
+                "{}",
+                drifted("version")
+            );
+            assert_eq!(
+                entry["description"].as_str().unwrap_or_default(),
+                manifest.app.description,
+                "{}",
+                drifted("description")
+            );
+            let published_caps: Vec<&str> = entry["capabilities"]
+                .as_array()
+                .map(|caps| caps.iter().filter_map(|c| c.as_str()).collect())
+                .unwrap_or_default();
+            assert_eq!(
+                published_caps, manifest.app.capabilities.capabilities,
+                "{}",
+                drifted("capabilities")
+            );
+            matched += 1;
+        }
+        assert!(
+            matched > 0,
+            "no published registry entry resolved to a shipped app manifest"
+        );
+    }
+
+    /// `[launch] join_group` is read only on the builtin branch of
+    /// `launch_app_by_id_with_layout`, and `AppRuntime::sync_cwd` is a no-op
+    /// for the Python arm. Todo is a Python app, so the key it shipped was
+    /// inert — a declaration of behaviour it never had (stint 0646).
+    #[test]
+    fn todo_manifest_declares_no_pane_group() {
+        let manifest: AppManifest = toml::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/apps/todo/manifest.toml"
+        )))
+        .expect("todo manifest must parse");
+        assert!(
+            manifest.launch.join_group.is_none(),
+            "todo is a Python app; `[launch] join_group` is never read for one, \
+             so declaring it documents behaviour the app does not have"
+        );
     }
 
     #[test]

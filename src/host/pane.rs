@@ -1090,7 +1090,8 @@ pub struct AppPane {
     pub permissions: AppPermissions,
     pub manifest_id: String,
     pub name: String,
-    /// Pane group this app joined at spawn (for PathChanged routing).
+    /// Pane group this app joined at spawn. Only `sync_app_cwd` reads it, and
+    /// only builtin panes are ever assigned one — see `LaunchSection::join_group`.
     pub pane_group: Option<String>,
     /// The terminal pane this app was spawned alongside. CdRequest routes here
     /// directly — no tile-tree walk needed.
