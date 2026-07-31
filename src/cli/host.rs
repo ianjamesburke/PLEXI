@@ -14,10 +14,9 @@
 //! picks the seeded panes up on the launched app's first frame.
 //!
 //! All channel-scoped paths here go through `host_config_dir(channel)`, not
-//! `crate::config::config_dir()` — the latter prefers an inherited
-//! `PLEXI_CHANNEL` env var over the running binary's own name, which would
-//! let `host start/stop/status` silently target the wrong channel's profile
-//! when invoked from inside a pane.
+//! `crate::config::config_dir()` — the latter lets the bare `plexi` binary
+//! adopt an inherited `PLEXI_CHANNEL`, which would let `host start/stop/status`
+//! silently target the wrong channel's profile when invoked from inside a pane.
 
 use serde::Deserialize;
 use std::io::Write;
@@ -193,8 +192,9 @@ pub(crate) fn host_child_env(
 /// `None` → `~/.plexi`, `Some("alpha")` → `~/.plexi-alpha`.
 ///
 /// Deliberately does **not** call `crate::config::config_dir()`, which
-/// prefers `PLEXI_CHANNEL` from the environment over the running binary's
-/// own name. `host start/stop/status` can be invoked from inside a pane
+/// lets the bare `plexi` binary adopt `PLEXI_CHANNEL` from the environment
+/// when its own name carries no channel. `host start/stop/status` can be
+/// invoked from inside a pane
 /// (e.g. an agent driving a nested PR-channel test), where the calling
 /// pane's `PLEXI_CHANNEL` would silently redirect every socket/spawn-queue
 /// path to the wrong channel's profile — the exact leak trap this command

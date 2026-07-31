@@ -1002,6 +1002,70 @@ fn channel_suffix_from_basename(basename: &str) -> String {
     }
 }
 
+/// The channel named by the running binary itself, if any: `plexi-alpha` →
+/// `Some("alpha")`, `plexi` → `None`.
+fn channel_from_basename(basename: &str) -> Option<&str> {
+    basename.strip_prefix("plexi-").filter(|s| !s.is_empty())
+}
+
+/// Resolve the profile dir name (`.plexi`, `.plexi-alpha`, …) from the running
+/// binary's basename and the ambient `PLEXI_CHANNEL`.
+///
+/// A channel-named binary is an *explicit address*: `plexi-alpha` always means
+/// the alpha profile, even when invoked from inside a pane of another channel,
+/// whose `PLEXI_CHANNEL` is inherited through the environment. Only the bare
+/// `plexi` binary carries no channel of its own, so it adopts the surrounding
+/// pane's `PLEXI_CHANNEL` when one is set (#2109) and falls back to `.plexi`
+/// outside any pane.
+fn resolve_channel_dir(basename: &str, env_channel: Option<&str>) -> String {
+    if channel_from_basename(basename).is_some() {
+        return channel_suffix_from_basename(basename);
+    }
+    match env_channel.filter(|c| !c.is_empty()) {
+        Some(channel) => format!(".plexi-{channel}"),
+        None => channel_suffix_from_basename(basename),
+    }
+}
+
+/// Basename of the running binary, defaulting to `plexi` when it cannot be read.
+fn current_exe_basename() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "plexi".to_string())
+}
+
+/// Ambient `PLEXI_CHANNEL`, or `None` when unset or empty. Always `None` under
+/// `cfg(test)`: unit tests must never resolve state from the channel of the
+/// pane running them (tests use `set_test_channel`/`set_test_profile_dir`).
+fn env_channel() -> Option<String> {
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        std::env::var("PLEXI_CHANNEL")
+            .ok()
+            .filter(|c| !c.is_empty())
+    }
+}
+
+/// The profile dir name for this process, resolved once and cached — both
+/// inputs (binary basename, `PLEXI_CHANNEL`) are fixed for the process lifetime.
+fn process_channel_dir() -> String {
+    static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
+    CHANNEL_DIR
+        .get_or_init(|| {
+            let basename = current_exe_basename();
+            let env = env_channel();
+            let dir = resolve_channel_dir(&basename, env.as_deref());
+            log::info!("channel dir resolved to {dir} (binary {basename}, PLEXI_CHANNEL={env:?})");
+            dir
+        })
+        .clone()
+}
+
 #[cfg(test)]
 thread_local! {
     /// Per-thread channel override for tests. Tests must use `set_test_channel`
@@ -1076,44 +1140,15 @@ pub fn workspace_channel_dir() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    #[cfg(not(test))]
-    if let Some(channel) = std::env::var("PLEXI_CHANNEL")
-        .ok()
-        .filter(|c| !c.is_empty())
-    {
-        log::info!("workspace_channel_dir: using PLEXI_CHANNEL={channel}");
-        return format!(".plexi-{channel}");
-    }
-    static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
-    #[cfg(not(test))]
-    {
-        CHANNEL_DIR
-            .get_or_init(|| {
-                let basename = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| "plexi".to_string());
-                channel_suffix_from_basename(&basename)
-            })
-            .clone()
-    }
+    let channel_dir = process_channel_dir();
     #[cfg(test)]
-    {
-        let channel_dir = CHANNEL_DIR
-            .get_or_init(|| {
-                let basename = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| "plexi".to_string());
-                channel_suffix_from_basename(&basename)
-            })
-            .clone();
-        assert_test_profile_is_isolated(&channel_dir);
-        channel_dir
-    }
+    assert_test_profile_is_isolated(&channel_dir);
+    channel_dir
 }
 
-/// Returns the config directory name based on the running binary basename.
+/// Returns the config directory name for this process. Same resolution as
+/// [`workspace_channel_dir`] — the profile dir and the workspace channel dir
+/// are always the same channel.
 fn config_dir_name() -> String {
     #[cfg(test)]
     if let Some(channel) = test_channel_override() {
@@ -1122,32 +1157,10 @@ fn config_dir_name() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    #[cfg(not(test))]
-    if let Some(channel) = std::env::var("PLEXI_CHANNEL")
-        .ok()
-        .filter(|c| !c.is_empty())
-    {
-        log::info!("config_dir_name: using PLEXI_CHANNEL={channel}");
-        return format!(".plexi-{channel}");
-    }
-    #[cfg(not(test))]
-    {
-        let basename = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "plexi".to_string());
-        channel_suffix_from_basename(&basename)
-    }
+    let channel_dir = process_channel_dir();
     #[cfg(test)]
-    {
-        let basename = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "plexi".to_string());
-        let channel_dir = channel_suffix_from_basename(&basename);
-        assert_test_profile_is_isolated(&channel_dir);
-        channel_dir
-    }
+    assert_test_profile_is_isolated(&channel_dir);
+    channel_dir
 }
 
 #[cfg(test)]
@@ -1936,6 +1949,40 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn channel_named_binary_wins_over_ambient_channel() {
+        // A `plexi-alpha` shim invoked from inside a beta pane addresses alpha.
+        assert_eq!(
+            resolve_channel_dir("plexi-alpha", Some("beta")),
+            ".plexi-alpha"
+        );
+        assert_eq!(
+            resolve_channel_dir("plexi-pr-42", Some("beta")),
+            ".plexi-pr-42"
+        );
+        assert_eq!(
+            resolve_channel_dir("plexi-beta", Some("alpha")),
+            ".plexi-beta"
+        );
+    }
+
+    #[test]
+    fn bare_binary_adopts_ambient_channel() {
+        // The bare binary names no channel of its own, so the pane's channel
+        // decides which profile it talks to (#2109).
+        assert_eq!(
+            resolve_channel_dir("plexi", Some("pr-999")),
+            ".plexi-pr-999"
+        );
+        assert_eq!(resolve_channel_dir("plexi", Some("beta")), ".plexi-beta");
+    }
+
+    #[test]
+    fn bare_binary_outside_a_pane_uses_stable_profile() {
+        assert_eq!(resolve_channel_dir("plexi", None), ".plexi");
+        assert_eq!(resolve_channel_dir("plexi", Some("")), ".plexi");
     }
 
     #[test]
