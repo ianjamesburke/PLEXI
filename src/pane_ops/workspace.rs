@@ -37,6 +37,13 @@ fn auto_init_workspace(root: &std::path::Path) {
         return;
     }
 
+    if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root) {
+        log::warn!(
+            "auto_init_workspace: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+            root.display()
+        );
+    }
+
     let channel_dir = crate::config::workspace_channel_dir();
     let channel_path = root.join(&channel_dir);
     if channel_path.exists() {
@@ -1943,5 +1950,25 @@ mod tests {
         assert_eq!(persisted_next_pane_id(3, &windows), 13);
         assert_eq!(persisted_next_pane_id(20, &windows), 20);
         assert_eq!(persisted_next_pane_id(7, &[]), 7);
+    }
+
+    #[test]
+    fn auto_init_existing_channel_workspace_ensures_neutral_app_state_ignore() {
+        let root = tempfile::tempdir().expect("root");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let channel_path = root.path().join(channel_dir);
+        std::fs::create_dir_all(&channel_path).expect("channel workspace");
+        std::fs::write(channel_path.join("workspace.toml"), "id = \"existing\"\n")
+            .expect("workspace");
+        let neutral_dir = root.path().join(".plexi");
+        std::fs::create_dir_all(&neutral_dir).expect("neutral dir");
+        std::fs::write(neutral_dir.join(".gitignore"), "# user rule\nbuild/\n").expect("gitignore");
+
+        auto_init_workspace(root.path());
+
+        assert_eq!(
+            std::fs::read_to_string(neutral_dir.join(".gitignore")).expect("read gitignore"),
+            "# user rule\nbuild/\napp_states/\n"
+        );
     }
 }

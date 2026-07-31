@@ -84,8 +84,10 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_gap",
     "pane_title_font_size",
     "osc_pane_title",
+    "app_state",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
+const KNOWN_APP_STATE: &[&str] = &["superseded_orphans"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
     "preset",
@@ -283,6 +285,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("marketplace") {
                 check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("app_state") {
+                check_unknown_keys(t, "app_state", KNOWN_APP_STATE, &path_str, &mut diags);
             }
             if table.contains_key("quick_note") {
                 diags.push(ConfigDiagnostic::DeprecatedSection {
@@ -507,6 +512,30 @@ pub struct PlexiConfig {
     /// Unmapped extensions fall through to manifest associations, then builtin
     /// media players, then the OS default.
     pub file_handlers: Option<std::collections::HashMap<String, String>>,
+    pub app_state: Option<AppStateConfig>,
+}
+
+/// App-state maintenance (`[app_state]`). App state is channel-neutral
+/// (`.plexi/app_states/`); legacy channel-suffixed copies
+/// (`.plexi-<channel>/app_states/`) are reclaimed on app launch.
+#[derive(Deserialize, Default, Clone)]
+pub struct AppStateConfig {
+    /// Disposal of a channel-suffixed app-state orphan that lost the reclaim
+    /// to a newer orphan or to an existing canonical file. `"archive"`
+    /// (default) renames it to an inert `<app_id>.json.superseded` sibling;
+    /// `"remove"` deletes it, but only when its bytes are proven identical to
+    /// the canonical state — a divergent orphan is archived even under
+    /// `"remove"`, because unproven-copied data is never deleted.
+    pub superseded_orphans: Option<SupersededOrphanPolicy>,
+}
+
+/// See [`AppStateConfig::superseded_orphans`].
+#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum SupersededOrphanPolicy {
+    #[default]
+    Archive,
+    Remove,
 }
 
 /// CLI behavior configuration.
@@ -1537,6 +1566,19 @@ impl PlexiConfig {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.marketplace = Some(incoming),
             _ => {}
+        }
+        match (self.app_state.as_mut(), other.app_state) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.app_state = Some(incoming),
+            _ => {}
+        }
+    }
+}
+
+impl AppStateConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.superseded_orphans.is_some() {
+            self.superseded_orphans = other.superseded_orphans;
         }
     }
 }

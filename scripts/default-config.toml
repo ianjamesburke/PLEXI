@@ -101,3 +101,12 @@ tips = true
 # account_url     = "https://plexiapp.com"
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
+
+[app_state]
+# App state is channel-neutral (.plexi/app_states/); channel-suffixed copies
+# (.plexi-<channel>/app_states/) are reclaimed on app launch. This picks what
+# happens to a copy superseded by the reclaim:
+#   "archive" (default) rename it to an inert <app_id>.json.superseded sibling
+#   "remove"            delete it — but only when byte-identical to the
+#                       canonical state; a divergent copy is archived instead
+# superseded_orphans = "archive"
