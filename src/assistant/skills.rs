@@ -114,7 +114,7 @@ impl SkillRegistry {
                     .then_some((skill, (name_hit as usize, overlap)))
             })
             .collect::<Vec<_>>();
-        matches.sort_by(|a, b| b.1.cmp(&a.1));
+        matches.sort_by_key(|e| std::cmp::Reverse(e.1));
         match matches.as_slice() {
             [(skill, _), ..] if matches.get(1).is_none_or(|next| next.1 != matches[0].1) => {
                 Some(*skill)

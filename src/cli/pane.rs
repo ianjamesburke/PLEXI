@@ -308,8 +308,7 @@ fn slot_wait_outcome(
 /// `plexi pane slot wait <name> [pane_id] --until <PATTERN> [--timeout <SECS>]`
 pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout: f64) -> i32 {
     if !timeout.is_finite()
-        || timeout < 0.0
-        || timeout > crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+        || !(0.0..=crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS).contains(&timeout)
     {
         eprintln!(
             "error: --timeout must be a non-negative number of seconds at most {}, got {timeout}",
@@ -1260,7 +1259,7 @@ pub(super) fn open_github_ephemeral(
         .or_else(|| std::env::current_dir().ok());
     let workspace_root: Option<String> = start_dir
         .as_deref()
-        .and_then(|d| crate::app::registry::resolve_workspace_root(d))
+        .and_then(crate::app::registry::resolve_workspace_root)
         .map(|p| p.to_string_lossy().into_owned());
 
     let abs_path = cache_dir.to_string_lossy().into_owned();

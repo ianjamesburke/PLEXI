@@ -225,7 +225,6 @@ impl PlexiApp {
     /// `kind = input`:
     ///   text typing  — edits buffer
     ///   Enter        — submit (only if non-empty OR `required == false`)
-
     pub(crate) fn confirm_close_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,

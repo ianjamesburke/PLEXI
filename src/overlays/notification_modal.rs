@@ -22,7 +22,7 @@ fn draw_notification_image(
             let (orig_w, orig_h) = (*w as f32, *h as f32);
             let scale = (avail_w / orig_w).min(NOTIFICATION_IMAGE_MAX_H / orig_h);
             // Only ever shrink — never upscale a small image and pixelate it.
-            let scale = scale.min(1.0).max(0.0);
+            let scale = scale.clamp(0.0, 1.0);
             let display = Vec2::new(orig_w * scale, orig_h * scale);
             ui.add(egui::Image::new((texture.id(), display)).corner_radius(style::RADIUS_MD));
         }
@@ -600,7 +600,7 @@ impl PlexiApp {
                         if let Some(c) = shortcut_pressed {
                             for (i, opt) in notif.options.iter().enumerate() {
                                 if let Some(sc) = &opt.shortcut {
-                                    if sc.to_ascii_lowercase().chars().next() == Some(c) {
+                                    if sc.to_ascii_lowercase().starts_with(c) {
                                         picked = Some(i);
                                         break;
                                     }
@@ -628,10 +628,10 @@ impl PlexiApp {
                         });
                     }
                 }
-                NotifyKind::Input => {
+                NotifyKind::Input
                     // Bare Enter inserts a newline into the multiline field;
                     // Cmd+Enter is the commit chord.
-                    if cmd_enter_pressed {
+                    if cmd_enter_pressed => {
                         let buf = self.modal_input_buffer.trim().to_string();
                         if !buf.is_empty() || !notif.required {
                             action_cmd = Some(AppCommand::DeliverNotifyAction {
@@ -644,7 +644,6 @@ impl PlexiApp {
                             });
                         }
                     }
-                }
                 _ => {}
             }
         }

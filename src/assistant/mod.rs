@@ -260,7 +260,7 @@ impl ToolCallHooks for AssistantToolHooks {
             detail: tool_render_detail(name, output_json),
             input_summary: self.in_flight_inputs.lock().unwrap().remove(name),
             output_preview: output_json
-                .map(|output| tool_output_preview(output))
+                .map(tool_output_preview)
                 .filter(|preview| !preview.is_empty()),
         });
     }
@@ -1697,7 +1697,7 @@ impl AssistantApp {
         // wins; only the installed default is escalated.
         let tier_is_default_sourced = self.session_overrides.model_tier.is_none()
             && self.settings.model.tier.source.scope == settings::SettingsScope::Default;
-        let mut tier = self.session_overrides.model_tier.unwrap_or_else(|| {
+        let mut tier = self.session_overrides.model_tier.unwrap_or({
             if tier_is_default_sourced {
                 agent.default_tier
             } else {

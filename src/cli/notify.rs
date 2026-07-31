@@ -18,6 +18,8 @@ pub fn parse_notify_scope(
     }
 }
 
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
 pub fn notify_cli(
     title: &str,
     body: &str,

@@ -363,6 +363,7 @@ impl PlexiApp {
     ///   2. focus_mode off — the global mute gate.
     ///   3. priority >= interrupt_threshold — low-urgency arrivals like
     ///      "note saved" stay passive.
+    ///
     /// A notification that fails any gate still queues (the badge ticks); it
     /// just arrives silently.
     pub(crate) fn notification_may_interrupt(&self, n: &PendingNotification) -> bool {
@@ -449,7 +450,7 @@ impl PlexiApp {
     /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
         if n.deliver_after
-            .map_or(false, |t| t > std::time::Instant::now())
+            .is_some_and(|t| t > std::time::Instant::now())
         {
             return false;
         }

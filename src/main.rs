@@ -157,7 +157,7 @@ fn main() -> eframe::Result {
     // project-level `[log] level = "debug"` actually takes effect.
     let merged_config_root = adopted_root
         .clone()
-        .or_else(|| crate::config::active_workspace_root());
+        .or_else(crate::config::active_workspace_root);
     let log_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref())
         .log
         .unwrap_or_default();

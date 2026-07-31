@@ -41,7 +41,7 @@ impl PlexiApp {
         let resolved_cwd = cwd
             .map(std::path::PathBuf::from)
             .or(workspace_root)
-            .or_else(|| dirs::home_dir());
+            .or_else(dirs::home_dir);
 
         // Find the sender's tile so we can split next to it. Without the
         // tile we have no anchor for the split — bail out and notify the

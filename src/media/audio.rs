@@ -186,7 +186,7 @@ pub fn start_playback(request: PlaybackRequest) -> Result<PlaybackSession, Audio
         .map_err(|e| AudioError::Cpal(format!("rodio: output stream: {e}")))?;
     let file = File::open(&request.source)
         .map_err(|e| AudioError::Cpal(format!("open {}: {e}", request.source)))?;
-    let player = rodio::play(&handle.mixer(), BufReader::new(file))
+    let player = rodio::play(handle.mixer(), BufReader::new(file))
         .map_err(|e| AudioError::Cpal(format!("decode/play {}: {e}", request.source)))?;
     player.set_volume(request.volume.clamp(0.0, 2.0));
     Ok(PlaybackSession {
@@ -350,7 +350,7 @@ fn pick_output_config(
             100_000
         };
         let dist = clamped.abs_diff(rate) + channel_penalty;
-        if best.as_ref().map_or(true, |(d, _)| dist < *d) {
+        if best.as_ref().is_none_or(|(d, _)| dist < *d) {
             best = Some((dist, range));
         }
     }

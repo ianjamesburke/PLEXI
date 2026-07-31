@@ -108,7 +108,7 @@ fn update_cache_fresh_for_channel(cache_path: &Path, channel: UpdateChannel, now
     std::fs::read(cache_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .map_or(false, |json| {
+        .is_some_and(|json| {
             cached_json_fresh_for_channel(&json, channel, now)
         })
 }

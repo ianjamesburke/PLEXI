@@ -63,6 +63,8 @@ mod tests {
 /// Render a full-width tab bar and return a switch/reorder action, if any.
 /// The caller must pre-allocate `bar_rect` (typically `TAB_BAR_HEIGHT` px tall)
 /// and advance the cursor past it.
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_tab_bar(
     ctx: &egui::Context,
     painter: &egui::Painter,
@@ -435,7 +437,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         let is_focused = self.owner_pane == Some(*pane_id);
 
-        let is_hidden = self.panes.get(pane_id).map_or(false, |p| p.is_hidden());
+        let is_hidden = self.panes.get(pane_id).is_some_and(|p| p.is_hidden());
 
         if is_hidden {
             ui.set_opacity(0.4);
@@ -665,7 +667,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn tab_title_for_pane(&mut self, pane: &PaneId) -> egui::WidgetText {
-        let is_hidden = self.panes.get(pane).map_or(false, |p| p.is_hidden());
+        let is_hidden = self.panes.get(pane).is_some_and(|p| p.is_hidden());
         let explicit_name = self.pane_names.get(pane).cloned();
         let label = match (is_hidden, explicit_name) {
             (true, Some(name)) => format!("{name} (hidden)"),
@@ -839,7 +841,7 @@ fn collect_tile_rects(
                 let n = children.len();
                 if n > 0 {
                     let cols = ((n as f32).sqrt().ceil() as usize).max(1);
-                    let rows = (n + cols - 1) / cols;
+                    let rows = n.div_ceil(cols);
                     let w = rect.width() / cols as f32;
                     let h = rect.height() / rows as f32;
                     for (i, child_id) in children.iter().enumerate() {
@@ -967,7 +969,7 @@ pub(crate) fn paint_portal_minimap(
         let body_rect = win_rect;
 
         // Render panes inside the body
-        for (_pane_idx, pane) in win.panes.iter().enumerate() {
+        for pane in win.panes.iter() {
             let pane_rect = egui::Rect::from_min_max(
                 egui::pos2(
                     body_rect.min.x + pane.norm_rect.min.x * body_rect.width(),

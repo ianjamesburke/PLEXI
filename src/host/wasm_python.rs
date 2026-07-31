@@ -515,12 +515,14 @@ pub fn run_headless_frame(
 /// — the guest is dead or wedged and later clicks cannot succeed. Returns the
 /// pre-action frame plus one `(handler_id, render result)` entry per
 /// attempted action.
+pub type UiActionOutcomes = (UiTree, Vec<(String, Result<UiTree, WasmPythonError>)>);
+
 pub fn run_headless_ui_action_sequence(
     config: &PythonLaunchConfig,
     size: (f32, f32),
     seed_state: Option<Value>,
     handler_ids: &[String],
-) -> Result<(UiTree, Vec<(String, Result<UiTree, WasmPythonError>)>), WasmPythonError> {
+) -> Result<UiActionOutcomes, WasmPythonError> {
     let mut session = HeadlessPythonSession::launch(config, size, seed_state)?;
     let before = session.render_frame(1)?;
     let mut outcomes = Vec::with_capacity(handler_ids.len());

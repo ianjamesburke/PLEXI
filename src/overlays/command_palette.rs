@@ -837,7 +837,7 @@ impl PlexiApp {
             let home = dirs::home_dir();
             let rescan_cwd = focused_workspace_root
                 .as_deref()
-                .or_else(|| home.as_deref())
+                .or(home.as_deref())
                 .unwrap_or(std::path::Path::new("/"));
             log::info!(
                 "palette: registry workspace ({:?}) differs from palette workspace ({:?}), rescanning",

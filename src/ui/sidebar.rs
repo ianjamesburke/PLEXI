@@ -43,7 +43,7 @@ fn resolve_drag_drop(
     parked_rects: &[Rect],
 ) -> Option<SidebarDrop> {
     let pos = pointer?;
-    let into_parked = parked_header.map_or(false, |h| pos.y >= h.top());
+    let into_parked = parked_header.is_some_and(|h| pos.y >= h.top());
     let rects = if into_parked {
         parked_rects
     } else {
@@ -388,12 +388,11 @@ impl PlexiApp {
                             ui.close();
                         }
                     }
-                    if has_root {
-                        if ui.button("Clear root").clicked() {
+                    if has_root
+                        && ui.button("Clear root").clicked() {
                             menu_action = Some((i, WindowMenuAction::ClearRoot));
                             ui.close();
                         }
-                    }
                     if num_ctxs > 1 {
                         ui.separator();
                         if ui.button("Park").clicked() {

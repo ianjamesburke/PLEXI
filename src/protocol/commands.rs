@@ -1016,16 +1016,14 @@ pub enum AppRequest {
     /// Open a workspace artifact (file or directory) via the host.
     ///
     /// Modes:
-    ///   - `OpenInPane`        — open the path in a new app pane, e.g. a
-    ///                           file browser at a directory or a text
-    ///                           editor on a file. Implementation: routes
-    ///                           through the file-browser app for
-    ///                           directories; falls through to the OS
-    ///                           default for files in this PR.
-    ///   - `RevealInFinder`    — `open -R <path>` on macOS.
-    ///   - `OpenWithDefault`   — `open <path>` on macOS — uses Launch
-    ///                           Services to pick the registered app for
-    ///                           the file's UTI.
+    ///   - `OpenInPane` — open the path in a new app pane, e.g. a file
+    ///     browser at a directory or a text editor on a file.
+    ///     Implementation: routes through the file-browser app for
+    ///     directories; falls through to the OS default for files in
+    ///     this PR.
+    ///   - `RevealInFinder` — `open -R <path>` on macOS.
+    ///   - `OpenWithDefault` — `open <path>` on macOS — uses Launch
+    ///     Services to pick the registered app for the file's UTI.
     ///
     /// Capability: `terminal.bindings`. All fields required.
     OpenArtifact {
@@ -1363,7 +1361,7 @@ pub struct NotificationAction {
 ///
 /// - `Message` — title + body, single Acknowledge button.
 /// - `Choice`  — title + body + N options; Enter picks the focused one, ↑↓/j-k
-///               cycles, 1-9 direct-selects, optional per-option `shortcut` key.
+///   cycles, 1-9 direct-selects, optional per-option `shortcut` key.
 /// - `Input`   — title + body + a text field; Enter submits.
 ///
 /// Future kinds (image / audio / video / rich) will land here without breaking

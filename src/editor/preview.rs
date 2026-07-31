@@ -522,9 +522,12 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
     // excluded; spans already inside a Markdown link are excluded too (the
     // cmark link wins).
     let mut excluded = code_ranges;
-    excluded.extend(inlines.iter().filter_map(|s| {
-        matches!(s.kind, InlineKind::Code | InlineKind::Link).then(|| s.bytes.clone())
-    }));
+    excluded.extend(
+        inlines
+            .iter()
+            .filter(|s| matches!(s.kind, InlineKind::Code | InlineKind::Link))
+            .map(|s| s.bytes.clone()),
+    );
     for (range, name) in scan_wiki_links(text) {
         if excluded
             .iter()
@@ -546,7 +549,6 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
     // Bare http(s) URLs are a render-time affordance: unlike Markdown links,
     // they do not change the document. Skip parser-owned links and code so a
     // URL is never double-styled or clickable inside literal source.
-    let mut excluded = excluded;
     excluded.extend(links.iter().map(|link| link.bytes.clone()));
     excluded.extend(images.iter().map(|image| image.bytes.clone()));
     for range in scan_bare_http_urls(text) {

@@ -179,7 +179,9 @@ pub struct ToolArgProgress {
 /// not compaction mechanics: raw history and checkpoint format remain owned
 /// by the store layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CompactionState {
+    #[default]
     Idle,
     Compacting,
     Completed {
@@ -188,11 +190,6 @@ pub enum CompactionState {
     },
 }
 
-impl Default for CompactionState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 /// Side effects the model requests from the pane shell.
 #[derive(Debug, Clone, PartialEq)]

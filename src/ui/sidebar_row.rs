@@ -212,8 +212,13 @@ fn draw_pips(
                 egui::StrokeKind::Inside,
             );
             group_rects.push((group, group_rect));
-            for dot_i in start..end {
-                dot_centers[dot_i] = (cursor_x
+            for (dot_i, center) in dot_centers
+                .iter_mut()
+                .enumerate()
+                .take(end)
+                .skip(start)
+            {
+                *center = (cursor_x
                     + WINDOW_GROUP_PAD_X
                     + PANE_DOT_RADIUS
                     + (dot_i - start) as f32 * PANE_DOT_SPACING)
@@ -225,8 +230,7 @@ fn draw_pips(
             }
         }
     }
-    for dot_i in 0..capped {
-        let cx = dot_centers[dot_i];
+    for (dot_i, &cx) in dot_centers.iter().enumerate().take(capped) {
         let is_hidden = dots.hidden_set.contains(&dot_i);
         let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
         let focused = dots.focused_idx == Some(dot_i);
@@ -277,7 +281,7 @@ fn draw_pips(
     }
     if dots.count > PANE_DOT_MAX {
         let overflow_x = cursor_x + PANE_DOT_RADIUS * 0.5;
-        let overflow_color = if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
+        let overflow_color = if dots.focused_idx.is_some_and(|idx| idx >= PANE_DOT_MAX) {
             with_alpha(colors.accent, row_alpha)
         } else {
             with_alpha(colors.text_dim, 0.5)
@@ -406,7 +410,7 @@ impl ContextItem {
                             });
 
                             // Pips: rendered inline right of the name, before badge/action.
-                            draw_pips(ui, &pane_dots, &colors, row_alpha, is_dragging);
+                            draw_pips(ui, &pane_dots, colors, row_alpha, is_dragging);
 
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(if action_enabled {
@@ -533,7 +537,7 @@ impl ContextItem {
             None
         };
 
-        let in_action = action_zone.map_or(false, |az| ui.rect_contains_pointer(az));
+        let in_action = action_zone.is_some_and(|az| ui.rect_contains_pointer(az));
 
         if let Some(az) = action_zone {
             if hovered && !is_dragging {

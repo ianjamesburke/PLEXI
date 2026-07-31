@@ -260,11 +260,10 @@ fn stream_ollama(
 
         // Extract text delta from message content.
         if let Some(text) = chunk["message"]["content"].as_str() {
-            if !text.is_empty() {
-                if tx.send(StreamEvent::Text(text.to_string())).is_err() {
+            if !text.is_empty()
+                && tx.send(StreamEvent::Text(text.to_string())).is_err() {
                     return;
                 }
-            }
         }
 
         // Ollama tool calls arrive in a `done: true` chunk with

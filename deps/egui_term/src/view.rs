@@ -308,7 +308,7 @@ impl<'a> TerminalView<'a> {
                             &event,
                             state,
                             self.backend,
-                            &layout,
+                            layout,
                         ));
                     } else if let egui::Event::Key {
                         key: Key::F,
@@ -728,7 +728,7 @@ impl<'a> TerminalView<'a> {
                         Pos2::new(x, underline_height),
                         Pos2::new(x + cell_width, underline_height),
                     ],
-                    stroke: Stroke::new(cell_height * 0.15, fg).into(),
+                    stroke: Stroke::new(cell_height * 0.15, fg),
                 });
             }
 
@@ -995,7 +995,7 @@ impl<'a> TerminalView<'a> {
             };
             let pill_width =
                 query_galley.size().x + counter_width + pill_pad_h * 2.0;
-            let pill_width = pill_width.max(140.0).min(280.0);
+            let pill_width = pill_width.clamp(140.0, 280.0);
             let pill_height = query_galley.size().y + pill_pad_v * 2.0;
 
             let pill_rect = Rect::from_min_size(
@@ -1046,8 +1046,7 @@ impl<'a> TerminalView<'a> {
                 .unwrap_or_default()
                 .as_millis()
                 / 530)
-                % 2
-                == 0;
+                .is_multiple_of(2);
             if blink_on {
                 let cursor_x = query_pos.x
                     + painter

@@ -307,9 +307,7 @@ impl PlexiApp {
     ) -> Option<PaneId> {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
-        let Some(focused) = self.windows[self.active_window].focused_pane else {
-            return None;
-        };
+        let focused = self.windows[self.active_window].focused_pane?;
 
         let cmd = if vertical {
             HostAction::SplitVertical
@@ -898,18 +896,15 @@ impl PlexiApp {
                 log::info!("scheduler: routine '{name}' run ended — pane {pane_id} closed");
             }
         }
-        match removed_pane {
-            Some(Pane::App(app_pane)) => {
-                let pane_id = app_pane.id;
-                // Hot reload (#83): drop any active watcher for this pane.
-                // Idempotent — no-op when the pane wasn't being watched.
-                self.hot_reload.unwatch(pane_id);
-                // Tombstone any notifications this pane posted — they stay visible but
-                // their action buttons are hidden since the app can no longer respond.
-                self.tombstone_pane_notifications(pane_id);
-                // else: builtin app pane drops here
-            }
-            _ => {}
+        if let Some(Pane::App(app_pane)) = removed_pane {
+            let pane_id = app_pane.id;
+            // Hot reload (#83): drop any active watcher for this pane.
+            // Idempotent — no-op when the pane wasn't being watched.
+            self.hot_reload.unwatch(pane_id);
+            // Tombstone any notifications this pane posted — they stay visible but
+            // their action buttons are hidden since the app can no longer respond.
+            self.tombstone_pane_notifications(pane_id);
+            // else: builtin app pane drops here
         }
     }
 

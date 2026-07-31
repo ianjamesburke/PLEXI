@@ -12,6 +12,7 @@ pub struct HostPane {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct HostContext {
     pub panes: Vec<HostPane>,
     pub focused_pane: Option<PaneId>,
@@ -23,17 +24,6 @@ pub struct HostContext {
     pub parent_id: Option<u64>,
 }
 
-impl Default for HostContext {
-    fn default() -> Self {
-        Self {
-            panes: Vec::new(),
-            focused_pane: None,
-            groups: HashMap::new(),
-            context_id: 0,
-            parent_id: None,
-        }
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct HostModel {

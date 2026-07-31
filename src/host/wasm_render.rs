@@ -291,6 +291,8 @@ fn column_bottom_pin(nodes: &[IndexedNode], child_id: u32) -> Option<(u32, &Foot
     }
 }
 
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
 fn render_node(
     ui: &mut egui::Ui,
     nodes: &[IndexedNode],

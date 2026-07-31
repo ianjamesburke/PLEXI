@@ -21,7 +21,7 @@
 //! - `git+https://...`          → literal URL (`git+` stripped)
 //! - `git+ssh://...` / `git+http://...`
 //! - `local:<app-name>`         → bundled-app seed (no clone, host copies
-//!                                from `apps/<name>/` baked into the binary)
+//!   from `apps/<name>/` baked into the binary)
 //! - anything else → error (no silent fallthrough).
 //!
 //! The current pack schema version constant is [`PACK_SCHEMA_VERSION`].

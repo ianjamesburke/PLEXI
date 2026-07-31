@@ -469,15 +469,12 @@ impl PermissionStore {
     }
 
     /// Split a store key (`app_id::workspace_path::capability_str`) into its
-    /// parts. Uses rsplitn so workspace paths containing `::` parse correctly.
+    /// parts. Splits from the right so workspace paths containing `::` parse
+    /// correctly.
     /// Returns `None` for malformed keys.
     fn parse_entry_key(key: &str) -> Option<(&str, &str, &str)> {
-        let mut right = key.rsplitn(2, "::");
-        let cap_str = right.next()?;
-        let left = right.next()?;
-        let mut left_parts = left.splitn(2, "::");
-        let app_id = left_parts.next()?;
-        let workspace = left_parts.next()?;
+        let (left, cap_str) = key.rsplit_once("::")?;
+        let (app_id, workspace) = left.split_once("::")?;
         Some((app_id, workspace, cap_str))
     }
 

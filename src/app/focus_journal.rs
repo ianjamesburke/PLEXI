@@ -167,12 +167,12 @@ fn parse_iso_to_unix(ts: &str) -> Option<u64> {
 /// Number of days from the Unix epoch (1970-01-01) to the given Gregorian date.
 /// Returns None if the date is before 1970 or implausibly large.
 fn days_since_epoch(year: u64, month: u64, day: u64) -> Option<u64> {
-    if year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 {
+    if year < 1970 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     // Days in each month (non-leap year).
     let days_in_month = [31u64, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let is_leap = |y: u64| (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let is_leap = |y: u64| (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
 
     let mut total: u64 = 0;
     for y in 1970..year {

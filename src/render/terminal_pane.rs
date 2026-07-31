@@ -121,6 +121,8 @@ pub fn render(
     (false, tab_action)
 }
 
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
 fn render_name_bar_and_tabs(
     ui: &mut egui::Ui,
     tile_id: TileId,
@@ -267,7 +269,7 @@ fn is_terminal_outside_workspace(
     if terminal.outside_workspace_root.as_deref() == Some(root)
         && terminal
             .outside_workspace_checked_at
-            .map_or(false, |checked_at| {
+            .is_some_and(|checked_at| {
                 checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL
             })
     {

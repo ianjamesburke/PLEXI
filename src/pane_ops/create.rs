@@ -16,6 +16,9 @@ use egui_tiles::{Tile, TileId, Tree};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// A fully-built context window: tile tree, panes, root tile, spawn order.
+type ContextPaneSet = (Tree<PaneId>, HashMap<PaneId, Pane>, TileId, Vec<PaneId>);
+
 /// Context identity stamped into a new pane's `PLEXI_CONTEXT_*` environment.
 ///
 /// Carried explicitly so a pane can be created for a context that is not the
@@ -61,7 +64,7 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
             // only created once content is typed (empty notes are deleted).
             let path = args
                 .first()
-                .map(|s| std::path::PathBuf::from(s))
+                .map(std::path::PathBuf::from)
                 .unwrap_or_else(new_inbox_note_path);
             Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(
                 path,
@@ -588,6 +591,8 @@ impl PlexiApp {
         Ok(())
     }
 
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     fn open_wasm_app_instance(
         &mut self,
         app_id: &str,
@@ -733,7 +738,6 @@ impl PlexiApp {
     }
 
     /// Relaunch a CPython-in-WASM pane while preserving its pane envelope.
-
     pub(crate) fn reload_app_pane(&mut self, pane_id: PaneId, reason: &str) -> bool {
         let active = self.active_window;
         let Some(app_pane) = self.windows[active]
@@ -756,13 +760,8 @@ impl PlexiApp {
     /// Drain pending `ReloadRequest`s from the watcher channel and reload
     /// the matching panes. Called once per frame from the host update loop.
     pub(crate) fn drain_hot_reload_requests(&mut self) {
-        loop {
-            match self.hot_reload_rx.try_recv() {
-                Ok(req) => {
-                    self.reload_app_pane(req.pane_id, "watcher");
-                }
-                Err(_) => break,
-            }
+        while let Ok(req) = self.hot_reload_rx.try_recv() {
+            self.reload_app_pane(req.pane_id, "watcher");
         }
     }
 
@@ -770,7 +769,6 @@ impl PlexiApp {
     /// so the developer can read the crash overlay. Only applies to panes
     /// that opted in via `[app] watch = true` — production installs are
     /// unaffected. Called once per frame alongside `drain_hot_reload_requests`.
-
     pub(crate) fn drain_crash_restarts(&mut self) {}
 
     /// Force-reload the focused app pane (manual trigger via Cmd+Option+R).
@@ -855,7 +853,7 @@ impl PlexiApp {
         cwd: PathBuf,
         commands: &[Option<String>],
         layout: crate::app_protocol::SubContextLayout,
-    ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId, Vec<PaneId>)> {
+    ) -> Option<ContextPaneSet> {
         if commands.is_empty() {
             log::error!("create_context_pane_set: refusing to build a window with zero panes");
             return None;
@@ -974,6 +972,8 @@ impl PlexiApp {
     /// Does NOT read or write `active_window` or `focused_pane` — all targeting is explicit.
     /// Returns the newly allocated PaneId.
     /// `keep_focus`: if true, `focused_pane` in the target window is NOT changed.
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_terminal_pane_at(
         &mut self,
         win_idx: usize,
@@ -1573,10 +1573,6 @@ impl PlexiApp {
         Err(format!("app '{app_id}' has no WASM runtime"))
     }
 
-    /// Attempt to spawn a PGAP process from the CLI's native `--plexi` descriptor
-    /// `plexi_app` field. Returns `None` if the CLI is not found, does not support
-    /// `--plexi`, or has no `plexi_app` field.
-
     /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
     pub(crate) fn open_secrets_manager(&mut self) {
         // Toggle: if already open, close it.
@@ -1700,7 +1696,7 @@ impl PlexiApp {
 
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
-        match self.launch_app_by_id_with_layout("text-editor", None, &[path_str.clone()], None) {
+        match self.launch_app_by_id_with_layout("text-editor", None, std::slice::from_ref(&path_str), None) {
             Ok(_) => {
                 let pane_id = target_pane_id.or_else(|| {
                     self.windows[active].focused_pane.and_then(|tile_id| {

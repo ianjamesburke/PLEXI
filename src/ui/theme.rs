@@ -193,7 +193,7 @@ impl Colors {
     /// chrome tracks the host theme (light/dark + user `[theme]` overrides).
     /// Both the SDK-semantic names (bg/surface/muted/...) and ANSI aliases
     /// (red/green/yellow) are emitted so apps can pull whichever they need.
-    pub fn to_theme_map(&self) -> std::collections::HashMap<String, String> {
+    pub fn to_theme_map(self) -> std::collections::HashMap<String, String> {
         fn hex(c: Color32) -> String {
             format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
         }

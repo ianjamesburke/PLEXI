@@ -25,6 +25,8 @@ impl<'a> AppChrome<'a> {
         self.colors.border
     }
 
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn text_label(
         &self,
         ui: &mut Ui,

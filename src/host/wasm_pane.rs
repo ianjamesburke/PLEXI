@@ -2072,7 +2072,7 @@ impl LiveWasmPane {
             );
         });
 
-        let decision = match response.selected.as_deref() {
+        let decision = match response.selected {
             Some("grant_once") => Some((true, false)),
             Some("grant_always") => Some((true, true)),
             Some("deny_once") => Some((false, false)),

@@ -971,7 +971,7 @@ fn analyze_python_entry(
         true,
         python_dependencies,
     )?;
-    analyze_python_entry_with(&entry_path, Path::new(&runtime.executable))
+    analyze_python_entry_with(entry_path, Path::new(&runtime.executable))
 }
 
 fn analyze_python_entry_with(entry_path: &Path, python: &Path) -> Result<SdkAnalysis, String> {
@@ -1026,11 +1026,13 @@ json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes}, sy
     let report: PythonAstReport = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("could not parse AST report: {e}"))?;
 
-    let mut analysis = SdkAnalysis::default();
-    analysis.has_init = report.functions.iter().any(|name| name == "init");
-    analysis.has_update = report.functions.iter().any(|name| name == "update");
-    analysis.has_view = report.functions.iter().any(|name| name == "view");
-    analysis.legacy_app_classes = report.legacy_app_classes;
+    let mut analysis = SdkAnalysis {
+        has_init: report.functions.iter().any(|name| name == "init"),
+        has_update: report.functions.iter().any(|name| name == "update"),
+        has_view: report.functions.iter().any(|name| name == "view"),
+        legacy_app_classes: report.legacy_app_classes,
+        ..Default::default()
+    };
 
     for required in ["init", "update", "view"] {
         if !report.functions.iter().any(|name| name == required) {

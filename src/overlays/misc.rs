@@ -356,12 +356,12 @@ impl PlexiApp {
                         continue;
                     }
                     let clean = |s: &str| s.replace("**", "");
-                    if line.starts_with("## ") {
+                    if let Some(rest) = line.strip_prefix("## ") {
                         ui.add_space(style::SPACE_XS);
-                        crate::ui::typography::body_strong(ui, clean(&line[3..]), &self.colors);
+                        crate::ui::typography::body_strong(ui, clean(rest), &self.colors);
                         ui.add_space(2.0);
-                    } else if line.starts_with("### ") {
-                        crate::ui::typography::caption_strong(ui, clean(&line[4..]), &self.colors);
+                    } else if let Some(rest) = line.strip_prefix("### ") {
+                        crate::ui::typography::caption_strong(ui, clean(rest), &self.colors);
                     } else if line.starts_with("- ") || line.starts_with("* ") {
                         crate::ui::typography::body(ui, clean(line), &self.colors);
                     } else if line.starts_with('#') || line.trim().is_empty() {
@@ -502,9 +502,9 @@ impl PlexiApp {
                         }
                     } else {
                         // Tilde expansion.
-                        let expanded = if raw.starts_with("~/") {
+                        let expanded = if let Some(rest) = raw.strip_prefix("~/") {
                             if let Some(home) = dirs::home_dir() {
-                                home.join(&raw[2..])
+                                home.join(rest)
                             } else {
                                 std::path::PathBuf::from(&raw)
                             }

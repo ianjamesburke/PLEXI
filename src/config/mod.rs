@@ -931,11 +931,7 @@ pub fn build_channel() -> Option<String> {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;
     let name = basename.as_str();
-    if let Some(suffix) = name.strip_prefix("plexi-").filter(|s| !s.is_empty()) {
-        Some(suffix.to_string())
-    } else {
-        None
-    }
+    name.strip_prefix("plexi-").filter(|s| !s.is_empty()).map(|suffix| suffix.to_string())
 }
 
 /// True when this binary was compiled for, and is currently running as, the
@@ -1054,7 +1050,7 @@ pub fn workspace_channel_dir() -> String {
     static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
     #[cfg(not(test))]
     {
-        return CHANNEL_DIR
+        CHANNEL_DIR
             .get_or_init(|| {
                 let basename = std::env::current_exe()
                     .ok()
@@ -1062,7 +1058,7 @@ pub fn workspace_channel_dir() -> String {
                     .unwrap_or_else(|| "plexi".to_string());
                 channel_suffix_from_basename(&basename)
             })
-            .clone();
+            .clone()
     }
     #[cfg(test)]
     {
@@ -1103,7 +1099,7 @@ fn config_dir_name() -> String {
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "plexi".to_string());
-        return channel_suffix_from_basename(&basename);
+        channel_suffix_from_basename(&basename)
     }
     #[cfg(test)]
     {

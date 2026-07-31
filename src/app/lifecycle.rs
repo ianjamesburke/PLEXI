@@ -1551,8 +1551,8 @@ impl PlexiApp {
                                 )),
                             }
                         } else if let Some(app_pane) = pane.as_app_mut() {
-                            match &mut app_pane.runtime {
-                                runtime => match super::drive_native_pane_key(runtime, key) {
+                            let runtime = &mut app_pane.runtime;
+                            match super::drive_native_pane_key(runtime, key) {
                                     Ok(disposition) => {
                                         let disposition_label = match disposition {
                                             crate::app::app_trait::KeyDisposition::Consumed => {
@@ -1578,7 +1578,6 @@ impl PlexiApp {
                                         log::warn!("pane_ipc: key_pane: {e}");
                                         Err(e)
                                     }
-                                },
                             }
                         } else {
                             Err(format!("pane {pane_id}: unknown pane type"))
@@ -2549,7 +2548,7 @@ impl PlexiApp {
                         .find(|w| w.context_id == new_ctx_id)
                         .map(|w| w.grid_y)
                         .unwrap_or_else(|| self.windows[self.active_window].grid_y);
-                    let mut new_x = self
+                    let first_x = self
                         .windows
                         .iter()
                         .filter(|w| w.context_id == new_ctx_id && w.grid_y == active_y)
@@ -2557,7 +2556,7 @@ impl PlexiApp {
                         .max()
                         .map(|x| x + 1)
                         .unwrap_or(1);
-                    for cmd in windows {
+                    for (new_x, cmd) in (first_x..).zip(windows) {
                         log::info!(
                             "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x} cmd={cmd:?}"
                         );
@@ -2569,7 +2568,6 @@ impl PlexiApp {
                             false,
                             None,
                         );
-                        new_x += 1;
                     }
                 }
                 // Write JSON response for callers that passed a response_file path.
@@ -2591,7 +2589,7 @@ impl PlexiApp {
                             "context_id": new_ctx_id,
                             "windows": windows_info,
                         });
-                        write_json_response(&rf, response);
+                        write_json_response(rf, response);
                     }
                 }
                 self.save_workspace();

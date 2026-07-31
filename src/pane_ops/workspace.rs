@@ -1310,7 +1310,7 @@ impl PlexiApp {
         }
 
         // Update last_page_x_per_row bookkeeping for any shifted columns
-        for (_, last_x) in self.last_page_x_per_row.iter_mut() {
+        for last_x in self.last_page_x_per_row.values_mut() {
             if let Some(&new) = old_to_new.get(last_x) {
                 *last_x = new;
             }

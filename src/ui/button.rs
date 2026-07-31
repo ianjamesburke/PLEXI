@@ -183,7 +183,7 @@ pub(crate) fn choice_button(
 pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::Response {
     let now = ui.ctx().input(|i| i.time);
     let copied_at: Option<f64> = ui.ctx().memory(|m| m.data.get_temp(id));
-    let just_copied = copied_at.map_or(false, |t| now - t < 2.0);
+    let just_copied = copied_at.is_some_and(|t| now - t < 2.0);
     let icon = if just_copied { "✓" } else { "\u{f0c5}" };
     let resp = ui
         .add(egui::Button::new(RichText::new(icon).size(style::TEXT_CAPTION)).frame(false))

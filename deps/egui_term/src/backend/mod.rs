@@ -514,9 +514,8 @@ impl TerminalBackend {
             let changed: Vec<String> = snapshot
                 .iter()
                 .zip(&state.grid_snapshot)
-                .filter_map(|(current, previous)| {
-                    (current != previous).then(|| current.clone())
-                })
+                .filter(|(current, previous)| current != previous)
+                .map(|(current, _)| current.clone())
                 .collect();
             if !changed.is_empty() {
                 let stream_cursor = self.lines_written.load(Ordering::Relaxed);
@@ -604,7 +603,7 @@ impl TerminalBackend {
         let total = screen_lines + history_size;
         let is_alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
         self.advance_cursor(
-            &grid,
+            grid,
             total,
             screen_lines,
             history_size,
@@ -631,7 +630,7 @@ impl TerminalBackend {
         let total = screen_lines + history_size;
         let is_alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
         self.advance_cursor(
-            &grid,
+            grid,
             total,
             screen_lines,
             history_size,

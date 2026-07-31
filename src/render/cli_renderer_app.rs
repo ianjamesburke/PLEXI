@@ -175,13 +175,12 @@ impl CliRendererApp {
         };
         let mut cmds: &[Command] = &d.commands;
         for (i, segment) in self.cmd_path.iter().enumerate() {
-            if let Some(cmd) = cmds.iter().find(|c| &c.name == segment) {
+            {
+                let cmd = cmds.iter().find(|c| &c.name == segment)?;
                 if i == self.cmd_path.len() - 1 {
                     return Some(cmd);
                 }
                 cmds = &cmd.commands;
-            } else {
-                return None;
             }
         }
         None

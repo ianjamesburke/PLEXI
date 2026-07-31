@@ -605,6 +605,8 @@ impl PlexiApp {
     /// avoids reassigning a live pane's id, which would orphan any
     /// subscriptions, watchers, or WASM runtime handles already registered
     /// under the id the new pane launched with.
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     fn assistant_spawn_pane(
         &mut self,
         origin_pane_id: u64,
