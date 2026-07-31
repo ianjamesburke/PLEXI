@@ -14,7 +14,8 @@ is no ambient process access to escape to. See `docs/wasm-runtime.md`
 § Security Model for the full boundary.
 """
 
-__version__ = "3.0.0"
+from ._version import __version__
+
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
 from ._v3_state import StateSnapshot, log, state

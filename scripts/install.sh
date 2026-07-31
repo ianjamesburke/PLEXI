@@ -246,6 +246,7 @@ rm -rf "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk.old"
 cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk.tmp"
 mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || true
 mv "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk"
+cp sdk/python/pyproject.toml "$profile_dir/sdk/pyproject.toml"
 rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 # App-seeding policy is channel-gated (see scripts/AGENTS.md). packs/core.toml
