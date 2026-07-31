@@ -15,6 +15,19 @@ fn update_check_due(last_update_check: std::time::Instant, now: std::time::Insta
 }
 
 impl PlexiApp {
+    /// Keep app runtime state truthful before serving pane IPC. This lives in
+    /// the logic preamble because eframe can skip `ui()` while a host is
+    /// minimized or occluded.
+    fn poll_app_runtime_state(&mut self) {
+        for window in &mut self.windows {
+            for pane in window.panes.values_mut() {
+                if let Some(app_pane) = pane.as_app_mut() {
+                    app_pane.runtime.poll_runtime_state();
+                }
+            }
+        }
+    }
+
     /// Early per-frame work that runs before overlay dispatch and panel rendering.
     /// Handles adopted context paths, finder service drains, notification polling,
     /// pane command draining, update channel checks, PTY event draining, and
@@ -57,6 +70,7 @@ impl PlexiApp {
                 }
             }
         }
+        self.poll_app_runtime_state();
         self.drain_pane_cmd_channel();
         if self.shutdown_requested {
             // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).

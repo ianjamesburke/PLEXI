@@ -964,6 +964,24 @@ impl AppRuntime {
         }
     }
 
+    /// Lifecycle is an observation of the runtime, not a pane-existence flag.
+    pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
+        match self {
+            AppRuntime::Builtin(_) => ("running", None),
+            AppRuntime::Python(app) => app.lifecycle(),
+            AppRuntime::Wasm(app) if app.is_running() => ("running", None),
+            AppRuntime::Wasm(_) => ("exited", None),
+        }
+    }
+
+    /// Poll state that must stay current even when eframe skips rendering an
+    /// occluded host window.
+    pub(crate) fn poll_runtime_state(&mut self) {
+        if let AppRuntime::Python(app) = self {
+            app.poll_runtime_state();
+        }
+    }
+
     pub(crate) fn drop_file(&mut self, path_or_url: &str) -> Result<serde_json::Value, String> {
         match self {
             AppRuntime::Builtin(app) => app.drop_file(path_or_url),

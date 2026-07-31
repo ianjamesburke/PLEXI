@@ -260,6 +260,79 @@ fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
 }
 
 #[test]
+fn pane_state_reports_failed_for_python_guest_that_dies_at_import() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let app_dir = tmp.path().join("import-failure");
+    std::fs::create_dir(&app_dir).expect("create fixture app directory");
+    std::fs::write(
+        app_dir.join("manifest.toml"),
+        r#"schema_version = 1
+
+[app]
+id = "import-failure"
+type = "app"
+name = "Import Failure"
+entry = "main.py"
+version = "0.1.0"
+description = "HostHarness import-failure fixture"
+
+[app.capabilities]
+capabilities = []
+
+[runtime]
+python_compat = true
+"#,
+    )
+    .expect("write fixture manifest");
+    std::fs::write(
+        app_dir.join("main.py"),
+        "raise ImportError('fixture import failure')\n",
+    )
+    .expect("write fixture entry");
+
+    let mut h = HostHarness::new();
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch fixture app");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("fixture app pane appears");
+    let pane = h.app.windows[h.app.active_window]
+        .panes
+        .get_mut(&pane_id)
+        .and_then(Pane::as_app_mut)
+        .expect("fixture app pane");
+    let AppRuntime::Python(runtime) = &mut pane.runtime else {
+        panic!("fixture must launch through the Python runtime");
+    };
+    runtime.record_runtime_stderr_for_test(
+        "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\n",
+    );
+    assert_eq!(runtime.lifecycle().0, "starting");
+    runtime.record_runtime_stderr_for_test("ImportErr");
+    assert_eq!(runtime.lifecycle().0, "starting");
+    runtime.record_runtime_stderr_for_test("or: fixture import failure\n");
+
+    let response_file = temp_response(tmp.path(), "pane-state-import-failure");
+    h.inject_ipc(AppRequest::GetPaneState {
+        pane_id,
+        response_file: response_file.clone(),
+    });
+    h.run_hidden_frames(1);
+
+    let response = read_json_response(&response_file);
+    assert_eq!(response["lifecycle"], "failed", "response={response}");
+    assert!(
+        response["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("ImportError: fixture import failure")),
+        "response={response}"
+    );
+}
+
+#[test]
 fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let note = tmp.path().join("note.md");

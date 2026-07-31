@@ -2142,16 +2142,7 @@ impl PlexiApp {
                                 .unwrap_or(serde_json::Value::Array(vec![]));
                             let semantic = app_pane.semantic_state();
                             let app_state = app_pane.runtime.semantic_details();
-                            let lifecycle = match &app_pane.runtime {
-                                crate::host::pane::AppRuntime::Wasm(wasm) => if wasm.is_running() {
-                                    "running"
-                                } else {
-                                    "exited"
-                                }
-                                .to_string(),
-                                crate::host::pane::AppRuntime::Builtin(_) => "running".to_string(),
-                                crate::host::pane::AppRuntime::Python(_) => "running".to_string(),
-                            };
+                            let (lifecycle, error) = app_pane.runtime.lifecycle();
                             log::info!(
                                 "pane_ipc: get_pane_state: pane_id={pane_id} runtime={} schema_version={} node_count={}",
                                 app_pane.runtime.runtime_kind(),
@@ -2164,6 +2155,7 @@ impl PlexiApp {
                                 "title": app_pane.name,
                                 "manifest_id": app_pane.manifest_id,
                                 "lifecycle": lifecycle,
+                                "error": error,
                                 "frame": frame,
                                 "semantic": semantic,
                                 "app_state": app_state,

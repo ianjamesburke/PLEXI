@@ -755,6 +755,10 @@ pub struct LivePythonPane {
     repaint: RepaintHook,
     wants_close: bool,
     error: Option<String>,
+    /// stderr accumulated from a Python traceback until its unindented
+    /// exception line arrives. `DrainableOutput` may split one traceback
+    /// across several non-blocking drains.
+    pending_traceback_stderr: String,
     timers: std::collections::HashMap<String, PythonTimer>,
     pending_timer_events: Vec<String>,
     viewport_size: Option<(f32, f32)>,
@@ -1500,6 +1504,7 @@ impl LivePythonPane {
             repaint,
             wants_close: false,
             error: None,
+            pending_traceback_stderr: String::new(),
             timers: std::collections::HashMap::new(),
             pending_timer_events: Vec::new(),
             viewport_size: None,
@@ -1640,6 +1645,10 @@ impl LivePythonPane {
                 .request_render_at(std::time::Instant::now());
         }
         self.drain_runtime();
+        if let Some(error) = &self.error {
+            ui.colored_label(colors.danger, error);
+            return;
+        }
         if !self.ready {
             if pending_click.is_some() {
                 log::info!(
@@ -1863,6 +1872,11 @@ impl LivePythonPane {
         for record in records {
             self.log_guest_stderr(&record);
         }
+        // The classifier above is for the host log; fatal-state detection
+        // still runs off the raw stderr blob so a traceback that dies at
+        // import surfaces through `self.error` (stint 0638).
+        self.record_runtime_stderr(&stderr);
+        self.finish_pending_traceback_if_runtime_exited();
     }
 
     /// One host record per guest stderr line, each carrying the `app::<id>`
@@ -1891,6 +1905,13 @@ impl LivePythonPane {
                 log::error!("app::{} CPython WASM stderr: {}", self.app_id, record.line)
             }
         }
+    }
+
+    /// Poll runtime output from the host logic pass as well as from `ui()`.
+    /// eframe suppresses `ui()` for an occluded host, but pane-state IPC must
+    /// still observe a guest's fatal traceback before serving its response.
+    pub(crate) fn poll_runtime_state(&mut self) {
+        self.drain_runtime();
     }
 
     /// Handle one non-tree bridge message. Tree framing (`component_tree` /
@@ -2557,6 +2578,43 @@ impl LivePythonPane {
     pub(crate) fn semantic_state(&self) -> crate::host::pane::SemanticPaneState {
         python_semantic_state(self.tree.as_deref())
     }
+    pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
+        if let Some(error) = self.error.as_deref() {
+            ("failed", Some(error))
+        } else if self.tree.is_some() {
+            ("running", None)
+        } else if self.runtime.is_finished() {
+            ("exited", None)
+        } else {
+            ("starting", None)
+        }
+    }
+
+    fn record_runtime_stderr(&mut self, stderr: &str) {
+        if self.pending_traceback_stderr.is_empty()
+            && !stderr.contains("Traceback (most recent call last):")
+        {
+            return;
+        }
+        self.pending_traceback_stderr.push_str(stderr);
+        if self.pending_traceback_stderr.ends_with('\n') || self.runtime.is_finished() {
+            self.finish_pending_traceback();
+        }
+    }
+
+    fn finish_pending_traceback_if_runtime_exited(&mut self) {
+        if self.runtime.is_finished() && !self.pending_traceback_stderr.is_empty() {
+            self.finish_pending_traceback();
+        }
+    }
+
+    fn finish_pending_traceback(&mut self) {
+        if let Some(exception) = traceback_exception_line(&self.pending_traceback_stderr) {
+            self.error = Some(exception.to_string());
+            self.pending_traceback_stderr.clear();
+        }
+    }
+
     #[cfg(test)]
     pub fn has_rendered_tree(&self) -> bool {
         self.tree.is_some()
@@ -2564,6 +2622,10 @@ impl LivePythonPane {
     #[cfg(test)]
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+    #[cfg(test)]
+    pub fn record_runtime_stderr_for_test(&mut self, stderr: &str) {
+        self.record_runtime_stderr(stderr);
     }
     pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
         // Drop the old decoder (closes its stdout, joins the thread) before the
@@ -2580,6 +2642,7 @@ impl LivePythonPane {
         self.ready = false;
         self.frame_scheduler.reset(std::time::Instant::now());
         self.error = None;
+        self.pending_traceback_stderr.clear();
         self.wants_close = false;
         self.timers.clear();
         self.pending_timer_events.clear();
@@ -2798,6 +2861,24 @@ impl GuestStderrClassifier {
 /// traceback frame opens with, quoted path or angle-bracketed frozen module.
 fn is_traceback_frame_line(trimmed: &str) -> bool {
     trimmed.starts_with("File ") && trimmed.contains(", line ")
+}
+
+/// Extract the useful final exception line from a Python traceback. The full
+/// stderr remains in the host log; this compact line is what the failed pane
+/// and pane-state callers should lead with.
+fn traceback_exception_line(stderr: &str) -> Option<&str> {
+    let lines: Vec<&str> = stderr.lines().filter(|line| !line.trim().is_empty()).collect();
+    lines
+        .iter()
+        .position(|line| line.starts_with("Traceback (most recent call last):"))
+        .and_then(|traceback_start| {
+            lines[traceback_start + 1..]
+                .iter()
+                .rev()
+                .find(|line| !line.starts_with(char::is_whitespace))
+                .copied()
+        })
+        .map(str::trim)
 }
 
 fn python_key_name(key: egui::Key) -> String {
@@ -5272,6 +5353,26 @@ mod tests {
         assert!(records
             .iter()
             .all(|record| record.kind == GuestStderrKind::Payload));
+    }
+
+    #[test]
+    fn traceback_exception_line_uses_the_final_exception() {
+        assert_eq!(
+            traceback_exception_line(
+                "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\nImportError: fixture import failure\n"
+            ),
+            Some("ImportError: fixture import failure")
+        );
+    }
+
+    #[test]
+    fn traceback_exception_line_waits_for_an_unindented_exception() {
+        assert_eq!(
+            traceback_exception_line(
+                "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\n"
+            ),
+            None
+        );
     }
 
     #[test]
