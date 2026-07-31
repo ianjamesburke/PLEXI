@@ -214,8 +214,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
     });
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
-        root: None,
+        root: std::env::temp_dir(),
         description: None,
         context_id: 2,
         parent_id: None,
@@ -1062,8 +1061,7 @@ fn cli_notify_window_scope_without_live_window_narrows_to_context() {
     // A live context with no window (parked): in the router, not in windows.
     h.app.router.push(crate::host::context::Context {
         name: "Parked".into(),
-        path: std::env::temp_dir(),
-        root: None,
+        root: std::env::temp_dir(),
         description: None,
         context_id: 777,
         parent_id: None,

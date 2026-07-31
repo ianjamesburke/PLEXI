@@ -1017,6 +1017,17 @@ impl AppRuntime {
         }
     }
 
+    /// Push the pane's current context root into runtimes that resolve
+    /// state paths at call time. Builtins and WASM component panes keep
+    /// their existing schemes and ignore it.
+    pub fn refresh_context_root(&mut self, root: &std::path::Path) {
+        match self {
+            AppRuntime::Builtin(_) => {}
+            AppRuntime::Python(app) => app.set_context_root(root),
+            AppRuntime::Wasm(_) => {}
+        }
+    }
+
     /// Pump event I/O for a pane not in the active context.
     pub fn background_tick(&mut self) {
         match self {

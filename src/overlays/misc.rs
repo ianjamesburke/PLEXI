@@ -495,11 +495,9 @@ impl PlexiApp {
                         return;
                     }
                     if raw.is_empty() {
-                        log::info!("TextInputOverlay: clear context root idx={idx}");
-                        self.router.get_mut(idx).root = None;
-                        if idx == self.router.active_idx() {
-                            self.apply_context_transition_effects();
-                        }
+                        // A context is always anchored — an empty commit leaves
+                        // the root unchanged rather than un-rooting the context.
+                        log::info!("TextInputOverlay: empty root input idx={idx} — root unchanged");
                     } else {
                         // Tilde expansion.
                         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
@@ -514,11 +512,11 @@ impl PlexiApp {
                             std::path::PathBuf::from(&raw)
                         };
 
-                        // Resolve relative paths against context path.
+                        // Resolve relative paths against the context root.
                         // Skip resolution if the raw input started with ~ (failed
                         // tilde expansion should not be treated as relative).
                         let resolved = if expanded.is_relative() && !raw.starts_with('~') {
-                            self.router.get(idx).path.join(&expanded)
+                            self.router.get(idx).root.join(&expanded)
                         } else {
                             expanded
                         };

@@ -12,7 +12,7 @@ fn workspace_config_applies_when_switching_contexts() {
     write_workspace_config(root_a.path(), "#111111");
     write_workspace_config(root_b.path(), "#22aa44");
 
-    app.router.get_mut(0).root = Some(root_a.path().to_path_buf());
+    app.router.get_mut(0).root = root_a.path().to_path_buf();
     app.windows[0].path = root_a.path().to_path_buf();
     app.reload_config();
     assert_eq!(
@@ -25,8 +25,7 @@ fn workspace_config_applies_when_switching_contexts() {
     let win_b_id = 2;
     app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        path: root_b.path().to_path_buf(),
-        root: Some(root_b.path().to_path_buf()),
+        root: root_b.path().to_path_buf(),
         description: None,
         context_id: ctx_b_id,
         parent_id: None,
@@ -67,7 +66,7 @@ fn switching_contexts_refreshes_workspace_app_registry() {
         .expect("create root a workspace dir");
     write_registry_app(root_b.path(), "local-tool", "Local Tool");
 
-    app.router.get_mut(0).root = Some(root_a.path().to_path_buf());
+    app.router.get_mut(0).root = root_a.path().to_path_buf();
     app.windows[0].path = root_a.path().to_path_buf();
     app.reload_config();
     assert!(
@@ -79,8 +78,7 @@ fn switching_contexts_refreshes_workspace_app_registry() {
     let win_b_id = 2;
     app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        path: root_b.path().to_path_buf(),
-        root: Some(root_b.path().to_path_buf()),
+        root: root_b.path().to_path_buf(),
         description: None,
         context_id: ctx_b_id,
         parent_id: None,
@@ -637,8 +635,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
     let child_win_id = 9902u64;
     app.router.push(crate::host::context::Context {
         name: "Child".to_string(),
-        path: std::path::PathBuf::from("/tmp/child_1854"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/child_1854"),
         description: None,
         context_id: child_id,
         parent_id: Some(root_id),
@@ -727,8 +724,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
 
     app.router.push(crate::host::context::Context {
         name: "A".to_string(),
-        path: std::path::PathBuf::from("/tmp/a"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/a"),
         description: None,
         context_id: a_id,
         parent_id: Some(root_id),
@@ -737,8 +733,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     });
     app.router.push(crate::host::context::Context {
         name: "B".to_string(),
-        path: std::path::PathBuf::from("/tmp/b"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/b"),
         description: None,
         context_id: b_id,
         parent_id: Some(a_id),
@@ -847,8 +842,7 @@ fn delete_context_refuses_cascade_that_would_empty_router() {
 
     app.router.push(crate::host::context::Context {
         name: "Child".to_string(),
-        path: std::path::PathBuf::from("/tmp/child"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/child"),
         description: None,
         context_id: child_id,
         parent_id: Some(root_id),
@@ -857,8 +851,7 @@ fn delete_context_refuses_cascade_that_would_empty_router() {
     });
     app.router.push(crate::host::context::Context {
         name: "Grandchild".to_string(),
-        path: std::path::PathBuf::from("/tmp/grandchild"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/grandchild"),
         description: None,
         context_id: grandchild_id,
         parent_id: Some(child_id),
@@ -904,8 +897,7 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
 
     app.router.push(crate::host::context::Context {
         name: "A".to_string(),
-        path: std::path::PathBuf::from("/tmp/a"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/a"),
         description: None,
         context_id: a_id,
         parent_id: Some(root_id),
@@ -914,8 +906,7 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
     });
     app.router.push(crate::host::context::Context {
         name: "B".to_string(),
-        path: std::path::PathBuf::from("/tmp/b"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/b"),
         description: None,
         context_id: b_id,
         parent_id: Some(a_id),
@@ -924,8 +915,7 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
     });
     app.router.push(crate::host::context::Context {
         name: "Sibling".to_string(),
-        path: std::path::PathBuf::from("/tmp/sibling"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/sibling"),
         description: None,
         context_id: sibling_id,
         parent_id: Some(root_id),
@@ -1015,7 +1005,7 @@ fn context_transition_rescans_registry() {
 
     // Switch context 0 to root A and verify registry picks up app-a.
     let idx0 = app.router.active_idx();
-    app.router.get_mut(idx0).root = Some(dir_a.clone());
+    app.router.get_mut(idx0).root = dir_a.clone();
     app.apply_context_transition_effects();
 
     let ids: Vec<String> = app
@@ -1040,8 +1030,7 @@ fn context_transition_rescans_registry() {
     app.next_window_id += 1;
     app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        path: dir_b.clone(),
-        root: Some(dir_b.clone()),
+        root: dir_b.clone(),
         description: None,
         context_id: ctx_b_id,
         parent_id: None,
@@ -1224,8 +1213,7 @@ fn delete_context_collapses_empty_portal_window() {
     let child_win_id = 77711u64;
     app.router.push(crate::host::context::Context {
         name: "Child2029".to_string(),
-        path: std::path::PathBuf::from("/tmp/test_2029_child"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/test_2029_child"),
         description: None,
         context_id: child_id,
         parent_id: Some(root_id),
@@ -1346,8 +1334,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
     let child_win_id = 88811u64;
     app.router.push(crate::host::context::Context {
         name: "ChildEdge".to_string(),
-        path: std::path::PathBuf::from("/tmp/test_2029_edge_child"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/test_2029_edge_child"),
         description: None,
         context_id: child_id,
         parent_id: Some(root_id),
@@ -1450,8 +1437,7 @@ fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
 fn test_context(id: u64, parent_id: u64, name: &str) -> crate::host::context::Context {
     crate::host::context::Context {
         name: name.to_string(),
-        path: std::path::PathBuf::from(format!("/tmp/{name}")),
-        root: None,
+        root: std::path::PathBuf::from(format!("/tmp/{name}")),
         description: None,
         context_id: id,
         parent_id: Some(parent_id),
@@ -1932,8 +1918,7 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
     let child_id = 7701u64;
     app.router.push(crate::host::context::Context {
         name: "Child".to_string(),
-        path: std::path::PathBuf::from("/tmp/child_rename"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/child_rename"),
         description: None,
         context_id: child_id,
         parent_id: Some(root_id),
@@ -2366,7 +2351,7 @@ fn set_context_root_ipc_targets_caller_context() {
 
     let other_idx = h.app.router.position(|c| c.context_id == other_id).unwrap();
     assert_eq!(
-        h.app.router.get(other_idx).root.as_deref(),
+        Some(h.app.router.get(other_idx).root.as_path()),
         Some(tmp.path()),
         "root must land on the caller's context"
     );
@@ -2379,6 +2364,26 @@ fn set_context_root_ipc_targets_caller_context() {
         h.app.router.get(active_idx).root,
         active_root_before,
         "active context root must be untouched"
+    );
+}
+
+/// Setting a context root must ensure `<root>/.plexi/.gitignore` covers
+/// `app_states/` so a user can never accidentally commit their app state
+/// (standing ruling: app state is personal, single-user, local data).
+#[test]
+fn set_context_root_ensures_app_state_gitignore() {
+    let mut h = crate::testing::HostHarness::new();
+    let fresh_root = tempfile::tempdir().expect("fresh context root");
+
+    h.app
+        .set_context_root(fresh_root.path().to_path_buf(), None);
+
+    let gitignore = fresh_root.path().join(".plexi/.gitignore");
+    let contents = std::fs::read_to_string(&gitignore)
+        .expect("setting a context root must create .plexi/.gitignore");
+    assert!(
+        contents.lines().any(|line| line.trim() == "app_states/"),
+        "gitignore must cover app_states/: {contents:?}"
     );
 }
 
@@ -2481,7 +2486,7 @@ fn context_sub_creates_exactly_n_panes() {
     );
     // Defect 3: rooted at the path the caller passed (its cwd), not the parent's.
     assert_eq!(
-        child.root.as_deref(),
+        Some(child.root.as_path()),
         Some(root.path()),
         "sub-context must root at the caller-supplied path"
     );
@@ -2551,8 +2556,7 @@ fn resolve_parent_context_prefers_id_over_duplicate_name() {
     let duplicate_id = first_id + 500;
     app.router.push(crate::host::context::Context {
         name: app.router.active().name.clone(),
-        path: std::path::PathBuf::from("/tmp/dupe"),
-        root: Some(std::path::PathBuf::from("/tmp/dupe")),
+        root: std::path::PathBuf::from("/tmp/dupe"),
         description: None,
         context_id: duplicate_id,
         parent_id: None,
@@ -2620,7 +2624,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
         .expect("sub-context must exist")
         .clone();
     assert_eq!(child.depth, parent_depth + 1, "child sits one level deeper");
-    assert_eq!(child.root.as_deref(), Some(root.path()));
+    assert_eq!(child.root.as_path(), root.path());
     assert_eq!(
         h.app.context_depth_for(child.context_id),
         parent_depth + 1,
@@ -2772,8 +2776,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
     let other_win_id = 9_002;
     h.app.router.push(crate::host::context::Context {
         name: "Elsewhere".into(),
-        path: std::path::PathBuf::from("/tmp/elsewhere"),
-        root: Some(std::path::PathBuf::from("/tmp/elsewhere")),
+        root: std::path::PathBuf::from("/tmp/elsewhere"),
         description: None,
         context_id: other_ctx_id,
         parent_id: None,
@@ -2847,8 +2850,7 @@ fn audit_0678_two_contexts_accept_the_same_root() {
     let second_ctx_id = 4242;
     app.router.push(crate::host::context::Context {
         name: "Second".into(),
-        path: shared.path().to_path_buf(),
-        root: None,
+        root: shared.path().to_path_buf(),
         description: None,
         context_id: second_ctx_id,
         parent_id: None,
@@ -2863,77 +2865,15 @@ fn audit_0678_two_contexts_accept_the_same_root() {
     let roots: Vec<_> = app.router.iter().map(|c| c.root.clone()).collect();
     assert_eq!(
         roots,
-        vec![
-            Some(shared.path().to_path_buf()),
-            Some(shared.path().to_path_buf())
-        ],
+        vec![shared.path().to_path_buf(), shared.path().to_path_buf()],
         "set_context_root accepts a root already held by another context"
     );
 }
 
-/// Q1, second half: a sub-context created from the keyboard inherits the
-/// parent's `path`, not its `root`. Nothing keeps the two fields in sync —
-/// `set_context_root` writes only `root` — so after a set-root the child is
-/// anchored at the directory the parent was *created* in, which is neither the
-/// parent's current root nor anything the user chose.
-#[test]
-fn audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root() {
-    let ctx = egui::Context::default();
-    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
-
-    let created_at = app.router.get(0).path.clone();
-    let moved = tempfile::tempdir().expect("new root");
-    let parent_id = app.router.get(0).context_id;
-    app.set_context_root(moved.path().to_path_buf(), Some(parent_id));
-    assert_eq!(
-        app.router.get(0).path,
-        created_at,
-        "precondition: set_context_root leaves `path` untouched"
-    );
-
-    // The divergence itself is observable without creating anything, and it is
-    // the necessary condition for the defect: `root` moved, `path` did not.
-    // Asserted before the child exists so this test still carries evidence in a
-    // PTY-less environment, where the child is never created — an audit test
-    // that returns early asserting nothing is exactly the vacuity this round
-    // exists to remove.
-    assert_eq!(
-        app.router.get(0).root.as_deref(),
-        Some(moved.path()),
-        "the parent's root moved"
-    );
-    assert_ne!(
-        app.router.get(0).path,
-        moved.path().to_path_buf(),
-        "but its `path` still names the directory it was created in — the two \
-         fields have diverged, and sub-context creation reads the stale one"
-    );
-
-    let before = app.router.len();
-    app.new_child_context_from_keyboard();
-    if app.router.len() == before {
-        // No PTY: the child is never created. The divergence asserted above is
-        // the whole of what this environment can observe, and it has been.
-        return;
-    }
-
-    let child_root = app
-        .router
-        .iter()
-        .find(|c| c.parent_id == Some(parent_id))
-        .and_then(|c| c.root.clone())
-        .expect("the child context is rooted");
-    // The pair a fix must reconcile: the child took the stale creation-time
-    // path, and that is not the root its parent actually has.
-    assert_eq!(
-        child_root, created_at,
-        "the child inherited the parent's creation-time path"
-    );
-    assert_ne!(
-        child_root,
-        moved.path().to_path_buf(),
-        "and therefore not the parent's current root — every context-scoped \
-         address the child derives points at a directory the user re-rooted away from"
-    );
-}
+// Q1's second half — a sub-context created from the keyboard inheriting the
+// parent's stale `path` instead of its live `root` — documented a divergence
+// between two separate fields on `Context`. Stints 0651/0652 collapsed
+// `Context.path` into the single non-optional `root`, so the two fields this
+// test existed to catch drifting apart can no longer diverge: there is only
+// one field. The test was deleted rather than adapted; nothing here survives
+// the fix to assert.

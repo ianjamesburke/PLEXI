@@ -16,7 +16,6 @@ pub(crate) enum WindowMenuAction {
     MoveToBottom,
     Delete,
     SetRoot(PathBuf),
-    ClearRoot,
     /// Open the text-input overlay to set the root interactively.
     OpenRootOverlay,
     Park,
@@ -29,14 +28,15 @@ pub(crate) enum WindowMenuAction {
 /// This is the canonical context type used everywhere: live GUI state,
 /// persistence (workspace save/restore), and test harness. Replaces the
 /// former `SavedContext` and unifies with `HostContext`.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Context {
     pub name: String,
-    pub path: PathBuf,
-    /// Optional project root. When set, new panes in this context open at
-    /// this directory rather than inheriting the focused pane's CWD.
-    #[serde(default)]
-    pub root: Option<PathBuf>,
+    /// The single directory this context is anchored to. Non-optional: every
+    /// context is anchored somewhere (creation defaults to the creating
+    /// pane's cwd, or home). New panes in this context open here, context
+    /// scoped app state resolves against it, and `plexi context set-root`
+    /// rewrites it.
+    pub root: PathBuf,
     /// Optional description — ambient intent for what you're doing in this context.
     #[serde(default)]
     pub description: Option<String>,
@@ -54,6 +54,56 @@ pub struct Context {
     /// collapsed into a "Parked (N)" divider at the bottom. All panes stay alive.
     #[serde(default)]
     pub parked: bool,
+}
+
+/// Legacy-aware deserialization. Workspace files written before the
+/// `Context.path` → `Context.root` collapse carry a required `path` and an
+/// optional `root`; the surviving field is `root`, and for those files the
+/// anchor is `root` when it was set, else the creation-time `path`. A file
+/// carrying neither is corrupt and fails loudly with the context's name —
+/// never a silent default, because a workspace file that half-loads is a user
+/// losing their layout.
+impl<'de> Deserialize<'de> for Context {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawContext {
+            name: String,
+            #[serde(default)]
+            root: Option<PathBuf>,
+            /// Legacy pre-0651 field; folded into `root` on read.
+            #[serde(default)]
+            path: Option<PathBuf>,
+            #[serde(default)]
+            description: Option<String>,
+            context_id: u64,
+            #[serde(default)]
+            parent_id: Option<u64>,
+            #[serde(default)]
+            depth: u32,
+            #[serde(default)]
+            parked: bool,
+        }
+
+        let raw = RawContext::deserialize(deserializer)?;
+        let root = raw.root.or(raw.path).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "context '{}' (id {}) has neither `root` nor legacy `path` — workspace file is corrupt",
+                raw.name, raw.context_id
+            ))
+        })?;
+        Ok(Context {
+            name: raw.name,
+            root,
+            description: raw.description,
+            context_id: raw.context_id,
+            parent_id: raw.parent_id,
+            depth: raw.depth,
+            parked: raw.parked,
+        })
+    }
 }
 
 /// A window is a single spatial grid page — a pane layout with focus and zoom state.

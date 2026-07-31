@@ -1642,16 +1642,16 @@ fn cwd_for_welcome_tab_returns_context_root_when_set() {
     );
 }
 
-/// Regression guard for #1534: without a context root, `cwd_for_welcome_tab`
-/// must fall back to home dir, not panic or return an arbitrary dir.
+/// A context is always anchored (stint 0651): with no explicit `set-root`,
+/// the welcome tab opens at the context's creation-time root — never a panic,
+/// never an arbitrary dir (regression lineage: #1534).
 #[test]
-fn cwd_for_welcome_tab_falls_back_to_window_path_when_no_root() {
+fn cwd_for_welcome_tab_uses_creation_root_without_explicit_set_root() {
     let h = HostHarness::new();
-    // No root set — fallback chain: None → home_dir()
     assert_eq!(
         h.app.cwd_for_welcome_tab(),
-        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
-        "cwd_for_welcome_tab must fall back to home dir when no context root is set"
+        h.app.router.active().root,
+        "cwd_for_welcome_tab must return the context's anchor root"
     );
 }
 
@@ -1926,8 +1926,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
     let child_win_id = 77002u64;
     h.app.router.push(crate::host::context::Context {
         name: "child".to_string(),
-        path: std::path::PathBuf::from("/tmp/harness_2023_child"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp/harness_2023_child"),
         description: None,
         context_id: child_ctx_id,
         parent_id: Some(root_ctx_id),
@@ -4861,7 +4860,7 @@ mod routine_firing {
     /// loads routines from it, and give it a stable name.
     fn root_default_context(h: &mut HostHarness, root: &std::path::Path) {
         let ctx = h.app.router.get_mut(0);
-        ctx.root = Some(root.to_path_buf());
+        ctx.root = root.to_path_buf();
         ctx.name = "main".to_string();
     }
 
@@ -4921,8 +4920,9 @@ mod routine_firing {
         add_focused_app_pane(h, win_idx, root);
         h.app.router.push(Context {
             name: name.to_string(),
-            path: root.to_path_buf(),
-            root: None, // no root: tick_scheduler must not load routines from here
+            // Anchored beside (not at) the routines root: tick_scheduler
+            // scans every context root, and this context must not load them.
+            root: root.join("no-routines-anchor"),
             description: None,
             context_id: ctx_id,
             parent_id: None,

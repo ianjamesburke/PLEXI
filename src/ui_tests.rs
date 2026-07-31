@@ -788,8 +788,7 @@ mod tests {
             // Register the child context so the portal header shows a real name.
             app.router.push(crate::host::context::Context {
                 name: "Notes".to_string(),
-                path: editor_path.clone(),
-                root: None,
+                root: editor_path.clone(),
                 description: Some("Editing notes".to_string()),
                 context_id: child_ctx_id,
                 parent_id: Some(active_ctx_id),
@@ -1219,8 +1218,7 @@ mod tests {
             app.parked_section_expanded = false;
             let mk = |id: u64, name: &str| crate::host::context::Context {
                 name: name.to_string(),
-                path: std::env::temp_dir().join(name),
-                root: None,
+                root: std::env::temp_dir().join(name),
                 description: None,
                 context_id: id,
                 parent_id: None,
@@ -1243,8 +1241,10 @@ mod tests {
             .expect("render failed");
 
         // The parked header sits under the "Contexts" header and active row;
-        // click its shared fixed-height hit target near the chevron.
-        let click = egui::pos2(28.0, 126.0);
+        // click its shared fixed-height hit target near the chevron. The
+        // active row is two lines tall since stint 0651 (every context shows
+        // its root as a subtitle), which pushes the header down.
+        let click = egui::pos2(28.0, 147.0);
         h.harness()
             .input_mut()
             .events
@@ -1291,8 +1291,7 @@ mod tests {
             // Add a second active context so there is a drag source + a list.
             app.router.push(crate::host::context::Context {
                 name: "second".to_string(),
-                path: std::env::temp_dir().join("second"),
-                root: None,
+                root: std::env::temp_dir().join("second"),
                 description: None,
                 context_id: 71_001,
                 parent_id: None,
@@ -1336,8 +1335,7 @@ mod tests {
             // second master's sidebar number from 2 to 3.
             app.router.push(crate::host::context::Context {
                 name: "child-of-one".to_string(),
-                path: std::env::temp_dir().join("child-of-one"),
-                root: None,
+                root: std::env::temp_dir().join("child-of-one"),
                 description: None,
                 context_id: child_ctx_id,
                 parent_id: Some(parent_ctx_id),
@@ -1346,8 +1344,7 @@ mod tests {
             });
             app.router.push(crate::host::context::Context {
                 name: "master-two".to_string(),
-                path: std::env::temp_dir().join("master-two"),
-                root: None,
+                root: std::env::temp_dir().join("master-two"),
                 description: None,
                 context_id: 72_002,
                 parent_id: None,
@@ -1444,8 +1441,7 @@ mod tests {
             // index the old raw-index walk would have landed on.
             app.router.push(crate::host::context::Context {
                 name: "child-of-one".to_string(),
-                path: std::env::temp_dir().join("child-of-one"),
-                root: None,
+                root: std::env::temp_dir().join("child-of-one"),
                 description: None,
                 context_id: child_ctx_id,
                 parent_id: Some(parent_ctx_id),
@@ -1454,8 +1450,7 @@ mod tests {
             });
             app.router.push(crate::host::context::Context {
                 name: "master-two".to_string(),
-                path: std::env::temp_dir().join("master-two"),
-                root: None,
+                root: std::env::temp_dir().join("master-two"),
                 description: None,
                 context_id: 72_002,
                 parent_id: None,
@@ -2489,8 +2484,7 @@ mod tests {
             app.next_window_id += 1;
             app.router.push(crate::host::context::Context {
                 name: "squad-alpha".to_string(),
-                path: browser_root.clone(),
-                root: Some(browser_root.clone()),
+                root: browser_root.clone(),
                 description: None,
                 context_id: squad_ctx_id,
                 parent_id: None,
@@ -3153,8 +3147,7 @@ mod tests {
             let plexi_root = std::env::temp_dir().join("GitHub/PLEXI");
             app.router.push(crate::host::context::Context {
                 name: "PLEXI".to_string(),
-                path: plexi_root.clone(),
-                root: Some(plexi_root.clone()),
+                root: plexi_root.clone(),
                 description: None,
                 context_id: plexi_ctx_id,
                 parent_id: None,
@@ -3183,8 +3176,7 @@ mod tests {
                 let root = std::env::temp_dir().join(dir);
                 app.router.push(crate::host::context::Context {
                     name: name.to_string(),
-                    path: root.clone(),
-                    root: Some(root),
+                    root: root,
                     description: None,
                     context_id: ctx_id,
                     parent_id: None,
@@ -3352,8 +3344,7 @@ mod tests {
                     let root = std::env::temp_dir().join(dir);
                     app.router.push(crate::host::context::Context {
                         name: name.to_string(),
-                        path: root.clone(),
-                        root: Some(root),
+                        root: root,
                         description: None,
                         context_id: ctx_id,
                         parent_id: None,

@@ -65,7 +65,7 @@ def _decode_state(encoded: dict[str, str]) -> StateSnapshot:
         payload = base64.b64decode(value)
         raw[key] = payload
         values[key] = json.loads(payload.decode("utf-8"))
-    return StateSnapshot(values, raw)
+    return StateSnapshot(values, raw, {"global": values}, ("global",))
 
 
 def _encode_effect(effect: Any) -> dict[str, Any]:

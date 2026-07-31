@@ -378,6 +378,10 @@ pub struct PlexiBehavior<'a> {
     /// Used by `terminal_pane::render` to flag terminal panes whose CWD has
     /// drifted outside the workspace tree. See issue #308 Phase 1.
     pub workspace_root: Option<PathBuf>,
+    /// The rendered window's context root, pushed into app panes every frame
+    /// so state-scope resolution follows `plexi context set-root` at call
+    /// time (stint 0652).
+    pub context_root: PathBuf,
     /// Opacity applied to unfocused panes when ghost mode is active.
     /// `None` = no dimming. Values below 1.0 dim all non-focused panes.
     pub unfocused_opacity: Option<f32>,
@@ -512,7 +516,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
 
             let pending_click = self.pending_pane_clicks.remove(pane_id);
-            render::app_pane::render(&mut app_ui, app_pane, &self.colors, has_tabs, pending_click);
+            render::app_pane::render(
+                &mut app_ui,
+                app_pane,
+                &self.colors,
+                has_tabs,
+                pending_click,
+                &self.context_root,
+            );
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);

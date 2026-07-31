@@ -496,6 +496,9 @@ impl PlexiApp {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
         config.workspace_root = workspace_root.clone();
+        // Seed the pane's live context root from the launching context; the
+        // render loop refreshes it every frame thereafter (stint 0652).
+        config.context_root = self.router.active().root.clone();
         config.launch_args = launch_args;
         config.capabilities = permissions
             .capabilities
@@ -1074,7 +1077,7 @@ impl PlexiApp {
         // home), matching every other new-pane path. A GUI launch whose focused
         // cwd is "/" still falls back to home.
         let cwd = self
-            .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+            .resolve_new_pane_cwd(None)
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         log::info!(
@@ -1349,7 +1352,7 @@ impl PlexiApp {
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override
             .or_else(|| {
-                self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+                self.resolve_new_pane_cwd(None)
             })
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         log::info!(
@@ -1694,7 +1697,7 @@ impl PlexiApp {
         let ctx = crate::app::QuickNoteCtx {
             cwd,
             workspace_root: crate::config::active_workspace_root(),
-            context_root: self.router.active().root.clone(),
+            context_root: Some(self.router.active().root.clone()),
         };
         let dir = crate::config::config_dir().join("notes").join("inbox");
         let Some(path) = Self::write_inbox_note("", "scratchpad", &dir, &ctx) else {
@@ -1740,7 +1743,7 @@ impl PlexiApp {
             .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let workspace_root = crate::config::active_workspace_root();
-        let context_root = self.router.active().root.clone();
+        let context_root = Some(self.router.active().root.clone());
         self.quick_note_text = String::new();
         self.quick_note_ctx = crate::app::QuickNoteCtx {
             cwd,

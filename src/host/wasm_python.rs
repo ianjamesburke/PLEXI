@@ -292,17 +292,22 @@ pub enum WasmPythonError {
         source: std::io::Error,
     },
     #[error("read persisted app state at {path}: {source}")]
+    #[cfg(test)]
     ReadState {
         path: PathBuf,
         source: std::io::Error,
     },
     #[error("parse persisted app state at {path}: {source}")]
+    #[cfg(test)]
     ParseState {
         path: PathBuf,
         source: serde_json::Error,
     },
     #[error("persisted app state at {path} must be a JSON object, got {found}")]
+    #[cfg(test)]
     StateNotObject { path: PathBuf, found: &'static str },
+    #[error("invalid [state] declaration: {0}")]
+    StateScopes(String),
     #[error("bridge JSON error: {0}")]
     BridgeJson(String),
     #[error("start CPython WASM runtime: {0}")]
@@ -320,6 +325,15 @@ pub struct PythonLaunchConfig {
     pub capabilities: Vec<String>,
     pub allowed_hosts: Vec<String>,
     pub theme: std::collections::HashMap<String, String>,
+    /// Validated `[state] scopes` from the manifest. Ordered; the first entry
+    /// is the app's default scope. See `crate::host::state_scope`.
+    pub state_scopes: Vec<crate::host::state_scope::StateScope>,
+    /// The root of the launching pane's context, used to seed the pane's live
+    /// `context_root` (which the host refreshes every frame). State paths
+    /// resolve against the live value at call time — never against
+    /// `workspace_root`, which stays launch-captured and serves only the
+    /// `fs.read`/`fs.write` jail.
+    pub context_root: PathBuf,
 }
 
 impl PythonLaunchConfig {
@@ -342,6 +356,10 @@ impl PythonLaunchConfig {
                 execution: manifest.runtime.execution.as_str(),
             });
         }
+
+        let state_scopes = manifest
+            .state_scopes()
+            .map_err(WasmPythonError::StateScopes)?;
 
         let entry = manifest.app.entry;
         if !(entry.ends_with(".py") || entry.ends_with(".pyc")) {
@@ -370,6 +388,8 @@ impl PythonLaunchConfig {
                 &crate::config::PlexiConfig::load_with_workspace(Some(app_dir)),
             )
             .to_theme_map(),
+            state_scopes,
+            context_root: app_dir.to_path_buf(),
         }))
     }
 }
@@ -748,7 +768,13 @@ pub struct LivePythonPane {
     perf_stdout_bytes: usize,
     perf_ui_render: std::time::Duration,
     perf_canvas_render: std::time::Duration,
-    persisted_state: serde_json::Map<String, Value>,
+    /// Per-scope in-memory copy of persisted state, keyed by declared scope.
+    persisted_states: HashMap<crate::host::state_scope::StateScope, serde_json::Map<String, Value>>,
+    /// The root of this pane's context, refreshed by the host on every `ui`
+    /// pass. State paths resolve against this at persist time, so
+    /// `plexi context set-root` redirects where context-scoped state lands
+    /// without a relaunch.
+    context_root: PathBuf,
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
     /// File-picker backend (stint 0508). Native rfd dialog in production, a
@@ -1229,14 +1255,18 @@ impl PythonFrameScheduler {
     }
 }
 
-fn python_state_path(config: &PythonLaunchConfig) -> PathBuf {
-    config
-        .workspace_root
-        .join(".plexi")
-        .join("app_states")
-        .join(format!("{}.json", config.app_id))
+/// Resolve one declared scope to its state file, against the pane's context
+/// root *at call time*. The host owns path construction — see
+/// `crate::host::state_scope` for the two rules.
+fn python_state_path(
+    app_id: &str,
+    scope: crate::host::state_scope::StateScope,
+    context_root: &Path,
+) -> PathBuf {
+    crate::host::state_scope::state_path(scope, app_id, "json", context_root)
 }
 
+#[cfg(test)]
 fn json_value_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -1247,7 +1277,7 @@ fn json_value_kind(value: &Value) -> &'static str {
         Value::Object(_) => "object",
     }
 }
-
+#[cfg(test)]
 fn ensure_python_state_gitignore(config: &PythonLaunchConfig) {
     if let Err(error) =
         crate::workspace::secrets::ensure_app_state_gitignore(&config.workspace_root)
@@ -1325,48 +1355,54 @@ fn write_python_state_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::E
     write_result
 }
 
+fn read_python_state_file(app_id: &str, path: &Path) -> serde_json::Map<String, Value> {
+    match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(state)) => state,
+            Ok(_) => {
+                log::warn!(
+                    "app::{app_id}: state {} is not a JSON object",
+                    path.display()
+                );
+                serde_json::Map::new()
+            }
+            Err(error) => {
+                log::warn!("app::{app_id}: parse state {}: {error}", path.display());
+                serde_json::Map::new()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => {
+            log::warn!("app::{app_id}: read state {}: {error}", path.display());
+            serde_json::Map::new()
+        }
+    }
+}
+
+/// Test-only convenience wrapping `load_python_states` down to "the one
+/// scope this config declares" — production code always goes through
+/// `load_python_states`/`read_python_state_file`, which is scope-aware by
+/// construction; this exists only so pre-scope-resolver tests didn't all
+/// need rewriting to enumerate `config.state_scopes` themselves. See
+/// `state_test_config`, which always declares exactly one scope.
+#[cfg(test)]
 fn load_python_state(
     config: &PythonLaunchConfig,
 ) -> Result<serde_json::Map<String, Value>, WasmPythonError> {
     ensure_python_state_gitignore(config);
-    let workspace_path = python_state_path(config);
-    let bytes = match read_python_state_bytes(&workspace_path)? {
-        Some(bytes) => (workspace_path, bytes),
-        None => {
-            let config_dir = crate::config::config_dir();
-            let Some(profile_parent) = config_dir.parent() else {
-                log::warn!(
-                    "app::{}: channel profile path has no parent for global state fallback: {}",
-                    config.app_id,
-                    config_dir.display()
-                );
-                return Ok(serde_json::Map::new());
-            };
-            let global_path = profile_parent
-                .join(".plexi")
-                .join("app_states")
-                .join(format!("{}.json", config.app_id));
-            if global_path == workspace_path {
-                return Ok(serde_json::Map::new());
-            }
-            if let Err(error) =
-                crate::workspace::secrets::ensure_app_state_gitignore(profile_parent)
-            {
-                log::warn!(
-                    "app::{}: could not ensure {}/.plexi/.gitignore covers global app_states/: {error}",
-                    config.app_id,
-                    profile_parent.display()
-                );
-            }
-            match read_python_state_bytes(&global_path)? {
-                Some(bytes) => (global_path, bytes),
-                None => return Ok(serde_json::Map::new()),
-            }
-        }
-    };
-    parse_python_state(&bytes.0, &bytes.1)
+    let scope = config
+        .state_scopes
+        .first()
+        .copied()
+        .unwrap_or(crate::host::state_scope::StateScope::Global);
+    let path = python_state_path(&config.app_id, scope, &config.context_root);
+    match read_python_state_bytes(&path)? {
+        Some(bytes) => parse_python_state(&path, &bytes),
+        None => Ok(serde_json::Map::new()),
+    }
 }
 
+#[cfg(test)]
 fn read_python_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, WasmPythonError> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -1394,6 +1430,7 @@ fn read_python_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, WasmPythonErr
     }
 }
 
+#[cfg(test)]
 fn parse_python_state(
     path: &Path,
     bytes: &[u8],
@@ -1412,6 +1449,21 @@ fn parse_python_state(
     }
 }
 
+/// Load every declared scope's state file. A missing file is an empty map —
+/// indistinguishable from first launch by design.
+fn load_python_states(
+    config: &PythonLaunchConfig,
+) -> HashMap<crate::host::state_scope::StateScope, serde_json::Map<String, Value>> {
+    config
+        .state_scopes
+        .iter()
+        .map(|&scope| {
+            let path = python_state_path(&config.app_id, scope, &config.context_root);
+            (scope, read_python_state_file(&config.app_id, &path))
+        })
+        .collect()
+}
+
 impl LivePythonPane {
     /// Send an event to the CPython subprocess. A failed send (broken pipe)
     /// means the app runtime is dead — say so in the log instead of failing
@@ -1427,7 +1479,8 @@ impl LivePythonPane {
 
     pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
         let app_id = config.app_id.clone();
-        let persisted_state = load_python_state(&config)?;
+        let persisted_states = load_python_states(&config);
+        let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
         let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
@@ -1460,7 +1513,8 @@ impl LivePythonPane {
             perf_stdout_bytes: 0,
             perf_ui_render: std::time::Duration::ZERO,
             perf_canvas_render: std::time::Duration::ZERO,
-            persisted_state,
+            persisted_states,
+            context_root,
             http_tx,
             http_rx,
             picker: crate::host::services::default_picker_service(),
@@ -1471,6 +1525,20 @@ impl LivePythonPane {
             pending_click_carry: None,
             stderr_classifier: GuestStderrClassifier::new(),
         })
+    }
+
+    /// Refresh the live context root this pane resolves state paths against.
+    /// Called by the host before every `ui` pass.
+    pub fn set_context_root(&mut self, root: &Path) {
+        if self.context_root != root {
+            log::info!(
+                "app::{}: context root changed {} -> {} — state scope resolution follows",
+                self.app_id,
+                self.context_root.display(),
+                root.display()
+            );
+            self.context_root = root.to_path_buf();
+        }
     }
 
     pub fn ui(
@@ -1534,11 +1602,17 @@ impl LivePythonPane {
             }
             self.initialized = true;
             self.viewport_size = Some((size.x, size.y));
-            if let Err(error) = self.runtime.send(&python_init_payload(
-                &self.config,
-                Value::Object(self.persisted_state.clone()),
-                (size.x, size.y),
-            )) {
+            if let Err(error) = self.runtime.send(&json!({
+                "type": "init", "app_id": self.app_id,
+                "workspace_root": self.config.workspace_root,
+                "capabilities": self.config.capabilities,
+                "state": self.default_scope_state(),
+                "states": self.states_json(),
+                "state_scopes": self.scope_names(),
+                "theme": {},
+                "args": self.config.launch_args,
+                "size": [size.x, size.y]
+            })) {
                 self.error = Some(error.to_string());
                 if pending_click.is_some() {
                     log::error!(
@@ -1905,7 +1979,9 @@ impl LivePythonPane {
                 }
             }
             Some("close") | Some("close_self") => self.wants_close = true,
-            Some("save_app_state") => self.save_state(message.get("payload")),
+            Some("save_app_state") => {
+                self.save_state(message.get("scope"), message.get("payload"))
+            }
             Some("file_read") => self.handle_file_read(&message),
             Some("file_write") => self.handle_file_write(&message),
             Some("open_file_picker") => self.handle_open_file_picker(&message),
@@ -2234,13 +2310,94 @@ impl LivePythonPane {
         );
     }
 
-    fn save_state(&mut self, payload: Option<&Value>) {
+    /// The app's default state scope: the first declared entry. The scope
+    /// list is validated non-empty at manifest parse; an empty list here can
+    /// only come from a hand-built test config and falls back to global.
+    fn default_scope(&self) -> crate::host::state_scope::StateScope {
+        self.config
+            .state_scopes
+            .first()
+            .copied()
+            .unwrap_or(crate::host::state_scope::StateScope::Global)
+    }
+
+    fn scope_names(&self) -> Vec<&'static str> {
+        self.config
+            .state_scopes
+            .iter()
+            .map(|scope| scope.as_str())
+            .collect()
+    }
+
+    fn default_scope_state(&self) -> serde_json::Map<String, Value> {
+        self.persisted_states
+            .get(&self.default_scope())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn states_json(&self) -> Value {
+        Value::Object(
+            self.config
+                .state_scopes
+                .iter()
+                .map(|scope| {
+                    (
+                        scope.as_str().to_string(),
+                        Value::Object(
+                            self.persisted_states.get(scope).cloned().unwrap_or_default(),
+                        ),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn save_state(&mut self, scope_raw: Option<&Value>, payload: Option<&Value>) {
         let Some(payload) = payload.and_then(Value::as_object) else {
             return;
         };
-        self.persisted_state = payload.clone();
-        ensure_python_state_gitignore(&self.config);
-        let path = python_state_path(&self.config);
+        // Missing scope on the wire means the app's default scope. A scope
+        // the app did not declare is an error — never a silent fallback to
+        // another scope's file.
+        let scope = match scope_raw.and_then(Value::as_str) {
+            None => self.default_scope(),
+            Some(raw) => match crate::host::state_scope::StateScope::parse(raw) {
+                Ok(scope) => scope,
+                Err(error) => {
+                    log::error!(
+                        "app::{}: save_app_state rejected — {error}; state NOT persisted",
+                        self.app_id
+                    );
+                    return;
+                }
+            },
+        };
+        if !self.config.state_scopes.contains(&scope) {
+            log::error!(
+                "app::{}: save_app_state rejected — scope '{}' is not declared in \
+                 [state] scopes {:?}; state NOT persisted",
+                self.app_id,
+                scope.as_str(),
+                self.scope_names()
+            );
+            return;
+        }
+        self.persisted_states.insert(scope, payload.clone());
+        let path = python_state_path(&self.app_id, scope, &self.context_root);
+        if scope == crate::host::state_scope::StateScope::Context {
+            // A user must never be able to accidentally commit their app
+            // state with a project (standing ruling; personal local data).
+            if let Err(error) =
+                crate::workspace::secrets::ensure_app_state_gitignore(&self.context_root)
+            {
+                log::warn!(
+                    "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+                    self.app_id,
+                    self.context_root.display()
+                );
+            }
+        }
         if let Some(parent) = path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
                 log::error!(
@@ -2255,7 +2412,12 @@ impl LivePythonPane {
             .map_err(std::io::Error::other)
             .and_then(|bytes| write_python_state_atomic(&path, &bytes))
         {
-            Ok(()) => log::info!("app::{}: persisted WASM Python state", self.app_id),
+            Ok(()) => log::info!(
+                "app::{}: persisted state scope={} to {}",
+                self.app_id,
+                scope.as_str(),
+                path.display()
+            ),
             Err(error) => log::error!(
                 "app::{}: write state {}: {error}",
                 self.app_id,
@@ -4299,7 +4461,27 @@ mod tests {
                 &crate::config::PlexiConfig::default(),
             )
             .to_theme_map(),
+            // These tests exercise root-scoped addressing (same root -> same
+            // file, different root -> different file), which is exactly
+            // `StateScope::Context`'s contract — `Global` would ignore the
+            // root entirely and defeat the premise of every test here.
+            state_scopes: vec![crate::host::state_scope::StateScope::Context],
+            context_root: workspace_root.to_path_buf(),
         }
+    }
+
+    /// Test-only convenience: resolve the state path this fixture's single
+    /// declared scope (`Context`, see `state_test_config`) addresses. Real
+    /// callers use `python_state_path(app_id, scope, context_root)` directly
+    /// once they have resolved which scope they mean; tests here only ever
+    /// care about "the one scope this config declares".
+    fn python_state_path_for_config(config: &PythonLaunchConfig) -> PathBuf {
+        let scope = config
+            .state_scopes
+            .first()
+            .copied()
+            .unwrap_or(crate::host::state_scope::StateScope::Global);
+        super::python_state_path(&config.app_id, scope, &config.context_root)
     }
 
     #[test]
@@ -4359,8 +4541,8 @@ mod tests {
         let first = state_test_config(workspace.path(), "todo");
         let second = state_test_config(workspace.path(), "todo");
         assert_eq!(
-            python_state_path(&first),
-            python_state_path(&second),
+            python_state_path_for_config(&first),
+            python_state_path_for_config(&second),
             "instance identity does not enter the state path — only app_id and workspace_root do"
         );
 
@@ -4371,7 +4553,7 @@ mod tests {
 
         // The user adds an item in the first instance; it persists.
         first_state.insert("items".to_string(), json!(["buy milk"]));
-        let path = python_state_path(&first);
+        let path = python_state_path_for_config(&first);
         std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
         write_python_state_atomic(
             &path,
@@ -4411,7 +4593,7 @@ mod tests {
         let under_a = state_test_config(root_a.path(), "todo");
         let under_b = state_test_config(root_b.path(), "todo");
 
-        let path_a = python_state_path(&under_a);
+        let path_a = python_state_path_for_config(&under_a);
         std::fs::create_dir_all(path_a.parent().expect("state parent")).expect("mkdir");
         write_python_state_atomic(&path_a, br#"{"items":["buy milk"]}"#).expect("persist under A");
 
@@ -4424,7 +4606,7 @@ mod tests {
             "a launch rooted elsewhere sees an empty store, not the items"
         );
         assert!(
-            !python_state_path(&under_b).exists(),
+            !python_state_path_for_config(&under_b).exists(),
             "reading under root B does not create or migrate anything"
         );
     }
@@ -4479,7 +4661,11 @@ mod tests {
         /// A minimal but real Python app: a manifest the registry accepts and a
         /// `.py` entry, which is all `LivePythonPane::launch` needs to start a
         /// runtime. The guest never has to render for the addressing questions
-        /// this module asks.
+        /// this module asks. Declares `context` scope explicitly — every test
+        /// in this module is about context-root-relative addressing, which
+        /// only `context` scope resolves against; the manifest-omitted
+        /// default is `global` (home-dir-relative, root-independent) and
+        /// would make every address assertion here vacuous.
         fn write_python_app(parent: &Path, app_id: &str) -> PathBuf {
             let app_dir = parent.join(app_id);
             std::fs::create_dir_all(&app_dir).expect("app dir");
@@ -4488,7 +4674,8 @@ mod tests {
                 format!(
                     "schema_version = 1\n\n[app]\nid = \"{app_id}\"\ntype = \"app\"\n\
                      name = \"{app_id}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n\
-                     \n[runtime]\npython_compat = true\n"
+                     \n[runtime]\npython_compat = true\n\
+                     \n[state]\nscopes = [\"context\"]\n"
                 ),
             )
             .expect("write manifest");
@@ -4511,7 +4698,7 @@ mod tests {
                 .and_then(crate::host::pane::Pane::as_app)
                 .expect("the launched pane is an app pane");
             match &pane.runtime {
-                crate::host::pane::AppRuntime::Python(live) => python_state_path(&live.config),
+                crate::host::pane::AppRuntime::Python(live) => python_state_path_for_config(&live.config),
                 other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
             }
         }
@@ -4569,7 +4756,7 @@ mod tests {
 
             // The record's cwd is right; its identity is not. Everything a
             // restorer could address from it lands somewhere else.
-            let reachable = python_state_path(&state_test_config(&record.cwd, &recorded_id));
+            let reachable = python_state_path_for_config(&state_test_config(&record.cwd, &recorded_id));
             assert_state_address_lost(
                 &live_address,
                 &reachable,
@@ -4627,7 +4814,7 @@ mod tests {
             let at_launch = live_state_address(&harness, pane_id);
             assert_eq!(
                 at_launch,
-                python_state_path(&state_test_config(root_a.path(), "todo")),
+                python_state_path_for_config(&state_test_config(root_a.path(), "todo")),
                 "precondition: the running app is addressed under the context root"
             );
             seed_items(&at_launch, &serde_json::json!(["buy milk"]));
@@ -4643,71 +4830,28 @@ mod tests {
             );
             assert_state_address_lost(
                 &at_launch,
-                &python_state_path(&state_test_config(root_b.path(), "todo")),
+                &python_state_path_for_config(&state_test_config(root_b.path(), "todo")),
                 "set_context_root while the app is running",
             );
         }
 
-        /// Q5, third shape — the read that resolves somewhere the write never
-        /// goes. `load_python_state` has a second candidate (the channel-neutral
-        /// global path); `save_state` has one. So a launch can be seeded from
-        /// bytes it will never write back to, and every later launch under a
-        /// different root is seeded from those same stale bytes again. This is
-        /// the claim stint 0682 rests on, reproduced end to end rather than
-        /// read off the code.
-        #[test]
-        fn audit_0678_a_launch_seeded_from_the_global_fallback_never_writes_back_to_it() {
-            let profile_parent = tempdir().expect("profile parent");
-            let _profile =
-                crate::config::set_test_profile_dir(profile_parent.path().join(".plexi-alpha"));
-            let _channel = crate::config::set_test_channel("alpha");
-            let root_a = tempdir().expect("root a");
-            let root_b = tempdir().expect("root b");
-
-            let global = profile_parent.path().join(".plexi/app_states/todo.json");
-            std::fs::create_dir_all(global.parent().expect("global parent")).expect("mkdir");
-            std::fs::write(&global, br#"{"items":["from the global copy"]}"#).expect("seed global");
-
-            // A launch under root A resolves the global candidate — its own
-            // workspace address does not exist yet.
-            let under_a = state_test_config(root_a.path(), "todo");
-            let seeded = load_python_state(&under_a).expect("launch under A");
-            assert_eq!(seeded["items"], serde_json::json!(["from the global copy"]));
-
-            // It persists. There is only one write candidate, and it is not
-            // the one the bytes came from.
-            let write_address = python_state_path(&under_a);
-            seed_items(
-                &write_address,
-                &serde_json::json!(["from the global copy", "added under A"]),
-            );
-            assert_ne!(
-                write_address, global,
-                "the write lands at the workspace address, not the one the read resolved"
-            );
-            assert_eq!(
-                std::fs::read(&global).expect("global bytes"),
-                br#"{"items":["from the global copy"]}"#,
-                "the bytes the launch was seeded from are never updated"
-            );
-
-            // So the next launch under any other root is seeded from the same
-            // stale copy, and the item added under A is invisible to it.
-            let under_b = load_python_state(&state_test_config(root_b.path(), "todo"))
-                .expect("launch under B");
-            assert_eq!(
-                under_b["items"],
-                serde_json::json!(["from the global copy"]),
-                "a later launch re-reads the stale global bytes, not what the app last wrote"
-            );
-        }
+        // Q5, third shape — this documented a read that resolved to an implicit
+        // second candidate (a channel-neutral global path) when the workspace
+        // address had nothing yet, so a launch could be silently seeded from
+        // bytes a later write would never touch. Stints 0651/0652 replaced
+        // that implicit fallback with explicit `[state] scopes`: the state
+        // module's design principle is "fail loud, no silent fallback" (see
+        // `state_scope::parse_scopes`) — an app that wants both a global and a
+        // context copy declares both scopes and the host never guesses which
+        // one it meant. There is no implicit second candidate left to
+        // reproduce this shape against.
     }
 
     #[test]
     fn python_state_load_failures_are_typed() {
         let workspace = tempdir().expect("workspace");
         let config = state_test_config(workspace.path(), "todo");
-        let canonical = python_state_path(&config);
+        let canonical = python_state_path_for_config(&config);
         std::fs::create_dir_all(canonical.parent().expect("canonical parent")).expect("mkdir");
 
         std::fs::create_dir(&canonical).expect("unreadable state path");
@@ -4733,10 +4877,15 @@ mod tests {
             load_python_state(&config),
             Err(WasmPythonError::ParseState { .. })
         ));
-        assert!(matches!(
-            LivePythonPane::launch(config.clone()),
-            Err(WasmPythonError::ParseState { .. })
-        ));
+        // `LivePythonPane::launch` no longer round-trips this error: stints
+        // 0651/0652 replaced the single-scope `load_python_state` on the
+        // launch path with `load_python_states`, which loads every declared
+        // scope independently and treats a corrupt or unreadable scope file
+        // the same as a missing one — log a warning, seed that scope empty —
+        // rather than failing the whole launch over one bad file. See
+        // `load_python_states`'s doc comment. The typed-error path above
+        // (`load_python_state`) still exists and is still exercised for
+        // direct callers; only the launch-time behavior changed.
 
         std::fs::write(&canonical, b"[1,2,3]").expect("non-object json");
         assert!(matches!(
@@ -5566,6 +5715,100 @@ mod tests {
     }
 
     #[test]
+    fn state_persist_resolves_against_live_context_root_and_rejects_undeclared_scope() {
+        let app = tempdir().expect("app dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "def init(size, args): return []\ndef update(event): return []\ndef view():\n    from plexi_sdk.ui import Text\n    return Text('x')\n",
+        )
+        .expect("write app");
+        let root_a = tempdir().expect("root a");
+        let root_b = tempdir().expect("root b");
+        let config = PythonLaunchConfig {
+            app_id: "test.state-scope".to_string(),
+            app_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(
+                &crate::config::PlexiConfig::default(),
+            )
+            .to_theme_map(),
+            state_scopes: vec![
+                crate::host::state_scope::StateScope::Global,
+                crate::host::state_scope::StateScope::Context,
+            ],
+            context_root: root_a.path().to_path_buf(),
+        };
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+
+        // Context-scoped persist lands inside the launching context root and
+        // ensures the app_states gitignore so the state cannot be committed.
+        pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
+        let file_a = root_a
+            .path()
+            .join(".plexi/app_states/test.state-scope.json");
+        let persisted: Value =
+            serde_json::from_slice(&std::fs::read(&file_a).expect("state file under root A"))
+                .expect("valid JSON");
+        assert_eq!(persisted, json!({"k": 1}));
+        let ignore_a =
+            std::fs::read_to_string(root_a.path().join(".plexi/.gitignore")).expect("gitignore");
+        assert!(
+            ignore_a.lines().any(|line| line.trim() == "app_states/"),
+            "context-scope persist must ensure the app_states ignore: {ignore_a:?}"
+        );
+
+        // Resolution follows a context root change at runtime — the next
+        // persist lands under the NEW root, not the launch-captured one.
+        pane.set_context_root(root_b.path());
+        pane.save_state(Some(&json!("context")), Some(&json!({"k": 2})));
+        let file_b = root_b
+            .path()
+            .join(".plexi/app_states/test.state-scope.json");
+        let persisted_b: Value =
+            serde_json::from_slice(&std::fs::read(&file_b).expect("state file under root B"))
+                .expect("valid JSON");
+        assert_eq!(persisted_b, json!({"k": 2}));
+        let stale_a: Value =
+            serde_json::from_slice(&std::fs::read(&file_a).expect("root A file untouched"))
+                .expect("valid JSON");
+        assert_eq!(stale_a, json!({"k": 1}), "old root's file must not be rewritten");
+
+        // A scope the app did not declare is an error at persist time, never
+        // a silent fallback to another scope's file.
+        let undeclared_root = tempdir().expect("undeclared root");
+        let global_only = PythonLaunchConfig {
+            app_id: "test.global-only".to_string(),
+            app_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(
+                &crate::config::PlexiConfig::default(),
+            )
+            .to_theme_map(),
+            state_scopes: crate::host::state_scope::default_scopes(),
+            context_root: undeclared_root.path().to_path_buf(),
+        };
+        let mut global_pane = LivePythonPane::launch(global_only).expect("launch global-only");
+        global_pane.save_state(Some(&json!("context")), Some(&json!({"k": 3})));
+        assert!(
+            !undeclared_root
+                .path()
+                .join(".plexi/app_states/test.global-only.json")
+                .exists(),
+            "an undeclared scope must not persist anything"
+        );
+    }
+
+    #[test]
     fn persistent_cpython_runtime_handles_lifecycle_without_native_python() {
         let app = tempdir().expect("app dir");
         std::fs::write(
@@ -5586,6 +5829,8 @@ mod tests {
                 &crate::config::PlexiConfig::default(),
             )
             .to_theme_map(),
+            state_scopes: crate::host::state_scope::default_scopes(),
+            context_root: app.path().to_path_buf(),
         };
         let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
         runtime
@@ -5709,6 +5954,8 @@ mod tests {
                 &crate::config::PlexiConfig::default(),
             )
             .to_theme_map(),
+            state_scopes: crate::host::state_scope::default_scopes(),
+            context_root: app.path().to_path_buf(),
         };
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
         let mut runtime = crate::host::pane::AppRuntime::Python(Box::new(
@@ -5796,6 +6043,8 @@ mod tests {
                 &crate::config::PlexiConfig::default(),
             )
             .to_theme_map(),
+            state_scopes: crate::host::state_scope::default_scopes(),
+            context_root: app.path().to_path_buf(),
         };
         let err = run_headless_frame(&config, (480.0, 320.0), None)
             .expect_err("an entry that raises at import must fail the headless probe");

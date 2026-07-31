@@ -25,6 +25,7 @@ pub mod pane;
 pub mod scheduler;
 pub mod services;
 pub mod shell;
+pub mod state_scope;
 pub mod typed_pipes;
 pub mod wasm_app;
 pub mod wasm_frame;

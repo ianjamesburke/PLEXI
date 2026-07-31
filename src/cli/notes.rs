@@ -4,16 +4,11 @@ use super::binary_in_path;
 
 /// The context root this CLI invocation belongs to.
 ///
-/// `PLEXI_CONTEXT_ROOT` is exported into panes of a context that has an explicit
-/// project root, so an in-pane `plexi notes` resolves to the same dir the GUI
-/// picker scans. Outside a pane, fall back to the workspace root the cwd sits in.
-///
-/// Known gap: a context with `root: None` exports no `PLEXI_CONTEXT_ROOT`, while
-/// the GUI keys that context's notes on `Context::path`. When the cwd's workspace
-/// root differs from that path, the CLI scans a different dir than the picker.
-/// Closing it means exporting the effective scope root into every pane's env,
-/// which is pane-env plumbing outside this change; the mismatch is logged below
-/// so it is observable rather than silent.
+/// `PLEXI_CONTEXT_ROOT` is exported into every pane (a context is always
+/// anchored to a root), so an in-pane `plexi notes` resolves to the same dir
+/// the GUI picker scans. Outside a pane, fall back to the workspace root the
+/// cwd sits in. A pane missing the var predates the non-optional root and is
+/// logged below rather than silently diverging from the picker.
 fn cli_context_root() -> Option<std::path::PathBuf> {
     if let Some(root) = std::env::var_os("PLEXI_CONTEXT_ROOT").filter(|v| !v.is_empty()) {
         return Some(std::path::PathBuf::from(root));
@@ -21,7 +16,7 @@ fn cli_context_root() -> Option<std::path::PathBuf> {
     let fallback = crate::config::active_workspace_root();
     if std::env::var_os("PLEXI_PANE_ID").is_some() {
         log::warn!(
-            "notes: pane exports no PLEXI_CONTEXT_ROOT (rootless context) — \
+            "notes: pane exports no PLEXI_CONTEXT_ROOT (pre-root-collapse pane env) — \
              falling back to workspace root {fallback:?}, which may differ from the picker's dir"
         );
     }

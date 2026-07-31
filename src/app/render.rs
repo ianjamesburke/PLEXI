@@ -15,22 +15,6 @@ fn update_check_due(last_update_check: std::time::Instant, now: std::time::Insta
 }
 
 impl PlexiApp {
-    /// Cwd-derived fallback workspace root, used when the active context has no
-    /// explicit `root`. `config::active_workspace_root()` stat-walks the
-    /// filesystem from the process cwd, so it must not run every frame; the
-    /// result is cached with a 1s TTL (see `workspace_root_fallback_cache`).
-    fn fallback_workspace_root(&mut self) -> Option<std::path::PathBuf> {
-        const TTL: std::time::Duration = std::time::Duration::from_secs(1);
-        if let Some((resolved_at, ref root)) = self.workspace_root_fallback_cache {
-            if resolved_at.elapsed() < TTL {
-                return root.clone();
-            }
-        }
-        let root = crate::config::active_workspace_root();
-        self.workspace_root_fallback_cache = Some((std::time::Instant::now(), root.clone()));
-        root
-    }
-
     /// Early per-frame work that runs before overlay dispatch and panel rendering.
     /// Handles adopted context paths, finder service drains, notification polling,
     /// pane command draining, update channel checks, PTY event draining, and
@@ -424,12 +408,8 @@ impl PlexiApp {
                 // Resolved before the mutable borrow of the active window. The
                 // explicit context root is a cheap field clone; the cwd-derived
                 // fallback stat-walks the filesystem and is TTL-cached (#2023).
-                let workspace_root = self
-                    .router
-                    .active()
-                    .root
-                    .clone()
-                    .or_else(|| self.fallback_workspace_root());
+                let active_context_root = self.router.active().root.clone();
+                let workspace_root = Some(active_context_root.clone());
 
                 // Drag pacing (stint 0510): promote exactly one queued drag
                 // sample per pane into this frame's pending-click slot, so a
@@ -616,6 +596,7 @@ impl PlexiApp {
                     drag_cursor_pos,
                     hovered_files,
                     workspace_root,
+                    context_root: active_context_root,
                     unfocused_opacity,
                     portal_info,
                     owner_pane,
@@ -843,6 +824,7 @@ impl PlexiApp {
                                     &self.colors,
                                     has_tabs,
                                     pending_click,
+                                    &self.router.active().root,
                                 );
                             }
                         } else {

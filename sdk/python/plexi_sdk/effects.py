@@ -6,12 +6,23 @@ from typing import Any, Optional
 
 @dataclass
 class SetState:
+    """Merge ``data`` into in-memory state. ``scope`` selects which declared
+    state scope receives the keys; ``None`` means the app's default scope
+    (the first entry of the manifest's ``[state] scopes``). Using a scope the
+    app did not declare raises at apply time — never a silent fallback."""
     data: dict
+    scope: str | None = None
 
 
 @dataclass
 class PersistState:
+    """Merge ``data`` into a scope's state and persist that scope's snapshot
+    to disk. The host owns path construction: ``global`` state lives in
+    ``~/.plexi/app_states/``, ``context`` state in
+    ``<context_root>/.plexi/app_states/`` — resolved against the pane's
+    context root at call time. ``scope=None`` targets the default scope."""
     data: dict
+    scope: str | None = None
 
 
 @dataclass

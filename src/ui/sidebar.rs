@@ -303,12 +303,7 @@ impl PlexiApp {
             } else {
                 self.context_notification_count(i)
             };
-            let subtitle = self
-                .router
-                .get(i)
-                .root
-                .as_ref()
-                .map(|p| p.display().to_string());
+            let subtitle = Some(self.router.get(i).root.display().to_string());
 
             let (action, response) = ContextItem {
                 is_active,
@@ -339,7 +334,6 @@ impl PlexiApp {
             if delete_context.is_none() {
                 let num_ctxs = num_contexts;
                 let cwd_for_menu = focused_cwd.clone();
-                let has_root = self.router.get(i).root.is_some();
                 response.context_menu(|ui| {
                     if ui.button("Rename").clicked() {
                         menu_action = Some((i, WindowMenuAction::Rename));
@@ -377,22 +371,10 @@ impl PlexiApp {
                             ui.close();
                         }
                     }
-                    {
-                        let label = if has_root {
-                            "Edit root\u{2026}"
-                        } else {
-                            "Set root\u{2026}"
-                        };
-                        if ui.button(label).clicked() {
-                            menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
-                            ui.close();
-                        }
+                    if ui.button("Edit root\u{2026}").clicked() {
+                        menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
+                        ui.close();
                     }
-                    if has_root
-                        && ui.button("Clear root").clicked() {
-                            menu_action = Some((i, WindowMenuAction::ClearRoot));
-                            ui.close();
-                        }
                     if num_ctxs > 1 {
                         ui.separator();
                         if ui.button("Park").clicked() {
@@ -457,7 +439,7 @@ impl PlexiApp {
                     let ctx = self.router.get(i);
                     let ctx_name = ctx.name.clone();
                     let ctx_id = ctx.context_id;
-                    let subtitle = ctx.root.as_ref().map(|p| p.display().to_string());
+                    let subtitle = Some(ctx.root.display().to_string());
 
                     let pane_dots = self.sidebar_pane_dots(ctx_id, false);
 
@@ -670,22 +652,8 @@ impl PlexiApp {
                     self.set_context_root(path, Some(ctx_id));
                     self.save_workspace();
                 }
-                WindowMenuAction::ClearRoot => {
-                    log::info!("sidebar: clear context root ctx_idx={i}");
-                    self.router.get_mut(i).root = None;
-                    if i == self.router.active_idx() {
-                        self.apply_context_transition_effects();
-                    }
-                    self.save_workspace();
-                }
                 WindowMenuAction::OpenRootOverlay => {
-                    let existing = self
-                        .router
-                        .get(i)
-                        .root
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default();
+                    let existing = self.router.get(i).root.display().to_string();
                     log::info!("TextInputOverlay: opened target=ContextRoot({i}) via sidebar");
                     self.text_overlay_browse_rx = None;
                     self.text_overlay = Some((
@@ -752,8 +720,7 @@ mod tests {
         let context_id = 41;
         app.router.push(crate::host::context::Context {
             name: "return target".to_string(),
-            path: std::path::PathBuf::from("/tmp"),
-            root: None,
+            root: std::path::PathBuf::from("/tmp"),
             description: None,
             context_id,
             parent_id: None,

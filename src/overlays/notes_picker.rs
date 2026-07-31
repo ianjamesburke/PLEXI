@@ -582,8 +582,7 @@ mod tests {
         let mk_ctx = |id: u64, name: &str, root: &std::path::Path, depth: u32| {
             crate::host::context::Context {
                 name: name.to_string(),
-                path: root.to_path_buf(),
-                root: Some(root.to_path_buf()),
+                root: root.to_path_buf(),
                 description: None,
                 context_id: id,
                 parent_id: (depth > 0).then_some(1),
