@@ -7,7 +7,6 @@ If anyone reintroduces a hardcoded version constant, these tests fail loudly.
 from __future__ import annotations
 
 import tomllib
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,11 +39,20 @@ def _host_sdk_layout(tmp_path: Path) -> Path:
 
 
 def _import_host_sdk(sdk_dir: Path) -> subprocess.CompletedProcess[str]:
-    env = os.environ | {"PYTHONPATH": str(sdk_dir)}
+    """Import the copied SDK with ``sdk_dir`` as the only non-stdlib path.
+
+    ``-I`` drops the cwd and ``PYTHONPATH``; ``-S`` drops site-packages. Without
+    both, the probe silently resolves the real source tree or the editable
+    install instead of the layout under test.
+    """
+    code = (
+        f"import sys; sys.path.insert(0, {str(sdk_dir)!r}); "
+        "import plexi_sdk; print(plexi_sdk.SDK_ID)"
+    )
     return subprocess.run(
-        [sys.executable, "-S", "-c", "import plexi_sdk; print(plexi_sdk.SDK_ID)"],
+        [sys.executable, "-I", "-S", "-c", code],
         capture_output=True,
-        env=env,
+        cwd=sdk_dir.parent,
         text=True,
     )
 
@@ -58,6 +66,7 @@ def test_version_resolves_from_host_sdk_layout(tmp_path: Path):
 
 
 def test_missing_host_sdk_metadata_fails_loudly(tmp_path: Path):
+    """No pyproject.toml and no installed distribution: refuse to guess a version."""
     sdk_dir = _host_sdk_layout(tmp_path)
     (sdk_dir / "pyproject.toml").unlink()
 
@@ -65,6 +74,22 @@ def test_missing_host_sdk_metadata_fails_loudly(tmp_path: Path):
 
     assert result.returncode != 0
     assert "Plexi SDK metadata is missing" in result.stderr
+
+
+def test_version_resolves_from_installed_distribution_metadata(tmp_path: Path):
+    """Wheel layout: the package ships without pyproject.toml, dist-info carries it."""
+    sdk_dir = _host_sdk_layout(tmp_path)
+    (sdk_dir / "pyproject.toml").unlink()
+    dist_info = sdk_dir / "plexi_sdk-9.9.9.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: plexi-sdk\nVersion: 9.9.9\n"
+    )
+
+    result = _import_host_sdk(sdk_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "plexi-sdk-py/9.9.9"
 
 
 def test_no_stale_sdk_version_constant():
