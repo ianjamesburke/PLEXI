@@ -308,12 +308,9 @@ python_compat = true
         panic!("fixture must launch through the Python runtime");
     };
     runtime.record_runtime_stderr_for_test(
-        "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\n",
+        "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\nImportError: fixture import failure\n",
     );
-    assert_eq!(runtime.lifecycle().0, "starting");
-    runtime.record_runtime_stderr_for_test("ImportErr");
-    assert_eq!(runtime.lifecycle().0, "starting");
-    runtime.record_runtime_stderr_for_test("or: fixture import failure\n");
+    assert_eq!(runtime.lifecycle().0, "failed");
 
     let response_file = temp_response(tmp.path(), "pane-state-import-failure");
     h.inject_ipc(AppRequest::GetPaneState {
@@ -325,10 +322,20 @@ python_compat = true
     let response = read_json_response(&response_file);
     assert_eq!(response["lifecycle"], "failed", "response={response}");
     assert!(
-        response["error"]
+        response["failure"]["error"]
             .as_str()
             .is_some_and(|error| error.contains("ImportError: fixture import failure")),
         "response={response}"
+    );
+    // The exact envelope check `plexi pane state` runs must read this failed
+    // guest's response as a SUCCESS — guest failure is payload, not transport.
+    assert!(
+        crate::cli::pane::pane_state_envelope_error(&response).is_none(),
+        "failed-guest pane state must not trip the CLI error envelope: response={response}"
+    );
+    assert!(
+        response.get("error").is_none(),
+        "success responses must not carry a top-level `error` key: response={response}"
     );
 }
 

@@ -1257,6 +1257,15 @@ impl PythonFrameScheduler {
     fn reset(&mut self, now: std::time::Instant) {
         *self = Self::new(now);
     }
+
+    /// A dead guest must not keep the host painting: drop pending frames and
+    /// stop requesting renders, so `poll_render` and `next_repaint_deadline`
+    /// both go quiet.
+    fn stop(&mut self) {
+        self.mode = PythonSchedulerMode::Scheduled;
+        self.render_requested = false;
+        self.pending.clear();
+    }
 }
 
 /// Resolve one declared scope to its state file, against the pane's context
@@ -1646,8 +1655,22 @@ impl LivePythonPane {
         }
         self.drain_runtime();
         if let Some(error) = &self.error {
+            // Fatal state: stop the frame scheduler so a dead guest no longer
+            // drives host repaints, and lead with the exception line.
+            self.frame_scheduler.stop();
             ui.colored_label(colors.danger, error);
             return;
+        }
+        if self.runtime.is_finished() {
+            self.frame_scheduler.stop();
+            // No guest is left to service timers; firing them would send to a
+            // dead runtime and misreport a clean exit as a failure.
+            self.timers.clear();
+            self.pending_timer_events.clear();
+            if self.tree.is_none() {
+                ui.colored_label(colors.danger, "app exited before rendering a frame");
+                return;
+            }
         }
         if !self.ready {
             if pending_click.is_some() {
@@ -1876,7 +1899,11 @@ impl LivePythonPane {
         // still runs off the raw stderr blob so a traceback that dies at
         // import surfaces through `self.error` (stint 0638).
         self.record_runtime_stderr(&stderr);
-        self.finish_pending_traceback_if_runtime_exited();
+        if !self.pending_traceback_stderr.is_empty() {
+            // The runtime may have exited after the last stderr push; that
+            // finalizes a trailing partial line.
+            self.refresh_guest_error();
+        }
     }
 
     /// One host record per guest stderr line, each carrying the `app::<id>`
@@ -2579,15 +2606,11 @@ impl LivePythonPane {
         python_semantic_state(self.tree.as_deref())
     }
     pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
-        if let Some(error) = self.error.as_deref() {
-            ("failed", Some(error))
-        } else if self.tree.is_some() {
-            ("running", None)
-        } else if self.runtime.is_finished() {
-            ("exited", None)
-        } else {
-            ("starting", None)
-        }
+        python_lifecycle(
+            self.error.as_deref(),
+            self.runtime.is_finished(),
+            self.tree.is_some(),
+        )
     }
 
     fn record_runtime_stderr(&mut self, stderr: &str) {
@@ -2597,21 +2620,22 @@ impl LivePythonPane {
             return;
         }
         self.pending_traceback_stderr.push_str(stderr);
-        if self.pending_traceback_stderr.ends_with('\n') || self.runtime.is_finished() {
-            self.finish_pending_traceback();
-        }
+        self.refresh_guest_error();
     }
 
-    fn finish_pending_traceback_if_runtime_exited(&mut self) {
-        if self.runtime.is_finished() && !self.pending_traceback_stderr.is_empty() {
-            self.finish_pending_traceback();
-        }
-    }
-
-    fn finish_pending_traceback(&mut self) {
-        if let Some(exception) = traceback_exception_line(&self.pending_traceback_stderr) {
-            self.error = Some(exception.to_string());
-            self.pending_traceback_stderr.clear();
+    fn refresh_guest_error(&mut self) {
+        let Some(exception) =
+            pending_traceback_exception(&self.pending_traceback_stderr, self.runtime.is_finished())
+        else {
+            return;
+        };
+        if self.error.as_deref() != Some(exception) {
+            let exception = exception.to_string();
+            log::info!(
+                "app::{}: guest entered failed state: {exception}",
+                self.app_id
+            );
+            self.error = Some(exception);
         }
     }
 
@@ -2863,22 +2887,65 @@ fn is_traceback_frame_line(trimmed: &str) -> bool {
     trimmed.starts_with("File ") && trimmed.contains(", line ")
 }
 
-/// Extract the useful final exception line from a Python traceback. The full
-/// stderr remains in the host log; this compact line is what the failed pane
-/// and pane-state callers should lead with.
+/// Liveness has exactly one authoritative source: the runtime thread. A
+/// committed tree only refines a live guest into starting vs running — it must
+/// never decide dead vs alive, or a guest that dies after its first frame
+/// keeps reporting `running` from its stale tree.
+fn python_lifecycle(
+    error: Option<&str>,
+    runtime_finished: bool,
+    has_frame: bool,
+) -> (&'static str, Option<&str>) {
+    match (error, runtime_finished, has_frame) {
+        (Some(error), _, _) => ("failed", Some(error)),
+        (None, true, _) => ("exited", None),
+        (None, false, true) => ("running", None),
+        (None, false, false) => ("starting", None),
+    }
+}
+
+/// Extract the useful final exception line from accumulated traceback stderr.
+/// The full stderr remains in the host log; this compact line is what the
+/// failed pane and pane-state callers should lead with. While the guest is
+/// alive only complete lines count — `DrainableOutput` may split a line across
+/// drains; once the runtime has exited the buffer is final as-is.
+fn pending_traceback_exception(buffer: &str, runtime_finished: bool) -> Option<&str> {
+    let complete = if runtime_finished {
+        buffer
+    } else {
+        &buffer[..=buffer.rfind('\n')?]
+    };
+    traceback_exception_line(complete)
+}
+
+/// The last exception-record line following a traceback header wins: chained
+/// tracebacks ("During handling of the above exception, ...") put the
+/// authoritative exception at the end.
 fn traceback_exception_line(stderr: &str) -> Option<&str> {
-    let lines: Vec<&str> = stderr.lines().filter(|line| !line.trim().is_empty()).collect();
-    lines
-        .iter()
-        .position(|line| line.starts_with("Traceback (most recent call last):"))
-        .and_then(|traceback_start| {
-            lines[traceback_start + 1..]
-                .iter()
-                .rev()
-                .find(|line| !line.starts_with(char::is_whitespace))
-                .copied()
-        })
-        .map(str::trim)
+    let mut after_header = false;
+    let mut exception = None;
+    for line in stderr.lines() {
+        if line.starts_with("Traceback (most recent call last):") {
+            after_header = true;
+        } else if after_header && is_exception_record_line(line) {
+            exception = Some(line.trim_end());
+        }
+    }
+    exception
+}
+
+/// A Python exception record prints unindented as `Name: message` or a bare
+/// `Name`, where `Name` is a (dotted) identifier. Frame lines are indented,
+/// and chaining prose ("During handling of the above exception, ...") has
+/// spaces before any colon, so neither can match.
+fn is_exception_record_line(line: &str) -> bool {
+    if line.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let head = line.split(':').next().unwrap_or_default();
+    let mut chars = head.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 fn python_key_name(key: egui::Key) -> String {
@@ -5372,6 +5439,55 @@ mod tests {
                 "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\n"
             ),
             None
+        );
+    }
+
+    #[test]
+    fn traceback_exception_line_prefers_the_last_chained_exception() {
+        assert_eq!(
+            traceback_exception_line(
+                "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\nValueError: original\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"main.py\", line 3, in <module>\nTypeError: chained failure\n"
+            ),
+            Some("TypeError: chained failure")
+        );
+    }
+
+    #[test]
+    fn traceback_exception_line_accepts_a_bare_exception_name() {
+        assert_eq!(
+            traceback_exception_line(
+                "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\nKeyboardInterrupt\n"
+            ),
+            Some("KeyboardInterrupt")
+        );
+    }
+
+    #[test]
+    fn pending_traceback_exception_ignores_a_partial_line_while_the_guest_lives() {
+        let buffer = "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\nImportErr";
+        assert_eq!(pending_traceback_exception(buffer, false), None);
+        assert_eq!(
+            pending_traceback_exception(buffer, true),
+            Some("ImportErr")
+        );
+        let completed = format!("{buffer}or: fixture import failure\n");
+        assert_eq!(
+            pending_traceback_exception(&completed, false),
+            Some("ImportError: fixture import failure")
+        );
+    }
+
+    #[test]
+    fn python_lifecycle_reads_liveness_from_the_runtime_not_the_tree() {
+        // The bug: a guest that dies after its first frame must not keep
+        // reporting `running` off its stale tree.
+        assert_eq!(python_lifecycle(None, true, true), ("exited", None));
+        assert_eq!(python_lifecycle(None, true, false), ("exited", None));
+        assert_eq!(python_lifecycle(None, false, true), ("running", None));
+        assert_eq!(python_lifecycle(None, false, false), ("starting", None));
+        assert_eq!(
+            python_lifecycle(Some("ImportError: nope"), true, true),
+            ("failed", Some("ImportError: nope"))
         );
     }
 

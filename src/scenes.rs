@@ -2763,7 +2763,7 @@ impl HeadlessBackend {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
-                    let (lifecycle, error) = app_pane.runtime.lifecycle();
+                    let (lifecycle, guest_error) = app_pane.runtime.lifecycle();
                     let tree = match &app_pane.runtime {
                         AppRuntime::Builtin(_) => serde_json::json!({
                             "semantic": app_pane.semantic_state(),
@@ -2771,7 +2771,10 @@ impl HeadlessBackend {
                         }),
                         AppRuntime::Python(_) => serde_json::json!({
                             "semantic": app_pane.semantic_state(),
-                            "error": error,
+                            // Same nested shape as the get_pane_state IPC
+                            // response, so scene assertions exercise what
+                            // agents actually read.
+                            "failure": guest_error.map(|error| serde_json::json!({ "error": error })),
                         }),
                         AppRuntime::Wasm(w) => serde_json::json!({
                             "frame": w.last_render_text(),

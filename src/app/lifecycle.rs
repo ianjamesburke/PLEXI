@@ -2142,9 +2142,9 @@ impl PlexiApp {
                                 .unwrap_or(serde_json::Value::Array(vec![]));
                             let semantic = app_pane.semantic_state();
                             let app_state = app_pane.runtime.semantic_details();
-                            let (lifecycle, error) = app_pane.runtime.lifecycle();
+                            let (lifecycle, guest_error) = app_pane.runtime.lifecycle();
                             log::info!(
-                                "pane_ipc: get_pane_state: pane_id={pane_id} runtime={} schema_version={} node_count={}",
+                                "pane_ipc: get_pane_state: pane_id={pane_id} lifecycle={lifecycle} runtime={} schema_version={} node_count={}",
                                 app_pane.runtime.runtime_kind(),
                                 semantic.schema_version,
                                 semantic.nodes.len(),
@@ -2155,7 +2155,12 @@ impl PlexiApp {
                                 "title": app_pane.name,
                                 "manifest_id": app_pane.manifest_id,
                                 "lifecycle": lifecycle,
-                                "error": error,
+                                // The CLI transport envelope signals failure
+                                // with a top-level `error` string. Guest-domain
+                                // failure detail therefore lives one level down
+                                // in a nested object, where no envelope check
+                                // on top-level scalars can ever read it.
+                                "failure": guest_error.map(|error| serde_json::json!({ "error": error })),
                                 "frame": frame,
                                 "semantic": semantic,
                                 "app_state": app_state,
