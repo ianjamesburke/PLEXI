@@ -1057,7 +1057,7 @@ Apps declare named event streams (e.g. `probe.tick`) and emit events on them. `p
 | `declare` | Declare an event stream so it can be emitted on and subscribed to |
 | `emit` | Emit an event onto a declared stream |
 | `list` | List event streams currently declared by running apps |
-| `mcp-config` | Print the host event MCP server config for an MCP-aware agent |
+| `mcp-config` | Print the host MCP server config for an MCP-aware agent |
 
 ### `plexi events subscribe`
 
@@ -1124,9 +1124,9 @@ List event streams currently declared by running apps
 
 ### `plexi events mcp-config`
 
-Print the host event MCP server config for an MCP-aware agent.
+Print the host MCP server config for an MCP-aware agent.
 
-Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can subscribe to app events natively over MCP.
+Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
 
 ## `plexi notify`
 

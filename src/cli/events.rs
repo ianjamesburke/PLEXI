@@ -257,14 +257,14 @@ pub fn events_mcp_config_cli() -> i32 {
         _ => {
             eprintln!(
                 "error: PLEXI_HOST_MCP_PORT / PLEXI_HOST_MCP_TOKEN not set — run this inside a \
-                 Plexi terminal pane on a build with the host event MCP server"
+                 Plexi terminal pane on a build with the host MCP server"
             );
             return 1;
         }
     };
     let config = serde_json::json!({
         "mcpServers": {
-            "plexi-events": {
+            "plexi-host": {
                 "type": "http",
                 "url": format!("http://127.0.0.1:{port}/mcp"),
                 "headers": { "Authorization": format!("Bearer {token}") }

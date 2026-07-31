@@ -706,7 +706,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
 /// Issue #1392: deleting a context must cascade to all descendants AND
 /// clean up router.depth_stack entries pointing to deleted contexts.
 #[test]
-fn delete_context_cascades_and_cleans_depth_stack() {
+fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -721,6 +721,16 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     let b_id = 9002u64;
     let a_win_id = 9003u64;
     let b_win_id = 9004u64;
+    let a_pane_id = 65_300_111u64;
+    let b_pane_id = 65_300_112u64;
+    let a_token = crate::app::host_mcp::register_pane_credential_for_test(
+        a_pane_id,
+        std::path::PathBuf::from("/tmp/a"),
+    );
+    let b_token = crate::app::host_mcp::register_pane_credential_for_test(
+        b_pane_id,
+        std::path::PathBuf::from("/tmp/b"),
+    );
 
     app.router.push(crate::host::context::Context {
         name: "A".to_string(),
@@ -746,12 +756,14 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     app.context_active_window.insert(b_id, b_win_id);
     {
         let mut tiles_a = egui_tiles::Tiles::default();
-        let r_a = tiles_a.insert_pane(88881);
+        let r_a = tiles_a.insert_pane(a_pane_id);
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(a_pane_id, test_app_pane(a_pane_id));
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/a"),
             tree: egui_tiles::Tree::new("plexi_a", r_a, tiles_a),
-            panes: std::collections::HashMap::new(),
+            panes,
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -762,12 +774,14 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     }
     {
         let mut tiles_b = egui_tiles::Tiles::default();
-        let r_b = tiles_b.insert_pane(88882);
+        let r_b = tiles_b.insert_pane(b_pane_id);
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(b_pane_id, test_app_pane(b_pane_id));
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/b"),
             tree: egui_tiles::Tree::new("plexi_b", r_b, tiles_b),
-            panes: std::collections::HashMap::new(),
+            panes,
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -786,6 +800,16 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     let a_idx_now = app.router.position(|c| c.context_id == a_id).unwrap();
     app.delete_context(a_idx_now);
 
+    assert_eq!(
+        crate::app::host_mcp::authenticated_workspace_for_test(&a_token),
+        None,
+        "deleting a context must revoke credentials for its panes"
+    );
+    assert_eq!(
+        crate::app::host_mcp::authenticated_workspace_for_test(&b_token),
+        None,
+        "cascade deletion must revoke credentials for descendant panes"
+    );
     // A and B should both be gone from the router.
     assert!(
         app.router.iter().find(|c| c.context_id == a_id).is_none(),
@@ -821,6 +845,44 @@ fn delete_context_cascades_and_cleans_depth_stack() {
             }
         }
     }
+}
+
+#[test]
+fn delete_window_revokes_removed_pane_credentials() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let context_id = app.router.active().context_id;
+    let removed_pane_id = 65_300_101u64;
+    let removed_token = crate::app::host_mcp::register_pane_credential_for_test(
+        removed_pane_id,
+        std::path::PathBuf::from("/tmp/removed"),
+    );
+
+    let mut tiles = egui_tiles::Tiles::default();
+    let root = tiles.insert_pane(removed_pane_id);
+    let mut panes = std::collections::HashMap::new();
+    panes.insert(removed_pane_id, test_app_pane(removed_pane_id));
+    app.windows.push(Window {
+        name: "removed".to_string(),
+        path: std::path::PathBuf::from("/tmp/removed"),
+        tree: egui_tiles::Tree::new("removed_window", root, tiles),
+        panes,
+        focused_pane: Some(root),
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 65_300_102,
+        context_id,
+    });
+
+    app.delete_window(1);
+
+    assert_eq!(
+        crate::app::host_mcp::authenticated_workspace_for_test(&removed_token),
+        None
+    );
 }
 
 /// Stint 0454: deleting a root context whose descendant tree covers every
@@ -1521,8 +1583,19 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     });
     app.router
         .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
+    let moved_token = crate::app::host_mcp::register_pane_credential_for_test(
+        child_left,
+        std::path::PathBuf::from("/tmp/dissolve_single_child"),
+    );
 
     app.dissolve_portal(child_ctx_id);
+
+    assert_eq!(
+        crate::app::host_mcp::authenticated_workspace_for_test(&moved_token),
+        Some(std::path::PathBuf::from("/tmp/dissolve_single_child")),
+        "dissolving a context moves its panes and must not revoke their credentials"
+    );
+    crate::app::host_mcp::revoke_pane_credentials(child_left);
 
     assert!(
         app.router.iter().all(|ctx| ctx.context_id != child_ctx_id),
@@ -2337,6 +2410,29 @@ fn set_context_root_ipc_targets_caller_context() {
     h.app
         .router
         .push(test_context(other_id, active_id, "background"));
+    let pane_id = 65_300_201u64;
+    let mut tiles = egui_tiles::Tiles::default();
+    let pane_tile = tiles.insert_pane(pane_id);
+    let mut panes = std::collections::HashMap::new();
+    panes.insert(pane_id, test_app_pane(pane_id));
+    h.app.windows.push(Window {
+        name: "background".to_string(),
+        path: std::path::PathBuf::from("/tmp/background"),
+        tree: egui_tiles::Tree::new("background", pane_tile, tiles),
+        panes,
+        focused_pane: Some(pane_tile),
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 65_300_202,
+        context_id: other_id,
+    });
+    let old_root = std::path::PathBuf::from("/tmp/background");
+    let token = crate::app::host_mcp::register_pane_credential_for_test(pane_id, old_root.clone());
+    assert_eq!(
+        crate::app::host_mcp::authenticated_workspace_for_test(&token),
+        Some(old_root)
+    );
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let payload = serde_json::json!({
@@ -2365,6 +2461,12 @@ fn set_context_root_ipc_targets_caller_context() {
         active_root_before,
         "active context root must be untouched"
     );
+    assert_eq!(
+        crate::app::host_mcp::authenticated_workspace_for_test(&token),
+        Some(tmp.path().to_path_buf()),
+        "set-root must rebind live pane credentials to the new workspace"
+    );
+    crate::app::host_mcp::revoke_pane_credentials(pane_id);
 }
 
 /// Setting a context root must ensure `<root>/.plexi/.gitignore` covers
@@ -2641,7 +2743,7 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
-    let settings = PlexiApp::make_backend_settings(
+    let (settings, _pending_credential) = PlexiApp::make_backend_settings(
         7,
         Some(std::path::PathBuf::from("/tmp")),
         &app.colors,

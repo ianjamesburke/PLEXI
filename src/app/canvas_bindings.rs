@@ -69,7 +69,7 @@ impl PlexiApp {
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
-        let settings = Self::make_backend_settings(
+        let (settings, pending_credential) = Self::make_backend_settings(
             new_id,
             resolved_cwd,
             &self.colors,
@@ -99,6 +99,7 @@ impl PlexiApp {
         self.windows[active]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(term)));
+        pending_credential.mark_live();
 
         // Split the tree directly, adjacent to sender_tile, without touching focused_pane.
         // place_below=false → side-by-side (vertical=true), Canvas app left, terminal right.

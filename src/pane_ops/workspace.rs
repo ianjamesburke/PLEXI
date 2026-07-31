@@ -101,6 +101,12 @@ fn two_windows_mut(
     }
 }
 
+fn revoke_window_pane_credentials(window: &Window) {
+    for pane_id in window.panes.keys() {
+        crate::app::host_mcp::revoke_pane_credentials(*pane_id);
+    }
+}
+
 fn clone_tile_subtree(
     source_tiles: &egui_tiles::Tiles<PaneId>,
     source_id: egui_tiles::TileId,
@@ -1051,7 +1057,17 @@ impl PlexiApp {
             &deleted[1..]
         );
 
-        // 3. Remove all windows belonging to any deleted context.
+        // 3. Remove all windows belonging to any deleted context. Release
+        // their host MCP credentials before dropping the panes: a context
+        // delete bypasses close_tile and therefore has no terminal-exit
+        // cleanup.
+        for window in self
+            .windows
+            .iter()
+            .filter(|window| deleted.contains(&window.context_id))
+        {
+            revoke_window_pane_credentials(window);
+        }
         self.windows.retain(|c| !deleted.contains(&c.context_id));
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
@@ -1240,6 +1256,7 @@ impl PlexiApp {
         self.minimap_visible_per_context
             .insert(removed_ws_id, self.minimap.visible);
 
+        revoke_window_pane_credentials(&self.windows[index]);
         self.windows.remove(index);
 
         // If the deleted window was the stored last-visited for its context,
@@ -1511,6 +1528,15 @@ impl PlexiApp {
             root.display()
         );
         auto_init_workspace(&root);
+        let context_id = self.router.get(idx).context_id;
+        for pane_id in self
+            .windows
+            .iter()
+            .filter(|window| window.context_id == context_id)
+            .flat_map(|window| window.panes.keys())
+        {
+            crate::app::host_mcp::rebind_pane_credential(*pane_id, root.clone());
+        }
         self.router.get_mut(idx).root = root;
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.
@@ -1743,8 +1769,18 @@ impl PlexiApp {
             );
         }
 
-        self.windows
-            .retain(|w| w.window_id != primary_child_window_id && w.context_id != child_ctx_id);
+        for window in self.windows.iter().filter(|window| {
+            window.window_id == primary_child_window_id || window.context_id == child_ctx_id
+        }) {
+            // The primary window's panes were grafted into the parent above,
+            // and promoted windows were rebound to the parent context. Revoke
+            // only credentials for panes still present in windows that this
+            // retain is about to destroy.
+            revoke_window_pane_credentials(window);
+        }
+        self.windows.retain(|window| {
+            window.window_id != primary_child_window_id && window.context_id != child_ctx_id
+        });
         if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
             self.router.remove_at(idx);
         }

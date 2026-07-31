@@ -352,7 +352,7 @@ impl PlexiApp {
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
-        let mut settings = Self::make_backend_settings(
+        let (mut settings, pending_credential) = Self::make_backend_settings(
             new_id,
             cwd,
             &self.colors,
@@ -380,6 +380,7 @@ impl PlexiApp {
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
+        pending_credential.mark_live();
 
         let split_target = match self.windows[self.active_window].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
@@ -477,7 +478,7 @@ impl PlexiApp {
             log::info!(
                 "new_tab (empty context): target_win_idx={target_win_idx} cwd={cwd:?} context_root={ctx_root:?}"
             );
-            let mut settings = Self::make_backend_settings(
+            let (mut settings, pending_credential) = Self::make_backend_settings(
                 new_id,
                 Some(cwd),
                 &self.colors,
@@ -506,6 +507,7 @@ impl PlexiApp {
             pane.ephemeral = close_on_exit;
             let ctx = &mut self.windows[target_win_idx];
             ctx.panes.insert(new_id, Pane::Terminal(Box::new(pane)));
+            pending_credential.mark_live();
             let pane_tile = ctx.tree.tiles.insert_pane(new_id);
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
             ctx.tree.root = Some(tab_tile);
@@ -541,7 +543,7 @@ impl PlexiApp {
         log::info!(
             "new_tab: target_win_idx={target_win_idx} cwd={cwd:?} context_root={ctx_root:?}"
         );
-        let mut settings = Self::make_backend_settings(
+        let (mut settings, pending_credential) = Self::make_backend_settings(
             new_id,
             cwd,
             &self.colors,
@@ -569,6 +571,7 @@ impl PlexiApp {
         self.windows[target_win_idx]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
+        pending_credential.mark_live();
         self.push_focus_history(old_window_id, old_focus);
 
         let ctx = &mut self.windows[target_win_idx];
@@ -890,6 +893,7 @@ impl PlexiApp {
         // without it a closed run would block its routine forever), then park
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
+            crate::app::host_mcp::revoke_pane_credentials(pane_id);
             if self.pane_heartbeats.remove(&pane_id).is_some() {
                 log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");
             }

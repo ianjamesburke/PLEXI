@@ -911,9 +911,10 @@ impl PlexiApp {
         let total = commands.len();
         let mut panes: HashMap<PaneId, Pane> = HashMap::new();
         let mut pane_ids: Vec<PaneId> = Vec::with_capacity(total);
+        let mut pending_credentials = Vec::with_capacity(total);
         for (idx, initial_cmd) in commands.iter().enumerate() {
             let new_id = self.host.alloc_pane_id();
-            let mut settings = Self::make_backend_settings(
+            let (mut settings, pending_credential) = Self::make_backend_settings(
                 new_id,
                 Some(cwd.clone()),
                 &self.colors,
@@ -955,6 +956,7 @@ impl PlexiApp {
             );
             panes.insert(new_id, Pane::Terminal(Box::new(pane)));
             pane_ids.push(new_id);
+            pending_credentials.push(pending_credential);
         }
         let (tree, first_tile) = super::layout::build_squad_tree(&pane_ids, layout);
         log::info!(
@@ -963,6 +965,9 @@ impl PlexiApp {
             pane_ids,
             cwd.display()
         );
+        for credential in pending_credentials {
+            credential.mark_live();
+        }
         Some((tree, panes, first_tile, pane_ids))
     }
 
@@ -974,7 +979,7 @@ impl PlexiApp {
         close_on_exit: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
-        let mut settings = Self::make_backend_settings(
+        let (mut settings, pending_credential) = Self::make_backend_settings(
             new_id,
             cwd,
             &self.colors,
@@ -1006,6 +1011,7 @@ impl PlexiApp {
         let root_tile = tiles.insert_pane(new_id);
         let tree = Tree::new("plexi", root_tile, tiles);
 
+        pending_credential.mark_live();
         Some((tree, panes, root_tile))
     }
 
@@ -1033,7 +1039,7 @@ impl PlexiApp {
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
              vertical={vertical} keep_focus={keep_focus} initial_cmd={initial_cmd:?}"
         );
-        let mut settings = Self::make_backend_settings(
+        let (mut settings, pending_credential) = Self::make_backend_settings(
             new_id,
             cwd,
             &self.colors,
@@ -1060,6 +1066,7 @@ impl PlexiApp {
         self.windows[win_idx]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
+        pending_credential.mark_live();
 
         let share =
             crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
