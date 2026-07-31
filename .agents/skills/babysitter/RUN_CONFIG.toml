@@ -67,7 +67,16 @@ style = "file-form, no slash commands for codex"
 #     Never poll to stay alive (context-kills the head); never blocking-sleep to
 #     idle (the turn still ends eventually and the loop dies silently).
 # Either engine: relay early when context feels heavy — baton to a fresh head.
+# 2026-07-31 (Ian): 900 was the PRIMARY clock and it wasted the fleet — a worker
+# finishing at minute 2 of a 15-minute cycle left every lane idle for 13 minutes.
+# The head now waits EVENT-DRIVEN on each pane's own status slot / idle verdict
+# (see SKILL.md "Waiting on a pane"), which fires in ~10s. This interval is now a
+# FAILSAFE HEARTBEAT ONLY: it catches a dead or wedged agent whose event never
+# fires. It is not how progress is detected. Do not shorten it to "go faster" —
+# shortening it only burns head context; the event watch is what makes it fast.
 check_interval_seconds = 900
+wait_mode = "event-driven"          # slot/idle watch is primary; interval is failsafe
+pane_event_poll_seconds = 10        # inner poll of the blocking watch, not a head cycle
 codex_head_clock = "external-heartbeat"  # operator loop prompts 'cycle'
 
 [worker-postgate]

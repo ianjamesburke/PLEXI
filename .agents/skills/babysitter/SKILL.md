@@ -242,6 +242,16 @@ For each **batch**, in order:
 
    Act: progressing → arm another wait. Idle-at-prompt / question / blocked → answer or nudge with `pane send --submit`. Errored / looping → `ctrl+c`, re-orient. Detect "done" by an explicit signal (PR number, "merged"), never by silence. **A worker idle with unfinished work gets nudged immediately, not next cycle.**
 
+   **Waiting on a WORKER or TESTER: never sleep on the check interval.** This is the dominant wait in a run and it must be event-driven. Workers and testers already publish `status` on every transition and go `idle` at their prompt, so block on that and act the moment it changes — a lane that finishes at minute 2 of a 15-minute cycle must not cost 13 minutes of dead fleet (Ian, 2026-07-31; the same gap let a head sit wedged for 3h10m while its slot still read `state=running`).
+
+   ```
+   Bash (run_in_background): until s=$(plexi pane slot read status <id> 2>/dev/null); v=$(plexi pane status <id> 2>/dev/null | jq -r .verdict); \
+     case "$s" in *done*|*blocked*) break;; esac; [ "$v" = "idle" ] || [ "$v" = "blocked" ] && break; sleep 10; done; \
+     plexi pane status <id>; plexi pane slot read status <id>; plexi pane capture <id> --lines 20
+   ```
+
+   `check_interval_seconds` is a FAILSAFE HEARTBEAT, not the clock — it exists to catch an agent whose event never fires (dead, wedged, usage-limited). **Never treat a status slot as liveness on its own**: always pair it with the `idle` verdict and with whether anything has actually committed. A slot saying `running` while the agent is idle at a prompt is the exact failure this pairing exists to catch.
+
    **Waiting on a merge or any single external state change:** don't poll with wakeups or sub-agents — arm one background watch and act when it fires:
    ```
    Bash (run_in_background): until [ "$(gh pr view <PR#> --json state --jq .state)" != "OPEN" ]; do sleep 15; done; gh pr view <PR#> --json state,mergedAt
