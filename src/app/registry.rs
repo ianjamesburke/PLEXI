@@ -961,6 +961,7 @@ pub(crate) fn find_dev_pack_app(id: &str, start: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
 
     /// Create a manifest and entry script under `dir/<id>/`.
     /// `name` is what shows up in the manifest's `[app].name` so tests can
@@ -1854,5 +1855,87 @@ entry = "main.py"
     fn find_dev_pack_app_returns_none_without_apps_dev_dir() {
         let plain = tempfile::tempdir().unwrap();
         assert!(find_dev_pack_app("anything", plain.path()).is_none());
+    }
+
+    #[test]
+    fn every_python_manifest_entry_imports_against_in_tree_sdk() {
+        fn manifests_under(dir: &Path, manifests: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(dir).expect("read app directory") {
+                let entry = entry.expect("read app directory entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    manifests_under(&path, manifests);
+                } else if path.file_name().is_some_and(|name| name == "manifest.toml") {
+                    manifests.push(path);
+                }
+            }
+        }
+
+        let repo_root = std::env::var_os("PLEXI_APP_IMPORT_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let apps_root = repo_root.join("apps");
+        let sdk_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+        let mut manifests = Vec::new();
+        manifests_under(&apps_root, &mut manifests);
+        manifests.sort();
+
+        let mut import_targets = Vec::new();
+        for manifest_path in manifests {
+            let manifest_text = fs::read_to_string(&manifest_path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()));
+            let manifest: AppManifest = toml::from_str(&manifest_text)
+                .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
+            if manifest.app.manifest_type != ManifestType::App
+                || !manifest.app.entry.ends_with(".py")
+            {
+                continue;
+            }
+
+            let entry = manifest_path
+                .parent()
+                .expect("manifest has parent")
+                .join(&manifest.app.entry);
+            import_targets.push((manifest.app.id, entry));
+        }
+
+        let mut command = Command::new("python3");
+        command
+            .arg("-c")
+            .arg(
+                r#"import importlib.util, os, pathlib, sys
+for index, target in enumerate(sys.argv[1:]):
+    app_id, entry = target.split('=', 1)
+    path = pathlib.Path(entry)
+    os.chdir(path.parent)
+    spec = importlib.util.spec_from_file_location(f'_plexi_app_import_gate_{index}', path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        print(f'app {app_id} ({path}) failed to import against the in-tree SDK', file=sys.stderr)
+        raise"#,
+            )
+            .env("PYTHONPATH", &sdk_path)
+            .env_remove("PLEXI_CHANNEL")
+            .env_remove("PLEXI_CONTEXT_ROOT")
+            .env_remove("PLEXI_CONTEXT_ID")
+            .env_remove("PLEXI_CONTEXT_NAME")
+            .env_remove("PLEXI_SOCKET")
+            .env_remove("PLEXI_RUNNING")
+            .env_remove("PLEXI_PANE_ID");
+        for (app_id, entry) in &import_targets {
+            command.arg(format!("{app_id}={}", entry.display()));
+        }
+        let output = command
+            .output()
+            .expect("run Python imports against the in-tree SDK");
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 }
