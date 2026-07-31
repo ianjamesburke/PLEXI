@@ -1554,19 +1554,21 @@ impl LivePythonPane {
             }
         }
         let stderr = self.runtime.drain_stderr();
-        if !stderr.trim().is_empty() {
-            if is_benign_cpython_wasi_stderr(&stderr) {
-                log::debug!(
+        for record in guest_stderr_records(&stderr) {
+            match record.kind {
+                GuestStderrKind::BenignWasiStartup => log::debug!(
                     "app::{} CPython WASM stderr (benign WASI startup noise): {}",
                     self.app_id,
-                    stderr.trim()
-                );
-            } else {
-                log::error!(
-                    "app::{} CPython WASM stderr: {}",
+                    record.line
+                ),
+                GuestStderrKind::Payload => {
+                    log::error!("app::{} CPython WASM stderr: {}", self.app_id, record.line)
+                }
+                GuestStderrKind::TracebackException => log::error!(
+                    "app::{} CPython WASM stderr exception: {}",
                     self.app_id,
-                    stderr.trim()
-                );
+                    record.line
+                ),
             }
         }
     }
@@ -2193,6 +2195,7 @@ fn python_semantic_state(tree: Option<&PythonUiTree>) -> crate::host::pane::Sema
 /// agents and humans to ignore real guest tracebacks in the same stream.
 /// Returns true only when *every* non-empty line matches a known-benign
 /// pattern; any unrecognized line (a real traceback) keeps the ERROR level.
+#[cfg(test)]
 fn is_benign_cpython_wasi_stderr(stderr: &str) -> bool {
     const BENIGN_SUBSTRINGS: &[&str] = &["Could not find platform dependent libraries"];
     stderr
@@ -2200,6 +2203,56 @@ fn is_benign_cpython_wasi_stderr(stderr: &str) -> bool {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .all(|line| BENIGN_SUBSTRINGS.iter().any(|needle| line.contains(needle)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuestStderrKind {
+    BenignWasiStartup,
+    Payload,
+    TracebackException,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuestStderrRecord<'a> {
+    kind: GuestStderrKind,
+    line: &'a str,
+}
+
+/// Turn guest stderr into one host log record per physical non-empty line.
+/// A traceback's final line is singled out because it contains the exception
+/// type and message a reader needs to find first. This deliberately returns
+/// records rather than a formatted blob: logging a blob gives continuation
+/// lines no host prefix and makes them impossible to attribute or grep.
+fn guest_stderr_records(stderr: &str) -> Vec<GuestStderrRecord<'_>> {
+    const BENIGN_SUBSTRINGS: &[&str] = &["Could not find platform dependent libraries"];
+    let mut records: Vec<_> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| GuestStderrRecord {
+            kind: if BENIGN_SUBSTRINGS.iter().any(|needle| line.contains(needle)) {
+                GuestStderrKind::BenignWasiStartup
+            } else {
+                GuestStderrKind::Payload
+            },
+            line,
+        })
+        .collect();
+    if records.iter().any(|record| {
+        record.kind == GuestStderrKind::Payload
+            && record
+                .line
+                .starts_with("Traceback (most recent call last):")
+    }) {
+        if let Some(last_payload) = records
+            .iter_mut()
+            .rev()
+            .find(|record| record.kind == GuestStderrKind::Payload)
+        {
+            last_payload.kind = GuestStderrKind::TracebackException;
+        }
+    }
+    records
 }
 
 fn python_key_name(key: egui::Key) -> String {
@@ -4020,6 +4073,47 @@ mod tests {
             "Could not find platform dependent libraries <exec_prefix>\n\
              Traceback (most recent call last):\n  ZeroDivisionError"
         ));
+    }
+
+    #[test]
+    fn guest_stderr_records_split_noise_and_prefixable_traceback_lines() {
+        let records = guest_stderr_records(
+            "Could not find platform dependent libraries <exec_prefix>\n\
+             Traceback (most recent call last):\n\
+               File \"main.py\", line 4, in <module>\n\
+             ImportError: cannot import name 'App' from 'plexi_sdk'\n",
+        );
+        assert_eq!(
+            records,
+            vec![
+                GuestStderrRecord {
+                    kind: GuestStderrKind::BenignWasiStartup,
+                    line: "Could not find platform dependent libraries <exec_prefix>",
+                },
+                GuestStderrRecord {
+                    kind: GuestStderrKind::Payload,
+                    line: "Traceback (most recent call last):",
+                },
+                GuestStderrRecord {
+                    kind: GuestStderrKind::Payload,
+                    line: "File \"main.py\", line 4, in <module>",
+                },
+                GuestStderrRecord {
+                    kind: GuestStderrKind::TracebackException,
+                    line: "ImportError: cannot import name 'App' from 'plexi_sdk'",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn guest_stderr_records_never_preserve_raw_continuations() {
+        let records = guest_stderr_records("warning one\nwarning two\n");
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| !record.line.contains('\n')));
+        assert!(records
+            .iter()
+            .all(|record| record.kind == GuestStderrKind::Payload));
     }
 
     #[test]

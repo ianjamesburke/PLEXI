@@ -64,6 +64,9 @@ fn main() -> eframe::Result {
     // Parse --profile <name> early so config_dir() resolves correctly for
     // both logging and all downstream I/O.
     let raw_args: Vec<String> = std::env::args().collect();
+    let is_app_prune_command = raw_args
+        .windows(2)
+        .any(|args| args[0] == "app" && args[1] == "prune");
 
     // Top-level --help/-h: print grouped subcommand sections before any
     // logging or config init, so no noise appears alongside help output.
@@ -122,6 +125,16 @@ fn main() -> eframe::Result {
         for o in &core_outcomes {
             if let crate::cli::install_host::InstallStatus::Failed(msg) = &o.status {
                 log::warn!("core pack: FAILED {}: {msg}", o.id);
+            }
+        }
+        if !is_app_prune_command {
+            let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
+            if !pruned.is_empty() {
+                log::info!(
+                "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
+                    pruned.len(),
+                    apps_dir.display()
+                );
             }
         }
     }
@@ -550,6 +563,9 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::app_uninstall(&id, yes))
                             }
                             AppCmd::List => std::process::exit(cli::app_list()),
+                            AppCmd::Prune { dry_run } => {
+                                std::process::exit(cli::app_prune_cli(dry_run))
+                            }
                             AppCmd::Trust { path } => {
                                 log::info!("app_trust:cli: path={path}");
                                 std::process::exit(cli::app_trust_cli(&path));

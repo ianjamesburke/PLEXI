@@ -88,6 +88,7 @@ app install [SPEC]       Install from path, github:owner/repo, or --pack core.
                          No args = install from .plexi/apps.toml. --version SEMVER to pin.
 app uninstall ID         Remove an installed app.
 app list                 Show all installed apps with versions.
+app prune --dry-run      Report retired first-party pre-v3 installs that launch reconciliation removes.
 app info ID              Show app details: id, name, version, tools.
 app render APP           Render an app (installed id or local path, e.g. ".") without a
                          running host. Default output is the JSON UI tree; --png for an
