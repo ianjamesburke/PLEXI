@@ -44,7 +44,7 @@ pub struct OpenPaneRequest {
     pub runtime: PaneRuntimeKind,
     pub placement: Placement,
     pub share: ShareRatio,
-    /// Pane group name for PathChanged broadcasts. None = ungrouped.
+    /// Pane group name for `sync_app_cwd` membership. None = ungrouped.
     pub group: Option<String>,
     /// Capabilities declared in the app's manifest.toml.
     pub declared_capabilities: Vec<Capability>,

@@ -151,8 +151,9 @@ pub enum PlexiEvent {
         pipe_id: String,
         payload: serde_json::Value,
     },
-    /// Pane group CWD broadcast. Apps in the same group receive this when any
-    /// member's CWD changes.
+    /// Pane group CWD broadcast. **Declared, never constructed** — no host path
+    /// emits this today; `sync_app_cwd` reassigns `workspace_root` in place
+    /// instead. Do not cite it as the mechanism behind a cwd-scoping symptom.
     PathChanged { cwd: PathBuf },
     /// App is being backgrounded (host window losing focus, app no longer visible).
     Suspend,
