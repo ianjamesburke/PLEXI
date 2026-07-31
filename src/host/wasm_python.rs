@@ -1512,7 +1512,7 @@ fn adopt_python_state_orphan(
             parent.display()
         )));
     }
-    let (mut destination_file, remove_source) = match std::fs::hard_link(&source, destination) {
+    let (mut destination_file, remove_source) = match std::fs::hard_link(source, destination) {
         Ok(()) => match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -1541,7 +1541,7 @@ fn adopt_python_state_orphan(
                 source.display(),
                 destination.display()
             );
-            match copy_python_state_orphan_no_clobber(config, &source, destination) {
+            match copy_python_state_orphan_no_clobber(config, source, destination) {
                 Ok(file) => (file, false),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     log::warn!(
@@ -1561,11 +1561,11 @@ fn adopt_python_state_orphan(
         }
     };
     if let Err(error) =
-        verify_python_state_adoption(config, &source, destination, &mut destination_file)
+        verify_python_state_adoption(config, source, destination, &mut destination_file)
     {
         let reason = match cleanup_created_python_state(
             config,
-            &source,
+            source,
             destination,
             &destination_file,
         ) {
@@ -1583,7 +1583,7 @@ fn adopt_python_state_orphan(
         );
         return Ok(());
     }
-    if let Err(error) = std::fs::remove_file(&source) {
+    if let Err(error) = std::fs::remove_file(source) {
         return Err(adoption_error(format!(
             "destination verified but source removal failed: {error}"
         )));
