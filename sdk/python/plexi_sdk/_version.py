@@ -1,40 +1,36 @@
 """Single source of truth for the SDK version.
 
 The version lives in ``pyproject.toml`` (the ``[project].version`` field).
-At runtime it is read via ``importlib.metadata`` when the package is installed.
-When running from an uninstalled source checkout (no dist metadata), it is read
-directly from the sibling ``pyproject.toml``. Both paths return the same string;
-they never diverge because there is exactly one place the number is written.
+The host copies that metadata beside the package at runtime. Missing or malformed
+metadata is an installation error: returning a default would make the SDK claim
+a version that was never declared.
 """
 
 from __future__ import annotations
 
 import tomllib
-from importlib.metadata import PackageNotFoundError, version as _dist_version
 from pathlib import Path
 
-_DISTRIBUTION_NAME = "plexi-sdk"
-
-
-_FALLBACK_VERSION = "0.1.13"
-
-
-def _read_from_pyproject() -> str | None:
+def _read_from_pyproject() -> str:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     if not pyproject.is_file():
-        return None
+        raise RuntimeError(
+            f"Plexi SDK metadata is missing: expected {pyproject}. "
+            "Reinstall Plexi to restore the bundled SDK."
+        )
     with pyproject.open("rb") as f:
         data = tomllib.load(f)
-    return str(data.get("project", {}).get("version", _FALLBACK_VERSION))
-
-
-def _resolve_version() -> str:
-    if source_version := _read_from_pyproject():
-        return source_version
     try:
-        return _dist_version(_DISTRIBUTION_NAME)
-    except PackageNotFoundError:
-        return _FALLBACK_VERSION
+        version = data["project"]["version"]
+    except KeyError as e:
+        raise RuntimeError(
+            f"Plexi SDK metadata is invalid: {pyproject} has no project.version."
+        ) from e
+    if not isinstance(version, str) or not version:
+        raise RuntimeError(
+            f"Plexi SDK metadata is invalid: {pyproject} has an empty project.version."
+        )
+    return version
 
 
-__version__ = _resolve_version()
+__version__ = _read_from_pyproject()

@@ -31,23 +31,40 @@ def test_sdk_id_embeds_version():
     assert plexi_sdk.SDK_ID == f"plexi-sdk-py/{plexi_sdk.__version__}"
 
 
-def test_version_resolves_from_host_sdk_layout(tmp_path: Path):
-    """The host ships the package and metadata side by side under ``sdk/``."""
+def _host_sdk_layout(tmp_path: Path) -> Path:
     package_dir = Path(plexi_sdk.__file__).resolve().parent
     sdk_dir = tmp_path / "sdk"
     shutil.copytree(package_dir, sdk_dir / "plexi_sdk")
     shutil.copy2(package_dir.parent / "pyproject.toml", sdk_dir / "pyproject.toml")
+    return sdk_dir
 
+
+def _import_host_sdk(sdk_dir: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ | {"PYTHONPATH": str(sdk_dir)}
-    result = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-S", "-c", "import plexi_sdk; print(plexi_sdk.SDK_ID)"],
-        check=True,
         capture_output=True,
         env=env,
         text=True,
     )
 
+
+def test_version_resolves_from_host_sdk_layout(tmp_path: Path):
+    """The host ships the package and metadata side by side under ``sdk/``."""
+    result = _import_host_sdk(_host_sdk_layout(tmp_path))
+
+    assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == f"plexi-sdk-py/{_pyproject_version()}"
+
+
+def test_missing_host_sdk_metadata_fails_loudly(tmp_path: Path):
+    sdk_dir = _host_sdk_layout(tmp_path)
+    (sdk_dir / "pyproject.toml").unlink()
+
+    result = _import_host_sdk(sdk_dir)
+
+    assert result.returncode != 0
+    assert "Plexi SDK metadata is missing" in result.stderr
 
 
 def test_no_stale_sdk_version_constant():

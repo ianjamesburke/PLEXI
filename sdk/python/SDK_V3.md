@@ -802,7 +802,9 @@ plexi_sdk/
 - `plexi_sdk/_state.py`
 - legacy widget modules replaced by `ui.py` primitives
 
-**`pyproject.toml` version:** `3.0.0`. Python requirement remains repo-standard `>=3.11`.
+`pyproject.toml` is copied beside the host-installed package and is the sole
+package-version source. Missing SDK metadata is an installation error, not a
+defaulted version. Python requirement remains repo-standard `>=3.11`.
 
 ---
 
