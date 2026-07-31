@@ -16,6 +16,7 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 
 | File | Covers | Stint |
 |---|---|---|
+| `agent-run-orchestration.md` | Host primitives + durable run record behind the babysitter loop | see file |
 | `app-framework-marketplace.md` | v1 app platform + marketplace | see file |
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
 | `assistant-host-app.md` | Host assistant app spec | see file |
