@@ -29,6 +29,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
   `plexi app --help`.
+- **App state** — read or replace a file-backed app's state document, so a human
+  and an agent can drive the same app: `plexi app state --help`. Only apps that
+  declare a `[state]` section are addressable; the path is resolved from the
+  manifest and the calling context, never passed in. A running app picks the
+  write up on its own event loop.
 - **Notifications** — show scoped information to the person using the host:
   `plexi notify --help`.
 - **Workspace tools** — initialize a workspace, run named commands, and manage

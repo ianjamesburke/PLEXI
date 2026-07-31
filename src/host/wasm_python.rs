@@ -328,6 +328,11 @@ pub struct PythonLaunchConfig {
     /// Validated `[state] scopes` from the manifest. Ordered; the first entry
     /// is the app's default scope. See `crate::host::state_scope`.
     pub state_scopes: Vec<crate::host::state_scope::StateScope>,
+    /// Validated `[state] format` from the manifest. JSON unless the app
+    /// declared `format = "markdown"`, in which case the host is
+    /// format-blind: the file's bytes round-trip verbatim under a single
+    /// `document` key.
+    pub state_format: crate::host::state_scope::StateFormat,
     /// The root of the launching pane's context, used to seed the pane's live
     /// `context_root` (which the host refreshes every frame). State paths
     /// resolve against the live value at call time — never against
@@ -360,6 +365,9 @@ impl PythonLaunchConfig {
         let state_scopes = manifest
             .state_scopes()
             .map_err(WasmPythonError::StateScopes)?;
+        let state_format = manifest
+            .state_format()
+            .map_err(WasmPythonError::StateScopes)?;
 
         let entry = manifest.app.entry;
         if !(entry.ends_with(".py") || entry.ends_with(".pyc")) {
@@ -389,6 +397,7 @@ impl PythonLaunchConfig {
             )
             .to_theme_map(),
             state_scopes,
+            state_format,
             context_root: app_dir.to_path_buf(),
         }))
     }
@@ -773,7 +782,10 @@ pub struct LivePythonPane {
     perf_ui_render: std::time::Duration,
     perf_canvas_render: std::time::Duration,
     /// Per-scope in-memory copy of persisted state, keyed by declared scope.
-    persisted_states: HashMap<crate::host::state_scope::StateScope, serde_json::Map<String, Value>>,
+    /// Each entry also caches the backing file's `(mtime, len)` from the last
+    /// successful read/write so a persist can detect an external write that
+    /// landed since (disk wins — see `save_state`).
+    persisted_states: HashMap<crate::host::state_scope::StateScope, ScopeState>,
     /// The root of this pane's context, refreshed by the host on every `ui`
     /// pass. State paths resolve against this at persist time, so
     /// `plexi context set-root` redirects where context-scoped state lands
@@ -1268,15 +1280,29 @@ impl PythonFrameScheduler {
     }
 }
 
+/// One scope's in-memory state plus the file identity it was last synced
+/// against. `(mtime, len)` are `None` until the backing file has been seen on
+/// disk; `error` is set when the file exists but could not be decoded — the
+/// scope then refuses to persist until an external read clears it, so a
+/// corrupt file is never silently reset to `{}`.
+#[derive(Debug, Clone, Default)]
+struct ScopeState {
+    values: serde_json::Map<String, Value>,
+    mtime: Option<std::time::SystemTime>,
+    len: Option<u64>,
+    error: Option<String>,
+}
+
 /// Resolve one declared scope to its state file, against the pane's context
 /// root *at call time*. The host owns path construction — see
-/// `crate::host::state_scope` for the two rules.
+/// `crate::host::state_scope` for the two rules. Validates the app id.
 fn python_state_path(
     app_id: &str,
     scope: crate::host::state_scope::StateScope,
+    format: crate::host::state_scope::StateFormat,
     context_root: &Path,
-) -> PathBuf {
-    crate::host::state_scope::state_path(scope, app_id, "json", context_root)
+) -> Result<PathBuf, String> {
+    crate::host::state_scope::state_file(scope, app_id, format, context_root)
 }
 
 #[cfg(test)]
@@ -1303,92 +1329,126 @@ fn ensure_python_state_gitignore(config: &PythonLaunchConfig) {
     }
 }
 
-fn write_python_state_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
-
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("state path has no parent: {}", path.display()),
-        )
-    })?;
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("state path has no file name: {}", path.display()),
-        )
-    })?;
-    let mut temp_path = None;
-    let mut temp_file = None;
-    for _ in 0..16 {
-        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(
-            ".{}.{}.{id}.tmp",
-            file_name.to_string_lossy(),
-            std::process::id()
-        ));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => {
-                temp_path = Some(candidate);
-                temp_file = Some(file);
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+/// Encode a scope's values for disk in the app's declared format.
+///
+/// JSON is pretty-printed. Markdown keeps the host format-blind: the app's
+/// `document` value (which must be a string) is written verbatim — no JSON
+/// envelope, no escaping.
+fn encode_state_file(
+    values: &serde_json::Map<String, Value>,
+    format: crate::host::state_scope::StateFormat,
+) -> Result<Vec<u8>, String> {
+    match format {
+        crate::host::state_scope::StateFormat::Json => {
+            serde_json::to_vec_pretty(&Value::Object(values.clone()))
+                .map_err(|error| format!("serialize state JSON: {error}"))
         }
-    }
-    let (temp_path, mut temp_file) = match (temp_path, temp_file) {
-        (Some(path), Some(file)) => (path, file),
-        _ => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("could not allocate state temp file beside {}", path.display()),
-            ));
-        }
-    };
-    let write_result = temp_file
-        .write_all(bytes)
-        .and_then(|()| temp_file.sync_all())
-        .and_then(|()| std::fs::rename(&temp_path, path));
-    if write_result.is_err() {
-        if let Err(error) = std::fs::remove_file(&temp_path) {
-            log::warn!(
-                "could not clean up failed app-state temp file {}: {error}",
-                temp_path.display()
-            );
-        }
-    }
-    write_result
-}
-
-fn read_python_state_file(app_id: &str, path: &Path) -> serde_json::Map<String, Value> {
-    match std::fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-            Ok(Value::Object(state)) => state,
-            Ok(_) => {
-                log::warn!(
-                    "app::{app_id}: state {} is not a JSON object",
-                    path.display()
-                );
-                serde_json::Map::new()
-            }
-            Err(error) => {
-                log::warn!("app::{app_id}: parse state {}: {error}", path.display());
-                serde_json::Map::new()
+        crate::host::state_scope::StateFormat::Markdown => match values.get("document") {
+            Some(Value::String(document)) => Ok(document.as_bytes().to_vec()),
+            Some(other) => Err(format!(
+                "markdown state requires a string 'document' value, got {}",
+                match other {
+                    Value::Null => "null",
+                    Value::Bool(_) => "a bool",
+                    Value::Number(_) => "a number",
+                    Value::Array(_) => "an array",
+                    Value::Object(_) => "an object",
+                    Value::String(_) => unreachable!(),
+                }
+            )),
+            None => {
+                Err("markdown state requires a 'document' key carrying the file text".to_string())
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
-        Err(error) => {
-            log::warn!("app::{app_id}: read state {}: {error}", path.display());
-            serde_json::Map::new()
+    }
+}
+
+/// Decode a state file's bytes in the app's declared format. The inverse of
+/// [`encode_state_file`]: markdown text arrives as `{"document": "<file text>"}`.
+pub(crate) fn decode_state_file(
+    bytes: &[u8],
+    format: crate::host::state_scope::StateFormat,
+) -> Result<serde_json::Map<String, Value>, String> {
+    match format {
+        crate::host::state_scope::StateFormat::Json => {
+            match serde_json::from_slice::<Value>(bytes) {
+                Ok(Value::Object(state)) => Ok(state),
+                Ok(other) => Err(format!(
+                    "state file is not a JSON object (got {})",
+                    match other {
+                        Value::Null => "null",
+                        Value::Bool(_) => "a bool",
+                        Value::Number(_) => "a number",
+                        Value::String(_) => "a string",
+                        Value::Array(_) => "an array",
+                        Value::Object(_) => unreachable!(),
+                    }
+                )),
+                Err(error) => Err(format!("parse state JSON: {error}")),
+            }
         }
+        crate::host::state_scope::StateFormat::Markdown => {
+            let text = String::from_utf8(bytes.to_vec())
+                .map_err(|error| format!("markdown state is not valid UTF-8: {error}"))?;
+            let mut map = serde_json::Map::new();
+            map.insert("document".to_string(), Value::String(text));
+            Ok(map)
+        }
+    }
+}
+
+/// Read one scope's state file into a [`ScopeState`]. A missing file is an
+/// empty map — indistinguishable from first launch by design. A file that
+/// exists but fails to decode sets `error` and leaves `values` empty; the
+/// caller decides whether to keep previously-known values.
+fn read_python_state_file(
+    app_id: &str,
+    path: &Path,
+    format: crate::host::state_scope::StateFormat,
+) -> ScopeState {
+    let (mtime, len) = stat_state_file(path);
+    match std::fs::read(path) {
+        Ok(bytes) => match decode_state_file(&bytes, format) {
+            Ok(values) => ScopeState {
+                values,
+                mtime,
+                len,
+                error: None,
+            },
+            Err(error) => {
+                log::error!(
+                    "app::{app_id}: state {} is unreadable ({error}) — state is NOT reset; \
+                     persists are blocked until the file is fixed",
+                    path.display()
+                );
+                ScopeState {
+                    values: serde_json::Map::new(),
+                    mtime,
+                    len,
+                    error: Some(error),
+                }
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ScopeState::default(),
+        Err(error) => {
+            let message = format!("read state {}: {error}", path.display());
+            log::error!("app::{app_id}: {message} — state is NOT reset");
+            ScopeState {
+                values: serde_json::Map::new(),
+                mtime,
+                len,
+                error: Some(message),
+            }
+        }
+    }
+}
+
+/// Stat a state file's `(mtime, len)` identity pair. `(None, None)` when the
+/// file does not exist (or cannot be statted).
+fn stat_state_file(path: &Path) -> (Option<std::time::SystemTime>, Option<u64>) {
+    match std::fs::metadata(path) {
+        Ok(meta) => (meta.modified().ok(), Some(meta.len())),
+        Err(_) => (None, None),
     }
 }
 
@@ -1408,7 +1468,8 @@ fn load_python_state(
         .first()
         .copied()
         .unwrap_or(crate::host::state_scope::StateScope::Global);
-    let path = python_state_path(&config.app_id, scope, &config.context_root);
+    let path = python_state_path(&config.app_id, scope, config.state_format, &config.context_root)
+        .expect("resolve state path");
     match read_python_state_bytes(&path)? {
         Some(bytes) => parse_python_state(&path, &bytes),
         None => Ok(serde_json::Map::new()),
@@ -1466,13 +1527,31 @@ fn parse_python_state(
 /// indistinguishable from first launch by design.
 fn load_python_states(
     config: &PythonLaunchConfig,
-) -> HashMap<crate::host::state_scope::StateScope, serde_json::Map<String, Value>> {
+) -> HashMap<crate::host::state_scope::StateScope, ScopeState> {
     config
         .state_scopes
         .iter()
         .map(|&scope| {
-            let path = python_state_path(&config.app_id, scope, &config.context_root);
-            (scope, read_python_state_file(&config.app_id, &path))
+            let state = match python_state_path(
+                &config.app_id,
+                scope,
+                config.state_format,
+                &config.context_root,
+            ) {
+                Ok(path) => read_python_state_file(&config.app_id, &path, config.state_format),
+                Err(error) => {
+                    log::error!(
+                        "app::{}: cannot resolve state path for scope {}: {error}",
+                        config.app_id,
+                        scope.as_str()
+                    );
+                    ScopeState {
+                        error: Some(error),
+                        ..ScopeState::default()
+                    }
+                }
+            };
+            (scope, state)
         })
         .collect()
 }
@@ -2380,7 +2459,7 @@ impl LivePythonPane {
     fn default_scope_state(&self) -> serde_json::Map<String, Value> {
         self.persisted_states
             .get(&self.default_scope())
-            .cloned()
+            .map(|state| state.values.clone())
             .unwrap_or_default()
     }
 
@@ -2393,12 +2472,140 @@ impl LivePythonPane {
                     (
                         scope.as_str().to_string(),
                         Value::Object(
-                            self.persisted_states.get(scope).cloned().unwrap_or_default(),
+                            self.persisted_states
+                                .get(scope)
+                                .map(|state| state.values.clone())
+                                .unwrap_or_default(),
                         ),
                     )
                 })
                 .collect(),
         )
+    }
+
+    /// Every declared scope's state file, resolved against the *current*
+    /// context root. The watcher registration in `pane_ops::create` re-syncs
+    /// against this each drain pass, so `plexi context set-root` follows.
+    pub fn state_paths(&self) -> Vec<(crate::host::state_scope::StateScope, PathBuf)> {
+        self.config
+            .state_scopes
+            .iter()
+            .filter_map(|&scope| {
+                match python_state_path(
+                    &self.app_id,
+                    scope,
+                    self.config.state_format,
+                    &self.context_root,
+                ) {
+                    Ok(path) => Some((scope, path)),
+                    Err(error) => {
+                        log::error!(
+                            "app::{}: cannot resolve state path for scope {}: {error}",
+                            self.app_id,
+                            scope.as_str()
+                        );
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Tell the runtime a scope's state changed outside its own persist flow
+    /// (an external edit, or a persist that lost to one). The SDK replaces
+    /// the scope's values wholesale and dispatches `events.StateChanged`.
+    fn send_state_changed(
+        &self,
+        scope: crate::host::state_scope::StateScope,
+        values: &serde_json::Map<String, Value>,
+        error: Option<&str>,
+    ) {
+        self.send_to_runtime(&json!({
+            "type": "state_changed",
+            "scope": scope.as_str(),
+            "payload": Value::Object(values.clone()),
+            "error": error,
+            "source": "external",
+        }));
+    }
+
+    /// Re-read one scope's state file after an external change notification.
+    ///
+    /// No-ops when the file's `(mtime, len)` identity matches the cached pair
+    /// — this is what suppresses watcher echoes of our own atomic writes. On
+    /// a real change the on-disk values replace the scope's values wholesale
+    /// (disk wins; deleted keys vanish) and the app is notified via
+    /// `state_changed`. On a decode failure the previous values are kept, the
+    /// scope's `error` is set (blocking persists), and the app is notified
+    /// with the error attached.
+    pub fn apply_external_state(&mut self, scope: crate::host::state_scope::StateScope) {
+        if !self.config.state_scopes.contains(&scope) {
+            log::warn!(
+                "app::{}: external state change for undeclared scope '{}' ignored",
+                self.app_id,
+                scope.as_str()
+            );
+            return;
+        }
+        let path = match python_state_path(
+            &self.app_id,
+            scope,
+            self.config.state_format,
+            &self.context_root,
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                log::error!(
+                    "app::{}: cannot resolve state path for scope {}: {error}",
+                    self.app_id,
+                    scope.as_str()
+                );
+                return;
+            }
+        };
+        let (mtime, len) = stat_state_file(&path);
+        let cached = self.persisted_states.entry(scope).or_default();
+        let unchanged_existing = mtime.is_some() && mtime == cached.mtime && len == cached.len;
+        let still_absent = mtime.is_none() && cached.mtime.is_none() && cached.error.is_none();
+        if unchanged_existing || still_absent {
+            log::debug!(
+                "app::{}: external state notification for scope {} matches cached identity — \
+                 self-write echo, ignoring",
+                self.app_id,
+                scope.as_str()
+            );
+            return;
+        }
+        let fresh = read_python_state_file(&self.app_id, &path, self.config.state_format);
+        match &fresh.error {
+            None => {
+                log::info!(
+                    "app::{}: state scope={} changed on disk ({}) — replacing in-memory state \
+                     and notifying app",
+                    self.app_id,
+                    scope.as_str(),
+                    path.display()
+                );
+                *cached = fresh;
+                let values = cached.values.clone();
+                self.send_state_changed(scope, &values, None);
+            }
+            Some(error) => {
+                log::error!(
+                    "app::{}: external change to state scope={} ({}) is unreadable: {error} — \
+                     keeping previous values; persists blocked until the file is fixed",
+                    self.app_id,
+                    scope.as_str(),
+                    path.display()
+                );
+                cached.error = Some(error.clone());
+                cached.mtime = fresh.mtime;
+                cached.len = fresh.len;
+                let values = cached.values.clone();
+                let message = error.clone();
+                self.send_state_changed(scope, &values, Some(&message));
+            }
+        }
     }
 
     fn save_state(&mut self, scope_raw: Option<&Value>, payload: Option<&Value>) {
@@ -2431,8 +2638,78 @@ impl LivePythonPane {
             );
             return;
         }
-        self.persisted_states.insert(scope, payload.clone());
-        let path = python_state_path(&self.app_id, scope, &self.context_root);
+        if let Some(error) = self
+            .persisted_states
+            .get(&scope)
+            .and_then(|state| state.error.as_ref())
+        {
+            log::error!(
+                "app::{}: save_app_state refused — scope '{}' has an unresolved file error \
+                 ({error}); fix the file on disk, a successful re-read clears this",
+                self.app_id,
+                scope.as_str()
+            );
+            return;
+        }
+        let path = match python_state_path(
+            &self.app_id,
+            scope,
+            self.config.state_format,
+            &self.context_root,
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                log::error!(
+                    "app::{}: save_app_state rejected — {error}; state NOT persisted",
+                    self.app_id
+                );
+                return;
+            }
+        };
+        // Read-back-before-write (disk wins): if the file changed since we
+        // last synced with it, an external writer got there first — drop
+        // this persist, reload from disk, and tell the app so it can
+        // re-apply its change on top of the fresh state.
+        let (disk_mtime, disk_len) = stat_state_file(&path);
+        let cached_identity = self
+            .persisted_states
+            .get(&scope)
+            .map(|state| (state.mtime, state.len))
+            .unwrap_or((None, None));
+        if disk_mtime.is_some() && (disk_mtime, disk_len) != cached_identity {
+            log::warn!(
+                "app::{}: state scope={} ({}) changed on disk since load — reloading instead \
+                 of overwriting; persist dropped",
+                self.app_id,
+                scope.as_str(),
+                path.display()
+            );
+            let fresh = read_python_state_file(&self.app_id, &path, self.config.state_format);
+            let error = fresh.error.clone();
+            let values = fresh.values.clone();
+            self.persisted_states.insert(scope, fresh);
+            self.send_state_changed(scope, &values, error.as_deref());
+            return;
+        }
+        let bytes = match encode_state_file(payload, self.config.state_format) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::error!(
+                    "app::{}: save_app_state rejected — {error}; state NOT persisted",
+                    self.app_id
+                );
+                return;
+            }
+        };
+        if let Err(error) =
+            crate::host::state_scope::assert_within_scope(&path, scope, &self.context_root)
+        {
+            log::error!(
+                "app::{}: save_app_state rejected — {error}; state NOT persisted",
+                self.app_id
+            );
+            return;
+        }
         if scope == crate::host::state_scope::StateScope::Context {
             // A user must never be able to accidentally commit their app
             // state with a project (standing ruling; personal local data).
@@ -2446,26 +2723,29 @@ impl LivePythonPane {
                 );
             }
         }
-        if let Some(parent) = path.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                log::error!(
-                    "app::{}: create state dir {}: {error}",
-                    self.app_id,
-                    parent.display()
+        match crate::host::state_scope::atomic_write(&path, &bytes) {
+            Ok(()) => {
+                // Re-stat AFTER the rename so the cached identity is the
+                // file we just produced — statting before the rename would
+                // make every self-write look external and loop reloads.
+                let (mtime, len) = stat_state_file(&path);
+                self.persisted_states.insert(
+                    scope,
+                    ScopeState {
+                        values: payload.clone(),
+                        mtime,
+                        len,
+                        error: None,
+                    },
                 );
-                return;
+                log::info!(
+                    "app::{}: persisted state scope={} format={} to {}",
+                    self.app_id,
+                    scope.as_str(),
+                    self.config.state_format.as_str(),
+                    path.display()
+                );
             }
-        }
-        match serde_json::to_vec_pretty(payload)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| write_python_state_atomic(&path, &bytes))
-        {
-            Ok(()) => log::info!(
-                "app::{}: persisted state scope={} to {}",
-                self.app_id,
-                scope.as_str(),
-                path.display()
-            ),
             Err(error) => log::error!(
                 "app::{}: write state {}: {error}",
                 self.app_id,
@@ -4612,6 +4892,7 @@ mod tests {
             // `StateScope::Context`'s contract — `Global` would ignore the
             // root entirely and defeat the premise of every test here.
             state_scopes: vec![crate::host::state_scope::StateScope::Context],
+            state_format: crate::host::state_scope::StateFormat::Json,
             context_root: workspace_root.to_path_buf(),
         }
     }
@@ -4627,7 +4908,13 @@ mod tests {
             .first()
             .copied()
             .unwrap_or(crate::host::state_scope::StateScope::Global);
-        super::python_state_path(&config.app_id, scope, &config.context_root)
+        super::python_state_path(
+            &config.app_id,
+            scope,
+            config.state_format,
+            &config.context_root,
+        )
+        .expect("resolve state path")
     }
 
     #[test]
@@ -4701,7 +4988,7 @@ mod tests {
         first_state.insert("items".to_string(), json!(["buy milk"]));
         let path = python_state_path_for_config(&first);
         std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
-        write_python_state_atomic(
+        crate::host::state_scope::atomic_write(
             &path,
             &serde_json::to_vec_pretty(&first_state).expect("serialize"),
         )
@@ -4713,7 +5000,7 @@ mod tests {
 
         // The second instance persists anything at all — a draft keystroke is
         // enough — and writes the empty item list it has held since launch.
-        write_python_state_atomic(
+        crate::host::state_scope::atomic_write(
             &path,
             &serde_json::to_vec_pretty(&second_state).expect("serialize"),
         )
@@ -4741,7 +5028,7 @@ mod tests {
 
         let path_a = python_state_path_for_config(&under_a);
         std::fs::create_dir_all(path_a.parent().expect("state parent")).expect("mkdir");
-        write_python_state_atomic(&path_a, br#"{"items":["buy milk"]}"#).expect("persist under A");
+        crate::host::state_scope::atomic_write(&path_a, br#"{"items":["buy milk"]}"#).expect("persist under A");
 
         assert_eq!(
             load_python_state(&under_a).expect("load under A")["items"],
@@ -4851,7 +5138,7 @@ mod tests {
 
         fn seed_items(address: &Path, items: &serde_json::Value) {
             std::fs::create_dir_all(address.parent().expect("state parent")).expect("mkdir");
-            write_python_state_atomic(
+            crate::host::state_scope::atomic_write(
                 address,
                 &serde_json::to_vec_pretty(&serde_json::json!({ "items": items }))
                     .expect("serialize"),
@@ -5046,7 +5333,7 @@ mod tests {
         let path = workspace.path().join("todo.json");
         std::fs::write(&path, br#"{"version":"old"}"#).expect("seed");
 
-        write_python_state_atomic(&path, br#"{"version":"new"}"#).expect("atomic replace");
+        crate::host::state_scope::atomic_write(&path, br#"{"version":"new"}"#).expect("atomic replace");
 
         assert_eq!(
             std::fs::read(&path).expect("state"),
@@ -5956,6 +6243,7 @@ mod tests {
                 crate::host::state_scope::StateScope::Global,
                 crate::host::state_scope::StateScope::Context,
             ],
+            state_format: crate::host::state_scope::StateFormat::Json,
             context_root: root_a.path().to_path_buf(),
         };
         let mut pane = LivePythonPane::launch(config).expect("launch pane");
@@ -6010,6 +6298,7 @@ mod tests {
             )
             .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
+            state_format: crate::host::state_scope::StateFormat::Json,
             context_root: undeclared_root.path().to_path_buf(),
         };
         let mut global_pane = LivePythonPane::launch(global_only).expect("launch global-only");
@@ -6020,6 +6309,280 @@ mod tests {
                 .join(".plexi/app_states/test.global-only.json")
                 .exists(),
             "an undeclared scope must not persist anything"
+        );
+    }
+
+    /// Shared scaffolding for the file-backed state tests (stint 0644):
+    /// a trivial app + a context-scoped launch config against a fresh root.
+    fn file_state_config(
+        app_dir: &Path,
+        app_id: &str,
+        context_root: &Path,
+        format: crate::host::state_scope::StateFormat,
+    ) -> PythonLaunchConfig {
+        std::fs::write(
+            app_dir.join("main.py"),
+            "def init(size, args): return []\ndef update(event): return []\ndef view():\n    from plexi_sdk.ui import Text\n    return Text('x')\n",
+        )
+        .expect("write app");
+        PythonLaunchConfig {
+            app_id: app_id.to_string(),
+            app_dir: app_dir.to_path_buf(),
+            entry: app_dir.join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app_dir.to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+            state_scopes: vec![crate::host::state_scope::StateScope::Context],
+            state_format: format,
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
+            context_root: context_root.to_path_buf(),
+        }
+    }
+
+    fn context_state_file(root: &Path, app_id: &str, ext: &str) -> PathBuf {
+        root.join(".plexi/app_states")
+            .join(format!("{app_id}.{ext}"))
+    }
+
+    #[test]
+    fn persist_does_not_clobber_a_file_changed_since_load() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let file = context_state_file(root.path(), "test.no-clobber", "json");
+        std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
+        std::fs::write(&file, serde_json::to_vec_pretty(&json!({"a": 1})).unwrap())
+            .expect("seed state");
+
+        let config = file_state_config(
+            app.path(),
+            "test.no-clobber",
+            root.path(),
+            crate::host::state_scope::StateFormat::Json,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+
+        // External writer lands after load. Different byte length guarantees
+        // the (mtime, len) pair differs even at 1s mtime granularity.
+        std::fs::write(
+            &file,
+            serde_json::to_vec_pretty(&json!({"external": "winner", "padding": 12345})).unwrap(),
+        )
+        .expect("external write");
+
+        pane.save_state(
+            Some(&json!("context")),
+            Some(&json!({"app": "would-clobber"})),
+        );
+
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(
+            on_disk,
+            json!({"external": "winner", "padding": 12345}),
+            "disk wins: the app's persist must be dropped, not overwrite the external write"
+        );
+        let scope_state = pane
+            .persisted_states
+            .get(&crate::host::state_scope::StateScope::Context)
+            .expect("scope state");
+        assert_eq!(
+            Value::Object(scope_state.values.clone()),
+            json!({"external": "winner", "padding": 12345}),
+            "the on-disk values must replace (not merge into) the in-memory scope"
+        );
+
+        // A follow-up persist now syncs cleanly (identity was re-cached).
+        pane.save_state(Some(&json!("context")), Some(&json!({"app": "retry"})));
+        let retried: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(retried, json!({"app": "retry"}));
+    }
+
+    #[test]
+    fn persist_is_atomic_and_leaves_no_partial_file() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let config = file_state_config(
+            app.path(),
+            "test.atomic",
+            root.path(),
+            crate::host::state_scope::StateFormat::Json,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
+
+        let file = context_state_file(root.path(), "test.atomic", "json");
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(on_disk, json!({"k": 1}));
+        let residue: Vec<String> = std::fs::read_dir(file.parent().unwrap())
+            .expect("read state dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(residue.is_empty(), "temp residue left behind: {residue:?}");
+    }
+
+    #[test]
+    fn malformed_state_file_surfaces_error_and_does_not_reset() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let file = context_state_file(root.path(), "test.malformed", "json");
+        std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
+        std::fs::write(&file, b"{not json at all").expect("seed corrupt state");
+
+        let config = file_state_config(
+            app.path(),
+            "test.malformed",
+            root.path(),
+            crate::host::state_scope::StateFormat::Json,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let scope = crate::host::state_scope::StateScope::Context;
+        assert!(
+            pane.persisted_states
+                .get(&scope)
+                .and_then(|s| s.error.as_ref())
+                .is_some(),
+            "a corrupt state file must surface as a scope error"
+        );
+
+        // Persists are refused while the error stands — the corrupt file is
+        // never silently replaced with `{}` or the app's payload.
+        pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
+        assert_eq!(
+            std::fs::read(&file).expect("read state"),
+            b"{not json at all",
+            "a corrupt state file must not be overwritten"
+        );
+
+        // Fixing the file externally and re-reading clears the error.
+        std::fs::write(
+            &file,
+            serde_json::to_vec_pretty(&json!({"fixed": true})).unwrap(),
+        )
+        .expect("fix state file");
+        pane.apply_external_state(scope);
+        let scope_state = pane.persisted_states.get(&scope).expect("scope state");
+        assert!(
+            scope_state.error.is_none(),
+            "successful re-read clears the error"
+        );
+        assert_eq!(
+            Value::Object(scope_state.values.clone()),
+            json!({"fixed": true})
+        );
+        pane.save_state(Some(&json!("context")), Some(&json!({"k": 2})));
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(
+            on_disk,
+            json!({"k": 2}),
+            "persists resume once the error clears"
+        );
+    }
+
+    #[test]
+    fn apply_external_state_replaces_rather_than_merges() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let file = context_state_file(root.path(), "test.replace", "json");
+        std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
+        std::fs::write(
+            &file,
+            serde_json::to_vec_pretty(&json!({"a": 1, "b": 2})).unwrap(),
+        )
+        .expect("seed state");
+
+        let config = file_state_config(
+            app.path(),
+            "test.replace",
+            root.path(),
+            crate::host::state_scope::StateFormat::Json,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let scope = crate::host::state_scope::StateScope::Context;
+
+        // External write drops key "b"; longer content keeps (mtime, len)
+        // distinct without relying on mtime granularity.
+        std::fs::write(
+            &file,
+            serde_json::to_vec_pretty(&json!({"a": 99, "padding": "xxxxxxxxxxxx"})).unwrap(),
+        )
+        .expect("external write");
+        pane.apply_external_state(scope);
+
+        let scope_state = pane.persisted_states.get(&scope).expect("scope state");
+        assert_eq!(
+            Value::Object(scope_state.values.clone()),
+            json!({"a": 99, "padding": "xxxxxxxxxxxx"}),
+            "external state must replace wholesale — deleted keys must vanish, never merge"
+        );
+    }
+
+    #[test]
+    fn markdown_format_writes_document_verbatim() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let config = file_state_config(
+            app.path(),
+            "test.markdown",
+            root.path(),
+            crate::host::state_scope::StateFormat::Markdown,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+
+        let document = "# Checklist\n\n- [ ] first\n- [x] second\n";
+        pane.save_state(
+            Some(&json!("context")),
+            Some(&json!({"document": document})),
+        );
+
+        let file = context_state_file(root.path(), "test.markdown", "md");
+        assert!(file.exists(), "markdown state must use the .md extension");
+        assert_eq!(
+            std::fs::read(&file).expect("read markdown state"),
+            document.as_bytes(),
+            "markdown bytes must round-trip verbatim — no JSON envelope, no escaping"
+        );
+
+        // Read-back is the inverse: {"document": "<file text>"}.
+        let external = "# Edited outside\n";
+        std::fs::write(&file, external).expect("external markdown write");
+        pane.apply_external_state(crate::host::state_scope::StateScope::Context);
+        let scope_state = pane
+            .persisted_states
+            .get(&crate::host::state_scope::StateScope::Context)
+            .expect("scope state");
+        assert_eq!(
+            Value::Object(scope_state.values.clone()),
+            json!({"document": external})
+        );
+    }
+
+    #[test]
+    fn markdown_format_rejects_non_string_document() {
+        let app = tempdir().expect("app dir");
+        let root = tempdir().expect("context root");
+        let config = file_state_config(
+            app.path(),
+            "test.markdown-bad",
+            root.path(),
+            crate::host::state_scope::StateFormat::Markdown,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+
+        pane.save_state(Some(&json!("context")), Some(&json!({"document": 42})));
+        pane.save_state(Some(&json!("context")), Some(&json!({"not_document": "x"})));
+
+        let file = context_state_file(root.path(), "test.markdown-bad", "md");
+        assert!(
+            !file.exists(),
+            "a non-string (or missing) document must be a loud error with NO write"
         );
     }
 
@@ -6045,6 +6608,7 @@ mod tests {
             )
             .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
+            state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
         };
         let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
@@ -6170,6 +6734,7 @@ mod tests {
             )
             .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
+            state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
         };
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
@@ -6259,6 +6824,7 @@ mod tests {
             )
             .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
+            state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
         };
         let err = run_headless_frame(&config, (480.0, 320.0), None)

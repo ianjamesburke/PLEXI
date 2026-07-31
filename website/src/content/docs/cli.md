@@ -457,6 +457,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
 | `test` | Run an app's AppHarness tests with `uv run pytest tests/` |
 | `info` | Show details about an installed app: id, name, version, and available tools |
+| `state` | Read or replace a file-backed app's state document (stint 0645) |
 | `init` | Create a new app from a template |
 | `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
 | `inspect` | Show the trust sheet for a local app directory or .plexipkg package |
@@ -578,6 +579,36 @@ Show details about an installed app: id, name, version, and available tools
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes |  |
+
+### `plexi app state`
+
+Read or replace a file-backed app's state document (stint 0645).
+
+Only apps that declare a `[state]` section are addressable. The state path is resolved from the manifest and the calling context — callers never pass a path, and there is no flag to address another context.
+
+| Subcommand | Description |
+|---|---|
+| `get` | Print an app's current state document to stdout |
+| `set` | Replace an app's state document, reading from a file or stdin |
+
+#### `plexi app state get`
+
+Print an app's current state document to stdout
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<app>` | string | yes | App id (from `plexi app list`) |
+| `--scope` | string | no | Which declared scope to read. Defaults to the app's first declared scope; a scope the app did not declare is an error |
+
+#### `plexi app state set`
+
+Replace an app's state document, reading from a file or stdin
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<app>` | string | yes | App id (from `plexi app list`) |
+| `<file>` | string | no | File to read the new document from. Reads stdin when omitted |
+| `--scope` | string | no | Which declared scope to write. Defaults to the app's first declared scope; a scope the app did not declare is an error |
 
 ### `plexi app init`
 

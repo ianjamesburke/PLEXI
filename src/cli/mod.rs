@@ -211,6 +211,7 @@ pub mod agent;
 pub mod ai;
 pub mod app;
 pub mod app_check;
+pub mod app_state;
 pub mod completions;
 pub mod config_cli;
 pub mod context_cli;

@@ -906,6 +906,8 @@ impl PlexiApp {
             // Hot reload (#83): drop any active watcher for this pane.
             // Idempotent — no-op when the pane wasn't being watched.
             self.hot_reload.unwatch(pane_id);
+            // State watch (stint 0644): same lifecycle, same idempotence.
+            self.state_watch.unwatch(pane_id);
             // Tombstone any notifications this pane posted — they stay visible but
             // their action buttons are hidden since the app can no longer respond.
             self.tombstone_pane_notifications(pane_id);

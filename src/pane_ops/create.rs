@@ -531,6 +531,9 @@ impl PlexiApp {
         let app_id = config.app_id.clone();
         let runtime = crate::host::wasm_python::LivePythonPane::launch(config)
             .map_err(|error| error.to_string())?;
+        // Captured before the runtime moves into the pane closure; the drain
+        // pass re-syncs these if the pane's context root changes later.
+        let state_paths = runtime.state_paths();
         let manifest_id = app_id.clone();
         let name = app_id.clone();
         let new_id = self
@@ -560,6 +563,9 @@ impl PlexiApp {
             )
             .ok_or_else(|| format!("overlay launch target unavailable for {app_id}"))?;
         self.hot_reload.watch(new_id, app_dir);
+        // State files (stint 0644): watch for external writes so CLI/agent
+        // edits reach the running app without a relaunch.
+        self.state_watch.watch(new_id, &state_paths);
         crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
             app_id: app_id.clone(),
             type_id: "python-wasm".to_string(),
@@ -812,6 +818,67 @@ impl PlexiApp {
     pub(crate) fn drain_hot_reload_requests(&mut self) {
         while let Ok(req) = self.hot_reload_rx.try_recv() {
             self.reload_app_pane(req.pane_id, "watcher");
+        }
+    }
+
+    /// Drain pending `StateChangedNotice`s from the state watcher and re-read
+    /// the affected scope on the matching pane (stint 0644). In the same pass,
+    /// re-sync every live Python pane's watcher registration against its
+    /// currently-resolved state paths — `plexi context set-root` moves
+    /// context-scoped paths without any pane event, and this drain is the one
+    /// place that observes both sides. Called once per `logic` pass.
+    pub(crate) fn drain_state_change_requests(&mut self) {
+        while let Ok(notice) = self.state_watch_rx.try_recv() {
+            let mut found = false;
+            for window in &mut self.windows {
+                if let Some(app_pane) = window
+                    .panes
+                    .get_mut(&notice.pane_id)
+                    .and_then(|pane| pane.as_app_mut())
+                {
+                    log::info!(
+                        "state_watch: external change → pane {} app {} scope={}",
+                        notice.pane_id,
+                        app_pane.manifest_id,
+                        notice.scope.as_str()
+                    );
+                    app_pane.runtime.apply_external_state(notice.scope);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                // Pane closed between the notice and the drain — the unwatch
+                // on close already tore the watcher down; nothing to do.
+                log::debug!(
+                    "state_watch: notice for unknown pane {} dropped (pane closed)",
+                    notice.pane_id
+                );
+            }
+        }
+
+        // Registration re-sync: covers context-root moves.
+        let mut stale: Vec<(
+            PaneId,
+            Vec<(crate::host::state_scope::StateScope, std::path::PathBuf)>,
+        )> = Vec::new();
+        for window in &self.windows {
+            for pane in window.panes.values() {
+                let Some(app_pane) = pane.as_app() else {
+                    continue;
+                };
+                let current = app_pane.runtime.state_paths();
+                if current.is_empty() {
+                    continue;
+                }
+                if self.state_watch.watched_entries(app_pane.id) != current.as_slice() {
+                    stale.push((app_pane.id, current));
+                }
+            }
+        }
+        for (pane_id, entries) in stale {
+            log::info!("state_watch: re-registering pane {pane_id} — resolved state paths changed");
+            self.state_watch.watch(pane_id, &entries);
         }
     }
 

@@ -63,9 +63,193 @@ impl StateScope {
     }
 }
 
+/// The on-disk format of an app's state file. Declared in the manifest
+/// (`[state] format`); the host is format-blind for anything but JSON — a
+/// markdown file's bytes pass through verbatim under a single `document` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StateFormat {
+    /// Pretty-printed JSON object — the default.
+    #[default]
+    Json,
+    /// A plain-text markdown document; the host never parses it.
+    Markdown,
+}
+
+impl StateFormat {
+    /// Manifest / wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+        }
+    }
+
+    /// State-file extension, without the dot.
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "md",
+        }
+    }
+
+    /// Parse a manifest format name. Unknown values are a loud error, never a
+    /// silent fallback to JSON.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "json" => Ok(Self::Json),
+            "markdown" => Ok(Self::Markdown),
+            other => Err(format!(
+                "unknown state format '{other}' — valid formats: json, markdown"
+            )),
+        }
+    }
+}
+
 /// The scopes an app that omits `[state]` gets.
 pub fn default_scopes() -> Vec<StateScope> {
     vec![StateScope::Global]
+}
+
+/// Validate an app id before it is used as a state-file name component.
+/// The id becomes `<dir>/<app_id>.<ext>` on disk, so anything that could
+/// escape the state directory (separators, traversal, hidden-file prefixes)
+/// is rejected loudly.
+pub fn validate_app_id(app_id: &str) -> Result<(), String> {
+    if app_id.is_empty() {
+        return Err("app id is empty — cannot resolve a state file".to_string());
+    }
+    if app_id.starts_with('.') {
+        return Err(format!(
+            "app id '{app_id}' starts with '.' — state file names must not be hidden or traversal paths"
+        ));
+    }
+    if app_id.contains("..") {
+        return Err(format!(
+            "app id '{app_id}' contains '..' — path traversal is not allowed in state file names"
+        ));
+    }
+    if let Some(bad) = app_id
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    {
+        return Err(format!(
+            "app id '{app_id}' contains invalid character '{bad}' — allowed: A-Z a-z 0-9 . _ -"
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve a scope + format to the concrete state file for `app_id`,
+/// validating the app id first. New callers route through this; `state_path`
+/// stays as the raw two-rule resolver.
+pub fn state_file(
+    scope: StateScope,
+    app_id: &str,
+    format: StateFormat,
+    context_root: &Path,
+) -> Result<PathBuf, String> {
+    validate_app_id(app_id)?;
+    Ok(state_path(scope, app_id, format.ext(), context_root))
+}
+
+/// Assert that `path`'s parent directory really is the scope's state
+/// directory, resolving symlinks. Catches a symlinked `.plexi/` or
+/// `app_states/` that would silently redirect writes outside the scope.
+///
+/// The comparison anchors on the scope's trusted *base* (the context root, or
+/// the home dir for global scope): the base is canonicalized, the
+/// `.plexi/app_states` tail is appended literally, and the actual parent's
+/// fully-resolved form must match exactly. Components of the parent that do
+/// not exist yet (first write) cannot hide a symlink and are appended
+/// literally too.
+pub fn assert_within_scope(
+    path: &Path,
+    scope: StateScope,
+    context_root: &Path,
+) -> Result<(), String> {
+    let (base, plexi_dir) = match scope {
+        StateScope::Global => (
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+            ".plexi",
+        ),
+        StateScope::Context => (context_root.to_path_buf(), ".plexi"),
+    };
+    let expected = resolve_existing_prefix(&base)
+        .map_err(|error| format!("resolve scope base {}: {error}", base.display()))?
+        .join(plexi_dir)
+        .join(APP_STATES_DIR);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("state path {} has no parent directory", path.display()))?;
+    let actual = resolve_existing_prefix(parent)
+        .map_err(|error| format!("resolve state dir {}: {error}", parent.display()))?;
+    if actual != expected {
+        return Err(format!(
+            "state path {} escapes its scope: parent resolves to {} but the {} scope \
+             directory is {} — refusing to follow a redirected app_states directory",
+            path.display(),
+            actual.display(),
+            scope.as_str(),
+            expected.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Fully resolve `path` by canonicalizing its nearest existing ancestor and
+/// re-appending the not-yet-existing tail components literally (they cannot
+/// contain symlinks because they do not exist).
+fn resolve_existing_prefix(path: &Path) -> Result<PathBuf, String> {
+    let mut probe = path;
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !probe.exists() {
+        let name = probe
+            .file_name()
+            .ok_or_else(|| format!("no existing ancestor for {}", path.display()))?;
+        tail.push(name.to_os_string());
+        probe = probe
+            .parent()
+            .ok_or_else(|| format!("no existing ancestor for {}", path.display()))?;
+    }
+    let mut resolved = probe
+        .canonicalize()
+        .map_err(|error| format!("canonicalize {}: {error}", probe.display()))?;
+    for name in tail.iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
+}
+
+/// Write `bytes` to `path` atomically: sibling temp file, fsync, rename.
+/// A reader never observes a partial file; a crash leaves at worst an
+/// orphaned `.{name}.tmp-{uuid}` sibling. Pattern shared with
+/// `crate::assistant::store`.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("write {}: missing parent", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let temp = parent.join(format!(
+        ".{}.tmp-{}",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut file =
+            std::fs::File::create(&temp).map_err(|e| format!("create {}: {e}", temp.display()))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("write {}: {e}", temp.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("sync {}: {e}", temp.display()))?;
+        std::fs::rename(&temp, path)
+            .map_err(|e| format!("rename {} to {}: {e}", temp.display(), path.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 /// Validate a manifest `[state] scopes` list. Rules (fail loud, no silent
@@ -137,11 +321,9 @@ mod tests {
         assert!(parse_scopes(&["workspace".to_string()])
             .unwrap_err()
             .contains("unknown state scope 'workspace'"));
-        assert!(
-            parse_scopes(&["global".to_string(), "global".to_string()])
-                .unwrap_err()
-                .contains("more than once")
-        );
+        assert!(parse_scopes(&["global".to_string(), "global".to_string()])
+            .unwrap_err()
+            .contains("more than once"));
     }
 
     #[test]
@@ -160,6 +342,106 @@ mod tests {
             !global.starts_with(root),
             "global scope must ignore the context root"
         );
+    }
+
+    #[test]
+    fn validate_app_id_rejects_traversal_separators_and_empties() {
+        assert!(validate_app_id("").unwrap_err().contains("empty"));
+        assert!(validate_app_id(".hidden").unwrap_err().contains("'.'"));
+        assert!(validate_app_id("a..b").unwrap_err().contains(".."));
+        assert!(validate_app_id("a/b")
+            .unwrap_err()
+            .contains("invalid character"));
+        assert!(validate_app_id("a\\b")
+            .unwrap_err()
+            .contains("invalid character"));
+        assert!(validate_app_id("a b")
+            .unwrap_err()
+            .contains("invalid character"));
+        assert!(validate_app_id("todo").is_ok());
+        assert!(validate_app_id("acme.todo-2").is_ok());
+    }
+
+    #[test]
+    fn state_file_refuses_bad_app_ids_and_uses_format_ext() {
+        let root = Path::new("/projects/demo");
+        assert!(state_file(StateScope::Context, "../todo", StateFormat::Json, root).is_err());
+        assert!(state_file(StateScope::Context, "a/b", StateFormat::Json, root).is_err());
+        assert_eq!(
+            state_file(StateScope::Context, "todo", StateFormat::Markdown, root).unwrap(),
+            PathBuf::from("/projects/demo/.plexi/app_states/todo.md")
+        );
+        assert_eq!(
+            state_file(StateScope::Context, "todo", StateFormat::Json, root).unwrap(),
+            PathBuf::from("/projects/demo/.plexi/app_states/todo.json")
+        );
+    }
+
+    #[test]
+    fn state_format_parses_and_defaults() {
+        assert_eq!(StateFormat::parse("json").unwrap(), StateFormat::Json);
+        assert_eq!(
+            StateFormat::parse("markdown").unwrap(),
+            StateFormat::Markdown
+        );
+        assert!(StateFormat::parse("yaml")
+            .unwrap_err()
+            .contains("valid formats: json, markdown"));
+        assert_eq!(StateFormat::default(), StateFormat::Json);
+        assert_eq!(StateFormat::Markdown.ext(), "md");
+        assert_eq!(StateFormat::Markdown.as_str(), "markdown");
+    }
+
+    #[test]
+    fn assert_within_scope_rejects_a_symlinked_app_states_dir() {
+        let root = tempfile::tempdir().expect("context root");
+        let elsewhere = tempfile::tempdir().expect("attacker-controlled dir");
+        let plexi_dir = root.path().join(".plexi");
+        std::fs::create_dir_all(&plexi_dir).expect("create .plexi");
+        std::os::unix::fs::symlink(elsewhere.path(), plexi_dir.join(APP_STATES_DIR))
+            .expect("symlink app_states elsewhere");
+
+        let path = state_file(StateScope::Context, "todo", StateFormat::Json, root.path())
+            .expect("resolve state file");
+        let err = assert_within_scope(&path, StateScope::Context, root.path())
+            .expect_err("a symlinked app_states dir must be rejected");
+        assert!(err.contains("escapes its scope"), "unexpected error: {err}");
+
+        // A genuine directory passes.
+        let honest = tempfile::tempdir().expect("honest root");
+        let honest_dir = context_state_dir(honest.path());
+        std::fs::create_dir_all(&honest_dir).expect("create app_states");
+        let honest_path = state_file(
+            StateScope::Context,
+            "todo",
+            StateFormat::Json,
+            honest.path(),
+        )
+        .expect("resolve state file");
+        assert_within_scope(&honest_path, StateScope::Context, honest.path())
+            .expect("real app_states dir is within scope");
+
+        // Not-yet-created app_states dir is fine too (first write).
+        let fresh = tempfile::tempdir().expect("fresh root");
+        let fresh_path = state_file(StateScope::Context, "todo", StateFormat::Json, fresh.path())
+            .expect("resolve state file");
+        assert_within_scope(&fresh_path, StateScope::Context, fresh.path())
+            .expect("missing app_states dir is within scope before first write");
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_residue() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("app_states").join("todo.json");
+        atomic_write(&path, b"{\"k\":1}").expect("atomic write");
+        assert_eq!(std::fs::read(&path).expect("read back"), b"{\"k\":1}");
+        let residue: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(residue.is_empty(), "temp residue left behind: {residue:?}");
     }
 
     #[test]

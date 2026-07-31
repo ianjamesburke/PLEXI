@@ -241,10 +241,9 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
-        EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd,
-        RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ContextCmd,
+        DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
+        RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -601,6 +600,14 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::app_test_cli(&path, snapshot));
                             }
                             AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
+                            AppCmd::State { cmd } => match cmd {
+                                AppStateCmd::Get { app, scope } => std::process::exit(
+                                    cli::app_state::get(&app, scope.as_deref()),
+                                ),
+                                AppStateCmd::Set { app, file, scope } => std::process::exit(
+                                    cli::app_state::set(&app, file.as_deref(), scope.as_deref()),
+                                ),
+                            },
                             AppCmd::Validate { path } => {
                                 log::info!("app_validate:cli: path={path}");
                                 std::process::exit(cli::validate_cli(&path));

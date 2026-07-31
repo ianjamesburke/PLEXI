@@ -381,13 +381,35 @@ scopes = ["global", "context"]
 ```
 
 Omitting `[state]` gives `["global"]`. The host owns path construction:
-`global` state lives in `~/.plexi/app_states/<app_id>.json` (channel-neutral,
+`global` state lives in `~/.plexi/app_states/<app_id>.<ext>` (channel-neutral,
 cross-project), `context` state in `<context_root>/.plexi/app_states/`,
 resolved against the pane's context root at call time — so
 `plexi context set-root` immediately redirects where context-scoped state
 lands. Context-scoped state is gitignored by the host (`.plexi/.gitignore`
 gains `app_states/` automatically): app state is personal, single-user, local
 data — never committed. An unknown or empty scope list fails install loudly.
+
+`[state] format` selects the on-disk shape: `"json"` (default, `.json`
+extension) or `"markdown"` (`.md`). Markdown keeps the host format-blind:
+your state must carry the whole document as a string under the single key
+`document` — `PersistState({"document": text})` writes those bytes verbatim
+(a non-string `document` is a loud error and nothing is written), and reads
+arrive back as `{"document": "<file text>"}`. For checklist documents use
+the blessed codec in `plexi_sdk.state_format` (`ChecklistItem`,
+`parse_checklist`, `render_checklist`): tolerant reader, canonical writer.
+An unknown format fails install loudly.
+
+State files are shared with the outside world — the CLI, agents, and editors
+write them too. The contract is **disk wins**: every write (host and CLI) is
+atomic temp+rename, and the host read-backs before writing — a `PersistState`
+that loses to a concurrent external write is dropped, the on-disk state is
+reloaded, and your app is told via the `events.StateChanged` event
+(re-apply your change from there; never assume a persist landed). External
+edits also arrive as `StateChanged`: the scope's values are replaced
+wholesale before `update()` runs — deleted keys vanish, never a merge — and
+`event.error` is set when the file exists but cannot be decoded (previous
+values are kept and persists to that scope are blocked until the file is
+fixed).
 
 ## Dev / Test Loop
 

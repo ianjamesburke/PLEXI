@@ -54,6 +54,7 @@ pub(crate) fn python_launch_config_from_parts(
         // Headless one-shot renders never persist state; the default scope
         // list and an app-dir anchor are inert here.
         state_scopes: crate::host::state_scope::default_scopes(),
+        state_format: crate::host::state_scope::StateFormat::Json,
         context_root: app_dir.to_path_buf(),
     }
 }

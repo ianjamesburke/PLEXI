@@ -348,6 +348,13 @@ pub struct PlexiApp {
     /// existing `AppPane` envelope.
     pub(crate) hot_reload: crate::host::hot_reload::HotReloadWatcher,
     pub(crate) hot_reload_rx: ui_mailbox::MailboxReceiver<crate::host::hot_reload::ReloadRequest>,
+    /// App state file watcher (stint 0644). Watches each file-backed app
+    /// pane's state files for external writes; `state_watch_rx` is drained
+    /// each `logic` pass (never `ui` — occluded-window trap) and each notice
+    /// triggers `apply_external_state` on the matching pane.
+    pub(crate) state_watch: crate::host::state_watch::StateWatcher,
+    pub(crate) state_watch_rx:
+        ui_mailbox::MailboxReceiver<crate::host::state_watch::StateChangedNotice>,
     /// Config file watcher (#1115). Watches `config.toml` for saves and fires
     /// a signal so `reload_config()` runs automatically.
     pub(crate) _config_watcher: Option<crate::config::watcher::ConfigWatcher>,
@@ -1033,6 +1040,13 @@ impl PlexiApp {
         let (hr_watcher2, hr_rx2) =
             crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
 
+        // App state file watcher (stint 0644). Same two-branch shadow-name
+        // pattern as hot_reload above.
+        let (sw_watcher, sw_rx) =
+            crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
+        let (sw_watcher2, sw_rx2) =
+            crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
+
         // Config file watcher (#1115). Watches config.toml for saves so the
         // host can hot-reload theme/font/notification settings automatically.
         let (mut cfg_watcher, mut cfg_reload_rx) = match crate::config::watcher::start(
@@ -1450,6 +1464,8 @@ impl PlexiApp {
                     directed_pipes: HashMap::new(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
+                    state_watch: sw_watcher,
+                    state_watch_rx: sw_rx,
                     _config_watcher: cfg_watcher.take(),
                     config_reload_rx: cfg_reload_rx.take(),
                     _registry_watcher: reg_watcher.take(),
@@ -1594,6 +1610,19 @@ impl PlexiApp {
             };
 
         let agent_host = crate::agent::AgentHost::production(config.ai.clone());
+        // Standing ruling: a context root must gitignore its app_states dir
+        // (personal local data, never committed). Guarded so constructing a
+        // Context never creates directories as a side effect.
+        if default_root.is_dir() {
+            if let Err(error) =
+                crate::workspace::secrets::ensure_app_state_gitignore(&default_root)
+            {
+                log::warn!(
+                    "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+                    default_root.display()
+                );
+            }
+        }
         let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
@@ -1713,6 +1742,8 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher2,
             hot_reload_rx: hr_rx2,
+            state_watch: sw_watcher2,
+            state_watch_rx: sw_rx2,
             _config_watcher: cfg_watcher.take(),
             config_reload_rx: cfg_reload_rx.take(),
             _registry_watcher: default_reg_watcher.take(),
@@ -2025,9 +2056,20 @@ impl PlexiApp {
         let (tx, rx) = mpsc::channel();
         let (hr_watcher, hr_rx) =
             crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
+        let (sw_watcher, sw_rx) =
+            crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
         let path =
             std::env::temp_dir().join(format!("plexi-test-workspace-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("create isolated test workspace");
+        // Standing ruling: a context root must gitignore its app_states dir.
+        if path.is_dir() {
+            if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(&path) {
+                log::warn!(
+                    "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+                    path.display()
+                );
+            }
+        }
         let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) =
             ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
@@ -2170,6 +2212,8 @@ impl PlexiApp {
                 directed_pipes: HashMap::new(),
                 hot_reload: hr_watcher,
                 hot_reload_rx: hr_rx,
+                state_watch: sw_watcher,
+                state_watch_rx: sw_rx,
                 _config_watcher: None,
                 config_reload_rx: None,
                 _registry_watcher: None,
@@ -3396,6 +3440,12 @@ impl eframe::App for PlexiApp {
         // dropped (sending Shutdown + reaping the child) and replaced with
         // a fresh subprocess. Idempotent if the pane was closed since.
         self.drain_hot_reload_requests();
+
+        // App state files (stint 0644): drain external-change notices and
+        // re-read the affected scope on the matching pane. Lives in `logic`,
+        // never `ui` — external CLI/agent edits must land even when the host
+        // window is hidden or occluded.
+        self.drain_state_change_requests();
 
         // Crash-resilient dev reload (#1055): auto-restart watched panes that
         // have crashed, after a 2s delay so the developer can read the traceback.
