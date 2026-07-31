@@ -1,26 +1,25 @@
-from plexi_sdk import App, RenderContext
-from plexi_sdk.widgets import KeyMap
+"""Prove printable keys arrive as V3 ``KeyEvent`` values."""
+
+from plexi_sdk import state
+from plexi_sdk.effects import SetState, SetTitle
+from plexi_sdk.events import KeyEvent
+from plexi_sdk.ui import AppBar, Column, FooterKeys, Text
 
 
-class KeyMapProbe(App):
-    def on_init(self) -> None:
-        self._last_action = "none"
-        self._km = KeyMap()
-        self._km.bind("z", "bare-z")
-        self._km.bind("z", "ctrl-z", mod="ctrl")
-        self._km.bind("return", "submit")
-
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.text(10, 10, f"last_action={self._last_action}", size=14, color="#ffffff",
-                 selectable=False)
-        ctx.status_summary(f"last_action={self._last_action}")
-
-    def on_key(self, key: str, mods: dict) -> None:
-        action = self._km.handle(key, mods)
-        if action is not None:
-            self._last_action = action
-            self.emit.schedule_render()
+def init(_size, _args):
+    return [SetTitle("KeyMap Probe"), SetState({"last_action": "none"})]
 
 
-if __name__ == "__main__":
-    KeyMapProbe().run()
+def update(event):
+    if isinstance(event, KeyEvent) and event.pressed and event.key == "z":
+        action = "ctrl-z" if event.modifiers.ctrl else "bare-z"
+        return [SetState({"last_action": action})]
+    return []
+
+
+def view():
+    return Column([
+        AppBar("KeyMap Probe"),
+        Text(f"last_action={state.get('last_action', 'none')}", bold=True),
+        FooterKeys([("z", "record printable key")]),
+    ], grow=True)
