@@ -291,6 +291,29 @@ pub enum WasmPythonError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("read persisted app state at {path}: {source}")]
+    ReadState {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("parse persisted app state at {path}: {source}")]
+    ParseState {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("persisted app state at {path} must be a JSON object, got {found}")]
+    StateNotObject { path: PathBuf, found: &'static str },
+    #[error("inspect persisted app-state orphan at {path}: {source}")]
+    InspectStateOrphan {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("adopt persisted app-state orphan from {source_path} to {destination}: {reason}")]
+    AdoptState {
+        source_path: PathBuf,
+        destination: PathBuf,
+        reason: String,
+    },
     #[error("bridge JSON error: {0}")]
     BridgeJson(String),
     #[error("start CPython WASM runtime: {0}")]
@@ -1155,37 +1178,508 @@ fn python_state_path(config: &PythonLaunchConfig) -> PathBuf {
         .join(format!("{}.json", config.app_id))
 }
 
-fn load_python_state(config: &PythonLaunchConfig) -> serde_json::Map<String, Value> {
-    let path = python_state_path(config);
-    match std::fs::read(&path) {
-        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-            Ok(Value::Object(state)) => state,
-            Ok(_) => {
-                log::warn!(
-                    "app::{}: state {} is not a JSON object",
-                    config.app_id,
-                    path.display()
-                );
-                serde_json::Map::new()
-            }
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn ensure_python_state_gitignore(config: &PythonLaunchConfig) {
+    if let Err(error) =
+        crate::workspace::secrets::ensure_app_state_gitignore(&config.workspace_root)
+    {
+        log::warn!(
+            "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+            config.app_id,
+            config.workspace_root.display()
+        );
+    }
+}
+
+fn discover_python_state_orphans_beneath(
+    config: &PythonLaunchConfig,
+    root: &Path,
+) -> Result<Vec<PathBuf>, WasmPythonError> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(WasmPythonError::InspectStateOrphan {
+                path: root.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
             Err(error) => {
                 log::warn!(
-                    "app::{}: parse state {}: {error}",
+                    "app::{}: inspect orphan state entry beneath {}: {error}",
                     config.app_id,
-                    path.display()
+                    root.display()
                 );
-                serde_json::Map::new()
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(".plexi-") || name.len() == ".plexi-".len() {
+            continue;
+        }
+        let path = entry
+            .path()
+            .join("app_states")
+            .join(format!("{}.json", config.app_id));
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => {
+                return Err(WasmPythonError::InspectStateOrphan {
+                    path,
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "orphan state candidate is not a regular file",
+                    ),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(WasmPythonError::InspectStateOrphan {
+                    path,
+                    source,
+                });
+            }
+        };
+        let modified = match metadata.modified() {
+            Ok(modified) => modified,
+            Err(source) => {
+                return Err(WasmPythonError::InspectStateOrphan {
+                    path,
+                    source,
+                });
+            }
+        };
+        candidates.push((modified, path));
+    }
+    candidates.sort_by(|(left_time, left_path), (right_time, right_path)| {
+        right_time
+            .cmp(left_time)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    Ok(candidates.into_iter().map(|(_, path)| path).collect())
+}
+
+#[cfg(unix)]
+fn python_state_destination_is_owned(path: &Path, file: &std::fs::File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(open_metadata) = file.metadata() else {
+        return false;
+    };
+    let Ok(path_metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    open_metadata.dev() == path_metadata.dev() && open_metadata.ino() == path_metadata.ino()
+}
+
+#[cfg(not(unix))]
+fn python_state_destination_is_owned(_path: &Path, _file: &std::fs::File) -> bool {
+    false
+}
+
+fn cleanup_created_python_state(
+    _config: &PythonLaunchConfig,
+    source: &Path,
+    destination: &Path,
+    destination_file: &std::fs::File,
+) -> Result<(), String> {
+    if !python_state_destination_is_owned(destination, destination_file) {
+        return Err(format!(
+            "refusing to clean up unverified destination {} after adopting {}; preserving source",
+            destination.display(),
+            source.display()
+        ));
+    }
+    std::fs::remove_file(destination).map_err(|error| {
+        format!(
+            "could not clean up failed adoption destination {} from {}: {error}; preserving source",
+            destination.display(),
+            source.display()
+        )
+    })
+}
+
+fn copy_python_state_orphan_no_clobber(
+    config: &PythonLaunchConfig,
+    source: &Path,
+    destination: &Path,
+) -> Result<std::fs::File, std::io::Error> {
+    let mut source_file = std::fs::File::open(source)?;
+    let mut destination_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    if let Err(error) = std::io::copy(&mut source_file, &mut destination_file) {
+        return match cleanup_created_python_state(config, source, destination, &destination_file) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(std::io::Error::other(format!(
+                "{error}; {cleanup_error}"
+            ))),
+        };
+    }
+    if let Err(error) = destination_file.sync_all() {
+        return match cleanup_created_python_state(config, source, destination, &destination_file) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(std::io::Error::other(format!(
+                "{error}; {cleanup_error}"
+            ))),
+        };
+    }
+    Ok(destination_file)
+}
+
+fn adopt_python_state_orphan(
+    config: &PythonLaunchConfig,
+    search_root: &Path,
+    destination: &Path,
+) -> Result<bool, WasmPythonError> {
+    let Some(source) = discover_python_state_orphans_beneath(config, search_root)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(false);
+    };
+    let adoption_error = |reason: String| WasmPythonError::AdoptState {
+        source_path: source.clone(),
+        destination: destination.to_path_buf(),
+        reason,
+    };
+    let Some(parent) = destination.parent() else {
+        return Err(adoption_error("canonical state path has no parent".to_string()));
+    };
+    if let Err(error) = std::fs::create_dir_all(parent) {
+        return Err(adoption_error(format!(
+            "create canonical state dir {}: {error}",
+            parent.display()
+        )));
+    }
+    let (mut destination_file, remove_source) = match std::fs::hard_link(&source, destination) {
+        Ok(()) => match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(destination)
+        {
+            Ok(file) => (file, true),
+            Err(error) => {
+                return Err(adoption_error(format!(
+                    "open adopted destination for verification: {error}; preserving source"
+                )));
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
-        Err(error) => {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             log::warn!(
-                "app::{}: read state {}: {error}",
+                "app::{}: canonical state appeared during adoption; preserving orphan {} and destination {}",
                 config.app_id,
-                path.display()
+                source.display(),
+                destination.display()
             );
-            serde_json::Map::new()
+            return Ok(true);
         }
+        Err(link_error) => {
+            log::warn!(
+                "app::{}: hard-link orphan state {} to {} failed: {link_error}; trying no-clobber copy",
+                config.app_id,
+                source.display(),
+                destination.display()
+            );
+            match copy_python_state_orphan_no_clobber(config, &source, destination) {
+                Ok(file) => (file, false),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    log::warn!(
+                        "app::{}: canonical state appeared during copy fallback; preserving orphan {} and destination {}",
+                        config.app_id,
+                        source.display(),
+                        destination.display()
+                    );
+                    return Ok(true);
+                }
+                Err(error) => {
+                    return Err(adoption_error(format!(
+                        "hard-link failed ({link_error}); no-clobber copy failed: {error}; preserving source"
+                    )));
+                }
+            }
+        }
+    };
+    if let Err(error) =
+        verify_python_state_adoption(config, &source, destination, &mut destination_file)
+    {
+        let reason = match cleanup_created_python_state(
+            config,
+            &source,
+            destination,
+            &destination_file,
+        ) {
+            Ok(()) => error,
+            Err(cleanup_error) => format!("{error}; {cleanup_error}"),
+        };
+        return Err(adoption_error(reason));
+    }
+    if !remove_source {
+        log::info!(
+            "app::{}: adopted orphan state by verified copy from {} to {}; preserving source",
+            config.app_id,
+            source.display(),
+            destination.display()
+        );
+        return Ok(true);
+    }
+    if let Err(error) = std::fs::remove_file(&source) {
+        return Err(adoption_error(format!(
+            "destination verified but source removal failed: {error}"
+        )));
+    }
+    log::info!(
+        "app::{}: adopted orphan state from {} to {}",
+        config.app_id,
+        source.display(),
+        destination.display()
+    );
+    Ok(true)
+}
+
+fn verify_python_state_adoption(
+    config: &PythonLaunchConfig,
+    source: &Path,
+    destination: &Path,
+    destination_file: &mut std::fs::File,
+) -> Result<(), String> {
+    use std::io::{Read, Seek};
+
+    if !python_state_destination_is_owned(destination, destination_file) {
+        return Err(format!(
+            "app::{}: adopted destination {} from {} changed before verification; preserving source",
+            config.app_id,
+            destination.display(),
+            source.display()
+        ));
+    }
+    let source_bytes = std::fs::read(source).map_err(|error| {
+        format!(
+            "app::{}: verify adopted source state {} against {}: {error}; preserving source",
+            config.app_id,
+            source.display(),
+            destination.display()
+        )
+    })?;
+    destination_file.rewind().map_err(|error| {
+        format!(
+            "app::{}: seek adopted destination state {} from {}: {error}; preserving source",
+            config.app_id,
+            destination.display(),
+            source.display()
+        )
+    })?;
+    let mut destination_bytes = Vec::new();
+    destination_file
+        .read_to_end(&mut destination_bytes)
+        .map_err(|error| {
+            format!(
+                "app::{}: verify adopted destination state {} from {}: {error}; preserving source",
+                config.app_id,
+                destination.display(),
+                source.display()
+            )
+        })?;
+    if source_bytes != destination_bytes {
+        return Err(format!(
+            "app::{}: adopted state verification mismatch from {} to {}; preserving source",
+            config.app_id,
+            source.display(),
+            destination.display()
+        ));
+    }
+    if !python_state_destination_is_owned(destination, destination_file) {
+        return Err(format!(
+            "app::{}: adopted destination {} from {} changed after verification; preserving source",
+            config.app_id,
+            destination.display(),
+            source.display()
+        ));
+    }
+    Ok(())
+}
+
+fn write_python_state_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("state path has no parent: {}", path.display()),
+        )
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("state path has no file name: {}", path.display()),
+        )
+    })?;
+    let mut temp_path = None;
+    let mut temp_file = None;
+    for _ in 0..16 {
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{}.{}.{id}.tmp",
+            file_name.to_string_lossy(),
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temp_path = Some(candidate);
+                temp_file = Some(file);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (temp_path, mut temp_file) = match (temp_path, temp_file) {
+        (Some(path), Some(file)) => (path, file),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("could not allocate state temp file beside {}", path.display()),
+            ));
+        }
+    };
+    let write_result = temp_file
+        .write_all(bytes)
+        .and_then(|()| temp_file.sync_all())
+        .and_then(|()| std::fs::rename(&temp_path, path));
+    if write_result.is_err() {
+        if let Err(error) = std::fs::remove_file(&temp_path) {
+            log::warn!(
+                "could not clean up failed app-state temp file {}: {error}",
+                temp_path.display()
+            );
+        }
+    }
+    write_result
+}
+
+fn load_python_state(
+    config: &PythonLaunchConfig,
+) -> Result<serde_json::Map<String, Value>, WasmPythonError> {
+    ensure_python_state_gitignore(config);
+    let workspace_path = python_state_path(config);
+    let bytes = match read_python_state_bytes(&workspace_path)? {
+        Some(bytes) => (workspace_path, bytes),
+        None => {
+            adopt_python_state_orphan(config, &config.workspace_root, &workspace_path)?;
+            match read_python_state_bytes(&workspace_path)? {
+                Some(bytes) => (workspace_path, bytes),
+                None => {
+                    let config_dir = crate::config::config_dir();
+                    let Some(profile_parent) = config_dir.parent() else {
+                        log::warn!(
+                            "app::{}: channel profile path has no parent for global state fallback: {}",
+                            config.app_id,
+                            config_dir.display()
+                        );
+                        return Ok(serde_json::Map::new());
+                    };
+                    let global_path = profile_parent
+                        .join(".plexi")
+                        .join("app_states")
+                        .join(format!("{}.json", config.app_id));
+                    if global_path == workspace_path {
+                        return Ok(serde_json::Map::new());
+                    }
+                    if let Err(error) =
+                        crate::workspace::secrets::ensure_app_state_gitignore(profile_parent)
+                    {
+                        log::warn!(
+                            "app::{}: could not ensure {}/.plexi/.gitignore covers global app_states/: {error}",
+                            config.app_id,
+                            profile_parent.display()
+                        );
+                    }
+                    match read_python_state_bytes(&global_path)? {
+                        Some(bytes) => (global_path, bytes),
+                        None => {
+                            adopt_python_state_orphan(config, profile_parent, &global_path)?;
+                            match read_python_state_bytes(&global_path)? {
+                                Some(bytes) => (global_path, bytes),
+                                None => return Ok(serde_json::Map::new()),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    parse_python_state(&bytes.0, &bytes.1)
+}
+
+fn read_python_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, WasmPythonError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => Err(WasmPythonError::ReadState {
+                    path: path.to_path_buf(),
+                    source,
+                }),
+                Err(metadata_error)
+                    if metadata_error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    Ok(None)
+                }
+                Err(source) => Err(WasmPythonError::ReadState {
+                    path: path.to_path_buf(),
+                    source,
+                }),
+            }
+        }
+        Err(source) => Err(WasmPythonError::ReadState {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn parse_python_state(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<serde_json::Map<String, Value>, WasmPythonError> {
+    let value =
+        serde_json::from_slice::<Value>(bytes).map_err(|source| WasmPythonError::ParseState {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    match value {
+        Value::Object(state) => Ok(state),
+        other => Err(WasmPythonError::StateNotObject {
+            path: path.to_path_buf(),
+            found: json_value_kind(&other),
+        }),
     }
 }
 
@@ -1204,7 +1698,7 @@ impl LivePythonPane {
 
     pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
         let app_id = config.app_id.clone();
-        let persisted_state = load_python_state(&config);
+        let persisted_state = load_python_state(&config)?;
         let (http_tx, http_rx) = std::sync::mpsc::channel();
         let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
@@ -1991,6 +2485,7 @@ impl LivePythonPane {
             return;
         };
         self.persisted_state = payload.clone();
+        ensure_python_state_gitignore(&self.config);
         let path = python_state_path(&self.config);
         if let Some(parent) = path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
@@ -2004,7 +2499,7 @@ impl LivePythonPane {
         }
         match serde_json::to_vec_pretty(payload)
             .map_err(std::io::Error::other)
-            .and_then(|bytes| std::fs::write(&path, bytes))
+            .and_then(|bytes| write_python_state_atomic(&path, &bytes))
         {
             Ok(()) => log::info!("app::{}: persisted WASM Python state", self.app_id),
             Err(error) => log::error!(
@@ -3846,6 +4341,298 @@ mod tests {
     struct NoopWake;
     impl Wake for NoopWake {
         fn wake(self: Arc<Self>) {}
+    }
+
+    fn state_test_config(workspace_root: &Path, app_id: &str) -> PythonLaunchConfig {
+        PythonLaunchConfig {
+            app_id: app_id.to_string(),
+            app_dir: workspace_root.to_path_buf(),
+            entry: workspace_root.join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: workspace_root.to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn python_state_adopts_channel_orphan_into_neutral_path() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let orphan = workspace.path().join(".plexi-beta/app_states/todo.json");
+        std::fs::create_dir_all(orphan.parent().expect("orphan parent")).expect("mkdir");
+        std::fs::write(&orphan, br#"{"items":["recovered"]}"#).expect("seed orphan");
+
+        let state = load_python_state(&config).expect("orphan state should be adopted");
+
+        assert_eq!(state["items"], json!(["recovered"]));
+        assert_eq!(
+            std::fs::read(python_state_path(&config)).expect("canonical bytes"),
+            br#"{"items":["recovered"]}"#
+        );
+        assert!(
+            !orphan.exists(),
+            "source is removed only after verified adoption"
+        );
+    }
+
+    #[test]
+    fn python_state_never_overwrites_canonical_with_orphan() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let canonical = python_state_path(&config);
+        let orphan = workspace.path().join(".plexi-beta/app_states/todo.json");
+        std::fs::create_dir_all(canonical.parent().expect("canonical parent")).expect("mkdir");
+        std::fs::create_dir_all(orphan.parent().expect("orphan parent")).expect("mkdir");
+        std::fs::write(&canonical, br#"{"version":"new"}"#).expect("seed canonical");
+        std::fs::write(&orphan, br#"{"version":"old"}"#).expect("seed orphan");
+
+        let state = load_python_state(&config).expect("canonical state");
+
+        assert_eq!(state["version"], "new");
+        assert_eq!(
+            std::fs::read(&canonical).expect("canonical bytes"),
+            br#"{"version":"new"}"#
+        );
+        assert!(orphan.exists(), "unchosen orphan must remain recoverable");
+    }
+
+    #[test]
+    fn python_state_load_failures_are_typed() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let canonical = python_state_path(&config);
+        std::fs::create_dir_all(canonical.parent().expect("canonical parent")).expect("mkdir");
+
+        std::fs::create_dir(&canonical).expect("unreadable state path");
+        assert!(matches!(
+            load_python_state(&config),
+            Err(WasmPythonError::ReadState { .. })
+        ));
+        std::fs::remove_dir(&canonical).expect("remove state dir");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("missing-target", &canonical)
+                .expect("dangling canonical symlink");
+            assert!(matches!(
+                load_python_state(&config),
+                Err(WasmPythonError::ReadState { .. })
+            ));
+            std::fs::remove_file(&canonical).expect("remove dangling symlink");
+        }
+
+        std::fs::write(&canonical, b"{not-json").expect("invalid json");
+        assert!(matches!(
+            load_python_state(&config),
+            Err(WasmPythonError::ParseState { .. })
+        ));
+        assert!(matches!(
+            LivePythonPane::launch(config.clone()),
+            Err(WasmPythonError::ParseState { .. })
+        ));
+
+        std::fs::write(&canonical, b"[1,2,3]").expect("non-object json");
+        assert!(matches!(
+            load_python_state(&config),
+            Err(WasmPythonError::StateNotObject { .. })
+        ));
+    }
+
+    #[test]
+    fn python_state_migration_is_idempotent() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "slides");
+        let orphan = workspace
+            .path()
+            .join(".plexi-pr-123/app_states/slides.json");
+        std::fs::create_dir_all(orphan.parent().expect("orphan parent")).expect("mkdir");
+        std::fs::write(&orphan, br#"{"slide":4}"#).expect("seed orphan");
+
+        let first = load_python_state(&config).expect("first load");
+        let second = load_python_state(&config).expect("second load");
+
+        assert_eq!(first, second);
+        assert_eq!(second["slide"], 4);
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn python_state_migration_prefers_newest_orphan_and_preserves_others() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let older = workspace.path().join(".plexi-beta/app_states/todo.json");
+        let newer = workspace.path().join(".plexi-pr-456/app_states/todo.json");
+        for path in [&older, &newer] {
+            std::fs::create_dir_all(path.parent().expect("orphan parent")).expect("mkdir");
+        }
+        std::fs::write(&older, br#"{"source":"beta"}"#).expect("seed older");
+        std::fs::write(&newer, br#"{"source":"pr"}"#).expect("seed newer");
+        std::fs::File::options()
+            .write(true)
+            .open(&older)
+            .expect("open older")
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(10))
+            .expect("set older mtime");
+        std::fs::File::options()
+            .write(true)
+            .open(&newer)
+            .expect("open newer")
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(20))
+            .expect("set newer mtime");
+
+        let state = load_python_state(&config).expect("migrate newest");
+
+        assert_eq!(state["source"], "pr");
+        assert!(older.exists(), "unchosen orphan remains recoverable");
+        assert!(!newer.exists(), "chosen and verified source is removed");
+    }
+
+    #[test]
+    fn python_state_reclaims_global_legacy_into_global_neutral() {
+        let profile_parent = tempdir().expect("profile parent");
+        let _profile = crate::config::set_test_profile_dir(
+            profile_parent.path().join(".plexi-alpha"),
+        );
+        let _channel = crate::config::set_test_channel("alpha");
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let orphan = profile_parent
+            .path()
+            .join(".plexi-beta/app_states/todo.json");
+        let global_neutral = profile_parent.path().join(".plexi/app_states/todo.json");
+        std::fs::create_dir_all(orphan.parent().expect("orphan parent")).expect("mkdir");
+        std::fs::write(&orphan, br#"{"scope":"global"}"#).expect("seed orphan");
+
+        let state = load_python_state(&config).expect("global fallback");
+
+        assert_eq!(state["scope"], "global");
+        assert_eq!(
+            std::fs::read(&global_neutral).expect("global neutral"),
+            br#"{"scope":"global"}"#
+        );
+        assert!(!orphan.exists(), "verified global orphan is reclaimed");
+        assert!(
+            !python_state_path(&config).exists(),
+            "global fallback must not become project-local state"
+        );
+    }
+
+    #[test]
+    fn python_state_local_candidate_wins_over_global_fallback() {
+        let profile_parent = tempdir().expect("profile parent");
+        let _profile = crate::config::set_test_profile_dir(
+            profile_parent.path().join(".plexi-alpha"),
+        );
+        let _channel = crate::config::set_test_channel("alpha");
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let local = workspace.path().join(".plexi-beta/app_states/todo.json");
+        let global = profile_parent
+            .path()
+            .join(".plexi-beta/app_states/todo.json");
+        for path in [&local, &global] {
+            std::fs::create_dir_all(path.parent().expect("orphan parent")).expect("mkdir");
+        }
+        std::fs::write(&local, br#"{"scope":"local"}"#).expect("seed local");
+        std::fs::write(&global, br#"{"scope":"global"}"#).expect("seed global");
+
+        let state = load_python_state(&config).expect("local state");
+
+        assert_eq!(state["scope"], "local");
+        assert!(!local.exists(), "local source reclaimed");
+        assert!(global.exists(), "unused global fallback remains");
+        assert!(
+            !profile_parent
+                .path()
+                .join(".plexi/app_states/todo.json")
+                .exists(),
+            "local state prevents global migration"
+        );
+    }
+
+    #[test]
+    fn python_state_local_migration_error_stops_global_fallback() {
+        let profile_parent = tempdir().expect("profile parent");
+        let _profile = crate::config::set_test_profile_dir(
+            profile_parent.path().join(".plexi-alpha"),
+        );
+        let _channel = crate::config::set_test_channel("alpha");
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let channel_dir = workspace.path().join(".plexi-beta");
+        std::fs::create_dir_all(&channel_dir).expect("channel dir");
+        std::fs::write(channel_dir.join("app_states"), b"path conflict")
+            .expect("conflicting app_states file");
+        let global = profile_parent.path().join(".plexi/app_states/todo.json");
+        std::fs::create_dir_all(global.parent().expect("global parent")).expect("mkdir global");
+        std::fs::write(&global, br#"{"scope":"global"}"#).expect("seed global fallback");
+
+        let error = load_python_state(&config)
+            .expect_err("local orphan inspection failure must stop fallback");
+
+        let WasmPythonError::InspectStateOrphan { path, .. } = error else {
+            panic!("expected typed orphan inspection error");
+        };
+        assert_eq!(
+            path,
+            channel_dir.join("app_states").join("todo.json")
+        );
+        assert!(
+            !python_state_path(&config).exists(),
+            "failed local migration must not synthesize empty state"
+        );
+    }
+
+    #[test]
+    fn python_state_copy_fallback_is_no_clobber() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "todo");
+        let source = workspace.path().join(".plexi-beta/app_states/todo.json");
+        let destination = python_state_path(&config);
+        std::fs::create_dir_all(source.parent().expect("source parent")).expect("mkdir source");
+        std::fs::create_dir_all(destination.parent().expect("destination parent"))
+            .expect("mkdir destination");
+        std::fs::write(&source, br#"{"source":"beta"}"#).expect("seed source");
+
+        let destination_file =
+            copy_python_state_orphan_no_clobber(&config, &source, &destination)
+                .expect("copy fallback");
+        destination_file.sync_all().expect("destination synced");
+        assert_eq!(
+            std::fs::read(&destination).expect("destination"),
+            br#"{"source":"beta"}"#
+        );
+
+        std::fs::write(&source, br#"{"source":"newer"}"#).expect("replace source");
+        let error = copy_python_state_orphan_no_clobber(&config, &source, &destination)
+            .expect_err("existing destination must not be overwritten");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read(destination).expect("unchanged destination"),
+            br#"{"source":"beta"}"#
+        );
+    }
+
+    #[test]
+    fn python_state_atomic_write_replaces_complete_file_without_temp_leak() {
+        let workspace = tempdir().expect("workspace");
+        let path = workspace.path().join("todo.json");
+        std::fs::write(&path, br#"{"version":"old"}"#).expect("seed");
+
+        write_python_state_atomic(&path, br#"{"version":"new"}"#).expect("atomic replace");
+
+        assert_eq!(
+            std::fs::read(&path).expect("state"),
+            br#"{"version":"new"}"#
+        );
+        let entries: Vec<_> = std::fs::read_dir(workspace.path())
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(entries, [std::ffi::OsString::from("todo.json")]);
     }
 
     // ── resolve_app_fs_path (stint 0508: workspace jail + picker grants) ──
