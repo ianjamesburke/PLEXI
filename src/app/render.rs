@@ -94,7 +94,7 @@ impl PlexiApp {
             log::info!("ui: restarting for update");
             if let Some(bundle) = std::env::current_exe().ok().and_then(|p| {
                 p.ancestors()
-                    .find(|a| a.extension().map_or(false, |e| e == "app"))
+                    .find(|a| a.extension().is_some_and(|e| e == "app"))
                     .map(|b| b.to_path_buf())
             }) {
                 let script = format!(

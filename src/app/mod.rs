@@ -2310,6 +2310,8 @@ impl PlexiApp {
         user_theme
     }
 
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_backend_settings(
         pane_id: u64,
         working_directory: Option<PathBuf>,
@@ -4516,7 +4518,7 @@ impl eframe::App for PlexiApp {
         }
 
         // Config hot-reload (#1115): drain filesystem watcher signals.
-        let config_changed = self.config_reload_rx.as_ref().map_or(false, |rx| {
+        let config_changed = self.config_reload_rx.as_ref().is_some_and(|rx| {
             let hit = rx.try_recv().is_ok();
             if hit {
                 while rx.try_recv().is_ok() {}
@@ -4537,7 +4539,7 @@ impl eframe::App for PlexiApp {
         }
 
         // App registry hot-reload (#1712): drain filesystem watcher signals.
-        let registry_changed = self.registry_reload_rx.as_ref().map_or(false, |rx| {
+        let registry_changed = self.registry_reload_rx.as_ref().is_some_and(|rx| {
             let hit = rx.try_recv().is_ok();
             if hit {
                 while rx.try_recv().is_ok() {}
@@ -4638,13 +4640,13 @@ impl PlexiApp {
                     .into_iter()
                     .flatten()
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
                     .filter_map(|e| {
                         let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
                         Some((mtime, e.path()))
                     })
                     .collect();
-            with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+            with_mtime.sort_by_key(|e| std::cmp::Reverse(e.0));
             with_mtime.into_iter().map(|(_, p)| p).collect()
         };
 

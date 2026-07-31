@@ -197,13 +197,12 @@ fn kind_of(stack: &ScopeStack) -> TokenKind {
             TokenKind::Comment
         } else if name.starts_with("string") {
             TokenKind::String
-        } else if name.starts_with("constant.numeric") {
-            TokenKind::Number
         } else if name.starts_with("constant") {
             TokenKind::Number
-        } else if name.starts_with("keyword") || name.starts_with("storage.modifier") {
-            TokenKind::Keyword
-        } else if name.starts_with("storage.type") {
+        } else if name.starts_with("keyword")
+            || name.starts_with("storage.modifier")
+            || name.starts_with("storage.type")
+        {
             TokenKind::Keyword
         } else if name.starts_with("entity.name.function") || name.starts_with("support.function")
         {

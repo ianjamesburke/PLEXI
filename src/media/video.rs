@@ -421,8 +421,7 @@ mod avf_impl {
         // representation. The cast is safe because both are opaque
         // `[u8; 0]`-shaped types pointing at the same Core Foundation object.
         let key: &NSString = &*(cf_key as *const _ as *const NSString);
-        let value: &objc2::runtime::AnyObject =
-            &*(format_value.as_ref() as *const _ as *const objc2::runtime::AnyObject);
+        let value: &objc2::runtime::AnyObject = &*(format_value.as_ref() as *const _);
         NSDictionary::from_slices::<NSString>(&[key], &[value])
     }
 
@@ -431,17 +430,16 @@ mod avf_impl {
     /// track output, and the asset (kept alive for the duration of the
     /// reader). Caller drops all three when the reader is exhausted or
     /// being rebuilt for seek.
+    type ReaderParts = (
+        objc2::rc::Retained<AVURLAsset>,
+        objc2::rc::Retained<AVAssetReader>,
+        objc2::rc::Retained<AVAssetReaderTrackOutput>,
+    );
+
     unsafe fn build_reader(
         path: &str,
         start_ms: Option<u64>,
-    ) -> Result<
-        (
-            objc2::rc::Retained<AVURLAsset>,
-            objc2::rc::Retained<AVAssetReader>,
-            objc2::rc::Retained<AVAssetReaderTrackOutput>,
-        ),
-        VideoError,
-    > {
+    ) -> Result<ReaderParts, VideoError> {
         let asset = build_asset(path)?;
         let video_type = AVMediaTypeVideo
             .ok_or_else(|| VideoError::Decoder("AVMediaTypeVideo unbound".to_owned()))?;
@@ -859,9 +857,9 @@ fn render_gradient_frame(width: u32, height: u32, frame_index: u64) -> Vec<u8> {
     let mut buf = Vec::with_capacity((width * height * 4) as usize);
     let phase = (frame_index % 256) as u8;
     for y in 0..height {
-        let row_base = ((y as u32 * 255) / height.max(1)) as u8;
+        let row_base = ((y * 255) / height.max(1)) as u8;
         for x in 0..width {
-            let r = ((x as u32 * 255) / width.max(1)) as u8;
+            let r = ((x * 255) / width.max(1)) as u8;
             let g = row_base.wrapping_add(phase);
             let b = phase.wrapping_add(row_base / 2);
             buf.push(r);

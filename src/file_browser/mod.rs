@@ -1574,7 +1574,7 @@ impl FileBrowserApp {
                 if !text.is_empty() {
                     text.push('\n');
                 }
-                text.push_str("\u{2026}");
+                text.push('\u{2026}');
             }
             egui::ScrollArea::vertical()
                 .max_height(max_height)

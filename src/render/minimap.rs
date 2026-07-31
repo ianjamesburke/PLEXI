@@ -103,6 +103,8 @@ pub fn minimap_panel_rect(
     ))
 }
 
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
 pub fn render_minimap(
     ui: &mut egui::Ui,
     content_rect: egui::Rect,

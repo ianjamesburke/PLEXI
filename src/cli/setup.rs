@@ -165,7 +165,7 @@ pub fn is_installed() -> bool {
         return true;
     }
     let name = cli_name();
-    std::env::var_os("PATH").map_or(false, |path| {
+    std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir| dir.join(&name).exists())
     })
 }

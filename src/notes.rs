@@ -403,7 +403,7 @@ pub(crate) fn migrate_legacy_workspace_notes(contexts: &[Context]) -> NotesMigra
         let mut note_paths: Vec<PathBuf> = notes
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |x| x == "md"))
+            .filter(|p| p.extension().is_some_and(|x| x == "md"))
             .collect();
         note_paths.sort();
 
@@ -673,12 +673,12 @@ pub(crate) fn substitute_action_tokens(cmd: &str, note_body: &str, fm: &NoteFron
     let cwd_str = fm
         .cwd
         .as_deref()
-        .map(|s| crate::host::shell::shell_quote(s))
+        .map(crate::host::shell::shell_quote)
         .unwrap_or_default();
     let ctx_root_str = fm
         .context_root
         .as_deref()
-        .map(|s| crate::host::shell::shell_quote(s))
+        .map(crate::host::shell::shell_quote)
         .unwrap_or_default();
 
     cmd.replace("{note}", &quoted_note)
@@ -722,7 +722,7 @@ pub(crate) fn scan_inbox() -> Vec<InboxNote> {
 
     let mut paths: Vec<(std::time::SystemTime, PathBuf)> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
+        .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
         .filter_map(|e| {
             let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
             Some((mtime, e.path()))
@@ -730,7 +730,7 @@ pub(crate) fn scan_inbox() -> Vec<InboxNote> {
         .collect();
 
     // Newest first.
-    paths.sort_by(|a, b| b.0.cmp(&a.0));
+    paths.sort_by_key(|e| std::cmp::Reverse(e.0));
 
     paths
         .iter()

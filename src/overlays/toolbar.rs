@@ -31,8 +31,8 @@ impl PlexiApp {
 
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if host_ui_gallery_available() {
-                    if button::toolbar_button(
+                if host_ui_gallery_available()
+                    && button::toolbar_button(
                         ui,
                         RichText::new("UI")
                             .size(style::TEXT_CAPTION)
@@ -51,7 +51,6 @@ impl PlexiApp {
                             }
                         );
                     }
-                }
 
                 if button::icon_button(ui, "?", "Keyboard shortcuts (\u{2318}/)", &self.colors)
                     .clicked()

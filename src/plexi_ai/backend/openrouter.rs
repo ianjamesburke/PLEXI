@@ -340,7 +340,7 @@ pub(super) fn stream_openai_compatible(
         };
 
         // Usage-only chunk: choices is empty/absent, usage is present.
-        if chunk["choices"].as_array().map_or(true, |c| c.is_empty()) {
+        if chunk["choices"].as_array().is_none_or(|c| c.is_empty()) {
             if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
                 let (inp, out) = parse_usage_tokens(usage);
                 input_tokens = inp;
@@ -445,12 +445,11 @@ pub(super) fn stream_openai_compatible(
 
         // Text delta
         if let Some(text) = choice["delta"]["content"].as_str() {
-            if !text.is_empty() {
-                if tx.send(StreamEvent::Text(text.to_string())).is_err() {
+            if !text.is_empty()
+                && tx.send(StreamEvent::Text(text.to_string())).is_err() {
                     // Receiver dropped — caller cancelled.
                     return;
                 }
-            }
         }
     }
 

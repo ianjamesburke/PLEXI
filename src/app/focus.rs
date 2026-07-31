@@ -1271,7 +1271,7 @@ impl PlexiApp {
             .into_iter()
             .map(|p| (std::fs::metadata(&p).and_then(|m| m.modified()).ok(), p))
             .collect();
-        with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+        with_mtime.sort_by_key(|e| std::cmp::Reverse(e.0));
 
         with_mtime
             .into_iter()

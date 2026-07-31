@@ -568,7 +568,7 @@ pub fn update_app_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(), 
     if !dest.join(".git").exists() {
         return Err("not a git checkout (likely bundled core app)".to_string());
     }
-    cloner.pull(&dest)?;
+    cloner.pull(dest)?;
     log::info!("update: {id} at {}", dest.display());
     Ok(())
 }
@@ -582,6 +582,7 @@ pub fn update_app_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(), 
 ///     `local:<id>` and version is `manifest.version` (or `bundled` if
 ///     unset). These re-install from the binary's embedded examples on
 ///     `plexi install --pack <path>`.
+///
 /// Apps without a parseable manifest are skipped with a warning.
 ///
 /// Returns the number of entries written.

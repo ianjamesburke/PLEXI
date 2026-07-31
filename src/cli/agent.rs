@@ -320,13 +320,13 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
         .any(|s| s.get("detail").and_then(|v| v.as_str()).is_some());
     if show_detail {
         println!(
-            "{:<12} {:<16} {:<12} {:<20} {}",
-            "PANE_ID", "AGENT", "STATE", "SESSION_ID", "DETAIL"
+            "{:<12} {:<16} {:<12} {:<20} DETAIL",
+            "PANE_ID", "AGENT", "STATE", "SESSION_ID"
         );
     } else {
         println!(
-            "{:<12} {:<16} {:<12} {}",
-            "PANE_ID", "AGENT", "STATE", "SESSION_ID"
+            "{:<12} {:<16} {:<12} SESSION_ID",
+            "PANE_ID", "AGENT", "STATE"
         );
     }
     for s in &filtered {

@@ -86,7 +86,7 @@ impl PlexiApp {
         let screen_rect = ctx.content_rect();
 
         // Modal — grows from ~25% to ~80% of screen height as the user types.
-        let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
+        let modal_w = (screen_rect.width() * 0.72).clamp(480.0, 864.0);
         let max_text_h = (screen_rect.height() * 0.8).max(80.0);
         let line_h = style::TEXT_BODY + 4.0;
         let initial_rows = ((screen_rect.height() * 0.25) / line_h).round() as usize;

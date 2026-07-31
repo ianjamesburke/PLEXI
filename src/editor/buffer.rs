@@ -77,13 +77,13 @@ impl TextBuffer {
 
     /// Total number of chars.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.rope.len_chars()
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.rope.len_chars() == 0
     }
 }

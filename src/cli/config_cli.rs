@@ -543,7 +543,7 @@ fn write_default_config(path: &std::path::Path) -> Result<(), String> {
     }
     if path.exists() {
         let bak = path.with_extension("toml.bak");
-        if let Err(e) = std::fs::copy(&path, &bak) {
+        if let Err(e) = std::fs::copy(path, &bak) {
             return Err(format!(
                 "could not back up config to {}: {e}",
                 bak.display()
@@ -551,7 +551,7 @@ fn write_default_config(path: &std::path::Path) -> Result<(), String> {
         }
         eprintln!("backed up existing config to {}", bak.display());
     }
-    match std::fs::write(&path, crate::config::CONFIG_TEMPLATE) {
+    match std::fs::write(path, crate::config::CONFIG_TEMPLATE) {
         Ok(()) => {
             eprintln!("✓ wrote default config to {}", path.display());
             Ok(())

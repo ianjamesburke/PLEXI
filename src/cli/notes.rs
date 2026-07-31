@@ -176,7 +176,7 @@ pub fn notes_list_cli() -> i32 {
             continue;
         };
         for entry in entries.filter_map(|e| e.ok()) {
-            if entry.path().extension().map_or(false, |x| x == "md") {
+            if entry.path().extension().is_some_and(|x| x == "md") {
                 if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
                     paths.push((mtime, entry.path()));
                 }
@@ -184,7 +184,7 @@ pub fn notes_list_cli() -> i32 {
         }
     }
 
-    paths.sort_by(|a, b| b.0.cmp(&a.0));
+    paths.sort_by_key(|e| std::cmp::Reverse(e.0));
     log::info!("notes_list: found {} notes", paths.len());
     for (_, path) in &paths {
         println!("{}", path.display());
@@ -221,7 +221,7 @@ pub fn notes_open_cli() -> i32 {
                     d.filter_map(|e| e.ok()).any(|e| {
                         std::path::Path::new(&e.file_name())
                             .extension()
-                            .map_or(false, |x| x == "md")
+                            .is_some_and(|x| x == "md")
                     })
                 })
                 .unwrap_or(false)

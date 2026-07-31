@@ -139,6 +139,8 @@ fn wait_for_agent_boot(response_file: &str, agent: &AgentBootRequest) -> i32 {
 /// `context_name` targets the named context wherever it is (terminal spawns
 /// only — the host resolves the name and errors back when it does not exist);
 /// `None` keeps the caller-derived targeting.
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
 pub fn pane_new_cli(
     cmd: Option<&str>,
     name: Option<&str>,

@@ -281,8 +281,7 @@ fn renumber_following(
     ops: &mut Vec<EditOperation>,
 ) {
     let mut offset = initial_offset;
-    let mut expected = first_expected;
-    for l in (line + 1)..buffer.line_count() {
+    for (expected, l) in (first_expected..).zip((line + 1)..buffer.line_count()) {
         let text = movement::line_text(buffer, l);
         let Some(m) = parse_marker(&text) else { break };
         let Some(n) = m.ordered else { break };
@@ -308,7 +307,6 @@ fn renumber_following(
             });
             offset += new_digits.chars().count() as isize - old_digits.chars().count() as isize;
         }
-        expected += 1;
     }
 }
 

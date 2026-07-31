@@ -45,11 +45,11 @@ fn check_openrouter() -> OpenRouterReport {
         match key {
             None => {
                 log::info!("cli:doctor: OPENROUTER_API_KEY not found in keychain");
-                return OpenRouterReport {
+                OpenRouterReport {
                     configured: false,
                     model_count: None,
                     status: "not configured".to_string(),
-                };
+                }
             }
             Some(key) => {
                 log::info!("cli:doctor: OPENROUTER_API_KEY found -- validating via API");

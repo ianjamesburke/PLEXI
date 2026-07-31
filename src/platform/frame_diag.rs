@@ -160,7 +160,7 @@ pub fn snapshot_and_reset() -> Vec<(RepaintCause, u32)> {
         .map(|&cause| (cause, COUNTERS[cause as usize].swap(0, Ordering::Relaxed)))
         .filter(|&(_, n)| n > 0)
         .collect();
-    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.sort_by_key(|e| std::cmp::Reverse(e.1));
     counts
 }
 

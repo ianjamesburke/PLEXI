@@ -76,7 +76,7 @@ impl PlexiApp {
 
         let mut panes = Vec::with_capacity(current_len);
         for window in &self.windows {
-            for (_, pane) in &window.panes {
+            for pane in window.panes.values() {
                 if let Some(app) = pane.as_app() {
                     panes.push(PaneContext {
                         type_id: app.manifest_id.clone(),

@@ -262,12 +262,11 @@ pub struct ToolCallResult {
 
 /// Map from `call_id` → sender that will receive the `ToolCallResult` once
 /// `DrawCommand::ToolResult` arrives.
-static PENDING_CALLS: OnceLock<
-    Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>>,
-> = OnceLock::new();
+type PendingCallMap = Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>>;
 
-fn pending_calls(
-) -> &'static Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>> {
+static PENDING_CALLS: OnceLock<PendingCallMap> = OnceLock::new();
+
+fn pending_calls() -> &'static PendingCallMap {
     PENDING_CALLS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 

@@ -356,6 +356,8 @@ impl AssistantRenderer {
     /// turn, in strict chronological order (stint 0455). `index_offset` is
     /// the slice's absolute start index into `model.turns`, so cross-frame
     /// widget/cache keys stay stable.
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     fn draw_turn_range(
         ui: &mut egui::Ui,
         md_cache: &mut egui_commonmark::CommonMarkCache,
@@ -505,6 +507,8 @@ impl AssistantRenderer {
         );
     }
 
+    // Arg-struct refactor is a design change tracked in stint 0661.
+    #[allow(clippy::too_many_arguments)]
     fn draw_turn_row(
         ui: &mut egui::Ui,
         md_cache: &mut egui_commonmark::CommonMarkCache,

@@ -168,7 +168,7 @@ pub fn start_host_mcp_server(
                 }
             }
         })
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     log::info!("host_mcp: started on 127.0.0.1:{port}");
     Ok((port, token))

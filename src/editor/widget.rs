@@ -41,7 +41,7 @@ fn caret_blink_visible(elapsed_since_activity: f64, interval: f64) -> bool {
     if elapsed_since_activity < 0.0 {
         return true;
     }
-    (elapsed_since_activity / interval) as u64 % 2 == 0
+    ((elapsed_since_activity / interval) as u64).is_multiple_of(2)
 }
 
 /// Wall-clock delay until the caret's next visibility flip, so the widget can
@@ -141,8 +141,10 @@ fn prepare_layout_job(
         .map(|(byte, _)| byte)
         .chain(std::iter::once(source_text.len()))
         .collect();
-    let mut job = LayoutJob::default();
-    job.wrap = source_job.wrap;
+    let mut job = LayoutJob {
+        wrap: source_job.wrap,
+        ..Default::default()
+    };
     for (display_column, ch) in display_text.chars().enumerate() {
         let source_column =
             display_to_source[display_column].min(source_char_bytes.len().saturating_sub(1));
@@ -1165,6 +1167,9 @@ impl<'a> EditorWidget<'a> {
     /// Lays out one line's galley: syntax-colored via the span provider in
     /// code mode, single-color otherwise (and as the unknown-language
     /// fallback).
+    // Argument-struct refactor is a design change tracked in stint 0661;
+    // this is the narrow exception, not a pattern to copy.
+    #[allow(clippy::too_many_arguments)]
     fn line_galley(
         &mut self,
         ui: &Ui,
@@ -1255,6 +1260,9 @@ impl<'a> EditorWidget<'a> {
         })
     }
 
+    // Argument-struct refactor is a design change tracked in stint 0661;
+    // this is the narrow exception, not a pattern to copy.
+    #[allow(clippy::too_many_arguments)]
     fn paint(
         &mut self,
         ui: &Ui,
