@@ -892,6 +892,7 @@ pub fn ensure_profile_initialized() -> bool {
     let stamp_path = sdk_dir.join(".sdk_version");
     let current_version = env!("CARGO_PKG_VERSION");
     let needs_extract = !sdk_dest.exists()
+        || !sdk_dir.join("pyproject.toml").is_file()
         || std::fs::read_to_string(&stamp_path)
             .map(|v| v.trim() != current_version)
             .unwrap_or(true);
@@ -907,11 +908,18 @@ pub fn ensure_profile_initialized() -> bool {
                 eprintln!("profile init: failed to seed SDK: {e}");
             } else {
                 let _ = std::fs::create_dir_all(&sdk_dir);
-                let _ = std::fs::write(&stamp_path, current_version);
-                log::info!(
-                    "profile init: seeded SDK v{current_version} to {}",
-                    sdk_dest.display()
-                );
+                if let Err(e) = std::fs::write(
+                    sdk_dir.join("pyproject.toml"),
+                    include_str!("../../sdk/python/pyproject.toml"),
+                ) {
+                    eprintln!("profile init: failed to seed SDK metadata: {e}");
+                } else {
+                    let _ = std::fs::write(&stamp_path, current_version);
+                    log::info!(
+                        "profile init: seeded SDK v{current_version} to {}",
+                        sdk_dest.display()
+                    );
+                }
             }
         }
     } else {
