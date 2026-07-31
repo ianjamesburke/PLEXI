@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.3] — 2026-07-31
+
+### Changes
+- fix(host): drop needless borrows of &Path in adopt_python_state_orphan (#2538)
+- fix(apps/todo): manifest described a state file the app never writes (#2534)
+- Reclaim channel-scoped app state (#2531)
+- fix(host): attribute tracebacks and quarantine pre-v3 apps (#2530)
+- fix(sdk): resolve version from installed metadata too
+- fix(sdk): fail loudly on missing version metadata
+- fix(sdk): unify packaged Python SDK version
+- fix: port repo apps to SDK v3 (#2527)
+- fix(release): refuse just bump with no commits since last stable tag (#2523)
 ## [0.2.2] — 2026-07-29
 
 ### Changes

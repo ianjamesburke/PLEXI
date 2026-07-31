@@ -2,7 +2,7 @@
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
 skill_version: "4.4.3"
-plexi_version: "0.2.2"
+plexi_version: "0.2.3"
 last_verified: "2026-07-29"
 ---
 
