@@ -18,6 +18,19 @@ policy = "codex-first"          # workers and testers
 head_engine = "claude"
 head_tier = "medium"
 
+# MERGE RUNNER — Ian's ruling 2026-07-31: merging never needs the top tier.
+# A clean merge is mechanical: confirm green checks, confirm mergeable, merge,
+# close the stint, delete the branch. Delegate it to a fresh SMALL-tier pane
+# (`cs`) instead of spending head context and Opus tokens on it.
+merge_runner_tier = "small"
+# EXPLICIT CARVE-OUT, stated out loud rather than buried: the small runner does
+# CLEAN merges only. It must escalate back to the head, never improvise, when it
+# hits a conflict, a red or missing check, a PR that is not MERGEABLE, or a
+# tester FAIL that looks wrong. Conflict resolution and overruling a false FAIL
+# are judgment, not mechanics, and those stay with the head.
+merge_runner_escalates_on = ["conflict", "checks-not-green", "not-mergeable", "disputed-fail"]
+
+
 [authorization]
 # Standing pre-authorization from Ian (2026-07-28). A run needs no per-dispatch
 # auto-merge grant. Flip to false to force per-merge approval.
@@ -63,4 +76,16 @@ codex_head_clock = "external-heartbeat"  # operator loop prompts 'cycle'
 # spend idle anyway. Effect: the tester's pr-install in the same worktree
 # becomes an incremental build — the single biggest cycle-time cut available
 # (Ian spotted it 2026-07-29). Provenance contract unchanged.
-prewarm_release_build = true
+prewarm_release_build = false   # 2026-07-31: OFF. Every worker running cargo build --release in its own worktree spawned ~20 concurrent cargo / 9 rustc and drove Ian's machine into OOM warnings. Re-enable only with a hard lane cap and a global build lock.
+
+[limits]
+# Added 2026-07-31 after Ian hit out-of-memory warnings with ~10 panes live.
+# Hard ceiling on CONCURRENT workers + testers across the whole run. Ian's words:
+# eight "seems kind of high". Four is the working default; raise only if he says so.
+max_concurrent_lanes = 4
+# Never run more than one cargo build at a time across lanes. Rust builds are the
+# memory hog, not the agents; N parallel release builds is what OOMed the machine.
+max_concurrent_cargo_builds = 1
+# When the cap is hit, PAUSE new lanes rather than queueing more panes. Resume as
+# lanes finish. An idle fleet is the normal failure mode; an unusable laptop is worse.
+on_cap = "pause"

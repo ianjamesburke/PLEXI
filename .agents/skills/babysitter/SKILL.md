@@ -281,7 +281,7 @@ For each **batch**, in order:
      When the worker reports fixed, **close the previous tester pane and open a NEW tester pane (its tier alias)** for the re-check (never reuse the warm one), and give it a **targeted re-check, not a full re-run**:
      > "New commits pushed to PR #`<PR#>` (<what changed>). Re-install and re-validate ONLY the changed path thoroughly, plus a one-item smoke of the previously-passed area. Everything else already passed at <prior commit> — do not repeat it. PASS or bugs?"
      Loop worker ↔ (a fresh tester each round) until a tester returns a clean PASS. You are the only channel between them, and you hold the running summary of what already passed so each fresh tester only re-checks the delta.
-   - **PASS** → proceed to merge.
+   - **PASS** → proceed to merge. **Merging is delegated, not done by the head.** Spawn a fresh SMALL-tier pane (`cs`, per `[engines].merge_runner_tier`) whose entire job is: confirm the PR is `MERGEABLE` with green checks, merge it, close the stint, delete the branch, report the merge commit, done. Merging is mechanical and does not deserve head context or top-tier tokens. The runner escalates back to the head — and never improvises — on any of `[engines].merge_runner_escalates_on`: a conflict, checks not green or missing, a PR that is not `MERGEABLE`, or a tester FAIL it thinks is wrong. Conflict resolution and overruling a false FAIL are judgment and stay with the head.
 
 5. **Merge — after tester PASS *and* the human gate.** A PASS is not permission to merge.
 
