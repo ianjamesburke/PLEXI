@@ -82,8 +82,12 @@ jobs:
         run: bash scripts/fetch-cpython-bundle.sh
 
       - name: Test host
-        # Alpha has five known host-suite failures; retain these explicit skips
-        # until each test is independently repaired without masking new failures.
+        # One documented skip. headless_frame_fails_fast_when_the_guest_dies_at_import
+        # is a real pre-existing alpha defect (guest death at import is reported via
+        # the 15s timeout backstop instead of the process-exit path); it fails
+        # identically on clean alpha in CI and locally. Tracked in stint 0663,
+        # which deletes this line when the defect is fixed. Baseline: zero-skip
+        # CI run on clean alpha showed 2122 passed and exactly this 1 failure.
         run: |
           skip_args=()
           if [ "$WASI_BUNDLE_MODE" = "skip" ]; then
@@ -94,11 +98,7 @@ jobs:
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
             cargo test --bin plexi -- \
-            --skip send_to_pane_searches_all_windows \
-            --skip pgap_send_to_pane_forwarded_with_panes_control \
             --skip headless_frame_fails_fast_when_the_guest_dies_at_import \
-            --skip pane_send_submit_completes_while_window_hidden \
-            --skip pane_send_submit_unconfirmed_reports_observed_input_line \
             ${skip_args[@]+"${skip_args[@]}"}
 
   clippy:
