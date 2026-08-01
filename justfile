@@ -472,6 +472,33 @@ merge-close ISSUE PR:
 merge-close-stints PR +STINTS:
     bash scripts/merge-pr.sh close-stints {{PR}} {{STINTS}}
 
+# Babysitter pipeline mechanics (bs- namespace): deterministic lane operations
+# so agent transcripts carry judgment only. Each publishes a typed JSON slot
+# report via scripts/bs-slot.sh.
+
+# Start a stint lane: assert alpha clean+synced, mint the wtp worktree from
+# alpha HEAD, claim the stint(s). Multiple ids = one batch lane (one worktree,
+# multi-id branch, one PR). Last output line is the worktree path.
+bs-start +stints:
+    bash scripts/bs-start.sh {{stints}}
+
+# Start-over button: force-wipe the stint's worktree+branch, uninstall its
+# plexi-pr-* build, unclaim, then re-run bs-start. Idempotent.
+bs-reset stint:
+    bash scripts/bs-reset.sh {{stint}}
+
+# Validation setup: resolve branch/worktree from the PR, run `just pr-install`.
+# Prints BRANCH= / WORKTREE= / HEAD= lines for the calling skill.
+bs-validate-setup pr:
+    bash scripts/bs-validate-setup.sh {{pr}}
+
+# Merge + retire the lane: `just merge-pr`, uninstall plexi-pr-<N>, confirm
+# the worktree was reaped (hard error if it survived).
+#   just bs-merge 2542
+#   just bs-merge 2542 no-issue
+bs-merge pr *flags:
+    bash scripts/bs-merge.sh {{pr}} {{flags}}
+
 # Dispatch Claude agents at one or more issues. Labels each "in progress" first
 # to prevent double-claiming when multiple dispatches run close together.
 # TODO: replace `c` with `claude --dangerously-skip-permissions` once this flow
