@@ -255,7 +255,6 @@ plexi config reset
         "cli",
         "marketplace",
         "file_handlers",
-        "app_state",
     ];
     if let Some(s) = structs.get("PlexiConfig") {
         let scalar: Vec<&FieldInfo> = s
@@ -418,18 +417,6 @@ All fields are optional. Omitting the section uses the official `plexiapp.com` r
 "#
     );
     if let Some(s) = structs.get("MarketplaceConfig") {
-        emit_table(&s.fields);
-    }
-
-    // ── App state ────────────────────────────────────────────────────────────
-    print!(
-        r#"### App state (`[app_state]`)
-
-App state is channel-neutral: every channel reads and writes `.plexi/app_states/`. Legacy channel-suffixed copies (`.plexi-<channel>/app_states/`) are reclaimed on app launch — the newest is adopted as the canonical state and the rest are superseded.
-
-"#
-    );
-    if let Some(s) = structs.get("AppStateConfig") {
         emit_table(&s.fields);
     }
 

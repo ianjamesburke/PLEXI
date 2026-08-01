@@ -45,7 +45,6 @@ pub(crate) fn python_launch_config_from_parts(
         workspace_root: app_dir.to_path_buf(),
         capabilities: capabilities.to_vec(),
         allowed_hosts: allowed_hosts.to_vec(),
-        superseded_orphan_policy: Default::default(),
     }
 }
 

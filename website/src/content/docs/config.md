@@ -268,14 +268,6 @@ All fields are optional. Omitting the section uses the official `plexiapp.com` r
 | `account_url` | string | `crate::app::account::DEFAULT_ACCOUNT_URL` | Override the accounts service base URL. Default: `crate::app::account::DEFAULT_ACCOUNT_URL` (`plexiapp.com`). |
 | `account_email` | string | — | Default email pre-filled by `plexi account login`. Unset = prompt. |
 
-### App state (`[app_state]`)
-
-App state is channel-neutral: every channel reads and writes `.plexi/app_states/`. Legacy channel-suffixed copies (`.plexi-<channel>/app_states/`) are reclaimed on app launch — the newest is adopted as the canonical state and the rest are superseded.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `superseded_orphans` | SupersededOrphanPolicy | — | Disposal of a channel-suffixed app-state orphan that lost the reclaim to a newer orphan or to an existing canonical file. `"archive"` (default) renames it to an inert `<app_id>.json.superseded` sibling; `"remove"` deletes it, but only when its bytes are proven identical to the canonical state — a divergent orphan is archived even under `"remove"`, because unproven-copied data is never deleted. |
-
 ## Default config.toml
 
 This is the built-in template Plexi writes when it creates or resets the active channel config.
@@ -384,13 +376,4 @@ tips = true
 # account_url     = "https://plexiapp.com"
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
-
-[app_state]
-# App state is channel-neutral (.plexi/app_states/); channel-suffixed copies
-# (.plexi-<channel>/app_states/) are reclaimed on app launch. This picks what
-# happens to a copy superseded by the reclaim:
-#   "archive" (default) rename it to an inert <app_id>.json.superseded sibling
-#   "remove"            delete it — but only when byte-identical to the
-#                       canonical state; a divergent copy is archived instead
-# superseded_orphans = "archive"
 ```
