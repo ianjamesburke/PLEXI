@@ -753,7 +753,7 @@ Control panes — list, focus, send input, capture output, and more
 | `drop` | Drop a local file or image URL onto a pane |
 | `click` | Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation |
 | `drag` | Drag the pointer across an app pane through the production input path: press, N intermediate moves, release — delivered one frame at a time |
-| `command` | Send a shell command to a terminal pane as if typed from the keyboard |
+| `command` | Send an ordinary shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
 | `slot` | Manage host-managed named file slots for a pane |
 
@@ -954,9 +954,11 @@ Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
 
 ### `plexi pane command`
 
-Send a shell command to a terminal pane as if typed from the keyboard.
+Send an ordinary shell command to a terminal pane as if typed from the keyboard.
 
-Use `--enter` to append a newline so the command is submitted immediately.
+`--enter` submits it through the same host-confirmed settle -> Enter -> confirm sequence as `pane send --submit` (see that command for the full contract), rather than racing a raw newline against the shell's line editor. Exits 0 only once the host confirms the command was submitted; on an unconfirmed submit it exits non-zero and prints the observed input line to stderr. Terminal panes only.
+
+This verb is scoped to ordinary shell commands. Driving an interactive TUI belongs to `plexi pane send --submit`; booting another agent belongs to `plexi pane new --agent`.
 
 Example: plexi pane command 42 "git status" --enter
 
@@ -964,7 +966,7 @@ Example: plexi pane command 42 "git status" --enter
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to send the command to (from `plexi pane list`) |
 | `<text>` | string | yes | Text to send to the pane |
-| `--enter` / `-e` | flag | no | Append a newline after the text, submitting it as a command |
+| `--enter` / `-e` | flag | no | Submit the command through the host-confirmed settle -> Enter -> confirm sequence, instead of just typing it |
 
 ### `plexi pane state`
 

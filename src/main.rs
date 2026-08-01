@@ -874,14 +874,16 @@ fn main() -> eframe::Result {
                             text,
                             enter,
                         } => {
-                            let payload = if enter { format!("{text}\n") } else { text };
                             log::info!(
                                 "pane_command:cli: pane_id={pane_id} len={} enter={enter}",
-                                payload.len()
+                                text.len()
                             );
-                            // `pane command` is the type-only verb: it never
-                            // takes the host's submit path.
-                            std::process::exit(cli::pane_send_cli(pane_id, &payload, false));
+                            // `--enter` takes the exact host-confirmed submit
+                            // path `pane send --submit` uses (settle, Enter,
+                            // confirm) instead of racing a raw newline against
+                            // the shell's line editor. Without `--enter` this
+                            // stays the type-only verb, same as `pane send`.
+                            std::process::exit(cli::pane_send_cli(pane_id, &text, enter));
                         }
                         PaneCmd::Key { pane_id, key } => {
                             std::process::exit(cli::pane_key_cli(pane_id, &key))

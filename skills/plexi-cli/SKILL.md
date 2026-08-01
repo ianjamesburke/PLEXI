@@ -18,7 +18,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 ## Feature map
 
 - **Panes** — create terminals, control their input and focus, inspect them, and
-  coordinate work: `plexi pane --help`.
+  coordinate work: `plexi pane --help`. Running a command in another pane:
+  `pane command <id> "<cmd>" --enter` is the host-confirmed submit for an
+  ordinary shell command (exits 0 only once the host confirms it ran);
+  `pane send --submit` is the same contract for driving an interactive TUI,
+  and `pane new --agent` is the dedicated verb for booting another agent.
 - **Slots** — store a small, named pane result that another pane can inspect or
   wait for: `plexi pane slot --help`.
 - **Contexts** — create or enter scoped project spaces, including pre-populated

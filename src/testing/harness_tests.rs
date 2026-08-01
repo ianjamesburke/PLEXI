@@ -6374,4 +6374,109 @@ mod pane_send_submit_tests {
             "a plain send must type the text and nothing else"
         );
     }
+
+    /// Regression for stint 0654: `pane command <id> "<cmd>" --enter` used to
+    /// write `<cmd>\n` as one raw blob with `submit=false`, so it raced the
+    /// shell's own line-editor/completion machinery — observed live as an
+    /// ambiguous-prefix alias opening a completion menu (`cm` -> `cm cmp
+    /// cmpdylib cmuwmtopbm`) instead of running. `--enter` now issues the
+    /// exact same `SendToPane { submit: true }` request as `pane send
+    /// --submit`, so the shell only sees Enter once settled, and the outcome
+    /// is asserted on the pane's rendered tail rather than the write
+    /// returning `Ok`.
+    #[test]
+    fn pane_command_enter_runs_ambiguous_prefix_alias_instead_of_completing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        // The exact ambiguous-prefix shape from the live failure: one alias
+        // plus several longer names sharing its prefix. Kept as short
+        // individual lines — a long setup line wraps across terminal
+        // columns, which corrupts the tail-scoping below.
+        type_only(&h, term, "alias cm='echo cm-ran'\n", None);
+        type_only(&h, term, "alias cmp='echo cmp-ran'\n", None);
+        type_only(&h, term, "cmpdylib() { :; }\n", None);
+        type_only(&h, term, "cmuwmtopbm() { :; }\n", None);
+        settle_terminal(&mut h, term);
+
+        let response = temp_response(tmp.path(), "pane-command-enter");
+        // `pane command <id> "cm" --enter` now maps 1:1 onto this request —
+        // see the `PaneCmd::Command` arm in `src/main.rs`.
+        submit(&h, term, "cm", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, false);
+        assert_eq!(
+            reply["ok"].as_bool(),
+            Some(true),
+            "the host must confirm the alias was submitted: {reply}"
+        );
+
+        wait_for_output(&mut h, term, "cm-ran");
+        let observed = tail(&mut h, term);
+        // Scope the check to what the shell produced *after* the `cm`
+        // invocation echoed back — the setup line above legitimately
+        // mentions `cmpdylib`/`cmuwmtopbm` by name and must not trip this.
+        // Match the invocation line by its ending rather than a whole-line
+        // prompt string: the prompt rendering differs between the local
+        // harness (`› cm`) and CI's shell (`host:dir runner$ cm`), and a
+        // literal match silently falling back to the full scrollback on a
+        // miss is how a broken locator becomes a false failure.
+        let anchor = observed
+            .iter()
+            .rposition(|line| {
+                let trimmed = line.trim_end();
+                trimmed != "cm-ran" && trimmed.ends_with("cm")
+            })
+            .unwrap_or_else(|| {
+                panic!("could not locate the `cm` invocation line in the pane tail: {observed:?}")
+            });
+        let after_invocation = &observed[anchor + 1..];
+        assert!(
+            !after_invocation
+                .iter()
+                .any(|line| line.contains("cmpdylib") || line.contains("cmuwmtopbm")),
+            "the alias must run directly, never open a completion menu listing the ambiguous \
+             candidates: {observed:?}"
+        );
+    }
+
+    /// Regression for stint 0654's actual defect statement: "`pane command`
+    /// today always exits 0 whether or not anything ran." The pre-fix
+    /// `PaneCmd::Command { enter: true }` arm sent exactly this request —
+    /// `SendToPane { submit: false }` with a manually appended `\n` — which
+    /// answers `ok: true` the instant the bytes are queued for the PTY, with
+    /// no signal about what the shell did with them. `--enter` now sends
+    /// `submit: true` instead, and
+    /// `pane_send_submit_unconfirmed_reports_observed_input_line` above
+    /// proves that shape actually catches a swallowed command in this exact
+    /// scenario.
+    #[test]
+    fn pane_command_enter_old_shape_never_detects_a_swallowed_command() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        // A shell state where nothing typed from here on ever reaches the
+        // tail — the same setup `pane_send_submit_unconfirmed_reports_observed_input_line`
+        // uses to prove the new shape reports this as unconfirmed.
+        type_only(&h, term, "stty -echo; cat > /dev/null\n", None);
+        wait_for_output(&mut h, term, "cat > /dev/null");
+        settle_terminal(&mut h, term);
+
+        let response = temp_response(tmp.path(), "pane-command-old-shape");
+        type_only(&h, term, "never-ran\n", Some(response.clone()));
+        h.run_frames(1);
+
+        assert_eq!(
+            read_json_response(&response)["ok"].as_bool(),
+            Some(true),
+            "the pre-fix shape (`submit: false` plus a manually appended newline) reports \
+             success the instant the write is queued, even though the command was silently \
+             swallowed — this blindness is exactly why the reported failure was invisible \
+             to the caller"
+        );
+    }
 }
