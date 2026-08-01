@@ -49,6 +49,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install just
+        uses: taiki-e/install-action@v2.85.6
+
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -98,10 +101,8 @@ jobs:
 
       - name: Verify roadmap evidence
         run: |
-          python3 scripts/test-roadmap-evidence.py
-          env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
-            -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
-            python3 scripts/roadmap-evidence.py
+          just roadmap-evidence-fixtures
+          just roadmap-evidence
 
   clippy:
     name: clippy
