@@ -198,6 +198,18 @@ The spec assumes a chat host with an embedded iframe. Plexi is a tiling environm
 
 **A request is a request.** `ui/request-display-mode` and `ui/notifications/size-changed` are proposals the host arbitrates against the current layout. A guest never commands the tiling. That is the authority model's position applied to geometry, and it is why these map to pane *operations* rather than to direct writes.
 
+### Keyboard support for MCP-app panes
+
+**A focused iframe already receives keyboard input.** Basic keyboard interaction inside an MCP app needs no protocol change and no Plexi work: an app that binds keys in its own HTML works the day the pane exists. What the spec cannot express is *declaration* — a server has no way to tell a host which shortcuts it offers, so the host can neither render them nor arbitrate a collision. Everything below closes the declaration gap and nothing below touches the input path.
+
+**Decision: a Plexi vendor extension in the spec's own extensibility seam.** Shortcuts are declared in `_meta.ui` on the UI resource — the same namespace the spec already uses for `visibility` and `resourceUri` — each entry carrying a key combination, a short label, and a one-line description, with a runtime notification for shortcuts that change as the app changes mode. The extension is named under `io.plexi/*`, matching the reverse-DNS shape of the release's formalized identifiers (`io.modelcontextprotocol/tasks`), so it can be proposed upstream as a SEP later without a rename.
+
+Degradation runs both ways, and that is the design rather than a caveat: a non-Plexi host ignores an unknown `_meta` key and loses nothing, and a server that declares no shortcuts still works mouse-only exactly as it does today. Plexi-compliant MCP UIs with *optional* keyboard support.
+
+**Declared shortcuts render in the pane footer through the primitive that already exists.** `HintBar` and `HintGroup` in `src/ui/hints.rs` are the host's key→label footer — the Assistant's own composer renders its bindings through them. A declared MCP shortcut becomes a `HintGroup` entry and nothing else is built. That primitive's visual redesign is stint `0699`'s scope, filed on Ian's read that the current key→label footer is an ugly primitive, with a design deliverable rather than an implementation. This section consumes whatever `0699` produces: no second footer, no MCP-specific chrome.
+
+**Key arbitration is fail-visible.** Host-reserved chords — pane navigation, fullscreen, the rest of the host keymap — are never forwarded to the iframe. The host consumes them first, so an MCP app can never capture the keys a user needs in order to leave it. Everything else forwards while the pane is focused. A declared shortcut colliding with a reserved chord is **refused at declaration, with the collision named**, never shadowed silently at runtime — silent shadowing produces a footer advertising a key that does nothing, which is worse than an absent shortcut. This is §4's routing principle on a third surface: when two claimants want one name, fail where a person can see it rather than picking a winner quietly.
+
 ### Observability is centralized by construction
 
 Every iframe↔host message crosses one bridge. Instrumenting that bridge instruments every MCP app that will ever be installed — no per-server work, and more importantly no per-server *gap*. The records land in the same drain as everything else in §3, carrying the attribution `tool_dispatch` already logs on every invocation: caller app id and pane on one side, provider pane and tool name on the other.
