@@ -157,8 +157,7 @@ Later consolidation candidates (left untouched by 0327, not yet unified): notifi
 ## General Rules
 
 - When the user reports a bug, fix what they asked for first.
-- **Never read or write another system's storage directly.** Cross-system access goes through the typed surface — a CLI command, an SDK tool, a host API — never the backing file, state dir, or `~/.plexi*` path. An interface versions and throws; a file succeeds forever, including after nothing reads it. Concrete precedent: stint 0674 moved todo onto the SDK `state` API and every external writer to `~/.plexi/todos.json` kept "succeeding" into a dead file with no error. If a consumer needs something and no typed surface exists, build the surface — do not reach into the path.
-- **Moving or retiring a surface is not done until every consumer is migrated.** That burden is on whoever moves it, never on consumers to notice. Grep the old path repo-wide before the PR opens.
+- App/host state is reached through SDK tools or CLI, never a `~/.plexi*` path.
 - Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Delete or wire up.
 - Always run `cargo build` after work.
 - **Failed PR reset:** close the PR, revert worktree, comment on the issue, re-label `ready`, start fresh.
