@@ -169,7 +169,7 @@
           "type": "object"
         },
         "NotifyKind": {
-          "description": "The shape / interaction model of a notification.\n\n- `Message` — title + body, single Acknowledge button.\n- `Choice`  — title + body + N options; Enter picks the focused one, ↑↓/j-k\n              cycles, 1-9 direct-selects, optional per-option `shortcut` key.\n- `Input`   — title + body + a text field; Enter submits.\n\nFuture kinds (image / audio / video / rich) will land here without breaking\nexisting apps — `#[serde(default)]` on the field means missing `kind`\ndeserializes to `Message`.",
+          "description": "The shape / interaction model of a notification.\n\n- `Message` — title + body, single Acknowledge button.\n- `Choice`  — title + body + N options; Enter picks the focused one, ↑↓/j-k\n  cycles, 1-9 direct-selects, optional per-option `shortcut` key.\n- `Input`   — title + body + a text field; Enter submits.\n\nFuture kinds (image / audio / video / rich) will land here without breaking\nexisting apps — `#[serde(default)]` on the field means missing `kind`\ndeserializes to `Message`.",
           "enum": [
             "message",
             "choice",
@@ -664,6 +664,43 @@
             "title",
             "body",
             "priority"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remove a notification posted by the caller. The host verifies the\ncaller identity against the notification's stamped provenance.",
+          "properties": {
+            "notify_id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "source_context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "source_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "dismiss_notification",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "notify_id",
+            "response_file"
           ],
           "type": "object"
         },
@@ -1417,6 +1454,55 @@
             "type",
             "pane_id",
             "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Configure or disable a host-owned recurring terminal prompt.",
+          "properties": {
+            "every_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "off": {
+              "default": false,
+              "type": "boolean"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "pane_heartbeat",
+              "type": "string"
+            },
+            "while_idle_only": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "pane_id"
           ],
           "type": "object"
         },
@@ -2678,7 +2764,7 @@
           "type": "object"
         },
         {
-          "description": "Open a workspace artifact (file or directory) via the host.\n\nModes:\n  - `OpenInPane`        — open the path in a new app pane, e.g. a\n                          file browser at a directory or a text\n                          editor on a file. Implementation: routes\n                          through the file-browser app for\n                          directories; falls through to the OS\n                          default for files in this PR.\n  - `RevealInFinder`    — `open -R <path>` on macOS.\n  - `OpenWithDefault`   — `open <path>` on macOS — uses Launch\n                          Services to pick the registered app for\n                          the file's UTI.\n\nCapability: `terminal.bindings`. All fields required.",
+          "description": "Open a workspace artifact (file or directory) via the host.\n\nModes:\n  - `OpenInPane` — open the path in a new app pane, e.g. a file\n    browser at a directory or a text editor on a file.\n    Implementation: routes through the file-browser app for\n    directories; falls through to the OS default for files in\n    this PR.\n  - `RevealInFinder` — `open -R <path>` on macOS.\n  - `OpenWithDefault` — `open <path>` on macOS — uses Launch\n    Services to pick the registered app for the file's UTI.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "mode": {
               "$ref": "#/$defs/ArtifactOpenMode"
@@ -3857,7 +3943,7 @@
           "type": "object"
         },
         {
-          "description": "Pane group CWD broadcast. Apps in the same group receive this when any\nmember's CWD changes.",
+          "description": "Pane group CWD broadcast. **Declared, never constructed** — no host path\nemits this today; `sync_app_cwd` reassigns `workspace_root` in place\ninstead. Do not cite it as the mechanism behind a cwd-scoping symptom.",
           "properties": {
             "cwd": {
               "type": "string"
@@ -3913,7 +3999,7 @@
           "type": "object"
         },
         {
-          "description": "Host theme changed (config hot-reload or macOS system appearance toggle).\nApp should update its color state; the next render will pick up the new colors.",
+          "description": "Host theme changed through Plexi configuration.\nApp should update its color state; the next render will pick up the new colors.",
           "properties": {
             "colors": {
               "additionalProperties": {

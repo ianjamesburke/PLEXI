@@ -1,5 +1,108 @@
 use super::super::*;
 use crate::testing::HostHarness;
+use std::sync::{Arc, Mutex};
+
+struct ThemeEventRecorder {
+    events: Arc<Mutex<Vec<crate::app_protocol::PlexiEvent>>>,
+}
+
+impl crate::app::app_trait::App for ThemeEventRecorder {
+    fn type_id(&self) -> &'static str {
+        "theme-event-recorder"
+    }
+
+    fn display_name(&self) -> String {
+        "Theme event recorder".to_string()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn ui(
+        &mut self,
+        _ui: &mut egui::Ui,
+        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+    }
+
+    fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+        self.events.lock().expect("event recorder").push(event);
+    }
+}
+
+fn add_theme_event_recorder(
+    app: &mut PlexiApp,
+    window_index: usize,
+    hidden: bool,
+) -> Arc<Mutex<Vec<crate::app_protocol::PlexiEvent>>> {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let pane_id = app.host.alloc_pane_id();
+    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+        pip_status: None,
+        id: pane_id,
+        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(ThemeEventRecorder {
+            events: events.clone(),
+        })),
+        workspace_root: "/tmp".into(),
+        permissions: crate::app::permissions::AppPermissions::builtin(),
+        manifest_id: "theme-event-recorder".to_string(),
+        name: "theme-event-recorder".to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden,
+        agent: None,
+        slots: HashMap::new(),
+        semantic_state: Default::default(),
+    }));
+    app.windows[window_index].panes.insert(pane_id, pane);
+    let tile = app.windows[window_index].tree.tiles.insert_pane(pane_id);
+    if app.windows[window_index].tree.root().is_none() {
+        app.windows[window_index].tree.root = Some(tile);
+    }
+    events
+}
+
+#[test]
+fn theme_broadcast_reaches_background_apps_in_every_window() {
+    let ctx = egui::Context::default();
+    let frame_tick = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+    let background_events = add_theme_event_recorder(&mut app, 0, true);
+    app.windows.push(crate::host::context::Window {
+        name: "inactive".to_string(),
+        path: "/tmp".into(),
+        tree: egui_tiles::Tree::empty("inactive-theme-window"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 2,
+        context_id: 2,
+    });
+    let inactive_events = add_theme_event_recorder(&mut app, 1, false);
+    let parked_events = Arc::new(Mutex::new(Vec::new()));
+    app.background_apps.insert(
+        "parked-theme-recorder".to_string(),
+        (
+            1,
+            Box::new(ThemeEventRecorder {
+                events: parked_events.clone(),
+            }),
+        ),
+    );
+
+    app.broadcast_theme_event();
+
+    for events in [background_events, inactive_events, parked_events] {
+        let events = events.lock().expect("event recorder");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], crate::app_protocol::PlexiEvent::Theme { .. }));
+    }
+}
 
 // ── Focus history tests ───────────────────────────────────────────────────
 

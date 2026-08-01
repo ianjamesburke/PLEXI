@@ -484,6 +484,7 @@ impl PlexiApp {
             .map(|capability| capability.as_str().to_string())
             .collect();
         config.allowed_hosts = permissions.allowed_hosts.clone();
+        config.theme = self.colors.to_theme_map();
         let app_id = config.app_id.clone();
         let runtime = crate::host::wasm_python::LivePythonPane::launch(config)
             .map_err(|error| error.to_string())?;

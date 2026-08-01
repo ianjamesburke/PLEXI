@@ -122,6 +122,32 @@ def _find_events(events: list[dict], event_type: str) -> list[dict]:
     return [e for e in events if e.get("type") == event_type]
 
 
+def test_theme_event_schedules_render(tmp_path):
+    app = tmp_path / "theme_app.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return []
+
+        def update(event):
+            return []
+
+        def view():
+            return Text("theme")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_app(proc)
+        _send_event(proc, {"type": "theme", "colors": {"fg": "#123456"}})
+        events = _render(proc)
+        assert _find_events(events, "schedule_render"), (
+            "a Theme event must schedule a render so the new colors become visible"
+        )
+    finally:
+        proc.kill()
+
+
 def test_protocol_output_flushes_one_batch_per_input_event(monkeypatch):
     from plexi_sdk import _v3_runtime as runtime
 

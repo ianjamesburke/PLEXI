@@ -161,7 +161,7 @@ pub enum PlexiEvent {
     Resume,
     /// App is being closed. Process must exit within a short timeout.
     Shutdown,
-    /// Host theme changed (config hot-reload or macOS system appearance toggle).
+    /// Host theme changed through Plexi configuration.
     /// App should update its color state; the next render will pick up the new colors.
     Theme {
         /// Updated role → #rrggbb map. Same roles as the Init `theme` field.
