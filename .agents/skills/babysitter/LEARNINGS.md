@@ -266,3 +266,148 @@ against state the head has NOT yet ruled on, never against raw current state.
   point the silent-no-op class disappears.
 - fired: 2026-08-01
 - runs: 0
+
+### L019 — A worker can silently escalate its own model tier
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: worker-3 (pane 723) was launched `com` = `gpt-5.6-terra` (medium, per RUN_CONFIG
+  `worker_tier`). Midway through the CI fix round its footer read `gpt-5.6-sol high` — `col`, the
+  LARGE tier. Nobody authorized it; the head only noticed because the model string happened to be
+  visible in a routine buffer tail. RUN_CONFIG's tier is set at launch and the head never re-checks
+  it, so a self-escalation is invisible and unbounded for the life of the pane. Ian's standing rule
+  is that large requires his say-so or a hard-reject after the configured tier has failed. A
+  `/model` sent to switch back was accepted as a command but the footer did not change; the head
+  declined to grind on the TUI mid-run.
+- rule: Read the tier off the pane footer whenever you capture it, and treat a tier that does not
+  match RUN_CONFIG as an incident: state it, and do not let it carry into further substantive work.
+  Launch tier is an assumption with a shelf life, not a fact.
+- falsification: delete if the host makes a pane's tier immutable after launch, or exposes it as a
+  slot the head can assert on — at which point this becomes a HOST fix rather than a watch habit.
+- fired: 2026-08-01
+- runs: 0
+
+### L020 — "Nothing pending" reads identically to "nothing started"
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: The head's CI watch broke when no check was `pending`. Immediately after a new push, the
+  run's jobs are not registered yet: `gh pr checks` returns only CodeRabbit (always instantly
+  `pass`), nothing is pending, and the watch declared CI terminal 180s in while `clippy` and `test`
+  had not started. Third variant of the same bug in one run — a condition that cannot distinguish
+  two opposite states (L013: idle-vs-wedged; L015a: red-I-ruled-on vs red-that-is-new).
+- rule: Require the real jobs to be PRESENT before trusting terminality — count non-CodeRabbit rows
+  and demand at least one. Generally: before shipping any wake condition, name the state it would
+  ALSO match, and if that state is the opposite of what you want, the condition is wrong.
+- falsification: delete if `gh pr checks` gains an explicit "checks not yet created" state that the
+  head can test directly.
+- fired: 2026-08-01
+- runs: 0
+
+### L021 — A gate that has never run green is not a gate
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: Ian moved the roadmap evidence gate off the PR path to `schedule:` + `workflow_dispatch`
+  (sound: it re-ran the workspace suite plus every scene serially, ~25 min on every PR to answer a
+  release question). But GitHub only runs `schedule:` and `workflow_dispatch` from the DEFAULT
+  branch's copy of a workflow file, and `roadmap-evidence.yml` exists only on the PR branch. So the
+  gate cannot execute until the PR merges — meaning 0701 would ship a release-authority gate whose
+  first-ever execution is an unattended 09:00 UTC nightly, after every prior attempt had died on a
+  missing `just` or a scene timeout.
+- rule: When a PR introduces a gate that does not run on the PR path, its first successful execution
+  is part of that PR's Done-When, not a later surprise. Merge, then immediately `gh workflow run` it
+  on the default branch and watch it to a verdict attended. Never let the first run be the nightly.
+- falsification: delete if a gate is ever introduced off-PR-path and its first scheduled run passes
+  clean twice in a row without an attended dispatch, proving the attended step redundant.
+- fired: 2026-08-01
+- runs: 0
+
+### L022 — A new check can appear on a sha you already ruled green
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: The head ruled `8d4eb0d9` green (`clippy` pass, `test` pass) and armed its watch against
+  that sha, so CI was excluded from waking it. Minutes later a separate workflow run added an
+  `update-docs` check to the SAME sha, and it failed. The sha-based guard (L015a) that fixed the
+  fire-instantly bug had introduced a blind spot in the other direction: green is a verdict on the
+  checks that existed when you looked, not on the sha.
+- rule: "CI green" is never final while a PR is open. Re-read `gh pr checks` immediately before
+  merging, not only when the watch wakes; a check set can grow after a green reading.
+- falsification: delete if all repo workflows are consolidated so a PR's check set is fixed at push
+  time.
+- fired: 2026-08-01
+- runs: 0
+
+### L023 — Rule a red out of the gate only after proving it is not yours
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: `update-docs` failed with `[DocDr] Error [503] ... Under Construction` — plainly an
+  external service, and the tempting call was to wave it through as "not our bug" and merge. Instead
+  the head timestamped the workflow's recent runs: the same job SUCCEEDED on another branch at
+  23:40:07Z, 108 seconds AFTER this failure at 23:38:20Z. So it was a transient window, not an
+  outage — which means a re-run settles it definitively for ~30 seconds of wall clock, and merging
+  past a red on a plausible story was never necessary.
+- rule: An external-looking red still gets one cheap disproof before it is excluded from the gate:
+  check whether the same job passed elsewhere, and when. If it passed after your failure, re-run it
+  rather than reasoning about it. Only exclude a red you have evidence is unfixable by retry.
+- falsification: delete if two consecutive runs show a re-run of an external-service red failing
+  again, proving the retry step wasteful.
+- fired: 2026-08-01
+- runs: 0
+
+### L024 — `cargo test --exact` with a bare name runs nothing and exits 0
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: tester-1 ran `cargo test --bin plexi stable_and_rc_channels_disable_v1_stubbed_surfaces
+  -- --exact` and got `test result: ok. 0 passed; 0 failed; 0 ignored; 2178 filtered out` — exit 0,
+  the word "ok" in the output, and not one test executed. `--exact` matches the FULL module path
+  (`release::tests::<name>`), so a bare function name matches nothing. Had the tester read that as
+  its baseline, the whole falsification round would have been vacuous: revert the guard, "test still
+  ok", conclude the guard holds. Fourth instance tonight of a green signal that cannot distinguish
+  "worked" from "did nothing" (L013, L018, L020).
+- rule: Any test result with `0 passed` is INCONCLUSIVE, never a pass — check the passed count, not
+  the exit code. Falsification requires BOTH halves observed: the test green on the unmodified tree,
+  then red with the guard reverted. Brief testers with the full module path.
+- falsification: delete if the toolchain starts failing a filter that matches zero tests (cargo has
+  `--no-tests=fail` behind an unstable flag; delete when it is stable and adopted).
+- fired: 2026-08-01
+- runs: 0
+
+### L025 — "Agent idle" is not "work delivered"; read the remote, never the report
+- class: RULE
+- promoted: 2026-08-01 (merge-queue drain, PRs 2522/2532/2536/2555/2556/2557)
+- incident: Five separate agents in one session finished real work and then went idle without
+  pushing or reporting. Every time, the artifact existed and only the delivery was missing: 0654
+  had opened its PR and never said so; 0654's assertion fix sat as a local commit twice; the 2536
+  rebase was complete and clean while the head believed it was mid-conflict; the 2532 rebase had
+  been done for twenty minutes with `pgrep cargo|rustc` returning zero. One auditor produced
+  nothing across four idle notifications and had to be replaced. The head recovered every case by
+  reading the worktree and `git ls-remote` directly, never by waiting.
+- rule: Treat an idle notification as "check the remote," not as a status. Ground truth is
+  `git ls-remote origin <branch>` against the worktree HEAD, plus `gh pr view --json
+  mergeable,mergeStateStatus,updatedAt` — a PR whose `updatedAt` predates the agent's last claim
+  means nothing was pushed. When a deliverable is a report rather than a commit, have the agent
+  write it to a FILE incrementally and message only "file complete"; a message that is never sent
+  loses everything, a partially written file loses nothing.
+- falsification: delete if two consecutive runs show every agent reporting completion within a
+  minute of its last artifact, making the remote check redundant.
+- fired: 2026-08-01
+- runs: 0
+
+### L026 — A locator that silently widens on a miss is a false-failure generator
+- class: RULE
+- promoted: 2026-08-01 (stint 0654, PR #2557)
+- incident: A regression test scoped its assertion to output after the command echo via
+  `.rposition(|l| l.trim() == "› cm").map_or(observed.as_slice(), |i| &observed[i+1..])`. `"› cm"`
+  is the LOCAL harness prompt; CI's shell renders `host:dir runner$ cm`. The anchor never matched
+  on CI, `map_or` fell back to the entire scrollback — including the test's own setup lines, which
+  legitimately name the completion candidates being asserted absent — and the test failed three CI
+  rounds while the product fix was correct the whole time. It passed 5/5 locally each round. Same
+  shape as L018's `install-action` with no `tool:` input: a required thing missing degrades to a
+  permissive default instead of an error.
+- rule: A search that fails to find its anchor must panic, never fall back to a wider scope. Never
+  anchor a terminal assertion on a rendered prompt — match by suffix or by an emitted token that is
+  environment-independent. Generally: in tests and CI alike, "could not locate X" is a failure of
+  the harness and must say so; degrading to "check everything" or "do nothing" produces a signal
+  that cannot distinguish broken from working (L013, L018, L020, L024).
+- falsification: delete if a linting pass starts rejecting `map_or`/`unwrap_or` fallbacks on
+  locator results across the test suite, making the rule mechanically enforced.
+- fired: 2026-08-01
+- runs: 0
