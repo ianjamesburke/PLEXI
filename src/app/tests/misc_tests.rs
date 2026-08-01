@@ -330,16 +330,16 @@ fn file_handler_config_routes_extension_to_app() {
 }
 
 #[test]
-fn media_files_route_to_native_viewer_apps() {
+fn stable_routes_only_images_to_native_viewer_apps() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
     let (_tile, _pane) = app.add_test_pane();
 
-    for (filename, expected_id) in [
-        ("photo.png", "image-viewer"),
-        ("clip.mp4", "video-player"),
-        ("song.mp3", "audio-player"),
+    for (filename, expected_id, opens_pane) in [
+        ("photo.png", "image-viewer", true),
+        ("clip.mp4", "video-player", false),
+        ("song.mp3", "audio-player", false),
     ] {
         let panes_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
         let path = std::env::temp_dir()
@@ -350,21 +350,28 @@ fn media_files_route_to_native_viewer_apps() {
         app.dispatch_open_artifact(0, path, crate::app_protocol::ArtifactOpenMode::OpenInPane);
 
         let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
-        assert_eq!(
-            panes_after,
-            panes_before + 1,
-            "{filename} should open exactly one in-Plexi pane"
-        );
-        assert!(
-            app.windows.iter().any(|w| {
-                w.panes.values().any(|p| {
-                    p.as_app()
-                        .map(|a| a.runtime.type_id() == expected_id)
-                        .unwrap_or(false)
-                })
-            }),
-            "{filename} should route to {expected_id}"
-        );
+        if opens_pane {
+            assert_eq!(
+                panes_after,
+                panes_before + 1,
+                "{filename} should open exactly one in-Plexi pane"
+            );
+            assert!(
+                app.windows.iter().any(|w| {
+                    w.panes.values().any(|p| {
+                        p.as_app()
+                            .map(|a| a.runtime.type_id() == expected_id)
+                            .unwrap_or(false)
+                    })
+                }),
+                "{filename} should route to {expected_id}"
+            );
+        } else {
+            assert_eq!(
+                panes_after, panes_before,
+                "stable must not open the beta-only {expected_id} surface for {filename}"
+            );
+        }
     }
 }
 

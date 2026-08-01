@@ -40,6 +40,42 @@ use crate::ui_tests::PlexiUiHarness;
 pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 4;
 const LIVE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// Scales a scene-declared timeout by `PLEXI_SCENE_TIMEOUT_SCALE`.
+///
+/// A scene's `timeout_s` exists to catch a hang, not to assert a performance
+/// budget: the same wait that finishes in 10s on a developer's machine can
+/// exceed 15s on a shared CI runner, and the resulting failure says "too slow
+/// to observe" while reading as "the thing never happened". The scale factor
+/// keeps one deadline in the scene file and lets a slower executor widen it
+/// without editing every scene.
+///
+/// Unset means 1.0. A non-numeric or non-positive value is a configuration
+/// error and panics rather than silently reverting to the default.
+fn scene_timeout(secs: f32) -> Duration {
+    let raw = std::env::var(SCENE_TIMEOUT_SCALE_VAR).ok();
+    Duration::from_secs_f32(secs * scene_timeout_scale(raw.as_deref()))
+}
+
+const SCENE_TIMEOUT_SCALE_VAR: &str = "PLEXI_SCENE_TIMEOUT_SCALE";
+
+/// Parses the scale factor. `None` means unset, which is 1.0.
+///
+/// A malformed or non-positive value panics: a scene deadline silently
+/// reverting to its default is the failure this knob exists to prevent.
+fn scene_timeout_scale(raw: Option<&str>) -> f32 {
+    let Some(raw) = raw else {
+        return 1.0;
+    };
+    let parsed: f32 = raw
+        .parse()
+        .unwrap_or_else(|e| panic!("{SCENE_TIMEOUT_SCALE_VAR}={raw:?} is not a number: {e}"));
+    assert!(
+        parsed.is_finite() && parsed > 0.0,
+        "{SCENE_TIMEOUT_SCALE_VAR}={raw:?} must be a finite number greater than zero"
+    );
+    parsed
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostStatusClass {
     Running,
@@ -1480,8 +1516,7 @@ impl LiveBackend {
             }
             Step::WaitAppFrame { wait_app_frame } => {
                 let pane_id = self.handles.resolve(&wait_app_frame.target)?;
-                let _ =
-                    self.settled_state(pane_id, Duration::from_secs_f32(wait_app_frame.timeout_s))?;
+                let _ = self.settled_state(pane_id, scene_timeout(wait_app_frame.timeout_s))?;
                 Ok(None)
             }
             Step::RunSteps { .. } => {
@@ -1815,7 +1850,7 @@ impl LiveBackend {
         }
         let mut history = Vec::new();
         let result = poll_live_until(
-            Duration::from_secs_f32(spec.timeout_s),
+            scene_timeout(spec.timeout_s),
             LIVE_POLL_INTERVAL,
             |elapsed| {
                 let state = self.pane_state(pane_id)?;
@@ -2458,7 +2493,7 @@ impl HeadlessBackend {
             Step::WaitAppFrame { wait_app_frame } => {
                 let pane_id = self.handles.resolve(&wait_app_frame.target)?;
                 self.h
-                    .wait_for_app_frame(pane_id, Duration::from_secs_f32(wait_app_frame.timeout_s))
+                    .wait_for_app_frame(pane_id, scene_timeout(wait_app_frame.timeout_s))
                     .map_err(|message| SceneError::new("wait_app_frame_failed", message))?;
                 Ok(None)
             }
@@ -2657,7 +2692,7 @@ impl HeadlessBackend {
                 &mut Vec::new(),
             )?;
         }
-        let deadline = Instant::now() + Duration::from_secs_f32(spec.timeout_s);
+        let deadline = Instant::now() + scene_timeout(spec.timeout_s);
         let started = Instant::now();
         let mut history = Vec::new();
         loop {
@@ -2802,6 +2837,25 @@ mod tests {
     use std::sync::Mutex;
 
     static LIVE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn scene_timeout_scale_defaults_to_one_and_multiplies_when_set() {
+        assert_eq!(scene_timeout_scale(None), 1.0);
+        assert_eq!(scene_timeout_scale(Some("4")), 4.0);
+        assert_eq!(scene_timeout_scale(Some("2.5")), 2.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a number")]
+    fn scene_timeout_scale_rejects_non_numeric() {
+        scene_timeout_scale(Some("soon"));
+    }
+
+    #[test]
+    #[should_panic(expected = "greater than zero")]
+    fn scene_timeout_scale_rejects_zero() {
+        scene_timeout_scale(Some("0"));
+    }
 
     fn scenes_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

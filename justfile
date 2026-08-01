@@ -49,6 +49,14 @@ website-smoke:
 test:
     env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test
 
+# Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
+# This includes scenes that opt out of scene_suite.
+roadmap-evidence:
+    env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID python3 scripts/roadmap-evidence.py
+
+roadmap-evidence-fixtures:
+    python3 scripts/test-roadmap-evidence.py
+
 # Rebuild the WASM POC components and refresh the committed test fixtures the
 # host runtime gate tests load (G3/G5 etc). Run after changing any
 # apps/wasm-poc/* source. Requires cargo-component + the wasm32-wasip2 target.

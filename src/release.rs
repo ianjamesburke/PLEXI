@@ -10,6 +10,9 @@ pub enum ReleaseFeature {
     Assistant,
     AppWrappers,
     Marketplace,
+    Daw,
+    MediaIo,
+    Accessibility,
 }
 
 impl ReleaseFeature {
@@ -18,12 +21,20 @@ impl ReleaseFeature {
             Self::Assistant => "assistant",
             Self::AppWrappers => "app wrappers",
             Self::Marketplace => "marketplace",
+            Self::Daw => "DAW",
+            Self::MediaIo => "media I/O",
+            Self::Accessibility => "experimental accessibility",
         }
     }
 
     pub fn minimum_tier(self) -> ReleaseTier {
         match self {
-            Self::Assistant | Self::AppWrappers | Self::Marketplace => ReleaseTier::Beta,
+            Self::Assistant
+            | Self::AppWrappers
+            | Self::Marketplace
+            | Self::Daw
+            | Self::MediaIo
+            | Self::Accessibility => ReleaseTier::Beta,
         }
     }
 }
@@ -125,6 +136,21 @@ mod tests {
             ReleaseFeature::Assistant,
             Some("pr-2259")
         ));
+    }
+
+    #[test]
+    fn stable_and_rc_channels_disable_v1_stubbed_surfaces() {
+        for feature in [
+            ReleaseFeature::Daw,
+            ReleaseFeature::MediaIo,
+            ReleaseFeature::Accessibility,
+        ] {
+            assert!(!feature_enabled_for_channel(feature, None));
+            assert!(!feature_enabled_for_channel(feature, Some("main")));
+            assert!(!feature_enabled_for_channel(feature, Some("rc-010")));
+            assert!(feature_enabled_for_channel(feature, Some("alpha")));
+            assert!(feature_enabled_for_channel(feature, Some("beta")));
+        }
     }
 
     #[test]
