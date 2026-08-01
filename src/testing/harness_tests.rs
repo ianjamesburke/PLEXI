@@ -6410,10 +6410,21 @@ mod pane_send_submit_tests {
         // Scope the check to what the shell produced *after* the `cm`
         // invocation echoed back — the setup line above legitimately
         // mentions `cmpdylib`/`cmuwmtopbm` by name and must not trip this.
-        let after_invocation = observed
+        // Match the invocation line by its ending rather than a whole-line
+        // prompt string: the prompt rendering differs between the local
+        // harness (`› cm`) and CI's shell (`host:dir runner$ cm`), and a
+        // literal match silently falling back to the full scrollback on a
+        // miss is how a broken locator becomes a false failure.
+        let anchor = observed
             .iter()
-            .rposition(|line| line.trim() == "› cm")
-            .map_or(observed.as_slice(), |idx| &observed[idx + 1..]);
+            .rposition(|line| {
+                let trimmed = line.trim_end();
+                trimmed != "cm-ran" && trimmed.ends_with("cm")
+            })
+            .unwrap_or_else(|| {
+                panic!("could not locate the `cm` invocation line in the pane tail: {observed:?}")
+            });
+        let after_invocation = &observed[anchor + 1..];
         assert!(
             !after_invocation
                 .iter()
