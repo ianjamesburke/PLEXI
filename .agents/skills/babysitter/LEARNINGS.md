@@ -50,7 +50,7 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: **Not a wording fix.** A resource lock the host enforces, not a sentence workers are asked to honour. Filed as a Plexi feature request — stint **0690** (host-arbitrated cargo/build lock). Until it lands, do not run a multi-lane session that depends on voluntary compliance; run one build lane.
 - falsification: delete if a host-side lock ships and a full multi-lane run completes with zero violations, or if two consecutive multi-lane runs pass with prose alone (which would prove the instruction sufficient after all).
 - fired: 2026-08-01 (6x)
-- runs: 0
+- runs: 1
 
 ### L002 — Retire workers at PR-open, not at merge
 - class: RULE
@@ -59,7 +59,7 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: Close a worker pane once its PR is open and green. Spawn a fresh pane for a fix round. Supersedes "one batch per pane through merge".
 - falsification: delete if a fix round ever costs materially more than a fresh spawn (lost worktree, lost context that a re-brief could not restore) twice in a row.
 - fired: 2026-08-01
-- runs: 0
+- runs: 1
 
 ### L003 — A send is not delivered until `pane status` says `working`
 - class: RULE
@@ -68,7 +68,7 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: After any control message, confirm `pane status` reaches `working`; press enter once if it has not. Never treat exit 0 as proof of delivery, and never re-send on exit code alone.
 - falsification: delete if a host fix makes `--submit` reliable and two consecutive runs show zero collapsed pastes.
 - fired: 2026-08-01 (6x)
-- runs: 0
+- runs: 1
 
 ### L004 — Attribute a build by its owner, never by its directory
 - class: RULE
@@ -77,7 +77,7 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: Confirm the OWNER of a cargo process before calling it a violation (`pgrep -fl` gives the full path; cross-check the pane's state). An idle pane is not compiling. A tester's token lane is the PR's feature worktree, not a `pr-<N>` string.
 - falsification: delete if `pr-install` moves to a dedicated build tree, making path attribution unambiguous again.
 - fired: 2026-08-01 (2x, as the error it now prevents)
-- runs: 0
+- runs: 1
 
 ### L005 — A slot value alone is never ground truth
 - class: RULE
@@ -86,7 +86,7 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: Pair the slot with `verdict` and a ground-truth check (`gh pr list --head`) before acting on it. The step token tells you whether the value is current; when it is stale, verify externally.
 - falsification: delete if slot invalidation becomes automatic host-side and two consecutive runs show no stale reads.
 - fired: 2026-08-01 (3x)
-- runs: 0
+- runs: 1
 
 ### L006 — The vacuous-gate question
 - class: RULE
@@ -94,8 +94,8 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - incident: Asking "would this test still pass after the bug is fixed?" caught two audit tests that were green in CI and proved nothing. The replacements assert behaviour that changes post-fix. Highest-value check of the run.
 - rule: For every new test a worker adds, ask whether it would still pass once the bug is fixed. If yes, it is vacuous — send it back.
 - falsification: delete if it goes 10 runs without catching a vacuous test.
-- fired: 2026-08-01 (2x)
-- runs: 0
+- fired: 2026-08-01 (3x)
+- runs: 1
 
 ### L007 — Carry known pre-existing defects forward into tester briefs
 - class: RULE
@@ -104,7 +104,7 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: When a run establishes a pre-existing defect, every subsequent tester brief names it and excludes it from that PR's gate. Pairs with the worker-side decision ladder: a Done-When criterion failing on a pre-existing defect outside the diff is the worker's own call.
 - falsification: delete if the decision ladder alone prevents the false round twice, making the brief clause redundant.
 - fired: 2026-08-01 (2x)
-- runs: 0
+- runs: 1
 
 ### L008 — Ending a turn bare freezes the run
 - class: RULE
@@ -113,7 +113,7 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: `needs-input` abolished; slot grammar is `working | done | blocked | failed`. Every turn ends with the status slot matching reality. Backed by the decision ladder (PR #2548) and, outside the repo, a launchd freeze watchdog that nudges an idle head with no terminal status.
 - falsification: delete if two consecutive runs end with zero bare turns AND the watchdog logs no nudges — at which point the behaviour is habitual and the wording is dead weight. Do **not** delete merely because no freeze occurred; the watchdog firing is what proves the rule is still load-bearing.
 - fired: 2026-08-01
-- runs: 0
+- runs: 1
 
 ### L009 — One head instruction cannot serialize two consumer classes
 - class: CANDIDATE
@@ -122,4 +122,31 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - rule: (not yet promoted) Make the cargo budget explicitly cover testers as well as workers.
 - falsification: expires if L001's host lock lands and makes the config key moot, or if it is not seen again within 3 runs.
 - fired: —
+- runs: 1
+
+### L010 — A dirty alpha blocks the run at spawn, not at merge
+- class: RULE
+- promoted: 2026-08-01 (stint 0630)
+- incident: The head's own uncommitted rewrite of SKILL.md and RUN_CONFIG.toml sat in the alpha root. `just bs-start 0630` correctly refused to branch a worktree from a dirty tree, so worker-1 blocked before it could claim — the very first action of the run. SKILL.md warned about this hazard only at the merge boundary, where `merge-pr`'s sync would destroy the edits; nobody had noticed it also fails closed at the start.
+- rule: The head verifies alpha is clean before spawning worker-1, and gets any of its own skill edits committed as `chore(babysitter):` at run start rather than at merge time. Commit, never restore.
+- falsification: delete if `bs-start` grows a dirty-tree bypass, or if two consecutive runs start clean without the check being what made them clean.
+- fired: 2026-08-01
+- runs: 0
+
+### L011 — Name the un-drivable surface in the brief and pre-authorize the fallback
+- class: RULE
+- promoted: 2026-08-01 (stint 0630)
+- incident: 0630's surface was a HELD modifier (Ctrl) with no pane primitive behind it — not injectable through the CLI. The brief said so up front, told the tester not to grind on it, and pre-authorized falsifying the PR's own new guard instead. The tester hit exactly that wall, took the fallback immediately, and returned PASS in 9m50s on the first attempt. Contrast the previous run, where a tester discovered an un-drivable surface on its own and lost most of a session to it.
+- rule: Before writing a tester brief, ask what about this surface may not be drivable (held modifier, hover, drag, real LLM turn). Name it, forbid grinding, and give the substitute that still proves the change — usually falsifying the new guard in a scratch copy.
+- falsification: delete if two consecutive runs show testers correctly self-selecting the fallback without being told, making the clause redundant.
+- fired: 2026-08-01
+- runs: 0
+
+### L012 — A watch that matches a bare `done` fires on the wrong step
+- class: RULE
+- promoted: 2026-08-01 (stint 0630)
+- incident: The head's watch loop broke on any status value ending in `done`. The worker wrote `start:done` on finishing worktree setup; the loop fired and reported a terminal state before implementation had begun. Cost one wasted cycle and a re-armed watch.
+- rule: `status` is `<step>:<state>`. Wait on the specific step, or on the `pr` slot becoming non-empty — never on a bare `done` suffix. Pair with the `pane status` verdict; a slot alone is never liveness (see L005).
+- falsification: delete if the slot grammar gains a single unambiguous terminal value that cannot collide with an intermediate step.
+- fired: 2026-08-01
 - runs: 0

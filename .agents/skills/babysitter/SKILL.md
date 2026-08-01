@@ -47,7 +47,8 @@ Tier is chosen at launch (`plexi pane new --agent <alias>`) — resolve the alia
 - `sprints <SPRINT_ID...>` — queue is every open task in the named sprints. Resolve with `stint sprint show <id>` at start, **re-resolve after every merge** (a merge can unblock tasks not in the initial snapshot). Run ends when the named sprints have no claimable tasks left. Tasks blocked on work outside the named sprints: report as skipped, never wait on them.
 - `resume` — fresh-head takeover: read `RUN_STATE.md`, re-resolve the queue, append a takeover line to `LOG.md`, continue at the next batch. Also the crash-recovery path.
 
-First action:
+First action — **check that alpha is clean before spawning anything.** `just bs-start` refuses to branch a worktree from a dirty alpha, so a stray uncommitted edit blocks the first worker before it can claim. Your own edits to this file are the usual culprit. Get them committed as `chore(babysitter):` at run start, not at merge time — commit, never `git checkout --`. The head does not run git: hand the commit to the worker as its first instruction, or to a throwaway pane.
+
 - No pane handed → `plexi pane new -n "worker-1" --agent <worker tier alias>` (see "Spawning an agent pane").
 - Pane handed → confirm live and idle, then label it:
   ```
@@ -128,6 +129,8 @@ Workers and testers write; the head reads. A successor head writes its own `head
 3. **Human last** — only money, irreversible actions, spec reversals, audible/visual taste calls. Those go to the human gate; nothing else does.
 
 **Every turn — head and worker — ends with `status` matching reality.** `working` only mid-turn; otherwise `done`/`blocked`/`failed` before the turn ends. Never end quiet with an unresolved question in prose — if stuck, write `blocked` + `last_error`.
+
+**Match the step token, never a bare `done`.** `status` is `<step>:<state>`, and a worker passes through several terminal-looking values on its way to a PR (`start:done`, `impl:done`, …). A watch that breaks on any value ending in `done` fires on the first one and reports a batch finished that has not started. Wait on the step you actually want, or on the `pr` slot becoming non-empty — and pair it with the `pane status` verdict, since a slot value alone is never liveness.
 
 ## Prompt submission
 
@@ -224,11 +227,15 @@ For each **batch**, in order:
    - **Anything else** → install-and-drive:
      > "Validate PR #`<PR#>` for Plexi. Install with `just pr-install <PR#>`. This is a full Rust build, 10–20 min — block on exit code; absence of the install dir/binary/log while the process is alive is not evidence of failure. Then `plexi-pr-<PR#> host start --background` (install doesn't boot the host). Before trusting any FAIL, confirm the fix is live in the build: drive the feature, confirm its new log line fires in `~/.plexi-pr-<PR#>/plexi.log`, and check the head sha in `install.log` matches `gh pr view <PR#> --json headRefOid`. Signal absent → report 'fix not present in installed build', not a behavior FAIL. Then actually drive the build end to end. Where the PR adds an assertion/guard, prove it's falsifiable: violate it locally, watch it fail clearly, revert. Use the host's own primitives to observe it, never macOS `screencapture`/screen recording. Do NOT re-run test suites — the worker already ran them green; your job is behavior the suites can't see. Operate autonomously — never ask a human to click/look/confirm anything. Report a clear PASS or a numbered bug/repro list. Do not touch the code. Publish progress on your slots: `status` on every transition, `verdict` (PASS/FAIL) + `last_error` on FAIL at the end. Write syntax: `.agents/skills/implement-stint/SKILL.md` Worker Mode section."
 
-   Autonomous verification is the default in ~99% of cases (`pane state`, `pane capture`, channel log, `scene-live` shots). Only when a check is genuinely impossible agentically (physical hardware, audio, an external account) does it stop: surface exactly what needs human eyes, park that batch.
+   Autonomous verification is the default in ~99% of cases (`pane state`, `pane capture`, channel log, `host screenshot`). Only when a check is genuinely impossible agentically (physical hardware, audio, an external account) does it stop: surface exactly what needs human eyes, park that batch.
+
+   **Name the anticipated hard part in the brief, and pre-authorize its fallback.** Before writing a tester brief, ask what about this surface may not be drivable through the CLI — a held modifier, a hover, a drag, a real LLM turn, anything with no pane primitive behind it. Say so explicitly, tell the tester not to grind on it, and give it the substitute that would still prove the change: usually falsifying the PR's own new guard (restore the old condition in a scratch copy, confirm the test fails and names the right thing, revert). A guard that cannot fail proves nothing, and a tester left to discover an un-drivable surface on its own burns most of a session before improvising a weaker check.
 
    The tester validates behavior, not the diff — AI diff review already happened pre-push.
 
-   **Never let a tester reach for `screencapture`/screen recording/an OS permission prompt.** Use Plexi's own primitives instead: `plexi-pr-<N> pane state <id>` (semantic tree), `pane capture <id>` (terminal content), `~/.plexi-pr-<N>/plexi.log` (fps/timing ground truth), `just scene-live <scene.toml> pr-<N>` (headless framebuffer shot, human-review only). Full loop: `.agents/skills/drive-host/SKILL.md`.
+   **Never let a tester reach for `screencapture`/screen recording/an OS permission prompt.** Use Plexi's own primitives instead: `plexi-pr-<N> pane state <id>` (semantic tree), `pane capture <id>` (terminal content), `~/.plexi-pr-<N>/plexi.log` (fps/timing ground truth), `plexi-pr-<N> host screenshot` (real pixels, but see below), `plexi-pr-<N> app render . --png` (not-running-host render). Full loop: `.agents/skills/drive-host/SKILL.md`.
+
+   Two capture traps to state in every brief that needs pixels: `just scene-live` **cannot** take screenshots — `run-live-scene.sh` hardcodes `PLEXI_SCENE_NO_SHOTS=1` and the live backend skips them, so never promise a tester framebuffer shots from it. And `host screenshot` may return its typed deadline error when the host window is occluded, which a tester will misread as a product failure (stint 0691).
 
 4. **Route the verdict.** Wait on `verdict`; direct `--lines 20` read only as fallback; sub-agent only for a long report.
    - **Near-pass FAIL** (tester's own findings pass, one check couldn't run or hit the wrong artifact) → don't open a fix round. Spawn a micro-check tester scoped to exactly the unfinished check.
