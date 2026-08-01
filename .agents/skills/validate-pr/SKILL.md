@@ -323,7 +323,22 @@ Attempt: <N>/3
 Pipeline: pipeline:merge + ready set — invoking /merge-pr inline
 ```
 
-Invoke `/merge-pr <pr-number>` inline in the same pane.
+**Human-gate check before merging.** If the stint/issue body contains a `## Human Gate` section (or the PR carries a `human-gate` label), the PR needs Ian's hands before it merges — tester PASS is necessary but not sufficient:
+
+- Do NOT invoke `/merge-pr`. Leave the PR open with `pipeline:merge + ready` set.
+- Keep the `plexi-pr-<N>` install on disk — do not reap it.
+- Append to `HUMAN_CHECKS.md` (next to the babysitter skill):
+
+  ```
+  - [ ] PR #<N> (<title>) — build installed: `plexi-pr-<N>`
+    Drive: <the 1-2 concrete things to do in the running build to judge it>
+    Judging: <what Ian is deciding>
+    Findings: (Ian appends here; any entry routes a fix round on this same PR, then re-validate)
+  ```
+
+- Findings appended by Ian route back as a fix round to a fresh worker on the same branch; re-validate after. Merge only once Ian checks the box.
+
+Otherwise (no human gate — the common case): invoke `/merge-pr <pr-number>` inline in the same pane.
 
 ### Modify
 
