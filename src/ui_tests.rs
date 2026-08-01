@@ -1427,6 +1427,70 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Stint 0605: `NextContext`/`PrevContext` cycle the same enumeration the
+    /// sidebar draws. Against a live router carrying a real subcontext wedged
+    /// between two masters, cycling steps master → master and wraps, so it can
+    /// never activate a context with no row, no number, and no recorded depth
+    /// entry for zoom-out to pop.
+    #[test]
+    fn context_cycling_visits_master_contexts_only() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        let child_ctx_id = h.with_app_mut(|app| {
+            app.router.get_mut(0).name = "master-one".to_string();
+            let parent_ctx_id = app.router.get(0).context_id;
+            let child_ctx_id = parent_ctx_id + 9_000;
+
+            // Subcontext at router index 1, between the two masters — the
+            // index the old raw-index walk would have landed on.
+            app.router.push(crate::host::context::Context {
+                name: "child-of-one".to_string(),
+                path: std::env::temp_dir().join("child-of-one"),
+                root: None,
+                description: None,
+                context_id: child_ctx_id,
+                parent_id: Some(parent_ctx_id),
+                depth: 1,
+                parked: false,
+            });
+            app.router.push(crate::host::context::Context {
+                name: "master-two".to_string(),
+                path: std::env::temp_dir().join("master-two"),
+                root: None,
+                description: None,
+                context_id: 72_002,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+            child_ctx_id
+        });
+        h.run_steps(2);
+
+        h.with_app(|app| {
+            // From master-one (idx 0): forward skips the subcontext at idx 1.
+            let next = app.router.cycle_top_level(true).expect("next exists");
+            assert_eq!(
+                app.router.get(next).name,
+                "master-two",
+                "cycling must skip the subcontext sitting between the masters"
+            );
+            assert_ne!(
+                app.router.get(next).context_id,
+                child_ctx_id,
+                "cycling must never activate a subcontext"
+            );
+
+            // Backward from the first master wraps to the last master, not to
+            // the subcontext that precedes it in raw router order.
+            let prev = app.router.cycle_top_level(false).expect("prev exists");
+            assert_eq!(
+                app.router.get(prev).name,
+                "master-two",
+                "cycling backward from the first master wraps to the last"
+            );
+        });
+    }
+
     /// Notes triage overlay: renders a note, and emptying the inbox returns
     /// to the picker instead of closing outright.
     #[test]
