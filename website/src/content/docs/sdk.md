@@ -1003,7 +1003,7 @@ in brightness.
 ### `TextInput`
 
 ```python
-TextInput(id: str, placeholder: str = '', height: float = 48.0, multiline: bool = False, value: Optional[str] = None, on_change: str = '', on_submit: str = '', password: bool = False)
+TextInput(id: str, placeholder: str = '', height: float = 48.0, multiline: bool = False, value: Optional[str] = None, on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False)
 ```
 
 Layout-aware text input. Place inside a Column like any other child.
@@ -1081,17 +1081,36 @@ Call handle_key(key) from on_key. Call hit_index(click_y) from on_click.
 ### `FormField`
 
 ```python
-FormField(id: str, label: str, placeholder: str = '', required: bool = False, height: float = 48.0, LABEL_H: float = TEXT_HINT + SPACE_XS, LABEL_GAP: float = SPACE_SM, BOTTOM_PAD: float = SPACE_LG)
+FormField(id: str, label: str, placeholder: str = '', required: bool = False, height: float = 48.0, value: Optional[str] = None, autofocus: bool = False, on_change: str = '', on_submit: str = '', LABEL_H: float = TEXT_HINT + SPACE_XS, LABEL_GAP: float = SPACE_SM, BOTTOM_PAD: float = SPACE_LG)
 ```
 
-Label + TextInput row. Create in on_init (stable across renders).
+Label + TextInput, as one form row.
 
-Read .submitted after the render pass; it contains the text entered by the
-user when they pressed Enter, or None if no submission this frame.
+In a declarative ``view()`` tree this composes to a column of a caption
+label and a text input, so a labeled field is one component instead of
+hand-stacked parts. ``value`` makes it a controlled input (the app owns the
+text and echoes ``UiValueChange`` back into state); ``autofocus`` hands it
+the cursor the frame it appears. Handler ids default to ``id``, matching
+:class:`TextInput`.
 
-Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-declarative-tree node exists for a labeled input row. Compose a
-`"column"` of a `Text` label and a `TextInput` yourself in tree mode.
+In canvas mode (``measure()``/``render()``) it draws the same pair itself;
+read ``.submitted`` after the render pass for the text the user entered.
+
+### `Actions`
+
+```python
+Actions(buttons: Sequence[Button], gap: float = SPACE_SM)
+```
+
+A form's action row: buttons laid side by side, never stacked.
+
+Buttons declared as plain children of a ``Column`` each take the column's
+full width and stack vertically, which is how a Save/Cancel pair ends up
+reading as two unrelated full-bleed bars. ``Actions`` is the primitive for
+the pair: one row, standard button spacing, primary action first.
+
+    Actions([Button("Add", "add", style="primary"),
+             Button("Cancel", "cancel", style="ghost")])
 
 ### `Column`
 

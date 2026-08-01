@@ -373,6 +373,11 @@ interface types {
         on-change: string,
         on-submit: string,
         password: bool,
+        // Declares this field its pane's default text surface: when the pane
+        // owns input and nothing else is focused, the host focuses it. An app
+        // that reveals an entry form declares autofocus on the field instead
+        // of issuing an imperative focus command.
+        autofocus: bool,
     }
 
     record row-node     { children: list<node-id>, gap: f32, align: alignment, grow: bool }

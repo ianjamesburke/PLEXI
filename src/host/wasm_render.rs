@@ -99,17 +99,159 @@ pub fn render_ui_tree_with_canvas_fits(
         // color apps are told their container is) across the entire pane rect
         // first, then inset the layout. Without this the surface would start
         // inside the inset and the darker pane gutter would show through as a
-        // black border around every flow app. AppBar/FooterKeys still paint
-        // their own bands full-bleed via `clip_rect`, on top of this surface.
+        // black border around every flow app.
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
-        egui::Frame::NONE
-            .inner_margin(root_content_inset())
-            .show(ui, |ui| render_root(ui, &mut out));
+        // Stint 0674: chrome bands are exempt from the inset. A leading AppBar
+        // and a trailing FooterKeys are the app's *edges*, not its content —
+        // insetting them floats the title bar off the pane's top-left corner
+        // with a strip of background above and beside it. Render those bands
+        // against the pane rect and inset only the body between them.
+        if !render_root_with_chrome_bands(
+            ui,
+            tree,
+            colors,
+            &mut out,
+            surface,
+            canvas_fits,
+            pending_click,
+            surface_key,
+        ) {
+            egui::Frame::NONE
+                .inner_margin(root_content_inset())
+                .show(ui, |ui| render_root(ui, &mut out));
+        }
     } else {
         render_root(ui, &mut out);
     }
     out
+}
+
+/// Render a root `Column` whose leading `AppBar`s and trailing `FooterKeys`
+/// paint full-bleed while its body carries the standard content inset.
+/// Returns false when the tree is not a column (the caller then insets the
+/// whole tree, which is correct for a bare root widget).
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
+fn render_root_with_chrome_bands(
+    ui: &mut egui::Ui,
+    tree: &UiTree,
+    colors: &Colors,
+    out: &mut RenderResult,
+    surface: Option<egui::TextureId>,
+    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
+) -> bool {
+    let nodes = &tree.nodes;
+    let Some(UiNodeData::Column(c)) = find_node(nodes, tree.root).map(|n| &n.data) else {
+        return false;
+    };
+
+    let leading = c
+        .children
+        .iter()
+        .take_while(|id| {
+            matches!(
+                find_node(nodes, **id).map(|n| &n.data),
+                Some(UiNodeData::AppBar(_))
+            )
+        })
+        .count();
+    let trailing = c
+        .children
+        .last()
+        .copied()
+        .and_then(|last_id| column_bottom_pin(nodes, last_id));
+    if leading == 0 && trailing.is_none() {
+        return false;
+    }
+
+    let stack_size = egui::vec2(ui.available_width(), ui.available_height());
+    let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
+
+    let bars_h = if leading > 0 {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
+            ui.set_clip_rect(stack_rect);
+            ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for &child in &c.children[..leading] {
+                    render_node(
+                        ui,
+                        nodes,
+                        child,
+                        colors,
+                        out,
+                        1,
+                        surface,
+                        canvas_fits,
+                        pending_click,
+                        surface_key,
+                    );
+                }
+            });
+        })
+        .response
+        .rect
+        .height()
+    } else {
+        0.0
+    };
+
+    let footer_h = trailing
+        .map(|(_, f)| app_chrome::footer_keys_height(ui, &f.entries, f.divider))
+        .unwrap_or(0.0);
+    let body_end = c.children.len() - usize::from(trailing.is_some());
+    let body_rect = egui::Rect::from_min_max(
+        egui::pos2(stack_rect.min.x, stack_rect.min.y + bars_h),
+        egui::pos2(stack_rect.max.x, stack_rect.max.y - footer_h),
+    );
+    if body_rect.height() > 0.0 && body_end > leading {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+            ui.set_clip_rect(body_rect);
+            egui::Frame::NONE
+                .inner_margin(root_content_inset())
+                .show(ui, |ui| {
+                    render_column_children(
+                        ui,
+                        nodes,
+                        &c.children[leading..body_end],
+                        c.gap,
+                        c.align,
+                        colors,
+                        out,
+                        0,
+                        surface,
+                        canvas_fits,
+                        pending_click,
+                        surface_key,
+                    );
+                });
+        });
+    }
+
+    if let Some((footer_id, _)) = trailing {
+        let footer_rect = egui::Rect::from_min_size(
+            egui::pos2(stack_rect.min.x, stack_rect.max.y - footer_h),
+            egui::vec2(stack_rect.width(), footer_h),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
+            ui.set_clip_rect(footer_rect);
+            render_node(
+                ui,
+                nodes,
+                footer_id,
+                colors,
+                out,
+                1,
+                surface,
+                canvas_fits,
+                pending_click,
+                surface_key,
+            );
+        });
+    }
+    true
 }
 
 /// The host UI kit's standard content inset for a declarative app's root.
@@ -291,6 +433,89 @@ fn column_bottom_pin(nodes: &[IndexedNode], child_id: u32) -> Option<(u32, &Foot
     }
 }
 
+/// Index of the first child that is a grow `Space` node — the "push everything
+/// after me to the bottom" marker `Spacer(grow=True)` compiles to.
+fn grow_spacer_index(nodes: &[IndexedNode], children: &[u32]) -> Option<usize> {
+    children.iter().position(
+        |id| matches!(find_node(nodes, *id).map(|n| &n.data), Some(UiNodeData::Space(s)) if s.grow),
+    )
+}
+
+/// Lay out a column's children, honoring a grow spacer as a bottom-pin split
+/// (stint 0674).
+///
+/// A grow `Space` renders as `ui.add_space(available_height())`, which consumes
+/// every remaining pixel — so before this split, *every* child declared after a
+/// `Spacer(grow=True)` was pushed past the clip edge and silently vanished (the
+/// todo app's Add/Toggle/Delete controls). Splitting at the spacer and running
+/// the tail bottom-up puts those children flush against the bottom with no
+/// measurement pass, and they can never overlap the head: the two layouts grow
+/// toward each other and stop.
+// Arg-struct refactor is a design change tracked in stint 0661.
+#[allow(clippy::too_many_arguments)]
+fn render_column_children(
+    ui: &mut egui::Ui,
+    nodes: &[IndexedNode],
+    children: &[u32],
+    gap: f32,
+    align: Alignment,
+    colors: &Colors,
+    out: &mut RenderResult,
+    depth: u32,
+    surface: Option<egui::TextureId>,
+    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
+) {
+    let render_span = |ui: &mut egui::Ui, span: &[u32], out: &mut RenderResult| {
+        ui.spacing_mut().item_spacing.y = gap;
+        for &child in span {
+            render_node(
+                ui,
+                nodes,
+                child,
+                colors,
+                out,
+                depth + 1,
+                surface,
+                canvas_fits,
+                pending_click,
+                surface_key,
+            );
+        }
+    };
+
+    let Some(split) = grow_spacer_index(nodes, children) else {
+        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
+            render_span(ui, children, out)
+        });
+        return;
+    };
+
+    let stack_size = egui::vec2(ui.available_width(), ui.available_height());
+    let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
+
+    ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
+        ui.set_clip_rect(stack_rect);
+        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
+            render_span(ui, &children[..split], out)
+        });
+    });
+
+    let tail: Vec<u32> = children[split + 1..].iter().rev().copied().collect();
+    if tail.is_empty() {
+        return;
+    }
+    ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
+        ui.set_clip_rect(stack_rect);
+        // Bottom-up places the first item it is given at the bottom edge, so
+        // the tail is fed in reverse to preserve the app's declared order.
+        ui.with_layout(egui::Layout::bottom_up(cross_align(align)), |ui| {
+            render_span(ui, &tail, out)
+        });
+    });
+}
+
 // Arg-struct refactor is a design change tracked in stint 0661.
 #[allow(clippy::too_many_arguments)]
 fn render_node(
@@ -369,7 +594,16 @@ fn render_node(
                 .log_name("l1_text_input")
                 .show(ui, &mut buf, colors);
             if let Some(key) = surface_key {
-                crate::ui::focus::register_text_surface(ui.ctx(), key, resp.id);
+                // `autofocus` declares this field the pane's default text
+                // surface: the reconciler focuses it when the pane owns input
+                // and holds no focused surface, so an app that reveals an
+                // entry form gets a live cursor with no imperative focus
+                // command and no key-routing code of its own (stint 0674).
+                if ti.autofocus {
+                    crate::ui::focus::register_default_text_surface(ui.ctx(), key, resp.id);
+                } else {
+                    crate::ui::focus::register_text_surface(ui.ctx(), key, resp.id);
+                }
                 // Node-targeted clicks focus the field; once focused, the
                 // dispatch gate (`focused_pane_text_surface`, stint 0456)
                 // routes keystrokes here instead of the app's KeyEvent path.
@@ -441,23 +675,20 @@ fn render_node(
                     ui.set_clip_rect(body_rect);
                     ui.set_min_height(body_h);
                     ui.set_max_height(body_h);
-                    ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
-                        ui.spacing_mut().item_spacing.y = c.gap;
-                        for &child in &c.children[..c.children.len() - 1] {
-                            render_node(
-                                ui,
-                                nodes,
-                                child,
-                                colors,
-                                out,
-                                depth + 1,
-                                surface,
-                                canvas_fits,
-                                pending_click,
-                                surface_key,
-                            );
-                        }
-                    });
+                    render_column_children(
+                        ui,
+                        nodes,
+                        &c.children[..c.children.len() - 1],
+                        c.gap,
+                        c.align,
+                        colors,
+                        out,
+                        depth,
+                        surface,
+                        canvas_fits,
+                        pending_click,
+                        surface_key,
+                    );
                 });
 
                 let footer_rect = egui::Rect::from_min_size(
@@ -482,23 +713,20 @@ fn render_node(
                     );
                 });
             } else {
-                ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
-                    ui.spacing_mut().item_spacing.y = c.gap;
-                    for child in &c.children {
-                        render_node(
-                            ui,
-                            nodes,
-                            *child,
-                            colors,
-                            out,
-                            depth + 1,
-                            surface,
-                            canvas_fits,
-                            pending_click,
-                            surface_key,
-                        );
-                    }
-                });
+                render_column_children(
+                    ui,
+                    nodes,
+                    &c.children,
+                    c.gap,
+                    c.align,
+                    colors,
+                    out,
+                    depth,
+                    surface,
+                    canvas_fits,
+                    pending_click,
+                    surface_key,
+                );
             }
         }
 
@@ -912,6 +1140,7 @@ mod tests {
                         on_change: "guess".to_string(),
                         on_submit: "guess".to_string(),
                         password: false,
+                        autofocus: false,
                     }),
                 ),
             ],
@@ -1321,6 +1550,165 @@ mod tests {
         assert_eq!(inset.right, style::SPACE_XL as i8);
         assert_eq!(inset.top, style::SPACE_MD as i8);
         assert_eq!(inset.bottom, style::SPACE_MD as i8);
+    }
+
+    /// A `Column([AppBar, body…, FooterKeys])` — the shape every flow app has.
+    fn chrome_tree() -> UiTree {
+        UiTree {
+            root: 0,
+            nodes: vec![
+                node(
+                    0,
+                    UiNodeData::Column(ColumnNode {
+                        children: vec![1, 2, 3, 4],
+                        gap: style::SPACE_MD,
+                        align: Alignment::Start,
+                        grow: true,
+                    }),
+                ),
+                node(
+                    1,
+                    UiNodeData::AppBar(AppBarNode {
+                        title: "Todo".to_string(),
+                        subtitle: "2 open".to_string(),
+                    }),
+                ),
+                node(
+                    2,
+                    UiNodeData::Text(TextNode {
+                        text: "buy milk".to_string(),
+                        size: None,
+                        bold: false,
+                        color: None,
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                ),
+                node(3, UiNodeData::Space(SpaceNode { size: 0.0, grow: true })),
+                node(
+                    4,
+                    UiNodeData::Button(ButtonNode {
+                        label: "Add item".to_string(),
+                        on_click: "add".to_string(),
+                        style: ButtonStyle::Primary,
+                        disabled: false,
+                    }),
+                ),
+            ],
+        }
+    }
+
+    /// Stint 0674: an `AppBar` is the app's top edge, not its content. Insetting
+    /// it floated the title band off the pane's corner — a strip of background
+    /// above and beside every flow app's chrome. The band paints against the
+    /// pane rect while the body below it keeps the standard inset.
+    #[test]
+    fn leading_app_bar_paints_full_bleed_while_body_stays_inset() {
+        let pane = egui::vec2(400.0, 300.0);
+        let shapes = painted_shapes(&chrome_tree(), pane);
+        let fills_pane = |r: &egui::Rect| r.max.y >= pane.y - 0.5;
+
+        let band = shapes
+            .iter()
+            .filter(|r| !fills_pane(r))
+            .find(|r| {
+                r.min.y <= 0.5 && r.min.x <= 0.5 && r.max.x >= pane.x - 0.5
+            })
+            .copied();
+        assert!(
+            band.is_some(),
+            "app bar should paint a full-width band at the pane's top edge; painted {shapes:?}"
+        );
+
+        let body_top = band.expect("band").max.y;
+        let body = shapes
+            .iter()
+            .filter(|r| !fills_pane(r) && r.min.y > body_top)
+            .fold(egui::Rect::NOTHING, |acc, r| acc.union(*r));
+        assert!(
+            body.min.x >= style::SPACE_XL - 0.5,
+            "body content left edge {} should keep the ~SPACE_XL inset",
+            body.min.x
+        );
+    }
+
+    /// Stint 0674: a grow `Space` consumed `available_height()`, so every child
+    /// declared after it was pushed past the pane's bottom edge and silently
+    /// vanished (todo's Add/Toggle/Delete controls). The tail now pins to the
+    /// bottom and stays inside the pane.
+    #[test]
+    fn column_children_after_a_grow_spacer_stay_inside_the_pane() {
+        let pane = egui::vec2(400.0, 300.0);
+        let content = painted_shapes(&chrome_tree(), pane)
+            .into_iter()
+            .filter(|r| r.max.y < pane.y - 0.5 || r.min.y > 0.5)
+            .fold(egui::Rect::NOTHING, |acc, r| acc.union(r));
+
+        assert!(
+            content.max.y <= pane.y + 0.5,
+            "nothing may render past the pane's bottom edge, got {}",
+            content.max.y
+        );
+        assert!(
+            content.max.y >= pane.y - (style::SPACE_MD + style::BUTTON_H_MD + 8.0),
+            "the child after the grow spacer should sit near the bottom edge, \
+             content ends at {} of {}",
+            content.max.y,
+            pane.y
+        );
+    }
+
+    /// Stint 0674: `autofocus` makes a field its pane's *default* text surface,
+    /// which the focus reconciler grants when the pane owns input and nothing
+    /// else is focused. A field that did not ask for focus only registers.
+    #[test]
+    fn autofocus_text_input_registers_as_the_panes_default_surface() {
+        fn default_surface_exists(autofocus: bool) -> bool {
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            let colors = Colors::from_config(
+                &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+            );
+            let key = crate::ui::focus::SurfaceKey::Pane(7);
+            let tree = UiTree {
+                root: 0,
+                nodes: vec![node(
+                    0,
+                    UiNodeData::TextInput(TextInputNode {
+                        value: String::new(),
+                        placeholder: "What needs doing?".to_string(),
+                        on_change: "draft".to_string(),
+                        on_submit: "draft".to_string(),
+                        password: false,
+                        autofocus,
+                    }),
+                )],
+            };
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 200.0),
+                )),
+                ..Default::default()
+            };
+            ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| {
+                        let _ =
+                            render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key));
+                    });
+            });
+            let registry = crate::ui::focus::drain_text_surfaces(&ctx);
+            assert!(
+                registry.default_for(key).is_some() || !registry.surfaces.is_empty(),
+                "the field must register as a text surface either way"
+            );
+            registry.default_for(key).is_some()
+        }
+
+        assert!(default_surface_exists(true));
+        assert!(!default_surface_exists(false));
     }
 
     fn fixture() -> PathBuf {
