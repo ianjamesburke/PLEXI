@@ -4236,6 +4236,59 @@ fn pane_ipc_serviced_while_window_hidden() {
     );
 }
 
+/// Stint 0688: an app pane's outbound commands are external-client servicing,
+/// not rendering. `drain_all_app_commands` and the command execution it feeds
+/// lived in `App::ui`, so a minimized or fully occluded host executed no app
+/// command at all — every assistant tool call, notification, and host request
+/// from every runtime sat queued until the window was uncovered. They now run
+/// from `App::logic` via `service_app_commands`; this pins that they complete
+/// on hidden passes alone.
+#[test]
+fn app_commands_execute_while_window_hidden() {
+    let mut h = HostHarness::new();
+    // The harness boots with notifications off; this test uses one as the
+    // observable side effect of a command actually executing.
+    h.app.notifications_enabled = true;
+    let pane = h.add_assistant_pane();
+    h.run_frames(1);
+    assert!(
+        h.app.pending_notifications.is_empty(),
+        "no notification should be queued before the app emits one"
+    );
+
+    h.assistant_mut(pane)
+        .pending_commands
+        .push(crate::app::app_trait::AppCommand::ShowNotification {
+            notify_id: "hidden-pass-notify".to_string(),
+            sender_pane_id: pane,
+            source_context_id: 0,
+            level: "info".to_string(),
+            title: "hidden".to_string(),
+            body: "emitted while the window is covered".to_string(),
+            kind: Default::default(),
+            options: Vec::new(),
+            input_prompt: None,
+            required: false,
+            priority: 0,
+            scope: crate::app_protocol::NotifyScope::Global,
+            image_inline: None,
+            image_pipe_id: None,
+            timeout_secs: None,
+            on_dismiss: None,
+        });
+
+    h.run_hidden_frames(1);
+
+    assert!(
+        h.app
+            .pending_notifications
+            .iter()
+            .any(|notification| notification.notify_id == "hidden-pass-notify"),
+        "an app command queued while the window is hidden must be drained and \
+         executed on a logic-only pass — eframe never calls ui for a covered window"
+    );
+}
+
 /// Companion to `pane_ipc_serviced_while_window_hidden`: queued pane inputs
 /// must NOT be swallowed by hidden passes. A hidden pass has no widget pass to
 /// receive events, so `raw_input_hook` must leave `pending_pane_inputs` queued

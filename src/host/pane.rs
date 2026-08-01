@@ -1014,7 +1014,7 @@ impl AppRuntime {
     pub fn background_tick(&mut self) {
         match self {
             AppRuntime::Builtin(app) => app.background_tick(),
-            AppRuntime::Python(_) => {}
+            AppRuntime::Python(app) => app.background_tick(),
             AppRuntime::Wasm(app) => app.background_tick(),
         }
     }
@@ -1024,7 +1024,7 @@ impl AppRuntime {
     pub fn needs_background_tick(&self) -> bool {
         match self {
             AppRuntime::Builtin(app) => app.needs_background_tick(),
-            AppRuntime::Python(_) => false,
+            AppRuntime::Python(app) => app.needs_background_tick(),
             AppRuntime::Wasm(app) => app.needs_background_tick(),
         }
     }

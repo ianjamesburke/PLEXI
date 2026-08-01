@@ -570,7 +570,10 @@ pub struct AssistantApp {
     agent_registry: AgentRegistry,
     skill_registry: SkillRegistry,
     pending_skill: Option<SkillDefinition>,
-    pending_commands: Vec<AppCommand>,
+    /// Crate-visible so `HostHarness` can seed an outbound command and prove the
+    /// host still drains it on a hidden (logic-only) pass — the seam
+    /// `assistant_mut` already exists for (stint 0688).
+    pub(crate) pending_commands: Vec<AppCommand>,
     settings_loader: SettingsLoader,
     session_overrides: SessionOverrides,
     settings: AssistantSettings,
