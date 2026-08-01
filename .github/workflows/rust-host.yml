@@ -96,6 +96,11 @@ jobs:
             --skip headless_frame_fails_fast_when_the_guest_dies_at_import \
             ${skip_args[@]+"${skip_args[@]}"}
 
+      - name: Verify roadmap evidence
+        run: |
+          just roadmap-evidence-fixtures
+          just roadmap-evidence
+
   clippy:
     name: clippy
     runs-on: macos-latest

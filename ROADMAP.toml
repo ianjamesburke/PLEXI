@@ -153,11 +153,11 @@ stints = []
 [[node]]
 id = "accessibility-tree"
 title = "AccessKit node tree exposure"
-status = "yellow"
+status = "red"
 deps = ["host-model"]
-evidence = ["accesskit_normalization_removes_children_outside_pane"]
+evidence = ["stable_and_rc_channels_disable_v1_stubbed_surfaces"]
 stints = []
-note = "One normalization test. No end-to-end screen-reader qualification exists."
+note = "Stable v1 stubs the unqualified AccessKit tree. The experimental tree requires beta or alpha; no screen-reader qualification is claimed."
 
 # ---------------------------------------------------------------------------
 # CLI and configuration
@@ -749,38 +749,29 @@ stints = ["0249"]
 [[node]]
 id = "media-io"
 title = "Audio / MIDI / video device and decoder layer"
-status = "yellow"
+status = "red"
 deps = ["typed-pipes"]
-evidence = [
-  "mock_decoder_round_trips_frames",
-  "mock_device_round_trips_pcm_frames",
-  "ump_round_trip_channel_voice",
-  "sample_rate_negotiation_picks_closest_supported",
-  "avf_decoder_open_with_invalid_path_returns_error_not_panic",
-]
+evidence = ["stable_and_rc_channels_disable_v1_stubbed_surfaces"]
 stints = ["0521", "0522"]
-note = "Coverage is mock round-trips plus no-panic smoke on real devices. Frame-accurate seek and PTS (edit-grade decode) do not exist."
+note = "Stable v1 gates built-in audio/video playback and unqualified media I/O to beta. Mock/device coverage is not a stable media promise."
+
+[[node]]
+id = "basic-media-playback"
+title = "Basic audio and video playback"
+status = "red"
+deps = ["media-io"]
+evidence = ["stable_and_rc_channels_disable_v1_stubbed_surfaces"]
+stints = []
+note = "A beta-only experimental surface; stable v1 returns the release-gate message instead of opening a partial player."
 
 [[node]]
 id = "daw"
 title = "DAW engine, model, and bundle — tracks, clips, mixdown, undo"
-status = "green"
+status = "red"
 deps = ["media-io", "app-protocol"]
-evidence = [
-  "gate_core_matrix",
-  "gate_deterministic_long_sequence",
-  "gate_randomized_commands",
-  "gate_minimizer_shrinks_reproducible_failures",
-  "gate_serialization_round_trip",
-  "block_size_never_changes_output",
-  "hard_left_pan_silences_right_channel",
-  "full_undo_preserves_monotonic_next_id",
-  "daw_gate_mixdown_determinism",
-  "daw_gate_render_is_block_size_independent",
-  "daw_gate_pane_drive",
-  "daw-gate-bundle",
-]
+evidence = ["stable_and_rc_channels_disable_v1_stubbed_surfaces"]
 stints = []
+note = "DAW remains a beta/alpha proof of concept. Stable v1 gates the manifest POC app and makes no DAW qualification claim."
 
 [[node]]
 id = "video-editor"

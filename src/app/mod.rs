@@ -1022,7 +1022,11 @@ impl PlexiApp {
         log::info!(target: "plexi::frame_diag", "frame diagnostics active; summary every 10s");
 
         theme::setup_fonts(&cc.egui_ctx);
-        cc.egui_ctx.enable_accesskit();
+        if crate::release::feature_enabled(crate::release::ReleaseFeature::Accessibility) {
+            cc.egui_ctx.enable_accesskit();
+        } else {
+            crate::release::log_feature_blocked(crate::release::ReleaseFeature::Accessibility);
+        }
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 

@@ -86,6 +86,14 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
     }
 }
 
+fn release_feature_for_app_id(id: &str) -> Option<crate::release::ReleaseFeature> {
+    match id {
+        "audio-player" | "video-player" => Some(crate::release::ReleaseFeature::MediaIo),
+        "com.plexi.daw-engine-poc" => Some(crate::release::ReleaseFeature::Daw),
+        _ => None,
+    }
+}
+
 fn builtin_default_group(type_id: &str) -> Option<String> {
     match type_id {
         "file_browser" => Some("cwd".to_string()),
@@ -113,6 +121,12 @@ pub(crate) fn restore_builtin_app_pane(
     cwd: PathBuf,
     app_state: Option<&serde_json::Value>,
 ) -> Option<Pane> {
+    if let Some(feature) = release_feature_for_app_id(app_id) {
+        if !crate::release::feature_enabled(feature) {
+            crate::release::log_feature_blocked(feature);
+            return None;
+        }
+    }
     let args = builtin_restore_args(app_id, app_state)?;
     let mut app = builtin_factory(app_id, &cwd, &args)?;
     if let Some(state) = app_state {
@@ -445,6 +459,12 @@ impl PlexiApp {
     ) -> Result<PaneId, String> {
         use crate::host::wasm_app::{StateStore, WasmApp};
 
+        if let Some(feature) = release_feature_for_app_id(app_id) {
+            if !crate::release::feature_enabled(feature) {
+                return Err(crate::release::feature_unavailable_message(feature));
+            }
+        }
+
         let store = StateStore::ephemeral();
         let snapshot = store.snapshot();
         let permission_store =
@@ -689,6 +709,12 @@ impl PlexiApp {
         use crate::host::wasm_app::{Grants, StateStore, WasmApp};
 
         let app_id = installed.manifest.id.clone();
+
+        if let Some(feature) = release_feature_for_app_id(&app_id) {
+            if !crate::release::feature_enabled(feature) {
+                return Err(crate::release::feature_unavailable_message(feature));
+            }
+        }
 
         // Cloud/remote execution is future work (stints 0286/0287): no
         // server-side wasmtime runtime or thin-client streaming exists yet.
@@ -1321,6 +1347,12 @@ impl PlexiApp {
                 "launch_app_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}"
             );
             return Ok(Some(pane_id));
+        }
+
+        if let Some(feature) = release_feature_for_app_id(id) {
+            if !crate::release::feature_enabled(feature) {
+                return Err(crate::release::feature_unavailable_message(feature));
+            }
         }
 
         // When the caller does not specify a placement, fall back to the app's
