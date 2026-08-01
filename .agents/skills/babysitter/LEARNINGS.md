@@ -227,3 +227,42 @@ indistinguishable from "wake immediately." A watch that always fires carries exa
 information as one that never fires (L013). Corrected: record the head sha when arming the watch and
 ignore CI until the sha changes. Generalisation worth keeping — a wake condition must be defined
 against state the head has NOT yet ruled on, never against raw current state.
+
+### L017 — Never offer a worker a choice where you owed it a diagnosis
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: CI failed with `just: command not found`. The head's fix-round brief said "call the
+  scripts directly, OR install just if you can justify why that is the better long-term shape."
+  The worker took the shallower option, replaced the workflow's two `just` calls with direct
+  `python3` invocations, and pushed. But `scripts/roadmap-evidence.py` ITSELF shells out to
+  `just scene ...`, so the outer call was patched and the inner one was left. CI failed again
+  16m24s later on the identical root cause, one layer down. Cost: a full CI round trip plus a
+  worker spawn. The brief's phrasing invited a surface patch by making "shape" a matter of taste
+  rather than requiring the dependency be enumerated first.
+- rule: When the head already knows the fix, rule — do not present options. When the head does NOT
+  know, require the diagnosis as the deliverable before any edit, and rule on it. An either/or in a
+  brief is an instruction to pick the cheaper branch. Pairs with L016: enumerate before asserting a
+  dependency is satisfied, at every layer, not just the one the error message named.
+- falsification: delete if two consecutive runs show a worker escalating an under-specified either/or
+  back to the head instead of silently picking, making the clause redundant.
+- fired: 2026-08-01
+- runs: 0
+
+### L018 — A CI step that exits 0 is not evidence it did anything
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: Third consecutive `test` failure on PR #2555, all exit 127, all `just: command not found`.
+  Round 3 added `- name: Install just / uses: taiki-e/install-action@v2.85.6` in the right job, in the
+  right position, with a verified-existing version tag — and supplied **no `with:` block**. That
+  action's `action.yml` declares `tool` as `required: true`, but GitHub does not enforce `required`
+  for composite-action inputs: the step installed nothing, exited 0, and rendered green in the log.
+  The head only caught it by fetching the action's own `action.yml` at the pinned tag. Cost: a third
+  CI round trip on an already head-reviewed diff.
+- rule: Verifying an action's version tag exists is necessary and not sufficient — also read its
+  `action.yml` for required inputs, because `required: true` is advisory for composite actions and a
+  missing input is a silent no-op, not an error. Generally: when a step is added to make a later step
+  work, the proof is the later step passing, never the added step's own exit code.
+- falsification: delete if GitHub starts enforcing `required` inputs for composite actions, at which
+  point the silent-no-op class disappears.
+- fired: 2026-08-01
+- runs: 0
