@@ -154,6 +154,38 @@ def update(event):
     return []
 ```
 
+`plexi_sdk.tools` writes that declaration, its schema, and its dispatch arm from
+one decorator, so a tool lives in one place instead of three:
+
+```python
+from plexi_sdk import tools
+
+
+@tools.tool("csv.describe_table", "Describe the current table.", returns={"rows": int})
+def _describe() -> dict:
+    return {"rows": 42}
+
+
+@tools.tool("csv.set_title", "Rename the table.", {"title": str})
+def _set_title(title: str) -> tools.Reply:
+    return tools.Reply({"title": title}, [PersistState({"title": title})])
+
+
+def init(size, args):
+    return [tools.expose()]
+
+
+def update(event):
+    return tools.dispatch(event) or <the app's own handling>
+```
+
+`params`/`returns` map argument names to `str`/`int`/`float`/`bool` and become
+JSON Schema objects with every key required. A mutating tool returns its effects
+in a `tools.Reply` rather than writing state itself, and an exception inside a
+tool is reported to the Assistant as that call's `error` — never as a crash.
+Reach for the raw `AiTool`/`ExposeTools`/`ToolResult` types below only for a
+schema the decorator's type map cannot express.
+
 `input_schema` and `output_schema` are JSON Schema objects. `ToolCall.input_json`
 is the JSON string supplied by the Assistant. Return `output_json` matching the
 declared output schema for success or `error` for failure, never both. A
@@ -185,7 +217,7 @@ API; the widgets you reach for most:
 `AppBar`, `ActionBar`, `Column`, `HStack`, `Label`, `Text`, `Heading`,
 `Spacer`, `Divider`, `FooterKeys`, `SelectList`, `TextEdit`, `Card`,
 `Section`, `Tabs`, `Grid`, `Toggle`, `Scrollable`,
-`ButtonRow`, `Button`, `Badge`,
+`ButtonRow`, `Button`, `Badge`, `Actions`, `FormField`, `TextInput`,
 `ProgressBar`, `Canvas`, `CanvasRect`, `CanvasText`, `CanvasCircle`,
 `CanvasLine`
 <!-- /drift-check:components -->
@@ -196,6 +228,15 @@ Widget selection rules:
   scrolling, and click hit-testing. Never reimplement this by hand.
 - **Text entry:** use `TextEdit` in the component tree. Never read raw keys for
   text.
+- **Forms:** a labeled field is a `FormField`; a Save/Cancel pair is an
+  `Actions` row. Buttons declared as plain `Column` children each take the
+  column's full width and stack, so an action pair written that way reads as
+  two unrelated bars — `Actions` is the row.
+- **Focus:** the field that should hold the cursor declares
+  `autofocus=True` (on `TextInput` or `FormField`). The host focuses it
+  whenever the pane owns input and nothing else is focused, including the
+  frame a revealed form first renders, so an app never issues a focus command
+  or routes keys itself.
 - **Raw drawing / games:** return `Canvas(...)` and drive state from
   `RenderFrame`.
 
@@ -220,9 +261,14 @@ You write no layout code to look right. The host fills in its standard spacing
 wherever your tree declares none, and any explicit value you set wins:
 
 - **Root content inset.** A declarative tree is automatically inset from the
-  pane edge (horizontal `SPACE_XL`, vertical `SPACE_MD`). App bars and footer
-  keys still render full-bleed — only body content is inset — so a
-  `Column([AppBar(...), ...body..., FooterKeys(...)])` needs no layout code.
+  pane edge (horizontal `SPACE_XL`, vertical `SPACE_MD`). A leading `AppBar`
+  and a trailing `FooterKeys` are the app's edges, not its content: they render
+  full-bleed against the pane rect while only the body between them is inset —
+  so a `Column([AppBar(...), ...body..., FooterKeys(...)])` needs no layout
+  code.
+- **Bottom-pinned content.** A `Spacer(grow=True)` splits a column: everything
+  before it flows from the top, everything after it sits flush against the
+  bottom. Children after the spacer are never pushed off the pane.
   You no longer set root padding: `Column(padding=...)` does not affect the
   declarative tree (it survives only for legacy canvas-mode layout).
 - **Inter-child spacing.** Leave `gap` unset on `Column`/`HStack` and the host

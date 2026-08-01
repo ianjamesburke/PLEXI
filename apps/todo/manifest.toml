@@ -5,14 +5,14 @@ id = "todo"
 type = "app"
 name = "Todo"
 version = "0.1.0"
-description = "Simple todo list. Items persist across relaunches in host-owned app state."
+description = "Context-scoped todo list. Items persist across relaunches in host-owned app state."
 entry = "todo.py"
 
 [runtime]
 python_compat = true
 
 [app.capabilities]
-capabilities = ["fs.read", "fs.write"]
+capabilities = []
 
 [marketplace]
 visibility = "public"

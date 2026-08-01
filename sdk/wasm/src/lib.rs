@@ -333,6 +333,33 @@ pub mod ui {
             on_change: impl Into<String>,
             on_submit: impl Into<String>,
         ) -> u32 {
+            self.text_input_with_focus(key, value, placeholder, on_change, on_submit, false)
+        }
+
+        /// A text input that declares itself its pane's default text surface:
+        /// the host focuses it when the pane owns input and nothing else is
+        /// focused, so revealing an entry form gives it a live cursor without
+        /// any imperative focus call (stint 0674).
+        pub fn text_input_autofocus(
+            &mut self,
+            key: impl Into<String>,
+            value: impl Into<String>,
+            placeholder: impl Into<String>,
+            on_change: impl Into<String>,
+            on_submit: impl Into<String>,
+        ) -> u32 {
+            self.text_input_with_focus(key, value, placeholder, on_change, on_submit, true)
+        }
+
+        fn text_input_with_focus(
+            &mut self,
+            key: impl Into<String>,
+            value: impl Into<String>,
+            placeholder: impl Into<String>,
+            on_change: impl Into<String>,
+            on_submit: impl Into<String>,
+            autofocus: bool,
+        ) -> u32 {
             self.push(
                 key,
                 UiNodeData::TextInput(TextInputNode {
@@ -341,6 +368,7 @@ pub mod ui {
                     on_change: on_change.into(),
                     on_submit: on_submit.into(),
                     password: false,
+                    autofocus,
                 }),
             )
         }

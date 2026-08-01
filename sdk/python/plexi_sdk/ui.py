@@ -1868,6 +1868,7 @@ class TextInput(Component):
     on_change: str = ""
     on_submit: str = ""
     password: bool = False
+    autofocus: bool = False
 
     _submitted: Optional[str] = field(default=None, init=False, repr=False)
 
@@ -1897,6 +1898,11 @@ class TextInput(Component):
             "on_change": self.on_change or self.id,
             "on_submit": self.on_submit or self.id,
             "password": self.password,
+            # Declaring focus beats commanding it: the field that should hold
+            # the cursor says so, and the host grants it whenever the pane owns
+            # input and nothing else is focused — including the frame a form
+            # first appears (stint 0674).
+            "autofocus": self.autofocus,
         }
 
 
@@ -2190,20 +2196,27 @@ class SelectList(Component):
 
 @dataclass
 class FormField(Component):
-    """Label + TextInput row. Create in on_init (stable across renders).
+    """Label + TextInput, as one form row.
 
-    Read .submitted after the render pass; it contains the text entered by the
-    user when they pressed Enter, or None if no submission this frame.
+    In a declarative ``view()`` tree this composes to a column of a caption
+    label and a text input, so a labeled field is one component instead of
+    hand-stacked parts. ``value`` makes it a controlled input (the app owns the
+    text and echoes ``UiValueChange`` back into state); ``autofocus`` hands it
+    the cursor the frame it appears. Handler ids default to ``id``, matching
+    :class:`TextInput`.
 
-    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
-    declarative-tree node exists for a labeled input row. Compose a
-    `"column"` of a `Text` label and a `TextInput` yourself in tree mode.
+    In canvas mode (``measure()``/``render()``) it draws the same pair itself;
+    read ``.submitted`` after the render pass for the text the user entered.
     """
     id: str
     label: str
     placeholder: str = ""
     required: bool = False
     height: float = 48.0
+    value: Optional[str] = None
+    autofocus: bool = False
+    on_change: str = ""
+    on_submit: str = ""
 
     LABEL_H: float = TEXT_HINT + SPACE_XS  # 11 + 4 = 15px
     LABEL_GAP: float = SPACE_SM            # 8px gap between label and input
@@ -2226,6 +2239,64 @@ class FormField(Component):
                  size=TEXT_HINT, color=theme.muted)
         input_y = y + self.LABEL_H + self.LABEL_GAP
         self._input.render(ctx, x, input_y, w, self.height)
+
+    def to_node(self) -> dict:
+        req_suffix = " *" if self.required else ""
+        label = Text(f"{self.label}{req_suffix}", size=TEXT_HINT, color=theme.muted)
+        field_input = TextInput(
+            self.id,
+            placeholder=self.placeholder,
+            height=self.height,
+            value=self.value,
+            on_change=self.on_change,
+            on_submit=self.on_submit,
+            autofocus=self.autofocus,
+        )
+        return {
+            "type": "column",
+            "children": [label.to_node(), field_input.to_node()],
+            "gap": self.LABEL_GAP,
+            "align": "stretch",
+            "grow": False,
+        }
+
+
+class Actions(Component):
+    """A form's action row: buttons laid side by side, never stacked.
+
+    Buttons declared as plain children of a ``Column`` each take the column's
+    full width and stack vertically, which is how a Save/Cancel pair ends up
+    reading as two unrelated full-bleed bars. ``Actions`` is the primitive for
+    the pair: one row, standard button spacing, primary action first.
+
+        Actions([Button("Add", "add", style="primary"),
+                 Button("Cancel", "cancel", style="ghost")])
+    """
+
+    def __init__(self, buttons: Sequence[Button], gap: float = SPACE_SM) -> None:
+        if any(not isinstance(b, Button) for b in buttons):
+            raise TypeError("Actions children must be Button instances")
+        self.buttons = list(buttons)
+        self.gap = gap
+
+    def measure(self, _avail_w: float) -> float:
+        return max((b.measure(_avail_w) for b in self.buttons), default=0.0)
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        if not self.buttons:
+            return
+        each_w = (w - self.gap * (len(self.buttons) - 1)) / len(self.buttons)
+        for i, button in enumerate(self.buttons):
+            button.render(ctx, x + i * (each_w + self.gap), y, each_w, h)
+
+    def to_node(self) -> dict:
+        return {
+            "type": "row",
+            "children": [b.to_node() for b in self.buttons],
+            "gap": self.gap,
+            "align": "start",
+            "grow": False,
+        }
 
 
 @dataclass

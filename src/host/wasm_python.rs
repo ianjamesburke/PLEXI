@@ -3727,6 +3727,10 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 .get("password")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            autofocus: value
+                .get("autofocus")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })),
         "Row" | "row" => Ok(UiNodeData::Row(RowNode {
             children: u32_list(value, "children")?,
@@ -5945,6 +5949,31 @@ execution = "cloud"
         assert!(matches!(tree.nodes[1].data, UiNodeData::TextInput(_)));
         assert!(matches!(tree.nodes[3].data, UiNodeData::ListView(_)));
         assert!(matches!(tree.nodes[4].data, UiNodeData::ProgressBar(_)));
+    }
+
+    /// Stint 0674: a field declares itself the pane's default text surface with
+    /// `autofocus`. Absent, it must decode false — an app that never asked for
+    /// focus must never steal it.
+    #[test]
+    fn ui_tree_decodes_text_input_autofocus() {
+        let tree = decode_ui_tree(
+            r#"{
+                "root":0,
+                "nodes":[
+                    {"id":0,"key":"0","data":{"type":"Column","children":[1,2],"gap":4.0}},
+                    {"id":1,"key":"0/a","data":{"type":"TextInput","value":"","placeholder":"p","autofocus":true}},
+                    {"id":2,"key":"0/b","data":{"type":"TextInput","value":"","placeholder":"p"}}
+                ]
+            }"#,
+        )
+        .expect("tree");
+
+        let autofocus = |node: &IndexedNode| match &node.data {
+            UiNodeData::TextInput(ti) => ti.autofocus,
+            other => panic!("expected a TextInput, got {other:?}"),
+        };
+        assert!(autofocus(&tree.nodes[1]));
+        assert!(!autofocus(&tree.nodes[2]));
     }
 
     #[test]

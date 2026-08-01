@@ -21,6 +21,7 @@ SDK_ID = f"plexi-sdk-py/{__version__}"
 from ._v3_state import StateSnapshot, log, state
 from . import effects as effects
 from . import events as events
+from . import tools as tools
 
 from ._constants import (
     TITLE, HEADING, BODY, CAPTION, HINT, MONO_BODY, MONO_SMALL,

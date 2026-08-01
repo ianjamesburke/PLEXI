@@ -232,6 +232,7 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "on_change": data.get("on_change", data.get("on-change", "")),
             "on_submit": data.get("on_submit", data.get("on-submit", "")),
             "password": data.get("password", False),
+            "autofocus": data.get("autofocus", False),
         }
     if node_type == "select_list":
         items = data.get("items", [])
