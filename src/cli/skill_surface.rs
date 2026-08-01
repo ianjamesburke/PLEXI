@@ -126,12 +126,20 @@ fn descend<'a>(
 /// the natural relabel target for the reference blocks.
 const INERT_FENCE_LANGS: &[&str] = &["json", "toml", "rust"];
 
-/// Coverage floors: canaries against silent extraction collapse. The gate
-/// currently resolves ~85 command paths and checks ~82 flags; a legitimate
-/// skill edit moves these gradually, a broken extractor drops them off a
-/// cliff. Raise/lower deliberately when the skill genuinely grows or shrinks.
-const MIN_COMMANDS_RESOLVED: usize = 60;
-const MIN_FLAGS_CHECKED: usize = 50;
+/// Coverage floors: canaries against silent extraction collapse. The public
+/// skill is a feature map with worked examples, not a complete CLI reference:
+/// the checked map resolves 18 paths and its executable examples resolve 19,
+/// for 37 total. A floor of 30 means dropping either checked section (at most
+/// 19 paths remain) always fails, while allowing deliberate small edits to a
+/// map or example without an unrelated test edit.
+///
+/// All 13 long flags live in the executable examples. Allow one flag to change
+/// with a legitimate recipe edit, but fail if two disappear: that catches a
+/// skipped multi-flag command line or a skipped example block. This is a
+/// canary for extraction coverage, not proof that the examples execute; live
+/// host verification of every published recipe is the separate guarantee.
+const MIN_COMMANDS_RESOLVED: usize = 30;
+const MIN_FLAGS_CHECKED: usize = 12;
 
 #[derive(Default)]
 struct Report {

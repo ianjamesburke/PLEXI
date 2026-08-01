@@ -1,326 +1,150 @@
 ---
 name: plexi-cli
-description: Operating inside Plexi — spawn/name panes, focus, launch apps, manage contexts, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "4.4.3"
+description: Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.
+skill_version: "5.0.0"
 plexi_version: "0.2.3"
-last_verified: "2026-07-29"
+last_verified: "2026-08-01"
 ---
 
 # Plexi CLI
 
-You are running inside a Plexi pane. `PLEXI_SOCKET` is set automatically -- every `plexi` command routes to the correct running instance.
+Start with `plexi --help`, then run `plexi <command> --help` before using a
+surface. Help is the reference for arguments and flags in the installed binary.
 
-**Before using any subcommand**, run `plexi <noun> --help` to confirm it exists and check its flags. Subcommands change across releases -- never assume.
+Run these commands from a Plexi pane when they act on a host. The pane's context
+and connection are supplied automatically. For app state and host state, use the
+CLI or app SDK; do not inspect Plexi profile files directly.
 
-Socket transport failures explicitly reported as an incomplete frame were not dispatched and are safe to retry. A host response timeout happens after transport success and does not prove non-delivery; do not retry it blindly.
+## Feature map
 
-## Env Vars (set automatically in every pane)
+- **Panes** — create terminals, control their input and focus, inspect them, and
+  coordinate work: `plexi pane --help`.
+- **Slots** — store a small, named pane result that another pane can inspect or
+  wait for: `plexi pane slot --help`.
+- **Contexts** — create or enter scoped project spaces, including pre-populated
+  sub-contexts: `plexi context --help`.
+- **Apps** — scaffold, check, test, open, package, install, and inspect apps:
+  `plexi app --help`.
+- **Notifications** — show scoped information to the person using the host:
+  `plexi notify --help`.
+- **Workspace tools** — initialize a workspace, run named commands, and manage
+  project secrets and routines: `plexi workspace --help`, `plexi run --help`,
+  `plexi secret --help`, and `plexi routine --help`.
+- **Agents** — install workspace definitions and report or inspect agent state:
+  `plexi agent --help`.
+- **Configuration and diagnostics** — inspect configuration, AI setup, app
+  health, and updates: `plexi config --help`, `plexi ai --help`,
+  `plexi doctor --help`, and `plexi update --help`.
+- **Marketplace and tool registry** — search and publish apps, manage an account,
+  and refresh CLI-tool knowledge: `plexi account --help`, `plexi registry --help`.
+- **Notes** — capture, browse, and process scratchpad notes: `plexi note --help`
+  and `plexi notes --help`.
 
-| Var | Purpose |
-|-----|---------|
-| `PLEXI_SOCKET` | IPC socket path; routes all commands to the running instance |
-| `PLEXI_PANE_ID` | Numeric ID of the current pane; pass to `--from` |
-| `PLEXI_CONTEXT_ID` | Context ID the pane belongs to |
-| `PLEXI_CONTEXT_NAME` | Context name the pane belongs to |
-
-## Command Reference
-
-### pane -- create, control, and inspect panes
-
-```
-pane new [CMD]           Open a terminal pane. Flags: -n NAME, -d/--down, -l/--left, -u/--up,
-                         -r/--right, --tab, --window, --overlay, --from PANE_ID, -e/--ephemeral,
-                         --no-focus, --cwd DIR
-pane new --agent ALIAS   Spawn a pane, launch the agent alias, and BLOCK until the agent TUI
-                         reports a booted idle prompt; prints the pane id on stdout only then.
-                         --boot-timeout SECS (default 60). Exit 0 = id on stdout, ready for a
-                         brief. Exit 2 = boot timeout (created pane id on stderr — close it).
-                         Exit 1 = usage/plumbing. Combines with the placement flags above.
-pane name [ID] NAME      Rename. One arg = rename self. Two args = rename by ID.
-pane list [--context [ID]]  JSON array of panes. --context (no arg) = caller's context.
-pane focus ID            Move visible focus to a pane (does NOT move the agent).
-pane close [ID]          Close a pane. Omit ID = close self.
-pane send ID TEXT        Type text into a pane. Use \n for Enter.
-pane send ID TEXT -s     --submit/-s: host types the text, waits for the input line to settle,
-                         presses Enter, confirms submission, and self-heals a collapsed paste
-                         with exactly one internal retry. Exit 0 = confirmed submitted; exit 1 =
-                         typed but unconfirmed (observed input line on stderr). Terminal panes only.
-pane key ID KEY          Send a keypress. Named: enter, escape, space, up, down, left, right,
-                         backspace. Chords: ctrl+c.
-pane command ID TEXT -e  Send text + Enter in one step (terminal panes only).
-pane capture [ID]        Last N lines as JSON. --lines N (default 50), --from-cursor CURSOR,
-                         --full-output. --plain prints raw lines only on stdout and the next
-                         cursor on stderr; --plain and --from-cursor compose.
-pane status ID           One host-derived JSON verdict: working, idle, blocked, or unknown,
-                         with high/low confidence and raw agent/status-bar/buffer evidence.
-pane heartbeat ID --every 5m --text "cycle"
-                         Host-owned recurring prompt; defaults to firing only when the agent is idle.
-pane heartbeat ID --off  Disable that pane's recurring prompt.
-pane self                Print current pane's ID.
-pane info                Print current pane details as JSON.
-pane state ID            App panes: L1 UiNode tree JSON. Terminal panes: simple status object.
-pane slot write NAME [CONTENT]  Write a named per-pane byte slot (stdin when CONTENT omitted).
-                         --pane-id ID (default: PLEXI_PANE_ID), --append or --replace for an
-                         existing slot.
-pane slot read NAME [PANE_ID]   Print a slot's raw bytes.
-pane slot wait NAME [PANE_ID]   Block until the slot's value matches --until REGEX; prints the
-                         matching value. --timeout SECS (default 300). Level-triggered: an
-                         already-matching value returns immediately. Exit 0 = match, exit 2 =
-                         timeout (nothing on stdout), exit 1 = usage/plumbing — branch on the
-                         exit code alone.
-pane slot list [PANE_ID]        List a pane's slots as JSON.
-pane slot delete NAME [PANE_ID] Delete a slot.
-```
-
-### app -- install, open, scaffold, inspect
+The release gate verifies these feature-map entry points:
 
 ```
-app open [TYPE_ID]       Open an installed app. Flags: -d, -l, -u, -r, --tab, --window,
-                         --from PANE_ID. Extra args forwarded to the app.
-app open --mcp CMD...    Wrap a stdio MCP server in a Plexi pane.
-app open --cli BINARY    Wrap a CLI tool with a Plexi UI.
-app init NAME            Scaffold a new app. --lang python (default), --global, --no-open,
-                         --from PANE_ID. Before building a canvas/on_render app, read
-                         the SDK reference at https://plexiapp.com/docs/sdk for the
-                         drawing API (rect stroke/glow/gradient, circle glow, arc_ring,
-                         theme tokens).
-app install [SPEC]       Install from path, github:owner/repo, or --pack core.
-                         No args = install from .plexi/apps.toml. --version SEMVER to pin.
-app uninstall ID         Remove an installed app.
-app list                 Show all installed apps with versions.
-app prune --dry-run      Report retired first-party pre-v3 installs that launch reconciliation removes.
-app info ID              Show app details: id, name, version, tools.
-app render APP           Render an app (installed id or local path, e.g. ".") without a
-                         running host. Default output is the JSON UI tree; --png for an
-                         image. --size WxH, --state FILE, --output FILE.
-app validate [PATH]      Check app dir for errors before publish/install.
-app freeze PATH          Export installed apps as TOML snapshot (like pip freeze).
-app publish              Stub for future marketplace publishing; confirm behavior with --help.
-app update               Check for available updates.
-app action ID ACTION [ARGS]  Send a semantic action to a running app (not raw text).
+pane
+pane slot
+context
+app
+notify
+workspace
+run
+secret
+routine
+agent
+config
+ai
+doctor
+update
+account
+registry
+note
+notes
 ```
 
-### context -- manage project scopes
+## Worked examples
 
-```
-context new [NAME]       New context. --path DIR, --parent[=NAME] (bare = current context), --from PANE_ID (portal anchor; defaults to caller), -d/-l/-u/-r portal direction, --focus, --window CMD (repeatable; creates extra windows atomically).
-context sub NAME         Sub-context under the caller's context, pre-populated with panes.
-                         --agents N (1-32, default 1), --command CMD (once = all panes, or exactly N times = one each; any other count errors),
-                         --layout tiled|columns (default tiled), --path DIR (defaults to caller's cwd), --focus, --from PANE_ID.
-                         Prints {"context_id","windows","panes":[ids]} — address the panes directly, no follow-up `pane list`.
-context open [PATH]      Switch current pane to a context at PATH.
-context set-root [PATH]  Change root folder for the caller's context (PLEXI_CONTEXT_ID).
-context current          Print context id/name as JSON.
-context describe TEXT    Set description for the caller's context (PLEXI_CONTEXT_ID).
-context zoom ID          Zoom into a sub-context.
-context zoom-out         Zoom out to parent context.
-context push [NAME]      Push a pane into a new sub-context. --pane-id ID (defaults to the calling pane).
-```
+### Initialize, open, and check an app
 
-### notify -- surface information to the user
-
-```
-notify --title TEXT      Required. --body TEXT, --level info|warn|error,
-                         --timeout SECS (0=sticky), --scope window|context|global
-                         (default context — stays in the sending context;
-                         pass --scope global to surface everywhere).
-                         The sending context is the caller's own (PLEXI_CONTEXT_ID),
-                         never the currently active one. Outside a pane there is no
-                         sending context: --scope context|window errors, and an
-                         unscoped notify escalates to global.
-                         Prints a notification id; use `notify dismiss ID` from the
-                         posting pane to remove it. --choice "key:Label" (repeatable,
-                         blocks until chosen). --wait-timeout SECS bounds only that choice wait
-                         (0 = wait indefinitely); --timeout always controls display lifetime.
-                         --host-action "key:action_type:arg" (runs even after caller exits).
-```
-
-### secret -- keychain-backed project secrets
-
-```
-secret set NAME          Prompts for value. --from-env, --global, --alias NAME.
-secret get NAME          Print value. --global.
-secret list              Show all secrets for current project.
-secret delete NAME       Remove a secret.
-```
-
-### agent -- workspace agent definitions
-
-```
-agent init NAME          Scaffold agent app (ai.query + chat UI). --from PANE_ID.
-agent add NAME           Install from global registry into workspace.
-agent update NAME        Re-install from registry, preserving memory/logs.
-agent list               List workspace agents.
-agent report             Hook-only state report. --state working|blocked|idle, --agent NAME,
-                         --session-id ID, --detail TEXT.
-agent status             Table of pane agent state. Adds DETAIL when any pane reports it.
-```
-
-A reported agent is addressable, not just observable: every pane with agent state
-becomes a row in the human's Cmd+P palette, across every context and window, keyed
-on the `--agent` name and annotated with `--detail`. Same-name agents are numbered
-within their context; blocked agents sort first. Report a name a human would
-search for; keep `--detail` to the active tool.
-
-### workspace, run, routine
-
-```
-workspace init           Set up .plexi/ in current dir. NEVER run from ~.
-run [COMMAND]            Run a named command from .plexi/commands.toml. Omit to list.
-routine list             Show the workspace's routines with schedule/next fire. Resolves routines.toml from the workspace root (works from any subdirectory).
-routine run NAME         Manually trigger a routine. Fires into its configured context like a scheduled run; --force fires a disabled routine.
-routine add NAME --command CMD --schedule SPEC [--context CTX] [--ephemeral]
-                         Append a routine. Schedule is validated by the scheduler's own parser; comments in the file are preserved.
-routine remove NAME      Delete a routine from routines.toml.
-routine enable NAME      Re-enable a disabled routine (removes enabled = false).
-routine disable NAME     Keep the routine but never fire it (sets enabled = false).
-```
-
-### ai, config, doctor, notes, demo, update, uninstall
-
-```
-ai doctor [--json]       Scan hardware, recommend models, check Ollama/OpenRouter.
-ai setup                 Interactive wizard to configure local AI via Ollama.
-config check             Validate config.toml.
-config edit              Open config.toml in $EDITOR.
-config get KEY           Print resolved value (e.g. agents.medium).
-config list              Print all known keys with type, value, description. --json for machine output.
-config set KEY=VAL ...   Set one or more keys in-place (e.g. config set theme.preset=dracula font_size=14).
-config reset             Overwrite config.toml with defaults.
-doctor [--json]          Audit installed apps for capability/config gaps.
-notes list               Print scratchpad note paths, newest first.
-notes open               Open note picker with fzf.
-demo                     Interactive keybinding tutorial (split, navigate).
-update                   Update Plexi binary.
-update apps              Update installed apps.
-host start --background  Launch without taking focus. On macOS the Accessory host has no normal
-                         Dock/menu-bar presence; drive it with pane/app/host CLI commands.
-completions SHELL        Print completion script (zsh, bash, fish).
-uninstall                Remove app bundle, CLI, completions. --keep-data, -y.
-```
-
-## Config Workflow for Agents
-
-Before writing any config key, run `plexi config list` to discover valid keys, their types, and current values. Then use `plexi config set KEY=VALUE` to apply changes without opening an editor. Scope: workspace if inside a workspace, global otherwise (override with -g/--global or -w/--workspace).
-
-## Non-Obvious Translation Rules
-
-- `pane new` is the canonical way to open a terminal pane
-- `app open TYPE_ID` opens installed apps -- never `pane send ID "app\n"`
-- `app render . --png` renders the app in the current dir with no running host; default output is JSON, not an image
-- `agent init` replaces the former `app init --agent` form
-- `pane command ID "text" --enter` = send + Enter in one step (terminal panes only)
-- `pane send` with `\n` submits in shell panes but does NOT submit Claude Code prompts -- use `pane send ID TEXT --submit`
-- `app action` delivers structured semantic events; `pane command` sends raw keystrokes
-
-## Footguns
-
-- **Never** run `workspace init` from `~` -- collides with profile dir at `~/.plexi/`
-- `pane send ID "text\n"` submits in **shell** panes but does **not** submit Claude Code prompts -- `--submit` is the sanctioned path into an agent TUI
-- `pane slot wait` exits 2 on timeout and 0 on match -- branch on the exit code, never parse stderr
-- `pane capture --plain` reserves stdout for captured text; read `cursor=N` from stderr when advancing a delta loop
-- `pane status ID` is the single-call corroboration path when a pane slot is missing or stale; `unknown`/`low` means escalate instead of guessing
-- `pane heartbeat ID --every 5m --text "cycle"` is host-owned and persists across host restart; use `--off` to remove it
-- `pane state` returns L1 UiNode tree for app panes; returns a simple status object for terminal panes
-- `pane focus` moves what the user **sees**, not where the agent runs -- the agent stays in its own pane
-- A background Accessory host stays behind other apps: pane send/key/click and `pane focus` drive it internally but do not front it
-- `app open --mcp` and `--cli` are mutually exclusive with TYPE_ID
-- `notify` without `--choice` is fire-and-forget; with `--choice` it **blocks** until the user picks
-
-## Multi-Command Patterns
-
-### Send a message to an agent (Claude Code / Codex) pane
+Create a workspace, scaffold an app, open it in a live pane, then check both the
+running pane and the generated app. `app init` prints the app path and pane ID;
+this example captures both instead of assuming where the workspace stores apps.
 
 ```bash
-plexi pane send $TARGET "your message here" --submit
+mkdir hello-workspace
+cd hello-workspace
+plexi workspace init
+
+INIT_OUTPUT=$(plexi app init hello --open)
+printf '%s\n' "$INIT_OUTPUT"
+APP_DIR=$(printf '%s\n' "$INIT_OUTPUT" | sed -n "s/^Created app 'hello' at //p")
+PANE_ID=$(printf '%s\n' "$INIT_OUTPUT" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\)$/\1/p' | head -1)
+
+plexi pane state "$PANE_ID"
+plexi app check "$APP_DIR"
 ```
 
-Exit 0 means the host observed the prompt leave the input line; non-zero means typed but unconfirmed (the observed input line is on stderr) -- do not blind-retry. On an older installed build, inspect `plexi pane --help` and follow its available behavior rather than assuming these newer verbs exist.
+### Create a named sub-context with a terminal grid
 
-### Check whether an agent pane is idle
+Create four terminal panes in one tiled sub-context. The context name is the
+argument to `context sub`; name the returned pane IDs directly.
 
 ```bash
-plexi pane status "$TARGET"
+SQUAD=$(plexi context sub release-train --agents 4 --command 'exec zsh' --layout tiled)
+CONTEXT_ID=$(printf '%s' "$SQUAD" | jq -r '.context_id')
+PLANNER=$(printf '%s' "$SQUAD" | jq -r '.panes[0]')
+IMPLEMENTER=$(printf '%s' "$SQUAD" | jq -r '.panes[1]')
+REVIEWER=$(printf '%s' "$SQUAD" | jq -r '.panes[2]')
+VERIFIER=$(printf '%s' "$SQUAD" | jq -r '.panes[3]')
+
+plexi pane name "$PLANNER" planner
+plexi pane name "$IMPLEMENTER" implementer
+plexi pane name "$REVIEWER" reviewer
+plexi pane name "$VERIFIER" verifier
+
+CONTEXTS=$(plexi context list)
+printf '%s' "$CONTEXTS" | jq --argjson id "$CONTEXT_ID" '.[] | select(.context_id == $id)'
+plexi pane list --context "$CONTEXT_ID"
 ```
 
-Trust `idle` only with `high` confidence. Treat `unknown` or `low` confidence as an escalation signal, not permission to guess from repeated captures.
+### Signal and wait for a pane's result
 
-### Cursor-based incremental capture
+Slots are small, durable, host-managed rendezvous points associated with a pane.
+Use one when another pane needs a simple, observable completion signal: publish a
+named value, then wait for a value that matches. A wait is level-triggered, so it
+also succeeds when the value was written before the wait began.
+
+Slots are not a stream or an app-to-app data channel. Use the event bus for
+structured app data and typed pipes for bulk binary data. Delete a slot when its
+value is no longer useful.
 
 ```bash
-CURSOR_FILE=$(mktemp)
-plexi pane capture "$TARGET" --lines 1 --plain 2>"$CURSOR_FILE"
-CURSOR=$(sed -n 's/^cursor=//p' "$CURSOR_FILE")
-# ... wait for new output ...
-plexi pane capture "$TARGET" --from-cursor "$CURSOR" --plain 2>"$CURSOR_FILE"
+WORKER=$(plexi pane new 'exec zsh' --name report-builder --no-focus)
+plexi pane slot write result ready --pane-id "$WORKER"
+RESULT=$(plexi pane slot wait result "$WORKER" --until '^ready$' --timeout 300)
+printf 'worker result: %s\n' "$RESULT"
+plexi pane close "$WORKER"
 ```
 
-Captured text is stdout. The next `cursor=N` marker is stderr; strip the prefix before passing it to the next `--from-cursor`.
+### Review and clean stale slot files
 
-### Blocking notification (waits for user choice)
+Slot values are stored as files in the workspace's channel data, one directory
+per pane. They remain while their pane is live. After panes close, review stale
+directories first, then remove them through the CLI.
 
 ```bash
-RESULT=$(plexi notify --title "PR ready" --body "Review and approve." \
-  --choice "a:Open PR" --choice "b:Skip" --choice "c:Talk to Claude" \
-  --host-action "c:pane_focus:$MY_PANE")
-case "$RESULT" in
-  a) open "<pr-url>" ;;
-  b) ;;
-  c) ;;  # pane_focus handled host-side
-esac
+plexi workspace clean --dry-run
+plexi workspace clean
 ```
 
-### Fire-and-forget notification (background -- use only when pane is about to close)
+### Post and dismiss a scoped notification
+
+Use a notification for information intended for the person using the host, not
+for structured agent-to-agent data.
 
 ```bash
-(RESULT=$(plexi notify --title "Done" --body "Branch pushed." --choice "ok:Dismiss")
- [ "$RESULT" = "open" ] && open "<pr-url>") &
-```
-
-### 2x2 grid layout (apps in three quadrants)
-
-```bash
-BALLS=$(plexi app open balls -r --from $PLEXI_PANE_ID)
-plexi app open tetris -d --from $PLEXI_PANE_ID
-plexi app open snake -d --from $BALLS
-```
-
-### Scoped agent squad (one command)
-
-```bash
-# 3 agents in their own sub-context, rooted at the current cwd.
-SQUAD=$(plexi context sub agentsquad --agents 3 --command claude)
-# Pane ids come back in the response — no follow-up `pane list` needed.
-for P in $(echo "$SQUAD" | jq -r '.panes[]'); do plexi pane name $P "squad-$P"; done
-```
-
-Prefer this over `context new --parent --window CMD ...`: that route seeds a
-spare terminal (N commands → N+1 panes), spreads the panes across sibling
-*pages* instead of tiling them in one window, and roots the sub-context at the
-parent context's path rather than your cwd.
-
-### Named agent dispatch lane
-
-```bash
-LANE=$(plexi pane new -n "issue-42" -r --from $PLEXI_PANE_ID --agent claude) || exit 1
-plexi pane send $LANE "investigate and fix issue 42" --submit
-```
-
-`--agent` prints the id only once the agent is booted and ready for a brief, so the send cannot race the TUI boot.
-
-### Block on another pane's progress slot
-
-```bash
-if VERDICT=$(plexi pane slot wait verdict $LANE --until 'PASS|FAIL' --timeout 600); then
-  echo "tester says: $VERDICT"
-elif [ $? -eq 2 ]; then
-  echo "no verdict within 10 min -- escalate" >&2
-fi
-```
-
-### Semantic app action (no keystroke simulation)
-
-```bash
-plexi app action $PANE_ID refresh
-plexi app action $PANE_ID navigate-to /some/path
+NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to inspect.' \
+  --scope context --timeout 30)
+plexi notify dismiss "$NOTICE"
 ```
