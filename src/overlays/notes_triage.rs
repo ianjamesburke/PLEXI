@@ -460,7 +460,7 @@ mod tests {
 
         let mut app = test_app();
         let active_root = std::path::PathBuf::from("/tmp/plexi-triage-active");
-        app.router.get_mut(0).root = Some(active_root.clone());
+        app.router.get_mut(0).root = active_root.clone();
 
         // Captured in a *different* context — keep must follow the capture.
         let captured_root = std::path::PathBuf::from("/tmp/plexi-triage-captured");

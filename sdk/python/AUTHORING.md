@@ -93,7 +93,11 @@ fields is in `sdk.md` (Effects section). The common ones:
 
 `SetState` is process-local runtime state — view/update data, caches, game
 state. `PersistState` writes the same snapshot **and** saves durable app state;
-use it only when a key must survive an app restart. There are no `LogInfo` /
+use it only when a key must survive an app restart. Both take an optional
+`scope=` naming one of the app's declared state scopes (see `[state] scopes`
+in the Manifest section); omitted means the app's default scope, and an
+undeclared scope raises — never a silent fallback. `state.get`/`state.all`
+accept the same `scope=` argument. There are no `LogInfo` /
 `LogWarn` / `LogError` effects — logging goes through the `log` module (below).
 Network fetches use `HttpFetch`, not `HttpRequest`.
 
@@ -365,6 +369,23 @@ launches. Note that when a relaunch is deduped to an existing instance, any
 `args` (or cwd) that relaunch carried are **not** delivered to the running
 instance — the host focuses it as-is (delivering relaunch args to a live
 instance via a bus event is future work).
+
+`[state] scopes` declares which state scopes your app addresses, ordered —
+the first entry is the default:
+
+```toml
+[state]
+scopes = ["global", "context"]
+```
+
+Omitting `[state]` gives `["global"]`. The host owns path construction:
+`global` state lives in `~/.plexi/app_states/<app_id>.json` (channel-neutral,
+cross-project), `context` state in `<context_root>/.plexi/app_states/`,
+resolved against the pane's context root at call time — so
+`plexi context set-root` immediately redirects where context-scoped state
+lands. Context-scoped state is gitignored by the host (`.plexi/.gitignore`
+gains `app_states/` automatically): app state is personal, single-user, local
+data — never committed. An unknown or empty scope list fails install loudly.
 
 ## Dev / Test Loop
 

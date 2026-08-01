@@ -338,7 +338,7 @@ impl PlexiApp {
             timestamp: crate::host::event_log::now_timestamp(),
         });
 
-        let cwd = self.resolve_new_pane_cwd(cwd_override, Some(focused));
+        let cwd = self.resolve_new_pane_cwd(cwd_override);
         log::info!(
             "split_focused: cwd={cwd:?} context_root={:?}",
             self.router.active().root
@@ -1202,8 +1202,7 @@ impl PlexiApp {
 
         let cwd = self.windows[src_idx]
             .get_focused_pane_cwd(focused_tile)
-            .or_else(|| self.router.active().root.clone())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")));
+            .unwrap_or_else(|| self.router.active().root.clone());
 
         let next_src_focus = self.windows[src_idx].find_next_focus(focused_tile);
 
@@ -1569,27 +1568,20 @@ impl PlexiApp {
 }
 
 impl PlexiApp {
+    /// Cwd for a newly created pane: an explicit override wins, else the
+    /// active context's root. A context is always anchored, so this always
+    /// resolves; the Option signature keeps override plumbing uniform.
     pub(crate) fn resolve_new_pane_cwd(
         &self,
         cwd_override: Option<std::path::PathBuf>,
-        focused: Option<TileId>,
     ) -> Option<std::path::PathBuf> {
-        cwd_override
-            .or_else(|| self.router.active().root.clone())
-            .or_else(|| {
-                focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f))
-            })
-            .or_else(dirs::home_dir)
+        cwd_override.or_else(|| Some(self.router.active().root.clone()))
     }
 
     /// CWD for the first terminal pane created from the welcome screen (empty window).
     /// Priority: context root → window launch path
     pub(crate) fn cwd_for_welcome_tab(&self) -> std::path::PathBuf {
-        self.router
-            .active()
-            .root
-            .clone()
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")))
+        self.router.active().root.clone()
     }
 }
 

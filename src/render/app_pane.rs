@@ -35,7 +35,11 @@ pub fn render(
     colors: &Colors,
     suppress_overtake: bool,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
+    context_root: &std::path::Path,
 ) {
+    // Refresh before the app pumps its bridge messages: a persist handled in
+    // this frame must resolve against this frame's context root.
+    app_pane.runtime.refresh_context_root(context_root);
     let has_overtake = app_pane.overlay_replaced.is_some() && !suppress_overtake;
     let nav_title: Option<String> = app_pane.runtime.nav_top_title().map(|t| t.to_owned());
     // Resolve before any mutable borrow of app_pane.runtime inside closures below.

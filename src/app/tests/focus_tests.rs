@@ -445,8 +445,7 @@ fn switch_workspace_pushes_focus_history() {
     app.next_window_id += 1;
     app.router.push(crate::host::context::Context {
         name: "ctx-b".into(),
-        path: std::path::PathBuf::from("/tmp"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp"),
         description: None,
         context_id: ctx_b_id,
         parent_id: None,
@@ -517,8 +516,7 @@ fn switch_workspace_no_double_push_during_history_navigation() {
     app.next_window_id += 1;
     app.router.push(crate::host::context::Context {
         name: "ctx-b".into(),
-        path: std::path::PathBuf::from("/tmp"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp"),
         description: None,
         context_id: ctx_b_id,
         parent_id: None,
@@ -573,8 +571,7 @@ fn focus_history_restores_context_minimap_visibility() {
     app.next_window_id += 1;
     app.router.push(crate::host::context::Context {
         name: "ctx-b".into(),
-        path: std::path::PathBuf::from("/tmp"),
-        root: None,
+        root: std::path::PathBuf::from("/tmp"),
         description: None,
         context_id: ctx_b_id,
         parent_id: None,

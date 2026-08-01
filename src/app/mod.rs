@@ -241,16 +241,6 @@ pub struct PlexiApp {
     /// rows every draw frame, so the collection trace fires only when the
     /// count changes — never once per frame.
     pub(crate) palette_agent_count_logged: Option<usize>,
-    /// TTL cache for the cwd-derived fallback workspace root passed to
-    /// `PlexiBehavior` each frame (#2023). The fallback
-    /// (`config::active_workspace_root()`) stat-walks the filesystem from the
-    /// process cwd, so it must not run per frame. The underlying state is
-    /// external filesystem layout — no enumerable mutation sites — so a 1s
-    /// TTL is the invalidation, matching the downstream
-    /// `OUTSIDE_WORKSPACE_CHECK_INTERVAL` of the only consumer (the terminal
-    /// "outside workspace" badge).
-    pub(crate) workspace_root_fallback_cache:
-        Option<(std::time::Instant, Option<std::path::PathBuf>)>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// Active text-input overlay and its dispatch target.
@@ -1177,7 +1167,7 @@ impl PlexiApp {
             let ctx_root_map: std::collections::HashMap<u64, PathBuf> = ws
                 .contexts
                 .iter()
-                .filter_map(|c| c.root.as_ref().map(|r| (c.context_id, r.clone())))
+                .map(|c| (c.context_id, c.root.clone()))
                 .collect();
             let ctx_depth_map: std::collections::HashMap<u64, u32> = ws
                 .contexts
@@ -1415,7 +1405,6 @@ impl PlexiApp {
                     palette_commands: Vec::new(),
                     palette_scroll_reset: false,
                     palette_agent_count_logged: None,
-                    workspace_root_fallback_cache: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     text_overlay: None,
@@ -1580,9 +1569,13 @@ impl PlexiApp {
                     desc,
                     a.root.display()
                 );
-                (name, desc, Some(a.root.clone()))
+                (name, desc, a.root.clone())
             }
-            None => ("Default".to_string(), None, dirs::home_dir()),
+            None => (
+                "Default".to_string(),
+                None,
+                dirs::home_dir().unwrap_or_else(|| path.clone()),
+            ),
         };
 
         let default_cwd = std::env::current_dir().unwrap_or_default();
@@ -1607,7 +1600,6 @@ impl PlexiApp {
             router: crate::workspace::router::WorkspaceRouter::new(
                 vec![crate::host::context::Context {
                     name: default_name,
-                    path: path.clone(),
                     root: default_root,
                     description: default_description,
                     context_id: 1,
@@ -1675,7 +1667,6 @@ impl PlexiApp {
             palette_commands: Vec::new(),
             palette_scroll_reset: false,
             palette_agent_count_logged: None,
-            workspace_root_fallback_cache: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -2056,8 +2047,7 @@ impl PlexiApp {
                 router: crate::workspace::router::WorkspaceRouter::new(
                     vec![crate::host::context::Context {
                         name: "Test".into(),
-                        path: path.clone(),
-                        root: None,
+                        root: path.clone(),
                         description: None,
                         context_id: 1,
                         parent_id: None,
@@ -2126,8 +2116,7 @@ impl PlexiApp {
                 palette_commands: Vec::new(),
                 palette_scroll_reset: false,
                 palette_agent_count_logged: None,
-                workspace_root_fallback_cache: None,
-                context_visit_history: Vec::new(),
+                    context_visit_history: Vec::new(),
                 renaming_pane: None,
                 text_overlay: None,
                 text_overlay_browse_rx: None,
@@ -2444,7 +2433,7 @@ impl PlexiApp {
         self.router
             .iter()
             .find(|c| c.context_id == context_id)
-            .and_then(|c| c.root.clone())
+            .map(|c| c.root.clone())
     }
 
     pub(crate) fn context_depth_for(&self, context_id: u64) -> u32 {
@@ -3405,10 +3394,7 @@ impl eframe::App for PlexiApp {
             hit
         });
         if registry_changed {
-            let root = self.router.active().root.clone().unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-            });
+            let root = self.router.active().root.clone();
             self.reload_app_registry_for_root(&root);
         }
 

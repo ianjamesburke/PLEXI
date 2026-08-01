@@ -165,8 +165,7 @@ mod tests {
     fn make_context(id: u64, name: &str, parent: Option<u64>) -> Context {
         Context {
             name: name.to_string(),
-            path: PathBuf::from("/tmp"),
-            root: None,
+            root: PathBuf::from("/tmp"),
             description: None,
             context_id: id,
             parent_id: parent,

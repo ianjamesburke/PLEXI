@@ -880,12 +880,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn reload_config_for_active_context(&mut self) {
-        let active_workspace = self
-            .router
-            .active()
-            .root
-            .clone()
-            .or_else(crate::config::active_workspace_root);
+        let active_workspace = Some(self.router.active().root.clone());
         self.sync_app_registry_for_active_context(active_workspace.as_deref());
         self.reload_config_for_workspace(active_workspace.as_deref());
     }

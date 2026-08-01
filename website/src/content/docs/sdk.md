@@ -28,14 +28,25 @@ is no ambient process access to escape to. See `docs/wasm-runtime.md`
 ### `SetState`
 
 ```python
-SetState(data: dict)
+SetState(data: dict, scope: str | None = None)
 ```
+
+Merge ``data`` into in-memory state. ``scope`` selects which declared
+state scope receives the keys; ``None`` means the app's default scope
+(the first entry of the manifest's ``[state] scopes``). Using a scope the
+app did not declare raises at apply time — never a silent fallback.
 
 ### `PersistState`
 
 ```python
-PersistState(data: dict)
+PersistState(data: dict, scope: str | None = None)
 ```
+
+Merge ``data`` into a scope's state and persist that scope's snapshot
+to disk. The host owns path construction: ``global`` state lives in
+``~/.plexi/app_states/``, ``context`` state in
+``<context_root>/.plexi/app_states/`` — resolved against the pane's
+context root at call time. ``scope=None`` targets the default scope.
 
 ### `SetSchedulerMode`
 
@@ -463,18 +474,23 @@ PaymentFailed(reason: str)
 ### `StateSnapshot`
 
 ```python
-StateSnapshot(values: Mapping[str, Any], raw_values: Mapping[str, bytes])
+StateSnapshot(values: Mapping[str, Any], raw_values: Mapping[str, bytes], scoped: Mapping[str, Mapping[str, Any]] = dict(), scopes: tuple[str, ...] = ('global',))
 ```
 
 ### `StateProxy`
 
-#### `get(key: str, default: Any = None)`
+#### `get(key: str, default: Any = None, scope: Optional[str] = None)`
 
 #### `raw(key: str)`
 
-#### `all()`
+#### `all(scope: Optional[str] = None)`
 
-#### `set(key: str, value: Any)`
+#### `set(key: str, value: Any, scope: Optional[str] = None)`
+
+#### `scopes()`
+
+The scopes this app declared in its manifest, ordered; the first
+entry is the default scope.
 
 
 ### `LogProxy`

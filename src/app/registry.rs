@@ -72,6 +72,33 @@ pub struct AppManifest {
     /// the app declares no version requirement and runs on any build.
     #[serde(default)]
     pub requires: Option<RequiresSection>,
+    /// Optional `[state]` section — which state scopes the app uses. Absent
+    /// means the app gets the default scope list (`["global"]`).
+    #[serde(default)]
+    pub state: Option<StateSection>,
+}
+
+/// v3 state section — `[state]`. Declares the ordered list of state scopes
+/// this app addresses; the first entry is the app's default. Validated at
+/// install and launch via [`AppManifest::state_scopes`] — an unknown scope,
+/// an empty list, or a duplicate fails loudly, never a silent fallback
+/// (`join_group` is the cautionary unvalidated-key precedent).
+#[derive(Deserialize, Debug, Clone)]
+pub struct StateSection {
+    /// Required within the section: a present-but-empty `[state]` table is a
+    /// manifest error, not a default.
+    pub scopes: Vec<String>,
+}
+
+impl AppManifest {
+    /// The validated `[state] scopes` list. An omitted `[state]` section
+    /// yields the default scope list; any invalid declaration is an error.
+    pub fn state_scopes(&self) -> Result<Vec<crate::host::state_scope::StateScope>, String> {
+        match &self.state {
+            Some(section) => crate::host::state_scope::parse_scopes(&section.scopes),
+            None => Ok(crate::host::state_scope::default_scopes()),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -682,6 +709,13 @@ impl AppRegistry {
                 ));
             }
         }
+
+        // An invalid `[state] scopes` declaration fails install loudly, same
+        // discipline as capabilities and on_launch above: a typo silently
+        // creating an unreachable scope would orphan the app's data. The
+        // launch path re-reads the manifest and re-validates in
+        // `PythonLaunchConfig::from_manifest_file`.
+        manifest.state_scopes()?;
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry, manifest.app.manifest_type)?;
 
@@ -1488,6 +1522,74 @@ entry = "run.sh"
         assert!(
             parsed.is_err(),
             "manifest with unknown type variant must be rejected, got: {parsed:?}"
+        );
+    }
+
+    // ── stint 0652 `[state] scopes` declaration ──────────────────────────
+
+    fn write_app_with_state_section(dir: &Path, id: &str, state_section: &str) {
+        let app_dir = dir.join(id);
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = format!(
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n{state_section}"
+        );
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    }
+
+    #[test]
+    fn manifest_with_valid_state_scopes_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_state_section(
+            global.path(),
+            "scoped-app",
+            "\n[state]\nscopes = [\"global\", \"context\"]\n",
+        );
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            registry.get("scoped-app").is_some(),
+            "a valid [state] scopes list must load"
+        );
+    }
+
+    #[test]
+    fn manifest_with_unknown_state_scope_fails_install_loudly() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_state_section(
+            global.path(),
+            "typo-scope-app",
+            "\n[state]\nscopes = [\"workspace\"]\n",
+        );
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            registry.get("typo-scope-app").is_none(),
+            "an unknown state scope must refuse to install, never silently fall back"
+        );
+    }
+
+    #[test]
+    fn manifest_with_empty_state_scopes_fails_install_loudly() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_state_section(global.path(), "empty-scope-app", "\n[state]\nscopes = []\n");
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            registry.get("empty-scope-app").is_none(),
+            "a present-but-empty [state] scopes must refuse to install"
+        );
+    }
+
+    #[test]
+    fn manifest_without_state_section_defaults_to_global() {
+        let manifest: AppManifest = toml::from_str(
+            "schema_version = 1\n\n[app]\nid = \"plain\"\ntype = \"app\"\nname = \"Plain\"\nentry = \"run.sh\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.state_scopes().unwrap(),
+            vec![crate::host::state_scope::StateScope::Global]
         );
     }
 

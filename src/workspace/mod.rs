@@ -562,8 +562,7 @@ mod tests {
     fn context_serde_round_trip() {
         let ctx = Context {
             name: "dev".to_string(),
-            path: PathBuf::from("/projects/dev"),
-            root: Some(PathBuf::from("/projects/dev/src")),
+            root: PathBuf::from("/projects/dev/src"),
             description: Some("main workspace".to_string()),
             context_id: 42,
             parent_id: Some(1),
@@ -576,12 +575,13 @@ mod tests {
         assert_eq!(restored.context_id, 42);
         assert_eq!(restored.parent_id, Some(1));
         assert_eq!(restored.depth, 1);
-        assert_eq!(restored.root, Some(PathBuf::from("/projects/dev/src")));
+        assert_eq!(restored.root, PathBuf::from("/projects/dev/src"));
     }
 
-    /// Legacy workspace JSON without optional Context fields deserializes with defaults.
+    /// Legacy workspace JSON written before the path→root collapse: a
+    /// required `path` and no `root`. The anchor folds to `path`.
     #[test]
-    fn legacy_context_without_optional_fields_deserializes() {
+    fn legacy_context_with_only_path_deserializes() {
         let legacy_json = r#"{
             "name": "old-ctx",
             "path": "/tmp",
@@ -593,7 +593,36 @@ mod tests {
         assert_eq!(restored.context_id, 7);
         assert_eq!(restored.parent_id, None);
         assert_eq!(restored.depth, 0);
-        assert_eq!(restored.root, None);
+        assert_eq!(restored.root, PathBuf::from("/tmp"));
         assert_eq!(restored.description, None);
+    }
+
+    /// Legacy workspace JSON carrying both `path` and an explicit `root`
+    /// keeps the root — it was the field `set-root` wrote and the only one
+    /// that affected behavior.
+    #[test]
+    fn legacy_context_with_path_and_root_prefers_root() {
+        let legacy_json = r#"{
+            "name": "old-ctx",
+            "path": "/tmp",
+            "root": "/projects/dev",
+            "context_id": 7
+        }"#;
+        let restored: Context =
+            serde_json::from_str(legacy_json).expect("legacy Context must deserialize");
+        assert_eq!(restored.root, PathBuf::from("/projects/dev"));
+    }
+
+    /// A context with neither `root` nor legacy `path` is corrupt and must
+    /// fail loudly (naming the context), never half-load a layout.
+    #[test]
+    fn context_without_root_or_path_fails_loudly() {
+        let corrupt_json = r#"{
+            "name": "broken-ctx",
+            "context_id": 9
+        }"#;
+        let error = serde_json::from_str::<Context>(corrupt_json)
+            .expect_err("context without root or path must not deserialize");
+        assert!(error.to_string().contains("broken-ctx"), "{error}");
     }
 }

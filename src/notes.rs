@@ -179,10 +179,9 @@ const RESERVED_NOTES_DIRS: [&str; 2] = ["inbox", "trash"];
 /// distinguishable and repeatable.
 const CONTEXT_DIR_PREFIX: &str = "ctx-";
 
-/// The path a context scopes its notes to: the explicit project `root` when set,
-/// otherwise the context's own `path`.
+/// The path a context scopes its notes to: its root.
 pub(crate) fn context_scope_root(ctx: &Context) -> &Path {
-    ctx.root.as_deref().unwrap_or(ctx.path.as_path())
+    ctx.root.as_path()
 }
 
 /// `true` when `candidate` is `ancestor` itself or lives beneath it.
@@ -818,8 +817,7 @@ mod tests {
     fn ctx(id: u64, name: &str, root: &str, depth: u32) -> Context {
         Context {
             name: name.to_string(),
-            path: PathBuf::from(root),
-            root: Some(PathBuf::from(root)),
+            root: PathBuf::from(root),
             description: None,
             context_id: id,
             parent_id: None,

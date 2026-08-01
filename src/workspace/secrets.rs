@@ -691,8 +691,9 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
 
 /// Ensure channel-neutral app state cannot be committed with a context root.
 ///
-/// Existing user rules are preserved byte-for-byte and the required entry is
-/// appended only when absent.
+/// App state is personal, single-user, local data — never committed, never
+/// shared. Existing user rules are preserved byte-for-byte and the required
+/// entry is appended only when absent.
 pub(crate) fn ensure_app_state_gitignore(workspace_root: &Path) -> Result<(), String> {
     use std::io::Write;
 
@@ -722,6 +723,7 @@ pub(crate) fn ensure_app_state_gitignore(workspace_root: &Path) -> Result<(), St
     file.sync_all()
         .map_err(|error| format!("sync {}: {error}", path.display()))
 }
+
 
 /// Default contents for `<root>/.plexi/.gitignore`. Anything that holds a
 /// secret value or is generated host state lives here.
@@ -1345,6 +1347,42 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(gitignore).unwrap(),
             "# personal\ncustom/\napp_states/\n"
+        );
+    }
+
+    /// The standing ruling made effective: in a real git repository, a state
+    /// file under `<root>/.plexi/app_states/` must be invisible to git after
+    /// the ensure runs — a user cannot accidentally commit their app state.
+    #[test]
+    fn app_state_gitignore_is_effective_in_a_real_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .expect("run git")
+        };
+        assert!(git(&["init", "-q"]).status.success(), "git init");
+
+        ensure_app_state_gitignore(repo.path()).expect("ensure gitignore");
+        let state_dir = repo.path().join(".plexi").join("app_states");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("todo.json"), b"{\"k\":1}").unwrap();
+
+        let check = git(&["check-ignore", "-q", ".plexi/app_states/todo.json"]);
+        assert!(
+            check.status.success(),
+            "git must ignore the state file (check-ignore exit {:?})",
+            check.status.code()
+        );
+        let status = git(&["status", "--porcelain"]);
+        let listing = String::from_utf8_lossy(&status.stdout).to_string();
+        assert!(
+            !listing.contains("app_states"),
+            "git status must not surface app state: {listing:?}"
         );
     }
 

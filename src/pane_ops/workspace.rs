@@ -16,6 +16,20 @@ use std::path::PathBuf;
 ///
 /// Idempotent — skips if the channel dir already has workspace.toml.
 /// Non-fatal — logs warn on failure but never prevents the root from being set.
+/// Ensure `<root>/.plexi/.gitignore` covers `app_states/` so a user can never
+/// accidentally commit their app state with a project (standing ruling: app
+/// state is personal, single-user, local data). Idempotent; preserves any
+/// existing user rules. Every path that creates or rewrites a context root
+/// calls this.
+fn ensure_context_state_ignore(root: &std::path::Path) {
+    if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root) {
+        log::warn!(
+            "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+            root.display()
+        );
+    }
+}
+
 fn auto_init_workspace(root: &std::path::Path) {
     // Guard: never init at home dir, filesystem root, or inside a Plexi profile dir.
     let home = dirs::home_dir();
@@ -37,12 +51,8 @@ fn auto_init_workspace(root: &std::path::Path) {
         return;
     }
 
-    if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root) {
-        log::warn!(
-            "auto_init_workspace: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
-            root.display()
-        );
-    }
+    ensure_context_state_ignore(root);
+
 
     let channel_dir = crate::config::workspace_channel_dir();
     let channel_path = root.join(&channel_dir);
@@ -437,10 +447,10 @@ impl PlexiApp {
         }
 
         // 3. Register the child context + window.
+        ensure_context_state_ignore(&path);
         self.router.push(crate::host::context::Context {
             name: ctx_name,
-            path: path.clone(),
-            root: Some(path.clone()),
+            root: path.clone(),
             description: ctx_description,
             context_id: ctx_id,
             parent_id: Some(parent_id),
@@ -476,7 +486,7 @@ impl PlexiApp {
     pub(crate) fn new_child_context_from_keyboard(&mut self) {
         let parent_ctx_id = self.router.active().context_id;
         let parent_name = self.router.active().name.clone();
-        let parent_path = self.router.active().path.clone();
+        let parent_path = self.router.active().root.clone();
         let current_win_id = self.windows[self.active_window].window_id;
         let current_focused = self.windows[self.active_window].focused_pane;
 
@@ -576,15 +586,12 @@ impl PlexiApp {
             .or(pane_name)
             .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
 
-        let (parent_path, parent_root) = self
+        let parent_root = self
             .router
             .iter()
             .find(|c| c.context_id == parent_ctx_id)
-            .map(|c| (c.path.clone(), c.root.clone()))
-            .unwrap_or_else(|| {
-                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-                (home.clone(), Some(home))
-            });
+            .map(|c| c.root.clone())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
@@ -628,12 +635,12 @@ impl PlexiApp {
         let mut child_panes = std::collections::HashMap::new();
         child_panes.insert(pane_id, pane);
 
+        ensure_context_state_ignore(&parent_root);
         self.router.insert_after_subtree(
             parent_ctx_id,
             crate::host::context::Context {
                 name: ctx_name,
-                path: parent_path.clone(),
-                root: parent_root,
+                root: parent_root.clone(),
                 description: None,
                 context_id: ctx_id,
                 parent_id: Some(parent_ctx_id),
@@ -643,7 +650,7 @@ impl PlexiApp {
         );
         self.windows.push(Window {
             name: String::new(),
-            path: parent_path,
+            path: parent_root,
             tree: child_tree,
             panes: child_panes,
             focused_pane: Some(child_root_tile),
@@ -715,10 +722,10 @@ impl PlexiApp {
             return;
         }
 
+        ensure_context_state_ignore(&cwd);
         self.router.push(crate::host::context::Context {
             name: ctx_name,
-            path: cwd.clone(),
-            root: Some(cwd),
+            root: cwd,
             description: None,
             context_id: ctx_id,
             parent_id: None,
@@ -818,10 +825,10 @@ impl PlexiApp {
             return;
         }
 
+        ensure_context_state_ignore(&path);
         self.router.push(crate::host::context::Context {
             name: ctx_name,
-            path: path.clone(),
-            root: Some(path),
+            root: path,
             description: ctx_description,
             context_id: ctx_id,
             parent_id: None,
@@ -869,7 +876,7 @@ impl PlexiApp {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
             .or_else(|| {
-                self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+                self.resolve_new_pane_cwd(None)
             })
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
@@ -966,7 +973,7 @@ impl PlexiApp {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
             .or_else(|| {
-                self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+                self.resolve_new_pane_cwd(None)
             })
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
@@ -1504,7 +1511,7 @@ impl PlexiApp {
             root.display()
         );
         auto_init_workspace(&root);
-        self.router.get_mut(idx).root = Some(root);
+        self.router.get_mut(idx).root = root;
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.
         if idx == self.router.active_idx() {
@@ -1523,10 +1530,7 @@ impl PlexiApp {
     ///      workspace-scoped, so a workspace that becomes active after boot
     ///      must still get its agents attached.
     pub(crate) fn apply_context_transition_effects(&mut self) {
-        let root = self.router.active().root.clone().unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-        });
+        let root = self.router.active().root.clone();
         log::info!(
             "transition_context: ctx_id={} root={} — rescanning registry + reloading config + restarting watcher",
             self.router.active().context_id,

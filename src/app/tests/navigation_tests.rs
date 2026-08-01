@@ -76,8 +76,7 @@ fn pane_navigate_cross_window_updates_active_window() {
     h.app.windows.push(second_window(2, 2, 9901));
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
-        root: None,
+        root: std::env::temp_dir(),
         description: None,
         context_id: 2,
         parent_id: None,
@@ -106,8 +105,7 @@ fn pane_navigate_cross_window_syncs_router() {
     h.app.windows.push(second_window(2, 2, 9902));
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
-        root: None,
+        root: std::env::temp_dir(),
         description: None,
         context_id: 2,
         parent_id: None,
@@ -500,8 +498,7 @@ fn empty_window(context_id: u64, window_id: u64) -> Window {
 fn context_b(context_id: u64) -> crate::host::context::Context {
     crate::host::context::Context {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
-        root: None,
+        root: std::env::temp_dir(),
         description: None,
         context_id,
         parent_id: None,
@@ -887,9 +884,13 @@ fn assistant_open_spawns_second_instance_in_other_context() {
         "the second instance must live in the caller's window"
     );
 
-    // Each context persisted its own conversation pointer in the store.
-    let store_ctx1 = crate::assistant::store::AssistantStore::new(&workspace_root, 1);
-    let store_ctx2 = crate::assistant::store::AssistantStore::new(&workspace_root, 2);
+    // Each context persisted its own conversation pointer in its store,
+    // anchored at that context's root (stint 0651: the root is the anchor —
+    // the cwd-walk workspace fallback is gone).
+    let root_ctx1 = h.app.context_root_for(1).expect("context 1 root");
+    let root_ctx2 = h.app.context_root_for(2).expect("context 2 root");
+    let store_ctx1 = crate::assistant::store::AssistantStore::new(&root_ctx1, 1);
+    let store_ctx2 = crate::assistant::store::AssistantStore::new(&root_ctx2, 2);
     let conv1 = store_ctx1
         .active_conversation()
         .expect("context 1 persisted a conversation");

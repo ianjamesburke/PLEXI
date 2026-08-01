@@ -2208,8 +2208,7 @@ mod tests {
         h.app.windows.push(target);
         h.app.router.push(crate::host::context::Context {
             name: "squad-alpha".to_string(),
-            path: std::env::temp_dir(),
-            root: None,
+            root: std::env::temp_dir(),
             description: None,
             context_id: 7,
             parent_id: None,

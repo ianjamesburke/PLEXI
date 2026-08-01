@@ -495,8 +495,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     let ctx2_id: u64 = 2;
     app.router.push(crate::host::context::Context {
         name: "Context 2".into(),
-        path: std::env::temp_dir(),
-        root: None,
+        root: std::env::temp_dir(),
         description: None,
         context_id: ctx2_id,
         parent_id: None,
@@ -575,8 +574,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
     let ctx2_id: u64 = 2;
     app.router.push(crate::host::context::Context {
         name: "Context 2".into(),
-        path: std::env::temp_dir(),
-        root: None,
+        root: std::env::temp_dir(),
         description: None,
         context_id: ctx2_id,
         parent_id: None,

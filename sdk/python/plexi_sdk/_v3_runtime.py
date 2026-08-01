@@ -77,7 +77,11 @@ class V3AppRuntime:
     def __init__(self, app_path: Path, launch_args: list[str] | None = None) -> None:
         self._module = _load_module(app_path)
         self._launch_args = launch_args or []
-        self._values: dict = {}
+        # Per-scope state, keyed by declared scope name. The first entry of
+        # ``_scopes`` is the app's default scope; ``_values`` always aliases
+        # the default scope's dict.
+        self._scopes: list[str] = ["global"]
+        self._scoped_values: dict[str, dict] = {"global": {}}
         self._last_render_time: float | None = None
         self._last_tree: dict | None = None
         self._force_full_tree = True
@@ -227,7 +231,7 @@ class V3AppRuntime:
         elif t == "inject_state":
             payload = ev.get("payload") or {}
             if isinstance(payload, dict):
-                self._values.update(payload)
+                self._default_values().update(payload)
                 self._set_state(in_view=False)
 
     def _handle_init(self, ev: dict) -> None:
@@ -246,9 +250,21 @@ class V3AppRuntime:
         from ._theme import theme as _theme
         _theme.update_from(ev.get("theme"))
 
-        init_state = ev.get("state")
-        if init_state and isinstance(init_state, dict):
-            self._values = dict(init_state)
+        scopes = ev.get("state_scopes")
+        if isinstance(scopes, list) and scopes:
+            self._scopes = [str(s) for s in scopes]
+        self._scoped_values = {s: {} for s in self._scopes}
+        states = ev.get("states")
+        if isinstance(states, dict):
+            for scope_name in self._scopes:
+                scoped_state = states.get(scope_name)
+                if isinstance(scoped_state, dict):
+                    self._scoped_values[scope_name] = dict(scoped_state)
+        else:
+            # Pre-scope hosts send a single flat "state" for the default scope.
+            init_state = ev.get("state")
+            if init_state and isinstance(init_state, dict):
+                self._scoped_values[self._scopes[0]] = dict(init_state)
 
         _emit({
             "type": "ready",
@@ -439,8 +455,29 @@ class V3AppRuntime:
         if schedule_render:
             _emit({"type": "schedule_render", "after_ms": 16})
 
+    def _default_values(self) -> dict:
+        return self._scoped_values[self._scopes[0]]
+
+    def _resolve_scope(self, scope: "str | None") -> str:
+        if scope is None:
+            return self._scopes[0]
+        if scope not in self._scoped_values:
+            raise ValueError(
+                f"state scope '{scope}' is not declared in this app's manifest "
+                f"[state] scopes {self._scopes}"
+            )
+        return scope
+
+    def _scope_dict(self, scope: "str | None") -> dict:
+        return self._scoped_values[self._resolve_scope(scope)]
+
     def _set_state(self, in_view: bool) -> None:
-        snapshot = StateSnapshot(dict(self._values), {})
+        snapshot = StateSnapshot(
+            dict(self._default_values()),
+            {},
+            {name: dict(values) for name, values in self._scoped_values.items()},
+            tuple(self._scopes),
+        )
         setattr(sdk, "_state", snapshot)
         setattr(sdk, "_in_view", in_view)
         _v3_state._state = snapshot
@@ -450,12 +487,18 @@ class V3AppRuntime:
         state_changed = False
         for effect in app_effects or []:
             if isinstance(effect, effects.SetState):
-                self._values.update(effect.data)
+                self._scope_dict(getattr(effect, "scope", None)).update(effect.data)
                 state_changed = True
             elif isinstance(effect, effects.PersistState):
-                self._values.update(effect.data)
+                scope_name = self._resolve_scope(getattr(effect, "scope", None))
+                scoped = self._scoped_values[scope_name]
+                scoped.update(effect.data)
                 state_changed = True
-                _emit({"type": "save_app_state", "payload": dict(self._values)})
+                _emit({
+                    "type": "save_app_state",
+                    "scope": scope_name,
+                    "payload": dict(scoped),
+                })
             elif isinstance(effect, effects.SetStatus):
                 _emit({"type": "status_summary", "text": effect.text})
             elif isinstance(effect, effects.SetTitle):

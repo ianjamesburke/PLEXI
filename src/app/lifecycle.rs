@@ -299,8 +299,7 @@ impl PlexiApp {
                         serde_json::json!({
                             "context_id": ctx.context_id,
                             "name": ctx.name,
-                            "path": ctx.path.to_string_lossy(),
-                            "root": ctx.root.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                            "root": ctx.root.to_string_lossy(),
                             "description": ctx.description,
                             "parent_id": ctx.parent_id,
                             "depth": ctx.depth,
@@ -514,7 +513,7 @@ impl PlexiApp {
                     .router
                     .iter()
                     .find(|ctx| ctx.context_id == context_id)
-                    .and_then(|ctx| ctx.root.clone());
+                    .map(|ctx| ctx.root.clone());
                 let slot_dir = slot_base_dir(context_root.as_deref()).join(pane_id.to_string());
                 let slot_path = slot_dir.join(slot_name);
                 let Some(pane) = self.windows[win_idx].panes.get_mut(pane_id) else {
@@ -773,7 +772,7 @@ impl PlexiApp {
                     .router
                     .iter()
                     .find(|ctx| ctx.context_id == context_id)
-                    .and_then(|ctx| ctx.root.clone());
+                    .map(|ctx| ctx.root.clone());
                 let fallback_path = slot_base_dir(context_root.as_deref())
                     .join(pane_id.to_string())
                     .join(slot_name);
@@ -830,7 +829,7 @@ impl PlexiApp {
                     .flat_map(|slots| slots.values().cloned())
                     .collect();
                 let mut roots = vec![crate::config::config_dir().join("slots")];
-                for root in self.router.iter().filter_map(|ctx| ctx.root.as_ref()) {
+                for root in self.router.iter().map(|ctx| &ctx.root) {
                     roots.push(slot_base_dir(Some(root)));
                 }
                 roots.sort();
@@ -2487,7 +2486,7 @@ impl PlexiApp {
                 let mut new_ctx_id = orig_ctx_id;
                 if let Some(pname) = parent_name {
                     let path = root.as_ref().cloned().unwrap_or_else(|| {
-                        let p = self.router.active().path.clone();
+                        let p = self.router.active().root.clone();
                         if p.is_absolute() {
                             p
                         } else {
@@ -3117,11 +3116,11 @@ impl PlexiApp {
     }
 
     pub(crate) fn tick_scheduler(&mut self) {
-        // Load routines from every context that has a root set
+        // Load routines from every context root
         let roots: Vec<std::path::PathBuf> = self
             .router
             .iter()
-            .filter_map(|ctx| ctx.root.clone())
+            .map(|ctx| ctx.root.clone())
             .collect();
         for root in &roots {
             let failures = self.scheduler.load_from_root(root);
@@ -3215,7 +3214,7 @@ impl PlexiApp {
         let ctx_id = self
             .router
             .iter()
-            .find(|c| c.root.as_deref() == Some(source_root))
+            .find(|c| c.root.as_path() == source_root)
             .map(|c| c.context_id);
         let (scope, source_context_id) = match ctx_id {
             Some(id) => (crate::app_protocol::NotifyScope::Context, id),
@@ -3331,7 +3330,7 @@ impl PlexiApp {
         // active_window — the target is a parameter, not ambient focus state
         // (stint 0574; "Don't switch global state to thread data" trap).
         let target_ctx_id = self.router.get(target_ctx_idx).context_id;
-        let cwd = self.router.get(target_ctx_idx).root.clone();
+        let cwd = Some(self.router.get(target_ctx_idx).root.clone());
         let spawned = self.context_spawn_target(target_ctx_id).map(|(win, tile)| {
             // vertical=true → side-by-side, matching the previous
             // split_focused(false, ..) behavior (its LinearDir is inverted).
