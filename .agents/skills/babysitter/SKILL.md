@@ -118,7 +118,7 @@ Since stint 0383 (PR #2390), `capture --lines N` returns the last N real content
 
 | Slot | Meaning |
 |---|---|
-| `status` | Current state, `<step-token>:<state>` — state is one of `working \| done \| blocked \| needs-input \| failed`. The step token (e.g. `batch3-impl`, `step4`) makes a stale value impossible to misread as current. |
+| `status` | Current state, `<step-token>:<state>` — state is one of `working \| done \| blocked \| failed`. There is no `needs-input`; a pane that has a question writes `blocked` and puts the one-line ask in `last_error` (see Decision ladder). The step token (e.g. `batch3-impl`, `step4`) makes a stale value impossible to misread as current. |
 | `pr` | PR number once opened. |
 | `verdict` | Tester's final call: `PASS` or `FAIL`. |
 | `last_error` | Short reason string when `status` is `blocked`/`failed`. |
@@ -127,7 +127,7 @@ Since stint 0383 (PR #2390), `capture --lines N` returns the last N real content
 Block on the primary status slot instead of polling it:
 
 ```
-plexi pane slot wait status <pane_id> --until ':(done|blocked|needs-input|failed)$' --timeout 600
+plexi pane slot wait status <pane_id> --until ':(done|blocked|failed)$' --timeout 600
 ```
 
 **Workers and testers write; the head reads.** A successor head also writes its own `head:working` takeover acknowledgement. The exact write syntax lives in one place — the pane-slot write contract in `.agents/skills/implement-stint/SKILL.md` (Worker Mode); point any pane there rather than restating it. The head's read verb is `plexi pane slot read <name> [pane_id]` — note its argument shape is *not* the write verb's.
@@ -135,6 +135,16 @@ plexi pane slot wait status <pane_id> --until ':(done|blocked|needs-input|failed
 **Freshness rule.** A slot value is only trustworthy if it names the current step. Two enforcement mechanisms — workers get theirs from the Worker Mode contract; every tester brief must pick one:
 - Stamp a step/generation token into `status` on write (`step4:blocked`, `batch3-test:working`), OR
 - `plexi pane slot delete status <pane_id>` at each step's start, so a stale value reads as *empty* (→ fall back to capture) rather than as current.
+
+### Decision ladder — who decides, and nobody waits bare
+
+1. **Worker first.** A worker that hits a question checks whether it is its own call. **A Done-When criterion that fails because of a pre-existing defect outside its diff is ALWAYS the worker's call**: document the call in the PR body, file the defect as its own stint via `/create-stint`, proceed to `done`. Never stall on it.
+2. **Head second.** If it is genuinely not the worker's call, the worker writes `blocked`, puts the one-line ask in `last_error`, files a gate (a stint tagged `gate` carrying the decision artifact — see the `file-gate` skill), and reports to the head. The head then **decides the ask itself**, defaulting to the worker's recommendation, and sends the ruling back.
+3. **Human last — only** for money, irreversible actions, spec reversals, and audible/visual taste calls. Those go to the human gate; nothing else does.
+
+### NEVER END A TURN BARE
+
+**Every turn — head and worker — ends with the status slot matching reality.** `working` only while actually inside a turn; otherwise `done`, `blocked`, or `failed` before the turn ends. Ending a turn with a question in prose and no terminal slot state is the named failure mode: it is invisible to every watcher and freezes the whole run. Proven live 2026-08-01 02:01 — a worker wrote `impl:needs-input` on stint 0674 and went idle, the head relayed the question upward and went idle at 02:08, and the run was dead until a human noticed. If you must stop, you are `blocked` with the ask in `last_error`, never merely quiet.
 
 **Fallback to capture only when the slot is empty or its step token is stale.** The capture path (`--lines 20`, or full-buffer `--plain` for verdict parsing) is retained solely for that case and for reading a long verbatim report a slot can't hold.
 
@@ -209,7 +219,7 @@ For each **batch**, in order:
 2. **Wait for progress — cheaply.** Arm one host-side wait for the current worker state:
 
    ```
-   plexi pane slot wait status <id> --until ':(done|blocked|needs-input|failed)$' --timeout 600
+   plexi pane slot wait status <id> --until ':(done|blocked|failed)$' --timeout 600
    ```
 
    Exit 0 prints the matched value; exit 2 is a timeout, so arm another wait; exit 1 is usage/plumbing. On a terminal state, read `pr`/`verdict`/`last_error` for details and act. **The slot is the source of truth when its step token is current.**
@@ -437,7 +447,7 @@ If `plexi pane send --help` does not list `--submit`, you are on a pre-build; us
 
 - **Submit:** `plexi pane send <id> "<text>"`, then `plexi pane key <id> enter` once. Do not use this sequence to confirm delivery or repeatedly press Enter.
 - **Spawn agent:** `NEWID=$(plexi pane new -n "<label>")`, then `plexi pane command "$NEWID" "<tier alias>" --enter`. Wait in bounded four-second pauses and run `plexi pane capture "$NEWID" --from-cursor 0` until the booted prompt/model footer appears before sending the brief.
-- **Wait for a slot:** older-build-only cadence: schedule `ScheduleWakeup` with `delaySeconds: 600`; on each wake run `plexi pane slot read <name> <pane_id>`. If its value ends in `:done`, `:blocked`, `:needs-input`, or `:failed`, read the other slots and act; otherwise schedule the next 600-second wake. This is polling, not a host-side wait.
+- **Wait for a slot:** older-build-only cadence: schedule `ScheduleWakeup` with `delaySeconds: 600`; on each wake run `plexi pane slot read <name> <pane_id>`. If its value ends in `:done`, `:blocked`, or `:failed`, read the other slots and act; otherwise schedule the next 600-second wake. This is polling, not a host-side wait.
 - **Capture raw output:** `RAW=$(plexi pane capture <id> --from-cursor <CURSOR>)`; then `printf '%s\\n' "$RAW" | sed '1d' | jq -r '.lines[]'`. Use `CURSOR=0` for the full buffer and `CURSOR=$(printf '%s\\n' "$RAW" | sed '1d' | jq -r '.cursor')` for the next delta. Do not treat an empty delta as proof that a command failed.
 - **Determine pane status:** run `plexi pane list` and `plexi pane capture <id> --lines 16`. Treat a pane as idle only when `agent.state` is idle, the untruncated status bar lacks `esc to interrupt`, and the trailing buffer is a completed reply; a tool call or `agent.state=working` means working. Never infer idle from one absent screen marker.
 - **Updater stderr:** `sudo:` lines can be background-updater noise when the command exits 0; filter them with `2>&1 | grep -v "sudo:"` only when that noise obstructs the read, and never retry solely because of it.
