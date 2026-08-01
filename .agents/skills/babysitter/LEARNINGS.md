@@ -1,0 +1,125 @@
+# Babysitter promotion ledger
+
+Rules earn their place by firing. This file is the accounting: what got promoted into `SKILL.md`, why, and **the condition under which it gets deleted**. Without a deletion condition a rule is permanent by default, and the skill only accretes.
+
+`LOG.md` records what happened in a run. This file records what we changed *because* of it, and what would prove that change wrong.
+
+## How to use it
+
+**At every run end** (same moment you write the sprint recap), do both halves:
+
+1. **WRITE** — every recap suggestion you promote into `SKILL.md` gets an entry here in the same edit. A promotion with no ledger entry is not a promotion; revert it.
+2. **READ** — walk the ledger and check each entry's falsification trigger against this run. Then act:
+   - Trigger met → **delete the rule from `SKILL.md`**, set the entry to `RETIRED` with the date and what triggered it. Do not soften the rule instead of deleting it.
+   - Rule fired → append the date to `fired:`. This is what earns its place.
+   - Neither → increment `runs:` and move on.
+
+A head that writes candidates but never runs the READ half has done half the job. The ledger is not an archive.
+
+## Classes
+
+- **RULE** — promoted into `SKILL.md`. Carries a falsification trigger.
+- **HOST** — repeated instruction failed to enforce it, so it is not a wording problem. Becomes a Plexi feature request (a stint), and the ledger entry names it. **Promote to HOST on the second run where prose demonstrably failed** — do not spend a third run rewording.
+- **CANDIDATE** — observed once, not yet promoted. Needs a second sighting or it expires.
+
+## No A/B measurement — deliberate
+
+We do not measure rules against control runs. Runs differ too much and n is too small; any "benefit" we computed would be noise, and cementing noise is worse than the accretion we are fixing. Falsification triggers are the whole mechanism: a rule stays because it demonstrably fired, and dies on a stated condition. (Ian + head ruling, 2026-08-01.)
+
+## Entry format
+
+```
+### L### — <short title>
+- class: RULE | HOST | CANDIDATE | RETIRED
+- promoted: YYYY-MM-DD   (run/queue that caused it)
+- incident: what actually happened, concretely
+- rule: the instruction now in SKILL.md — or the stint id, for HOST
+- falsification: the condition under which this gets DELETED
+- fired: dates it demonstrably caught something
+- runs: count of completed runs since promotion
+```
+
+---
+
+# Ledger
+
+### L001 — Cargo serialization cannot be enforced by instruction
+- class: HOST
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: Six real token violations across three workers in one night, every one *after* an explicit written prohibition — including a brand-new pane whose brief led with the rule, its reason, and its predecessor's retirement as precedent. Worker Mode's gate instinct beat every head instruction. Two further apparent violations turned out to be a tester's legitimate `pr-install` (see L004), which is itself evidence the prose guard was unfalsifiable in practice.
+- rule: **Not a wording fix.** A resource lock the host enforces, not a sentence workers are asked to honour. Filed as a Plexi feature request — stint **0690** (host-arbitrated cargo/build lock). Until it lands, do not run a multi-lane session that depends on voluntary compliance; run one build lane.
+- falsification: delete if a host-side lock ships and a full multi-lane run completes with zero violations, or if two consecutive multi-lane runs pass with prose alone (which would prove the instruction sufficient after all).
+- fired: 2026-08-01 (6x)
+- runs: 0
+
+### L002 — Retire workers at PR-open, not at merge
+- class: RULE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: An idle worker left alive after its PR opened has nothing to do, so any nudge sent it back to its build gate. Directly caused violations 1, 7 and 8. A fresh pane for a fix round cost seconds, and the worktree survived the pane close intact.
+- rule: Close a worker pane once its PR is open and green. Spawn a fresh pane for a fix round. Supersedes "one batch per pane through merge".
+- falsification: delete if a fix round ever costs materially more than a fresh spawn (lost worktree, lost context that a re-brief could not restore) twice in a row.
+- fired: 2026-08-01
+- runs: 0
+
+### L003 — A send is not delivered until `pane status` says `working`
+- class: RULE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: Collapsed paste six times in one run. `pane send --submit` returns exit 0 while the text sits unsubmitted, and it happens to short single-line sends on freshly-booted panes too. Once it idled a held cargo token for ~8 minutes.
+- rule: After any control message, confirm `pane status` reaches `working`; press enter once if it has not. Never treat exit 0 as proof of delivery, and never re-send on exit code alone.
+- falsification: delete if a host fix makes `--submit` reliable and two consecutive runs show zero collapsed pastes.
+- fired: 2026-08-01 (6x)
+- runs: 0
+
+### L004 — Attribute a build by its owner, never by its directory
+- class: RULE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: `just pr-install <N>` builds **inside the PR's own feature worktree**, so a tester's legitimate install is indistinguishable by path from a lane violation. The head killed a tester's install twice and retired a worker for violations that were the tester's build. The worker's pane read `idle` at the time — an idle pane cannot be compiling.
+- rule: Confirm the OWNER of a cargo process before calling it a violation (`pgrep -fl` gives the full path; cross-check the pane's state). An idle pane is not compiling. A tester's token lane is the PR's feature worktree, not a `pr-<N>` string.
+- falsification: delete if `pr-install` moves to a dedicated build tree, making path attribution unambiguous again.
+- fired: 2026-08-01 (2x, as the error it now prevents)
+- runs: 0
+
+### L005 — A slot value alone is never ground truth
+- class: RULE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: Stale slots three times in one run. Workers write on transition but never invalidate on new work. One falsely read `blocked` while its PR was already open, idling the token with two lanes queued; two falsely read `done`.
+- rule: Pair the slot with `verdict` and a ground-truth check (`gh pr list --head`) before acting on it. The step token tells you whether the value is current; when it is stale, verify externally.
+- falsification: delete if slot invalidation becomes automatic host-side and two consecutive runs show no stale reads.
+- fired: 2026-08-01 (3x)
+- runs: 0
+
+### L006 — The vacuous-gate question
+- class: RULE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: Asking "would this test still pass after the bug is fixed?" caught two audit tests that were green in CI and proved nothing. The replacements assert behaviour that changes post-fix. Highest-value check of the run.
+- rule: For every new test a worker adds, ask whether it would still pass once the bug is fixed. If yes, it is vacuous — send it back.
+- falsification: delete if it goes 10 runs without catching a vacuous test.
+- fired: 2026-08-01 (2x)
+- runs: 0
+
+### L007 — Carry known pre-existing defects forward into tester briefs
+- class: RULE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: Feeding an audit's result forward as a KNOWN PRE-EXISTING DEFECT clause stopped two later testers from failing their PRs over a host bug neither caused nor was allowed to fix. Without it, two false fix rounds.
+- rule: When a run establishes a pre-existing defect, every subsequent tester brief names it and excludes it from that PR's gate. Pairs with the worker-side decision ladder: a Done-When criterion failing on a pre-existing defect outside the diff is the worker's own call.
+- falsification: delete if the decision ladder alone prevents the false round twice, making the brief clause redundant.
+- fired: 2026-08-01 (2x)
+- runs: 0
+
+### L008 — Ending a turn bare freezes the run
+- class: RULE
+- promoted: 2026-08-01 (stint 0674 freeze, 02:01)
+- incident: A worker wrote `impl:needs-input` and went idle; the head relayed the question upward and went idle at 02:08. The only watchdog lived inside the `me` session and died when that session restarted at 02:53. The run was dead for hours.
+- rule: `needs-input` abolished; slot grammar is `working | done | blocked | failed`. Every turn ends with the status slot matching reality. Backed by the decision ladder (PR #2548) and, outside the repo, a launchd freeze watchdog that nudges an idle head with no terminal status.
+- falsification: delete if two consecutive runs end with zero bare turns AND the watchdog logs no nudges — at which point the behaviour is habitual and the wording is dead weight. Do **not** delete merely because no freeze occurred; the watchdog firing is what proves the rule is still load-bearing.
+- fired: 2026-08-01
+- runs: 0
+
+### L009 — One head instruction cannot serialize two consumer classes
+- class: CANDIDATE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: An install-tester and a worker are both cargo consumers, but `RUN_CONFIG`'s `max_concurrent_cargo_builds` says nothing about testers. Tonight's token counted them only because the head wrote it that way; a naive reading would let a tester install run beside a worker gate.
+- rule: (not yet promoted) Make the cargo budget explicitly cover testers as well as workers.
+- falsification: expires if L001's host lock lands and makes the config key moot, or if it is not seen again within 3 runs.
+- fired: —
+- runs: 0

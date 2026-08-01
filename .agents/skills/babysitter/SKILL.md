@@ -406,7 +406,13 @@ The loop keeps a self-improvement log at `.agents/skills/babysitter/LOG.md`. It 
 - Merge: total wall-clock brief→merge, number of worker↔tester rounds.
 - **Any workflow friction, immediately:** an agent forgot part of its brief, a redundant/wasted tool call, a thrash loop caught, an unclear brief that needed a nudge, a gotcha not yet in this skill. These are the highest-value lines in the file.
 
-**Sprints.** The queue runs in sprint blocks as detailed in the stint tasks. At the end of each sprint, append a **Sprint Recap**: what landed (stints → PRs), per-worker timing and try-count table, what we learned, and concrete suggestions to streamline the babysitter workflow (fewer tool calls, less token churn, brief wording fixes). When a recap suggestion is validated in practice, promote it into this SKILL.md and note the promotion in the log.
+**Sprints.** The queue runs in sprint blocks as detailed in the stint tasks. At the end of each sprint, append a **Sprint Recap**: what landed (stints → PRs), per-worker timing and try-count table, what we learned, and concrete suggestions to streamline the babysitter workflow (fewer tool calls, less token churn, brief wording fixes).
+
+**Promotion goes through the ledger — both halves, every run end.** `LEARNINGS.md` (next to this file) is where a validated suggestion becomes a rule and where a rule goes to die. At each run end:
+
+- **WRITE.** Every suggestion you promote into this SKILL.md gets a `LEARNINGS.md` entry in the same edit, carrying a **falsification trigger** — the stated condition under which the rule gets deleted. A promotion with no entry and no trigger is not a promotion; revert it. New observations that aren't ready to promote go in as `CANDIDATE`.
+- **READ.** Walk the ledger and check every trigger against the run you just finished. Trigger met → delete the rule from this SKILL.md and mark the entry `RETIRED`. Rule fired → record the date. Neither → increment its run count. **A run that appends candidates without running the READ half has left the ledger write-only** — that is the failure this file exists to prevent, and rules will only accrete.
+- **When repeated instruction is the thing that failed**, stop rewording it. A rule that prose demonstrably failed to enforce on two separate runs becomes a **host primitive request** — file it as a stint (`/create-stint`) and record it in the ledger as class `HOST`. Tonight's cargo-serialization case (L001) is the worked example: six violations across three workers despite leading every brief.
 
 Format (keep entries terse):
 
@@ -433,7 +439,7 @@ Applies to whichever pane hit the wall — worker or tester.
 
 ## Stop conditions
 
-- Queue empty → report a summary (each batch → stints → PR# → merged) and stop scheduling wakeups.
+- Queue empty → write the sprint recap **and run both halves of the `LEARNINGS.md` promotion ledger** (see Run log), then report a summary (each batch → stints → PR# → merged) and stop scheduling wakeups. A run is not closed while the ledger's READ half is unrun.
 - A batch hard-fails repeatedly (worker can't clear the tester's bugs after a couple of full worker↔tester rounds) → stop, leave it, surface to the user with the last tester report. Don't thrash.
 - User says stop / takes over.
 
@@ -461,7 +467,7 @@ If `plexi pane send --help` does not list `--submit`, you are on a pre-build; us
 - **Opt-in auto-merge (user triggers it, never the default).** Default holds: surface each passing PR to the user and wait. But when the user explicitly says the queue is good to merge and they will test holistically at the end (e.g. a final e2e gate), drop the human-hold gate: on tester PASS, have the worker squash-merge to alpha immediately and roll to the next batch with no surfacing-and-waiting. Keep the tester round; it protects alpha's trunk for downstream stints. Only the human-hold is removed.
 - **Protect your context.** Default to `--lines 20` reads and narrow full-buffer reads with `grep`/`sed`. Sub-agent delegation is the exception for genuinely long reports, not the default — see the capture-forms section. You hold summaries, not scrollback.
 - **Label every pane. Every pane is single-use — including the head.** Testers: close after each verdict, fresh pane per validation/re-check. Workers: one batch per pane, close + respawn at the boundary (step 6). The head: one batch per head, relay via `RUN_STATE.md` + `/babysitter resume` at each merge (step 7). Never carry a stale transcript into a new task.
-- **The run's state lives on disk, never only in context.** `RUN_STATE.md` (baton), `LOG.md` (telemetry), `HUMAN_CHECKS.md` (pending human validations), `.stint/` (the queue). Any head must be replaceable at any moment by `/babysitter resume`.
+- **The run's state lives on disk, never only in context.** `RUN_STATE.md` (baton), `LOG.md` (telemetry), `LEARNINGS.md` (promotion ledger), `HUMAN_CHECKS.md` (pending human validations), `.stint/` (the queue). Any head must be replaceable at any moment by `/babysitter resume`.
 - **Log as you go.** Timestamped events into `LOG.md` next to this skill; sprint recap at each sprint boundary (see Run log).
 - Verify state with `gh`/`stint`, not any pane's self-report.
 - Use `pane slot wait` for state transitions; on timeout, inspect `pane status` before nudging.
