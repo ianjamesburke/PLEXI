@@ -94,6 +94,43 @@ impl WorkspaceRouter {
             .collect()
     }
 
+    /// The index sequential context cycling should land on, in the requested
+    /// direction, wrapping at both ends. `None` when there is nowhere else to go.
+    ///
+    /// Cycling is a sidebar affordance, so it enumerates exactly the rows the
+    /// sidebar draws — top-level and unparked — for the same reason `Cmd+1..9`
+    /// routes through `top_level_order`: every navigation surface agrees on one
+    /// enumeration. Landing on a subcontext would activate a context with no
+    /// row, no number, and no recorded `push_depth` for zoom-out to pop.
+    ///
+    /// The active context may itself be a subcontext, reached by descending
+    /// through a Portal, and therefore absent from the list. The search compares
+    /// router indices rather than list positions so that case still resolves to
+    /// the nearest master in the requested direction.
+    pub(crate) fn cycle_top_level(&self, forward: bool) -> Option<usize> {
+        let order: Vec<usize> = self
+            .top_level_order()
+            .into_iter()
+            .filter(|&i| !self.contexts[i].parked)
+            .collect();
+        let active = self.active;
+        let target = if forward {
+            order
+                .iter()
+                .copied()
+                .find(|&i| i > active)
+                .or_else(|| order.first().copied())
+        } else {
+            order
+                .iter()
+                .rev()
+                .copied()
+                .find(|&i| i < active)
+                .or_else(|| order.last().copied())
+        };
+        target.filter(|&i| i != active)
+    }
+
     /// Expand a top-level-only ordering into a full permutation of `0..len` by
     /// emitting each entry followed by its descendants in router order.
     ///
@@ -351,6 +388,80 @@ mod tests {
             ids_with, ids_without,
             "subcontexts must not shift top-level sidebar numbering"
         );
+    }
+
+    /// Stint 0605: cycling walks the sidebar's enumeration, so it steps master
+    /// to master and never activates a hidden subcontext.
+    #[test]
+    fn cycle_top_level_skips_subcontexts_and_wraps() {
+        let contexts = vec![
+            make_ctx(10, None, 0),
+            make_ctx(11, Some(10), 1),
+            make_ctx(12, Some(10), 1),
+            make_ctx(20, None, 0),
+            make_ctx(30, None, 0),
+        ];
+        let masters = [0usize, 3, 4];
+
+        for &from in &masters {
+            let router = WorkspaceRouter::new(contexts.clone(), from);
+            let next = router.cycle_top_level(true).expect("next exists");
+            let prev = router.cycle_top_level(false).expect("prev exists");
+            for idx in [next, prev] {
+                assert!(
+                    masters.contains(&idx),
+                    "cycling from {from} yielded subcontext idx {idx}"
+                );
+                assert!(
+                    router.get(idx).parent_id.is_none(),
+                    "cycling from {from} yielded idx {idx} with a live parent"
+                );
+            }
+        }
+
+        // Last master wraps forward to the first, first wraps back to the last.
+        let last = WorkspaceRouter::new(contexts.clone(), 4);
+        assert_eq!(last.cycle_top_level(true), Some(0));
+        let first = WorkspaceRouter::new(contexts, 0);
+        assert_eq!(first.cycle_top_level(false), Some(4));
+    }
+
+    /// Parked contexts have no sidebar row either, so cycling steps over them.
+    #[test]
+    fn cycle_top_level_skips_parked() {
+        let mut contexts = vec![
+            make_ctx(10, None, 0),
+            make_ctx(20, None, 0),
+            make_ctx(30, None, 0),
+        ];
+        contexts[1].parked = true;
+        let router = WorkspaceRouter::new(contexts, 0);
+        assert_eq!(router.cycle_top_level(true), Some(2));
+        assert_eq!(router.cycle_top_level(false), Some(2));
+    }
+
+    /// A lone master has nowhere to cycle to; cycling must be a no-op rather
+    /// than re-activating the context it is already on.
+    #[test]
+    fn cycle_top_level_is_none_with_a_single_destination() {
+        let router =
+            WorkspaceRouter::new(vec![make_ctx(10, None, 0), make_ctx(11, Some(10), 1)], 0);
+        assert_eq!(router.cycle_top_level(true), None);
+        assert_eq!(router.cycle_top_level(false), None);
+    }
+
+    /// Descending through a Portal makes a subcontext active, so it has no slot
+    /// in the enumeration. Cycling must still resolve to the nearest master.
+    #[test]
+    fn cycle_top_level_from_an_active_subcontext_resolves_to_masters() {
+        let contexts = vec![
+            make_ctx(10, None, 0),
+            make_ctx(11, Some(10), 1),
+            make_ctx(20, None, 0),
+        ];
+        let router = WorkspaceRouter::new(contexts, 1);
+        assert_eq!(router.cycle_top_level(true), Some(2));
+        assert_eq!(router.cycle_top_level(false), Some(0));
     }
 
     /// A context whose parent was deleted has no portal to be reached through,

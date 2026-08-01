@@ -4335,25 +4335,17 @@ impl eframe::App for PlexiApp {
                     log::info!("tab: prev — window={}", self.active_window);
                 }
                 Action::NextContext => {
-                    let active = self.router.active_idx();
-                    let num = self.router.len();
-                    for offset in 1..num {
-                        let idx = (active + offset) % num;
-                        if !self.router.get(idx).parked {
-                            log::info!("context: next — idx={}", idx);
-                            self.switch_workspace(idx);
-                            break;
-                        }
+                    // Cycle the sidebar's own enumeration, not raw router
+                    // indices: masters only, unparked, wrapping at both ends.
+                    if let Some(idx) = self.router.cycle_top_level(true) {
+                        log::info!("context: next — idx={}", idx);
+                        self.switch_workspace(idx);
                     }
                 }
                 Action::PrevContext => {
-                    let active = self.router.active_idx();
-                    for idx in (0..active).rev() {
-                        if !self.router.get(idx).parked {
-                            log::info!("context: prev — idx={}", idx);
-                            self.switch_workspace(idx);
-                            break;
-                        }
+                    if let Some(idx) = self.router.cycle_top_level(false) {
+                        log::info!("context: prev — idx={}", idx);
+                        self.switch_workspace(idx);
                     }
                 }
                 Action::MoveContextUp => {
