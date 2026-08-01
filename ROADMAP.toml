@@ -753,7 +753,7 @@ status = "red"
 deps = ["typed-pipes"]
 evidence = ["stable_and_rc_channels_disable_v1_stubbed_surfaces"]
 stints = ["0521", "0522"]
-note = "Stable v1 gates built-in audio/video playback and unqualified media I/O to beta. Mock/device coverage is not a stable media promise."
+note = "Stable v1 gates the built-in audio and video player apps to beta. Protocol-level media operations remain capability-gated only and are not release-tier gated; 0708 tracks the follow-up."
 
 [[node]]
 id = "basic-media-playback"

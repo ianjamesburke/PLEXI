@@ -1537,11 +1537,17 @@ impl PlexiApp {
         // A `.wasm` file is a sandboxed component app (the run primitive, G6),
         // not a manifest-backed process app. Route it to the wasmtime path.
         if app_dir.extension().and_then(|e| e.to_str()) == Some("wasm") {
-            let app_id = app_dir
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("wasm")
-                .to_string();
+            let app_id = self
+                .registry
+                .manifest_id_for_wasm_path(&app_dir)
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    app_dir
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("wasm")
+                        .to_string()
+                });
             let workspace_root = workspace_root_override.unwrap_or_else(|| {
                 app_dir
                     .parent()
@@ -1961,6 +1967,7 @@ fn sanitize_wasm_path_component(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::app::permissions::AppPermissions;
+    use crate::app::registry::AppRegistry;
     use crate::host::wasm_app::{StateSnapshot, StateStore, WasmApp};
     use crate::testing::HostHarness;
 
@@ -1977,6 +1984,52 @@ mod tests {
         let app = WasmApp::load_ephemeral_run("counter-pane", &counter_fixture(), store)
             .expect("load counter fixture");
         (app, snapshot)
+    }
+
+    #[test]
+    fn raw_wasm_launch_uses_registered_manifest_identity_for_release_gate() {
+        let _channel = crate::config::set_test_channel("main");
+        let global_apps = tempfile::tempdir().expect("global apps");
+        let app_dir = global_apps.path().join("daw");
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        let wasm_path = app_dir.join("renamed-component.wasm");
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/daw-engine.wasm"),
+            &wasm_path,
+        )
+        .expect("copy DAW fixture");
+        std::fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\
+             \n\
+             [app]\n\
+             id = \"com.plexi.daw-engine-poc\"\n\
+             type = \"wasm\"\n\
+             name = \"DAW Engine\"\n\
+             version = \"0.1.0\"\n\
+             entry = \"renamed-component.wasm\"\n",
+        )
+        .expect("write manifest");
+        let bare = tempfile::tempdir().expect("bare cwd");
+        let registry = AppRegistry::load_with_global(bare.path(), global_apps.path());
+        assert!(registry.get("com.plexi.daw-engine-poc").is_some());
+
+        let mut h = HostHarness::new();
+        h.app.registry = registry;
+        let error = h
+            .app
+            .launch_app_by_path_with_layout_no_review_modal(
+                wasm_path.to_str().expect("UTF-8 fixture path"),
+                None,
+                None,
+                &[],
+            )
+            .expect_err("stable must reject a raw path to the registered DAW component");
+
+        assert!(
+            error.contains("DAW requires the beta channel"),
+            "raw launch must use the manifest identity, not the unrelated file name: {error}"
+        );
     }
 
     /// Stint 0431: the native-WASM open path must honor the default `"overlay"`

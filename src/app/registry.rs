@@ -517,6 +517,22 @@ impl AppRegistry {
         self.apps.get(id)
     }
 
+    /// Return the manifest identity for a registered WASM entry at `wasm_path`.
+    ///
+    /// Raw WASM launches still need the manifest's identity when they point at
+    /// a registered component: release gates, consent state, and pane identity
+    /// are all keyed by that canonical id rather than by a filesystem filename.
+    pub(crate) fn manifest_id_for_wasm_path(&self, wasm_path: &Path) -> Option<&str> {
+        let canonical_path = std::fs::canonicalize(wasm_path).ok()?;
+        self.apps.values().find_map(|installed| {
+            (installed.manifest.manifest_type == ManifestType::Wasm
+                && std::fs::canonicalize(&installed.bin_path)
+                    .ok()
+                    .is_some_and(|entry| entry == canonical_path))
+            .then_some(installed.manifest.id.as_str())
+        })
+    }
+
     /// Scan one directory of manifest-bearing subdirs, inserting discovered
     /// entries. Calls made later in `load()` shadow earlier ones; on shadow
     /// the displaced entry's source is logged so users can debug discovery.

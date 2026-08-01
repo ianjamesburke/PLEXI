@@ -98,8 +98,10 @@ jobs:
 
       - name: Verify roadmap evidence
         run: |
-          just roadmap-evidence-fixtures
-          just roadmap-evidence
+          python3 scripts/test-roadmap-evidence.py
+          env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
+            -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
+            python3 scripts/roadmap-evidence.py
 
   clippy:
     name: clippy
