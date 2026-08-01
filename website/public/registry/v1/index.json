@@ -17,7 +17,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "67ea5a821a74d2345126f67c897804caca2aeba4b9db66cdfae7640f985f4430"
+      "checksum": "2965a4d3007b435cb2ddf57d2fb170c1a6b6fb9315aa67ee79a4e9c65517522e"
     },
     {
       "id": "logs",
@@ -38,7 +38,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "e0502bebd5734103ac64477d6257da8da947747556662a0ba873fdfc3e3f2c22"
+      "checksum": "4c5bcaff06daccf1fdfe1cae73da1b465d80db669187f7f124c330d4a0b38018"
     },
     {
       "id": "permissions",
@@ -58,18 +58,15 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "e047d850434b58d9115e12a37743a37cee66cae8ffcbc71dedc93c0e7f0b6dd0"
+      "checksum": "f64b374679280108a6bcdb943e23d16c3de97713be8c71974fda7a5d86b7027d"
     },
     {
       "id": "todo",
       "name": "Todo",
       "version": "0.1.0",
-      "description": "Simple todo list. Items persist across relaunches in host-owned app state.",
+      "description": "Context-scoped todo list. Items persist across relaunches in host-owned app state.",
       "publisher": "plexi",
-      "capabilities": [
-        "fs.read",
-        "fs.write"
-      ],
+      "capabilities": [],
       "tags": [
         "core",
         "free",
@@ -79,7 +76,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "7f3c0e5a436a1428afd024de4ebb5a6a2426ab0aa1844423a3625c3165c60410"
+      "checksum": "182f8ad88ea3ba5defd77e4b168458709a563ce494d3aaefb7c61dbc328f56bc"
     },
     {
       "id": "wikipedia",
@@ -99,7 +96,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "fdf20e5c217b7cd0e1fd8e8374a283e140f2f284ad1488ff04d40a471819e52c"
+      "checksum": "e370cde1d4964389b59e9cbd1d86616a15a3b5a94977a023ff9ec6296aa30ecf"
     }
   ]
 }

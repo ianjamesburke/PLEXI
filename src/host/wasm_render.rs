@@ -206,27 +206,31 @@ fn render_root_with_chrome_bands(
         egui::pos2(stack_rect.min.x, stack_rect.min.y + bars_h),
         egui::pos2(stack_rect.max.x, stack_rect.max.y - footer_h),
     );
-    if body_rect.height() > 0.0 && body_end > leading {
-        ui.scope_builder(egui::UiBuilder::new().max_rect(body_rect), |ui| {
-            ui.set_clip_rect(body_rect);
-            egui::Frame::NONE
-                .inner_margin(root_content_inset())
-                .show(ui, |ui| {
-                    render_column_children(
-                        ui,
-                        nodes,
-                        &c.children[leading..body_end],
-                        c.gap,
-                        c.align,
-                        colors,
-                        out,
-                        0,
-                        surface,
-                        canvas_fits,
-                        pending_click,
-                        surface_key,
-                    );
-                });
+    // Apply the inset by shrinking the body rect rather than wrapping it in a
+    // `Frame`: a frame's bottom margin is added *after* its content instead of
+    // being withheld from the child's height, so a bottom-pinned child would
+    // land flush against the footer band and get painted over by it.
+    let inset = root_content_inset();
+    let body_inner = body_rect.shrink2(egui::vec2(inset.left as f32, inset.top as f32));
+    if body_inner.height() > 0.0 && body_end > leading {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body_inner), |ui| {
+            ui.set_clip_rect(body_inner);
+            ui.set_min_height(body_inner.height());
+            ui.set_max_height(body_inner.height());
+            render_column_children(
+                ui,
+                nodes,
+                &c.children[leading..body_end],
+                c.gap,
+                c.align,
+                colors,
+                out,
+                0,
+                surface,
+                canvas_fits,
+                pending_click,
+                surface_key,
+            );
         });
     }
 
@@ -502,16 +506,36 @@ fn render_column_children(
         });
     });
 
-    let tail: Vec<u32> = children[split + 1..].iter().rev().copied().collect();
+    let tail = &children[split + 1..];
     if tail.is_empty() {
         return;
     }
-    ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
-        ui.set_clip_rect(stack_rect);
-        // Bottom-up places the first item it is given at the bottom edge, so
-        // the tail is fed in reverse to preserve the app's declared order.
-        ui.with_layout(egui::Layout::bottom_up(cross_align(align)), |ui| {
-            render_span(ui, &tail, out)
+
+    // Measure the tail, then render it top-down in a bottom-anchored rect.
+    // A `bottom_up` layout cannot be used directly: a `Row` child is an
+    // `ui.horizontal`, whose own ui grows *downward* from wherever bottom-up
+    // seated it, so the row overflows the column's bottom edge and its lower
+    // half is clipped away. The sizing pass lays the tail out without painting,
+    // which gives an exact height with no frame of lag.
+    let mut sizing = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(stack_rect)
+            .sizing_pass()
+            .invisible()
+            .layout(egui::Layout::top_down(cross_align(align))),
+    );
+    let mut sizing_out = RenderResult::default();
+    render_span(&mut sizing, tail, &mut sizing_out);
+    let tail_h = sizing.min_rect().height().min(stack_rect.height());
+
+    let tail_rect = egui::Rect::from_min_max(
+        egui::pos2(stack_rect.min.x, stack_rect.max.y - tail_h),
+        stack_rect.max,
+    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(tail_rect), |ui| {
+        ui.set_clip_rect(tail_rect);
+        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
+            render_span(ui, tail, out)
         });
     });
 }
@@ -1098,8 +1122,8 @@ fn render_node(
 mod tests {
     use super::*;
     use crate::host::wasm_app::bindings::plexi::platform::types::{
-        AppBarNode, ButtonNode, CanvasNode, CanvasRect, CanvasText, ColumnNode, SurfaceNode,
-        TextInputNode, TextNode,
+        AppBarNode, ButtonNode, CanvasNode, CanvasRect, CanvasText, ColumnNode, FooterKeyEntry,
+        FooterKeysNode, RowNode, SpaceNode, SurfaceNode, TextInputNode, TextNode,
     };
     use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
 
@@ -1560,7 +1584,7 @@ mod tests {
                 node(
                     0,
                     UiNodeData::Column(ColumnNode {
-                        children: vec![1, 2, 3, 4],
+                        children: vec![1, 2, 3, 4, 7],
                         gap: style::SPACE_MD,
                         align: Alignment::Start,
                         grow: true,
@@ -1585,13 +1609,43 @@ mod tests {
                     }),
                 ),
                 node(3, UiNodeData::Space(SpaceNode { size: 0.0, grow: true })),
+                // The tail is a Row of buttons — an `Actions` bar, the shape the
+                // overflow bug actually took (a bare child never reproduced it).
                 node(
                     4,
+                    UiNodeData::Row(RowNode {
+                        children: vec![5, 6],
+                        gap: style::SPACE_SM,
+                        align: Alignment::Start,
+                        grow: false,
+                    }),
+                ),
+                node(
+                    5,
                     UiNodeData::Button(ButtonNode {
                         label: "Add item".to_string(),
                         on_click: "add".to_string(),
                         style: ButtonStyle::Primary,
                         disabled: false,
+                    }),
+                ),
+                node(
+                    6,
+                    UiNodeData::Button(ButtonNode {
+                        label: "Delete".to_string(),
+                        on_click: "delete".to_string(),
+                        style: ButtonStyle::Danger,
+                        disabled: false,
+                    }),
+                ),
+                node(
+                    7,
+                    UiNodeData::FooterKeys(FooterKeysNode {
+                        entries: vec![FooterKeyEntry {
+                            keys: vec!["a".to_string()],
+                            description: "add".to_string(),
+                        }],
+                        divider: true,
                     }),
                 ),
             ],
@@ -1620,10 +1674,15 @@ mod tests {
             "app bar should paint a full-width band at the pane's top edge; painted {shapes:?}"
         );
 
+        // Body content is everything that is not a full-width chrome band
+        // (the app bar's own band, the footer's band, its divider rule).
         let body_top = band.expect("band").max.y;
         let body = shapes
             .iter()
-            .filter(|r| !fills_pane(r) && r.min.y > body_top)
+            .filter(|r| {
+                let full_width = r.min.x <= 0.5 && r.max.x >= pane.x - 0.5;
+                !fills_pane(r) && !full_width && r.min.y > body_top
+            })
             .fold(egui::Rect::NOTHING, |acc, r| acc.union(*r));
         assert!(
             body.min.x >= style::SPACE_XL - 0.5,
@@ -1635,26 +1694,47 @@ mod tests {
     /// Stint 0674: a grow `Space` consumed `available_height()`, so every child
     /// declared after it was pushed past the pane's bottom edge and silently
     /// vanished (todo's Add/Toggle/Delete controls). The tail now pins to the
-    /// bottom and stays inside the pane.
+    /// bottom, and — the second half of the same bug — it must clear the
+    /// footer band rather than sliding under it and losing its lower half to
+    /// the clip. Both halves are asserted against the footer's own top edge,
+    /// because a clipped shape still reports its full pre-clip bounds and a
+    /// bounds-only check cannot see the overlap.
     #[test]
-    fn column_children_after_a_grow_spacer_stay_inside_the_pane() {
+    fn column_children_after_a_grow_spacer_pin_above_the_footer_band() {
         let pane = egui::vec2(400.0, 300.0);
-        let content = painted_shapes(&chrome_tree(), pane)
-            .into_iter()
-            .filter(|r| r.max.y < pane.y - 0.5 || r.min.y > 0.5)
-            .fold(egui::Rect::NOTHING, |acc, r| acc.union(r));
+        let shapes = painted_shapes(&chrome_tree(), pane);
+        let full_width = |r: &egui::Rect| r.min.x <= 0.5 && r.max.x >= pane.x - 0.5;
 
+        // The footer band is the full-width chrome strip in the lower half.
+        let footer_top = shapes
+            .iter()
+            .filter(|r| full_width(r) && r.min.y > pane.y / 2.0 && r.max.y < pane.y + 0.5)
+            .map(|r| r.min.y)
+            .fold(f32::INFINITY, f32::min);
         assert!(
-            content.max.y <= pane.y + 0.5,
-            "nothing may render past the pane's bottom edge, got {}",
-            content.max.y
+            footer_top.is_finite(),
+            "footer keys should paint a full-width band; painted {shapes:?}"
+        );
+
+        // Body content: shapes that are neither a full-width chrome band nor
+        // part of the footer's own contents (its key chips start below the
+        // band's top edge). A tail sliding under the footer still *starts*
+        // above it, so this keeps the failing case in scope.
+        let body = shapes
+            .iter()
+            .filter(|r| !full_width(r) && r.min.y < footer_top)
+            .fold(egui::Rect::NOTHING, |acc, r| acc.union(*r));
+        assert!(
+            body.max.y <= footer_top + 0.5,
+            "body content ends at {} but the footer band starts at {footer_top} — \
+             the bottom-pinned tail is sliding under the footer and being clipped",
+            body.max.y
         );
         assert!(
-            content.max.y >= pane.y - (style::SPACE_MD + style::BUTTON_H_MD + 8.0),
-            "the child after the grow spacer should sit near the bottom edge, \
-             content ends at {} of {}",
-            content.max.y,
-            pane.y
+            body.max.y >= footer_top - (style::BUTTON_H_MD + style::SPACE_MD + 8.0),
+            "the child after the grow spacer should sit just above the footer, \
+             body ends at {} with the footer at {footer_top}",
+            body.max.y
         );
     }
 
@@ -1691,7 +1771,7 @@ mod tests {
                 )),
                 ..Default::default()
             };
-            ctx.run_ui(raw, |ui| {
+            let _ = ctx.run_ui(raw, |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| {

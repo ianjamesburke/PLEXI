@@ -169,6 +169,7 @@ def test_ui_tree_serializes_text_input_and_select_list() -> None:
         "on_change": "todo-add:change",
         "on_submit": "todo-add:submit",
         "password": False,
+        "autofocus": False,
     }
     assert nodes[2]["data"]["type"] == "ListView"
     assert nodes[2]["data"]["selected"] == 1

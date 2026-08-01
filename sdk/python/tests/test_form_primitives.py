@@ -150,3 +150,31 @@ def test_duplicate_tool_names_are_rejected() -> None:
             @tools.tool("app.one", "Again.")
             def _again() -> dict:
                 return {}
+
+
+def _wire_nodes(component) -> list:
+    """The node list as it crosses the protocol — the adapter re-normalizes
+    every node, so a field only `to_node()` emits is not yet a shipped field."""
+    from plexi_sdk import _adapter
+
+    return _adapter._encode_uitree(component)["nodes"]
+
+
+def test_autofocus_survives_adapter_normalization() -> None:
+    from plexi_sdk.ui import Column
+
+    nodes = _wire_nodes(Column([FormField("draft", "Item", autofocus=True)]))
+    inputs = [n["data"] for n in nodes if n["data"].get("type") == "TextInput"]
+    assert [i["autofocus"] for i in inputs] == [True]
+
+
+def test_actions_row_survives_adapter_normalization() -> None:
+    from plexi_sdk.ui import Column
+
+    nodes = _wire_nodes(
+        Column([Actions([Button("Add", "add"), Button("Cancel", "cancel")])])
+    )
+    rows = [n["data"] for n in nodes if n["data"].get("type") == "Row"]
+    assert len(rows) == 1
+    buttons = [n["data"] for n in nodes if n["data"].get("type") == "Button"]
+    assert [b["label"] for b in buttons] == ["Add", "Cancel"]
