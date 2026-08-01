@@ -1,100 +1,41 @@
-# Babysitter run configuration — THE single place for run-invariant settings.
-# Read on invocation and re-read at every worker/tester spawn. RUN_STATE.md is
-# pure per-run state (queue position, PRs, lessons); dispatch briefs carry only
-# the queue and true one-off overlays. Nothing below gets restated anywhere.
+# Babysitter run configuration — single source for run-invariant settings.
+# Read on invocation and re-read at every spawn. Values only; behavior/mechanics
+# live in SKILL.md. Nothing below gets restated anywhere.
 
 [engines]
-# codex-first | claude-first. Workers AND heads. Fallback on usage-limit boot
-# error: respawn same brief on the other family's same tier, log it, stay
-# there for the rest of the run (re-probe next day).
-policy = "codex-first"          # workers and testers
-# HEADS RUN CLAUDE (cm) — stated loudly, ruled with Ian 2026-07-29 ~02:00:
-# the head role REQUIRES self-scheduling (ScheduleWakeup) and Codex has no
-# scheduler; a Codex head dies at every turn boundary and needs an external
-# heartbeat, which makes the operator a single point of failure (proven twice
-# tonight). This is a mechanics exception to codex-first, not a preference,
-# and it dissolves when stint 0628 (host-owned job supervisor) makes head
-# liveness a host invariant instead of an agent capability.
+policy = "codex-first"          # workers and testers; codex-first | claude-first
+# Heads run Claude — mechanics exception, not preference: the head role requires
+# ScheduleWakeup self-scheduling, which Codex has no equivalent for (see SKILL.md
+# "Head liveness"). Dissolves when stint 0628 (host-owned job supervisor) lands.
 head_engine = "claude"
 head_tier = "medium"
-
-# MERGE RUNNER — Ian's ruling 2026-07-31: merging never needs the top tier.
-# A clean merge is mechanical: confirm green checks, confirm mergeable, merge,
-# close the stint, delete the branch. Delegate it to a fresh SMALL-tier pane
-# (`cs`) instead of spending head context and Opus tokens on it.
-merge_runner_tier = "small"
-# EXPLICIT CARVE-OUT, stated out loud rather than buried: the small runner does
-# CLEAN merges only. It must escalate back to the head, never improvise, when it
-# hits a conflict, a red or missing check, a PR that is not MERGEABLE, or a
-# tester FAIL that looks wrong. Conflict resolution and overruling a false FAIL
-# are judgment, not mechanics, and those stay with the head.
+worker_tier = "medium"           # small only for genuinely trivial mechanical batches
+tester_tier = "medium"
+merge_runner_tier = "small"      # clean-merge-only; see merge_runner_escalates_on
 merge_runner_escalates_on = ["conflict", "checks-not-green", "not-mergeable", "disputed-fail"]
 
-
 [authorization]
-# Standing pre-authorization from Ian (2026-07-28). A run needs no per-dispatch
-# auto-merge grant. Flip to false to force per-merge approval.
-auto_merge = true
+auto_merge = true                # standing pre-authorization; false forces per-merge approval
 
 [reservations]
-# Never queued unattended, no exceptions. Ian runs these attended.
-attended_only = ["0601", "0439"]
+attended_only = ["0601", "0439"]  # never queued unattended
 
 [hazards]
-# Standing, run-independent. Every head enforces; briefs need not restate.
-# - NEVER set [notifications] sound in any config, any profile (audible-cue ban).
-# - Agent-run `security` commands against the login keychain: BANNED outright.
-#   `cargo test --bin plexi` is safe (InMemoryKeychain since #2504); pr-binaries,
-#   live hosts, and `plexi secret` calls are NOT covered — testers must not run them.
-# - Overnight == Ian may be asleep: no action that produces sound or dialogs.
-notes = "see comments above; comments are the contract"
+notes = "see .claude/skills/babysitter/SKILL.md Rules — no audible cue, no keychain security commands from agents, no sound/dialogs overnight"
 
 [briefing]
-# Codex heads/workers: no slash commands. First line of a worker brief:
-#   "Read .agents/skills/implement-stint/SKILL.md and follow its Worker Mode
-#    section as your contract. Batch these stints into ONE worktree and ONE PR: <ids>."
-# Send briefs via a file:  plexi pane send <id> "$(cat brief.txt)"  — inline
-# multiline text hits the collapsed-paste non-submit.
 style = "file-form, no slash commands for codex"
 
 [cadence]
-# Head liveness differs by engine — this is a CONTRACT, learned 2026-07-29 01:20
-# when a Codex head died at an idle prompt for 19 minutes:
-#   claude heads: self-schedule with ScheduleWakeup, ~15 min cycles.
-#   codex heads: CANNOT self-schedule. They end each check cycle's turn normally
-#     (status block + slot write) and go idle; the OPERATOR LOOP (the me-session
-#     watching the run) prompts "cycle" every 15 min — that heartbeat is the clock.
-#     Never poll to stay alive (context-kills the head); never blocking-sleep to
-#     idle (the turn still ends eventually and the loop dies silently).
-# Either engine: relay early when context feels heavy — baton to a fresh head.
-# 2026-07-31 (Ian): 900 was the PRIMARY clock and it wasted the fleet — a worker
-# finishing at minute 2 of a 15-minute cycle left every lane idle for 13 minutes.
-# The head now waits EVENT-DRIVEN on each pane's own status slot / idle verdict
-# (see SKILL.md "Waiting on a pane"), which fires in ~10s. This interval is now a
-# FAILSAFE HEARTBEAT ONLY: it catches a dead or wedged agent whose event never
-# fires. It is not how progress is detected. Do not shorten it to "go faster" —
-# shortening it only burns head context; the event watch is what makes it fast.
-check_interval_seconds = 900
-wait_mode = "event-driven"          # slot/idle watch is primary; interval is failsafe
-pane_event_poll_seconds = 10        # inner poll of the blocking watch, not a head cycle
-codex_head_clock = "external-heartbeat"  # operator loop prompts 'cycle'
+check_interval_seconds = 900        # failsafe heartbeat only, not the wait mechanism — see SKILL.md
+wait_mode = "event-driven"
+pane_event_poll_seconds = 10
+codex_head_clock = "external-heartbeat"   # operator loop prompts 'cycle'; see SKILL.md "Head liveness"
 
 [worker-postgate]
-# After gates pass and before reporting impl:done, the worker runs
-# `cargo build --release` in its own worktree. Cost: minutes it was going to
-# spend idle anyway. Effect: the tester's pr-install in the same worktree
-# becomes an incremental build — the single biggest cycle-time cut available
-# (Ian spotted it 2026-07-29). Provenance contract unchanged.
-prewarm_release_build = false   # 2026-07-31: OFF. Every worker running cargo build --release in its own worktree spawned ~20 concurrent cargo / 9 rustc and drove Ian's machine into OOM warnings. Re-enable only with a hard lane cap and a global build lock.
+prewarm_release_build = false    # OFF 2026-07-31: OOMed the machine at ~10 concurrent lanes; needs a build lock first
 
 [limits]
-# Added 2026-07-31 after Ian hit out-of-memory warnings with ~10 panes live.
-# Hard ceiling on CONCURRENT workers + testers across the whole run. Ian's words:
-# eight "seems kind of high". Four is the working default; raise only if he says so.
 max_concurrent_lanes = 4
-# Never run more than one cargo build at a time across lanes. Rust builds are the
-# memory hog, not the agents; N parallel release builds is what OOMed the machine.
 max_concurrent_cargo_builds = 1
-# When the cap is hit, PAUSE new lanes rather than queueing more panes. Resume as
-# lanes finish. An idle fleet is the normal failure mode; an unusable laptop is worse.
-on_cap = "pause"
+on_cap = "pause"                 # pause new lanes over queueing more panes
