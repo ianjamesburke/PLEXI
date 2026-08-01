@@ -1,0 +1,873 @@
+# ROADMAP.toml — authoritative for current state, CI-enforced.
+#
+# This file is NOT a list of future plans. It is the repo's honest, machine-
+# checkable answer to "what actually works today?" One node per feature or
+# concept. Status is a claim about the code on alpha right now, not an
+# aspiration and not a schedule.
+#
+#   status = "green"   working and proven. REQUIRES named passing tests in
+#                      `evidence`. A green node with no evidence is a CI failure.
+#   status = "yellow"  partially working, or working with a known defect or an
+#                      unproven surface. Evidence optional but encouraged.
+#   status = "red"     not built, or built and known broken. Evidence forbidden
+#                      to be treated as proof.
+#
+#   deps     = [node ids this node cannot work without]
+#   evidence = [exact test function names; must exist and must pass]
+#   stints   = [.stint task ids that own this node's open work]
+#
+# Evidence names are Rust `#[test]` function names run by `cargo test --bin plexi`
+# (or, for `crates/*`, that crate's test binary), plus TOML scenes under
+# `tests/scenes/`. CI resolves every name; an unresolvable or failing name on a
+# green node fails the merge.
+#
+# A rendered dependency graph is generated on merge — see
+# docs/2026-07-31-roadmap-enforcement-brief.md.
+
+schema_version = 1
+generated_from = "manual audit, 2026-07-31, alpha @ v0.2.3"
+
+# ---------------------------------------------------------------------------
+# Foundation — the host
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "host-model"
+title = "HostModel — pure state machine, commands in / effects out"
+status = "green"
+deps = []
+evidence = [
+  "alloc_pane_id_is_monotone_and_advances_counter",
+  "close_focused_pane_removes_from_model_registry",
+  "add_context_stores_hierarchy_fields",
+  "ancestors_of_returns_parent_chain",
+]
+stints = []
+
+[[node]]
+id = "pane-lifecycle"
+title = "Pane create / close / focus / zoom lifecycle"
+status = "green"
+deps = ["host-model"]
+evidence = [
+  "close_background_pane_does_not_steal_focus",
+  "close_background_pane_preserves_zoom",
+  "close_pane_by_id_keeps_sole_page_window_alive",
+  "close_pane_by_id_removes_zombie_active_window",
+  "persisted_next_pane_id_cannot_collide_with_saved_panes",
+]
+stints = []
+
+[[node]]
+id = "tiling-layout"
+title = "Tiling layout — grids, columns, tabs, reorder"
+status = "green"
+deps = ["pane-lifecycle"]
+evidence = [
+  "tiled_layout_builds_a_grid_container",
+  "columns_layout_builds_a_horizontal_linear_container",
+  "single_pane_needs_no_container",
+  "reorder_tab_moves_child_without_changing_active_focus_or_zoom",
+  "reorder_tab_rejects_invalid_indices_and_non_tabs",
+]
+stints = []
+
+[[node]]
+id = "spatial-navigation"
+title = "Directional pane/page navigation with per-row column memory"
+status = "green"
+deps = ["tiling-layout"]
+evidence = [
+  "down_uses_last_page_x_per_row_memory",
+  "up_prefers_same_column_when_unvisited",
+  "vertical_picks_closest_when_memory_misses",
+  "delete_prefers_next_column_same_row",
+  "ignores_pages_in_other_workspaces",
+]
+stints = []
+
+[[node]]
+id = "contexts"
+title = "Context tree — nested contexts, subcontexts, portals, depth stack"
+status = "green"
+deps = ["host-model"]
+evidence = [
+  "context_serde_round_trip",
+  "expand_subtrees_reinflates_hidden_children",
+  "insert_after_subtree_adjusts_active_index",
+  "depth_stack_push_pop",
+  "subcontext-portal",
+]
+stints = ["0651"]
+
+[[node]]
+id = "workspace-persistence"
+title = "Workspace save/load — atomic write, one-generation rotation, gitignore seeding"
+status = "green"
+deps = ["contexts"]
+evidence = [
+  "atomic_save_replaces_workspace_without_temp_residue",
+  "atomic_save_rotates_one_previous_generation",
+  "failed_partial_temp_write_preserves_loadable_workspace",
+  "init_workspace_creates_workspace_and_secrets_files",
+  "app_state_gitignore_preserves_rules_and_is_idempotent",
+]
+stints = []
+
+[[node]]
+id = "terminal-panes"
+title = "Terminal panes — PTY, OSC title, fullscreen input, linked terminals"
+status = "green"
+deps = ["pane-lifecycle"]
+evidence = [
+  "fullscreen_input_conjunction_fullscreen_terminal_reaches_pty",
+  "fullscreen_input_conjunction_tiled_terminal_reaches_pty",
+  "osc_title_tracks_but_does_not_overwrite_locked_terminal_pane_name",
+  "editor_chords_do_not_hijack_focused_terminal",
+]
+stints = ["0246", "0258", "0259"]
+
+[[node]]
+id = "hidden-window-servicing"
+title = "External clients serviced while the host window is hidden or occluded"
+status = "green"
+deps = ["host-model"]
+evidence = [
+  "pane_ipc_serviced_while_window_hidden",
+  "screenshot_capture_requested_on_hidden_passes",
+  "agent_spawn_observed_boot_completes_while_window_hidden",
+]
+stints = []
+
+[[node]]
+id = "host-screenshot"
+title = "plexi host screenshot — real render-pipeline capture, pane-cropped"
+status = "green"
+deps = ["hidden-window-servicing", "cli"]
+evidence = [
+  "screenshot_capture_requested_on_hidden_passes",
+  "screenshot_host_ui_gallery_trust_states",
+]
+stints = []
+
+[[node]]
+id = "accessibility-tree"
+title = "AccessKit node tree exposure"
+status = "yellow"
+deps = ["host-model"]
+evidence = ["accesskit_normalization_removes_children_outside_pane"]
+stints = []
+note = "One normalization test. No end-to-end screen-reader qualification exists."
+
+# ---------------------------------------------------------------------------
+# CLI and configuration
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "cli"
+title = "plexi CLI — the whole feature surface reachable from the command line"
+status = "green"
+deps = ["host-model"]
+evidence = [
+  "agent_flags_reach_the_host_and_the_reply_sets_the_exit_code",
+  "app_open_omits_layout_so_host_applies_split_default",
+  "secret_list_accepts_global_flag",
+  "arg_line_required_vs_optional",
+]
+stints = ["0265", "0656"]
+
+[[node]]
+id = "release-channels"
+title = "Channel isolation — alpha / beta / stable / pr-N sockets and profiles"
+status = "green"
+deps = ["cli", "config"]
+evidence = [
+  "alpha_channel",
+  "beta_channel",
+  "alpha_binary_uses_own_channel_socket_when_ambient_socket_mismatches",
+  "bare_binary_preserves_ambient_socket",
+  "only_numbered_pr_channels_are_test_channels",
+  "isolated_profile_guard_names_real_profile_dir",
+]
+stints = ["0267"]
+
+[[node]]
+id = "config"
+title = "Config load / merge / migrate / validate"
+status = "green"
+deps = []
+evidence = [
+  "project_config_overrides_global",
+  "project_partial_override_preserves_unset_global",
+  "migrate_config_preserves_comments",
+  "migrate_config_adds_version_to_v0",
+  "validate_ai_local_unknown_key",
+]
+stints = []
+
+[[node]]
+id = "generated-docs"
+title = "CLI and config reference docs generated from source, staleness-gated in CI"
+status = "green"
+deps = ["cli", "config"]
+evidence = ["config_docs_explain_channel_discipline"]
+stints = ["0256"]
+note = "Primary enforcement is the check-cli-docs / check-config-docs workflows, not a Rust test."
+
+[[node]]
+id = "release-pipeline"
+title = "just bump / promote / release — versioning and channel promotion"
+status = "yellow"
+deps = ["release-channels"]
+evidence = []
+stints = ["0329"]
+note = "Four tests in release.rs; the end-to-end bump→release round trip is verified by hand, not in CI."
+
+# ---------------------------------------------------------------------------
+# App platform
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "app-protocol"
+title = "PGAP v3 — the app/host wire protocol"
+status = "green"
+deps = ["host-model"]
+evidence = [
+  "component_event_serializes_correctly",
+  "init_event_serializes_pane_dimensions",
+  "init_event_deserializes_without_dimensions",
+  "is_reserved_shortcut_covers_expected_set",
+  "ai_tool_wire_requires_typed_input_and_output_schemas",
+]
+stints = ["0533"]
+
+[[node]]
+id = "python-sdk"
+title = "Python SDK — the canonical way to author an app"
+status = "green"
+deps = ["app-protocol"]
+evidence = [
+  "scaffold-renders-frame1",
+  "component-gallery",
+  "app_build_sdk_reference_is_generated_and_nonempty",
+]
+stints = []
+
+[[node]]
+id = "app-lifecycle"
+title = "App install, launch, reload, quarantine"
+status = "green"
+deps = ["app-protocol"]
+evidence = [
+  "install_clone_writes_app_dir_with_manifest_id",
+  "install_accepts_reverse_dns_app_id",
+  "install_fails_on_missing_manifest_not_workspace_error",
+  "install_already_installed_errors_clearly",
+  "pane-lifecycle",
+]
+stints = []
+
+[[node]]
+id = "hot-reload"
+title = "App hot reload during authoring"
+status = "green"
+deps = ["app-lifecycle"]
+evidence = [
+  "hot_reload_rereads_file_each_call",
+  "queued_node_click_survives_a_hot_reload_relaunch_race",
+]
+stints = []
+
+[[node]]
+id = "app-packs"
+title = "Declarative app packs — packs/core.toml seeds the maintained set"
+status = "green"
+deps = ["app-lifecycle"]
+evidence = [
+  "core_pack_parses",
+  "core_pack_is_canonical_and_consistent",
+  "core_pack_always_installs_missing_apps",
+  "apply_workspace_pack_idempotent_on_second_run",
+  "examples_pack_applies_only_when_empty",
+]
+stints = []
+
+[[node]]
+id = "embedded-registry"
+title = "Embedded CLI descriptor registry"
+status = "green"
+deps = ["cli"]
+evidence = [
+  "embedded_registry_round_trips_through_parser",
+  "lookup_mcp_returns_embedded_entry",
+  "list_mcp_names_returns_seeded_entries",
+]
+stints = []
+
+[[node]]
+id = "app-state-scopes"
+title = "State scope resolver — global vs context-scoped app state, externally writable"
+status = "red"
+deps = ["app-lifecycle", "contexts"]
+evidence = []
+stints = ["0644", "0645", "0651", "0652"]
+note = "Channel-scoped reclaim landed (#2531). The [state] manifest key, scope resolver, and `plexi app state get/set` are not built."
+
+[[node]]
+id = "pane-state-liveness"
+title = "plexi pane state — host-observed liveness separated from agent-claimed state"
+status = "red"
+deps = ["cli", "pane-lifecycle"]
+evidence = []
+stints = ["0641", "0664", "0665", "0666"]
+note = "Known defect: pane state reports lifecycle `running` for a dead app, so agents cannot detect failure."
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "capability-broker"
+title = "Capability broker — manifest declaration, scoped consent, precedence"
+status = "green"
+deps = ["app-protocol"]
+evidence = [
+  "deny_beats_ask_beats_allow",
+  "managed_deny_beats_user_allow_and_posture_allow",
+  "persisted_deny_beats_posture_allow_list",
+  "posture_lists_and_default_apply_in_order",
+  "expired_record_is_ignored",
+  "workspace_scoping_respected",
+  "corrupt_grants_file_backed_up",
+  "legacy_migration_is_loss_free_and_idempotent",
+]
+stints = []
+
+[[node]]
+id = "audit-trail"
+title = "Append-only event log / app timeline as the audit record"
+status = "green"
+deps = ["capability-broker"]
+evidence = [
+  "accepted_event_enters_timeline_without_checkpoint",
+  "app_events_declare_and_emit_into_timeline",
+  "begin_rollback_guards_unknown_and_in_flight",
+  "child_error_rolls_up",
+]
+stints = []
+
+[[node]]
+id = "trust-labels"
+title = "App trust labels — first-party, reviewed, unreviewed, component"
+status = "green"
+deps = ["capability-broker", "app-lifecycle"]
+evidence = [
+  "trust_label_core_id_is_first_party",
+  "trust_label_marketplace_reviewed_python_is_python_reviewed",
+  "trust_label_python_entry_is_python_unreviewed",
+  "trust_label_wasm_entry_is_component",
+  "trust_sheet_lists_wasm_required_and_optional_capabilities",
+  "app_trust_persists_grants_without_tty",
+]
+stints = []
+
+[[node]]
+id = "consent-ui"
+title = "Capability consent modal — grant, deny, remember"
+status = "yellow"
+deps = ["capability-broker"]
+evidence = [
+  "consent_allow_always_persists_grant",
+  "consent_allow_once_records_session_subscription",
+]
+stints = ["0592", "0593"]
+note = "Model-side consent is proven. Driving the real modal programmatically is not yet possible (0593 blocked)."
+
+[[node]]
+id = "secrets"
+title = "Secrets — workspace + user scope, keychain backing, env injection"
+status = "yellow"
+deps = ["workspace-persistence"]
+evidence = [
+  "secret_list_global_uses_user_scope_without_workspace_lookup",
+  "secrets_alias_routes_to_secret_command",
+  "openrouter_key_falls_back_to_legacy_global_secret",
+]
+stints = ["0441"]
+note = "src/secrets carries no unit tests of its own; coverage is CLI-level. Open bug: the Secrets app is blind to keychain items."
+
+[[node]]
+id = "sandboxing"
+title = "True app sandboxing"
+status = "red"
+deps = ["wasm-runtime"]
+evidence = []
+stints = ["0623"]
+note = "Acknowledged gap. Python apps run unsandboxed; v1 security is consent + audit + review. Real isolation arrives with the WASM runtime."
+
+# ---------------------------------------------------------------------------
+# Inter-pane communication
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "event-bus"
+title = "Event bus — declared streams, scoped subscriptions, cross-window delivery"
+status = "green"
+deps = ["app-protocol", "capability-broker"]
+evidence = [
+  "app_events_declare_and_emit_into_timeline",
+  "app_event_emit_without_declaration_returns_error",
+  "app_subscriptions_deliver_across_python_and_wasm_publishers",
+  "app_subscription_uses_app_actor_for_broker_and_pane_for_delivery",
+  "declare_rejects_empty_name_and_non_object_schema",
+  "event-probe",
+]
+stints = []
+
+[[node]]
+id = "directed-pipes"
+title = "Directed pipe — exclusive (sender, target) duplex JSON channel over the bus"
+status = "green"
+deps = ["event-bus"]
+evidence = [
+  "directed_pipe_routes_to_target_pane_only",
+  "malicious_pipe_id_not_in_socket_path",
+]
+stints = []
+
+[[node]]
+id = "typed-pipes"
+title = "Typed pipes — Unix socket + ring buffer for audio/video/MIDI frames"
+status = "green"
+deps = ["app-protocol"]
+evidence = [
+  "g13_pipes_open_send_overrun_close",
+  "g13_guest_roundtrip_waveform_pipe",
+  "g13_json_pipe_validation",
+  "drain_failed_set_after_broken_pipe",
+  "drain_failed_false_for_healthy_pipe",
+]
+stints = []
+
+[[node]]
+id = "pane-slots"
+title = "Pane slots — host-managed per-pane key/value files agents read and append"
+status = "green"
+deps = ["pane-lifecycle", "cli"]
+evidence = [
+  "pane_info_and_list_include_slots_object",
+  "pane_slot_append_uses_tracked_path_after_context_root_changes",
+  "pane_slot_append_rejects_final_file_over_10_mib",
+  "pane_slot_read_errors_use_sidecar_file",
+]
+stints = ["0665"]
+
+[[node]]
+id = "notifications"
+title = "Notifications — scoping, lifecycle, auto-dismiss, cues"
+status = "green"
+deps = ["host-model", "cli"]
+evidence = [
+  "cli_notify_without_scope_defaults_to_context",
+  "cli_notify_stale_identity_escalates_to_global",
+  "cli_notify_outside_pane_unscoped_escalates_to_global",
+  "auto_dismiss_spares_required_notifications",
+  "auto_dismiss_does_not_touch_other_pane_notifications",
+  "enqueue_notification_honours_master_switch",
+  "notification-modal-wrapped-narrow",
+]
+stints = []
+
+# ---------------------------------------------------------------------------
+# Intelligence
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "assistant"
+title = "Host assistant — conversations, checkpoints, slash commands, tool gating"
+status = "green"
+deps = ["capability-broker", "plexi-ai"]
+evidence = [
+  "ask_allow_always_persists_grant_and_next_call_skips_sheet",
+  "ask_allow_once_runs_tool_without_persisting_a_grant",
+  "ask_denied_by_user_returns_tool_error_not_a_crash",
+  "clear_starts_fresh_conversation_with_new_id",
+  "checkpoint_preserves_raw_turns_and_history_metadata",
+  "assistant-permissions",
+]
+stints = ["0419"]
+
+[[node]]
+id = "plexi-ai"
+title = "ai.query backend — provider routing, streaming, budgets, tool snapshots"
+status = "green"
+deps = ["capability-broker", "secrets"]
+evidence = [
+  "check_budget_blocks_per_app_over_limit",
+  "check_budget_blocks_global_over_limit",
+  "cancel_during_stream_commits_partial_and_stops",
+  "cross_workspace_tools_are_hidden",
+  "denied_wasm_tool_call_never_reaches_the_guest",
+  "debug_redacts_api_key",
+  "config_resolves_tiers_to_openrouter_model_ids",
+]
+stints = ["0323"]
+
+[[node]]
+id = "app-ai-capability"
+title = "Apps calling ai.query through the broker"
+status = "green"
+deps = ["plexi-ai", "app-protocol"]
+evidence = [
+  "ai_query_granted_streams_and_returns_final_response",
+  "ai_query_denied_does_not_call_broker",
+  "ai_query_appends_agent_turn_to_ledger_row_shape",
+]
+stints = []
+
+[[node]]
+id = "agent-definitions"
+title = "Named agent personas — definition files, registry precedence, workspace attach"
+status = "green"
+deps = ["assistant"]
+evidence = [
+  "definition_parses_routes_effort_tools_skills_and_hooks",
+  "registry_precedence_keeps_shadowed_definitions_visible",
+  "reload_workspace_attaches_and_detaches_agents",
+  "self_caused_deliveries_do_not_trigger_turns",
+  "required_fields_fail_fast",
+]
+stints = []
+
+[[node]]
+id = "agent-pane-spawn"
+title = "Agent pane spawn — boot confirmation, idle detection, typed failure"
+status = "green"
+deps = ["cli", "terminal-panes"]
+evidence = [
+  "agent_spawn_completes_from_observed_codex_boot",
+  "agent_spawn_defers_reply_until_agent_reports_idle",
+  "agent_spawn_boot_timeout_reports_pane_id",
+  "agent_spawn_errors_when_pane_closes_before_boot",
+  "agent_spawn_rejected_for_non_terminal_target",
+  "agent_spawn_streaming_agent_is_not_reported_idle",
+]
+stints = []
+
+[[node]]
+id = "agent-run-orchestration"
+title = "Host-owned run orchestration — admission, liveness, push completion, durable run record"
+status = "red"
+deps = ["agent-pane-spawn", "pane-slots", "pane-state-liveness"]
+evidence = []
+stints = ["0628", "0664", "0666", "0669", "0671", "0673"]
+note = "Spec only (docs/agent-run-orchestration.md). Today the control loop is prose in the babysitter skill; no host primitive exists."
+
+[[node]]
+id = "mcp-tool-sources"
+title = "MCP servers as tool sources / context-present apps"
+status = "red"
+deps = ["assistant", "app-protocol"]
+evidence = [
+  "concurrent_mcp_subscribers_do_not_collide",
+  "lookup_mcp_returns_embedded_entry",
+]
+stints = ["0382", "0578", "0653"]
+note = "Only descriptor lookup and title formatting exist. The app-tool bridge is unbuilt; evidence listed is scaffolding, not proof of the feature."
+
+[[node]]
+id = "routines"
+title = "Routines — scheduled commands firing into named contexts"
+status = "green"
+deps = ["cli", "contexts"]
+evidence = [
+  "add_writes_a_file_the_scheduler_parses",
+  "add_rejects_unparseable_schedule",
+  "routine_fires_into_named_context_and_restores_focus",
+  "routine_missing_context_skips_notifies_once",
+  "last_fire_survives_scheduler_rebuild",
+  "ephemeral_routine_pane_closes_on_exit_and_nonephemeral_stays",
+  "corrupt_state_file_degrades_to_startup_fire",
+]
+stints = []
+
+# ---------------------------------------------------------------------------
+# WASM runtime
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "wasm-runtime"
+title = "WASM runtime — components, CPython-in-Wasmtime, GPU surfaces, guest state"
+status = "yellow"
+deps = ["app-protocol", "typed-pipes"]
+evidence = [
+  "cpython_wasi_executes_inside_wasmtime_without_native_python",
+  "bundle_hash_mismatch_is_typed",
+  "g3_effect_roundtrip",
+  "g5_state_persists_across_reload",
+  "g7_surface_lifecycle_and_input",
+  "g11_gpu_render_pass_renders_uniform_color",
+  "g12_audio_process_output_produces_sound",
+  "wasm-sysmon",
+]
+stints = ["0638", "0660", "0663"]
+note = "Gates G1–G13 pass. Known defect: a guest that dies at import is reported via a 15s timeout instead of the process-exit path (0638/0663), and that test is explicitly skipped in CI."
+
+[[node]]
+id = "frame-pacing"
+title = "Real-time frame pacing and presentation across Python and WASM apps"
+status = "yellow"
+deps = ["wasm-runtime"]
+evidence = [
+  "continuous_scheduler_preserves_sixty_fps_budget",
+  "continuous_scheduler_stops_repainting_when_guest_misses_deadline",
+  "continuous_scheduler_coalesces_guest_wake_into_next_host_deadline",
+  "scheduled_mode_allows_only_one_render_transaction",
+  "async_readback_arrives_with_load_aware_budget",
+]
+stints = ["0549", "0550", "0551", "0553"]
+note = "Scheduler behaves under test; the Python and WASM paths are still not unified (0553 blocked), and three payload/perf reductions are open."
+
+[[node]]
+id = "wasm-distribution"
+title = "WASM bundle distribution through the hosted registry"
+status = "red"
+deps = ["wasm-runtime", "marketplace-hosted"]
+evidence = []
+stints = ["0286"]
+
+[[node]]
+id = "wasm-cloud-streaming"
+title = "Server-side wasmtime + thin-client host"
+status = "red"
+deps = ["wasm-distribution"]
+evidence = []
+stints = ["0287"]
+
+# ---------------------------------------------------------------------------
+# Host UI surfaces
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "ui-kit"
+title = "Host UI kit — design tokens, semantic theme colors, overlay primitives"
+status = "green"
+deps = ["host-model"]
+evidence = [
+  "semantic_app_chrome_colors_follow_host_theme_tokens",
+  "light_theme_detection_tracks_background_luminance",
+  "decode_badge_color_accepts_theme_status_aliases",
+  "component-gallery",
+]
+stints = ["0264"]
+
+[[node]]
+id = "text-editor"
+title = "Text editor core — grapheme-correct editing, undo grouping, soft wrap, code mode"
+status = "green"
+deps = ["ui-kit"]
+evidence = [
+  "backspace_deletes_grapheme_cluster",
+  "combining_diacritics_are_one_cluster",
+  "break_group_splits_undo_steps",
+  "code_mode_tab_indents_and_shift_tab_outdents",
+  "document_maps_source_cursors_to_visual_rows_and_boundaries",
+  "editor-gate-clipboard-undo",
+  "editor-gate-find-replace",
+  "editor-gate-persistence",
+  "editor-gate-unicode",
+]
+stints = []
+
+[[node]]
+id = "notes"
+title = "Notes — frontmatter, wiki + markdown links, live preview, attachments"
+status = "green"
+deps = ["text-editor"]
+evidence = [
+  "parse_note_with_frontmatter",
+  "parse_note_reads_title",
+  "ctrl_enter_activates_markdown_link_at_caret",
+  "ctrl_enter_on_missing_wiki_link_creates_and_opens_note",
+  "notes-live-preview",
+  "notes-links",
+  "notes-image-drop",
+  "notes-agent-drive",
+]
+stints = []
+
+[[node]]
+id = "file-browser"
+title = "File browser — navigation, search, trash, columns, inspector, quick look"
+status = "green"
+deps = ["ui-kit"]
+evidence = [
+  "enter_on_dir_navigates_not_opens",
+  "confirmed_trash_moves_selected_file_into_local_trash",
+  "column_model_round_trips_preferences",
+  "details_columns_keep_enabled_columns_reachable_at_breakpoint_width",
+  "escape_dismisses_quick_look_before_closing_browser",
+  "file-browser-narrow",
+  "file-browser-rename",
+]
+stints = ["0007", "0150"]
+
+[[node]]
+id = "command-palette"
+title = "Command palette and pickers — panes, apps, agents, notes, commands"
+status = "green"
+deps = ["ui-kit", "spatial-navigation"]
+evidence = [
+  "palette_pips_cover_every_window_in_the_context",
+  "pane_rows_sort_current_focus_then_reverse_history_before_spatial_fallback",
+  "notes_picker_refuses_to_delete_open_text_editor_note",
+  "notes_picker_filter_ranks_title_matches_first",
+  "agent_jump_switches_window_context_and_focused_pane_together",
+  "empty_palette_puts_commands_after_apps",
+]
+stints = ["0388"]
+
+[[node]]
+id = "cli-renderer"
+title = "CLI renderer app — descriptor-driven forms over arbitrary CLIs"
+status = "green"
+deps = ["embedded-registry", "app-protocol"]
+evidence = [
+  "loads_descriptor_and_lists_top_level_commands",
+  "navigate_into_leaf_opens_form_with_defaults",
+  "plain_enter_runs_the_form",
+  "requests_linked_terminal_below",
+  "build_command_string_assembles_flags_and_args",
+  "bad_descriptor_path_yields_error_view",
+]
+stints = ["0249"]
+
+# ---------------------------------------------------------------------------
+# Media
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "media-io"
+title = "Audio / MIDI / video device and decoder layer"
+status = "yellow"
+deps = ["typed-pipes"]
+evidence = [
+  "mock_decoder_round_trips_frames",
+  "mock_device_round_trips_pcm_frames",
+  "ump_round_trip_channel_voice",
+  "sample_rate_negotiation_picks_closest_supported",
+  "avf_decoder_open_with_invalid_path_returns_error_not_panic",
+]
+stints = ["0521", "0522"]
+note = "Coverage is mock round-trips plus no-panic smoke on real devices. Frame-accurate seek and PTS (edit-grade decode) do not exist."
+
+[[node]]
+id = "daw"
+title = "DAW engine, model, and bundle — tracks, clips, mixdown, undo"
+status = "green"
+deps = ["media-io", "app-protocol"]
+evidence = [
+  "gate_core_matrix",
+  "gate_deterministic_long_sequence",
+  "gate_randomized_commands",
+  "gate_minimizer_shrinks_reproducible_failures",
+  "gate_serialization_round_trip",
+  "block_size_never_changes_output",
+  "hard_left_pan_silences_right_channel",
+  "full_undo_preserves_monotonic_next_id",
+  "daw_gate_mixdown_determinism",
+  "daw_gate_render_is_block_size_independent",
+  "daw_gate_pane_drive",
+  "daw-gate-bundle",
+]
+stints = []
+
+[[node]]
+id = "video-editor"
+title = "Video editor — timeline UI, frame-accurate preview, export"
+status = "red"
+deps = ["media-io"]
+evidence = []
+stints = ["0522", "0524", "0525", "0526"]
+
+# ---------------------------------------------------------------------------
+# Not started
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "browser-surface"
+title = "Native browser App pane — profiles, context binding, agent automation"
+status = "red"
+deps = ["pane-lifecycle", "capability-broker", "contexts"]
+evidence = []
+stints = ["0480", "0481", "0482", "0483", "0484", "0485", "0486", "0487", "0488", "0489", "0490"]
+note = "Entire chain blocks on the unstarted 0480 WKWebView spike. Nothing is built."
+
+[[node]]
+id = "marketplace-hosted"
+title = "Hosted marketplace — registry, publisher submission, review flow"
+status = "red"
+deps = ["app-lifecycle", "trust-labels"]
+evidence = ["beta_scaffolds_keep_marketplace_placeholder"]
+stints = ["0344", "0358"]
+note = "Placeholder scaffolding only. The listed test proves the placeholder, not a marketplace."
+
+[[node]]
+id = "marketplace-monetization"
+title = "Accounts, payments, entitlements, payouts"
+status = "red"
+deps = ["marketplace-hosted"]
+evidence = []
+stints = ["0322", "0341", "0352", "0353", "0354", "0356"]
+
+[[node]]
+id = "biometric-verification"
+title = "Biometric user-verification effect for high-risk operations"
+status = "red"
+deps = ["capability-broker"]
+evidence = []
+stints = ["0333"]
+
+[[node]]
+id = "acp-client"
+title = "ACP client — hosting third-party coding agents"
+status = "red"
+deps = ["agent-definitions"]
+evidence = []
+stints = ["0395"]
+
+# ---------------------------------------------------------------------------
+# Verification infrastructure
+# ---------------------------------------------------------------------------
+
+[[node]]
+id = "test-harness"
+title = "HostHarness + TOML scene format — headless drive of the real host"
+status = "green"
+deps = ["host-model"]
+evidence = [
+  "add_test_pane_appears_in_snapshot",
+  "click_pane_node_activates_button_and_mutates_guest_view",
+  "click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform",
+  "blurred_window_still_delivers_injected_text_to_active_composer",
+  "correctness_budget_scales_with_load_and_stops_at_the_cap",
+]
+stints = ["0248"]
+
+[[node]]
+id = "ci-gate"
+title = "CI gate — cargo build, cargo test --bin plexi, clippy -D warnings on every PR to alpha"
+status = "yellow"
+deps = ["test-harness"]
+evidence = []
+stints = ["0663", "0660", "0268", "0269"]
+note = "Landed in #2529 and enforcing. Carries one documented skip for a real pre-existing alpha defect (0663) and a two-path CPython bundle strategy whose losing branch is not yet deleted (0660)."
+
+[[node]]
+id = "core-app-verification"
+title = "Standing verification sweep across the maintained core app set"
+status = "red"
+deps = ["test-harness", "app-packs"]
+evidence = []
+stints = ["0590"]
+note = "Individual apps have scenes; there is no sweep that proves the whole core set on a real install."
