@@ -102,7 +102,7 @@ Hard stops:
 - The PR is closed or merged.
 - You are about to edit files before the guard above has passed.
 
-While handling validation feedback, `just install` is banned. Reinstall only with `just pr-install $PR_NUMBER` from `WORKTREE`.
+While handling validation feedback, `just install` is banned. Reinstall only with `just bs-validate-setup $PR_NUMBER`.
 
 ---
 
@@ -144,43 +144,14 @@ If skipping → mark Install row as `skipped — <reason>`, proceed to Step 3 (w
 
 ## Step 2 — Install
 
-**Worktree gate — run this exact sequence. No shortcuts.**
+One recipe owns the mechanics — PR/branch/worktree resolution, the install, and provenance. `just pr-install` resolves and builds the PR's actual head itself (cwd-independent), so there is nothing to hand-derive here:
 
 ```bash
-# 1. Resolve WORKTREE from the alpha root — never from git rev-parse (returns CWD's worktree).
-ALPHA_ROOT=$(git worktree list --porcelain | awk '
-  /^worktree / { path=$2 }
-  /^branch refs\/heads\/alpha$/ { print path; exit }
-')
-test -n "$ALPHA_ROOT" || { echo "HARD STOP: could not resolve alpha worktree"; exit 1; }
-WORKTREE="$ALPHA_ROOT/worktrees/$BRANCH"
-test -d "$WORKTREE" || { echo "HARD STOP: feature worktree not found: $WORKTREE"; exit 1; }
-
-# 2. Verify the worktree is on the right branch before touching anything.
-ACTIVE_BRANCH=$(git -C "$WORKTREE" branch --show-current)
-test "$ACTIVE_BRANCH" = "$BRANCH" || { echo "HARD STOP: worktree branch mismatch: $ACTIVE_BRANCH != $BRANCH"; exit 1; }
-cd "$WORKTREE"
-
-# 3. Run install and capture output to check for actual recompile.
-INSTALL_OUT=$(just pr-install $PR_NUMBER 2>&1)
-echo "$INSTALL_OUT"
-
-# 4. Hard stop if no compile happened — binary would be stale alpha code.
-if ! echo "$INSTALL_OUT" | grep -q "Compiling plexi"; then
-  echo "WARNING: no 'Compiling plexi' in output — binary may be cached from wrong worktree."
-  echo "Forcing recompile..."
-  # Touch every changed file to invalidate cargo's cache for this worktree.
-  git diff --name-only origin/alpha...HEAD | grep '\.rs$' | xargs -I{} touch "$WORKTREE/{}" 2>/dev/null || true
-  INSTALL_OUT=$(just pr-install $PR_NUMBER 2>&1)
-  echo "$INSTALL_OUT"
-  if ! echo "$INSTALL_OUT" | grep -q "Compiling plexi"; then
-    echo "HARD STOP: still no recompile after touch. Binary source is unknown. Do not proceed."
-    exit 1
-  fi
-fi
-
-PR_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= "//' | tr -d '"')
+eval "$(just bs-validate-setup $PR_NUMBER | tee /dev/stderr | grep -E '^(BRANCH|WORKTREE|HEAD)=')"
+PR_VERSION=$(grep '^version' "${WORKTREE:-.}/Cargo.toml" | head -1 | sed 's/.*= "//' | tr -d '"')
 ```
+
+The recipe fails loudly (and publishes a `validate:failed` slot report) when the PR is not open or the install fails — stop and report; never hand-roll the install or fall back to `just install`. Provenance (PR, head sha, worktree) is appended to `~/.plexi-pr-<N>/install.log`.
 
 Wait for completion. The binary is now installed (`$PR_VERSION`). Move immediately to Step 3.
 
@@ -355,7 +326,7 @@ git commit -m "fix: <description>"
 git push
 ```
 
-Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall using the Step 2 worktree gate (verify branch, run install, hard stop if no "Compiling plexi" in output). Never run `just install` during validation. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
+Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall with `just bs-validate-setup $PR_NUMBER` (Step 2). Never run `just install` during validation. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
 
 Append to Ship Log:
 ```markdown
@@ -391,7 +362,7 @@ git commit -m "fix: <description from failure>"
 git push
 ```
 
-Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall using the Step 2 worktree gate (verify branch, run install, hard stop if no "Compiling plexi" in output). Never run `just install` during validation.
+Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall with `just bs-validate-setup $PR_NUMBER` (Step 2). Never run `just install` during validation.
 
 Append to Ship Log:
 ```markdown
@@ -509,9 +480,8 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 - `modify` is only valid if pass criteria not yet met
 - A user reply after a `[TESTING]` block stays inside `/validate-pr` by default, even after context compaction
 - Before any validation fix, rehydrate the PR with Step 0b and move into `WORKTREE`; no edits from repo root
-- `just install` is forbidden during validation; only `just pr-install $PR_NUMBER` from `WORKTREE`
-- Every `just pr-install` must produce a "Compiling plexi" line. If absent, binary is cached from the wrong worktree — hard stop, touch changed files, retry. Do not surface a testing block until the recompile is confirmed.
-- Always resolve `WORKTREE` from `git worktree list --porcelain` + alpha branch match, never from `git rev-parse --show-toplevel` (returns CWD's worktree, which may be wrong after context compaction)
+- `just install` is forbidden during validation; reinstall only via `just bs-validate-setup $PR_NUMBER` (which runs `just pr-install` against the PR's actual head)
+- Always resolve `WORKTREE` from `just bs-validate-setup`'s output (or `git worktree list --porcelain` + alpha branch match), never from `git rev-parse --show-toplevel` (returns CWD's worktree, which may be wrong after context compaction)
 - Never commit or release-bump `alpha`, `beta`, or `main` while handling `pass`, `fail`, or `modify`
 - Attempt count comes from the Ship Log, not arguments
 - Max 3 soft rejects. Hard reject requires explicit confirmation unless user already typed "fail" 3 times.

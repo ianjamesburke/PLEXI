@@ -174,28 +174,15 @@ Stop if the linked issue is closed or already labeled `in progress`, unless this
 
 ## Phase 2 - Claim, Create Worktree, Name Pane
 
-Build a short slug from the task title: lowercase, ASCII, words separated by `-`, no punctuation, max about 8 words.
-
-For fresh work, claim then immediately create the worktree. `stint` owns task state; no git commit is needed:
+For fresh work, one recipe owns the mechanics — alpha clean/synced assertions, worktree mint from alpha HEAD, base verification, slug derivation, and the claim (`stint` owns task state; no git commit is needed):
 
 ```bash
-stint claim <task-id>
+just bs-start <task-id>
 ```
 
-Create the worktree from alpha HEAD:
+Its last output line is the worktree path. On failure it names exactly what is wrong and where — fix that, or run `just bs-reset <task-id>` to wipe the lane and start over. Never hand-roll the `stint claim` / `wtp add` / base-verification sequence.
 
-```bash
-wtp add -b feature/stint-<task-id>-<short-slug> HEAD
-```
-
-Verify the worktree base:
-
-```bash
-git -C worktrees/feature/stint-<task-id>-<short-slug> log --oneline -1
-git log --oneline -1
-```
-
-If the commits differ, delete the new worktree/branch and recreate it before touching code.
+For a multi-task batch (worker mode), pass every id — `just bs-start <id> <id> ...` claims them all and mints the multi-id branch `feature/stint-<id>[-<id>...]-<slug>` that `just merge-pr` resolves.
 
 Name the pane:
 
