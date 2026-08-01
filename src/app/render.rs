@@ -587,7 +587,7 @@ impl PlexiApp {
                     }
                 }
 
-                let ctrl_held = ui.input(|i| i.modifiers.ctrl) && ctx.panes.len() > 1;
+                let ctrl_held = ui.input(|i| i.modifiers.ctrl);
                 {
                     let overlay_log_id = egui::Id::new("pane_id_overlay_on");
                     let was_held: bool =
