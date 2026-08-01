@@ -7,7 +7,6 @@ import json
 import pytest
 
 from plexi_sdk import tools
-from plexi_sdk._theme import theme
 from plexi_sdk.effects import ExposeTools, PersistState, ToolResult
 from plexi_sdk.events import KeyEvent, ToolCall
 from plexi_sdk.ui import Actions, Button, FormField, TextInput
@@ -27,7 +26,6 @@ def test_form_field_composes_a_labeled_input_in_the_declarative_tree() -> None:
     assert node["type"] == "column"
     label, field = node["children"]
     assert label["type"] == "text" and label["text"] == "Item"
-    assert label["color"] == theme.fg
     assert field["type"] == "TextInput"
     assert field["value"] == "milk"
     assert field["placeholder"] == "What needs doing?"

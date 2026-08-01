@@ -2236,13 +2236,13 @@ class FormField(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         req_suffix = " *" if self.required else ""
         ctx.text(x, y, f"{self.label}{req_suffix}",
-                 size=TEXT_HINT, color=theme.fg)
+                 size=TEXT_HINT, color=theme.muted)
         input_y = y + self.LABEL_H + self.LABEL_GAP
         self._input.render(ctx, x, input_y, w, self.height)
 
     def to_node(self) -> dict:
         req_suffix = " *" if self.required else ""
-        label = Text(f"{self.label}{req_suffix}", size=TEXT_HINT, color=theme.fg)
+        label = Text(f"{self.label}{req_suffix}", size=TEXT_HINT, color=theme.muted)
         field_input = TextInput(
             self.id,
             placeholder=self.placeholder,

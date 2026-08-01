@@ -1499,7 +1499,7 @@ impl LivePythonPane {
                     self.pending_click_carry = pending_click;
                 }
                 ui.centered_and_justified(|ui| {
-                    ui.add(python_loading_spinner(colors));
+                    ui.add(egui::Spinner::new());
                 });
                 self.record_render_perf(host_frame_started.elapsed());
                 ui.ctx()
@@ -1551,7 +1551,7 @@ impl LivePythonPane {
                 self.pending_click_carry = pending_click;
             }
             ui.centered_and_justified(|ui| {
-                ui.add(python_loading_spinner(colors));
+                ui.add(egui::Spinner::new());
             });
             self.record_render_perf(host_frame_started.elapsed());
             ui.ctx()
@@ -1617,7 +1617,7 @@ impl LivePythonPane {
                 self.pending_click_carry = pending_click;
             }
             ui.centered_and_justified(|ui| {
-                ui.add(python_loading_spinner(colors));
+                ui.add(egui::Spinner::new());
             });
         }
         self.record_render_perf(host_frame_started.elapsed());
@@ -2692,10 +2692,6 @@ fn scheduler_repaint_after(mode: Option<&str>, fps: Option<u64>) -> std::time::D
 
 fn valid_python_viewport(width: f32, height: f32) -> bool {
     width.is_finite() && height.is_finite() && width > 1.0 && height > 1.0
-}
-
-fn python_loading_spinner(colors: &crate::ui::theme::Colors) -> egui::Spinner {
-    egui::Spinner::new().color(colors.accent)
 }
 
 fn advance_fixed_deadline(
@@ -5102,22 +5098,6 @@ mod tests {
         assert_eq!(python_key_name(egui::Key::Backtick), "`");
         assert_eq!(python_key_name(egui::Key::Comma), ",");
         assert_eq!(python_key_name(egui::Key::Period), ".");
-    }
-
-    #[test]
-    fn python_loading_spinner_paints_with_the_theme_accent() {
-        let colors = crate::ui::theme::Colors::from_config(
-            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("theme preset"),
-        );
-        let ctx = egui::Context::default();
-        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.add(python_loading_spinner(&colors));
-        });
-        let shapes = format!("{:?}", output.shapes);
-        assert!(
-            shapes.contains(&format!("{:?}", colors.accent)),
-            "loading spinner must paint with the active theme's accent token; shapes={shapes}"
-        );
     }
 
     #[test]
