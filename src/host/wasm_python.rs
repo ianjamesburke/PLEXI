@@ -1499,7 +1499,7 @@ impl LivePythonPane {
                     self.pending_click_carry = pending_click;
                 }
                 ui.centered_and_justified(|ui| {
-                    ui.add(egui::Spinner::new());
+                    ui.add(python_loading_spinner(colors));
                 });
                 self.record_render_perf(host_frame_started.elapsed());
                 ui.ctx()
@@ -1551,7 +1551,7 @@ impl LivePythonPane {
                 self.pending_click_carry = pending_click;
             }
             ui.centered_and_justified(|ui| {
-                ui.add(egui::Spinner::new());
+                ui.add(python_loading_spinner(colors));
             });
             self.record_render_perf(host_frame_started.elapsed());
             ui.ctx()
@@ -1588,6 +1588,10 @@ impl LivePythonPane {
             self.perf_ui_render += render_started.elapsed();
             self.perf_canvas_render += result.canvas_time;
             for action in result.actions {
+                log::info!(
+                    "app::{}: emitted UI action at Python host boundary handler={action}",
+                    self.app_id
+                );
                 self.send_to_runtime(&json!({"type": "ui_action", "handler_id": action}));
             }
             for (handler_id, value) in result.value_changes {
@@ -1613,7 +1617,7 @@ impl LivePythonPane {
                 self.pending_click_carry = pending_click;
             }
             ui.centered_and_justified(|ui| {
-                ui.add(egui::Spinner::new());
+                ui.add(python_loading_spinner(colors));
             });
         }
         self.record_render_perf(host_frame_started.elapsed());
@@ -2655,14 +2659,11 @@ fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
             else {
                 return None;
             };
-            // Bare Escape is reserved for the host CloseApp binding (keys.rs,
-            // `BindingContext::AppActive`). Forwarding it to the guest also makes
-            // `handle_key` report `Consumed`, which claims Escape out of the
-            // frame's input buffer before `poll_actions` can fire CloseApp — so
-            // the focused app never closes on Escape. Skip it here, matching the
-            // pre-WASM ProcessApp carve-out. Cmd+Escape (context zoom-out) still
-            // forwards so guests can bind it.
-            if *key == egui::Key::Escape && !modifiers.command {
+            // Command chords are host input, never guest input. This matches
+            // the WASM runtime and remains a defense-in-depth guard if host
+            // routing order changes. Bare Escape is also reserved for the host
+            // CloseApp binding; forwarding it would let `handle_key` claim it.
+            if modifiers.command || *key == egui::Key::Escape {
                 return None;
             }
             Some(json!({
@@ -2691,6 +2692,10 @@ fn scheduler_repaint_after(mode: Option<&str>, fps: Option<u64>) -> std::time::D
 
 fn valid_python_viewport(width: f32, height: f32) -> bool {
     width.is_finite() && height.is_finite() && width > 1.0 && height > 1.0
+}
+
+fn python_loading_spinner(colors: &crate::ui::theme::Colors) -> egui::Spinner {
+    egui::Spinner::new().color(colors.accent)
 }
 
 fn advance_fixed_deadline(
@@ -5100,6 +5105,22 @@ mod tests {
     }
 
     #[test]
+    fn python_loading_spinner_paints_with_the_theme_accent() {
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("theme preset"),
+        );
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.add(python_loading_spinner(&colors));
+        });
+        let shapes = format!("{:?}", output.shapes);
+        assert!(
+            shapes.contains(&format!("{:?}", colors.accent)),
+            "loading spinner must paint with the active theme's accent token; shapes={shapes}"
+        );
+    }
+
+    #[test]
     fn python_key_tap_keeps_press_and_release_in_one_bridge_batch() {
         let raw = crate::app::key_str_to_egui_raw_input("right").expect("right key");
 
@@ -5112,13 +5133,10 @@ mod tests {
         assert_eq!(events[1]["pressed"], false);
     }
 
-    /// Stint 0430: bare Escape is reserved for the host CloseApp binding. It must
-    /// never reach the guest — forwarding it makes `handle_key` report `Consumed`,
-    /// which claims Escape out of the frame buffer before `poll_actions` can fire
-    /// CloseApp, so the focused app never closes. Cmd+Escape (context zoom-out) is
-    /// still delivered so guests can bind it.
+    /// Bare Escape drives CloseApp, and every command chord belongs to the host.
+    /// Python and component-WASM apps must enforce the same boundary.
     #[test]
-    fn python_key_events_skips_bare_escape_but_forwards_cmd_escape() {
+    fn python_key_events_reserves_all_command_chords_for_the_host() {
         let bare_escape = [egui::Event::Key {
             key: egui::Key::Escape,
             physical_key: None,
@@ -5138,9 +5156,22 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::COMMAND,
         }];
-        let forwarded = python_key_events(&cmd_escape);
-        assert_eq!(forwarded.len(), 1, "Cmd+Escape still forwards to the guest");
-        assert_eq!(forwarded[0]["key"], "escape");
+        assert!(
+            python_key_events(&cmd_escape).is_empty(),
+            "command chords belong exclusively to the host"
+        );
+
+        let cmd_d = [egui::Event::Key {
+            key: egui::Key::D,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }];
+        assert!(
+            python_key_events(&cmd_d).is_empty(),
+            "Cmd+D must never arrive at a Python app as bare delete input"
+        );
     }
 
     #[test]

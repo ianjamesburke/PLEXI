@@ -1134,19 +1134,29 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 ///
 /// `input` is a [`crate::app::input_router::PlexiInput`] buffer already taken
 /// out of `ctx` for this frame (stint 0240's ownership-transfer router).
-/// `poll_actions` is the outer, always-first consumer — the global hotkey
-/// allowlist runs before any [`crate::app::FocusKind`] on the focus stack
-/// sees an event, so a global shortcut can never be shadowed by overlay/app
-/// render order.
+/// The host calls this after the focused overlay owner in two passes: Global
+/// and Normal bindings before focused-app key dispatch, then AppActive
+/// bindings afterward. Thus host chords are structurally removed before a
+/// guest runtime can see them, while an app or focused text field still owns
+/// bare Escape before CloseApp.
 pub fn poll_actions(
     input: &mut crate::app::input_router::PlexiInput,
     table: &[BindingEntry],
+    claimed_key_releases: &mut std::collections::HashSet<egui::Key>,
     app_active: bool,
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
+
+    // A host chord owns both edges even if Command is released first and the
+    // matching key-up therefore arrives with no modifiers in a later frame.
+    for key in claimed_key_releases.iter().copied().collect::<Vec<_>>() {
+        if input.consume_key_release(key) {
+            claimed_key_releases.remove(&key);
+        }
+    }
 
     for entry in table {
         match entry.context {
@@ -1180,6 +1190,7 @@ pub fn poll_actions(
             input.consume_key(entry.modifiers, entry.key)
         };
         if triggered {
+            claimed_key_releases.insert(entry.key);
             actions.push(entry.action.clone());
         }
     }
@@ -1199,8 +1210,16 @@ pub fn poll_actions(
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
             if input.consume_key(egui::Modifiers::COMMAND, key) {
+                claimed_key_releases.insert(key);
                 actions.push(Action::SwitchContext(i));
             }
+        }
+    }
+
+    // Also claim a release delivered in the same raw-input batch as its press.
+    for key in claimed_key_releases.iter().copied().collect::<Vec<_>>() {
+        if input.consume_key_release(key) {
+            claimed_key_releases.remove(&key);
         }
     }
 
@@ -1224,11 +1243,16 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         });
         let mut actions = Vec::new();
+        let mut claimed_key_releases = std::collections::HashSet::new();
         let _ = ctx.run_ui(raw, |ui| {
             let ctx = ui.ctx();
             let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
             actions = poll_actions(
-                &mut input, &table, /* app_active */ true, /* keyboard_capture */ false,
+                &mut input,
+                &table,
+                &mut claimed_key_releases,
+                /* app_active */ true,
+                /* keyboard_capture */ false,
                 /* overlay_open */ false, /* shortcuts_overlay_open */ false,
             );
         });

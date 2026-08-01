@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import plexi_sdk as sdk  # noqa: E402
 from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import ExposeTools, PersistState, ToolResult  # noqa: E402
+from plexi_sdk.effects import ExposeTools, PersistState, SetState, ToolResult  # noqa: E402
 from plexi_sdk.events import KeyEvent, ToolCall, UiAction, UiValueChange  # noqa: E402
 
 import todo  # noqa: E402
@@ -26,6 +26,11 @@ def _set_state(values: dict) -> None:
 
 def _persisted(effects: list) -> dict:
     effect = next(effect for effect in effects if isinstance(effect, PersistState))
+    return effect.data
+
+
+def _transient(effects: list) -> dict:
+    effect = next(effect for effect in effects if isinstance(effect, SetState))
     return effect.data
 
 
@@ -66,7 +71,9 @@ def test_add_toggle_and_delete_through_ui_actions() -> None:
     assert adding["adding"] is True
 
     _set_state(adding)
-    draft = _persisted(todo.update(UiValueChange(todo.DRAFT, "Write tests")))
+    draft_effects = todo.update(UiValueChange(todo.DRAFT, "Write tests"))
+    assert not any(isinstance(effect, PersistState) for effect in draft_effects)
+    draft = _transient(draft_effects)
     assert draft["draft"] == "Write tests"
 
     _set_state(draft)
@@ -82,9 +89,10 @@ def test_add_toggle_and_delete_through_ui_actions() -> None:
     assert _persisted(todo.update(KeyEvent("d")))["items"] == []
 
 
-def test_enter_submits_and_escape_cancels_the_add_form() -> None:
+def test_form_submit_is_the_only_enter_path_and_escape_cancels() -> None:
     _set_state({**todo.DEFAULT_TODO_STATE, "adding": True, "draft": "milk"})
-    assert _persisted(todo.update(KeyEvent("enter")))["items"] == [
+    assert todo.update(KeyEvent("enter")) == []
+    assert _persisted(todo.update(UiAction(todo.ADD)))["items"] == [
         {"text": "milk", "done": False}
     ]
 
@@ -105,6 +113,14 @@ def test_add_form_field_autofocuses_so_typing_starts_immediately() -> None:
     _set_state({**todo.DEFAULT_TODO_STATE, "adding": True, "draft": ""})
     inputs = [n for n in _flatten(todo.view()) if n.get("type") == "TextInput"]
     assert [n["autofocus"] for n in inputs] == [True]
+
+
+def test_top_chrome_is_present_in_list_and_add_views() -> None:
+    for adding in (False, True):
+        _set_state({**todo.DEFAULT_TODO_STATE, "adding": adding})
+        root = todo.view().to_node()
+        assert root["children"][0]["type"] == "app_bar"
+        assert root["children"][0]["title"] == "Todo"
 
 
 def test_add_and_cancel_render_as_one_action_row_not_stacked() -> None:

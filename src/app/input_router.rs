@@ -167,6 +167,27 @@ impl PlexiInput {
         }
     }
 
+    /// Consume a key-release edge regardless of its current modifiers. The OS
+    /// may report Command released before the key that completed a host chord,
+    /// so the matching key-up can arrive with `Modifiers::NONE`.
+    pub(crate) fn consume_key_release(&mut self, key: egui::Key) -> bool {
+        if let Some(pos) = self.events.iter().position(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: event_key,
+                    pressed: false,
+                    ..
+                } if *event_key == key
+            )
+        }) {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Return every event still owned by this buffer to `ctx` so consumers
     /// later in the frame (a focused `TextEdit`, `dispatch_app_key_events`,
     /// the terminal widget's own read of `ctx.input()`) see whatever this

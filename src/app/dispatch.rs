@@ -65,6 +65,20 @@ impl PlexiApp {
             ctx.memory_mut(|m| m.data.insert_temp(gate_id, text_surface_focused));
         }
         if text_surface_focused {
+            if input.events().iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    }
+                )
+            }) {
+                log::info!(
+                    "app_keys: pane {pane_id} Enter owned by focused TextInput — raw app KeyEvent suppressed"
+                );
+            }
             return;
         }
         // The app classifies keys from the frame's ownership-transfer buffer

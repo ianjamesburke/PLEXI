@@ -163,7 +163,10 @@ fn classify_key(
     if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::N) {
         return Some(FileBrowserAction::NewFolder);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::R) {
+    // Command chords belong to the host shortcut router. F2 is the
+    // platform-neutral file-manager rename key and cannot collide with pane
+    // rename (Cmd+R).
+    if !in_search && key_pressed_no_repeat(input, egui::Key::F2) && !input.modifiers().any() {
         return Some(FileBrowserAction::Rename);
     }
     if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::C) {
