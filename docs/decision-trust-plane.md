@@ -39,8 +39,8 @@ Required fields:
 - **The question**, in plain language, standing on its own without the filer's context.
 - **The options**, each with what choosing it actually means — not labels, not internal identifiers.
 - **The filer's prediction**: which option it believes is right, and a probability.
-- **Blast radius**, a float.
-- **Category**, naming the kind of judgment this is. Categories are the axis trust is scored on, so this field is what makes trust mean anything.
+- **Blast radius**, a float. (Deferred to the second pass — see Staging. The first-pass record carries only the reserved-category flag.)
+- **Category**, naming the kind of judgment this is. Categories are the axis trust is scored on, so this field is what makes trust mean anything. **Categories are a small declared set in config — not a code enum, not a free-form string.** Free-form fragments scoring into single-use categories nothing ever folds over; a compiled enum needs a release to add one. The set is append-only: a category is never renamed and never deleted, because either orphans every historical record scored under it. Adding one is cheap; the discipline is that it starts small (a handful) and grows only when real decisions don't fit.
 
 **The prediction is the point of the whole record.** Without a prediction logged *before* the answer is known, there is nothing to score, and trust cannot be earned — it could only be asserted. The prototype already works this way: Ian's decision log records a float `confidence` and a `predicted_outcome` at filing time, then records what was actually chosen afterward, precisely so a running success rate exists at all. That prototype's fixed integer axes do not carry forward; its predict-then-record loop is the part that does.
 
@@ -93,6 +93,16 @@ This follows the repo's standing configuration rule, and it matters more here th
 ## 6. The agent creation surface
 
 The destination for `plexi agent` is creating and configuring agents — the one thing the noun should mean, replacing the unrelated referents the mesh appendix inventories. Eventually it is an app rather than a command: memory on or off, tool grants chosen from the centrally enumerated MCP and tool list with pre-approved credentials linked at grant time, an initial permission scope, and an initial trust that is **always low**. Grants come from the enumerated list rather than a typed-in one for the same reason the mesh enumerates capability cards — a hand-written grant list describes an agent nobody verified exists. And creation never sets trust: a creation surface able to set it would be an edit path to a derived number, which is the one thing §3 forbids.
+
+## Staging — the record first, the numbers later
+
+The trust fold has a property that dictates the build order: **it is inert until outcome records exist.** Every agent cold-starts low, so for the first months of operation the ladder resolves exactly as today's prose ladder does — everything rises to the head, reserved categories rise to the human — regardless of how sophisticated the scoring machinery is. Building that machinery first would be building a scale before there is anything to weigh.
+
+**First pass** (what the first sprint builds): the typed decision record with prediction-before-outcome, categories from the declared set, the reserved-category floor, always-rise resolution (worker → head → human, no trust gating), and outcome recording. This alone replaces the prose ladder, makes every judgment call auditable, and starts accumulating the data everything else needs.
+
+**Second pass** (slotted in later, cleanly, because the record already carries the fields): the blast-radius float and the radius→trust threshold mapping (§4), the trust fold itself, and trust-gated auto-resolution. Blast radius in particular is a calibration burden on the filer — agents will estimate it badly at first, and the no-hop-may-lower rule only matters once radii gate anything. It earns its complexity only when there is a fold to feed.
+
+Nothing in the first pass is throwaway: the second pass activates dormant fields, it does not migrate a schema.
 
 ## Non-goals
 
