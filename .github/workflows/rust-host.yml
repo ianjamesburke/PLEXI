@@ -3,8 +3,22 @@ name: Rust host
 on:
   push:
     branches: [alpha]
+    paths-ignore:
+      - '**/*.md'
+      - '.agents/**'
+      - '.claude/**'
+      - 'docs/**'
+      - 'website/**'
+      - '.stint/**'
   pull_request:
     branches: [alpha]
+    paths-ignore:
+      - '**/*.md'
+      - '.agents/**'
+      - '.claude/**'
+      - 'docs/**'
+      - 'website/**'
+      - '.stint/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
