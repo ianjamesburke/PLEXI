@@ -2712,6 +2712,119 @@ mod tests {
         assert_eq!(h.pane_count(), 2);
     }
 
+    /// Holding Control exposes every pane's centered ID, including a window
+    /// with just one pane. The two-pane layout is the control case for the
+    /// same production render path.
+    #[test]
+    fn ctrl_pane_id_overlay_renders_for_single_and_split_layouts() {
+        fn pane_rect(h: &PlexiUiHarness, pane_id: PaneId) -> egui::Rect {
+            h.with_app(|app| {
+                let window = &app.windows[app.active_window];
+                let tile_id = window
+                    .tree
+                    .tiles
+                    .iter()
+                    .find_map(|(tile_id, tile)| {
+                        matches!(tile, egui_tiles::Tile::Pane(id) if *id == pane_id)
+                            .then_some(tile_id)
+                    })
+                    .expect("pane tile");
+                window.tree.tiles.rect(*tile_id).expect("painted pane rect")
+            })
+        }
+
+        fn center_glyph_changed(
+            without_ctrl: &image::RgbaImage,
+            with_ctrl: &image::RgbaImage,
+            pane_rect: egui::Rect,
+        ) -> bool {
+            let center = pane_rect.center();
+            let x_start = (center.x - 20.0).max(0.0) as u32;
+            let x_end = (center.x + 20.0).min(with_ctrl.width() as f32) as u32;
+            let y_start = (center.y - 20.0).max(0.0) as u32;
+            let y_end = (center.y + 20.0).min(with_ctrl.height() as f32) as u32;
+
+            (y_start..y_end).any(|y| {
+                (x_start..x_end).any(|x| without_ctrl.get_pixel(x, y) != with_ctrl.get_pixel(x, y))
+            })
+        }
+
+        let screenshot_dir =
+            std::env::temp_dir().join(format!("plexi-0630-pane-id-overlay-{}", std::process::id()));
+        std::fs::create_dir_all(&screenshot_dir).expect("create screenshot directory");
+        println!("pane ID overlay screenshots: {}", screenshot_dir.display());
+
+        let mut single = PlexiUiHarness::new_sized(900.0, 600.0);
+        single.step();
+        let single_pane = add_focused_pane(&mut single);
+        single.step();
+        let single_off = single.render().expect("single Ctrl-off render");
+        single.harness().input_mut().modifiers = egui::Modifiers::CTRL;
+        single.step();
+        let single_on = single.render().expect("single Ctrl-on render");
+        single_off
+            .save(screenshot_dir.join("single-ctrl-off.png"))
+            .expect("save single Ctrl-off screenshot");
+        single_on
+            .save(screenshot_dir.join("single-ctrl-on.png"))
+            .expect("save single Ctrl-on screenshot");
+        assert!(
+            center_glyph_changed(&single_off, &single_on, pane_rect(&single, single_pane)),
+            "Control must paint the pane ID in a single-pane layout"
+        );
+
+        let mut split = PlexiUiHarness::new_sized(900.0, 600.0);
+        split.step();
+        let first_pane = add_focused_pane(&mut split);
+        let second_pane = add_focused_pane(&mut split);
+        split.with_app_mut(|app| {
+            let window = &mut app.windows[app.active_window];
+            let first_tile = window
+                .tree
+                .tiles
+                .iter()
+                .find_map(|(tile_id, tile)| {
+                    matches!(tile, egui_tiles::Tile::Pane(id) if *id == first_pane)
+                        .then_some(*tile_id)
+                })
+                .expect("first pane tile");
+            let second_tile = window
+                .tree
+                .tiles
+                .iter()
+                .find_map(|(tile_id, tile)| {
+                    matches!(tile, egui_tiles::Tile::Pane(id) if *id == second_pane)
+                        .then_some(*tile_id)
+                })
+                .expect("second pane tile");
+            window.tree.root = Some(
+                window
+                    .tree
+                    .tiles
+                    .insert_horizontal_tile(vec![first_tile, second_tile]),
+            );
+            window.focused_pane = Some(first_tile);
+        });
+        split.step();
+        let split_off = split.render().expect("split Ctrl-off render");
+        split.harness().input_mut().modifiers = egui::Modifiers::CTRL;
+        split.step();
+        let split_on = split.render().expect("split Ctrl-on render");
+        split_off
+            .save(screenshot_dir.join("split-ctrl-off.png"))
+            .expect("save split Ctrl-off screenshot");
+        split_on
+            .save(screenshot_dir.join("split-ctrl-on.png"))
+            .expect("save split Ctrl-on screenshot");
+
+        for pane_id in [first_pane, second_pane] {
+            assert!(
+                center_glyph_changed(&split_off, &split_on, pane_rect(&split, pane_id)),
+                "Control must paint pane {pane_id}'s ID in a split layout"
+            );
+        }
+    }
+
     #[test]
     fn new_context_adds_window() {
         let mut h = PlexiUiHarness::new();
