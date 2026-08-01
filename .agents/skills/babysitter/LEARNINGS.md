@@ -150,3 +150,72 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - falsification: delete if the slot grammar gains a single unambiguous terminal value that cannot collide with an intermediate step.
 - fired: 2026-08-01
 - runs: 0
+
+### L013 — A wake condition gated on high confidence never fires
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: The head's watch loop broke only on `verdict == idle && confidence == high`. Pane 712 at
+  rest reports `idle` / `low` / `unknown` — the normal resting shape of a Codex pane. The condition
+  was unsatisfiable, so the worker answered a head review at ~17:27 and the head would not have
+  learned until its ~17:53 heartbeat cap. Ian walked in on the dead air and asked why everything had
+  stopped. Nothing was broken; the head simply could not see that anything had happened.
+- rule: Break on ANY idle, then disambiguate finished-vs-wedged by reading the buffer. Never let one
+  field be both the trigger and the interpretation. In SKILL.md step 2.
+- falsification: delete if `pane status` gains a trustworthy terminal signal for Codex panes (see
+  L014), at which point the confidence field stops being load-bearing at all.
+- fired: 2026-08-01
+- runs: 0
+
+### L014 — The head has no trustworthy liveness primitive for a Codex pane
+- class: HOST
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: `idle/low/unknown` is what "finished and waiting" looks like AND what "wedged" looks like.
+  Codex panes have no scheduler of their own (SKILL.md "Head liveness"), so an unattended run's entire
+  clock is the head's polling loop. One wrong comparison in that loop stalls the run silently, with
+  every individual component behaving correctly. That is not a wording problem.
+- rule: Filed as a Plexi feature request — a pane liveness primitive the head can trust, same shape as
+  stint 0628 (host-owned job supervisor). Until it lands, every head watch loop is single-point-of-
+  failure infrastructure and gets reviewed as such.
+- falsification: delete when a host-side terminal/liveness signal ships and two consecutive unattended
+  runs complete with no head-side stall.
+- fired: 2026-08-01
+- runs: 0
+
+### L015 — Watch the pane and the PR in the same loop
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: #2555's `test` job FAILED (exit 127, the new roadmap-evidence step) while the head's watch
+  polled only pane slots. The red sat unobserved for ~10 minutes because the pane was legitimately
+  idle the whole time. A lane has two failure surfaces; the head was instrumented on one.
+- rule: Once a `pr` slot exists, every wait iteration also checks `gh pr checks <PR#>`, and a red check
+  wakes the head exactly like a terminal slot does. In SKILL.md step 2.
+- falsification: delete if CI red is ever surfaced to the head by another channel that two consecutive
+  runs prove sufficient.
+- fired: 2026-08-01
+- runs: 0
+
+### L016 — Enumeration-first: a task's "measure the surface" step is a gated deliverable
+- class: RULE
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: 0591 step 1 ("investigate first — measure, don't assume", and confirm rather than trust the
+  task's own notes) and 0703 Done-When #1 (enumerate stable audio/MIDI/video/decoder entry points) were
+  both passed through as prose inside a four-stint batch brief. The worker implemented against an
+  assumed surface, gated four app-open paths, and opened the PR. Only when the head asked for the
+  enumeration did the audit happen — 58m57s — and it invalidated part of the implementation: raw .wasm
+  path-open derives the app id from the FILE STEM and bypasses the manifest-id DAW gate entirely, and
+  the protocol-level media ops (audio capture/playback/device listing, MIDI listing/input/output, video
+  decoder open/state/close) are capability-gated, not release-tier-gated. Both Done-Whens unmet, an hour
+  of rework, bought at full price. The task authors had anticipated this exact failure in the task body.
+- rule: When a stint's own first step is an investigation, require the enumeration posted BEFORE any
+  implementation code, as its own blocked-for-review checkpoint, and rule on it before work starts.
+  Result goes in the PR body verbatim. In SKILL.md "Batch into as few PRs as possible".
+- falsification: delete if two consecutive runs show workers self-selecting enumeration-before-
+  implementation without the clause, making it redundant.
+- fired: 2026-08-01
+- runs: 0
+
+### L002 — RECONCILED 2026-08-01
+Promoted into SKILL.md step 6 (retire at PR-open) on 2026-08-01, two runs after it entered this ledger.
+It sat here unreconciled while three consecutive heads read the note and did not act, which is the
+standing proof that this ledger is written at run end and read by nobody at run start. A rule that
+lives only here is inert. The ledger is the receipt for a rule; SKILL.md is the rule.

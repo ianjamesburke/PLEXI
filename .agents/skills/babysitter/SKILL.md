@@ -24,7 +24,7 @@ You are the wire: Worker → PR → Tester → (bugs) → you → Worker → (fi
 | Role | Tier source | Notes |
 |---|---|---|
 | Head | `[engines].head_tier` | Escalate to large only for a genuine head-level judgment call; log it in `RUN_STATE.md`. |
-| Worker | `[engines].worker_tier` | Large is never a launch default — requires Ian's say-so or a hard-reject after the configured tier has failed. Every fix round runs large regardless of config. |
+| Worker | `[engines].worker_tier` | Large is never a launch default, and never an automatic fix-round escalation either — it requires Ian's say-so or a hard-reject after the configured tier has failed. |
 | Tester | `[engines].tester_tier` | Escalate a fumbling tester via `/model`, same as any pane. |
 | Merge runner | `[engines].merge_runner_tier` | Clean merges only — see step 5. |
 
@@ -143,6 +143,8 @@ Host settles input, presses Enter, confirms, self-heals one collapsed paste. Exi
 
 Group the queue before dispatching. Small/related stints ship in **one** PR — never one-PR-per-stint when they can combine. Parallelize implementation where files don't overlap, but collapse the result into the smallest number of PRs. A **batch**, not a single stint, is the unit of work below.
 
+**Enumeration-first: when a task's own first step is "measure the reachable surface", make it a gated deliverable.** Some stints open with an investigation — *enumerate every stable entry point*, *confirm rather than trust this note*, *measure, don't assume*. That step is not preamble; it is the part of the task a reviewer cannot reconstruct from the diff, and it is where the task's real scope is discovered. Passing it along as prose inside a batch brief does not work: the worker implements against the surface it assumed, and the audit — when it finally happens, under a review question — invalidates the implementation that preceded it. Instead, require the enumeration **posted before any gating code is written**, as its own blocked-for-review checkpoint, and rule on it before implementation starts. Its result also belongs in the PR body verbatim.
+
 ## Spawning an agent pane
 
 ```
@@ -208,6 +210,10 @@ For each **batch**, in order:
 
    Act: progressing → arm another wait. Idle-at-prompt/question/blocked → answer or nudge. Errored/looping → `ctrl+c`, re-orient. Detect "done" by an explicit signal (PR number, "merged"), never silence.
 
+   **Never gate a wake-up on high confidence.** A Codex pane at rest reports `agent_state: idle` with `confidence: low` and `verdict: unknown` — that is what *finished and waiting* looks like, and it is also what *wedged* looks like. A watch loop that breaks only on `verdict == idle && confidence == high` can never fire on such a pane, so the head sleeps to its heartbeat cap while the lane sits answered. Break on **any** idle, then disambiguate finished-vs-wedged by reading the buffer. Same trap as L005 in the other direction: never let a single field be both the trigger and the interpretation.
+
+   **Watch the pane and the PR in the same loop.** A lane has two independent failure surfaces and pane state only covers one. CI can go red while the pane sits legitimately idle, and a loop polling only slots will not see it. Once a `pr` slot exists, every wait iteration checks `gh pr checks <PR#>` too, and a red check wakes the head exactly like a terminal slot does.
+
    **Never sleep on a fixed interval while waiting on a worker/tester** — block on their status transition instead:
    ```
    Bash (run_in_background): until s=$(plexi pane slot read status <id> 2>/dev/null); v=$(plexi pane status <id> 2>/dev/null | jq -r .verdict); \
@@ -242,9 +248,8 @@ For each **batch**, in order:
    - **Brief-induced false FAIL** (tester says the substance is correct but it violates your criterion) → your bug. Never use a mechanical proxy (grep-absence, exact-string-absence, line count) as the pass criterion for a semantic requirement. Read the artifact yourself, overrule on the record, log your error, merge — no fix round.
    - **Derive every pass criterion from the stint's own Done-When**, never your mental model of the surrounding problem. Not in the task body → it's either a regression check (state it as one) or a separate finding (file a follow-up stint, don't gate this PR on it).
    - **Bugs found** → fix-round protocol on the worker, in order:
-     1. `/compact` the worker, wait for terminal slot state.
-     2. Escalate to the large tier if not already there (`grep -E "alias (cl|col)=" ~/dotfiles/zshrc` for the model name).
-     3. Relay the tester report verbatim:
+     1. Spawn a fresh worker pane at the configured tier (the previous one was retired at PR-open). Stay on the configured tier — a fix round is not grounds to escalate to large; that needs Ian's say-so or a hard-reject.
+     2. Relay the tester report verbatim:
         > "Tester found these on PR #`<PR#>`: <bug list>. Do NOT quick-fix patch this — find the root cause, fix that, and if the right fix is a real refactor, propose it before patching. Determine whether each bug is caused by your change or pre-existing on alpha (prove pre-existing with a baseline repro). Verify with the closest automated/headless repro, satisfy the Worker Mode gate again, push, reply with the commit and a one-line root-cause statement."
      Proven pre-existing on alpha → drop from this PR's gate, file a follow-up stint, don't scope-creep.
      Worker reports fixed → close the old tester pane, open a new one (same tier), targeted re-check only:
@@ -272,12 +277,15 @@ For each **batch**, in order:
    stint show <ID>                             # expect done, every id
    ```
 
-6. **Retire the worker after every task.** A worker's context degrades with each task it carries — re-reads files, misses instructions, reasons from stale tasks. When a batch is done (merged or abandoned): close the pane, spawn a brand-new one for the next batch.
+6. **Retire the worker at PR-open, not at merge.** Once its PR is open and CI is green a worker has nothing left to do, and an idle pane with a build gate in its muscle memory re-enters that gate on any nudge. Close it:
    ```
    plexi pane close <worker-id>
+   ```
+   The worktree survives the close intact, so a fix round costs one fresh spawn and nothing else. Spawn the next worker only when there is real work — a fix round, or the next batch:
+   ```
    plexi pane new -n "worker-<N+1>" --agent <worker tier alias>
    ```
-   Brief the successor with distilled state (PR numbers, results, decisions, gotchas) — never rely on "warm repo knowledge" to justify keeping a pane alive. Retire only at the clean boundary — never mid-task; fix rounds use `/compact` in place instead (step 4). Testers: same rule, fresh pane per validation, closed after each verdict.
+   Brief every successor with distilled state (PR numbers, results, decisions, gotchas) — never rely on "warm repo knowledge" to justify keeping a pane alive. Testers: same rule, fresh pane per validation, closed after each verdict.
 
 7. **Hand off the head after every merge.** See "Head handoff" below.
 
