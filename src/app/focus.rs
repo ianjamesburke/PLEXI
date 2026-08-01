@@ -1070,10 +1070,6 @@ impl PlexiApp {
         self.binding_table = crate::host::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
-        // Reset so the auto-switch re-evaluates against the current system theme (#1776, #1812).
-        // Without this, a config reload that restores a disk preset would leave
-        // last_system_theme unchanged, silently suppressing the auto-switch.
-        self.last_system_theme = None;
         log::info!(
             "Configuration reloaded from disk. active_workspace={}",
             active_workspace
@@ -1082,49 +1078,26 @@ impl PlexiApp {
         );
     }
 
-    /// Auto-switch to the paired preset for `system_theme`.
-    /// No-ops if the configured preset has no paired variant (e.g. nord, dracula).
-    pub(super) fn apply_auto_theme(&mut self, system_theme: egui::Theme) {
-        let current_preset = self
-            .config
-            .theme
-            .as_ref()
-            .and_then(|t| t.preset.as_deref())
-            .unwrap_or("");
-        let Some(new_preset) = crate::ui::theme::paired_preset(current_preset, system_theme) else {
-            return;
-        };
-        log::info!("theme: auto-switch to {new_preset} (system_theme={system_theme:?})");
-        if let Some(preset) = crate::ui::theme::preset_colors(new_preset) {
-            let user_theme = self.config.theme.clone().unwrap_or_default();
-            let theme_cfg = crate::ui::theme::apply_preset(&preset, &user_theme);
-            let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
-            if self.colors != new_colors {
-                self.colors = new_colors;
-                let dark_mode = !crate::ui::theme::is_light_preset(new_preset);
-                crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
-                let window_theme = if dark_mode {
-                    egui::SystemTheme::Dark
-                } else {
-                    egui::SystemTheme::Light
-                };
-                self.ctx
-                    .send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
-                self.theme = crate::ui::theme::terminal_theme(&theme_cfg);
-                self.broadcast_theme_event();
-            }
-        }
-    }
-
     /// Push the current host `Colors` to every running app as a `Theme` event.
-    /// Called after `self.colors` is updated — both on config hot-reload and on
-    /// macOS system-appearance change — so apps never need to poll for theme changes.
-    fn broadcast_theme_event(&mut self) {
+    /// Called after `self.colors` is updated on config hot-reload.
+    pub(crate) fn broadcast_theme_event(&mut self) {
         let event = crate::app_protocol::PlexiEvent::Theme {
             colors: self.colors.to_theme_map(),
         };
-        let _ = event;
-        log::info!("theme: broadcast Theme event to all running apps");
+        let mut delivered = 0;
+        for window in &mut self.windows {
+            for pane in window.panes.values_mut() {
+                if let Some(app) = pane.as_app_mut() {
+                    app.runtime.queue_outbound_event(event.clone());
+                    delivered += 1;
+                }
+            }
+        }
+        for (_, app) in self.background_apps.values_mut() {
+            app.queue_outbound_event(event.clone());
+            delivered += 1;
+        }
+        log::info!("theme: broadcast Theme event to {delivered} running apps");
     }
 
     /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors

@@ -45,6 +45,12 @@ pub(crate) fn python_launch_config_from_parts(
         workspace_root: app_dir.to_path_buf(),
         capabilities: capabilities.to_vec(),
         allowed_hosts: allowed_hosts.to_vec(),
+        theme: crate::ui::theme::colors_from_config(
+            &crate::config::PlexiConfig::load_with_workspace(
+                crate::config::active_workspace_root().as_deref(),
+            ),
+        )
+        .to_theme_map(),
     }
 }
 

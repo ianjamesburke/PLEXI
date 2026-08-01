@@ -319,6 +319,7 @@ pub struct PythonLaunchConfig {
     pub workspace_root: PathBuf,
     pub capabilities: Vec<String>,
     pub allowed_hosts: Vec<String>,
+    pub theme: std::collections::HashMap<String, String>,
 }
 
 impl PythonLaunchConfig {
@@ -365,7 +366,37 @@ impl PythonLaunchConfig {
             workspace_root: app_dir.to_path_buf(),
             capabilities: manifest.app.capabilities.capabilities,
             allowed_hosts: manifest.app.capabilities.allowed_hosts,
+            theme: crate::ui::theme::colors_from_config(
+                &crate::config::PlexiConfig::load_with_workspace(Some(app_dir)),
+            )
+            .to_theme_map(),
         }))
+    }
+}
+
+fn python_init_payload(
+    config: &PythonLaunchConfig,
+    state: Value,
+    size: (f32, f32),
+) -> Value {
+    json!({
+        "type": "init",
+        "app_id": config.app_id,
+        "workspace_root": config.workspace_root,
+        "capabilities": config.capabilities,
+        "state": state,
+        "theme": config.theme,
+        "args": config.launch_args,
+        "size": [size.0, size.1],
+    })
+}
+
+fn cache_python_theme_for_relaunch(
+    config: &mut PythonLaunchConfig,
+    event: &crate::app_protocol::PlexiEvent,
+) {
+    if let crate::app_protocol::PlexiEvent::Theme { colors } = event {
+        config.theme.clone_from(colors);
     }
 }
 
@@ -569,16 +600,11 @@ impl HeadlessPythonSession {
         seed_state: Option<Value>,
     ) -> Result<Self, WasmPythonError> {
         let runtime = WasmPythonRuntime::launch(config)?;
-        runtime.send(&json!({
-            "type": "init",
-            "app_id": config.app_id,
-            "workspace_root": config.workspace_root,
-            "capabilities": config.capabilities,
-            "state": seed_state,
-            "theme": {},
-            "args": config.launch_args,
-            "size": [size.0, size.1],
-        }))?;
+        runtime.send(&python_init_payload(
+            config,
+            seed_state.unwrap_or(Value::Null),
+            size,
+        ))?;
         let mut session = Self {
             runtime,
             last_tree: None,
@@ -1508,13 +1534,11 @@ impl LivePythonPane {
             }
             self.initialized = true;
             self.viewport_size = Some((size.x, size.y));
-            if let Err(error) = self.runtime.send(&json!({
-                "type": "init", "app_id": self.app_id,
-                "workspace_root": self.config.workspace_root,
-                "capabilities": self.config.capabilities, "state": self.persisted_state, "theme": {},
-                "args": self.config.launch_args,
-                "size": [size.x, size.y]
-            })) {
+            if let Err(error) = self.runtime.send(&python_init_payload(
+                &self.config,
+                Value::Object(self.persisted_state.clone()),
+                (size.x, size.y),
+            )) {
                 self.error = Some(error.to_string());
                 if pending_click.is_some() {
                     log::error!(
@@ -2298,6 +2322,7 @@ impl LivePythonPane {
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+        cache_python_theme_for_relaunch(&mut self.config, &event);
         match encode_python_host_event(event) {
             Ok(value) => {
                 if let Err(error) = self.runtime.send(&value) {
@@ -4269,7 +4294,49 @@ mod tests {
             workspace_root: workspace_root.to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(
+                &crate::config::PlexiConfig::default(),
+            )
+            .to_theme_map(),
         }
+    }
+
+    #[test]
+    fn python_init_payload_carries_the_active_host_theme() {
+        let workspace = tempdir().expect("workspace");
+        let mut config = state_test_config(workspace.path(), "test.theme-init");
+        config.theme = std::collections::HashMap::from([
+            ("fg".to_string(), "#123456".to_string()),
+            ("bg".to_string(), "#abcdef".to_string()),
+        ]);
+
+        let payload = python_init_payload(&config, json!({}), (480.0, 320.0));
+
+        assert_eq!(payload["theme"], json!(config.theme));
+        assert!(
+            payload["theme"]
+                .as_object()
+                .is_some_and(|theme| !theme.is_empty())
+        );
+    }
+
+    #[test]
+    fn theme_event_updates_the_cached_python_relaunch_theme() {
+        let workspace = tempdir().expect("workspace");
+        let mut config = state_test_config(workspace.path(), "test.theme-relaunch");
+        let colors = std::collections::HashMap::from([(
+            "fg".to_string(),
+            "#123456".to_string(),
+        )]);
+
+        cache_python_theme_for_relaunch(
+            &mut config,
+            &crate::app_protocol::PlexiEvent::Theme {
+                colors: colors.clone(),
+            },
+        );
+
+        assert_eq!(config.theme, colors);
     }
 
     /// Stint 0678 audit evidence (Q2/Q5): two live instances of one app under
@@ -5504,13 +5571,14 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(
+                &crate::config::PlexiConfig::default(),
+            )
+            .to_theme_map(),
         };
         let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
         runtime
-            .send(&json!({
-                "type": "init", "app_id": config.app_id, "workspace_root": "/",
-                "capabilities": [], "state": {}, "theme": {}
-            }))
+            .send(&python_init_payload(&config, json!({}), (480.0, 320.0)))
             .expect("send init");
         runtime
             .send(&json!({"type": "render", "frame_id": 1}))
@@ -5626,6 +5694,10 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(
+                &crate::config::PlexiConfig::default(),
+            )
+            .to_theme_map(),
         };
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
         let mut runtime = crate::host::pane::AppRuntime::Python(Box::new(
@@ -5709,6 +5781,10 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(
+                &crate::config::PlexiConfig::default(),
+            )
+            .to_theme_map(),
         };
         let err = run_headless_frame(&config, (480.0, 320.0), None)
             .expect_err("an entry that raises at import must fail the headless probe");

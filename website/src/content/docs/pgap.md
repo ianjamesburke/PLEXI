@@ -147,6 +147,17 @@ Post a notification. All three action_types must dispatch correctly (no TODO).
 | `timeout_secs` | `integer?` | no |
 | `title` | `string` | yes |
 
+### `dismiss_notification`
+
+Remove a notification posted by the caller. The host verifies the caller identity against the notification's stamped ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `notify_id` | `string` | yes |
+| `response_file` | `string` | yes |
+| `source_context_id` | `integer?` | no |
+| `source_pane_id` | `integer?` | no |
+
 ### `set_agent_state`
 
 Report agent state for a pane. Called by hook scripts via `plexi agent report`.
@@ -416,6 +427,19 @@ Write text to a running pane's PTY stdin. Sent by `plexi pane send`. `\n` in tex
 | `response_file` | `string?` | no |
 | `submit` | `boolean` | no |
 | `text` | `string` | yes |
+
+### `pane_heartbeat`
+
+Configure or disable a host-owned recurring terminal prompt.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `every_ms` | `integer?` | no |
+| `off` | `boolean` | no |
+| `pane_id` | `integer` | yes |
+| `response_file` | `string?` | no |
+| `text` | `string?` | no |
+| `while_idle_only` | `boolean?` | no |
 
 ### `key_pane`
 
@@ -1179,7 +1203,7 @@ Typed pipe message (JSON mode only; binary mode travels on the side channel).
 
 ### `path_changed`
 
-Pane group CWD broadcast. Apps in the same group receive this when any member's CWD changes.
+Pane group CWD broadcast. **Declared, never constructed** — no host path emits this today; `sync_app_cwd` reassigns `...
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -1205,7 +1229,7 @@ App is being closed. Process must exit within a short timeout.
 
 ### `theme`
 
-Host theme changed (config hot-reload or macOS system appearance toggle). App should update its color state; the next...
+Host theme changed through Plexi configuration. App should update its color state; the next render will pick up the n...
 
 | Field | Type | Required |
 |-------|------|----------|

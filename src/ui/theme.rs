@@ -227,7 +227,11 @@ impl Colors {
 /// preset). Shared by the GUI and the headless `app render` path.
 pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
     let user_theme = config.theme.clone().unwrap_or_default();
-    let cfg = match config.theme.as_ref().and_then(|t| t.preset.as_deref()) {
+    let preset_name = user_theme
+        .preset
+        .as_deref()
+        .or(config.theme_preset.as_deref());
+    let cfg = match preset_name {
         Some(preset_name) => match preset_colors(preset_name) {
             Some(preset) => apply_preset(&preset, &user_theme),
             None => user_theme,
@@ -258,15 +262,15 @@ fn hex_to_bytes(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
 fn canonical_preset_name(name: &str) -> Option<&'static str> {
     let normalized = name.trim().to_lowercase().replace([' ', '_'], "-");
     match normalized.as_str() {
-        "catppuccin" | "catppuccin-mocha" | "mocha" => Some("catppuccin-mocha"),
+        "catppuccin-mocha" | "mocha" => Some("catppuccin-mocha"),
         "catppuccin-latte" | "latte" => Some("catppuccin-latte"),
         "dracula" => Some("dracula"),
-        "tokyo-night" | "tokyonight" | "tokyo" => Some("tokyo-night"),
+        "tokyo-night" => Some("tokyo-night"),
         "tokyo-day" | "tokyonight-day" => Some("tokyo-day"),
-        "gruvbox" | "gruvbox-dark" => Some("gruvbox-dark"),
+        "gruvbox-dark" => Some("gruvbox-dark"),
         "gruvbox-light" => Some("gruvbox-light"),
         "nord" => Some("nord"),
-        "solarized" | "solarized-dark" => Some("solarized-dark"),
+        "solarized-dark" => Some("solarized-dark"),
         "solarized-light" => Some("solarized-light"),
         "matrix" => Some("matrix"),
         "bios" | "retro" | "retro-bios" => Some("bios"),
@@ -286,29 +290,6 @@ pub fn is_light_preset(name: &str) -> bool {
             | Some("tokyo-day")
             | Some("plexi-day")
     )
-}
-
-/// Returns the paired preset for auto-style family aliases under
-/// `system_theme`, or `None` for explicit variants. `catppuccin` may follow
-/// the OS; `catppuccin-latte` and `catppuccin-mocha` mean exactly that flavor.
-pub fn paired_preset(name: &str, system_theme: egui::Theme) -> Option<&'static str> {
-    let normalized = name.trim().to_lowercase().replace([' ', '_'], "-");
-    match system_theme {
-        egui::Theme::Dark => match normalized.as_str() {
-            "catppuccin" => Some("catppuccin-mocha"),
-            "solarized" => Some("solarized-dark"),
-            "gruvbox" => Some("gruvbox-dark"),
-            "tokyo" | "tokyonight" => Some("tokyo-night"),
-            _ => None,
-        },
-        egui::Theme::Light => match normalized.as_str() {
-            "catppuccin" => Some("catppuccin-latte"),
-            "solarized" => Some("solarized-light"),
-            "gruvbox" => Some("gruvbox-light"),
-            "tokyo" | "tokyonight" => Some("tokyo-day"),
-            _ => None,
-        },
-    }
 }
 
 /// Returns the list of available preset names.
@@ -1263,17 +1244,17 @@ mod tests {
     }
 
     #[test]
-    fn explicit_catppuccin_variants_do_not_auto_flip() {
-        assert_eq!(paired_preset("catppuccin-latte", egui::Theme::Dark), None);
-        assert_eq!(paired_preset("catppuccin-mocha", egui::Theme::Light), None);
-        assert_eq!(
-            paired_preset("catppuccin", egui::Theme::Light),
-            Some("catppuccin-latte")
-        );
-        assert_eq!(
-            paired_preset("catppuccin", egui::Theme::Dark),
-            Some("catppuccin-mocha")
-        );
+    fn concrete_light_presets_remain_selectable() {
+        for name in [
+            "catppuccin-latte",
+            "solarized-light",
+            "gruvbox-light",
+            "tokyo-day",
+            "plexi-day",
+        ] {
+            assert!(preset_colors(name).is_some(), "missing light preset {name}");
+            assert!(is_light_preset(name), "{name} must be classified as light");
+        }
     }
 
     #[test]

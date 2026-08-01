@@ -223,6 +223,7 @@ class V3AppRuntime:
         elif t == "theme":
             from ._theme import theme as _theme
             _theme.update_from(ev.get("colors"))
+            _emit({"type": "schedule_render", "after_ms": 16})
         elif t == "inject_state":
             payload = ev.get("payload") or {}
             if isinstance(payload, dict):

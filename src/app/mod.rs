@@ -452,8 +452,6 @@ pub struct PlexiApp {
     /// Written on every heartbeat and on clean pane transitions; deleted on
     /// clean shutdown. If present at startup → emit crash_recovery event.
     pub(crate) focus_journal_path: std::path::PathBuf,
-    /// Last observed system theme for auto-switching catppuccin variants (#1776).
-    pub(crate) last_system_theme: Option<egui::Theme>,
     /// App commands held while a modal overlay owns keyboard input. Released and
     /// dispatched on the first frame where `input_captured_by_overlay()` is false.
     /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
@@ -1487,7 +1485,6 @@ impl PlexiApp {
                     focus_started_at: None,
                     terminal_traversal_lock: None,
                     focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
-                    last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai),
                     pending_pane_clicks: HashMap::new(),
@@ -1747,7 +1744,6 @@ impl PlexiApp {
             focus_started_at: None,
             terminal_traversal_lock: None,
             focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
-            last_system_theme: None,
             overlay_held_cmds: Vec::new(),
             agent_host,
             pending_pane_clicks: HashMap::new(),
@@ -2196,7 +2192,6 @@ impl PlexiApp {
                 focus_started_at: None,
                 terminal_traversal_lock: None,
                 focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
-                last_system_theme: None,
                 overlay_held_cmds: Vec::new(),
                 agent_host: crate::agent::AgentHost::inert(),
                 pending_pane_clicks: HashMap::new(),
@@ -3382,15 +3377,6 @@ impl eframe::App for PlexiApp {
         });
         if config_changed {
             self.reload_config();
-        }
-
-        // Auto-switch paired theme variant on macOS appearance change (#1776, #1812).
-        let current_system_theme = self.ctx.system_theme();
-        if current_system_theme != self.last_system_theme {
-            self.last_system_theme = current_system_theme;
-            if let Some(sys_theme) = current_system_theme {
-                self.apply_auto_theme(sys_theme);
-            }
         }
 
         // App registry hot-reload (#1712): drain filesystem watcher signals.
