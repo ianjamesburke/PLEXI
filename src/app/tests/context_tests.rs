@@ -2789,3 +2789,115 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
         "return window must be the caller's, not the globally active one"
     );
 }
+
+// ── Stint 0678 audit evidence ────────────────────────────────────────────────
+// Part of the reproduction half of the context-scoped state persistence audit
+// (docs/context-state-persistence-audit.md). The rest of the audit's evidence
+// lives in `host::wasm_python::tests::audit_0678`, next to the function that
+// computes a state address; that module's doc comment carries the assertion
+// discipline every audit test follows.
+
+/// Q1: nothing rejects two contexts pointing at the same root. `set_context_root`
+/// has no uniqueness check, and `new_context_empty` anchors every new context at
+/// the home directory, so duplicates are the default outcome rather than an edge
+/// case. Every context-scoped state path derived from a shared root collides.
+#[test]
+fn audit_0678_two_contexts_accept_the_same_root() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let shared = tempfile::tempdir().expect("shared root");
+    let second_ctx_id = 4242;
+    app.router.push(crate::host::context::Context {
+        name: "Second".into(),
+        path: shared.path().to_path_buf(),
+        root: None,
+        description: None,
+        context_id: second_ctx_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+
+    let first_ctx_id = app.router.get(0).context_id;
+    app.set_context_root(shared.path().to_path_buf(), Some(first_ctx_id));
+    app.set_context_root(shared.path().to_path_buf(), Some(second_ctx_id));
+
+    let roots: Vec<_> = app.router.iter().map(|c| c.root.clone()).collect();
+    assert_eq!(
+        roots,
+        vec![
+            Some(shared.path().to_path_buf()),
+            Some(shared.path().to_path_buf())
+        ],
+        "set_context_root accepts a root already held by another context"
+    );
+}
+
+/// Q1, second half: a sub-context created from the keyboard inherits the
+/// parent's `path`, not its `root`. Nothing keeps the two fields in sync —
+/// `set_context_root` writes only `root` — so after a set-root the child is
+/// anchored at the directory the parent was *created* in, which is neither the
+/// parent's current root nor anything the user chose.
+#[test]
+fn audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let created_at = app.router.get(0).path.clone();
+    let moved = tempfile::tempdir().expect("new root");
+    let parent_id = app.router.get(0).context_id;
+    app.set_context_root(moved.path().to_path_buf(), Some(parent_id));
+    assert_eq!(
+        app.router.get(0).path,
+        created_at,
+        "precondition: set_context_root leaves `path` untouched"
+    );
+
+    // The divergence itself is observable without creating anything, and it is
+    // the necessary condition for the defect: `root` moved, `path` did not.
+    // Asserted before the child exists so this test still carries evidence in a
+    // PTY-less environment, where the child is never created — an audit test
+    // that returns early asserting nothing is exactly the vacuity this round
+    // exists to remove.
+    assert_eq!(
+        app.router.get(0).root.as_deref(),
+        Some(moved.path()),
+        "the parent's root moved"
+    );
+    assert_ne!(
+        app.router.get(0).path,
+        moved.path().to_path_buf(),
+        "but its `path` still names the directory it was created in — the two \
+         fields have diverged, and sub-context creation reads the stale one"
+    );
+
+    let before = app.router.len();
+    app.new_child_context_from_keyboard();
+    if app.router.len() == before {
+        // No PTY: the child is never created. The divergence asserted above is
+        // the whole of what this environment can observe, and it has been.
+        return;
+    }
+
+    let child_root = app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .and_then(|c| c.root.clone())
+        .expect("the child context is rooted");
+    // The pair a fix must reconcile: the child took the stale creation-time
+    // path, and that is not the root its parent actually has.
+    assert_eq!(
+        child_root, created_at,
+        "the child inherited the parent's creation-time path"
+    );
+    assert_ne!(
+        child_root,
+        moved.path().to_path_buf(),
+        "and therefore not the parent's current root — every context-scoped \
+         address the child derives points at a directory the user re-rooted away from"
+    );
+}

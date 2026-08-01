@@ -21,6 +21,8 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
 | `assistant-host-app.md` | Host assistant app spec | see file |
 | `browser-surface.md` | Native browser App pane, profiles, context binding, automation, and live validation | see file |
+| `context-root-uniqueness-and-rollup.md` | Duplicate-root hard stop + parent-dir todo rollup — design brief awaiting a ruling | 0679 |
+| `context-state-persistence-audit.md` | Why context-scoped app state does not survive a restart — findings and evidence | 0678 |
 | `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
 | `marketplace-monetization.md` | Accounts, payments, no-license commercial model | 0338–0341, 0322 |
 | `notes-editor.md` | Native Notes editor, Live Preview, links, attachments, and agent validation | see file |

@@ -4692,6 +4692,369 @@ mod tests {
         );
     }
 
+    /// Stint 0678 audit evidence (Q2/Q5): two live instances of one app under
+    /// the same root address one file, and the loser is the instance that
+    /// persists *last* with the older in-memory map — not the one that wrote
+    /// the stale bytes first. Replays the exact host sequence: each instance
+    /// loads at launch (`load_python_state`), then persists its own map through
+    /// the same writer `save_state` uses (`write_python_state_atomic`).
+    ///
+    /// Assertion discipline for every `audit_0678_*` test: see the comment on
+    /// the `audit_0678` module below.
+    #[test]
+    fn audit_0678_second_instance_clobbers_the_first_instances_items() {
+        // Isolate `config_dir()` so the global-state fallback in
+        // `load_python_state` resolves inside a tempdir, never the real profile.
+        let profile = tempdir().expect("profile");
+        let _profile = crate::config::set_test_profile_dir(profile.path().join("profile"));
+        let workspace = tempdir().expect("workspace");
+        let first = state_test_config(workspace.path(), "todo");
+        let second = state_test_config(workspace.path(), "todo");
+        assert_eq!(
+            python_state_path(&first),
+            python_state_path(&second),
+            "instance identity does not enter the state path — only app_id and workspace_root do"
+        );
+
+        // Both instances launch against an empty store and hold their own copy.
+        let mut first_state = load_python_state(&first).expect("first launch load");
+        let second_state = load_python_state(&second).expect("second launch load");
+        assert!(first_state.is_empty() && second_state.is_empty());
+
+        // The user adds an item in the first instance; it persists.
+        first_state.insert("items".to_string(), json!(["buy milk"]));
+        let path = python_state_path(&first);
+        std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
+        write_python_state_atomic(
+            &path,
+            &serde_json::to_vec_pretty(&first_state).expect("serialize"),
+        )
+        .expect("first persist");
+        assert_eq!(
+            load_python_state(&second).expect("readback")["items"],
+            json!(["buy milk"])
+        );
+
+        // The second instance persists anything at all — a draft keystroke is
+        // enough — and writes the empty item list it has held since launch.
+        write_python_state_atomic(
+            &path,
+            &serde_json::to_vec_pretty(&second_state).expect("serialize"),
+        )
+        .expect("second persist");
+
+        let survivor = load_python_state(&first).expect("post-clobber load");
+        assert!(
+            survivor.get("items").is_none(),
+            "the second instance's launch-time map overwrote the item: {survivor:?}"
+        );
+    }
+
+    /// Stint 0678 audit evidence (Q4/Q5): state is addressed by
+    /// `workspace_root`, so the same app id launched under a different root
+    /// reads a different file and sees nothing. Nothing merges the two, and
+    /// nothing warns — this is the "write to a path nobody reads" shape.
+    #[test]
+    fn audit_0678_state_written_under_one_root_is_invisible_under_another() {
+        let profile = tempdir().expect("profile");
+        let _profile = crate::config::set_test_profile_dir(profile.path().join("profile"));
+        let root_a = tempdir().expect("root a");
+        let root_b = tempdir().expect("root b");
+        let under_a = state_test_config(root_a.path(), "todo");
+        let under_b = state_test_config(root_b.path(), "todo");
+
+        let path_a = python_state_path(&under_a);
+        std::fs::create_dir_all(path_a.parent().expect("state parent")).expect("mkdir");
+        write_python_state_atomic(&path_a, br#"{"items":["buy milk"]}"#).expect("persist under A");
+
+        assert_eq!(
+            load_python_state(&under_a).expect("load under A")["items"],
+            json!(["buy milk"])
+        );
+        assert!(
+            load_python_state(&under_b).expect("load under B").is_empty(),
+            "a launch rooted elsewhere sees an empty store, not the items"
+        );
+        assert!(
+            !python_state_path(&under_b).exists(),
+            "reading under root B does not create or migrate anything"
+        );
+    }
+
+    /// Stint 0678 audit evidence that needs a *live* app: a real CPython-WASM
+    /// pane launched through the production path, so the copy of the root that
+    /// actually owns the state path — `PythonLaunchConfig::workspace_root` —
+    /// is the one under test.
+    ///
+    /// **Assertion discipline.** Two earlier audit tests in this set passed
+    /// whether or not the defect existed. Both had the same shape: they
+    /// asserted an *implementation site's current value* — a private helper
+    /// returning `None`, a struct field that had not changed — instead of an
+    /// invariant. A fix is free to add a new code path and leave that site
+    /// exactly as it was, so such a test cannot tell a fixed system from a
+    /// broken one, and its green tick is worth nothing to the doc that cites
+    /// it.
+    ///
+    /// Every test here therefore asserts the **pair a fix must reconcile**:
+    /// the stale value *and* its disagreement with the live source of truth it
+    /// is supposed to equal. A fix must change one half or the other, so the
+    /// pair cannot survive one. `assert_state_address_lost` is the sanctioned
+    /// form for the address shape, and refuses to pass unless bytes genuinely
+    /// exist to be stranded — an empty fixture cannot fake a loss.
+    mod audit_0678 {
+        use super::*;
+
+        /// Fails unless an app's persisted bytes are genuinely stranded:
+        /// `live` must hold real bytes, and `reachable` — the address the
+        /// system can still resolve after the operation under test — must be
+        /// a different, empty location. Fixing the defect makes the two agree,
+        /// which fails this assertion by design.
+        fn assert_state_address_lost(live: &Path, reachable: &Path, what: &str) {
+            assert!(
+                live.is_file(),
+                "audit precondition failed for {what}: no bytes at {} to lose",
+                live.display()
+            );
+            assert_ne!(
+                reachable,
+                live,
+                "{what}: the system still resolves the address the bytes are at — \
+                 the defect this test documents no longer reproduces"
+            );
+            assert!(
+                !reachable.is_file(),
+                "{what}: the address the system resolves holds bytes of its own at {}",
+                reachable.display()
+            );
+        }
+
+        /// A minimal but real Python app: a manifest the registry accepts and a
+        /// `.py` entry, which is all `LivePythonPane::launch` needs to start a
+        /// runtime. The guest never has to render for the addressing questions
+        /// this module asks.
+        fn write_python_app(parent: &Path, app_id: &str) -> PathBuf {
+            let app_dir = parent.join(app_id);
+            std::fs::create_dir_all(&app_dir).expect("app dir");
+            std::fs::write(
+                app_dir.join("manifest.toml"),
+                format!(
+                    "schema_version = 1\n\n[app]\nid = \"{app_id}\"\ntype = \"app\"\n\
+                     name = \"{app_id}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n\
+                     \n[runtime]\npython_compat = true\n"
+                ),
+            )
+            .expect("write manifest");
+            std::fs::write(
+                app_dir.join("main.py"),
+                "def init(size, args): return []\ndef update(event): return []\n\
+                 def view(): return None\n",
+            )
+            .expect("write entry");
+            app_dir
+        }
+
+        /// The address the *running* instance writes to, read off its own
+        /// `PythonLaunchConfig` rather than reconstructed from a pane field.
+        fn live_state_address(harness: &crate::testing::HostHarness, pane_id: u64) -> PathBuf {
+            let win = &harness.app.windows[harness.app.active_window];
+            let pane = win
+                .panes
+                .get(&pane_id)
+                .and_then(crate::host::pane::Pane::as_app)
+                .expect("the launched pane is an app pane");
+            match &pane.runtime {
+                crate::host::pane::AppRuntime::Python(live) => python_state_path(&live.config),
+                other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
+            }
+        }
+
+        fn seed_items(address: &Path, items: &serde_json::Value) {
+            std::fs::create_dir_all(address.parent().expect("state parent")).expect("mkdir");
+            write_python_state_atomic(
+                address,
+                &serde_json::to_vec_pretty(&serde_json::json!({ "items": items }))
+                    .expect("serialize"),
+            )
+            .expect("the app persists an item");
+        }
+
+        /// Q5, first shape — the read that never happens. A saved workspace
+        /// records an app pane under `AppRuntime::type_id()` (the runtime
+        /// kind), so nothing in the record names the app whose state file the
+        /// pane's bytes are in. Restoring cannot re-address that file no
+        /// matter how it is implemented: the identity is simply not in the
+        /// record. Asserted at that boundary rather than against the current
+        /// restore helper, because a fix is expected to introduce a new
+        /// restore path and leave the helper alone.
+        #[test]
+        fn audit_0678_a_saved_app_pane_cannot_re_address_its_own_state() {
+            let mut harness = crate::testing::HostHarness::new();
+            let root = tempdir().expect("workspace root");
+            let app_dir = write_python_app(root.path(), "todo");
+
+            let pane_id = harness
+                .app
+                .launch_app_by_path_with_layout_no_review_modal(
+                    &app_dir.to_string_lossy(),
+                    None,
+                    Some(root.path().to_path_buf()),
+                    &[],
+                )
+                .expect("launch the app")
+                .expect("a Python launch returns a pane id");
+
+            let live_address = live_state_address(&harness, pane_id);
+            seed_items(&live_address, &serde_json::json!(["buy milk"]));
+
+            harness.app.save_workspace();
+            let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
+            let record = saved
+                .windows
+                .iter()
+                .flat_map(|window| &window.panes)
+                .find(|pane| pane.id == pane_id)
+                .expect("the app pane is in the saved workspace");
+            let recorded_id = record
+                .app_id
+                .clone()
+                .expect("an app pane records some app id");
+
+            // The record's cwd is right; its identity is not. Everything a
+            // restorer could address from it lands somewhere else.
+            let reachable = python_state_path(&state_test_config(&record.cwd, &recorded_id));
+            assert_state_address_lost(
+                &live_address,
+                &reachable,
+                "workspace save of a live CPython-WASM app pane",
+            );
+
+            // The other half of the pair: the identity that *would* re-address
+            // the file is on the pane the whole time, and is not what was
+            // written. A fix that records it flips this and the assertion above
+            // together.
+            let manifest_id = harness.app.windows[harness.app.active_window]
+                .panes
+                .get(&pane_id)
+                .and_then(crate::host::pane::Pane::as_app)
+                .expect("app pane")
+                .manifest_id
+                .clone();
+            assert_ne!(
+                recorded_id, manifest_id,
+                "the saved record names the runtime kind, not the app — \
+                 `manifest_id` is on the pane and carries the state file's name"
+            );
+        }
+
+        /// Q3 — `set-root` after launch. The context's root moves; the running
+        /// app's address does not, because it was captured into
+        /// `PythonLaunchConfig` at launch and nothing revisits it. Asserted as
+        /// a pair: the address is *unchanged*, and it *disagrees* with the
+        /// root the context now has. Any addressing fix — call-time resolution
+        /// against the live root, or a scope that drops the root entirely —
+        /// breaks one half or the other.
+        #[test]
+        fn audit_0678_set_context_root_leaves_a_running_app_at_the_old_address() {
+            let mut harness = crate::testing::HostHarness::new();
+            let root_a = tempdir().expect("root a");
+            let root_b = tempdir().expect("root b");
+            let context_id = harness.app.router.get(0).context_id;
+            harness
+                .app
+                .set_context_root(root_a.path().to_path_buf(), Some(context_id));
+
+            // The launch root is the context root — what `resolve_new_pane_cwd`
+            // yields for an app the registry has no workspace root for.
+            let app_dir = write_python_app(root_a.path(), "todo");
+            let pane_id = harness
+                .app
+                .launch_app_by_path_with_layout_no_review_modal(
+                    &app_dir.to_string_lossy(),
+                    None,
+                    Some(root_a.path().to_path_buf()),
+                    &[],
+                )
+                .expect("launch the app")
+                .expect("a Python launch returns a pane id");
+            let at_launch = live_state_address(&harness, pane_id);
+            assert_eq!(
+                at_launch,
+                python_state_path(&state_test_config(root_a.path(), "todo")),
+                "precondition: the running app is addressed under the context root"
+            );
+            seed_items(&at_launch, &serde_json::json!(["buy milk"]));
+
+            harness
+                .app
+                .set_context_root(root_b.path().to_path_buf(), Some(context_id));
+
+            assert_eq!(
+                live_state_address(&harness, pane_id),
+                at_launch,
+                "the running app still writes its launch-time address"
+            );
+            assert_state_address_lost(
+                &at_launch,
+                &python_state_path(&state_test_config(root_b.path(), "todo")),
+                "set_context_root while the app is running",
+            );
+        }
+
+        /// Q5, third shape — the read that resolves somewhere the write never
+        /// goes. `load_python_state` has a second candidate (the channel-neutral
+        /// global path); `save_state` has one. So a launch can be seeded from
+        /// bytes it will never write back to, and every later launch under a
+        /// different root is seeded from those same stale bytes again. This is
+        /// the claim stint 0682 rests on, reproduced end to end rather than
+        /// read off the code.
+        #[test]
+        fn audit_0678_a_launch_seeded_from_the_global_fallback_never_writes_back_to_it() {
+            let profile_parent = tempdir().expect("profile parent");
+            let _profile =
+                crate::config::set_test_profile_dir(profile_parent.path().join(".plexi-alpha"));
+            let _channel = crate::config::set_test_channel("alpha");
+            let root_a = tempdir().expect("root a");
+            let root_b = tempdir().expect("root b");
+
+            let global = profile_parent.path().join(".plexi/app_states/todo.json");
+            std::fs::create_dir_all(global.parent().expect("global parent")).expect("mkdir");
+            std::fs::write(&global, br#"{"items":["from the global copy"]}"#).expect("seed global");
+
+            // A launch under root A resolves the global candidate — its own
+            // workspace address does not exist yet.
+            let under_a = state_test_config(root_a.path(), "todo");
+            let seeded = load_python_state(&under_a).expect("launch under A");
+            assert_eq!(seeded["items"], serde_json::json!(["from the global copy"]));
+
+            // It persists. There is only one write candidate, and it is not
+            // the one the bytes came from.
+            let write_address = python_state_path(&under_a);
+            seed_items(
+                &write_address,
+                &serde_json::json!(["from the global copy", "added under A"]),
+            );
+            assert_ne!(
+                write_address, global,
+                "the write lands at the workspace address, not the one the read resolved"
+            );
+            assert_eq!(
+                std::fs::read(&global).expect("global bytes"),
+                br#"{"items":["from the global copy"]}"#,
+                "the bytes the launch was seeded from are never updated"
+            );
+
+            // So the next launch under any other root is seeded from the same
+            // stale copy, and the item added under A is invisible to it.
+            let under_b = load_python_state(&state_test_config(root_b.path(), "todo"))
+                .expect("launch under B");
+            assert_eq!(
+                under_b["items"],
+                serde_json::json!(["from the global copy"]),
+                "a later launch re-reads the stale global bytes, not what the app last wrote"
+            );
+        }
+    }
+
     #[test]
     fn python_state_never_overwrites_canonical_with_orphan() {
         let workspace = tempdir().expect("workspace");
