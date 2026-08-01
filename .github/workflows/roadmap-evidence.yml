@@ -1,0 +1,62 @@
+name: Roadmap evidence
+
+# Executes every proof named by ROADMAP.toml, including the scenes that opt out
+# of scene_suite. This answers "is the roadmap honest" — a release question, not
+# a per-commit one — so it deliberately does NOT run on pull_request.
+#
+# Why it is not a PR gate: the evidence set re-runs the workspace test suite the
+# `Rust host` workflow already ran, then executes every scene serially. That is
+# ~25 minutes added to every PR to re-answer a question almost no PR changes.
+#
+# Deliberately on-demand only — no schedule. A recurring run nobody reads is
+# noise that burns runner minutes and trains people to ignore a red badge.
+# Dispatch it when it answers a question you are actually asking: before a
+# release cut, or after changing something ROADMAP.toml claims as evidence.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # A scene's timeout_s catches a hang; it is not a performance budget. Scenes
+  # that finish in ~10s locally sit close to their 15s deadline on a shared
+  # runner, so widen the window here instead of editing every scene file.
+  # Consumed by `scene_timeout` in src/scenes.rs.
+  PLEXI_SCENE_TIMEOUT_SCALE: '4'
+
+jobs:
+  evidence:
+    name: evidence
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install just
+        uses: taiki-e/install-action@v2.85.6
+        with:
+          # taiki-e/install-action does not enforce `required` inputs for
+          # composite actions: omitting `tool` installs nothing, exits 0, and
+          # renders green. Never remove this block.
+          tool: just
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-evidence-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-evidence-
+
+      - name: Evidence resolver fixtures
+        run: just roadmap-evidence-fixtures
+
+      - name: Execute roadmap evidence
+        run: just roadmap-evidence

@@ -49,11 +49,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install just
-        uses: taiki-e/install-action@v2.85.6
-        with:
-          tool: just
-
       - name: Restore Cargo cache
         uses: actions/cache@v4
         with:
@@ -100,11 +95,6 @@ jobs:
             cargo test --bin plexi -- \
             --skip headless_frame_fails_fast_when_the_guest_dies_at_import \
             ${skip_args[@]+"${skip_args[@]}"}
-
-      - name: Verify roadmap evidence
-        run: |
-          just roadmap-evidence-fixtures
-          just roadmap-evidence
 
   clippy:
     name: clippy
