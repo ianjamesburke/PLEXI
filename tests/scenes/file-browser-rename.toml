@@ -5,7 +5,7 @@ size = [720.0, 520.0]
 open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
 
 [[steps]]
-key = { target = "files", value = "cmd+r" }
+key = { target = "files", value = "f2" }
 
 [[steps]]
 run_steps = 3

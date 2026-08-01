@@ -391,6 +391,7 @@ struct TextInputProbe {
 #[derive(Default)]
 struct KeyBurstProbe {
     received: Vec<String>,
+    released: Vec<String>,
 }
 
 impl crate::app::app_trait::App for KeyBurstProbe {
@@ -419,20 +420,24 @@ impl crate::app::app_trait::App for KeyBurstProbe {
         input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         for event in input.events() {
-            if let egui::Event::Key {
-                key, pressed: true, ..
-            } = event
-            {
+            if let egui::Event::Key { key, pressed, .. } = event {
                 let name = format!("{key:?}").to_ascii_lowercase();
                 let name = name.strip_prefix("arrow").unwrap_or(&name).to_string();
-                self.received.push(name);
+                if *pressed {
+                    self.received.push(name);
+                } else {
+                    self.released.push(name);
+                }
             }
         }
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({ "received": self.received }))
+        Some(serde_json::json!({
+            "received": self.received,
+            "released": self.released,
+        }))
     }
 }
 
@@ -680,6 +685,119 @@ fn raw_key_event_reaches_focused_app_via_router() {
     assert_eq!(
         state["enter_handled"], true,
         "RawInput Enter must reach handle_key through the ownership router"
+    );
+}
+
+/// Host command chords are a higher input layer than app shortcuts. A single
+/// Cmd+D may split the focused pane, but its `D` edge must already be gone when
+/// the focused app's raw-key handler runs. Before stint 0692 app dispatch ran
+/// before `poll_actions`, so the probe observed `d` as well as the host action.
+#[test]
+fn host_command_chord_is_removed_before_focused_app_dispatch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<KeyBurstProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        modifiers: egui::Modifiers::COMMAND,
+        events: vec![egui::Event::Key {
+            key: egui::Key::D,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }],
+        ..Default::default()
+    });
+
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("command-chord probe state");
+    assert_eq!(
+        state["received"],
+        serde_json::json!([] as [&str; 0]),
+        "host command chords must never leak into an app's bare-key shortcuts"
+    );
+}
+
+/// Releasing Command before the chord key must not turn the host-owned key-up
+/// into an orphan bare release in the focused app.
+#[test]
+fn host_command_chord_owns_its_release_after_command_is_released_first() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<KeyBurstProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+
+    // Cmd+B toggles host chrome without changing the focused pane.
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        modifiers: egui::Modifiers::COMMAND,
+        events: vec![egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }],
+        ..Default::default()
+    });
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        modifiers: egui::Modifiers::NONE,
+        events: vec![egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("command-chord probe state");
+    assert_eq!(state["received"], serde_json::json!([] as [&str; 0]));
+    assert_eq!(
+        state["released"],
+        serde_json::json!([] as [&str; 0]),
+        "host chord release must stay owned after Command is released first"
     );
 }
 
@@ -4562,7 +4680,7 @@ fn run_blurred_frames(h: &mut HostHarness, n: u32) {
     }
 }
 
-/// Stint 0545: the File Browser rename modal (Cmd+R on a selected entry)
+/// Stint 0545: the File Browser rename modal (F2 on a selected entry)
 /// must open with the entry name fully selected. Driven through the real
 /// KeyPane path so the modal opens exactly as a keystroke opens it, on
 /// OS-blurred frames so the test models the CLI-driven session where the
@@ -4588,7 +4706,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     let response_file = temp_response(tmp.path(), "rename-key");
     h.inject_ipc(AppRequest::KeyPane {
         pane_id,
-        key: "cmd+r".to_string(),
+        key: "f2".to_string(),
         response_file: Some(response_file.clone()),
     });
     run_blurred_frames(&mut h, 3);

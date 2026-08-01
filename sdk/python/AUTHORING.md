@@ -296,6 +296,8 @@ CSS name inline.
 
 Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase
 canonical — never match `"Enter"` or `"Escape"`.
+Command-key chords are host shortcuts and never reach apps. App shortcuts may
+use unmodified keys and the Ctrl, Shift, or Alt modifier fields.
 `event.pressed` is `True` on key-down and `False` on key-up. Track held keys by
 adding on press and removing on release; do not toggle state on every event.
 

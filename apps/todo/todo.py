@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from plexi_sdk import log, state, tools
-from plexi_sdk.effects import PersistState, SetStatus, SetTitle
+from plexi_sdk.effects import PersistState, SetState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import (
     Actions,
@@ -128,12 +128,12 @@ def update(event) -> list:
 
     if isinstance(event, UiValueChange) and event.handler_id == DRAFT:
         data["draft"] = event.value
-        return _save(data)
+        return [SetState(data)]
 
     action = event.handler_id if isinstance(event, UiAction) else None
     key = event.key if isinstance(event, KeyEvent) and event.pressed else None
 
-    if action == ADD or (data["adding"] and key == "enter"):
+    if action == ADD:
         return _save(_add(data, data["draft"]))
     if action == CANCEL or (data["adding"] and key == "escape"):
         data["adding"] = False

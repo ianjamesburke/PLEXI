@@ -115,7 +115,7 @@ use crate::workspace::router::ContextMove;
 use crate::workspace::WorkspaceFile;
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -210,6 +210,9 @@ pub struct PlexiApp {
     pub(crate) config: crate::config::PlexiConfig,
     pub(crate) key_bindings: crate::host::keys::KeyBindings,
     pub(crate) binding_table: Vec<crate::host::keys::BindingEntry>,
+    /// Keys whose press edge fired a host binding and whose matching release
+    /// remains host-owned, even if Command is released first.
+    pub(crate) claimed_host_key_releases: HashSet<egui::Key>,
     pub(crate) renaming_window: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) editing_description: Option<usize>,
@@ -1388,6 +1391,7 @@ impl PlexiApp {
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
+                    claimed_host_key_releases: HashSet::new(),
                     pending_close: false,
                     pending_context_close: None,
                     frame_tick,
@@ -1647,6 +1651,7 @@ impl PlexiApp {
             welcome_delete_last_press: None,
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
+            claimed_host_key_releases: HashSet::new(),
             key_bindings,
             pending_close: false,
             pending_context_close: None,
@@ -2092,6 +2097,7 @@ impl PlexiApp {
                 welcome_delete_last_press: None,
                 config,
                 binding_table: crate::host::keys::build_binding_table(&key_bindings),
+                claimed_host_key_releases: HashSet::new(),
                 key_bindings,
                 pending_close: false,
                 pending_context_close: None,
@@ -2730,6 +2736,25 @@ impl eframe::App for PlexiApp {
             crate::app::app_trait::KeyDisposition::Passthrough
         };
 
+        // Host bindings own their chords before an app can classify raw key
+        // events. This is the structural guard against one physical Cmd+D
+        // both splitting the pane and reaching a PGAP app as its bare `d`
+        // shortcut. Overlay owners still run first because their local key
+        // contracts determine which unclaimed events remain in the router.
+        let (app_active, keyboard_capture_active) = self.focused_app_capture_state();
+        let overlay_open = self.input_captured_by_overlay();
+        let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+        let mut poll_actions_result = keys::poll_actions(
+            &mut router_input,
+            &self.binding_table,
+            &mut self.claimed_host_key_releases,
+            /* app_active */ false,
+            keyboard_capture_active,
+            overlay_open,
+            self.show_shortcuts,
+        );
+        router_input.give_back(ctx);
+
         // Apps only receive key input when no overlay holds focus. Double-check
         // input_captured_by_overlay() after the re-syncs above — an overlay may
         // have returned Passthrough for keys it doesn't own (e.g. a Choice/Input
@@ -2835,33 +2860,24 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        // Determine if the focused pane has an active app surface, and whether
-        // that app has declared keyboard_capture mode.
-        let (app_active, keyboard_capture_active) = self.focused_app_capture_state();
-
         // Handle keyboard shortcuts. Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) always
         // fire; all other shortcuts are suppressed when an overlay holds focus via
         // the early-return guard in `keys::poll_actions`.
         //
-        // `poll_actions` is the outer, always-first consumer of the frame's
-        // `PlexiInput` ownership-transfer buffer (stint 0240) — it claims
-        // global-hotkey events out of the router before giving back whatever
-        // it didn't claim. The call site (and its position in the frame) is
-        // otherwise unchanged from the previous `ctx.input_mut` closure: the
-        // router replaces *how* events are read, not the pipeline's ordering,
-        // since re-sequencing overlay/app/terminal dispatch around the router
-        // needs interactive verification beyond this refactor's scope (see
-        // `src/app/input_router.rs`).
-        let overlay_open = self.input_captured_by_overlay();
+        // AppActive bindings are intentionally polled after app dispatch.
+        // Focused TextInputs and apps own bare Escape first; the dispatch gate
+        // removes it when it exits a field so CloseApp cannot fire in the same
+        // frame. Global and Normal host chords were already removed above.
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
-        let poll_actions_result = keys::poll_actions(
+        poll_actions_result.extend(keys::poll_actions(
             &mut router_input,
             &self.binding_table,
+            &mut self.claimed_host_key_releases,
             app_active,
             keyboard_capture_active,
             overlay_open,
             self.show_shortcuts,
-        );
+        ));
         router_input.give_back(ctx);
         for action in poll_actions_result {
             match action {
