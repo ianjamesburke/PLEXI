@@ -77,10 +77,12 @@ For any sprint that looks relevant:
 stint sprint show <id> 2>&1
 ```
 
+**Never assign a sprint on your own judgement.** Sprint placement is a scheduling decision the human owns, and an agent guessing at it silently corrupts the sprint graph — dates drift, goals blur, and `stint next` starts recommending work that was never scheduled.
+
 Rules:
-- Place the task in the earliest sprint whose goal it serves.
-- If no sprint goal fits, omit the sprint field entirely.
-- Infrastructure and tooling tasks default to the current active sprint unless they clearly belong elsewhere.
+- **Human in the loop:** propose a sprint (or "no sprint") with a one-line reason and get an explicit answer. This is one of the few questions this skill is always allowed to ask.
+- **Autonomous mode:** omit the `sprint` field entirely. An unsprinted task is visible and triageable; a wrongly-sprinted one is invisible noise inside someone else's plan. Never default to "the current active sprint."
+- Never infer a sprint from priority, size, or area.
 
 ---
 
