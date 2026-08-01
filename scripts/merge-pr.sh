@@ -139,7 +139,7 @@ resolve_stints() {
     local STINT
     {
         printf '%s\n' "$BRANCH" | grep -Eo 'stint-[0-9-]+' | grep -Eo '[0-9]{4}' || true
-        printf '%s\n' "$PR_BODY" | grep -Ei 'stint' | grep -Eo '[0-9]{4}' || true
+        printf '%s\n' "$PR_BODY" | grep -Eio 'stint[ #-]*[0-9]{4}' | grep -Eo '[0-9]{4}' || true
     } | sort -u | while IFS= read -r STINT; do
         [ -n "$STINT" ] || continue
         local TASK_FILE
