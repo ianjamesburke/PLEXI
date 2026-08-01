@@ -1242,9 +1242,19 @@ pub enum PaneCmd {
         #[arg(long, default_value = "left")]
         button: String,
     },
-    /// Send a shell command to a terminal pane as if typed from the keyboard.
+    /// Send an ordinary shell command to a terminal pane as if typed from the
+    /// keyboard.
     ///
-    /// Use `--enter` to append a newline so the command is submitted immediately.
+    /// `--enter` submits it through the same host-confirmed settle -> Enter ->
+    /// confirm sequence as `pane send --submit` (see that command for the
+    /// full contract), rather than racing a raw newline against the shell's
+    /// line editor. Exits 0 only once the host confirms the command was
+    /// submitted; on an unconfirmed submit it exits non-zero and prints the
+    /// observed input line to stderr. Terminal panes only.
+    ///
+    /// This verb is scoped to ordinary shell commands. Driving an
+    /// interactive TUI belongs to `plexi pane send --submit`; booting another
+    /// agent belongs to `plexi pane new --agent`.
     ///
     /// Example: plexi pane command 42 "git status" --enter
     #[command(name = "command")]
@@ -1253,7 +1263,8 @@ pub enum PaneCmd {
         pane_id: u64,
         /// Text to send to the pane
         text: String,
-        /// Append a newline after the text, submitting it as a command
+        /// Submit the command through the host-confirmed settle -> Enter ->
+        /// confirm sequence, instead of just typing it
         #[arg(long, short = 'e')]
         enter: bool,
     },

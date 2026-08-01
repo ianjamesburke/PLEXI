@@ -6366,4 +6366,61 @@ mod pane_send_submit_tests {
             "a plain send must type the text and nothing else"
         );
     }
+
+    /// Regression for stint 0654: `pane command <id> "<cmd>" --enter` used to
+    /// write `<cmd>\n` as one raw blob with `submit=false`, so it raced the
+    /// shell's own line-editor/completion machinery — observed live as an
+    /// ambiguous-prefix alias opening a completion menu (`cm` -> `cm cmp
+    /// cmpdylib cmuwmtopbm`) instead of running. `--enter` now issues the
+    /// exact same `SendToPane { submit: true }` request as `pane send
+    /// --submit`, so the shell only sees Enter once settled, and the outcome
+    /// is asserted on the pane's rendered tail rather than the write
+    /// returning `Ok`.
+    #[test]
+    fn pane_command_enter_runs_ambiguous_prefix_alias_instead_of_completing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        // The exact ambiguous-prefix shape from the live failure: one alias
+        // plus several longer names sharing its prefix.
+        type_only(
+            &h,
+            term,
+            "alias cm='echo cm-ran'; alias cmp='echo cmp-ran'; \
+             cmpdylib() { :; }; cmuwmtopbm() { :; }\n",
+            None,
+        );
+        settle_terminal(&mut h, term);
+
+        let response = temp_response(tmp.path(), "pane-command-enter");
+        // `pane command <id> "cm" --enter` now maps 1:1 onto this request —
+        // see the `PaneCmd::Command` arm in `src/main.rs`.
+        submit(&h, term, "cm", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, false);
+        assert_eq!(
+            reply["ok"].as_bool(),
+            Some(true),
+            "the host must confirm the alias was submitted: {reply}"
+        );
+
+        wait_for_output(&mut h, term, "cm-ran");
+        let observed = tail(&mut h, term);
+        // Scope the check to what the shell produced *after* the `cm`
+        // invocation echoed back — the setup line above legitimately
+        // mentions `cmpdylib`/`cmuwmtopbm` by name and must not trip this.
+        let after_invocation = observed
+            .iter()
+            .rposition(|line| line.trim() == "› cm")
+            .map_or(observed.as_slice(), |idx| &observed[idx + 1..]);
+        assert!(
+            !after_invocation
+                .iter()
+                .any(|line| line.contains("cmpdylib") || line.contains("cmuwmtopbm")),
+            "the alias must run directly, never open a completion menu listing the ambiguous \
+             candidates: {observed:?}"
+        );
+    }
 }
