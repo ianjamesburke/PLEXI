@@ -2027,27 +2027,4 @@ mod tests {
             "root tile must hold the launched wasm pane"
         );
     }
-
-    /// Stint 0678 audit evidence (Q5): a saved Python or native-WASM app pane
-    /// records `AppRuntime::type_id()` — the runtime kind, not the app id — so
-    /// the restore path has nothing to look the app up by. `builtin_factory`
-    /// has no entry for a runtime kind, restore returns `None`, and the caller
-    /// substitutes a terminal. The app is never relaunched, so its persisted
-    /// state is never read back on the next boot.
-    #[test]
-    fn audit_0678_wasm_app_panes_are_not_restorable_from_a_saved_workspace() {
-        let cwd = std::env::temp_dir();
-        assert!(
-            restore_builtin_app_pane("python-wasm", 900, cwd.clone(), None).is_none(),
-            "a CPython-WASM pane cannot be restored — the saved app_id is the runtime kind"
-        );
-        assert!(
-            restore_builtin_app_pane("wasm", 901, cwd.clone(), None).is_none(),
-            "a native-WASM pane cannot be restored either"
-        );
-        assert!(
-            restore_builtin_app_pane("todo", 902, cwd, None).is_none(),
-            "and the real app id would not resolve either — todo is not a builtin"
-        );
-    }
 }

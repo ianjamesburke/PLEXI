@@ -2791,10 +2791,11 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
 }
 
 // ── Stint 0678 audit evidence ────────────────────────────────────────────────
-// These two tests are the reproduction half of the context-scoped state
-// persistence audit (docs/context-state-persistence-audit.md). They assert
-// what alpha does today, not what it should do — a future fix is expected to
-// change them, and the doc names them as the evidence it rests on.
+// Part of the reproduction half of the context-scoped state persistence audit
+// (docs/context-state-persistence-audit.md). The rest of the audit's evidence
+// lives in `host::wasm_python::tests::audit_0678`, next to the function that
+// computes a state address; that module's doc comment carries the assertion
+// discipline every audit test follows.
 
 /// Q1: nothing rejects two contexts pointing at the same root. `set_context_root`
 /// has no uniqueness check, and `new_context_empty` anchors every new context at
@@ -2834,43 +2835,51 @@ fn audit_0678_two_contexts_accept_the_same_root() {
     );
 }
 
-/// Q3: a root change after launch does not follow a running app. The pane keeps
-/// the `workspace_root` captured when it was created, which is the value
-/// `python_state_path` reads, so `plexi context set-root` moves where *new*
-/// launches read and write while live panes keep writing the old location.
+/// Q1, second half: a sub-context created from the keyboard inherits the
+/// parent's `path`, not its `root`. Nothing keeps the two fields in sync —
+/// `set_context_root` writes only `root` — so after a set-root the child is
+/// anchored at the directory the parent was *created* in, which is neither the
+/// parent's current root nor anything the user chose.
 #[test]
-fn audit_0678_set_context_root_does_not_move_a_live_app_pane_root() {
+fn audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
-    let (_tile, pane_id) = app.add_test_pane();
-    let launch_root = app.windows[0]
-        .panes
-        .get(&pane_id)
-        .and_then(|p| p.as_app())
-        .expect("test pane is an app pane")
-        .workspace_root
-        .clone();
-
+    let created_at = app.router.get(0).path.clone();
     let moved = tempfile::tempdir().expect("new root");
-    let ctx_id = app.router.get(0).context_id;
-    app.set_context_root(moved.path().to_path_buf(), Some(ctx_id));
-
-    let after = app.windows[0]
-        .panes
-        .get(&pane_id)
-        .and_then(|p| p.as_app())
-        .expect("test pane is still an app pane")
-        .workspace_root
-        .clone();
+    let parent_id = app.router.get(0).context_id;
+    app.set_context_root(moved.path().to_path_buf(), Some(parent_id));
     assert_eq!(
-        after, launch_root,
-        "a live app pane keeps its launch-time workspace_root after set_context_root"
+        app.router.get(0).path,
+        created_at,
+        "precondition: set_context_root leaves `path` untouched"
+    );
+
+    let before = app.router.len();
+    app.new_child_context_from_keyboard();
+    if app.router.len() == before {
+        // No PTY available in this environment — the child is never created,
+        // so there is nothing to assert about its root.
+        return;
+    }
+
+    let child_root = app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .and_then(|c| c.root.clone())
+        .expect("the child context is rooted");
+    // The pair a fix must reconcile: the child took the stale creation-time
+    // path, and that is not the root its parent actually has.
+    assert_eq!(
+        child_root, created_at,
+        "the child inherited the parent's creation-time path"
     );
     assert_ne!(
-        after,
+        child_root,
         moved.path().to_path_buf(),
-        "the pane does not follow the context's new root"
+        "and therefore not the parent's current root — every context-scoped \
+         address the child derives points at a directory the user re-rooted away from"
     );
 }

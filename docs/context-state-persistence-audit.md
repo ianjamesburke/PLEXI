@@ -1,6 +1,6 @@
 # Context-Scoped State Persistence — Audit Findings
 
-**Stint:** 0678 (this audit), 0680, 0681, 0682, 0683 (the fixes it justifies — the last one to close is this doc's delete trigger)
+**Stint:** 0678 (this audit), 0680, 0681, 0682, 0683, 0686 (the fixes it justifies — the last one to close is this doc's delete trigger)
 **Status:** active
 **Date of evidence:** 2026-07-31, alpha at the branch point of this task
 
@@ -28,16 +28,23 @@ one is a read that never occurs because the app is never relaunched.
 
 ## Method
 
-- **Rust tests** (all deterministic, all currently green on this branch;
-  they assert what alpha *does*, so a fix is expected to change them):
+- **Rust tests written for this audit** (all deterministic; they assert what
+  alpha *does*, so a fix is expected to change them). In
+  `src/host/wasm_python.rs`, next to the function that computes a state
+  address: `audit_0678_second_instance_clobbers_the_first_instances_items`,
+  `audit_0678_state_written_under_one_root_is_invisible_under_another`, and the
+  `audit_0678` module — `audit_0678_a_saved_app_pane_cannot_re_address_its_own_state`,
+  `audit_0678_set_context_root_leaves_a_running_app_at_the_old_address`, and
+  `audit_0678_a_launch_seeded_from_the_global_fallback_never_writes_back_to_it`,
+  each of which launches a real CPython-WASM app through the production path.
+  In `src/app/tests/context_tests.rs`:
   `audit_0678_two_contexts_accept_the_same_root` and
-  `audit_0678_set_context_root_does_not_move_a_live_app_pane_root` in
-  `src/app/tests/context_tests.rs`;
-  `audit_0678_second_instance_clobbers_the_first_instances_items` and
-  `audit_0678_state_written_under_one_root_is_invisible_under_another` in
-  `src/host/wasm_python.rs`;
-  `audit_0678_wasm_app_panes_are_not_restorable_from_a_saved_workspace` in
-  `src/pane_ops/create.rs`.
+  `audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root`.
+- **Pre-existing tests cited as evidence** (not written here, already green in
+  alpha): `python_state_reclaims_global_legacy_into_global_neutral` and
+  `python_state_local_candidate_wins_over_global_fallback`, both in
+  `src/host/wasm_python.rs`, which pin the read path's second candidate and its
+  precedence.
 - **Live host logs**: `~/.plexi-alpha/plexi.log` and `~/.plexi-beta/plexi.log`
   from Ian's running sessions on the evidence date
   (`launch_app_by_id_with_layout`, `workspace_restore`, `app::todo: persisted
@@ -49,6 +56,23 @@ one is a read that never occurs because the app is never relaunched.
 Nothing here was concluded from reading code alone. Two structural facts
 (`AppRuntime::type_id` values, the absence of a uniqueness check on the create
 path) are code facts, and each is pinned by one of the tests above.
+
+**How these tests are stated, and why.** An earlier revision of this audit
+cited two tests that passed whether or not the defect existed — both asserted
+an implementation site's current value (a private helper returning `None`, a
+struct field that had not changed) rather than an invariant, and a fix is free
+to add a new code path and leave such a site untouched. They have been replaced.
+Every audit test now asserts the *pair a fix must reconcile*: the stale value
+**and** its disagreement with the live source of truth it should equal. The
+discipline, and the assertion helper that enforces it, are documented on the
+`audit_0678` module.
+
+**Limit of the reproduction, stated plainly.** Workspace *restore* cannot be
+driven end to end in a test: the restore loop lives inside `PlexiApp::new`,
+which also spawns socket listeners, the MCP server, and the update check, so no
+test can boot it. The restore-side evidence is therefore asserted one step
+earlier, at the saved record — which is the necessary condition for any restore
+implementation — plus the log evidence below. Closing that gap is stint 0686.
 
 ## The resolution chain
 
@@ -68,6 +92,16 @@ channel-neutral global fallback. Both candidates run
 wrote channel-suffixed paths. **Read has two candidates; write has one.** An
 app that loaded from the global fallback persists to the workspace path, so its
 next launch under a different root reads the stale global copy again.
+
+*Evidence.* The asymmetry itself is pinned by a pre-existing test,
+`python_state_reclaims_global_legacy_into_global_neutral`: a load resolves the
+global candidate while the write address is asserted still not to exist. Its
+consequence — the full round trip, where the item added after a
+fallback-seeded launch is invisible to the next launch under another root — is
+reproduced by
+`audit_0678_a_launch_seeded_from_the_global_fallback_never_writes_back_to_it`.
+Precedence between the two candidates is pinned by
+`python_state_local_candidate_wins_over_global_fallback`.
 
 **Where `workspace_root` comes from**, in resolution order at launch:
 `AppRegistry::InstalledApp::workspace_root` when the app was found inside a
@@ -93,11 +127,19 @@ app is running, and it steers nothing that a running app reads or writes.
 create path: `create_context` over IPC routes to `new_context_at_path` (root =
 the given path) or `new_context`, and `new_context_empty` anchors **every**
 new context at the home directory unconditionally, so a second rootless context
-duplicates the first by construction. A sub-context inherits its parent's path
-when no root is passed.
+duplicates the first by construction. Sub-contexts duplicate too, and by two
+different mechanisms: `push_pane_to_subcontext` copies the parent's `root`
+verbatim, while `new_child_context_from_keyboard` copies the parent's `path` —
+a separate field that nothing keeps in sync, because `set_context_root` writes
+only `root` and nothing ever writes `path` after creation. A keyboard
+sub-context is therefore anchored wherever its parent was *created*, which
+after any set-root is a directory the user re-rooted away from.
 
 *Evidence.* `audit_0678_two_contexts_accept_the_same_root` sets one directory
 as the root of two contexts through the production entry point; both accept.
+`audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root`
+re-roots a parent, creates a child from the keyboard path, and asserts the
+child's root is the parent's creation-time path and not its current root.
 On disk, `~/.plexi-alpha/workspaces/default.json` holds contexts `Default` and
 `Context 2` both rooted at `/Users/ianburke` — a duplicate root in a live saved
 workspace, not a constructed one.
@@ -134,9 +176,13 @@ that context go somewhere else. The CLI half-says this already — `plexi contex
 set-root` prints a tip that `PLEXI_CONTEXT_ROOT` is only picked up by newly
 opened panes — but nothing says it about app state.
 
-*Evidence.* `audit_0678_set_context_root_does_not_move_a_live_app_pane_root`
-records a live app pane's `workspace_root`, changes its context's root through
-the production entry point, and asserts the pane's root is unchanged.
+*Evidence.* `audit_0678_set_context_root_leaves_a_running_app_at_the_old_address`
+launches a real CPython-WASM app through the production launch path with its
+root set to the context's, seeds an item at the address the running instance
+reports from its own `PythonLaunchConfig`, changes the context root through the
+production entry point, and then asserts both halves: the running app still
+writes the launch-time address, and that address is not the one the context now
+resolves — where nothing exists at all.
 
 ### 4. Where do todo's bytes go right now, and which path is read next?
 
@@ -170,15 +216,22 @@ anticipate: a read that never happens at all.**
 
 - *Read that never happens* — after a restart the app is not relaunched.
   Workspace save records an app pane's `app_id` as `AppRuntime::type_id()`,
-  which is `python-wasm` for every CPython app and `wasm` for every native one;
-  `serialize_state` returns `None` for both, so `app_state` is saved as null.
-  Restore looks the saved id up in `builtin_factory`, finds nothing, and the
-  caller substitutes a `TerminalPane` in the pane's place. The state file is
-  never opened. *Evidence:*
-  `audit_0678_wasm_app_panes_are_not_restorable_from_a_saved_workspace`; and
-  across both channel logs, every `workspace_restore` line names a builtin
-  (`text-editor`) or the assistant — there is not one restored `python-wasm` or
-  `wasm` pane in either log's entire history.
+  which is `python-wasm` for every CPython app and `wasm` for every native one.
+  The app's real identity is on the pane the whole time, in `manifest_id`, and
+  is not what gets written. `serialize_state` returns `None` for both runtimes,
+  so `app_state` is saved as null — correctly, since an app's state belongs in
+  its state file rather than duplicated into workspace JSON, which is precisely
+  why the recorded identity is the *only* route back to it. Restore looks the
+  saved id up in `builtin_factory`, finds nothing, and the caller substitutes a
+  `TerminalPane` in the pane's place. The state file is never opened.
+  *Evidence:* `audit_0678_a_saved_app_pane_cannot_re_address_its_own_state`
+  launches a real CPython app, seeds its state file, saves the workspace
+  through `save_workspace`, reloads it from disk, and asserts that the address
+  derivable from the saved record is neither the file that holds the bytes nor
+  any file at all — while `manifest_id`, which would have addressed it, sits
+  unused on the pane. And across both channel logs, every `workspace_restore`
+  line names a builtin (`text-editor`) or the assistant — there is not one
+  restored `python-wasm` or `wasm` pane in either log's entire history.
 - *Write to a path nobody reads* — a relaunch under a different root writes and
   reads a different file. *Evidence:*
   `audit_0678_state_written_under_one_root_is_invisible_under_another`, and the
@@ -249,6 +302,7 @@ for 0678.
 | 0681 | Two live instances of one app overwrite each other's state whole; no merge, no reload-before-write, no conflict signal | Q2 |
 | 0682 | The state read path has a second candidate the write path does not, so a load can resolve to bytes the app will never write back | Q5 |
 | 0683 | State reads and writes are unobservable — the persist trace names no path, so where an app's bytes went cannot be answered from the log | method |
+| 0686 | Workspace restore is unobservable to tests — the restore loop is inside `PlexiApp::new` alongside socket, MCP, and update-check startup, so no test can boot it | method |
 
 The duplicate-root rule that question 1 exposes is a design question, not a bug
 fix; it is owned by stint 0679's design brief and awaits Ian's ruling.

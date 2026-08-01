@@ -23,22 +23,48 @@ context-scoped thing is derived from: the app registry scan, the workspace
 config overlay, the agent set, `PLEXI_CONTEXT_ROOT` in every pane's
 environment, notes scoping, and — the subject of the audit — app state paths.
 
-**Every place a root is set or changed:**
+**Every place a root is set or changed** — enumerated by grepping every write
+to `Context::root`, not by following the entry points a reader would expect:
 
 | Path | Root it assigns |
 |---|---|
 | `new_context_empty` (`plexi context create` with no root, ⌘-new-context) | the home directory, unconditionally |
 | `new_context_at_path` (`context create --root`, open-folder-as-context) | the given path |
-| `new_child_context` / `push_pane_to_subcontext` (sub-contexts, portals) | **the parent context's root, verbatim** |
-| `set_context_root` (`plexi context set-root`, ⇧⌘I, sidebar row menu, root overlay commit) | the given path, on one context, with no other checks |
+| `push_pane_to_subcontext` (push a pane into a sub-context) | **the parent context's `root`, verbatim** |
+| `new_child_context` (sub-contexts, portals) | the path its caller passes — and `new_child_context_from_keyboard` passes the parent's **`path`**, not its `root` |
+| `set_context_root` (`plexi context set-root`, ⇧⌘I, sidebar `SetRoot`, root-overlay commit with a non-empty path) | the given path, on one context, with no other checks |
+| `WindowMenuAction::ClearRoot` (sidebar row menu) | **clears the root by direct field write**, bypassing `set_context_root` |
+| Root-overlay commit with an empty buffer (`OverlayTarget::ContextRoot`) | **clears the root by direct field write**, likewise |
 | Workspace restore | whatever the saved file holds |
 
-Stint 0651 (open on PR #2536, not merged) makes `Context::root` non-optional,
-so "no root" stops being a state. It does not make roots unique.
+Two of these deserve spelling out, because both were missed on the first pass
+through this design and each is a hole a guard placed at the obvious entry
+point would leave open.
 
-**Are duplicates possible today?** They are not merely possible; two of the five
+**`Context::path` and `Context::root` are different fields, and nothing keeps
+them in sync.** `set_context_root` writes only `root`; nothing writes `path`
+after the context is created. So the keyboard sub-context path anchors the child
+at wherever its parent was *created* — which after any set-root is a directory
+the user deliberately moved away from. The audit reproduces this
+(`audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root`).
+A guard that only rejects *collisions* would wave this through: the child's root
+is not a duplicate, it is simply wrong.
+
+**Two paths clear the root by writing the field directly**, and both re-implement
+`set_context_root`'s transition-effects tail inline rather than calling it. That
+is the finding, not the typo: the choke point already exists and callers already
+go around it, so a convention that says "route root changes through
+`set_context_root`" is not a mechanism — it is a rule that has already been
+broken twice in shipped code.
+
+Stint 0651 (open on PR #2536, not merged) makes `Context::root` non-optional,
+so "no root" stops being a state. It does not make roots unique, and it does
+not close the direct-write paths.
+
+**Are duplicates possible today?** They are not merely possible; two of the
 paths above *guarantee* them. Every rootless new context lands on the home
-directory, and every sub-context inherits its parent's root by construction. The
+directory, and a pushed sub-context inherits its parent's root by construction.
+The
 audit records a live saved workspace holding two contexts both rooted at the home
 directory, and shows what that costs: a shared root means one shared
 context-scoped state file per app, addressed identically from both contexts,
@@ -53,12 +79,32 @@ shipped behavior.
 
 ### Recommended design
 
-**One guard, at one choke point, on the model.** Root assignment becomes a
-single fallible operation in `HostModel` — every path in the table above routes
-through it, and it returns a typed rejection naming the conflicting context.
-Guarding only `plexi context set-root`, or only creation, leaves four of five
-doors open; the audit's evidence is that the doors nobody thinks about (rootless
-create, sub-context inherit) are the ones duplicates actually come through.
+**One guard, at one choke point — and the choke point must be enforced by the
+compiler, not by convention.** Root assignment becomes a single fallible
+operation on the router: `set_root` and `clear_root`, both returning a typed
+rejection that names the conflicting context. Guarding only `plexi context
+set-root`, or only creation, leaves most of the table open; the audit's evidence
+is that the doors nobody thinks about (rootless create, sub-context inherit) are
+the ones duplicates actually come through.
+
+**`Context::root` becomes private to the router**, so those two methods are the
+only way to write it and a direct `.root = …` is a compile error. This is the
+part the first draft of this brief got wrong, and the correction is the whole
+lesson: the recommendation was "one choke point", the choke point already
+existed as `set_context_root`, and two shipped call sites already went around it
+by writing the field directly. A guard reachable only by a caller who chooses to
+call it does not survive its first busy afternoon. Encapsulation is what makes
+the count of mutation sites stop mattering — it stays correct when the eighth
+one is added by someone who never read this document.
+
+**The two clear paths route through `clear_root`**, which also owns the
+transition-effects tail both of them currently re-implement inline.
+
+**`Context::path` is the other half of the same defect.** Either it is kept in
+sync with `root` by the same operation, or the sub-context creation path stops
+reading it and reads `root` instead. Recommendation: the latter — `path` is the
+context's creation-time working directory and has no business anchoring a child.
+This is the seventh open decision in §5.
 
 **Sub-contexts are exempt, and the rule is restated to make that explicit:** *no
 two **top-level** contexts may share a root; a sub-context shares its parent's
@@ -108,7 +154,10 @@ that moment, so the set of duplicates can only shrink.
 - **Warn only, never block.** This is today's behavior. The audit is the
   evidence that a warning nobody reads does not prevent the data loss.
 - **Enforce in the CLI.** Leaves the GUI paths (⇧⌘I, sidebar, root overlay) and
-  workspace restore unguarded. The model is the only place all five paths meet.
+  workspace restore unguarded. The router is the only place they all meet.
+- **A guarded `set_context_root` that callers are expected to use.** This is
+  today's shape, and two call sites already bypass it. Rejected on the evidence
+  of its own track record.
 
 ### The comparison rule
 
@@ -241,14 +290,21 @@ filesystem ancestry.
    reversible.
 6. **Is rollup read-only?** Recommendation: yes for v1. Write-through can follow
    once the read view has been lived with.
+7. **Does a sub-context follow its parent's `root` or its `path`?** Today the
+   keyboard path takes `path`, which is frozen at creation and goes stale on
+   the first set-root. Recommendation: sub-context creation reads `root` only,
+   and `path` keeps its narrow meaning as the creation-time working directory.
+   The alternative — keeping the two fields in sync — preserves a second source
+   of truth for the same question, which is the anti-goal §4 cites.
 
 ## 6. Stints that would follow approval
 
 Described, not filed — this task files none.
 
-- **The guard.** Single fallible root-assignment operation on the model, every
-  assignment path routed through it, the path-comparison rule, and the rejection
-  error. Includes the sub-context exemption as ruled.
+- **The guard.** `Context::root` made private to the router behind fallible
+  `set_root` / `clear_root`, every assignment and clear path routed through
+  them, the path-comparison rule, and the rejection error. Includes the
+  sub-context exemption as ruled, and the `path`-vs-`root` decision from §5.7.
 - **Duplicate detection at load + `plexi context doctor`.** Warn trace, sidebar
   marking, and the one command that lists conflicts and resolves them.
 - **`plexi context set-root --steal`.** The takeover move the error text
