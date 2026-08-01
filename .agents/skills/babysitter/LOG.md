@@ -2114,3 +2114,19 @@ Still unfixed from the previous run's suggestion list:
   - "Retire workers at PR-open, not at merge" (L002) is in the ledger but SKILL.md step 6 still
     says retire at batch end. Reconcile next run.
   - Step 4's "every fix round runs on the large tier" still contradicts Ian's 2026-07-31 ruling.
+
+## 2026-08-01 — queue 0701 0702 0703 0591 (stable-v1 truth batch)
+- 20:14Z head start (pane 710, Ian's me-session relay). Queue: 0701 0702 0703 0591. auto_merge yes (standing).
+        Ruling context: docs/2026-08-01-v1-cut.md at alpha c071c8a6. Ian ruled DAW + media are STUBBED for
+        stable v1, so 0591 IS the resolution path for 0701's failing daw-gate-bundle green claim — the daw
+        node goes red/stub in ROADMAP.toml, not repaired to green.
+- 20:14Z BATCHED ALL FOUR INTO ONE PR. All four edit ROADMAP.toml; 0591/0703/0702 all add ReleaseFeature
+        variants in src/release.rs. Splitting guarantees serial rebase conflicts on both files.
+- 20:12Z head pruned completed `- [x]` entries from HUMAN_CHECKS.md at run start -> made alpha dirty ->
+        handed the `chore(babysitter):` commit to worker-1 as its step 0 (L010).
+- 20:13Z worker-1 spawned: pane 712, codex com (medium). Brief via file /tmp/bs-v1-stable/worker-brief.md
+- 20:13Z friction: `plexi pane new` has no --cwd, so the pane inherited the HEAD's cwd (~), not the repo
+        root — skills/just/stint all resolve from cwd. Patched the brief with an explicit cd line rather
+        than respawning. Worth a host primitive request if it recurs.
+- 20:14Z friction: collapsed paste again on a freshly-booted pane (L003, 7th observed occurrence).
+        `pane key 712 enter` submitted it; confirmed `pane status` -> working.
