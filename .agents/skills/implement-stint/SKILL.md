@@ -74,7 +74,17 @@ plexi pane slot write <name> <content> --replace
 - `--replace` is **mandatory on every write after the first**, or the write errors `slot already exists`.
 - Success is **silent** (no output, exit 0); failure prints a named error and exits non-zero. Trust the exit code — never read a slot back to confirm a write.
 
-Worker sequence: write `status` = `impl:working` at start, then `pr:working`, `blocked`, `needs-input`, or `failed` as those transitions happen; write the PR number to `pr` and any blocker reason to `last_error` the same way. Write `impl:done` (with `pr` set) the moment the PR is open and its checks are green.
+Worker sequence: write `status` = `impl:working` at start, then `pr:working`, `blocked`, or `failed` as those transitions happen; write the PR number to `pr` and any blocker reason to `last_error` the same way. Write `impl:done` (with `pr` set) the moment the PR is open and its checks are green. The legal states are `working | done | blocked | failed` — **`needs-input` is not a state.** A question is a `blocked`, never a slot value of its own.
+
+### Decision ladder — decide it, or block loudly
+
+Before you ask anyone anything, check whether it is your call. **A Done-When criterion that fails because of a pre-existing defect outside your diff is ALWAYS your call**: document the call in the PR body, file the defect as its own stint via `/create-stint`, and proceed to `done`. Do not stall, do not ask.
+
+If it is genuinely not your call: write `status` = `<step>:blocked`, put the one-line ask in `last_error`, file a gate (a stint tagged `gate` with the decision artifact — see the `file-gate` skill), and report to the head. The head decides second-opinion asks itself; only money, irreversible actions, spec reversals, and audible/visual taste calls reach a human.
+
+### NEVER END A TURN BARE
+
+**Every turn ends with `status` matching reality.** `working` only while you are actually inside a turn; otherwise `done`, `blocked`, or `failed` written *before* the turn ends. Ending a turn with a question in prose and no terminal slot state is the named failure mode — it is invisible to the head and to every watchdog, and it freezes the whole run. Proven live 2026-08-01 02:01 on stint 0674: a worker wrote `impl:needs-input` and went idle; the run was dead until a human noticed.
 
 ## Phase 0 - Resolve Task
 
