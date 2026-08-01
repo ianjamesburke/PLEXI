@@ -1148,6 +1148,42 @@ fn new_context_creates_top_level_empty_context() {
     );
 }
 
+/// Regression for stint 0607: a top-level context's root PTY must receive the
+/// new context identity, even though the previously active context remains
+/// selected while the new window is being seeded.
+#[test]
+fn new_context_root_pty_env_uses_its_own_context_identity() {
+    let mut h = crate::testing::HostHarness::new();
+    let previous_context_id = h.app.router.active().context_id;
+
+    h.app.new_context();
+
+    let new_context = h.app.router.active().clone();
+    if new_context.context_id == previous_context_id {
+        return; // PTY unavailable in this test environment.
+    }
+    let window = h
+        .app
+        .windows
+        .iter()
+        .find(|window| window.context_id == new_context.context_id)
+        .expect("new context window");
+    let terminal = window
+        .panes
+        .values()
+        .find_map(|pane| pane.as_terminal())
+        .expect("new context root terminal");
+
+    assert_eq!(
+        terminal.spawn_env.get("PLEXI_CONTEXT_ID"),
+        Some(&new_context.context_id.to_string())
+    );
+    assert_eq!(
+        terminal.spawn_env.get("PLEXI_CONTEXT_NAME"),
+        Some(&new_context.name)
+    );
+}
+
 /// Issue #2029: closing a sub-context portal that is the sole pane on a window must
 /// delete that window. Previously the window survived empty, showing the welcome screen.
 #[test]

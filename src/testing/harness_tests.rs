@@ -3303,7 +3303,11 @@ fn first_boot_seam_seeds_base_root_pane() {
     );
 
     let cwd = std::env::temp_dir();
-    if h.app.seed_window_root_pane(0, cwd, None, false).is_none() {
+    let context = h.app.pane_context_env_for_window(0);
+    if h.app
+        .seed_window_root_pane(0, &context, cwd, None, false)
+        .is_none()
+    {
         // No PTY in this env — the installer degrades to the welcome screen,
         // matching first boot's documented fallback. Nothing more to assert.
         return;
@@ -3329,7 +3333,11 @@ fn first_boot_seam_seeds_base_root_pane() {
 fn first_boot_shape_matches_new_context() {
     let mut h = HostHarness::new();
     let cwd = std::env::temp_dir();
-    if h.app.seed_window_root_pane(0, cwd, None, false).is_none() {
+    let context = h.app.pane_context_env_for_window(0);
+    if h.app
+        .seed_window_root_pane(0, &context, cwd, None, false)
+        .is_none()
+    {
         return; // no PTY in this env
     }
     let boot_pane_count = h.app.windows[0].panes.len();

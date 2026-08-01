@@ -233,8 +233,9 @@ impl PlexiApp {
             // the tree. If it has panes but none focused (rare), drop into the
             // standard terminal split path which will no-op for now.
             if self.windows[active].panes.is_empty() {
+                let context = self.pane_context_env_for_window(active);
                 if let Some((tree, panes, root_tile)) =
-                    self.create_single_pane_tree(None, None, false)
+                    self.create_single_pane_tree(&context, None, None, false)
                 {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
