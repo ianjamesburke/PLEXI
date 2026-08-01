@@ -219,3 +219,11 @@ Promoted into SKILL.md step 6 (retire at PR-open) on 2026-08-01, two runs after 
 It sat here unreconciled while three consecutive heads read the note and did not act, which is the
 standing proof that this ledger is written at run end and read by nobody at run start. A rule that
 lives only here is inert. The ledger is the receipt for a rule; SKILL.md is the rule.
+
+### L015a — amendment, same day
+The first implementation of L015 fired on the very first iteration, every iteration: the red that
+CAUSED the fix round is still on the wire for the whole round, so "wake on any red" is
+indistinguishable from "wake immediately." A watch that always fires carries exactly as much
+information as one that never fires (L013). Corrected: record the head sha when arming the watch and
+ignore CI until the sha changes. Generalisation worth keeping — a wake condition must be defined
+against state the head has NOT yet ruled on, never against raw current state.
