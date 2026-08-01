@@ -795,6 +795,11 @@ struct PythonOutputDecoder {
     rx: std::sync::mpsc::Receiver<DecodedOutput>,
     thread: Option<JoinHandle<()>>,
     stdout: DrainableOutput,
+    /// Decoded outputs sent but not yet taken. `std::sync::mpsc::Receiver` has
+    /// no length, and `needs_background_tick` must answer "is there work here"
+    /// without consuming anything — an off-screen pane is asked every frame and
+    /// a peek that took a message would drop it on the floor.
+    queued: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PythonOutputDecoder {
@@ -803,13 +808,36 @@ impl PythonOutputDecoder {
         let stdout = runtime.stdout.clone();
         let stdin = runtime.stdin.clone();
         let thread_stdout = stdout.clone();
+        let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let thread_queued = queued.clone();
         let thread = std::thread::Builder::new()
             .name(format!("plexi-python-decode-{app_id}"))
             .spawn(move || {
-                decode_loop(thread_stdout, stdin, app_id, tx, repaint);
+                decode_loop(thread_stdout, stdin, app_id, tx, repaint, thread_queued);
             })
             .ok();
-        Self { rx, thread, stdout }
+        Self {
+            rx,
+            thread,
+            stdout,
+            queued,
+        }
+    }
+
+    /// Take one decoded output, keeping [`Self::queued`] in step with the
+    /// channel. Every read of `rx` must go through here.
+    fn try_recv(&self) -> Result<DecodedOutput, std::sync::mpsc::TryRecvError> {
+        let output = self.rx.try_recv();
+        if output.is_ok() {
+            self.queued
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+        output
+    }
+
+    /// True when the guest has produced output the host has not read yet.
+    fn has_queued_output(&self) -> bool {
+        self.queued.load(std::sync::atomic::Ordering::Acquire) > 0
     }
 }
 
@@ -832,6 +860,7 @@ fn decode_loop(
     app_id: String,
     tx: std::sync::mpsc::Sender<DecodedOutput>,
     repaint: RepaintHook,
+    queued: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let mut partial: Vec<u8> = Vec::new();
     let mut last_tree: Option<Arc<PythonUiTree>> = None;
@@ -850,7 +879,14 @@ fn decode_loop(
             let value: Value = match serde_json::from_slice(line) {
                 Ok(value) => value,
                 Err(error) => {
-                    let _ = tx.send(DecodedOutput::DecodeError(error.to_string()));
+                    // Count before sending, never after: the paint side may take
+                    // the message the instant it lands, and a decrement that
+                    // beat its increment would underflow the unsigned counter
+                    // into "always busy".
+                    queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    if tx.send(DecodedOutput::DecodeError(error.to_string())).is_err() {
+                        queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    }
                     produced = true;
                     continue;
                 }
@@ -898,7 +934,9 @@ fn decode_loop(
                 if matches!(output, DecodedOutput::Tree { .. }) {
                     awaiting_full = false;
                 }
+                queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 if tx.send(output).is_err() {
+                    queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                     return; // paint side dropped the pane
                 }
                 produced = true;
@@ -1676,7 +1714,7 @@ impl LivePythonPane {
             }
         }
         loop {
-            match self.decoder.rx.try_recv() {
+            match self.decoder.try_recv() {
                 Ok(DecodedOutput::Tree {
                     frame_id,
                     tree,
@@ -2285,6 +2323,41 @@ impl LivePythonPane {
     }
     pub fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::AppCommand> {
         std::mem::take(&mut self.pending_commands)
+    }
+
+    /// Service the guest while the pane is not rendering (stint 0688).
+    ///
+    /// `ui` used to be the only caller of `drain_runtime`, so a pane in an
+    /// inactive context or under an occluded window read nothing back from its
+    /// subprocess. That is invisible for anything the guest only says while
+    /// being painted, and fatal for anything it says on its own: an assistant
+    /// `ToolCall` is written straight into the guest's stdin and answered
+    /// straight back out, with no render involved on either side, so every tool
+    /// call to a pane that was not painting sat in the decoder channel until
+    /// the broker's 30s timeout fired.
+    ///
+    /// This drains only. It deliberately does not call `fire_due_timers`:
+    /// timers push onto `pending_timer_events`, which is flushed solely by the
+    /// render request in `ui`, so firing them here would grow that queue
+    /// without bound behind an off-screen repeating timer. Delivering timers to
+    /// an unpainted pane is a separate capability, not part of unwedging the
+    /// command path.
+    pub fn background_tick(&mut self) {
+        let before = self.pending_commands.len();
+        self.drain_runtime();
+        let produced = self.pending_commands.len().saturating_sub(before);
+        if produced > 0 {
+            log::info!(
+                "app::{}: serviced {produced} command(s) off screen — pane is not rendering",
+                self.app_id
+            );
+        }
+    }
+
+    /// Whether [`Self::background_tick`] can currently make progress. Cheap and
+    /// non-consuming — the host asks this of every off-screen pane every frame.
+    pub fn needs_background_tick(&self) -> bool {
+        self.decoder.has_queued_output() || !self.pending_commands.is_empty()
     }
     pub fn display_name(&self) -> String {
         self.title.clone().unwrap_or_else(|| self.app_id.clone())
@@ -5480,6 +5553,145 @@ mod tests {
         )));
     }
 
+    /// Run one visible egui pass over the pane, the way `tiling.rs` does for a
+    /// pane the user can see. Used only to get the app past `init` — after
+    /// this the test never renders again, standing in for a pane that scrolled
+    /// off screen, moved to an inactive context, or sits under an occluded
+    /// window.
+    fn visible_pass(runtime: &mut crate::host::pane::AppRuntime, colors: &crate::ui::theme::Colors) {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    runtime.ui(
+                        ui,
+                        &crate::app::app_trait::AppRenderContext {
+                            colors,
+                            pane_id: 1,
+                        },
+                        None,
+                    );
+                });
+            },
+        );
+    }
+
+    /// Stint 0684: an assistant tool call to an app pane that is *not*
+    /// rendering must still be answered. `tool_dispatch` writes the `ToolCall`
+    /// straight into the guest's stdin and blocks on the reply, so the guest
+    /// runs and answers regardless of what the host is painting — but the host
+    /// only ever read that reply out of the decoder channel inside
+    /// `LivePythonPane::ui`. A pane in an inactive context, behind an occluded
+    /// window, or otherwise off screen therefore never surfaced its
+    /// `ToolResult` and every call to it timed out.
+    ///
+    /// The contract this pins: after one visible pass to get the app running,
+    /// `background_tick` alone must carry a tool call to its result.
+    #[test]
+    fn python_tool_result_reaches_the_host_without_a_ui_pass() {
+        let app = tempdir().expect("app dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "from plexi_sdk.effects import AiTool, ExposeTools, ToolResult\n\
+             from plexi_sdk.events import ToolCall\n\
+             from plexi_sdk.ui import Column, Text\n\
+             \n\
+             def init(size, args):\n\
+             \x20   return [ExposeTools([AiTool(name='probe.ping', description='ping',\n\
+             \x20       input_schema={'type': 'object', 'properties': {}},\n\
+             \x20       output_schema={'type': 'object'}, read_only=True)])]\n\
+             \n\
+             def update(event):\n\
+             \x20   if isinstance(event, ToolCall):\n\
+             \x20       return [ToolResult(event.call_id, output_json='{\"pong\": true}')]\n\
+             \x20   return []\n\
+             \n\
+             def view():\n\
+             \x20   return Column([Text('probe')])\n",
+        )
+        .expect("write app");
+        let config = PythonLaunchConfig {
+            app_id: "test.tool-offscreen".to_string(),
+            app_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+        };
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+        let mut runtime = crate::host::pane::AppRuntime::Python(Box::new(
+            LivePythonPane::launch(config).expect("launch CPython WASM"),
+        ));
+
+        // The pane was on screen once: render until the app has declared its
+        // tools, which is how `tool_dispatch` learns to reach it at all.
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(60));
+        let mut exposed = false;
+        while !exposed && std::time::Instant::now() < deadline {
+            visible_pass(&mut runtime, &colors);
+            exposed = runtime
+                .take_pending_commands()
+                .iter()
+                .any(|cmd| matches!(cmd, crate::app::app_trait::AppCommand::ExposeTools { .. }));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(exposed, "app never exposed its tools on a visible pass");
+
+        // Now the pane goes off screen. `tool_dispatch` still reaches the
+        // guest — it writes to stdin, which is independent of rendering.
+        let crate::host::pane::AppRuntime::Python(pane) = &runtime else {
+            panic!("python runtime");
+        };
+        pane.tool_event_sender()
+            .push_json_line(&json!({
+                "type": "tool_call",
+                "call_id": "call-offscreen",
+                "name": "probe.ping",
+                "input_json": "{}",
+                "caller_id": "test",
+            }))
+            .expect("deliver tool call");
+
+        // Only background servicing runs from here — no `ui` pass ever again.
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(30));
+        let mut result = None;
+        while result.is_none() && std::time::Instant::now() < deadline {
+            if runtime.needs_background_tick() {
+                runtime.background_tick();
+            }
+            result = runtime.take_pending_commands().into_iter().find_map(|cmd| {
+                match cmd {
+                    crate::app::app_trait::AppCommand::ToolResult {
+                        call_id,
+                        output_json,
+                        ..
+                    } if call_id == "call-offscreen" => Some(output_json),
+                    _ => None,
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        assert_eq!(
+            result.expect(
+                "an off-screen pane must still answer tool calls — no ui pass runs for a pane in \
+                 an inactive context or under an occluded window"
+            ),
+            Some("{\"pong\": true}".to_string())
+        );
+    }
+
     #[test]
     fn headless_frame_fails_fast_when_the_guest_dies_at_import() {
         let app = tempdir().expect("app dir");
@@ -6117,8 +6329,10 @@ execution = "cloud"
         let (tx, rx) = std::sync::mpsc::channel();
         let repaint: RepaintHook = Arc::new(Mutex::new(None));
         let reader = stdout.clone();
+        let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let thread_queued = queued.clone();
         let handle = std::thread::spawn(move || {
-            decode_loop(reader, stdin, "test".to_string(), tx, repaint);
+            decode_loop(reader, stdin, "test".to_string(), tx, repaint, thread_queued);
         });
 
         // Serialize to one line each — the decoder splits on '\n', so the
@@ -6157,6 +6371,12 @@ execution = "cloud"
         };
         assert_eq!(text.text, "score=7");
 
+        // Stint 0688: the decoder counts every output it sends, so an off-screen
+        // pane can be asked "do you have work?" without consuming anything. Both
+        // frames are counted here — this test reads the raw channel, and only
+        // `PythonOutputDecoder::try_recv` decrements.
+        assert_eq!(queued.load(std::sync::atomic::Ordering::Acquire), 2);
+
         stdout.close();
         handle.join().expect("decoder thread");
     }
@@ -6170,7 +6390,14 @@ execution = "cloud"
         let repaint: RepaintHook = Arc::new(Mutex::new(None));
         let reader = stdout.clone();
         let handle = std::thread::spawn(move || {
-            decode_loop(reader, stdin, "test".to_string(), tx, repaint);
+            decode_loop(
+                reader,
+                stdin,
+                "test".to_string(),
+                tx,
+                repaint,
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            );
         });
 
         // A delta with no prior full tree cannot be applied: fail-loud resync.
