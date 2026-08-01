@@ -2789,3 +2789,88 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
         "return window must be the caller's, not the globally active one"
     );
 }
+
+// ── Stint 0678 audit evidence ────────────────────────────────────────────────
+// These two tests are the reproduction half of the context-scoped state
+// persistence audit (docs/context-state-persistence-audit.md). They assert
+// what alpha does today, not what it should do — a future fix is expected to
+// change them, and the doc names them as the evidence it rests on.
+
+/// Q1: nothing rejects two contexts pointing at the same root. `set_context_root`
+/// has no uniqueness check, and `new_context_empty` anchors every new context at
+/// the home directory, so duplicates are the default outcome rather than an edge
+/// case. Every context-scoped state path derived from a shared root collides.
+#[test]
+fn audit_0678_two_contexts_accept_the_same_root() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let shared = tempfile::tempdir().expect("shared root");
+    let second_ctx_id = 4242;
+    app.router.push(crate::host::context::Context {
+        name: "Second".into(),
+        path: shared.path().to_path_buf(),
+        root: None,
+        description: None,
+        context_id: second_ctx_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+
+    let first_ctx_id = app.router.get(0).context_id;
+    app.set_context_root(shared.path().to_path_buf(), Some(first_ctx_id));
+    app.set_context_root(shared.path().to_path_buf(), Some(second_ctx_id));
+
+    let roots: Vec<_> = app.router.iter().map(|c| c.root.clone()).collect();
+    assert_eq!(
+        roots,
+        vec![
+            Some(shared.path().to_path_buf()),
+            Some(shared.path().to_path_buf())
+        ],
+        "set_context_root accepts a root already held by another context"
+    );
+}
+
+/// Q3: a root change after launch does not follow a running app. The pane keeps
+/// the `workspace_root` captured when it was created, which is the value
+/// `python_state_path` reads, so `plexi context set-root` moves where *new*
+/// launches read and write while live panes keep writing the old location.
+#[test]
+fn audit_0678_set_context_root_does_not_move_a_live_app_pane_root() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (_tile, pane_id) = app.add_test_pane();
+    let launch_root = app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(|p| p.as_app())
+        .expect("test pane is an app pane")
+        .workspace_root
+        .clone();
+
+    let moved = tempfile::tempdir().expect("new root");
+    let ctx_id = app.router.get(0).context_id;
+    app.set_context_root(moved.path().to_path_buf(), Some(ctx_id));
+
+    let after = app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(|p| p.as_app())
+        .expect("test pane is still an app pane")
+        .workspace_root
+        .clone();
+    assert_eq!(
+        after, launch_root,
+        "a live app pane keeps its launch-time workspace_root after set_context_root"
+    );
+    assert_ne!(
+        after,
+        moved.path().to_path_buf(),
+        "the pane does not follow the context's new root"
+    );
+}

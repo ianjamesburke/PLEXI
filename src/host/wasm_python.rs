@@ -4692,6 +4692,92 @@ mod tests {
         );
     }
 
+    /// Stint 0678 audit evidence (Q2/Q5): two live instances of one app under
+    /// the same root address one file, and the loser is the instance that
+    /// persists *last* with the older in-memory map — not the one that wrote
+    /// the stale bytes first. Replays the exact host sequence: each instance
+    /// loads at launch (`load_python_state`), then persists its own map through
+    /// the same writer `save_state` uses (`write_python_state_atomic`).
+    #[test]
+    fn audit_0678_second_instance_clobbers_the_first_instances_items() {
+        // Isolate `config_dir()` so the global-state fallback in
+        // `load_python_state` resolves inside a tempdir, never the real profile.
+        let profile = tempdir().expect("profile");
+        let _profile = crate::config::set_test_profile_dir(profile.path().join("profile"));
+        let workspace = tempdir().expect("workspace");
+        let first = state_test_config(workspace.path(), "todo");
+        let second = state_test_config(workspace.path(), "todo");
+        assert_eq!(
+            python_state_path(&first),
+            python_state_path(&second),
+            "instance identity does not enter the state path — only app_id and workspace_root do"
+        );
+
+        // Both instances launch against an empty store and hold their own copy.
+        let mut first_state = load_python_state(&first).expect("first launch load");
+        let second_state = load_python_state(&second).expect("second launch load");
+        assert!(first_state.is_empty() && second_state.is_empty());
+
+        // The user adds an item in the first instance; it persists.
+        first_state.insert("items".to_string(), json!(["buy milk"]));
+        let path = python_state_path(&first);
+        std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
+        write_python_state_atomic(
+            &path,
+            &serde_json::to_vec_pretty(&first_state).expect("serialize"),
+        )
+        .expect("first persist");
+        assert_eq!(
+            load_python_state(&second).expect("readback")["items"],
+            json!(["buy milk"])
+        );
+
+        // The second instance persists anything at all — a draft keystroke is
+        // enough — and writes the empty item list it has held since launch.
+        write_python_state_atomic(
+            &path,
+            &serde_json::to_vec_pretty(&second_state).expect("serialize"),
+        )
+        .expect("second persist");
+
+        let survivor = load_python_state(&first).expect("post-clobber load");
+        assert!(
+            survivor.get("items").is_none(),
+            "the second instance's launch-time map overwrote the item: {survivor:?}"
+        );
+    }
+
+    /// Stint 0678 audit evidence (Q4/Q5): state is addressed by
+    /// `workspace_root`, so the same app id launched under a different root
+    /// reads a different file and sees nothing. Nothing merges the two, and
+    /// nothing warns — this is the "write to a path nobody reads" shape.
+    #[test]
+    fn audit_0678_state_written_under_one_root_is_invisible_under_another() {
+        let profile = tempdir().expect("profile");
+        let _profile = crate::config::set_test_profile_dir(profile.path().join("profile"));
+        let root_a = tempdir().expect("root a");
+        let root_b = tempdir().expect("root b");
+        let under_a = state_test_config(root_a.path(), "todo");
+        let under_b = state_test_config(root_b.path(), "todo");
+
+        let path_a = python_state_path(&under_a);
+        std::fs::create_dir_all(path_a.parent().expect("state parent")).expect("mkdir");
+        write_python_state_atomic(&path_a, br#"{"items":["buy milk"]}"#).expect("persist under A");
+
+        assert_eq!(
+            load_python_state(&under_a).expect("load under A")["items"],
+            json!(["buy milk"])
+        );
+        assert!(
+            load_python_state(&under_b).expect("load under B").is_empty(),
+            "a launch rooted elsewhere sees an empty store, not the items"
+        );
+        assert!(
+            !python_state_path(&under_b).exists(),
+            "reading under root B does not create or migrate anything"
+        );
+    }
+
     #[test]
     fn python_state_never_overwrites_canonical_with_orphan() {
         let workspace = tempdir().expect("workspace");
