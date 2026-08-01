@@ -2763,31 +2763,29 @@ impl HeadlessBackend {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
-                    if let AppRuntime::Builtin(_) = &app_pane.runtime {
-                        return Some(AppState {
-                            pane_id,
-                            lifecycle: "running".to_string(),
-                            tree: serde_json::json!({
-                                "semantic": app_pane.semantic_state(),
-                                "app_state": app_pane.runtime.semantic_details(),
-                            }),
-                        });
-                    }
-                    if let AppRuntime::Python(_) = &app_pane.runtime {
-                        return Some(AppState {
-                            pane_id,
-                            lifecycle: "running".to_string(),
-                            tree: serde_json::json!({"semantic": app_pane.semantic_state()}),
-                        });
-                    }
-                    if let AppRuntime::Wasm(w) = &app_pane.runtime {
-                        return Some(AppState {
-                            pane_id,
-                            lifecycle: if w.is_running() { "running" } else { "exited" }
-                                .to_string(),
-                            tree: serde_json::json!({"frame": w.last_render_text(), "semantic": app_pane.semantic_state()}),
-                        });
-                    }
+                    let (lifecycle, guest_error) = app_pane.runtime.lifecycle();
+                    let tree = match &app_pane.runtime {
+                        AppRuntime::Builtin(_) => serde_json::json!({
+                            "semantic": app_pane.semantic_state(),
+                            "app_state": app_pane.runtime.semantic_details(),
+                        }),
+                        AppRuntime::Python(_) => serde_json::json!({
+                            "semantic": app_pane.semantic_state(),
+                            // Same nested shape as the get_pane_state IPC
+                            // response, so scene assertions exercise what
+                            // agents actually read.
+                            "failure": guest_error.map(|error| serde_json::json!({ "error": error })),
+                        }),
+                        AppRuntime::Wasm(w) => serde_json::json!({
+                            "frame": w.last_render_text(),
+                            "semantic": app_pane.semantic_state(),
+                        }),
+                    };
+                    return Some(AppState {
+                        pane_id,
+                        lifecycle: lifecycle.to_string(),
+                        tree,
+                    });
                 }
             }
             None

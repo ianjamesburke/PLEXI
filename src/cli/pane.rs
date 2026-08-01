@@ -1173,12 +1173,20 @@ pub fn pane_state_cli(pane_id: u64) -> i32 {
         Err(code) => return code,
     };
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        if let Some(err) = pane_state_envelope_error(&v) {
             eprintln!("error: {err}");
             return 1;
         }
     }
     print_json_output(&content)
+}
+
+/// The pane-state transport envelope signals failure with a top-level `error`
+/// string. Successful responses never carry a top-level `error` key — guest
+/// failure detail is nested under `failure` (see the `get_pane_state` handler)
+/// — so a success can never be misread as a transport failure here.
+pub(crate) fn pane_state_envelope_error(value: &serde_json::Value) -> Option<&str> {
+    value.get("error").and_then(|e| e.as_str())
 }
 
 /// `plexi open <type_id> [args...] [--layout=X]`
