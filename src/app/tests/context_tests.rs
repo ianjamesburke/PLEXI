@@ -2856,11 +2856,29 @@ fn audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root(
         "precondition: set_context_root leaves `path` untouched"
     );
 
+    // The divergence itself is observable without creating anything, and it is
+    // the necessary condition for the defect: `root` moved, `path` did not.
+    // Asserted before the child exists so this test still carries evidence in a
+    // PTY-less environment, where the child is never created — an audit test
+    // that returns early asserting nothing is exactly the vacuity this round
+    // exists to remove.
+    assert_eq!(
+        app.router.get(0).root.as_deref(),
+        Some(moved.path()),
+        "the parent's root moved"
+    );
+    assert_ne!(
+        app.router.get(0).path,
+        moved.path().to_path_buf(),
+        "but its `path` still names the directory it was created in — the two \
+         fields have diverged, and sub-context creation reads the stale one"
+    );
+
     let before = app.router.len();
     app.new_child_context_from_keyboard();
     if app.router.len() == before {
-        // No PTY available in this environment — the child is never created,
-        // so there is nothing to assert about its root.
+        // No PTY: the child is never created. The divergence asserted above is
+        // the whole of what this environment can observe, and it has been.
         return;
     }
 

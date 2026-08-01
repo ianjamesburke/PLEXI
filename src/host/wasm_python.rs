@@ -4839,7 +4839,8 @@ mod tests {
                 app_dir.join("manifest.toml"),
                 format!(
                     "schema_version = 1\n\n[app]\nid = \"{app_id}\"\ntype = \"app\"\n\
-                     name = \"{app_id}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n"
+                     name = \"{app_id}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n\
+                     \n[runtime]\npython_compat = true\n"
                 ),
             )
             .expect("write manifest");
