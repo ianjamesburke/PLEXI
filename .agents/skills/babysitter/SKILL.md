@@ -174,7 +174,7 @@ The command blocks until the agent reports a booted idle prompt and prints its p
 
 ## Model selection per pane
 
-Pick the tier at launch via the alias: workers default to medium (`cm`/`com`); drop to small (`cs`/`cos`) only for genuinely trivial mechanical batches, and start on large (`cl`/`col`) for hard or ambiguous ones. Testers launch medium (`cm`/`com`) — driving a real build and judging PASS/FAIL is not trivial mechanical work. Mid-run escalation is the only use of `/model`: escalate a warm pane to the large-tier model the moment it is fumbling/looping, and always for fix rounds (step 4).
+Pick the tier at launch via the alias: workers default to medium (`cm`/`com`); drop to small (`cs`/`cos`) only for genuinely trivial mechanical batches, and start on large (`cl`/`col`) for hard or ambiguous ones. Testers/validators launch small (`cs`/`cos`) — PR validation is checklist-driven (Ian's ruling 2026-07-31); escalate a fumbling tester via `/model`. Mid-run escalation is the only other use of `/model`: escalate a warm pane to the large-tier model the moment it is fumbling/looping, and always for fix rounds (step 4). Spawn agents with the pane cwd inside the repo root — skills resolve from cwd, and a slash command in the wrong directory dies as `Unknown command`. Launch the agent bare, then `pane send` the slash command + `pane key <id> enter`; send only the command and its argument (`/validate-pr 2540`) — never append extra instruction prose; if the skill needs more context to do its job, fix the skill.
 
 ## The loop
 
@@ -366,7 +366,11 @@ The full sprint queue is never carried in context or in the baton — sprint-que
 
 ## Human-check queue — `HUMAN_CHECKS.md` (next to this SKILL.md)
 
-Some stints carry a **`## Human Check`** section in their body: a validation only a human can perform (visual taste, audible sound, an external account). These never block the run and never park a batch. The contract:
+Two classes, distinguished by section name in the stint body:
+
+**`## Human Gate` — blocking, pre-merge.** The PR does not merge until Ian drives it by hand. `/validate-pr` owns the mechanics: on tester PASS it holds the merge, keeps the `plexi-pr-<N>` install on disk, and appends a HUMAN_CHECKS.md entry with a 1–2 item drive checklist and a Findings line where Ian's notes route a fix round on the same PR. `HUMAN_CHECKS.md` is therefore also the live list of PR builds installed and waiting for Ian's hands. Gated batches don't park the run — roll to the next batch; downstream stints that depend on a gated PR wait.
+
+**`## Human Check` — non-blocking, post-merge.** A validation only a human can perform (visual taste, audible sound, an external account). These never block the run and never park a batch. The contract:
 
 - The tester validates everything else as normal; a Human Check item is **out of the tester's scope** and its absence is not a FAIL.
 - Any evidence the check needs (before/after PNGs, scene shots) is produced by the worker or tester into a **stable path** — `.stint/evidence/<stint-id>-<name>.png` — never a pane scratch dir or a `pr-<N>` profile that gets reaped.
@@ -451,3 +455,4 @@ If `plexi pane send --help` does not list `--submit`, you are on a pre-build; us
 - **Log as you go.** Timestamped events into `LOG.md` next to this skill; sprint recap at each sprint boundary (see Run log).
 - Verify state with `gh`/`stint`, not any pane's self-report.
 - Use `pane slot wait` for state transitions; on timeout, inspect `pane status` before nudging.
+- **Worktree hygiene (Ian's ruling 2026-07-31).** Merge and cancel already reap their own trees (`just merge-pr`, `/cancel-pr`); the leak is lanes that end any other way. At every batch boundary and at run end, the head reaps orphans: a lane that died, hard-rejected, or was abandoned gets `wtp rm` (worker pane runs it, not the head). Clean tree → remove. Dirty tree → remove only if a merged/superseding PR covers its scope; otherwise hold and list it in `RUN_STATE.md` under `ORPHANED_WORKTREES` with one line on what's uncommitted. Unpushed commits → never remove; hold and list. A run may not close its final `LOG.md` recap while unreaped orphans are unlisted.
