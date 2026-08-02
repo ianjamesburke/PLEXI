@@ -26,6 +26,13 @@ env:
   # Consumed by `scene_timeout` in src/scenes.rs.
   PLEXI_SCENE_TIMEOUT_SCALE: '4'
 
+  # Scene evidence spawns real Python guests, which run as CPython-in-Wasmtime.
+  # Without the verified bundle every such scene reports wait_app_frame_failed —
+  # there is no interpreter to produce a first frame, and no timeout is long
+  # enough to fix that. Keep in step with `rust-host.yml`.
+  WASI_BUNDLE_MODE: prefetch
+  PLEXI_CPYTHON_BUNDLE_DIR: /Users/runner/.plexi-ci/wasm-bundles
+
 jobs:
   evidence:
     name: evidence
@@ -54,6 +61,17 @@ jobs:
           key: ${{ runner.os }}-cargo-evidence-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-evidence-
+
+      - name: Restore CPython WASI bundle cache
+        uses: actions/cache@v4
+        with:
+          path: /Users/runner/.plexi-ci/wasm-bundles
+          # Same pinned release as rust-host.yml; bump both together when
+          # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
+          key: cpython-wasi-3.12.12-wasi_sdk-20
+
+      - name: Prefetch verified CPython WASI bundle
+        run: bash scripts/fetch-cpython-bundle.sh
 
       - name: Evidence resolver fixtures
         run: just roadmap-evidence-fixtures
