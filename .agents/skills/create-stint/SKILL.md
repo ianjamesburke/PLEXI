@@ -149,21 +149,23 @@ If a GitHub issue should be created for this work, create it in Step 6. If one a
 
 ## Step 5 -- Write the Task File
 
-Find the next available ID:
+Reserve the ID atomically and capture it once:
 
 ```bash
-ls .stint/tasks/ | grep -oE '^[0-9]+' | sort -n | tail -1
+ID="$(stint reserve)"
 ```
 
-Increment by 1, zero-pad to 4 digits. Confirm no collision.
+Use `$ID` for the filename and frontmatter below. The reservation remains
+spent, so never derive an ID by listing task files or call `stint reserve`
+again for the same task.
 
-File path: `.stint/tasks/<NNNN>-<kebab-slug>.md`
+File path: `.stint/tasks/$ID-<kebab-slug>.md`
 
 Template:
 
 ```markdown
 ---
-id: "<NNNN>"
+id: "$ID"
 title: "<title>"
 status: todo
 priority: <p0-p4>
