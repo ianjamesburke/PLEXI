@@ -3233,7 +3233,10 @@ mod tests {
             app.next_window_id += 1;
             let inactive_root = std::path::PathBuf::from("/projects/narrator-site");
             app.router.push(crate::host::context::Context {
-                name: "Narrator Site".to_string(),
+                // Deliberately longer than a normal workspace title: the
+                // screenshot must exercise truncation without making the
+                // ordinary active title a false-positive fixture.
+                name: "Narrator Video Production Workspace".to_string(),
                 root: inactive_root.clone(),
                 description: None,
                 context_id: inactive_context_id,

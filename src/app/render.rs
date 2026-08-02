@@ -3,6 +3,7 @@
 use super::{ClickFlash, PlexiApp};
 use crate::app_protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
+use crate::ui::style;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_tiles::{Tile, TileId};
 use std::collections::HashMap;
@@ -187,7 +188,7 @@ impl PlexiApp {
                 }
             });
             egui::Panel::left("sidebar")
-                .default_size(220.0)
+                .default_size(style::SIDEBAR_DEFAULT_W)
                 .size_range(140.0..=400.0)
                 .resizable(true)
                 .show_separator_line(false)
