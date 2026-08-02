@@ -275,6 +275,10 @@ pub struct PlexiApp {
     pub(crate) modal_input_buffer: String,
     /// Text being composed in the quick note modal.
     pub(crate) quick_note_text: String,
+    /// Local images staged by the QuickNote modal. They are copied into the
+    /// Notes collection only when the user saves, so discard never leaves
+    /// unattached assets behind.
+    pub(crate) quick_note_attachments: Vec<PathBuf>,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
     /// Notes picker: inbox notes first, then workspace notes sorted by mtime.
@@ -1428,6 +1432,7 @@ impl PlexiApp {
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
                     quick_note_text: String::new(),
+                    quick_note_attachments: Vec::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
@@ -1691,6 +1696,7 @@ impl PlexiApp {
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
             quick_note_text: String::new(),
+            quick_note_attachments: Vec::new(),
             quick_note_ctx: QuickNoteCtx::default(),
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
@@ -2009,7 +2015,18 @@ impl PlexiApp {
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
     ) -> (Self, ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>) {
-        let config = config::PlexiConfig::default();
+        Self::new_for_test_with_config(ctx, frame_tick, config::PlexiConfig::default())
+    }
+
+    /// Construct the isolated headless host with an explicit already-loaded
+    /// configuration. Tests that exercise config plumbing load it through an
+    /// isolated profile before calling this helper.
+    #[cfg(test)]
+    pub fn new_for_test_with_config(
+        ctx: egui::Context,
+        frame_tick: crate::platform::logging::FrameTick,
+        config: config::PlexiConfig,
+    ) -> (Self, ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>) {
         let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -2052,7 +2069,7 @@ impl PlexiApp {
                 scheduler: crate::host::scheduler::Scheduler::new(),
                 theme: theme::terminal_theme(&theme_cfg),
                 colors,
-                default_font_size: theme::FONT_SIZE,
+                default_font_size: config.font_size.unwrap_or(theme::FONT_SIZE),
                 ctx,
                 router: crate::workspace::router::WorkspaceRouter::new(
                     vec![crate::host::context::Context {
@@ -2139,6 +2156,7 @@ impl PlexiApp {
                 modal_focused_option: 0,
                 modal_input_buffer: String::new(),
                 quick_note_text: String::new(),
+                quick_note_attachments: Vec::new(),
                 quick_note_ctx: QuickNoteCtx::default(),
                 notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
