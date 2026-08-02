@@ -50,8 +50,15 @@ pub enum EditorCommand {
     /// Delete selection, or every grapheme from the caret back to the start
     /// of the current line. This is the macOS Cmd+Backspace behavior.
     KillToLineStart,
+    /// Delete selection, or the word immediately before the caret.
+    DeleteWordBackward,
     /// Delete selection, or one grapheme right of the caret.
     DeleteForward,
+    /// Delete selection, or the word immediately after the caret.
+    DeleteWordForward,
+    /// Delete selection, or every grapheme from the caret to the end of the
+    /// current line. This is the macOS Cmd+Delete behavior.
+    KillToLineEnd,
     Move {
         movement: Movement,
         extend: bool,
@@ -191,7 +198,10 @@ impl Document {
             EditorCommand::InsertNewline => self.insert_newline(),
             EditorCommand::Backspace => self.delete(true),
             EditorCommand::KillToLineStart => self.kill_to_line_start(),
+            EditorCommand::DeleteWordBackward => self.delete_word(true),
             EditorCommand::DeleteForward => self.delete(false),
+            EditorCommand::DeleteWordForward => self.delete_word(false),
+            EditorCommand::KillToLineEnd => self.kill_to_line_end(),
             EditorCommand::Move { movement, extend } => self.do_move(movement, extend),
             EditorCommand::Indent => self.indent(),
             EditorCommand::Outdent => self.outdent(),
@@ -390,8 +400,9 @@ impl Document {
         self.commit(ops, selection_before, start_char, false);
     }
 
-    /// Cmd+Backspace: delete the selection, or the current line prefix. At a
-    /// line start it is intentionally a no-op rather than joining lines.
+    /// Cmd+Backspace: delete the selection, or the current line prefix. On a
+    /// blank line, remove its preceding newline so the blank line does not
+    /// become a dead-end keyboard operation.
     fn kill_to_line_start(&mut self) {
         if self.selection.is_range() {
             self.delete(true);
@@ -402,12 +413,74 @@ impl Document {
         let start_char = self.buffer.line_to_char(caret.line);
         let end_char = movement::cursor_to_char(&self.buffer, caret);
         if start_char == end_char {
+            if caret.line > 0 && movement::line_len(&self.buffer, caret.line) == 0 {
+                let newline_char = start_char - 1;
+                let ops = vec![EditOperation::Delete {
+                    pos: newline_char,
+                    text: self.buffer.slice(newline_char, start_char),
+                }];
+                log::info!("editor: Cmd+Backspace removed blank line");
+                self.commit(ops, selection_before, newline_char, false);
+            }
             return;
         }
         let ops = vec![EditOperation::Delete {
             pos: start_char,
             text: self.buffer.slice(start_char, end_char),
         }];
+        self.commit(ops, selection_before, start_char, false);
+    }
+
+    /// Option+Backspace / Option+Delete: delete the adjacent word, preserving
+    /// grapheme boundaries and treating a selection as the deletion target.
+    fn delete_word(&mut self, backward: bool) {
+        if self.selection.is_range() {
+            self.delete(backward);
+            return;
+        }
+        let selection_before = self.selection;
+        let caret = movement::clamp(&self.buffer, self.selection.head);
+        let other = if backward {
+            movement::word_left(&self.buffer, caret)
+        } else {
+            movement::word_right(&self.buffer, caret)
+        };
+        let a = movement::cursor_to_char(&self.buffer, other);
+        let b = movement::cursor_to_char(&self.buffer, caret);
+        let (start_char, end_char) = (a.min(b), a.max(b));
+        if start_char == end_char {
+            return;
+        }
+        let ops = vec![EditOperation::Delete {
+            pos: start_char,
+            text: self.buffer.slice(start_char, end_char),
+        }];
+        log::info!(
+            "editor: Option+{} deleted adjacent word",
+            if backward { "Backspace" } else { "Delete" }
+        );
+        self.commit(ops, selection_before, start_char, false);
+    }
+
+    /// Cmd+Delete: delete the selection, or the current line suffix.
+    fn kill_to_line_end(&mut self) {
+        if self.selection.is_range() {
+            self.delete(false);
+            return;
+        }
+        let selection_before = self.selection;
+        let caret = movement::clamp(&self.buffer, self.selection.head);
+        let start_char = movement::cursor_to_char(&self.buffer, caret);
+        let end_char =
+            self.buffer.line_to_char(caret.line) + movement::line_len(&self.buffer, caret.line);
+        if start_char == end_char {
+            return;
+        }
+        let ops = vec![EditOperation::Delete {
+            pos: start_char,
+            text: self.buffer.slice(start_char, end_char),
+        }];
+        log::info!("editor: Cmd+Delete removed line suffix");
         self.commit(ops, selection_before, start_char, false);
     }
 
@@ -659,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn kill_to_line_start_is_atomic_grapheme_safe_and_does_not_join_lines() {
+    fn kill_to_line_start_is_atomic_grapheme_safe_and_removes_blank_lines() {
         let mut d = doc("first\npre café👨\u{200d}👩 tail");
         d.apply(EditorCommand::SetCursor(Cursor::new(1, 12)));
         d.apply(EditorCommand::KillToLineStart);
@@ -672,10 +745,50 @@ mod tests {
         d.apply(EditorCommand::KillToLineStart);
         assert_eq!(d.text(), "first\npre café👨\u{200d}👩 tail");
 
+        let mut blank_line = doc("first\n\nthird");
+        blank_line.apply(EditorCommand::SetCursor(Cursor::new(1, 0)));
+        blank_line.apply(EditorCommand::KillToLineStart);
+        assert_eq!(blank_line.text(), "first\nthird");
+        assert_eq!(blank_line.cursor(), Cursor::new(0, 5));
+        blank_line.apply(EditorCommand::Undo);
+        assert_eq!(blank_line.text(), "first\n\nthird");
+
         d.apply(EditorCommand::SetCursor(Cursor::new(1, 4)));
         d.apply(EditorCommand::ExtendTo(Cursor::new(1, 11)));
         d.apply(EditorCommand::KillToLineStart);
         assert_eq!(d.text(), "first\npre  tail");
+    }
+
+    #[test]
+    fn word_deletion_is_atomic_and_grapheme_safe_in_both_directions() {
+        let mut d = doc("alpha beta 👨\u{200d}👩");
+        d.apply(EditorCommand::Move {
+            movement: Movement::DocEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::DeleteWordBackward);
+        assert_eq!(d.text(), "alpha beta ");
+        assert_eq!(d.cursor(), Cursor::new(0, 11));
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "alpha beta 👨\u{200d}👩");
+
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
+        d.apply(EditorCommand::DeleteWordForward);
+        assert_eq!(d.text(), " beta 👨\u{200d}👩");
+        assert_eq!(d.cursor(), Cursor::new(0, 0));
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "alpha beta 👨\u{200d}👩");
+    }
+
+    #[test]
+    fn kill_to_line_end_deletes_only_the_current_line_suffix() {
+        let mut d = doc("first\nsecond");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 2)));
+        d.apply(EditorCommand::KillToLineEnd);
+        assert_eq!(d.text(), "fi\nsecond");
+        assert_eq!(d.cursor(), Cursor::new(0, 2));
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "first\nsecond");
     }
 
     #[test]

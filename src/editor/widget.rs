@@ -1650,7 +1650,16 @@ fn translate_key(
         Key::Backspace if modifiers.command && !modifiers.shift && !modifiers.alt => {
             Some(EditorCommand::KillToLineStart)
         }
+        Key::Backspace if modifiers.alt && !modifiers.command && !modifiers.shift => {
+            Some(EditorCommand::DeleteWordBackward)
+        }
         Key::Backspace => Some(EditorCommand::Backspace),
+        Key::Delete if modifiers.command && !modifiers.shift && !modifiers.alt => {
+            Some(EditorCommand::KillToLineEnd)
+        }
+        Key::Delete if modifiers.alt && !modifiers.command && !modifiers.shift => {
+            Some(EditorCommand::DeleteWordForward)
+        }
         Key::Delete => Some(EditorCommand::DeleteForward),
         Key::Enter => Some(EditorCommand::InsertNewline),
         Key::A if modifiers.command => Some(EditorCommand::SelectAll),
@@ -2132,7 +2141,7 @@ mod tests {
     }
 
     #[test]
-    fn command_backspace_reaches_editor_and_kills_to_line_start() {
+    fn deletion_shortcuts_reach_editor() {
         let mut h = harness("one\nsecond");
         h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
         h.step();
@@ -2147,6 +2156,32 @@ mod tests {
                 &EditorMode::PlainText
             ),
             Some(EditorCommand::KillToLineStart)
+        );
+
+        let mut h = harness("one\n\nthree");
+        h.key_press(Key::ArrowDown);
+        h.step();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Backspace);
+        h.step();
+        assert_eq!(semantic(&h).text, "one\nthree");
+
+        let mut h = harness("alpha beta");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
+        h.step();
+        h.key_press_modifiers(Modifiers::ALT, Key::Backspace);
+        h.step();
+        assert_eq!(semantic(&h).text, "alpha ");
+        assert_eq!(
+            translate_key(Key::Backspace, Modifiers::ALT, 1, &EditorMode::PlainText),
+            Some(EditorCommand::DeleteWordBackward)
+        );
+        assert_eq!(
+            translate_key(Key::Delete, Modifiers::ALT, 1, &EditorMode::PlainText),
+            Some(EditorCommand::DeleteWordForward)
+        );
+        assert_eq!(
+            translate_key(Key::Delete, Modifiers::COMMAND, 1, &EditorMode::PlainText),
+            Some(EditorCommand::KillToLineEnd)
         );
     }
 
