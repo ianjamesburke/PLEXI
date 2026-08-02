@@ -353,11 +353,11 @@ impl FileBrowserApp {
                     .filter_map(|e| {
                         let e = e.ok()?;
                         let name = e.file_name().to_string_lossy().to_string();
-                        if name.starts_with('.') && !self.columns.show_hidden {
-                            return None;
-                        }
                         let path = e.path();
                         let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                        if name.starts_with('.') && !is_dir && !self.columns.show_hidden {
+                            return None;
+                        }
                         let meta = e.metadata().ok();
                         let size_bytes =
                             meta.as_ref()
@@ -3312,13 +3312,14 @@ mod tests {
         assert!(created_index < modified_index);
     }
 
-    /// Stint 0368: dotfile entries are filtered out of the listing by default,
-    /// and reappear once `show_hidden` is toggled on.
+    /// Dot directories remain navigable by default, while dotfiles stay hidden
+    /// until `show_hidden` is enabled.
     #[test]
-    fn show_hidden_toggle_filters_dotfile_entries() {
+    fn show_hidden_toggle_filters_dotfiles_but_not_dot_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("visible.txt"), b"v").expect("write visible");
         std::fs::write(dir.path().join(".hidden"), b"h").expect("write hidden");
+        std::fs::create_dir(dir.path().join(".config")).expect("create dot directory");
         let mut app = FileBrowserApp::new(dir.path().to_path_buf());
 
         assert!(!app.columns.show_hidden, "hidden files are off by default");
@@ -3326,6 +3327,10 @@ mod tests {
         assert!(
             !app.entries.iter().any(|e| e.name == ".hidden"),
             "dotfile must be filtered out while show_hidden is off"
+        );
+        assert!(
+            app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
+            "dot directory must remain visible while show_hidden is off"
         );
 
         app.columns.show_hidden = true;
@@ -3336,6 +3341,10 @@ mod tests {
             app.entries.iter().any(|e| e.name == ".hidden"),
             "dotfile must appear once show_hidden is on"
         );
+        assert!(
+            app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
+            "dot directory must remain visible once show_hidden is on"
+        );
 
         app.columns.show_hidden = false;
         app.refresh_preserving_filter();
@@ -3343,6 +3352,10 @@ mod tests {
         assert!(
             !app.entries.iter().any(|e| e.name == ".hidden"),
             "dotfile must be filtered again once show_hidden is toggled back off"
+        );
+        assert!(
+            app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
+            "dot directory must remain visible when show_hidden is toggled back off"
         );
     }
 
