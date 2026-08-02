@@ -695,57 +695,6 @@ impl PlexiApp {
                         expires_at,
                     });
             }
-            crate::app_protocol::AppRequest::LockAcquire {
-                name,
-                pane_id,
-                timeout_secs,
-                response_file,
-            } => {
-                log::info!("pane_ipc: kind=lock_acquire name={name:?} pane_id={pane_id} timeout_secs={timeout_secs}");
-                if !self
-                    .windows
-                    .iter()
-                    .any(|window| window.panes.contains_key(pane_id))
-                {
-                    crate::rpc::write_json_response(
-                        &format!("{response_file}.err"),
-                        serde_json::json!({"ok": false, "error": format!("pane {pane_id} is not live")}),
-                    );
-                    return;
-                }
-                if let Err(error) =
-                    self.build_leases
-                        .acquire(name, *pane_id, *timeout_secs, response_file.clone())
-                {
-                    crate::rpc::write_json_response(
-                        &format!("{response_file}.err"),
-                        serde_json::json!({"ok": false, "error": error}),
-                    );
-                }
-            }
-            crate::app_protocol::AppRequest::LockRelease {
-                name,
-                pane_id,
-                response_file,
-            } => {
-                log::info!("pane_ipc: kind=lock_release name={name:?} pane_id={pane_id}");
-                match self.build_leases.release(name, *pane_id) {
-                    Ok(()) => crate::rpc::write_json_response(
-                        response_file,
-                        serde_json::json!({"ok": true, "name": name, "pane_id": pane_id}),
-                    ),
-                    Err(error) => crate::rpc::write_json_response(
-                        &format!("{response_file}.err"),
-                        serde_json::json!({"ok": false, "error": error}),
-                    ),
-                };
-            }
-            crate::app_protocol::AppRequest::LockStatus {
-                name,
-                response_file,
-            } => {
-                crate::rpc::write_json_response(response_file, self.build_leases.status(name));
-            }
             crate::app_protocol::AppRequest::SlotRead {
                 pane_id,
                 slot_name,
@@ -3506,7 +3455,6 @@ impl PlexiApp {
             }
             match &event {
                 PtyEvent::Exit => {
-                    self.build_leases.release_pane(id, "pty_exit");
                     for win in &mut self.windows {
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {

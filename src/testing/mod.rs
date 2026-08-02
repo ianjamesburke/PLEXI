@@ -643,6 +643,8 @@ impl HostHarness {
 }
 
 #[cfg(test)]
+mod cargo_lease;
+#[cfg(test)]
 mod daw_gate;
 #[cfg(test)]
 mod flow_tests;

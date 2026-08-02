@@ -129,12 +129,6 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PaneCmd,
     },
-    /// Coordinate a named host-owned lease between panes.
-    #[command(next_help_heading = "Panes")]
-    Lock {
-        #[command(subcommand)]
-        cmd: LockCmd,
-    },
     /// Subscribe to a Plexi app's event streams and receive brokered deliveries.
     ///
     /// Apps declare named event streams (e.g. `probe.tick`) and emit events on them.
@@ -943,20 +937,6 @@ pub enum HostCmd {
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
-}
-
-#[derive(Subcommand)]
-pub enum LockCmd {
-    /// Block until the host grants this pane the named lease.
-    Acquire {
-        name: String,
-        #[arg(long, default_value_t = 900.0)]
-        timeout: f64,
-    },
-    /// Release this pane's named lease.
-    Release { name: String },
-    /// Print holder pane id(s), FIFO queue depth, and oldest wait time.
-    Status { name: String },
 }
 
 /// `plexi account <cmd>` — marketplace account management.

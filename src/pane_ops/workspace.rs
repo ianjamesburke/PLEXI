@@ -1051,19 +1051,8 @@ impl PlexiApp {
             &deleted[1..]
         );
 
-        // 3. Remove all windows belonging to any deleted context. Release
-        // their pane-owned leases before dropping the panes: a context delete
-        // bypasses close_tile and therefore has no terminal-exit cleanup.
-        let deleted_pane_ids: Vec<crate::spatial::tiling::PaneId> = self
-            .windows
-            .iter()
-            .filter(|window| deleted.contains(&window.context_id))
-            .flat_map(|window| window.panes.keys().copied())
-            .collect();
+        // 3. Remove all windows belonging to any deleted context.
         self.windows.retain(|c| !deleted.contains(&c.context_id));
-        for pane_id in deleted_pane_ids {
-            self.build_leases.release_pane(pane_id, "context_deleted");
-        }
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {

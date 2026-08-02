@@ -890,7 +890,6 @@ impl PlexiApp {
         // without it a closed run would block its routine forever), then park
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
-            self.build_leases.release_pane(pane_id, "pane_closed");
             if self.pane_heartbeats.remove(&pane_id).is_some() {
                 log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");
             }

@@ -29,7 +29,7 @@ This is the whole spec. Three categories, and the boundary between the first two
 No taste is involved. Every one of these has a right answer derivable from state, and every one of them is currently prose:
 
 - **Queue resolution and sprint re-resolution.** `stint sprint show` is already deterministic; re-resolving after every merge to catch newly-unblocked tasks is a fold, not a judgment.
-- **Lane admission.** Concurrency caps, the global one-cargo-build lease, pause-on-cap. Currently a number in `RUN_CONFIG.toml` that a head must remember to honor.
+- **Lane admission.** Concurrency caps, pause-on-cap. Currently a number in `RUN_CONFIG.toml` that a head must remember to honor. Cargo build serialization is no longer part of this bullet — see `scripts/cargo-with-lease.sh`.
 - **Spawn and boot confirmation.** Create pane, wait for a booted idle prompt, fail with a typed error on timeout, close the orphan.
 - **Waiting for a terminal state.** The single highest-value conversion: an event, not a loop.
 - **Liveness.** Whether a lane is alive is an observation about a process, never a claim written by that process.
@@ -150,7 +150,7 @@ Each of these was observed live. A design that does not close it by construction
 
 **A status slot that is a claim, not liveness.** Same primitive, stated as an invariant: *no consumer may make a scheduling decision from `claimed_state` alone.* This is enforceable in code — the API that returns a claim returns it alongside its observation, so reading one without the other is not expressible.
 
-**~17 lanes each running `cargo build --release` into OOM.** Closed by primitive 6: caps are host-held leases, not remembered numbers, and admission gates on swap growth and build-process count. `prewarm_release_build` becomes safe to re-enable the day the build lease exists, because the thing that made it dangerous was that nothing serialized it.
+**~17 lanes each running `cargo build --release` into OOM.** The part of this that was "nothing serialized concurrent builds" is closed: `scripts/cargo-with-lease.sh` wraps every cargo invocation in a kernel `flock`, so builds queue instead of racing, and a killed client releases the lock for free. What remains for primitive 6 is machine-wide pressure admission — caps as host-held leases instead of remembered numbers, gating on swap growth and build-process count across *all* consumers, not just cargo. `prewarm_release_build` re-enabling is now a policy call, not blocked on missing serialization.
 
 **A merge runner correctly refusing conflicts, with the conflicts then needing a head.** A conflict is a **typed lane outcome**, not an escalation performed by prose. It transitions the lane to `needs-judgment` — a first-class queue with a reason, the artifacts, and the blocked lane attached. Judgment work being queueable rather than shouted is what lets a supervisor keep running while a conflict waits, and it is the same queue that receives disputed FAILs and parked questions. The `merge_runner_escalates_on` list becomes the set of outcomes that route here.
 

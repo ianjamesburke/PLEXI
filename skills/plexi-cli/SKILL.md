@@ -25,8 +25,6 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   and `pane new --agent` is the dedicated verb for booting another agent.
 - **Slots** — store a small, named pane result that another pane can inspect or
   wait for: `plexi pane slot --help`.
-- **Locks** — coordinate host-owned named leases between panes with FIFO grants,
-  timeouts, and pane-death cleanup: `plexi lock --help`.
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
@@ -51,7 +49,6 @@ The release gate verifies these feature-map entry points:
 ```
 pane
 pane slot
-lock
 context
 app
 notify

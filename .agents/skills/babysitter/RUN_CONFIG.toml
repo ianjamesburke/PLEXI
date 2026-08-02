@@ -33,9 +33,8 @@ pane_event_poll_seconds = 10
 codex_head_clock = "external-heartbeat"   # operator loop prompts 'cycle'; see SKILL.md "Head liveness"
 
 [worker-postgate]
-prewarm_release_build = false    # OFF 2026-07-31: OOMed the machine at ~10 concurrent lanes; needs a build lock first
+prewarm_release_build = false    # OFF 2026-07-31: OOMed the machine at ~10 concurrent lanes. cargo is serialized now (scripts/cargo-with-lease.sh); re-enabling is a policy call.
 
 [limits]
 max_concurrent_lanes = 4
-max_concurrent_cargo_consumers = 1
 on_cap = "pause"                 # pause new lanes over queueing more panes

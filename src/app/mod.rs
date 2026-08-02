@@ -2,7 +2,6 @@ pub mod account;
 pub mod app_trait;
 pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
-pub(crate) mod build_lease;
 pub(crate) mod canvas_bindings;
 mod dispatch;
 pub mod file_handlers;
@@ -188,9 +187,6 @@ pub struct PlexiApp {
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
-    /// Host-arbitrated named build leases. Holders are pane ids so close and
-    /// PTY-death paths can release them without trusting a shell cleanup trap.
-    pub(crate) build_leases: crate::app::build_lease::BuildLeaseManager,
     /// `plexi pane new --agent` spawns whose response is withheld until the
     /// agent in the new pane self-reports idle (stint 0584).
     pub(crate) pending_agent_boots: Vec<crate::app::pane_wait::PendingAgentBoot>,
@@ -1393,7 +1389,6 @@ impl PlexiApp {
                     frame_diag_window: None,
                     pending_screenshots: Vec::new(),
                     pending_slot_waits: Vec::new(),
-                    build_leases: crate::app::build_lease::BuildLeaseManager::from_run_config(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
                     pane_heartbeats: restored_heartbeats,
@@ -1657,7 +1652,6 @@ impl PlexiApp {
             frame_diag_window: None,
             pending_screenshots: Vec::new(),
             pending_slot_waits: Vec::new(),
-            build_leases: crate::app::build_lease::BuildLeaseManager::from_run_config(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
             pane_heartbeats: HashMap::new(),
@@ -2114,7 +2108,6 @@ impl PlexiApp {
                 frame_diag_window: None,
                 pending_screenshots: Vec::new(),
                 pending_slot_waits: Vec::new(),
-                build_leases: crate::app::build_lease::BuildLeaseManager::from_run_config(),
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
                 pane_heartbeats: HashMap::new(),
@@ -2601,7 +2594,6 @@ impl eframe::App for PlexiApp {
         // host must still expire them on schedule, so the caller sees the
         // host's typed timeout instead of its own (stint 0585).
         self.service_pending_slot_waits(ctx);
-        self.build_leases.service(ctx);
 
         // And for `pane new --agent`, whose reply is owed either an idle
         // report, an expired deadline, or a pane that went away (stint 0584).
