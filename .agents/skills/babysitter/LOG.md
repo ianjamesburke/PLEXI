@@ -2138,3 +2138,100 @@ Still unfixed from the previous run's suggestion list:
 - 00:05 worker-0670 briefed: stint 0670 (atomic stint id reservation, size s), com (medium), pane 735
 - 00:05 note: 0670 spans two repos (ianjamesburke/stint + PLEXI skill) -> two PRs, repo boundary not scope creep. Cannot batch with 0690.
 - 00:05 both briefs carry an enumeration-first checkpoint (blocked-for-review before gating code).
+- 00:20 0670 enumeration: FOUR id-allocation paths (cmd_add w/ fs2 add.lock, gh import unlocked + in a loop, TUI create_task unlocked, skill manual max+1). Ruled: fix shared mutate::next_task_id, CLI verb on top of the same primitive.
+- 00:28 0690 enumeration approved. Boundary = leaf cargo invocation, non-reentrant, wrappers never acquire. Full inventory incl. nesting routes.
+- 00:30 friction: 0690 worker self-approved its own enumeration checkpoint ("approved and posted") without a head ruling; also printf'd it into a TUI block that COLLAPSED, so it never reached the head. Fix applied: enumeration deliverables must be written to a FILE, per L025. Candidate for promotion.
+- 00:30 HEAD CAUGHT: enumeration exposed that just test / check-docs / perf-clippy run in CI where no host exists to grant a lease. Unconditional acquire would have broken every CI job, and on the merge commit rather than the PR. Ruled: no-host = explicit no-op-and-proceed; host-reachable-but-timeout = hard non-zero. Never one code path for both.
+- 00:32 friction: first watch loop woke instantly on a status value already seen (wake-on-current-state, not on change). Re-armed against a fingerprint. SKILL.md already warns about this; the head still did it.
+- 00:33 friction: a `pane send --submit` to 735 landed as UNSUBMITTED input; pane sat idle looking identical to thinking until a `pane key enter`. Second occurrence class this run.
+- 01:05 0670 worker done: stint#13 + plexi#2558 open. PR body carries the 4-path enumeration verbatim; finding: the pre-existing add.lock DID span its read-max-write, so path 1 was already safe and the real exposure was gh import (loop), the TUI, and the manual skill instruction. Falsifiability proven: 8 real CLI processes -> 8 ids; lock defeated -> 1 unique id.
+- 01:05 0670 worker filed stint-repo task 0017 (no CI in stint repo) rather than building CI inside a size-s task. Correct call.
+- 01:06 worker-0670 (pane 735) retired at PR-open per skill.
+- 01:25 HEAD RULING (Ian): 0670 CLI lane REVERSED. stint repo PR 12 already merged (the fs2 add.lock PR 13 enumerated as pre-existing); PR 11 OPEN since 2026-07-31 solves the same problem with a ledger at git-common-dir/stint/ids/, outside every worktree. PR 13 and PR 11 overlap on 6 files; cannot both land.
+- 01:25 WHY PR 13 IS WRONG: each git worktree has its own checkout of .stint/tasks/, so a task file in one worktree is invisible to every other until committed+merged. A lock over the task-file dir serializes writers WITHIN a worktree and does nothing ACROSS them. PLEXI gitignores .stint/ and every lane runs in its own worktree -- exactly the config that produced the collisions. PR 13 would have merged, looked correct, and left the bug.
+- 01:26 tester-13 (pane 736) stood down mid-run, validation target reversed. PR 13 left OPEN, PR 11 untouched, PLEXI 2558 held (names PR 13's verb; verb name now unsettled).
+- 01:27 eval-pr11 (pane 737) spawned: report-only, no code. Q: does PR 11 apply cleanly + pass (no CI ever ran it), is it finishable as-is, and does it EMPIRICALLY solve the cross-worktree case (two worktrees allocating concurrently).
+- 01:27 FRICTION (promotion candidates, both): (a) neither babysitter nor implement-stint tells a head to check the TARGET repo for prior/competing work before dispatching -- a merged PR and an open competing PR both went unseen; (b) stint 0670's body never names the repo its code lives in, and cross-repo tasks have no convention for that. Cost: one full worker lane + one tester lane built and validated the wrong design.
+- 23:38Z PR #2555 MERGED as cf444208 (by Ian, directly). Stints 0591+0701+0702+0703 -> done.
+- 23:47Z HEAD ERROR: spawned tester-1 NINE MINUTES AFTER the merge and never noticed. I polled
+        `gh pr checks` (which answers happily post-merge) and never re-read PR *state*. Same class
+        as every watch bug tonight: watching a derived signal, not the authoritative one. The round
+        still had value (it proved both guards falsifiable) but I reported it as gating when it was
+        not.
+- 23:50Z L021 attended dispatch of the new Roadmap evidence gate (run 30724105791): FAILED. 16 tests,
+        all `wait_app_frame_failed: timed out after 60s waiting for first app frame`. Root cause found
+        by diffing the two workflows' SETUP (not their commands): roadmap-evidence.yml omitted the
+        WASI_BUNDLE_MODE/PLEXI_CPYTHON_BUNDLE_DIR env and both CPython WASI bundle steps that
+        rust-host.yml's test job has. Identical tests, different environment.
+- 00:47Z Fix had already landed from another lane, and better than I briefed: 6a188599 (the fix),
+        b88e7581 + d17bc888 (extract .github/actions/plexi-ci-env so ALL Rust jobs share one CI
+        environment). My brief said "don't copy-paste-and-drift"; the composite action makes drift
+        structurally impossible. Its own doc comment names the failure mode: "the second was written
+        by hand-copying the first."
+- 00:47Z worker-4 (pane 730) stood down without acting — correctly. The work had landed between my
+        diagnosis and its spawn; it declined to duplicate or trample another lane and said so plainly.
+        I initially mischaracterised this as misreading the brief. It was not.
+- 01:05Z Verification run 30724658922 still in_progress at handoff. UNRESOLVED - see below.
+
+### Sprint recap — queue 0701 0702 0703 0591 (2026-08-01 20:13Z -> 2026-08-02 01:05Z, ~4h50m)
+
+LANDED
+  #2555  0591+0703+0702+0701  one PR, one batch   4 CI rounds, 1 tester round (PASS first attempt)
+  Batched all four because all edit ROADMAP.toml and three add ReleaseFeature variants in
+  src/release.rs; splitting guaranteed serial rebase conflicts on both files.
+
+WHAT SHIPPED
+  ReleaseFeature::{Daw,MediaIo,Accessibility} at minimum_tier Beta, existing mechanism only.
+  AppRegistry::manifest_id_for_wasm_path closes the file-stem gate bypass at the root (raw .wasm
+  path-open derived the app id from the FILENAME and walked past the manifest-id check).
+  ROADMAP daw/media-io/accessibility-tree all green|yellow -> red per Ian's stub ruling; new
+  basic-media-playback node. Roadmap evidence resolver + regression fixtures + CI gate.
+
+IAN'S RULINGS
+  1. DAW + media STUBBED for stable v1 — the daw node is DOWNGRADED, never repaired to green.
+  2. Protocol-level media gating NOT a priority — descoped to 0708. ROADMAP note says so explicitly;
+     0703's second Done-When is recorded as deliberately partially met, not quietly satisfied.
+  3. Moved the roadmap gate off the PR path (c3a71979) — ~25min per PR to answer a release question.
+
+FILED: 0706 (repair daw-gate-bundle), 0708 (protocol media gating), 0709 (pane liveness primitive).
+
+WHAT ACTUALLY COST THE NIGHT
+  1. THREE CI ROUND TRIPS ON ONE EXIT-127, EACH A DIFFERENT CAUSE: workflow called `just`; then the
+     SCRIPT called `just` internally; then the install step passed no `tool` input and silently
+     no-opped. Root cause of the repetition was MINE — my brief offered an either/or where I owed a
+     diagnosis, and an either/or is an instruction to take the cheaper branch. (L017, L018.)
+  2. I REWROTE MY WATCH LOOP FOUR TIMES. Every version tested RAW CURRENT STATE instead of CHANGE
+     FROM STATE ALREADY SEEN: confidence==high (unsatisfiable), any-red (fires forever), nothing-
+     pending (also true before checks exist), ruled-sha (blind to a new check on that sha). Final
+     form fingerprints the check set and wakes on any difference. One principle, four bugs.
+     (L013, L015a, L020, L022.)
+  3. A GREEN SIGNAL THAT CANNOT DISTINGUISH "WORKED" FROM "DID NOTHING" appeared FIVE times: the
+     wake conditions above, the no-op action step, and `cargo test --exact` with a bare name
+     returning "ok. 0 passed; 2178 filtered out" — which would have made the whole tester round
+     vacuous had I not caught it. (L024.)
+  4. I ran a full tester round against an already-merged PR without noticing.
+
+WHAT WORKED, KEEP DOING
+  - Naming the un-drivable surface in the tester brief up front (L011) — release-tier gating is not
+    observable from a plexi-pr-<N> build, so the brief forbade grinding and pre-authorized guard
+    falsification instead. Tester returned PASS having observed BOTH halves (green on clean tree,
+    red with guard reverted) with zero wasted cycles.
+  - Head-reviewing the diff instead of trusting "gate green" — that is what caught the missing
+    enumeration, the overclaiming ROADMAP note, and the file-stem bypass.
+  - Disproving an external-looking red before excluding it (L023).
+
+LEDGER: promoted L013-L024 + L015a/L021a this run, and RECONCILED two contradictions carried by
+three previous heads: step 6 now retires workers at PR-open (L002, finally), and the large-tier
+fix-round clause now matches Ian's 2026-07-31 ruling.
+
+READ HALF (falsification triggers checked against this run):
+  L001 HOST cargo lock — still open; 0690 now in flight under the successor head. runs+1.
+  L002 — RECONCILED into SKILL.md this run. Closed.
+  L003 collapsed paste — FIRED on every freshly-booted pane again (4x). Rule load-bearing, keep.
+  L005 stale slot — FIRED (last_error held a dead dirty-alpha string across two later reads). Keep.
+  L006 vacuous gate — FIRED, and spawned L024. Keep.
+  L009 CANDIDATE (cargo budget covering testers) — not seen this run. 1 of 3 strikes.
+  L010 dirty alpha at bs-start — FIRED HARD, and I was the cause: I appended to tracked LOG.md
+       between the worker's commit and its bs-start. Keep; it is the most-fired rule in the ledger.
+  L011 name the un-drivable surface — FIRED, again decisive. Keep.
+  L004, L007, L008, L012 — not exercised this run. runs+1 each.
