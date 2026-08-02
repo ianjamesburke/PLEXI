@@ -3,7 +3,6 @@
 use super::{ClickFlash, PlexiApp};
 use crate::app_protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
-use crate::ui::style;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_tiles::{Tile, TileId};
 use std::collections::HashMap;
@@ -187,10 +186,12 @@ impl PlexiApp {
                     }
                 }
             });
+            // This review-only width is held in egui's per-session temp data:
+            // switching it never writes user configuration or persisted panel state.
             egui::Panel::left("sidebar")
-                .default_size(style::SIDEBAR_DEFAULT_W)
                 .size_range(140.0..=400.0)
-                .resizable(true)
+                .exact_size(crate::ui::sidebar::sidebar_width_preview(&ctx))
+                .resizable(false)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()

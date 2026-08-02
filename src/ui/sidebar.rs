@@ -1,26 +1,34 @@
 use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
-use crate::ui::sidebar_row::{CloseAffordance, ContextItem, PaneDots, SidebarAction};
+use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
+use crate::ui::style;
 use crate::workspace::router::ContextMove;
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
 
-const CLOSE_AFFORDANCE_PREVIEW_ID: &str = "sidebar_close_affordance_preview";
+const SIDEBAR_WIDTH_PREVIEW_ID: &str = "sidebar_width_preview";
+const SIDEBAR_NARROW_W: f32 = 200.0;
 
-fn close_affordance_preview(ctx: &egui::Context) -> CloseAffordance {
+pub(crate) fn sidebar_width_preview(ctx: &egui::Context) -> f32 {
     ctx.data(|data| {
-        data.get_temp(egui::Id::new(CLOSE_AFFORDANCE_PREVIEW_ID))
-            .unwrap_or_default()
+        data.get_temp(egui::Id::new(SIDEBAR_WIDTH_PREVIEW_ID))
+            .unwrap_or(style::SIDEBAR_DEFAULT_W)
     })
 }
 
-fn set_close_affordance_preview(ctx: &egui::Context, affordance: CloseAffordance) {
+fn toggle_sidebar_width_preview(ctx: &egui::Context, width: f32) -> f32 {
+    let next = if width == style::SIDEBAR_DEFAULT_W {
+        SIDEBAR_NARROW_W
+    } else {
+        style::SIDEBAR_DEFAULT_W
+    };
     ctx.data_mut(|data| {
-        data.insert_temp(egui::Id::new(CLOSE_AFFORDANCE_PREVIEW_ID), affordance);
+        data.insert_temp(egui::Id::new(SIDEBAR_WIDTH_PREVIEW_ID), next);
     });
+    next
 }
 
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
@@ -180,7 +188,7 @@ impl PlexiApp {
 impl PlexiApp {
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
-        let mut close_affordance = close_affordance_preview(ui.ctx());
+        let sidebar_width_preview = sidebar_width_preview(ui.ctx());
 
         // Header
         ui.add_space(8.0);
@@ -199,16 +207,14 @@ impl PlexiApp {
                 }
                 if button::toolbar_button(
                     ui,
-                    close_affordance.preview_label(),
-                    "Switch sidebar close-affordance preview",
+                    format!("Width: {:.0}", sidebar_width_preview),
+                    "Switch sidebar width preview between 220 and 200 points",
                 )
                 .clicked()
                 {
-                    close_affordance = close_affordance.toggled();
-                    set_close_affordance_preview(ui.ctx(), close_affordance);
+                    let next = toggle_sidebar_width_preview(ui.ctx(), sidebar_width_preview);
                     log::info!(
-                        "sidebar: close_affordance_preview={}",
-                        close_affordance.log_name()
+                        "sidebar: width_preview={next:.0}",
                     );
                 }
             });
@@ -345,7 +351,6 @@ impl PlexiApp {
                 badge_count,
                 subtitle,
                 pane_dots,
-                close_affordance,
                 draggable: true,
             }
             .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
@@ -484,7 +489,6 @@ impl PlexiApp {
                         badge_count: 0,
                         subtitle,
                         pane_dots,
-                        close_affordance,
                         draggable: true,
                     }
                     .draw(ui, egui::Id::new(("parked_ctx", i)), &self.colors);

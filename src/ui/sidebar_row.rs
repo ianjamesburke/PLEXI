@@ -4,44 +4,11 @@ use crate::ui::theme::Colors;
 use egui::emath::GuiRounding;
 use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
 
-pub const ACTION_ZONE_WIDTH: f32 = 30.0;
-
-/// Temporary presentation choices for the sidebar close affordance. The host
-/// owns deletion; this only chooses where its existing hit target is drawn.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CloseAffordance {
-    /// Keep the notification count and delete control together at the end.
-    #[default]
-    TrailingDelete,
-    /// Keep the delete control with the headline/pips and pin the count right.
-    InlineDelete,
-}
-
-impl CloseAffordance {
-    pub(crate) const fn toggled(self) -> Self {
-        match self {
-            Self::TrailingDelete => Self::InlineDelete,
-            Self::InlineDelete => Self::TrailingDelete,
-        }
-    }
-
-    pub(crate) const fn preview_label(self) -> &'static str {
-        match self {
-            Self::TrailingDelete => "X: end",
-            Self::InlineDelete => "X: inline",
-        }
-    }
-
-    pub(crate) const fn log_name(self) -> &'static str {
-        match self {
-            Self::TrailingDelete => "TrailingDelete",
-            Self::InlineDelete => "InlineDelete",
-        }
-    }
-}
+pub const ACTION_ZONE_WIDTH: f32 = 22.0;
 
 /// Fixed-width left gutter that holds the context index number.
-const GUTTER_W: f32 = 24.0;
+const GUTTER_W: f32 = 18.0;
+const ROW_INDENT: f32 = 4.0;
 
 /// Top and bottom padding added inside each row for vertical breathing room.
 const ROW_PAD_V: f32 = 7.0;
@@ -54,7 +21,7 @@ const PANE_DOT_MAX: usize = 8;
 const WINDOW_GROUP_PAD_X: f32 = 5.0;
 const WINDOW_GROUP_PAD_Y: f32 = 4.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
-const SIDEBAR_BADGE_W: f32 = 26.0;
+const SIDEBAR_BADGE_W: f32 = 18.0;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
@@ -127,7 +94,6 @@ pub struct ContextItem {
     pub subtitle: Option<String>,
     /// Dots rendered below the name row representing panes.
     pub pane_dots: Option<PaneDots>,
-    pub close_affordance: CloseAffordance,
     /// Whether this row supports drag reordering. When false, hover shows
     /// PointingHand instead of Grab and drag actions are suppressed.
     pub draggable: bool,
@@ -345,8 +311,9 @@ impl ContextItem {
         let bg_idx = ui.painter().add(egui::Shape::Noop);
 
         // Every sidebar row is a top-level context, so the gutter is a fixed
-        // 6px inset — there is no nesting level to indent for.
-        let indent = 6.0;
+        // There is no nesting level to indent for, so the compact inset leaves
+        // room for the primary label rather than a second visual gutter.
+        let indent = ROW_INDENT;
 
         let is_active = self.is_active;
         let is_dragging = self.is_dragging;
@@ -357,7 +324,6 @@ impl ContextItem {
         let badge_count = self.badge_count;
         let subtitle = self.subtitle.clone();
         let pane_dots = self.pane_dots;
-        let close_affordance = self.close_affordance;
         let accent_color = colors.accent;
         let text_primary = colors.text_primary;
         let text_dim = colors.text_dim;
@@ -419,7 +385,7 @@ impl ContextItem {
                                     if dots.count > PANE_DOT_MAX {
                                         w += 20.0;
                                     }
-                                    w + 6.0 // gap between name text and dots
+                                    w + 4.0 // gap between name text and dots
                                 } else {
                                     0.0
                                 }
@@ -461,26 +427,12 @@ impl ContextItem {
                             // the pips and overlap the count.
                             ui.add_space((text_max - title_width).max(0.0));
 
-                            // Pips remain beside the headline in both previews.
+                            // Pips stay beside the headline, before the trailing state.
                             draw_pips(ui, &pane_dots, colors, row_alpha, is_dragging);
 
-                            // InlineDelete keeps the close target with the
-                            // headline and pips; the count is rendered by the
-                            // trailing layout below.
-                            if action_enabled && close_affordance == CloseAffordance::InlineDelete {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    Vec2::new(ACTION_ZONE_WIDTH, ui.spacing().interact_size.y),
-                                    Sense::hover(),
-                                );
-                                close_rect_capture = Some(rect);
-                            }
-
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                // TrailingDelete puts the close target after
-                                // the count at the physical trailing edge.
-                                if action_enabled
-                                    && close_affordance == CloseAffordance::TrailingDelete
-                                {
+                                // The close target follows the count at the physical trailing edge.
+                                if action_enabled {
                                     let (rect, _) = ui.allocate_exact_size(
                                         Vec2::new(ACTION_ZONE_WIDTH, ui.spacing().interact_size.y),
                                         Sense::hover(),
