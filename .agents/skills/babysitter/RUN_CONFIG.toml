@@ -37,5 +37,5 @@ prewarm_release_build = false    # OFF 2026-07-31: OOMed the machine at ~10 conc
 
 [limits]
 max_concurrent_lanes = 4
-max_concurrent_cargo_builds = 1
+max_concurrent_cargo_consumers = 1
 on_cap = "pause"                 # pause new lanes over queueing more panes

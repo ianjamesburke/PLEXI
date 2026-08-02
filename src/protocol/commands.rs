@@ -461,6 +461,19 @@ pub enum AppRequest {
         response_file: String,
     },
 
+    /// Acquire a host-owned named lease for the calling pane. The reply is
+    /// parked by the host until FIFO capacity grants it or its deadline passes.
+    LockAcquire {
+        name: String,
+        pane_id: u64,
+        timeout_secs: f64,
+        response_file: String,
+    },
+    /// Release a named lease held by the calling pane.
+    LockRelease { name: String, pane_id: u64, response_file: String },
+    /// Report the current holders, queue depth, and oldest queued wait.
+    LockStatus { name: String, response_file: String },
+
     /// List named host-managed pane file slots.
     SlotList { pane_id: u64, response_file: String },
 
