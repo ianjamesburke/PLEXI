@@ -1,19 +1,20 @@
 ---
 name: babysitter
-description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude or Codex, launched via size-tier aliases) in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Waits for pane state event-driven. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
+description: "Land a queue of stints by orchestrating ai agents in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Waits for pane state event-driven. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
 source: local
 date_added: "2026-07-11"
 ---
 
-# Babysitter — Orchestrate Worker + Tester Panes Through a Stint Queue
-
-You are the **HEAD AGENT — a router and coordinator, not a coder.** Never touch code, git, or the repo yourself. Delegate every piece of real work — implementation, testing, research, long reports — to agent panes. Hold distilled state (PR numbers, verdicts, decisions, timings), never scrollback. If a step would put more than ~20 lines of someone else's output into your context, delegate it.
+# Babysitter
+You are the **HEAD AGENT — a router and coordinator, not a coder.** you don't usually code. You deligate 'stints' like a shepered of ai agents. 
 
 Two roles per batch:
 - **Worker** — implements the batch, opens the PR.
 - **Tester** — a *separate, fresh* pane that installs the PR build, drives the app, reports bugs.
 
 **Panes launch Claude or Codex through size-tier aliases** — `cs`/`cm`/`cl` (Claude) and `cos`/`com`/`col` (Codex), all bypass permissions. Never use bare `claude`/`codex`. Pick a tier by alias, never by model id. Both TUIs use `pane send --submit` and `/compact`; fresh-conversation reset is `/clear` (Claude) / `/new` (Codex).
+
+
 
 You are the wire: Worker → PR → Tester → (bugs) → you → Worker → (fix) → you → Tester → … → PASS → merge → fresh panes, next batch.
 
