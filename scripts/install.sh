@@ -37,12 +37,13 @@ fi
 
 display="Plexi${cap}"
 bundle_id="com.ianjamesburke.plexi${suffix}"
-# Resolve target-dir from cargo metadata so all worktrees share a single build
-# cache. The CARGO_TARGET_DIR env var or a [build] target-dir in .cargo/config.toml
-# points every worktree at <repo-root>/target/ rather than a per-worktree target/.
-# INVARIANT: if you change the target-dir in .cargo/config.toml, update this
-# resolver too. A mismatch causes install to silently skip the binary because the
-# bundle lands in the old path while this script looks in the new one.
+# Resolve target-dir from cargo metadata rather than hardcoding a path. The
+# [build] target-dir in .cargo/config.toml is relative ("target"), so each
+# worktree builds into its own target/ — worktrees do NOT share a build cache
+# (cross-worktree reuse comes from sccache, not a shared target dir).
+# Resolving via cargo metadata keeps this script correct regardless of where
+# target-dir points; a hardcoded path would silently skip the binary because
+# the bundle lands in one place while this script looks in another.
 _target_dir="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "")"
 
 # Preflight: fail fast if target-dir resolution failed rather than building and
