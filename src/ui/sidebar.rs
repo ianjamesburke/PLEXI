@@ -2,34 +2,11 @@ use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
 use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
-use crate::ui::style;
 use crate::workspace::router::ContextMove;
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
-
-const SIDEBAR_WIDTH_PREVIEW_ID: &str = "sidebar_width_preview";
-const SIDEBAR_NARROW_W: f32 = 200.0;
-
-pub(crate) fn sidebar_width_preview(ctx: &egui::Context) -> f32 {
-    ctx.data(|data| {
-        data.get_temp(egui::Id::new(SIDEBAR_WIDTH_PREVIEW_ID))
-            .unwrap_or(style::SIDEBAR_DEFAULT_W)
-    })
-}
-
-fn toggle_sidebar_width_preview(ctx: &egui::Context, width: f32) -> f32 {
-    let next = if width == style::SIDEBAR_DEFAULT_W {
-        SIDEBAR_NARROW_W
-    } else {
-        style::SIDEBAR_DEFAULT_W
-    };
-    ctx.data_mut(|data| {
-        data.insert_temp(egui::Id::new(SIDEBAR_WIDTH_PREVIEW_ID), next);
-    });
-    next
-}
 
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     for (i, rect) in rects.iter().enumerate() {
@@ -188,8 +165,6 @@ impl PlexiApp {
 impl PlexiApp {
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
-        let sidebar_width_preview = sidebar_width_preview(ui.ctx());
-
         // Header
         ui.add_space(8.0);
         let mut add_clicked = false;
@@ -204,18 +179,6 @@ impl PlexiApp {
                 ui.add_space(12.0);
                 if button::icon_button(ui, "+", "New context", &self.colors).clicked() {
                     add_clicked = true;
-                }
-                if button::toolbar_button(
-                    ui,
-                    format!("Width: {:.0}", sidebar_width_preview),
-                    "Switch sidebar width preview between 220 and 200 points",
-                )
-                .clicked()
-                {
-                    let next = toggle_sidebar_width_preview(ui.ctx(), sidebar_width_preview);
-                    log::info!(
-                        "sidebar: width_preview={next:.0}",
-                    );
                 }
             });
         });

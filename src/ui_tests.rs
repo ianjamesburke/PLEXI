@@ -3212,12 +3212,11 @@ mod tests {
         render_sidebar_pane_dots_pixel_grid(2.0, "/tmp/plexi-0564-sidebar-pips-ppp2.png");
     }
 
-    /// Stint 0700: the Contexts header keeps both sidebar-width candidates live
-    /// for visual review. This exercises the real header response, then renders
-    /// realistic names, root paths, pane pips, and notification badges at both
-    /// widths.
+    /// Stint 0700: the 220-point sidebar shows an ordinary context name in full
+    /// while a genuinely long name ellipsizes. The hover makes the sole trailing
+    /// close affordance visible in the evidence image.
     #[test]
-    fn screenshot_sidebar_width_previews_are_live_switchable() {
+    fn screenshot_sidebar_x_end_at_default_width() {
         let mut h = PlexiUiHarness::new_sized(1100.0, 700.0);
         h.step();
         let inactive_window_idx = h.with_app_mut(|app| {
@@ -3249,7 +3248,7 @@ mod tests {
             app.windows.push(crate::host::context::Window {
                 name: String::new(),
                 path: inactive_root,
-                tree: egui_tiles::Tree::empty("sidebar-width-preview"),
+                tree: egui_tiles::Tree::empty("sidebar-x-end-preview"),
                 panes: std::collections::HashMap::new(),
                 focused_pane: None,
                 zoomed_pane: None,
@@ -3300,54 +3299,14 @@ mod tests {
         // Hover a sidebar row so the trailing close glyph is visible in the PNG.
         let active_title = h.harness().get_by_label("PLEXI Workspace").rect().center();
         h.harness()
+            .get_by_label("Narrator Video Production Workspace");
+        h.harness()
             .input_mut()
             .events
             .push(egui::Event::PointerMoved(active_title));
         h.step();
-        h.harness().get_by_label("Width: 220");
         h.save_screenshot("/tmp/plexi-0700-sidebar-x-end.png")
             .expect("220-point sidebar render");
-
-        // Use the actual header widget's semantic rect rather than a guessed
-        // coordinate, then assert the re-rendered UI exposes the narrow state.
-        let toggle = h.harness().get_by_label("Width: 220").rect().center();
-        h.harness()
-            .input_mut()
-            .events
-            .push(egui::Event::PointerMoved(toggle));
-        h.harness()
-            .input_mut()
-            .events
-            .push(egui::Event::PointerButton {
-                pos: toggle,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            });
-        h.harness()
-            .input_mut()
-            .events
-            .push(egui::Event::PointerButton {
-                pos: toggle,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            });
-        h.run_steps(2);
-        h.harness().get_by_label("Width: 200");
-        assert!(
-            !h.host_has_label("Width: 220"),
-            "clicking the real header toggle must replace the width preview"
-        );
-
-        let active_title = h.harness().get_by_label("PLEXI Workspace").rect().center();
-        h.harness()
-            .input_mut()
-            .events
-            .push(egui::Event::PointerMoved(active_title));
-        h.step();
-        h.save_screenshot("/tmp/plexi-0700-sidebar-narrow.png")
-            .expect("200-point sidebar render");
     }
 
     /// Stint 0528 evidence: file browser rows + preview panel at ppp 2.0 —
