@@ -2,7 +2,7 @@ suite = false
 size = [1000.0, 700.0]
 
 [[steps]]
-open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-agent-drive.md"] }
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["{tmp}/note.md"] }
 
 [[steps]]
 focus = "notes"
@@ -56,7 +56,7 @@ expect = { target = "notes", drop_result = "rejected", timeout_s = 5.0 }
 close = "notes"
 
 [[steps]]
-open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["/tmp/plexi-notes-agent-drive.md"] }
+open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["{tmp}/note.md"] }
 
 [[steps]]
 expect = { target = "reopened", source_text_contains = "revised draft", rendered_text_contains = "revised draft", focused = true, timeout_s = 5.0 }

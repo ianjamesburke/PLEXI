@@ -5,7 +5,7 @@
 size = [1000.0, 700.0]
 
 [[steps]]
-open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-live-preview.md"] }
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["{tmp}/note.md"] }
 
 [[steps]]
 focus = "notes"
@@ -13,13 +13,13 @@ focus = "notes"
 [[steps]]
 expect = { target = "notes", focused = true, preview_mode = "live_preview" }
 
-# Reset any prior content, then seed realistic mixed Markdown in one insert
-# (Event::Text, so no list-continuation side effects).
+# Seed realistic mixed Markdown in one paste (no per-line list-continuation
+# side effects).
 [[steps]]
 key = { target = "notes", value = "cmd+a" }
 
 [[steps]]
-text = { target = "notes", value = "# Trip Notes\n\nPack **warm** layers and *maybe* a raincoat.\n\n- [ ] tent\n- [x] sleeping bag\n1. drive north\n\n> leave before sunrise\n\n```rust\nlet km = 420;\n```\n\n---\n\nFinal thoughts go here." }
+paste = { target = "notes", value = "# Trip Notes\n\nPack **warm** layers and *maybe* a raincoat.\n\n- [ ] tent\n- [x] sleeping bag\n1. drive north\n\n> leave before sunrise\n\n```rust\nlet km = 420;\n```\n\n---\n\nFinal thoughts go here." }
 
 # Jump to the top: the heading becomes the active block (raw source).
 [[steps]]

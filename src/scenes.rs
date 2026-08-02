@@ -25,6 +25,10 @@
 //!
 //! Assertions are structured keys (typed matchers), never expression strings.
 //! New verbs require a scene that needs them.
+//!
+//! A literal `{tmp}` anywhere in a scene file expands to a fresh per-run temp
+//! dir (removed when the run ends). Scenes that touch the filesystem must use
+//! it — a fixed path leaks state into the next run of the same scene.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -265,8 +269,13 @@ fn default_true() -> bool {
 pub enum Step {
     /// Open one process, WASM, or builtin app and bind its pane id to a handle.
     Open { open: OpenSpec },
-    /// Insert text through egui's normal text-input event path.
+    /// Insert text through egui's normal text-input event path. Printable
+    /// characters only: the editor drops control-character `Event::Text`
+    /// echoes, so multi-line content must arrive as `paste`.
     Text { text: TextSpec },
+    /// Deliver text through egui's paste event path — the production route
+    /// for multi-line content. Headless-only.
+    Paste { paste: TextSpec },
     /// Press a key combo against a pane handle or the whole host.
     Key { key: KeySpec },
     /// Deliver a local file or image URL through the production pane drop path.
@@ -827,6 +836,20 @@ fn install_scene_picker(
     Ok(ScenePickerGuard)
 }
 
+/// Expand `{tmp}` in raw scene TOML to a fresh per-run temp dir so scenes
+/// never see filesystem state left behind by a previous run. The returned
+/// guard keeps the dir alive for the run and removes it on drop.
+fn expand_scene_tmp(raw: String) -> Result<(String, Option<tempfile::TempDir>), SceneError> {
+    if !raw.contains("{tmp}") {
+        return Ok((raw, None));
+    }
+    let dir = tempfile::tempdir().map_err(|error| {
+        SceneError::new("scene_tmp", format!("create scene temp dir: {error}"))
+    })?;
+    let expanded = raw.replace("{tmp}", &dir.path().display().to_string());
+    Ok((expanded, Some(dir)))
+}
+
 pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneReport {
     if std::env::var("PLEXI_SCENE_BACKEND").is_ok_and(|value| value == "live") {
         return run_live_scene(scene_path, out_dir, no_shots);
@@ -844,6 +867,10 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                 SceneError::new("scene_read", format!("read {}: {e}", scene_path.display())),
             );
         }
+    };
+    let (raw, _tmp_guard) = match expand_scene_tmp(raw) {
+        Ok(expanded) => expanded,
+        Err(e) => return failed_report(scene_name, e),
     };
     let scene: Scene = match toml::from_str(&raw) {
         Ok(s) => s,
@@ -1393,6 +1420,13 @@ impl LiveBackend {
                     length,
                 }))
             }
+            Step::Paste { paste } => Err(SceneError::new(
+                "paste_unsupported",
+                format!(
+                    "paste step (target '{}') has no live transport; live scenes deliver text through `text`/`key`",
+                    paste.target
+                ),
+            )),
             Step::Key { key } => {
                 let pane_id = resolve_live_pane_target(&self.handles, &key.target, "key input")?;
                 self.command(
@@ -1967,6 +2001,10 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             )
         }
     };
+    let (raw, _tmp_guard) = match expand_scene_tmp(raw) {
+        Ok(expanded) => expanded,
+        Err(error) => return live_failed_report(scene_name, None, error),
+    };
     let scene: Scene = match toml::from_str(&raw) {
         Ok(scene) => scene,
         Err(error) => {
@@ -2110,6 +2148,11 @@ fn step_label(step: &Step) -> String {
             "text {} ({} chars)",
             text.target,
             text.value.chars().count()
+        ),
+        Step::Paste { paste } => format!(
+            "paste {} ({} chars)",
+            paste.target,
+            paste.value.chars().count()
         ),
         Step::Key { key } => format!("key {} {}", key.target, key.value),
         Step::DropFile { drop_file } => format!("drop_file {}", drop_file.target),
@@ -2274,6 +2317,26 @@ impl HeadlessBackend {
                 );
                 Ok(Some(StepDetail::TextInput {
                     target: text.target.clone(),
+                    pane_id,
+                    length,
+                }))
+            }
+            Step::Paste { paste } => {
+                let target = self.handles.resolve_input(&paste.target)?;
+                let pane_id = self.focus_target(target)?;
+                self.h
+                    .harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Paste(paste.value.clone()));
+                self.h.step();
+                let length = paste.value.chars().count();
+                log::info!(
+                    "scene: paste target={} pane_id={pane_id:?} length={length}",
+                    paste.target
+                );
+                Ok(Some(StepDetail::TextInput {
+                    target: paste.target.clone(),
                     pane_id,
                     length,
                 }))
@@ -2922,6 +2985,24 @@ mod tests {
             serde_json::to_string_pretty(&report).expect("serialize report")
         );
         assert!(report.passed, "scene failed — see report above");
+    }
+
+    #[test]
+    fn tmp_placeholder_expands_to_fresh_dir_per_run() {
+        let (unchanged, guard) = expand_scene_tmp("no placeholder".to_string()).unwrap();
+        assert_eq!(unchanged, "no placeholder");
+        assert!(guard.is_none(), "no temp dir without a {{tmp}} marker");
+
+        let (first, first_guard) = expand_scene_tmp("open {tmp}/note.md".to_string()).unwrap();
+        let (second, _second_guard) = expand_scene_tmp("open {tmp}/note.md".to_string()).unwrap();
+        assert!(!first.contains("{tmp}"), "marker fully expanded: {first}");
+        assert_ne!(first, second, "each run gets its own temp dir");
+
+        let dir = first_guard.expect("guard exists when {tmp} is used");
+        assert!(dir.path().is_dir());
+        let path = dir.path().to_path_buf();
+        drop(dir);
+        assert!(!path.exists(), "temp dir removed when the run ends");
     }
 
     #[test]
