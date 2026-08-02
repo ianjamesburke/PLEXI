@@ -5,7 +5,7 @@ use alacritty_terminal::event::{
     Event, EventListener, Notify, OnResize, WindowSize,
 };
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
-use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::grid::{Dimensions, Indexed, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{
     Selection, SelectionRange, SelectionType as AlacrittySelectionType,
@@ -205,8 +205,10 @@ impl TerminalBackend {
         let (event_sender, event_receiver) = mpsc::channel();
         let event_proxy = EventProxy(event_sender);
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
+        let mut initial_grid = GridSnapshot::default();
+        initial_grid.update_from(term.grid());
         let initial_content = RenderableContent {
-            grid: term.grid().clone(),
+            grid: initial_grid,
             selectable_range: None,
             terminal_mode: *term.mode(),
             terminal_size,
@@ -354,20 +356,26 @@ impl TerminalBackend {
     }
 
     pub fn selectable_content(&self) -> String {
-        let content = self.last_content();
         let mut result = String::new();
-        if let Some(range) = content.selectable_range {
+        // The snapshot only holds the visible viewport, so read the live
+        // grid — a selection that starts in scrollback but ends at the live
+        // view would otherwise silently drop all cells above the visible top.
+        // This runs on user action (copy), never per frame.
+        if let Some(range) = self.last_content.selectable_range {
+            let term = self.term.lock();
+            let grid = term.grid();
+            // The range was captured at the last sync; the grid may have
+            // scrolled or shrunk since. Clamp to current bounds so indexing
+            // cannot panic.
+            let start = clamp_point(grid, range.start);
+            let end = clamp_point(grid, range.end);
             // iter_from excludes the start point, so grab the first character
             // explicitly before the loop — same pattern used in open_link().
-            result.push(content.grid.index(range.start).c);
-            let mut prev_line: Option<Line> = Some(range.start.line);
-            let last_col = content.grid.last_column();
-            // iter_from(range.start) instead of display_iter() — display_iter
-            // only covers the current viewport, so a selection that starts in
-            // scrollback but ends at the live view would silently drop all cells
-            // above the visible top.
-            for indexed in content.grid.iter_from(range.start) {
-                if indexed.point > range.end {
+            result.push(grid.index(start).c);
+            let mut prev_line: Option<Line> = Some(start.line);
+            let last_col = grid.last_column();
+            for indexed in grid.iter_from(start) {
+                if indexed.point > end {
                     break;
                 }
                 if range.contains(indexed.point) {
@@ -375,7 +383,7 @@ impl TerminalBackend {
                         if prev != indexed.point.line {
                             // Only insert a newline if the previous row was NOT
                             // soft-wrapped (WRAPLINE flag on its last cell).
-                            let was_wrapped = content.grid[prev][last_col]
+                            let was_wrapped = grid[prev][last_col]
                                 .flags
                                 .contains(CellFlags::WRAPLINE);
                             // Trim trailing spaces from the completed line
@@ -423,7 +431,7 @@ impl TerminalBackend {
         }
 
         let cursor = terminal.grid_mut().cursor_cell().clone();
-        self.last_content.grid = terminal.grid().clone();
+        self.last_content.grid.update_from(terminal.grid());
         self.last_content.selectable_range = selectable_range;
         self.last_content.cursor = cursor.clone();
         self.last_content.terminal_mode = *terminal.mode();
@@ -699,29 +707,35 @@ impl TerminalBackend {
                 self.last_content.hovered_hyperlink = None;
             },
             LinkAction::Open => {
-                self.open_link();
+                self.open_link(terminal);
             },
         };
     }
 
-    fn open_link(&self) {
+    /// `terminal` is passed in because the caller (`process_command`) already
+    /// holds the term lock — `FairMutex` is not reentrant, so locking here
+    /// would deadlock.
+    fn open_link(&self, terminal: &Term<EventProxy>) {
         if let Some(range) = &self.last_content.hovered_hyperlink {
-            let start = range.start();
-            let end = range.end();
+            let grid = terminal.grid();
+            // The hover range was captured against an earlier grid state;
+            // clamp so indexing cannot panic if the grid scrolled since.
+            let start = clamp_point(grid, *range.start());
+            let end = clamp_point(grid, *range.end());
 
             // For multi-row URLs the range spans blank padding cells at the
             // end of each wrapped row. Filter to URL-valid chars only so those
             // spaces do not corrupt the reconstructed URL string.
-            let first_c = self.last_content.grid.index(*start).c;
+            let first_c = grid.index(start).c;
             let mut url = String::new();
             if is_url_char(first_c) {
                 url.push(first_c);
             }
-            for indexed in self.last_content.grid.iter_from(*start) {
+            for indexed in grid.iter_from(start) {
                 if is_url_char(indexed.c) {
                     url.push(indexed.c);
                 }
-                if indexed.point == *end {
+                if indexed.point >= end {
                     break;
                 }
             }
@@ -1027,6 +1041,18 @@ impl TerminalBackend {
 /// Note: inside a regex character class, `{-}` parses as the inclusive range
 /// `{` (U+007B) .. `}` (U+007D), which covers `{`, `|`, `}` — NOT a literal
 /// `-`. That is why plain hyphens ARE valid URL chars (e.g. `foo-bar.com`).
+/// Clamp a point captured against an earlier grid state to the current
+/// grid's indexable bounds: line within [-history_size, screen_lines) and
+/// column within [0, last_column]. Indexing an out-of-bounds point panics.
+fn clamp_point(grid: &Grid<Cell>, point: Point) -> Point {
+    let top = Line(-(grid.history_size() as i32));
+    let bottom = Line(grid.screen_lines() as i32 - 1);
+    Point::new(
+        point.line.max(top).min(bottom),
+        min(point.column, grid.last_column()),
+    )
+}
+
 fn is_url_char(c: char) -> bool {
     // C0 / DEL / C1 control ranges.
     if ('\u{0000}'..='\u{001F}').contains(&c)
@@ -1182,8 +1208,61 @@ fn resolve_dynamic_color(
     })
 }
 
+/// Viewport-only snapshot of the alacritty grid, refreshed by
+/// [`TerminalBackend::sync`] each frame. Holds exactly the cells the
+/// renderer paints — the visible screen at the current display offset —
+/// never scrollback. Cloning the full `Grid` here (screen + up to 10k
+/// history rows, under the `FairMutex` the PTY reader thread contends
+/// for) was the dominant per-frame cost and stalled the UI thread for
+/// seconds on large terminals. Paths that genuinely need scrollback
+/// (`selectable_content`, `open_link`, the capture APIs) read the live
+/// `Term` under its lock at call time instead.
+pub struct GridSnapshot {
+    cells: Vec<Indexed<Cell>>,
+    display_offset: usize,
+    pub cursor: SnapshotCursor,
+}
+
+pub struct SnapshotCursor {
+    pub point: Point,
+}
+
+impl Default for GridSnapshot {
+    fn default() -> Self {
+        Self {
+            cells: Vec::new(),
+            display_offset: 0,
+            cursor: SnapshotCursor {
+                point: Point::new(Line(0), Column(0)),
+            },
+        }
+    }
+}
+
+impl GridSnapshot {
+    pub fn display_offset(&self) -> usize {
+        self.display_offset
+    }
+
+    pub fn display_iter(&self) -> std::slice::Iter<'_, Indexed<Cell>> {
+        self.cells.iter()
+    }
+
+    /// Refill from the live grid, reusing the existing allocation so the
+    /// steady state performs no heap allocation.
+    fn update_from(&mut self, grid: &Grid<Cell>) {
+        self.display_offset = grid.display_offset();
+        self.cursor.point = grid.cursor.point;
+        self.cells.clear();
+        self.cells.extend(grid.display_iter().map(|indexed| Indexed {
+            point: indexed.point,
+            cell: indexed.cell.clone(),
+        }));
+    }
+}
+
 pub struct RenderableContent {
-    pub grid: Grid<Cell>,
+    pub grid: GridSnapshot,
     pub hovered_hyperlink: Option<RangeInclusive<Point>>,
     pub selectable_range: Option<SelectionRange>,
     pub cursor: Cell,
@@ -1196,7 +1275,7 @@ pub struct RenderableContent {
 impl Default for RenderableContent {
     fn default() -> Self {
         Self {
-            grid: Grid::new(0, 0, 0),
+            grid: GridSnapshot::default(),
             hovered_hyperlink: None,
             selectable_range: None,
             cursor: Cell::default(),
@@ -1271,6 +1350,79 @@ impl EventListener for EventProxy {
 mod tests {
     use super::is_url_char;
     use super::TerminalBackend;
+
+    fn scrolled_term() -> super::Term<super::EventProxy> {
+        use super::{EventProxy, Term, TerminalSize};
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let size = TerminalSize {
+            cell_width: 8,
+            cell_height: 16,
+            num_cols: 10,
+            num_lines: 5,
+            layout_size: crate::types::Size::default(),
+        };
+        let mut term = Term::new(
+            super::term::Config::default(),
+            &size,
+            EventProxy(sender),
+        );
+        let mut parser: alacritty_terminal::vte::ansi::Processor<
+            alacritty_terminal::vte::ansi::StdSyncHandler,
+        > = alacritty_terminal::vte::ansi::Processor::new();
+        for i in 0..20 {
+            parser.advance(&mut term, format!("line{i}\r\n").as_bytes());
+        }
+        term
+    }
+
+    /// The renderable snapshot must hold exactly the visible viewport —
+    /// never scrollback — and refresh in place without growing its
+    /// allocation. Cloning the full grid (screen + history) per frame was
+    /// the dominant render cost on large terminals.
+    #[test]
+    fn grid_snapshot_holds_viewport_only_and_reuses_allocation() {
+        use super::GridSnapshot;
+        use alacritty_terminal::grid::{Dimensions, Scroll};
+
+        let mut term = scrolled_term();
+        assert!(term.grid().history_size() > 0, "test needs scrollback");
+
+        let mut snapshot = GridSnapshot::default();
+        snapshot.update_from(term.grid());
+        assert_eq!(snapshot.cells.len(), 5 * 10);
+        assert_eq!(snapshot.display_offset(), 0);
+        assert_eq!(snapshot.cursor.point, term.grid().cursor.point);
+
+        term.grid_mut().scroll_display(Scroll::Delta(3));
+        let capacity = snapshot.cells.capacity();
+        snapshot.update_from(term.grid());
+        assert_eq!(snapshot.cells.len(), 5 * 10);
+        assert_eq!(snapshot.display_offset(), 3);
+        assert_eq!(snapshot.cells.capacity(), capacity);
+    }
+
+    /// Selection/link ranges are captured against an earlier grid state and
+    /// replayed against the live grid; out-of-bounds points must clamp
+    /// instead of panicking on index.
+    #[test]
+    fn clamp_point_bounds_stale_ranges() {
+        use super::clamp_point;
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Line, Point};
+
+        let term = scrolled_term();
+        let grid = term.grid();
+        let history = grid.history_size() as i32;
+
+        let clamped = clamp_point(grid, Point::new(Line(-999), Column(999)));
+        assert_eq!(clamped, Point::new(Line(-history), Column(9)));
+
+        let clamped = clamp_point(grid, Point::new(Line(999), Column(0)));
+        assert_eq!(clamped, Point::new(Line(4), Column(0)));
+
+        let in_bounds = Point::new(Line(2), Column(3));
+        assert_eq!(clamp_point(grid, in_bounds), in_bounds);
+    }
 
     /// The URL char predicate must mirror the negated class in `url_regex`:
     /// `[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩\`]`.
