@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 /// Live log level for plexi-namespace targets. The fern filter reads this on
@@ -245,6 +245,97 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
 /// Shared counter bumped by the UI thread each frame so the heartbeat can detect freezes.
 pub type FrameTick = Arc<AtomicU64>;
 
+/// Last host phase reached by the UI thread. The phase and its monotonic
+/// timestamp are packed into one atomic word so the heartbeat can take a
+/// coherent snapshot without contending with the UI thread.
+pub type UiPhaseTracker = Arc<AtomicU64>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum UiPhase {
+    Startup = 0,
+    Logic = 1,
+    LogicComplete = 2,
+    UiRender = 3,
+    RendererPresent = 4,
+    CloseRequest = 5,
+    WorkspaceSave = 6,
+    Exit = 7,
+}
+
+impl UiPhase {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::Logic => "logic",
+            Self::LogicComplete => "logic_complete",
+            Self::UiRender => "ui_render",
+            Self::RendererPresent => "renderer_present",
+            Self::CloseRequest => "close_request",
+            Self::WorkspaceSave => "workspace_save",
+            Self::Exit => "exit",
+        }
+    }
+
+    fn from_byte(value: u8) -> Self {
+        match value {
+            1 => Self::Logic,
+            2 => Self::LogicComplete,
+            3 => Self::UiRender,
+            4 => Self::RendererPresent,
+            5 => Self::CloseRequest,
+            6 => Self::WorkspaceSave,
+            7 => Self::Exit,
+            _ => Self::Startup,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct UiPhaseSnapshot {
+    name: &'static str,
+    age: Duration,
+}
+
+static UI_PHASE_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+fn ui_phase_millis() -> u64 {
+    UI_PHASE_EPOCH
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX >> 8)
+}
+
+fn pack_ui_phase(phase: UiPhase, millis: u64) -> u64 {
+    (millis.min(u64::MAX >> 8) << 8) | phase as u64
+}
+
+pub fn new_ui_phase_tracker() -> UiPhaseTracker {
+    Arc::new(AtomicU64::new(pack_ui_phase(
+        UiPhase::Startup,
+        ui_phase_millis(),
+    )))
+}
+
+pub(crate) fn mark_ui_phase(tracker: &UiPhaseTracker, phase: UiPhase) {
+    tracker.store(pack_ui_phase(phase, ui_phase_millis()), Ordering::Release);
+}
+
+fn ui_phase_snapshot(tracker: &UiPhaseTracker) -> UiPhaseSnapshot {
+    let packed = tracker.load(Ordering::Acquire);
+    unpack_ui_phase(packed, ui_phase_millis())
+}
+
+fn unpack_ui_phase(packed: u64, now_ms: u64) -> UiPhaseSnapshot {
+    let phase = UiPhase::from_byte(packed as u8);
+    let marked_at_ms = packed >> 8;
+    UiPhaseSnapshot {
+        name: phase.name(),
+        age: Duration::from_millis(now_ms.saturating_sub(marked_at_ms)),
+    }
+}
+
 /// Create a new frame tick counter. Pass the clone to `spawn_heartbeat`, store the
 /// original in `PlexiApp` and call `.fetch_add(1, Relaxed)` each frame.
 pub fn new_frame_tick() -> FrameTick {
@@ -281,7 +372,11 @@ pub(crate) fn freeze_verdict(counter_stalled: bool, repaint_pending: Option<bool
 ///
 /// Writes go directly to the file, bypassing the logger, so they survive
 /// even if the logger thread is itself blocked by a freeze.
-pub fn spawn_heartbeat(frame_tick: FrameTick, egui_ctx: HeartbeatCtxSlot) {
+pub fn spawn_heartbeat(
+    frame_tick: FrameTick,
+    egui_ctx: HeartbeatCtxSlot,
+    ui_phase: UiPhaseTracker,
+) {
     let log_path = log_path();
     std::thread::Builder::new()
         .name("plexi-heartbeat".into())
@@ -311,8 +406,11 @@ pub fn spawn_heartbeat(frame_tick: FrameTick, egui_ctx: HeartbeatCtxSlot) {
                         let frozen_secs = last_tick_seen_at.elapsed().as_secs();
                         if frozen_secs >= FREEZE_THRESHOLD_SECS && !freeze_reported {
                             freeze_reported = true;
+                            let phase = ui_phase_snapshot(&ui_phase);
+                            let phase_age_ms = phase.age.as_millis();
                             lines.push_str(&format!(
-                                "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s\n"
+                                "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
+                                phase.name
                             ));
                         }
                     } else if !freeze_reported {
@@ -325,8 +423,11 @@ pub fn spawn_heartbeat(frame_tick: FrameTick, egui_ctx: HeartbeatCtxSlot) {
                     // Frame counter advanced — UI thread is alive.
                     if freeze_reported {
                         let frozen_secs = last_tick_seen_at.elapsed().as_secs();
+                        let phase = ui_phase_snapshot(&ui_phase);
+                        let phase_age_ms = phase.age.as_millis();
                         lines.push_str(&format!(
-                            "[{now}] [INFO] [plexi::heartbeat] [THAW] UI thread resumed after ~{frozen_secs}s\n"
+                            "[{now}] [INFO] [plexi::heartbeat] [THAW] UI thread resumed after ~{frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
+                            phase.name
                         ));
                         freeze_reported = false;
                     }
@@ -354,6 +455,15 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use std::fs;
+
+    #[test]
+    fn ui_phase_snapshot_tracks_last_phase_without_locking() {
+        let tracker = Arc::new(AtomicU64::new(pack_ui_phase(UiPhase::Startup, 0)));
+        tracker.store(pack_ui_phase(UiPhase::WorkspaceSave, 42), Ordering::Release);
+        let snapshot = unpack_ui_phase(tracker.load(Ordering::Acquire), 100);
+        assert_eq!(snapshot.name, "workspace_save");
+        assert_eq!(snapshot.age, Duration::from_millis(58));
+    }
 
     /// Zero frames with no pending repaint is healthy idle — never a freeze.
     #[test]
