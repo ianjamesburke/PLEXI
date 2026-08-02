@@ -6,6 +6,12 @@
 //! gutter aligned to the title, a numeric badge slot distinct from the trailing
 //! action, drag-reorder sensing, and pane pips grouped into per-window capsules.
 //!
+//! The row is two tiers, the same convention [`crate::ui::list::ListRow`] uses
+//! when it has a secondary line: identity on top (index gutter, context name,
+//! and the close action pinned to the row's top-right corner), pane state
+//! below (per-window pip capsules, the overflow count, the notification badge,
+//! and the root path filling whatever is left).
+//!
 //! Geometry is resolved exactly once, by [`RowGeometry::measure`], into explicit
 //! slot rects in row-local space; [`RowGeometry::translated`] moves the whole set
 //! onto the allocated rect. Painting and hit testing both read those rects, so no
@@ -25,21 +31,27 @@ const ROW_INDENT: f32 = 4.0;
 const GUTTER_W: f32 = 18.0;
 /// Top and bottom padding added inside each row for vertical breathing room.
 const ROW_PAD_V: f32 = 7.0;
-/// Right margin for row content that has no trailing slot in front of it.
-const ROW_PAD_RIGHT: f32 = style::SPACE_SM;
-/// Vertical gap between the title line and the path line.
-const TITLE_SUBTITLE_GAP: f32 = 2.0;
+/// Right margin for row content, measured from the row edge. The selection
+/// card insets by `SPACE_XS`, so this leaves visible air inside its outline.
+const ROW_PAD_RIGHT: f32 = style::SPACE_MD;
+/// Vertical gap between the identity tier and the pane-state tier.
+const TIER_GAP: f32 = 3.0;
 
-/// Trailing slot widths. The two slots sit at fixed offsets from the row's
-/// right edge, in this order, so they can never swap or overlap.
-const CLOSE_SLOT_W: f32 = 22.0;
-const BADGE_SLOT_W: f32 = 18.0;
-const TRAILING_SLOT_GAP: f32 = style::SPACE_SM;
-/// Gap between the context name and the pane-pip strip on the title line.
+/// The close action is the row's card-level dismiss, pinned to the top-right
+/// corner of the identity tier — a touch larger than body chrome so it reads
+/// as closing the whole card, not editing a field.
+const CLOSE_SLOT_W: f32 = 26.0;
+const CLOSE_GLYPH_SIZE: f32 = style::TEXT_TITLE;
+/// Gap between the pip strip and the notification badge. The badge is a
+/// separate kind of thing from the pips and must never look glued to them.
+const PIP_BADGE_GAP: f32 = style::SPACE_SM;
+/// Gap before the root path, which fills whatever the pane state leaves.
+const PATH_GAP: f32 = style::SPACE_SM;
+/// Below this the path is dropped rather than elided down to a stub — pane
+/// state is the tier's job, and "/pro…" is noise, not information.
+const PATH_MIN_W: f32 = 48.0;
+/// Gap between the last capsule and the "+N" overflow count.
 const PIP_TEXT_GAP: f32 = style::SPACE_XS;
-/// The name never gives up more than this to the pip strip — a row whose
-/// context is unreadable is worse than one showing fewer pane dots.
-const TITLE_MIN_W: f32 = 56.0;
 
 /// Status-pip radius. Shared with the portal minimap so activity dots are the
 /// same size everywhere they appear (sidebar rows + portal previews).
@@ -136,9 +148,9 @@ pub struct SidebarRow {
     pub ctx_name: String,
     pub ctx_index: Option<usize>,
     pub badge_count: usize,
-    /// Root path shown on its own line below the title line.
+    /// Root path, trailing the pane-state tier.
     pub subtitle: Option<String>,
-    /// Pane pips shown on the title line, right of the name.
+    /// Pane pips, leading the pane-state tier.
     pub pane_dots: Option<PaneDots>,
     /// Whether this row supports drag reordering. When false, hover shows
     /// PointingHand instead of Grab and drag actions are suppressed.
@@ -265,105 +277,132 @@ struct RowGeometry {
     gutter: Rect,
     title: Rect,
     title_galley: std::sync::Arc<egui::Galley>,
-    subtitle: Option<(Rect, std::sync::Arc<egui::Galley>)>,
+    /// Close action, pinned to the identity tier's right edge.
+    close: Option<Rect>,
     /// Strip origin (left edge, vertical center) plus its measured layout.
     pips: Option<(Pos2, PipLayout)>,
-    badge: Option<Rect>,
-    close: Option<Rect>,
+    /// Badge pill and its centered count text.
+    badge: Option<(Rect, std::sync::Arc<egui::Galley>)>,
+    /// Root path, right-aligned in whatever the pane-state tier has left.
+    path: Option<(Rect, std::sync::Arc<egui::Galley>)>,
 }
 
 impl RowGeometry {
     fn measure(ui: &egui::Ui, row: &SidebarRow, width: f32) -> Self {
         let content_left = ROW_INDENT + GUTTER_W;
+        let content_right = width - ROW_PAD_RIGHT;
 
-        // Trailing slots are laid out right to left at fixed widths, so their
-        // positions depend on nothing but which of them are present.
-        let close = row
-            .action_enabled
-            .then_some((width - CLOSE_SLOT_W, CLOSE_SLOT_W));
-        let badge_right = close.map_or(width, |(left, _)| left - TRAILING_SLOT_GAP);
-        let badge = (row.badge_count > 0).then_some((badge_right - BADGE_SLOT_W, BADGE_SLOT_W));
-        // With no trailing slot to sit behind, content still keeps the row's
-        // right margin so text never kisses the selection card's outline.
-        let content_right = badge
-            .or(close)
-            .map_or(width - ROW_PAD_RIGHT, |(left, _)| left)
-            .max(content_left);
+        // ── Identity tier: gutter, name, close ────────────────────────────
+        // The close action is the only thing that shares this line, so the
+        // name's budget is one subtraction and does not vary with pane state.
+        let close_left = row.action_enabled.then_some(content_right - CLOSE_SLOT_W);
+        let title_max = (close_left.unwrap_or(content_right) - content_left).max(0.0);
+        let title_galley = elided_galley(
+            ui,
+            &row.ctx_name,
+            egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE),
+            title_max,
+        );
+        // The close slot is a hit target, not a text line: it is centered on
+        // the title and allowed to overhang into the row's padding rather than
+        // stretching the tier and bulking up every row.
+        let identity_h = title_galley.size().y;
+        let identity_top = ROW_PAD_V;
+        let identity_center_y = identity_top + identity_h / 2.0;
 
-        // The name owns the content lane; the pip strip may take what is left
-        // above the name's floor, and shrinks to fit it. Nothing here depends
-        // on the panel width beyond that one subtraction, so the row has one
-        // shape at every size instead of one per combination of slots.
+        // ── Pane-state tier: pips, badge, path ────────────────────────────
+        // Laid out left to right with fixed reservations, so the path is the
+        // only elastic element and no two of them can ever collide.
         let lane = (content_right - content_left).max(0.0);
+        let badge_galley = (row.badge_count > 0).then(|| {
+            let label = if row.badge_count > 9 {
+                "9+".to_string()
+            } else {
+                row.badge_count.to_string()
+            };
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    label,
+                    egui::FontId::proportional(style::TEXT_META),
+                    Color32::PLACEHOLDER,
+                )
+            })
+        });
+        let badge_size = badge_galley.as_ref().map(|galley| {
+            let h = galley.size().y + style::BADGE_PAD_V * 2.0;
+            Vec2::new((galley.size().x + style::BADGE_PAD_H * 2.0).max(h), h)
+        });
+        let badge_reserved = badge_size.map_or(0.0, |size| size.x + PIP_BADGE_GAP);
+
         let pips = row
             .pane_dots
             .as_ref()
-            .and_then(|dots| PipLayout::measure(dots, lane - TITLE_MIN_W - PIP_TEXT_GAP));
-        let pip_reserved = pips
-            .as_ref()
-            .map_or(0.0, |layout| layout.width + PIP_TEXT_GAP);
-
-        let title_font = egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE);
-        let title_max = (content_right - content_left - pip_reserved).max(0.0);
-        let title_galley = elided_galley(ui, &row.ctx_name, title_font, title_max);
-
-        let subtitle_galley = row.subtitle.as_ref().map(|path| {
-            elided_galley(
-                ui,
-                &shorten_path(path),
-                egui::FontId::proportional(style::TEXT_META),
-                (content_right - content_left).max(0.0),
-            )
+            .and_then(|dots| PipLayout::measure(dots, lane - badge_reserved));
+        let mut state_x = content_left + pips.as_ref().map_or(0.0, |layout| layout.width);
+        let badge_left = badge_size.map(|size| {
+            let left = if pips.is_some() {
+                state_x + PIP_BADGE_GAP
+            } else {
+                state_x
+            };
+            state_x = left + size.x;
+            left
         });
 
-        let title_line_h = title_galley
-            .size()
-            .y
-            .max(pips.as_ref().map_or(0.0, |layout| layout.height));
-        let subtitle_h = subtitle_galley.as_ref().map_or(0.0, |g| g.size().y);
-        let height = ROW_PAD_V * 2.0
-            + title_line_h
-            + if subtitle_galley.is_some() {
-                TITLE_SUBTITLE_GAP + subtitle_h
-            } else {
-                0.0
-            };
-        let title_top = ROW_PAD_V;
-        let title_center_y = title_top + title_line_h / 2.0;
+        let path_avail = (content_right - state_x - PATH_GAP).max(0.0);
+        let path_galley = row
+            .subtitle
+            .as_ref()
+            .filter(|_| path_avail >= PATH_MIN_W)
+            .map(|path| {
+                elided_galley(
+                    ui,
+                    &shorten_path(path),
+                    egui::FontId::proportional(style::TEXT_META),
+                    path_avail,
+                )
+            });
 
-        let slot_rect = |(left, w): (f32, f32)| {
-            Rect::from_min_size(Pos2::new(left, title_top), Vec2::new(w, title_line_h))
+        let state_h = pips
+            .as_ref()
+            .map_or(0.0, |layout| layout.height)
+            .max(badge_size.map_or(0.0, |size| size.y))
+            .max(path_galley.as_ref().map_or(0.0, |g| g.size().y));
+        // A row with no pane state at all is one tier tall, gap included.
+        let state_top = identity_top + identity_h + if state_h > 0.0 { TIER_GAP } else { 0.0 };
+        let state_center_y = state_top + state_h / 2.0;
+        let height = state_top + state_h + ROW_PAD_V;
+
+        let centered = |left: f32, size: Vec2| {
+            Rect::from_min_size(Pos2::new(left, state_center_y - size.y / 2.0), size)
         };
 
         Self {
             rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)),
             gutter: Rect::from_min_size(
-                Pos2::new(ROW_INDENT, title_top),
-                Vec2::new(GUTTER_W, title_line_h),
+                Pos2::new(ROW_INDENT, identity_top),
+                Vec2::new(GUTTER_W, identity_h),
             ),
             title: Rect::from_min_size(
-                Pos2::new(content_left, title_center_y - title_galley.size().y / 2.0),
+                Pos2::new(content_left, identity_center_y - identity_h / 2.0),
                 title_galley.size(),
             ),
             title_galley,
-            subtitle: subtitle_galley.map(|galley| {
+            close: close_left.map(|left| {
+                Rect::from_center_size(
+                    Pos2::new(left + CLOSE_SLOT_W / 2.0, identity_center_y),
+                    Vec2::splat(CLOSE_SLOT_W),
+                )
+            }),
+            pips: pips.map(|layout| (Pos2::new(content_left, state_center_y), layout)),
+            badge: badge_galley
+                .zip(badge_left)
+                .zip(badge_size)
+                .map(|((galley, left), size)| (centered(left, size), galley)),
+            path: path_galley.map(|galley| {
                 let size = galley.size();
-                (
-                    Rect::from_min_size(
-                        Pos2::new(content_left, title_top + title_line_h + TITLE_SUBTITLE_GAP),
-                        size,
-                    ),
-                    galley,
-                )
+                (centered(content_right - size.x, size), galley)
             }),
-            pips: pips.map(|layout| {
-                (
-                    Pos2::new(content_right - layout.width, title_center_y),
-                    layout,
-                )
-            }),
-            badge: badge.map(slot_rect),
-            close: close.map(slot_rect),
         }
     }
 
@@ -373,12 +412,14 @@ impl RowGeometry {
             gutter: self.gutter.translate(offset),
             title: self.title.translate(offset),
             title_galley: self.title_galley,
-            subtitle: self
-                .subtitle
-                .map(|(rect, galley)| (rect.translate(offset), galley)),
-            pips: self.pips.map(|(origin, layout)| (origin + offset, layout)),
-            badge: self.badge.map(|rect| rect.translate(offset)),
             close: self.close.map(|rect| rect.translate(offset)),
+            pips: self.pips.map(|(origin, layout)| (origin + offset, layout)),
+            badge: self
+                .badge
+                .map(|(rect, galley)| (rect.translate(offset), galley)),
+            path: self
+                .path
+                .map(|(rect, galley)| (rect.translate(offset), galley)),
         }
     }
 }
@@ -513,16 +554,17 @@ fn paint_pips(
     }
 
     if let Some(hidden) = layout.overflow {
-        // A focused pane that has no dot of its own is the one the overflow
-        // count stands in for, so the count carries its highlight.
-        let overflow_color = if dots
+        // The overflow count stands in for dots, so it is painted in a dot's
+        // own color — never the accent the notification badge owns, which is
+        // what made a collapsed pip strip read as a badge. A focused pane with
+        // no dot of its own is the one this count represents, so it takes the
+        // focused dot color.
+        let collapsed_is_focused = dots
             .focused_idx
-            .is_some_and(|idx| layout.dot_center_x(idx).is_none())
-        {
-            with_alpha(colors.accent, row_alpha)
-        } else {
-            with_alpha(colors.text_dim, 0.5)
-        };
+            .is_some_and(|idx| layout.dot_center_x(idx).is_none());
+        let overflow_color =
+            crate::ui::activity::pip_color(None, collapsed_is_focused, colors, t, 0)
+                .gamma_multiply(row_alpha);
         crate::ui::snap::text_snapped(
             painter,
             Pos2::new(origin.x + layout.width - PIP_OVERFLOW_W, cy),
@@ -622,14 +664,6 @@ impl SidebarRow {
             geom.title_galley.clone(),
             title_color,
         );
-        if let Some((subtitle_rect, galley)) = &geom.subtitle {
-            crate::ui::snap::galley_snapped(
-                ui.painter(),
-                subtitle_rect.min,
-                galley.clone(),
-                with_alpha(colors.text_dim, row_alpha),
-            );
-        }
 
         // --- Pips -------------------------------------------------------------
         if let (Some(dots), Some((origin, layout))) = (&self.pane_dots, &geom.pips) {
@@ -645,19 +679,34 @@ impl SidebarRow {
         }
 
         // --- Badge ------------------------------------------------------------
-        if let Some(badge_rect) = geom.badge {
-            let label = if self.badge_count > 9 {
-                "9+".to_string()
-            } else {
-                self.badge_count.to_string()
-            };
-            crate::ui::snap::text_snapped(
-                ui.painter(),
-                Pos2::new(badge_rect.right(), badge_rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                label,
-                egui::FontId::proportional(style::TEXT_META),
+        // A filled accent pill: taller than a pip, a different shape, and a
+        // different color family, so a notification count can never be
+        // mistaken for a collapsed pip strip sitting next to it.
+        if let Some((badge_rect, galley)) = &geom.badge {
+            let text_color = with_alpha(colors.text_on(colors.accent), row_alpha);
+            ui.painter().rect_filled(
+                *badge_rect,
+                style::RADIUS_BADGE,
                 with_alpha(colors.accent, row_alpha),
+            );
+            crate::ui::snap::galley_snapped(
+                ui.painter(),
+                Pos2::new(
+                    badge_rect.center().x - galley.size().x / 2.0,
+                    badge_rect.center().y - galley.size().y / 2.0,
+                ),
+                galley.clone(),
+                text_color,
+            );
+        }
+
+        // --- Path ---------------------------------------------------------
+        if let Some((path_rect, galley)) = &geom.path {
+            crate::ui::snap::galley_snapped(
+                ui.painter(),
+                path_rect.min,
+                galley.clone(),
+                with_alpha(colors.text_dim, row_alpha),
             );
         }
 
@@ -672,7 +721,7 @@ impl SidebarRow {
                 paint_text_centered(
                     ui,
                     "\u{2715}",
-                    egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE),
+                    egui::FontId::proportional(CLOSE_GLYPH_SIZE),
                     with_alpha(
                         if in_close {
                             colors.text_primary
@@ -820,12 +869,12 @@ mod tests {
         }
     }
 
-    /// The three trailing slots are distinct zones at fixed offsets from the
-    /// row's right edge: close outermost, badge inside it, pips inside that.
-    /// None of them may overlap, and none may move past another as the panel
-    /// narrows or content appears.
+    /// The two tiers each hold their own things and nothing crosses between
+    /// them: the close action owns the identity tier's right edge, and the
+    /// pane-state tier lays pips, badge, and path out left to right without
+    /// any pair ever overlapping, at every panel width.
     #[test]
-    fn trailing_slots_never_overlap_at_any_width() {
+    fn tiers_never_overlap_at_any_width() {
         for &panel_w in &[140.0_f32, 180.0, 220.0, 320.0, 480.0] {
             for &action_enabled in &[false, true] {
                 for &badge_count in &[0_usize, 4, 42] {
@@ -837,37 +886,53 @@ mod tests {
                                 "panel_w={panel_w} action={action_enabled} \
                                  badge={badge_count} panes={pane_count}"
                             );
-                            if let (Some(badge), Some(close)) = (geom.badge, geom.close) {
+
+                            // Identity tier.
+                            if let Some(close) = geom.close {
                                 assert!(
-                                    badge.right() <= close.left(),
-                                    "badge overlaps close ({label})"
+                                    geom.title.right() <= close.left() + f32::EPSILON,
+                                    "name runs into the close action ({label})"
+                                );
+                                assert!(
+                                    close.right() <= geom.rect.right(),
+                                    "close escapes the row ({label})"
+                                );
+                                assert!(
+                                    close.center().y < geom.rect.center().y,
+                                    "close must sit on the identity tier ({label})"
                                 );
                             }
-                            let trailing_left = geom
-                                .badge
-                                .or(geom.close)
-                                .map_or(geom.rect.right(), |slot| slot.left());
-                            if let Some((origin, layout)) = &geom.pips {
-                                assert!(
-                                    origin.x + layout.width <= trailing_left + f32::EPSILON,
-                                    "pips overlap the trailing slots ({label})"
-                                );
-                                assert!(
-                                    geom.title.right() <= origin.x + f32::EPSILON,
-                                    "title overlaps the pips ({label})"
-                                );
-                            } else {
-                                assert!(
-                                    geom.title.right() <= trailing_left + f32::EPSILON,
-                                    "title overlaps the trailing slots ({label})"
-                                );
-                            }
-                            assert!(
-                                geom.close.is_none_or(
-                                    |close| close.right() <= geom.rect.right() + f32::EPSILON
+
+                            // Pane-state tier, left to right.
+                            let mut cursor = geom.gutter.right();
+                            for (name, rect) in [
+                                (
+                                    "pips",
+                                    geom.pips.as_ref().map(|(origin, layout)| {
+                                        Rect::from_min_size(
+                                            Pos2::new(origin.x, origin.y - layout.height / 2.0),
+                                            Vec2::new(layout.width, layout.height),
+                                        )
+                                    }),
                                 ),
-                                "close escapes the row ({label})"
-                            );
+                                ("badge", geom.badge.as_ref().map(|(rect, _)| *rect)),
+                                ("path", geom.path.as_ref().map(|(rect, _)| *rect)),
+                            ] {
+                                let Some(rect) = rect else { continue };
+                                assert!(
+                                    rect.left() >= cursor - f32::EPSILON,
+                                    "{name} overlaps what precedes it ({label})"
+                                );
+                                assert!(
+                                    rect.right() <= geom.rect.right() + f32::EPSILON,
+                                    "{name} escapes the row ({label})"
+                                );
+                                assert!(
+                                    rect.center().y > geom.title.bottom(),
+                                    "{name} must sit below the identity tier ({label})"
+                                );
+                                cursor = rect.right();
+                            }
                         });
                     }
                 }
@@ -876,7 +941,7 @@ mod tests {
     }
 
     /// The index number shares the title's optical center, not the whole
-    /// row's — a row with a path line underneath would otherwise read with the
+    /// row's — with a pane-state tier underneath, row-centering reads as the
     /// number sitting low beside the name.
     #[test]
     fn index_gutter_is_centered_on_the_title_line() {
@@ -884,8 +949,8 @@ mod tests {
             let item = row(true, 3, 4);
             let geom = RowGeometry::measure(ui, &item, 220.0);
             assert!(
-                geom.subtitle.is_some(),
-                "setup: this row has a path line below the title"
+                geom.pips.is_some(),
+                "setup: this row has a pane-state tier below the title"
             );
             assert!(
                 (geom.gutter.center().y - geom.title.center().y).abs() < 0.01,
@@ -895,14 +960,40 @@ mod tests {
             );
             assert!(
                 geom.gutter.center().y < geom.rect.center().y,
-                "a two-line row's title sits above the row center, so the \
+                "a two-tier row's title sits above the row center, so the \
                  number must too"
             );
         });
     }
 
-    /// The pip strip's width is measured once and reused: the budget the title
-    /// is elided against is the same number the capsules are painted with.
+    /// The badge cannot be mistaken for a collapsed pip strip: it is a taller
+    /// filled pill, and it is separated from the pips by a visible gap rather
+    /// than butted against them.
+    #[test]
+    fn badge_is_visually_distinct_from_collapsed_pips() {
+        in_frame(220.0, |ui| {
+            let item = row(true, 4, PANE_DOT_MAX + 3);
+            let geom = RowGeometry::measure(ui, &item, 220.0);
+            let (pip_origin, layout) = geom.pips.as_ref().expect("many panes render pips");
+            let (badge, _) = geom.badge.as_ref().expect("a badge count renders a badge");
+            assert!(
+                layout.overflow.is_some(),
+                "setup: this many panes must collapse into an overflow count"
+            );
+            assert!(
+                badge.left() - (pip_origin.x + layout.width) >= PIP_BADGE_GAP - 0.01,
+                "the badge must not read as glued to the pip strip"
+            );
+            assert!(
+                badge.height() > PANE_DOT_RADIUS * 2.0 + 1.0,
+                "the badge pill must be taller than a pip so the two never \
+                 read as the same kind of thing"
+            );
+        });
+    }
+
+    /// The pip strip's width is measured once and reused: the budget the tier
+    /// is laid out against is the same number the capsules are painted with.
     #[test]
     fn pip_strip_width_is_measured_once() {
         in_frame(320.0, |ui| {
@@ -915,8 +1006,8 @@ mod tests {
                 "capsules must fill exactly the width the strip reserved"
             );
             assert!(
-                (origin.x + layout.width - geom.rect.right() + CLOSE_SLOT_W).abs() < 0.01,
-                "the strip must end exactly where the trailing slots begin"
+                (origin.x - geom.gutter.right()).abs() < 0.01,
+                "the strip must start at the content lane, under the name"
             );
         });
     }

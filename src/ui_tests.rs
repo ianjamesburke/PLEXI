@@ -1556,14 +1556,15 @@ mod tests {
         }
     }
 
-    /// Stint 0717: the whole vocabulary of the rebuilt context row in one
-    /// frame, at HiDPI — index numbers beside their names, per-window pip
-    /// capsules with the return-target pin on the active window, agent
-    /// activity colors, pip overflow past the visible cap, notification badges
-    /// inboard of the close slot, an active row, and a hovered row showing its
-    /// close glyph. Read the PNG: the number must sit on the name's optical
-    /// center, no two trailing slots may touch, and the capsule's top edge must
-    /// be unbroken except where the pin meets it.
+    /// Stint 0717: the whole vocabulary of the rebuilt two-tier context row in
+    /// one frame, at HiDPI. Identity tier — index number, context name, and
+    /// the close action pinned top-right. Pane-state tier — per-window pip
+    /// capsules with the return-target pin and agent activity colors, the
+    /// overflow count, the notification badge, and the root path trailing.
+    /// Read the PNG: the number must sit on the name's optical center; the
+    /// badge must read as a different kind of thing from the collapsed pips
+    /// beside it; the capsule's top edge must be unbroken except where the pin
+    /// meets it; and nothing on either tier may touch its neighbour.
     #[test]
     fn screenshot_sidebar_row_states() {
         const SHOT_PPP: f32 = 2.0;
