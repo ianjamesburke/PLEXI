@@ -260,13 +260,13 @@ pub struct PlexiApp {
     /// on Cmd+Shift+A.
     pub(crate) show_notification_modal: bool,
     /// ID of the notification the modal is currently showing. `None` means
-    /// "modal is empty / closed" — at the next render, the highest-priority
-    /// notification in the queue becomes current.
+    /// "modal is empty / closed" — at the next render, the next notification
+    /// in the queue becomes current.
     ///
     /// The invariant: **the currently-displayed notification is pinned by
     /// id**. New notifications arriving never change this, so the user can
     /// never be yanked to a different notification without their input.
-    /// Cmd+] / Cmd+[ move this id across the priority-sorted queue.
+    /// Cmd+] / Cmd+[ move this id across the ordered queue.
     pub(crate) current_notify_id: Option<String>,
     /// Focused option index for `kind = "choice"` notifications (0-based).
     /// Reset to 0 whenever the front of the queue changes.
@@ -303,9 +303,6 @@ pub struct PlexiApp {
     /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
     pub(crate) notifications_enabled: bool,
     pub(crate) notifications_focus_mode: bool,
-    /// Minimum priority that may auto-open the modal on arrival. Below this,
-    /// notifications enter the queue silently (badge only). Defaults to 100.
-    pub(crate) notifications_interrupt_threshold: u32,
     /// Path to the audible cue played on notification arrival. `None` = silent.
     pub(crate) notifications_sound: Option<String>,
     /// Keeps the most recent cue audible. Dropping a `PlaybackSession` stops
@@ -1062,11 +1059,6 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.focus_mode)
             .unwrap_or(false);
-        let notifications_interrupt_threshold = config
-            .notifications
-            .as_ref()
-            .and_then(|n| n.interrupt_threshold)
-            .unwrap_or(100); // PRIORITY_HIGH — only HIGH/CRITICAL interrupt by default
         let notifications_sound = config.notifications.as_ref().and_then(|n| n.cue_sound());
         let focus_history_depth = config.focus_history_depth.unwrap_or(100);
         log::info!("config: focus_history_depth={focus_history_depth}");
@@ -1439,7 +1431,6 @@ impl PlexiApp {
                     notification_images: HashMap::new(),
                     notifications_enabled,
                     notifications_focus_mode,
-                    notifications_interrupt_threshold,
                     notifications_sound,
                     notification_cue_playback: None,
                     focus_stack: Vec::new(),
@@ -1702,7 +1693,6 @@ impl PlexiApp {
             notification_images: HashMap::new(),
             notifications_enabled,
             notifications_focus_mode,
-            notifications_interrupt_threshold,
             notifications_sound,
             notification_cue_playback: None,
             focus_stack: Vec::new(),
@@ -2150,7 +2140,6 @@ impl PlexiApp {
                 notification_images: HashMap::new(),
                 notifications_enabled: false,
                 notifications_focus_mode: false,
-                notifications_interrupt_threshold: 100,
                 notifications_sound: None,
                 notification_cue_playback: None,
                 focus_stack: Vec::new(),
@@ -3281,11 +3270,11 @@ impl eframe::App for PlexiApp {
                         self.show_notification_modal = false;
                     } else {
                         self.show_notification_modal = true;
-                        // Pick highest-priority when re-opening the modal and
+                        // Pick the next notification when re-opening the modal and
                         // nothing is currently pinned. If something IS pinned
                         // (user closed+reopened), keep showing that one.
                         if self.current_notify_id.is_none() {
-                            self.current_notify_id = self.select_highest_priority();
+                            self.current_notify_id = self.select_next_notification();
                         }
                     }
                 }

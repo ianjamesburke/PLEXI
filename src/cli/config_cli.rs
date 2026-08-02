@@ -156,11 +156,6 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "bool",
         "Suppress all notification auto-open when true (default false)",
     ),
-    (
-        "notifications.interrupt_threshold",
-        "integer",
-        "Min priority to auto-open the modal (default 100)",
-    ),
     // agents.*
     ("agents.low", "string", "Command for low-tier agent tasks"),
     (

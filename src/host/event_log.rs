@@ -86,7 +86,6 @@ pub enum HostEvent {
     NotificationPosted {
         id: String,
         title: String,
-        urgency: String,
         timestamp: String,
     },
     /// The user invoked a notification action.

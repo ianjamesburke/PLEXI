@@ -66,7 +66,7 @@ pub struct PaneAgentState {
 
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AppRequest {
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
@@ -100,8 +100,6 @@ pub enum AppRequest {
     },
     /// Post a notification. All three action_types must dispatch correctly (no TODO).
     Notify {
-        /// One of: "info" | "warn" | "error"
-        level: String,
         title: String,
         body: String,
         /// The notification shape. Defaults to `message` for back-compat with
@@ -124,12 +122,6 @@ pub enum AppRequest {
         /// If set, host sends PlexiEvent::NotifyAction when the user responds.
         #[serde(default)]
         notify_id: Option<String>,
-        /// Higher = more urgent. REQUIRED — no `#[serde(default)]`. Apps must
-        /// set this explicitly; omitting it fails deserialisation (forces SDK
-        /// upgrade, no silent defaults). Ties broken by arrival order.
-        /// Typical values: 0 (background info), 50 (normal), 100 (important),
-        /// 200 (critical/required).
-        priority: u32,
         /// Inline image attachment (PNG / JPEG, base64-encoded). Rendered above
         /// the action buttons. Decoded size > 50 KB triggers a placeholder.
         /// `Option` is the natural empty/missing wire shape — no
@@ -2151,13 +2143,12 @@ mod tests {
         // Choice action shape: each NotifyOption carries a label, a value
         // (the structured `payload` from issue #74), and an optional
         // single-char hotkey (`shortcut`, the `key` from issue #74).
-        let json = r#"{"type":"notify","level":"info","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}],"priority":100}"#;
+        let json = r#"{"type":"notify","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}]}"#;
         let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             AppRequest::Notify {
                 kind,
                 options,
-                priority,
                 image_inline,
                 image_pipe_id,
                 ..
@@ -2167,7 +2158,6 @@ mod tests {
                 assert_eq!(options[0].value, "sidebar");
                 assert_eq!(options[0].shortcut.as_deref(), Some("1"));
                 assert_eq!(options[1].value, "fullwidth");
-                assert_eq!(*priority, 100);
                 assert!(
                     image_inline.is_none(),
                     "image_inline should default to None"
@@ -2195,7 +2185,7 @@ mod tests {
         // 4-byte base64 payload — well under the 50 KB cap. The host will
         // attempt to decode + render; tiny or invalid images render a
         // placeholder, never crash.
-        let json = r#"{"type":"notify","level":"info","title":"Pic","body":"see image","kind":"message","priority":50,"image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
+        let json = r#"{"type":"notify","title":"Pic","body":"see image","kind":"message","image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
         let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             AppRequest::Notify {
@@ -2225,7 +2215,7 @@ mod tests {
 
     #[test]
     fn notify_with_image_pipe_id_round_trips_serde() {
-        let json = r#"{"type":"notify","level":"info","title":"Pic","body":"piped","kind":"message","priority":50,"image_pipe_id":"render-out"}"#;
+        let json = r#"{"type":"notify","title":"Pic","body":"piped","kind":"message","image_pipe_id":"render-out"}"#;
         let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             AppRequest::Notify {
@@ -2244,7 +2234,7 @@ mod tests {
     fn notify_without_image_fields_round_trips_serde() {
         // Existing apps that never set image fields must continue to work.
         // Missing `image_inline` / `image_pipe_id` deserialise as None.
-        let json = r#"{"type":"notify","level":"info","title":"Plain","body":"no image","kind":"message","priority":50}"#;
+        let json = r#"{"type":"notify","title":"Plain","body":"no image","kind":"message"}"#;
         let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
             AppRequest::Notify {
@@ -2399,7 +2389,7 @@ mod tests {
 
     #[test]
     fn test_notify_timeout_fields() {
-        let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50,"timeout_secs":30,"on_dismiss":"user_ignored"}"#;
+        let json = r#"{"type":"notify","title":"T","body":"B","timeout_secs":30,"on_dismiss":"user_ignored"}"#;
         let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
             AppRequest::Notify {
@@ -2416,7 +2406,7 @@ mod tests {
 
     #[test]
     fn test_notify_timeout_fields_default() {
-        let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50}"#;
+        let json = r#"{"type":"notify","title":"T","body":"B"}"#;
         let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
             AppRequest::Notify {
@@ -2428,6 +2418,19 @@ mod tests {
                 assert!(on_dismiss.is_none());
             }
             other => panic!("expected AppRequest::Notify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn notify_rejects_removed_priority_and_level_fields() {
+        for removed in ["priority", "level"] {
+            let json = format!(
+                r#"{{"type":"notify","title":"T","body":"B","{removed}":1}}"#
+            );
+            assert!(
+                serde_json::from_str::<AppRequest>(&json).is_err(),
+                "removed notification field {removed} must fail loudly"
+            );
         }
     }
 

@@ -2342,14 +2342,12 @@ impl PlexiApp {
             }
             crate::app_protocol::AppRequest::Notify {
                 notify_id,
-                level,
                 title,
                 body,
                 kind,
                 options,
                 input_prompt,
                 required,
-                priority,
                 image_inline,
                 image_pipe_id,
                 timeout_secs,
@@ -2453,14 +2451,12 @@ impl PlexiApp {
                         source_context_id: caller_context_id.unwrap_or(0),
                         source_window_id: caller_window_id.unwrap_or(0),
                         scope: effective_scope,
-                        level: level.clone(),
                         title: title.clone(),
                         body: body.clone(),
                         kind: kind.clone(),
                         options: options.clone(),
                         input_prompt: input_prompt.clone(),
                         required: *required,
-                        priority: *priority,
                         image_inline: image_inline.clone(),
                         image_pipe_id: image_pipe_id.clone(),
                         response_file: response_file.clone(),
@@ -3256,8 +3252,7 @@ impl PlexiApp {
 
     /// Surface a routine problem as a user-visible notification, scoped to the
     /// context that owns the routine's workspace root (global when no context
-    /// matches). Routed through the single notification choke point; passive
-    /// priority — never auto-opens the modal, never triggers the audible cue.
+    /// matches). Routed through the single notification choke point.
     fn notify_routine_issue(&mut self, source_root: &std::path::Path, title: &str, body: &str) {
         let ctx_id = self
             .router
@@ -3283,16 +3278,12 @@ impl PlexiApp {
                 sender_pane_id: 0,
                 source_context_id,
                 source_window_id: 0,
-                level: "warn".to_string(),
                 title: title.to_string(),
                 body: body.to_string(),
                 kind: crate::app_protocol::NotifyKind::Message,
                 options: vec![],
                 input_prompt: None,
                 required: false,
-                // Passive (below the default interrupt threshold of 100): a
-                // routine hiccup informs, it never steals focus.
-                priority: 50,
                 scope,
                 image_inline: None,
                 image_pipe_id: None,

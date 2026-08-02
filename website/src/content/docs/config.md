@@ -107,14 +107,13 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
 
 ### Notifications (`[notifications]`)
 
-`interrupt_threshold` maps to named priority levels: `0` = LOW, `50` = NORMAL, `100` = HIGH, `200` = CRITICAL. Notifications below the threshold queue silently; at or above it, arrival opens the modal.
+Visible notifications open the modal unless `focus_mode` is enabled. There is one notification level.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | true | Master switch. If false, incoming notifications are silently dropped — apps still send them, but the modal never appears and the queue stays empty. Defaults to true. |
-| `focus_mode` | bool | false | Focus mode. When true, NO notification auto-surfaces regardless of priority. Everything queues silently; the user reviews via Cmd+Shift+A. Defaults to false. |
-| `interrupt_threshold` | integer | 100 | Minimum priority that may auto-open the modal. Notifications below this value queue silently (badge ticks, Cmd+Shift+A reveals them). At or above it, arrival auto-opens the modal. Defaults to 100 (`PRIORITY_HIGH`) — NORMAL and LOW are passive; HIGH and CRITICAL interrupt. Set to 0 to auto-open everything; set to 201 to match `focus_mode = true`. |
-| `sound` | string | — | Path to an audio file (WAV, MP3, FLAC, OGG) played once when a notification arrives, so an agent waiting on input can pull a human back while Plexi is in the background. Unset (the default) means no sound; an explicitly empty string also means no sound, so a workspace overlay can set `sound = ""` to silence a globally configured cue. The cue only fires for a notification that may interrupt: `enabled = false` drops it before the cue, `focus_mode = true` suppresses it, and a notification that is invisible or below `interrupt_threshold` arrives silently. |
+| `focus_mode` | bool | false | Focus mode. When true, no notification auto-surfaces. Everything queues silently; the user reviews via Cmd+Shift+A. Defaults to false. |
+| `sound` | string | — | Path to an audio file (WAV, MP3, FLAC, OGG) played once when a notification arrives, so an agent waiting on input can pull a human back while Plexi is in the background. Unset (the default) means no sound; an explicitly empty string also means no sound, so a workspace overlay can set `sound = ""` to silence a globally configured cue. The cue only fires for a notification that may interrupt: `enabled = false` drops it before the cue, `focus_mode = true` suppresses it, and an invisible notification arrives silently. |
 
 ### AI (`[ai]`)
 
@@ -307,7 +306,6 @@ ghost_opacity = 0.75
 [notifications]
 # enabled = true
 # focus_mode = false
-# interrupt_threshold = 100    # 0=LOW 50=NORMAL 100=HIGH 200=CRITICAL
 # sound = "/System/Library/Sounds/Ping.aiff"   # cue played on arrival; unset = silent
 
 [ai]

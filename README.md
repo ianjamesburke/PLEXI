@@ -151,16 +151,9 @@ plexi notify --title "Deploy ready" --body "Review before promoting." \
 
 **From an app (Python SDK):** emit a notification by returning a `Notify` effect from `update`. See [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md) for the current effect API.
 
-### Priority tiers
+### Notification delivery
 
-| Priority | Value | Behavior |
-|----------|-------|----------|
-| `PRIORITY_LOW` | 0 | Queues silently; badge ticks on toolbar |
-| `PRIORITY_NORMAL` | 50 | Queues silently by default |
-| `PRIORITY_HIGH` | 100 | Auto-opens the modal (default threshold) |
-| `PRIORITY_CRITICAL` | 200 | Always interrupts |
-
-The `interrupt_threshold` in `config.toml` sets the minimum priority that auto-opens the modal. Notifications below it queue silently — open `Cmd+Shift+A` to review.
+Plexi has one notification level. A visible notification opens the modal unless focus mode is on. Required notifications stay first in the queue; the rest remain in arrival order.
 
 ### The notification modal (`Cmd+Shift+A`)
 

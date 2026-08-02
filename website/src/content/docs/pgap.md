@@ -134,11 +134,9 @@ Post a notification. All three action_types must dispatch correctly (no TODO).
 | `image_pipe_id` | `string?` | no |
 | `input_prompt` | `string?` | no |
 | `kind` | `NotifyKind` | no |
-| `level` | `string` | yes |
 | `notify_id` | `string?` | no |
 | `on_dismiss` | `string?` | no |
 | `options` | `NotifyOption[]` | no |
-| `priority` | `integer` | yes |
 | `required` | `boolean` | no |
 | `response_file` | `string?` | no |
 | `scope` | `variant` | no |

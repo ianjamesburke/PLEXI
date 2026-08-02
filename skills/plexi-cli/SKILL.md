@@ -148,7 +148,9 @@ plexi workspace clean
 ### Post and dismiss a scoped notification
 
 Use a notification for information intended for the person using the host, not
-for structured agent-to-agent data.
+for structured agent-to-agent data. A visible notification interrupts unless
+the host's notification focus mode is enabled; notifications do not carry a
+severity or urgency flag.
 
 ```bash
 NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to inspect.' \

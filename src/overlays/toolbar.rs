@@ -94,7 +94,7 @@ impl PlexiApp {
                     {
                         self.show_notification_modal = !self.show_notification_modal;
                         if self.show_notification_modal && self.current_notify_id.is_none() {
-                            self.current_notify_id = self.select_highest_priority();
+                            self.current_notify_id = self.select_next_notification();
                         }
                     }
                 }

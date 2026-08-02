@@ -23,7 +23,6 @@ pub fn parse_notify_scope(
 pub fn notify_cli(
     title: &str,
     body: &str,
-    level: &str,
     choices: &[(String, String, Option<String>)],
     wait_for_response: bool,
     display_timeout_secs: u64,
@@ -90,12 +89,10 @@ pub fn notify_cli(
     let mut payload = serde_json::json!({
         "type": "notify",
         "notify_id": notify_id,
-        "level": level,
         "title": title,
         "body": body,
         "kind": kind,
         "options": options_json,
-        "priority": 50,
     });
     if display_timeout_secs > 0 {
         payload["timeout_secs"] = serde_json::Value::from(display_timeout_secs);
@@ -273,7 +270,6 @@ mod notify_tests {
         let code = notify_cli(
             "Test title",
             "Test body",
-            "info",
             &[],
             true,
             0,
@@ -298,7 +294,6 @@ mod notify_tests {
             notify_cli(
                 "Ready",
                 "Review tests",
-                "info",
                 &choices,
                 false,
                 0,
@@ -327,7 +322,6 @@ mod notify_tests {
             notify_cli(
                 "Expiry",
                 "body",
-                "info",
                 &[],
                 false,
                 30,
@@ -356,7 +350,6 @@ mod notify_tests {
             notify_cli(
                 "Ready",
                 "Review tests",
-                "info",
                 &choices,
                 true,
                 1,
@@ -414,7 +407,6 @@ mod notify_tests {
         let code = notify_cli(
             "Ready",
             "Review tests",
-            "info",
             &choices,
             true,
             1,
@@ -472,7 +464,7 @@ mod notify_tests {
     fn notify_cli_sends_caller_identity() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("T", "B", "info", &[], false, 0, 0, None, Some(7), Some(42))
+            notify_cli("T", "B", &[], false, 0, 0, None, Some(7), Some(42))
         });
         assert_eq!(code, 0);
         assert_eq!(payload["source_context_id"], 7);
@@ -485,7 +477,7 @@ mod notify_tests {
     fn notify_cli_omits_identity_when_absent() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("T", "B", "info", &[], false, 0, 0, None, None, None)
+            notify_cli("T", "B", &[], false, 0, 0, None, None, None)
         });
         assert_eq!(code, 0);
         assert!(payload.get("source_context_id").is_none());
@@ -503,7 +495,7 @@ mod notify_tests {
             crate::app_protocol::NotifyScope::Context,
             crate::app_protocol::NotifyScope::Window,
         ] {
-            let code = notify_cli("T", "B", "info", &[], false, 0, 0, Some(scope), None, None);
+            let code = notify_cli("T", "B", &[], false, 0, 0, Some(scope), None, None);
             assert_eq!(code, 1, "{scope:?} without a caller context must error");
         }
     }

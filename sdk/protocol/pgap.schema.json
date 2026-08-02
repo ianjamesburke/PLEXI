@@ -389,6 +389,7 @@
       "description": "App-to-host requests — go to `route_command`.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.",
           "properties": {
             "capability": {
@@ -411,6 +412,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.",
           "properties": {
             "key": {
@@ -428,6 +430,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Read a file through the native WASM app runtime host. Requires `fs.read` and\nthe resolved path must stay inside the app's workspace root.",
           "properties": {
             "path": {
@@ -445,6 +448,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List a directory through the native WASM app runtime host. Requires `fs.read`\nand the resolved path must stay inside the app's workspace root.",
           "properties": {
             "extensions": {
@@ -469,6 +473,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Save app state. Host writes to workspace or global JSON file.",
           "properties": {
             "payload": true,
@@ -484,6 +489,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request to start a run. Host surfaces in Run palette (Cmd+R).",
           "properties": {
             "intent": {
@@ -503,6 +509,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Signal that a run the app owns has finished.",
           "properties": {
             "result": true,
@@ -522,6 +529,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Post a notification. All three action_types must dispatch correctly (no TODO).",
           "properties": {
             "actions": {
@@ -565,10 +573,6 @@
               "default": "message",
               "description": "The notification shape. Defaults to `message` for back-compat with\nexisting apps. Determines how the modal renders and interacts."
             },
-            "level": {
-              "description": "One of: \"info\" | \"warn\" | \"error\"",
-              "type": "string"
-            },
             "notify_id": {
               "default": null,
               "description": "If set, host sends PlexiEvent::NotifyAction when the user responds.",
@@ -592,12 +596,6 @@
                 "$ref": "#/$defs/NotifyOption"
               },
               "type": "array"
-            },
-            "priority": {
-              "description": "Higher = more urgent. REQUIRED — no `#[serde(default)]`. Apps must\nset this explicitly; omitting it fails deserialisation (forces SDK\nupgrade, no silent defaults). Ties broken by arrival order.\nTypical values: 0 (background info), 50 (normal), 100 (important),\n200 (critical/required).",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
             },
             "required": {
               "default": false,
@@ -660,14 +658,13 @@
           },
           "required": [
             "type",
-            "level",
             "title",
-            "body",
-            "priority"
+            "body"
           ],
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Remove a notification posted by the caller. The host verifies the\ncaller identity against the notification's stamped provenance.",
           "properties": {
             "notify_id": {
@@ -705,6 +702,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Report agent state for a pane. Called by hook scripts via `plexi agent report`.",
           "properties": {
             "agent": {
@@ -745,6 +743,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Report an app's own pip status (red/yellow/green) for its activity dot.\nFire-and-forget; set by the app process via `App.set_pip_status`. Takes\npriority over derived activity until the app reports a new status.\n\n`pane_id` is stamped by the host with the sending app's own pane (the app\ndoes not know its pane id), so it defaults to 0 on the wire and an app\ncan only ever set its own pip — never another pane's.",
           "properties": {
             "pane_id": {
@@ -768,6 +767,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Get all tracked pane agent states. Writes JSON array to response_file.",
           "properties": {
             "response_file": {
@@ -785,6 +785,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Open a typed pipe.\nmode: \"json\" | \"binary\"\ndirection: \"in\" | \"out\" | \"duplex\"",
           "properties": {
             "direction": {
@@ -812,6 +813,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Open a *directed* JSON pipe to a specific target pane (#286).\n\nMirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only\nthe caller pane and the pane identified by `target_pane_id` can\nreceive messages on this pipe — peer apps are NOT subscribed even\nif they call `pipe_open` with the same `pipe_id`.\n\nCreated bidirectionally: both panes receive the other's `PipeSend`\npayloads as `PlexiEvent::PipeMessage`. Either side can close.\n\nCapability gate: caller needs `pipe.open` (the same as `PipeOpen`).\nThe target does NOT need `agents.list` — it just needs to be\naddressable. The target also doesn't need to opt in; the host\nsubscribes it on this pipe id.\n\nDirection is always `duplex` on directed pipes — there's no use case\nfor a one-way agent-to-agent channel today, so the field is omitted.\nMode is always `json`; binary directed pipes are out of scope until\na real use case arrives.",
           "properties": {
             "pipe_id": {
@@ -835,6 +837,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Send a JSON-mode pipe message (not for binary pipes).",
           "properties": {
             "payload": true,
@@ -854,6 +857,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Update the status text shown in the parent pane chrome.",
           "properties": {
             "text": {
@@ -871,6 +875,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Write one info-level marker line into the running host's channel log\n(`~/.plexi-<channel>/plexi.log`). Sent by `plexi host log` — the\nsanctioned way for automated drivers (release gates, scene runners,\nCI) to leave start/finish summaries in the installed host's own log\ninstead of only in their local output. Newlines are flattened so the\nmarker stays one greppable line.\nHost writes `{\"ok\":true}` to `response_file` when set.",
           "properties": {
             "message": {
@@ -899,6 +904,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request the host to spawn a new app pane. Requires `spawn.app` capability.\n`layout`: \"split_h\" (new pane right), \"split_v\" (default, new pane below),\n          or \"overlay\" (full pane, no split).\n`args`: argv passed to the child process (appended after the binary path).\nHost responds with `PlexiEvent::AppSpawned { pane_id }` on success.",
           "properties": {
             "args": {
@@ -930,6 +936,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_h\", \"split_right\", \"split_v\", \"split_below\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\nA spawned child that needs to report completion back to its spawner does\nso over the event bus: it calls `EmitEvent` with `<app>::completed` and\nthe spawner reads it via `SubscribeAppEvents`. There is no JSON-pipe\nreply channel (the legacy `--pipe=<id>` coupling was removed in 0327).\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
           "properties": {
             "agent_cmd": {
@@ -1044,6 +1051,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`\nover PLEXI_SOCKET.",
           "properties": {
             "name": {
@@ -1067,6 +1075,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.",
           "properties": {
             "context_id": {
@@ -1093,6 +1102,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List all open contexts. Host writes a JSON array to `response_file`.\nSent by `plexi context list`.",
           "properties": {
             "response_file": {
@@ -1110,6 +1120,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Query info for a specific pane by ID. Host writes JSON object to `response_file`.\nSent by `plexi pane info`.",
           "properties": {
             "pane_id": {
@@ -1133,6 +1144,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Query info for the previously focused pane. Host walks `pane_focus_history`\nfrom the end, finds the Nth live entry, and writes the same JSON shape as\n`GetPaneInfo` to `response_file`. `steps` defaults to 1 (immediate previous).\nReturns `{\"error\":\"...\"}` if history has fewer than N valid panes.\nSent by `plexi pane info --previous [N]`.",
           "properties": {
             "response_file": {
@@ -1156,6 +1168,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List permission state across apps (stint 0017). Gated on\n`permissions.manage` when arriving over PGAP. Host writes a JSON object\nto `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"app_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"app_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running app that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
           "properties": {
             "response_file": {
@@ -1173,6 +1186,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Set the stored permission state for an (app, workspace, capability)\ntriple (stint 0017). Gated on `permissions.manage` when arriving over\nPGAP. `state` is one of \"green\" | \"yellow\" | \"red\". When `workspace`\nis omitted, the workspace root of a running app with `app_id` is used;\nif no such app is running the request fails. Persists to\n`permissions.toml` AND live-updates any running app's permission set,\nso a revocation takes effect on the app's next request. Host writes\n`{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`. Unknown\ncapability or state strings fail closed with an error reply.",
           "properties": {
             "app_id": {
@@ -1208,6 +1222,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Write bytes to a named host-managed pane file slot.",
           "properties": {
             "append": {
@@ -1253,6 +1268,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Read raw bytes from a named host-managed pane file slot.",
           "properties": {
             "pane_id": {
@@ -1280,6 +1296,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Block until a named pane file slot's value matches `pattern`.\n\nLevel-triggered: a slot already matching at request time answers\nimmediately. The host parks the waiter otherwise and expires it after\n`timeout_secs`, writing a `{\"timeout\": true}` reply to the\n`<response_file>.err` sidecar so the caller sees the host's reason\nrather than its own poll timeout.",
           "properties": {
             "pane_id": {
@@ -1316,6 +1333,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List named host-managed pane file slots.",
           "properties": {
             "pane_id": {
@@ -1339,6 +1357,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Delete a named host-managed pane file slot.",
           "properties": {
             "pane_id": {
@@ -1366,6 +1385,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Remove slot files for pane ids that are no longer live in any window.",
           "properties": {
             "dry_run": {
@@ -1387,6 +1407,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.",
           "properties": {
             "pane_id": {
@@ -1406,6 +1427,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.",
           "properties": {
             "pane_id": {
@@ -1425,6 +1447,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Write text to a running pane's PTY stdin. Sent by `plexi pane send`.\n`\\n` in text (literal backslash-n) is interpreted as Enter.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on app panes.",
           "properties": {
             "pane_id": {
@@ -1458,6 +1481,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Configure or disable a host-owned recurring terminal prompt.",
           "properties": {
             "every_ms": {
@@ -1507,6 +1531,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Deliver a synthetic key event to any pane. Sent by `plexi pane key`.\nFor terminal panes, the key is translated to PTY bytes.\nFor PGAP app panes, a `PlexiEvent::Key` is delivered.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.",
           "properties": {
             "key": {
@@ -1537,6 +1562,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Deliver a local path or image URL to the pane through the same\nproduction drop handler used by native host drops.",
           "properties": {
             "pane_id": {
@@ -1564,6 +1590,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Deliver a synthetic pointer click to an app pane, in pane-pixel\ncoordinates (origin at the pane's top-left). Sent by `plexi pane click`.\nThe host injects a real `PointerMoved`+`PointerButton` press/release\npair into the live production egui pass, so it exercises the exact\nsame `canvas_transform` inversion a physical click would — never a\nparallel resolver. Terminal panes reject this (no click semantics\ndefined yet). Host writes `{\"ok\":true}` or `{\"error\":\"...\"}` to\n`response_file` when set.",
           "properties": {
             "button": {
@@ -1606,6 +1633,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Deliver a synthetic click to an app pane by node id, activating the\nButton/TextInput/ListView node the id names — the node-addressed\nsibling of `ClickPane` (stint 0414). Sent by\n`plexi pane click <pane_id> --node <node_id>`. `node_id` matches\n`SemanticPaneNode.id`, the id `plexi pane state` reports for every\nnode in the pane's tree, so a caller resolves it from `pane state`\noutput rather than computing pixel geometry. The host validates\n`node_id` against the pane's cached semantic tree and fails loudly\n(no queued click) when it is absent or not an interactive role;\notherwise it resolves the node's on-screen rect during the next\nrender pass and delivers the same `PendingPaneClick` honest hit-test\nthe pixel path uses. Host writes `{\"ok\":true}` or `{\"error\":\"...\"}`\nto `response_file` when set.",
           "properties": {
             "button": {
@@ -1642,6 +1670,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Deliver a sanctioned pointer drag to an app pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
           "properties": {
             "button": {
@@ -1719,6 +1748,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Read the last N lines from a terminal pane's PTY scrollback buffer.\nSent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.",
           "properties": {
             "from_cursor": {
@@ -1761,6 +1791,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Derive one auditable working/idle/blocked verdict from the pane's agent\ndetector, TUI status bar, and trailing terminal buffer.",
           "properties": {
             "pane_id": {
@@ -1784,6 +1815,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a versioned `semantic` tree for every runtime.\nProcess panes also retain the compatible `frame` RenderCommand array.\nFor terminal panes: host writes a simple status object.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
           "properties": {
             "pane_id": {
@@ -1807,6 +1839,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Capture the live host window as a PNG through the real render\npipeline (`egui::ViewportCommand::Screenshot` — actual rendered\npixels, not a re-render). With `pane_id`, the image is cropped to\nthat pane's current screen rect. Sent by `plexi host screenshot`.\nHost writes the PNG to `output_path` and\n`{\"ok\":true,\"path\":...,\"width\":...,\"height\":...}` (or\n`{\"error\":\"...\"}`) to `response_file`.",
           "properties": {
             "output_path": {
@@ -1837,6 +1870,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.\nHost delivers `PlexiEvent::Action { action, args }` to the target app pane.\nWrites `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
           "properties": {
             "action": {
@@ -1874,6 +1908,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
           "properties": {
             "anchor_pane": {
@@ -1948,6 +1983,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Create a sub-context under the caller's context, pre-populated with a\nsquad of terminal panes in a single window. Sent by `plexi context sub`.\n\nUnlike `CreateContext { parent_name, windows }` this seeds *exactly*\n`panes.len()` terminals — no spare root terminal — and tiles them inside\none window instead of creating sibling pages.",
           "properties": {
             "anchor_pane": {
@@ -2024,6 +2060,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Focus existing context by root, or create one. Sent by `plexi context open`.",
           "properties": {
             "root": {
@@ -2041,6 +2078,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Set/update the root of a context. Sent by `plexi context set-root`.\n`context_id` targets the caller's context (PLEXI_CONTEXT_ID); when\nabsent, the active context is used.",
           "properties": {
             "context_id": {
@@ -2066,6 +2104,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Set/update the description of a context. Sent by `plexi context describe`.\n`context_id` targets the caller's context (PLEXI_CONTEXT_ID); when\nabsent, the active context is used.",
           "properties": {
             "context_id": {
@@ -2091,6 +2130,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.",
           "properties": {
             "context_id": {
@@ -2110,6 +2150,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.",
           "properties": {
             "type": {
@@ -2123,6 +2164,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Push a pane into a new sub-context. Sent by `plexi context push`.\n`pane_id` targets the caller's pane (PLEXI_PANE_ID); when absent, the\nfocused pane is pushed.",
           "properties": {
             "name": {
@@ -2150,6 +2192,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Query the rolled-up `ContextState` for a context (#1518).\nThe requesting app must be in an ancestor (or the same) context.\nHost responds with `PlexiEvent::ContextStateResponse`.",
           "properties": {
             "context_id": {
@@ -2169,6 +2212,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Host-brokered HTTP request. Requires `net.http` capability.\nHost replies with `PlexiEvent::HttpResponse { request_id, ... }`.",
           "properties": {
             "body": {
@@ -2208,6 +2252,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Open an HTTP(S) URL in the user's default browser.\n\nCapability: `net.http`. The URL host must pass the same\n`allowed_hosts` check used by `HttpRequest`.",
           "properties": {
             "type": {
@@ -2225,6 +2270,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "v3.3 brokered AI call. Requires `ai.query` capability.\n\nThe host routes this to the active Plexi AI backend, appends an\n`AgentTurn` row to `ai-ledger.jsonl`, and replies with\n`PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.\n\nAll fields are required — no `serde(default)`. `tools` may be empty;\nnon-empty `tools` causes the broker to dispatch through a tool loop\n(#399) — the AI can call tools on any pane that exposed them via\n`AppRequest::ExposeTools`.",
           "properties": {
             "messages": {
@@ -2264,6 +2310,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "v3.7 tool protocol (#398). App declares its callable tools to the host.\nThe host registers these in the global tool registry so the broker can\nroute `PlexiEvent::ToolCall` events to this pane during AI turns that\ninclude tool-use.\n\nMay be sent at any time (including on_init). Replaces any prior\nregistration for this pane — send the full current set each time.",
           "properties": {
             "tools": {
@@ -2284,6 +2331,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "v3.7 tool protocol (#399). App returns the result of a `PlexiEvent::ToolCall`\ninvocation. `call_id` must match the `call_id` from the `ToolCall` event.\n\nEither `output_json` or `error` must be set — not both.",
           "properties": {
             "call_id": {
@@ -2313,6 +2361,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "App returns the result of a `PlexiEvent::McpToolCall` invocation.\n`call_id` must match the `call_id` from the `McpToolCall` event.\nEither `result` or `error` must be set.",
           "properties": {
             "call_id": {
@@ -2337,6 +2386,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Host-owned audio playback via `rodio`.",
           "properties": {
             "pipe_id": {
@@ -2374,6 +2424,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Host-owned audio capture: mic PCM delivered on a binary pipe.\n`device_id` selects which input device (from `ListAudioDevices`); when\n`None` the host opens the OS default input. The negotiated parameters\narrive in `PlexiEvent::AudioCaptureStarted`; failures arrive in\n`PlexiEvent::AudioCaptureError`.",
           "properties": {
             "buffer_size": {
@@ -2410,6 +2461,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request enumeration of audio devices (#277). Host responds with\n`PlexiEvent::AudioDevicesListed { request_id, inputs, outputs }`. No\ncapability gate — enumeration discloses only device names already\nvisible to any macOS app.",
           "properties": {
             "request_id": {
@@ -2427,6 +2479,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request enumeration of MIDI ports (#320). Host responds with\n`PlexiEvent::MidiDevicesListed { request_id, inputs, outputs }`. No\ncapability gate — enumeration discloses only port names already\nvisible in Audio MIDI Setup.",
           "properties": {
             "request_id": {
@@ -2444,6 +2497,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Open a MIDI input port and forward every incoming message as a binary\npipe frame on `pipe_id`. Each frame is a single MIDI 1.0 byte stream\n(1–3 bytes for channel-voice / system real-time). Requires `midi.in`.\nHost emits `PlexiEvent::PipeOpened` then `PlexiEvent::MidiInputOpened`\non success, or `PlexiEvent::MidiInputError` on failure (port not found,\ncapability denied, CoreMIDI error).",
           "properties": {
             "pipe_id": {
@@ -2465,6 +2519,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Close the MIDI input previously opened on `port_id`. The host\ndisconnects from the port and closes the associated binary pipe.\nNo-op if the port is not currently open. No response event.",
           "properties": {
             "port_id": {
@@ -2482,6 +2537,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Send one MIDI 1.0 byte stream to `port_id`. Fire-and-forget — the host\nonly emits `PlexiEvent::MidiSendError` if the send failed (port not\nopen, CoreMIDI error). Requires `midi.out`. The host opens the output\nport lazily on the first `SendMidi` call and keeps it open until the\napp exits.",
           "properties": {
             "bytes": {
@@ -2509,6 +2565,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Open a video decoder (#345). The host responds with\n`PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,\nfps, duration_ms }` on success or `PlexiEvent::VideoOpenError\n{ request_id, error }` on failure (capability denied, source not\nfound, decoder error, NotImplemented from the production stub).\nDecoded RGBA8 frames flow over the binary pipe at `pipe_id`; one\npipe frame = one video frame, packed `[R,G,B,A,...]` of length\n`width * height * 4`.\n\nRequires `video.playback` capability. All fields required —\nno `serde(default)`.",
           "properties": {
             "pipe_id": {
@@ -2534,6 +2591,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Drive playback state for a previously-opened video handle (#345).\n`handle_id` is the value returned in `VideoOpenAck`. State variants:\n`play`, `pause`, or `seek` to an absolute position in milliseconds.",
           "properties": {
             "handle_id": {
@@ -2557,6 +2615,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Close a previously-opened video handle (#345). Tears down the\ndecoder thread and the associated binary pipe drains. No response\nevent — fire-and-forget.",
           "properties": {
             "handle_id": {
@@ -2576,6 +2635,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request the host to cd all terminals in the same pane group to `cwd`.\nTerminals receive `cd <cwd>\\n` written to their PTY.",
           "properties": {
             "cwd": {
@@ -2593,6 +2653,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request a one-shot timer. Requires `timer` capability.\nHost fires `PlexiEvent::Timer { timer_id }` after `after_ms` milliseconds.",
           "properties": {
             "after_ms": {
@@ -2616,6 +2677,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Cancel a pending timer. No-op if the timer has already fired or doesn't exist.",
           "properties": {
             "timer_id": {
@@ -2633,6 +2695,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Async image fetch brokered through the host. Requires `net.http` capability.\nHost fetches `src`, caches under `handle`, and emits `PlexiEvent::ImageLoaded`\nwhen done.",
           "properties": {
             "handle": {
@@ -2654,6 +2717,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Ask the host to open a fresh terminal pane next to this Canvas app\nand link it. Host responds with `PlexiEvent::LinkedTerminalReady\n{ request_id, terminal_pane_id }`. `cwd` defaults to the app's\nworkspace root when `None`. `label` is reserved for future pane-\nchrome decoration; currently unused by the host but pinned on the\nwire so apps and the host evolve together.\n\nCapability: `terminal.bindings`. Required fields — no `serde(default)`.",
           "properties": {
             "cwd": {
@@ -2683,6 +2747,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Execute `command` in a linked terminal pane.\n\n`echo: true` — the command is typed into the terminal so the user\nsees it (followed by a newline so the shell executes it). This is\nthe default behaviour for click-driven UIs where the user wants to\nknow what just ran.\n`echo: false` — the command is still written to the PTY, but the\ncaller is signalling intent that the terminal is being driven\nprogrammatically (the terminal still echoes input by default at\nthe PTY level — silent execution is best-effort).\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "command": {
@@ -2710,6 +2775,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Insert `path` into the linked terminal at the cursor position.\n\n`Replace` mode: write a Ctrl-W (kill-word, shell readline default)\nbefore the path — replaces the partial word the user is typing.\n`Append` mode: write the path verbatim — handy for completing\ndrag-and-drop / file-picker style flows where the user is composing\na command.\n\nThe host wraps the path in single quotes (POSIX) when it contains\nshell metacharacters so the shell doesn't expand or split it.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "mode": {
@@ -2737,6 +2803,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Ask the host to compute the command that *would* run for a given\ncommand string in the linked terminal. Doesn't execute. Used for\nconfirmation modals before destructive operations.\n\nHost responds with `PlexiEvent::CommandPreview { request_id, command,\nwould_run_in_cwd }`. `would_run_in_cwd` is the terminal's current\nworking directory at request time — useful for \"rm -rf .git in\n/tmp/foo\" style confirmations.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "command": {
@@ -2764,6 +2831,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Open a workspace artifact (file or directory) via the host.\n\nModes:\n  - `OpenInPane` — open the path in a new app pane, e.g. a file\n    browser at a directory or a text editor on a file.\n    Implementation: routes through the file-browser app for\n    directories; falls through to the OS default for files in\n    this PR.\n  - `RevealInFinder` — `open -R <path>` on macOS.\n  - `OpenWithDefault` — `open <path>` on macOS — uses Launch\n    Services to pick the registered app for the file's UTI.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "mode": {
@@ -2785,6 +2853,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "App signals it has pushed a navigation level. The host appends the\nentry to its per-pane nav stack. While the stack has entries, the pane\nchrome shows a back arrow + the current view's title, and Cmd+[\nemits `PlexiEvent::NavBack` to the app instead of cycling tabs.\n\n`view_id` must be a stable identifier for this view (e.g. `\"detail\"`);\n`title` is shown in the pane chrome while this view is active.",
           "properties": {
             "title": {
@@ -2806,6 +2875,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "App signals it has popped a navigation level. The host removes the top\nentry from the per-pane nav stack (saturating — no-op on empty stack).",
           "properties": {
             "type": {
@@ -2819,6 +2889,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Enable or disable `PlexiEvent::MouseMove` delivery for this pane.\n\nOff by default to avoid flooding apps that don't need continuous pointer\ntracking. Send `{ enabled: true }` after `Ready` to start receiving\n`on_mouse_move` callbacks. Send `{ enabled: false }` to stop.",
           "properties": {
             "enabled": {
@@ -2836,6 +2907,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Spawn `command` via `sh -c` and stream its output back to the app.\n\nThe host pipes stdout and stderr, batches available bytes at ~30 Hz,\nand delivers each batch as `PlexiEvent::StreamChunk`. When the child\nexits (or the app calls `CancelProcess`) the host sends\n`PlexiEvent::StreamEnd`. `channel` selects which output stream to\nforward; v1 treats `structured` identically to `stdout`.\n\n`terminal_pane_id` links the stream to an existing linked terminal\nfor capability gating and future display contexts.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "channel": {
@@ -2867,6 +2939,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Cancel an in-flight `StreamProcess`. The host sends SIGTERM to the\nchild, waits up to 1s, then SIGKILL. A `PlexiEvent::StreamEnd` is\nalways delivered after cancellation.\n\nCancelling an already-exited stream is a no-op.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "correlation_id": {
@@ -2884,6 +2957,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Show a native file picker dialog. Requires `fs.pick` capability.\n\n`filter` is a list of file extensions without leading dots\n(e.g. `[\"mp4\", \"mov\"]`). Empty list = accept all files. Only applies\nto `open` and `save` modes.\n\n`multiple` allows selecting more than one file (`open` mode only).\n\n`mode` selects the dialog kind (`open` / `folder` / `save`); see\n`FilePickerMode`. Defaults to `open` when omitted.\n\nHost responds with `PlexiEvent::FilePicked` (paths) or\n`PlexiEvent::FilePickCancelled` (user dismissed / capability denied).\nEvery picked path is registered as a scoped fs grant for this pane:\nsubsequent `file_read` / `file_write` calls may name the granted path\n(or, for `folder` mode, any path under it) as an absolute path, in\naddition to workspace-relative paths. Grants live for the pane's\nlifetime and are never persisted.",
           "properties": {
             "filter": {
@@ -2916,6 +2990,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Declare the named event streams this app may emit on. Event names are\napp-defined but MUST be declared (with a JSON-Schema object) before\nany `EmitEvent` referencing them is accepted. Re-declaring a stream\nreplaces its previous declaration.",
           "properties": {
             "streams": {
@@ -2936,6 +3011,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Emit a semantic app event into the host timeline.\n\nRequired: `event` (a declared stream name), `actor`, `summary`,\n`resource_id`, `revision_after`. The host validates these and rejects\n(with a warn log) any event that is malformed or references an\nundeclared stream — rejected events never enter the timeline.\n\nSupplying `rollback_token` marks the mutation reversible: the host\nalso creates an undo checkpoint from this event's metadata.",
           "properties": {
             "actor": {
@@ -3038,6 +3114,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "App's answer to `PlexiEvent::RollbackVerify`: the current revision of\nthe queried resource. The host compares it against the checkpoint's\n`revision_after` — match → `PlexiEvent::RollbackApply`; mismatch →\nrollback blocked, checkpoint marked conflict.",
           "properties": {
             "checkpoint_id": {
@@ -3059,6 +3136,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Subscribe this pane to another app's declared event streams. Gated\nthrough the unified broker (`TargetType::AppEventStream`, one\nevaluation per event name) — the host stamps the subscriber identity\nfrom the requesting pane; apps cannot subscribe as someone else.\nPhase B wire subscriptions are session-scoped.\n\nHost responds with `PlexiEvent::AppEventsSubscribed`. Matching events\nare then delivered as `PlexiEvent::AppEvent`, shaped per\n`payload_mode` and tagged with the subscription's `trigger_mode`.",
           "properties": {
             "app_id": {
@@ -3104,6 +3182,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Remove a subscription previously created by `SubscribeAppEvents`.\nOnly the subscriber that owns it may remove it.",
           "properties": {
             "request_id": {
@@ -3125,6 +3204,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List undo checkpoints from the host undo timeline, newest first.\n`app_id` filters to one app; `None` = this app's own checkpoints.\nHost responds with `PlexiEvent::UndoCheckpoints`.",
           "properties": {
             "app_id": {
@@ -3148,6 +3228,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request rollback of an undo checkpoint. Gated through the unified\nbroker (`TargetType::UndoCheckpoint`). On allow, the host starts the\nrevision-verification round-trip with the checkpoint's owning app\n(`PlexiEvent::RollbackVerify` → `AppRequest::RollbackVerifyResult` →\n`PlexiEvent::RollbackApply`). Denials and conflicts are logged.",
           "properties": {
             "checkpoint_id": {
@@ -3165,6 +3246,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "No-op wake. Nudges the (zero-frame-idle) UI thread to run a frame so\nqueued work — spawn-queue files, pane-IPC channel messages — is\ndrained promptly. Sent by the CLI after writing a spawn-queue file\nwhen no `PLEXI_SOCKET` is set. Fire-and-forget; the handler does\nnothing — the wake effect is the socket listener's repaint request.",
           "properties": {
             "type": {
@@ -3178,6 +3260,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Request a clean host shutdown. Sent by `plexi host stop` over a direct\n`notify.sock` connection (never over `PLEXI_SOCKET` — `host stop` runs\noutside a pane by definition). Fire-and-forget; the handler sets a\nclose-pending flag consumed at the top of the next frame, which sends\n`egui::ViewportCommand::Close`. `host stop` falls back to `SIGTERM` if\nthis request goes unanswered within its short timeout.",
           "properties": {
             "type": {

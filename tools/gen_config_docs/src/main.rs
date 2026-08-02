@@ -301,7 +301,7 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
     print!(
         r#"### Notifications (`[notifications]`)
 
-`interrupt_threshold` maps to named priority levels: `0` = LOW, `50` = NORMAL, `100` = HIGH, `200` = CRITICAL. Notifications below the threshold queue silently; at or above it, arrival opens the modal.
+Visible notifications open the modal unless `focus_mode` is enabled. There is one notification level.
 
 "#
     );

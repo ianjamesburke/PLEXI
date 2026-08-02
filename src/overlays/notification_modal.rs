@@ -72,7 +72,7 @@ impl PlexiApp {
 
         // Resolve the currently-displayed notification by id. If the pinned
         // id was removed under us (dismissed on another code path) or was
-        // never set, pick the highest-priority remaining — never arbitrarily
+        // never set, pick the next remaining entry — never arbitrarily
         // index into the Vec.
         if self.pending_notifications.is_empty() {
             // Show an empty-state card so Cmd+Shift+A always gives feedback.
@@ -109,7 +109,7 @@ impl PlexiApp {
             })
             .unwrap_or(true)
         {
-            self.current_notify_id = self.select_highest_priority();
+            self.current_notify_id = self.select_next_notification();
         }
         let Some(current_id) = self.current_notify_id.clone() else {
             self.show_notification_modal = false;
@@ -146,11 +146,7 @@ impl PlexiApp {
         // `notify_id`, so subsequent frames reuse the same TextureHandle.
         let image_state = notification_image::resolve(self, ctx, &notif);
 
-        let level_color = match notif.level.as_str() {
-            "error" => Color32::from_rgb(0xff, 0x55, 0x55),
-            "warn" => Color32::from_rgb(0xf1, 0xfa, 0x8c),
-            _ => self.colors.accent,
-        };
+        let notification_color = self.colors.accent;
 
         // Live position + total, recomputed every frame. Total reflects the
         // current queue size so if a new notification arrives while this
@@ -278,12 +274,12 @@ impl PlexiApp {
             .order(egui::Order::Tooltip)
             .click_away(false)
             .show(ctx, &colors, |ui| {
-                // Header: level dot + kind label · queue indicator.
+                // Header: notification dot + kind label · queue indicator.
                 ui.horizontal(|ui| {
                     let (dot_rect, _) =
                         ui.allocate_exact_size(Vec2::new(10.0, 10.0), egui::Sense::hover());
                     ui.painter()
-                        .circle_filled(dot_rect.center(), 5.0, level_color);
+                        .circle_filled(dot_rect.center(), 5.0, notification_color);
                     ui.add_space(style::SPACE_SM);
                     let kind_label = match notif.kind {
                         NotifyKind::Message => "MESSAGE",
@@ -291,7 +287,7 @@ impl PlexiApp {
                         NotifyKind::Input => "INPUT",
                     };
                     ui.label(
-                        RichText::new(format!("{}  ·  {}", notif.level.to_uppercase(), kind_label))
+                        RichText::new(kind_label)
                             .size(style::TEXT_HINT)
                             .color(self.colors.text_dim)
                             .strong(),
@@ -731,7 +727,7 @@ impl PlexiApp {
                 cmds.push(cmd);
             }
 
-            match self.select_highest_priority() {
+            match self.select_next_notification() {
                 Some(next) => self.current_notify_id = Some(next),
                 None => {
                     self.show_notification_modal = false;

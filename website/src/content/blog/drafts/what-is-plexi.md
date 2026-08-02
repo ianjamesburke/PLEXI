@@ -47,7 +47,7 @@ Something big happened: now everyone has the technical know-how, and I know this
 
 **Can you give me a concrete example of something you do in Plexi in one move that takes five steps on a normal Mac?**
 
-Opening a file explorer should be easy. I should be able to have a good video viewing experience without having to open an entire video player app. You should be able to funnel your notifications through a single channel, agnostic of the system it came from. There's no reason we can't see our emails and our texts and our reminders and our to-dos in the same stream, sorted by priority. There's no reason we can't actually do that. It just needs the plumbing.
+Opening a file explorer should be easy. I should be able to have a good video viewing experience without having to open an entire video player app. You should be able to funnel your notifications through a single channel, agnostic of the system it came from. There's no reason we can't see our emails and our texts and our reminders and our to-dos in the same stream, with required items first and the rest in arrival order. There's no reason we can't actually do that. It just needs the plumbing.
 
 [NOTE - the question asked for one concrete "one move vs five steps" example. These are vision statements, not a demonstration. Even one specific keybind + what it replaces would land harder. Optional to address, but if you leave it as-is, consider softening the question so it doesn't set up an expectation you don't fully deliver.]
 
