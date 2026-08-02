@@ -44,7 +44,7 @@ jobs:
     name: test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Plexi CI environment
         uses: ./.github/actions/plexi-ci-env
@@ -76,7 +76,7 @@ jobs:
     name: clippy
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Plexi CI environment
         uses: ./.github/actions/plexi-ci-env

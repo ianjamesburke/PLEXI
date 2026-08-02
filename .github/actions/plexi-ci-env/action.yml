@@ -15,8 +15,8 @@ inputs:
     description: >
       Distinct cargo cache namespace for the calling job (e.g. "test", "clippy",
       "evidence"). Jobs hold different artifact kinds in target/ — a debug bin,
-      a --test cfg build, clippy metadata — so sharing one key means only one
-      write survives and later runs restore a cache matching none of them.
+      a --test cfg build, clippy metadata — so sharing one namespace means only
+      one write survives and later runs restore a cache matching none of them.
     required: true
   cpython-bundle:
     description: >
@@ -44,16 +44,16 @@ runs:
         # renders green. Never remove this line.
         tool: just
 
+    # Swatinem/rust-cache over a hand-rolled actions/cache block: it keys on the
+    # rustc version as well as Cargo.lock, prunes stale artifacts out of target/
+    # instead of growing without bound, and saves only on success. The doc-check
+    # workflows already used it; the heavy jobs did not, and their hand-written
+    # key was shared across three jobs holding different artifact kinds, so only
+    # one write ever survived. `prefix-key` restores the per-job namespace.
     - name: Restore Cargo cache
-      uses: actions/cache@v4
+      uses: Swatinem/rust-cache@v2
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ inputs.cache-key }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-${{ inputs.cache-key }}-
+        prefix-key: plexi-${{ inputs.cache-key }}
 
     - name: Restore CPython WASI bundle cache
       if: inputs.cpython-bundle == 'true'
