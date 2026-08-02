@@ -1838,6 +1838,10 @@ impl PlexiApp {
     }
 
     pub(crate) fn save_workspace(&self) {
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::WorkspaceSave,
+        );
         let mut saved_contexts = Vec::new();
         let mut saved_windows = Vec::new();
 

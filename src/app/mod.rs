@@ -178,6 +178,7 @@ pub struct PlexiApp {
     pub(crate) welcome_delete_press_count: u8,
     pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
     pub(crate) frame_tick: crate::platform::logging::FrameTick,
+    pub(crate) ui_phase: crate::platform::logging::UiPhaseTracker,
     /// Repaint-cause diagnostics sample window (#2019): start instant and
     /// frame count. `None` until the first frame opens a window.
     pub(crate) frame_diag_window: Option<(std::time::Instant, u32)>,
@@ -976,6 +977,7 @@ impl PlexiApp {
         cc: &eframe::CreationContext<'_>,
         frame_tick: crate::platform::logging::FrameTick,
         heartbeat_ctx: crate::platform::logging::HeartbeatCtxSlot,
+        ui_phase: crate::platform::logging::UiPhaseTracker,
     ) -> Self {
         // Hand the egui context to the heartbeat watchdog so it can tell
         // healthy zero-frame idle apart from a genuine UI freeze.
@@ -1395,6 +1397,7 @@ impl PlexiApp {
                     pending_close: false,
                     pending_context_close: None,
                     frame_tick,
+                    ui_phase: ui_phase.clone(),
                     frame_diag_window: None,
                     pending_screenshots: Vec::new(),
                     pending_slot_waits: Vec::new(),
@@ -1659,6 +1662,7 @@ impl PlexiApp {
             pending_close: false,
             pending_context_close: None,
             frame_tick,
+            ui_phase,
             frame_diag_window: None,
             pending_screenshots: Vec::new(),
             pending_slot_waits: Vec::new(),
@@ -2116,6 +2120,7 @@ impl PlexiApp {
                 pending_close: false,
                 pending_context_close: None,
                 frame_tick,
+                ui_phase: crate::platform::logging::new_ui_phase_tracker(),
                 frame_diag_window: None,
                 pending_screenshots: Vec::new(),
                 pending_slot_waits: Vec::new(),
@@ -2581,6 +2586,10 @@ impl eframe::App for PlexiApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::Logic,
+        );
         // Everything that services external clients — pane IPC, spawn queue,
         // PTY events, shutdown, event-bus subscriptions, agent turns — must
         // run here, not in `ui`. eframe skips `ui` entirely while the window
@@ -2634,10 +2643,18 @@ impl eframe::App for PlexiApp {
         // `service_app_commands`). It runs last in `logic` because the services
         // above may queue work an app command then consumes on this same pass.
         self.service_app_commands(ctx);
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::LogicComplete,
+        );
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::UiRender,
+        );
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Repaint-cause diagnostics (#2019): count this frame, attribute
@@ -3443,6 +3460,15 @@ impl eframe::App for PlexiApp {
         //     immediately (no triple-tap for deliberate window close gestures).
         //   - quitting == true → triple-tap completed; save and allow close.
         if ctx.input(|i| i.viewport().close_requested()) {
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::CloseRequest,
+            );
+            log::info!(
+                "quit_phase: close_request quitting={} quit_press_count={}",
+                self.quitting,
+                self.quit_press_count
+            );
             if self.quitting {
                 self.save_workspace();
             } else if self.confirm_quit() && self.quit_press_count > 0 {
@@ -3471,9 +3497,18 @@ impl eframe::App for PlexiApp {
         // widget focus (stint 0429). Everything above may change host focus
         // state; nothing after this may touch egui focus.
         self.reconcile_egui_focus(ctx);
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::RendererPresent,
+        );
     }
 
     fn on_exit(&mut self) {
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::Exit,
+        );
+        log::info!("quit_phase: on_exit begin");
         if let Some((window_id, tile_id)) = self.last_logged_focus {
             let duration_secs = self
                 .focus_started_at
@@ -3489,6 +3524,7 @@ impl eframe::App for PlexiApp {
                 FocusSegmentReason::Shutdown,
             );
         }
+        log::info!("quit_phase: on_exit complete");
     }
 }
 

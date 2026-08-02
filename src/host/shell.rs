@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -649,20 +651,51 @@ pub fn pid_has_children(pid: u32) -> bool {
 fn get_pid_cwd_uncached(pid: u32) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("/usr/sbin/lsof")
-            .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some(path) = line.strip_prefix('n') {
-                let p = PathBuf::from(path);
-                if p.is_dir() {
-                    return Some(p);
-                }
-            }
+        static LOG_BACKEND_ONCE: LazyLock<()> = LazyLock::new(|| {
+            log::info!(
+                "pid_cwd: using in-process {} backend",
+                pid_cwd_backend_name()
+            );
+        });
+        LazyLock::force(&LOG_BACKEND_ONCE);
+
+        let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+        let info_size = std::mem::size_of::<libc::proc_vnodepathinfo>();
+        // SAFETY: `info` points to writable storage of exactly the size
+        // requested from libproc. A short result is rejected before init.
+        let bytes = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                info_size as libc::c_int,
+            )
+        };
+        if bytes as usize != info_size {
+            return None;
         }
-        None
+
+        // SAFETY: libproc reported that it initialized the full struct.
+        let info = unsafe { info.assume_init() };
+        let path_ptr = info.pvi_cdir.vip_path.as_ptr().cast::<libc::c_char>();
+        // SAFETY: the slice is bounded to the in-struct MAXPATHLEN array;
+        // unlike CStr::from_ptr this cannot scan beyond it if the kernel ever
+        // returns a malformed record without a trailing NUL.
+        let path_bytes = unsafe {
+            std::slice::from_raw_parts(
+                path_ptr.cast::<u8>(),
+                std::mem::size_of_val(&info.pvi_cdir.vip_path),
+            )
+        };
+        let path_len = path_bytes.iter().position(|byte| *byte == 0)?;
+        if path_len == 0 {
+            return None;
+        }
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(&path_bytes[..path_len]));
+        // PROC_PIDVNODEPATHINFO's current-directory vnode already guarantees
+        // this is a directory; avoid a filesystem stat on the UI thread.
+        Some(path)
     }
     #[cfg(target_os = "linux")]
     {
@@ -673,6 +706,11 @@ fn get_pid_cwd_uncached(pid: u32) -> Option<PathBuf> {
         let _ = pid;
         None
     }
+}
+
+#[cfg(target_os = "macos")]
+fn pid_cwd_backend_name() -> &'static str {
+    "libproc"
 }
 
 fn ensure_shell_integration() -> io::Result<PathBuf> {
@@ -773,6 +811,16 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pid_cwd_uses_in_process_libproc_backend() {
+        assert_eq!(pid_cwd_backend_name(), "libproc");
+        assert_eq!(
+            get_pid_cwd_uncached(std::process::id()),
+            std::env::current_dir().ok()
+        );
+    }
 
     #[test]
     fn shell_join_plain_args_no_quoting() {
