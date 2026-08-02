@@ -14,3 +14,34 @@ Appended by the babysitter loop at merge time for stints with a `## Human Check`
   pre-existing host defect that reproduces on plain alpha with an app predating this PR, so it was dropped from this
   PR's gate and filed as stint 0688 — every app tool call to a pane that is not rendering times out, todo included.
   Until 0688 lands, drive this check with the todo pane on screen. Evidence: tester report is transient; PR #2546 body.
+
+                                                                              
+  [ ] **PR #2561 (stint 0711: delete the notification priority system) —      
+  TESTER PASS, MERGE HELD FOR THIS CHECK.**                                   
+  This supersedes the 0566/0693 entry above: plexi notify no longer has a     
+  priority number, a --level flag, or an                                      
+  interrupt_threshold to clear. One level — every visible, non-muted          
+  notification now interrupts and cues, so the                                
+  "test with a below-threshold notification and it looks broken" trap is gone 
+  with it.                                                                    
+  Do this: plexi-pr-2561 is still installed. Set [notifications] sound =      
+  "/System/Library/Sounds/Ping.aiff" in                                       
+  ~/.plexi-pr-2561/config.toml, run a plain plexi-pr-2561 notify with a title 
+  and body, and confirm you hear it                                           
+  **once** — not clipped, not repeated. Then set focus_mode = true and fire   
+  the same notification: you must hear                                        
+  **nothing**. Judging: is the cue pleasant and correctly timed, and does     
+  silence happen exactly when it should.                                      
+  No agent has ever heard this cue; the overnight rounds deliberately never   
+  emit sound.                                                                 
+  What the agents DID verify: a plain CLI notify now logs interrupt=true (it  
+  logged interrupt=false on alpha);                                           
+  an app-wire request carrying priority is rejected live with unknown field   
+  'priority' rather than silently                                             
+  ignored; interrupt_threshold is gone from config; both new guards were      
+  falsified in a scratch tree and failed                                      
+  under deliberately restored bad policies; no priority / --level /           
+  interrupt_threshold residue survives in                                     
+  docs, CLI help, or the SDK surface. Evidence: PR #2561 body; tester report  
+  is transient.                                                               
+

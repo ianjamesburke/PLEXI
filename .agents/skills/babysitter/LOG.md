@@ -2240,3 +2240,49 @@ READ HALF (falsification triggers checked against this run):
 - 01:41 ITEM THREE / 0663: no action required. 0663 is already status=todo (open). The pane-730 finding CONFIRMS the task body rather than contradicting it -- 0663 already documents the failure on clean alpha with baseline evidence (zero-skip probe PR #2537: 2122 passed, exactly this 1 failed). The AUDITOR was wrong, not the task. Left open.
 - 01:42 ITEM THREE / 0655: dispatched to pane 738 (cos, small; docs/config only, no cargo). Head pre-read both targets: the sweep is LARGELY ALREADY DONE -- RUN_CONFIG [briefing] no longer carries the collapsed-paste workaround, and SKILL.md already teaches `pane new --agent`, with the old recipe surviving only inside the labelled Compatibility fallback section. Worker instructed to verify and, if fully satisfied, CLOSE 0655 as already-done with evidence and open no PR rather than manufacture a diff.
 - 01:42 ITEM ONE: dirty .agents/skills/babysitter/LOG.md handed to pane 738 as its first instruction, path-scoped, with an explicit never-`git add -A` warning (other lanes have uncommitted work in docs/).
+
+  ## babysitter head-2 run — stints 0693 0700 0617 0698                       
+                                                                              
+  • 01:44Z worker-1 pane 746 briefed: 0693 (batch A), com/medium              
+  • 01:50Z Ian reversed 0693 into new stint 0711 (delete priority system, no  
+  compat). 0693 archived.                                                     
+  • 01:50Z friction: pane 746 Codex had exited but pane status read "working" 
+  — verdict lied; capture showed a bare shell. Closed 746, spawned 747.       
+  • 01:50Z friction: long multi-line brief stalled in Codex composer on a ~26-
+  col pane; two enters would not submit. File-form brief (/tmp/bs-2/brief-0711.
+  md) + one-line pointer worked first try. Candidate rule: width-independent, 
+  always file-form for briefs over ~15 lines.                                 
+  • 01:50Z worker-0711 pane 747 briefed, working.                             
+  • 03:19Z A(0711) PR #2561 opened; CI red on check-schema + clippy; routed to
+  worker 747.                                                                 
+  • 03:19Z A fix push 250cff92: clippy green, check-schema STILL stale (2nd   
+  time). Root cause: gen-schema run before a later source edit. Re-routed with
+  explicit ordering.                                                          
+  • 03:19Z B(0617+0698) blocked: full cargo test --bin plexi terminates mid-  
+  suite with no verdict; focused tests green. HEAD RULING: environment kill,  
+  not the diff. cargo clean -p then one retry; if killed again, push and let  
+  CI test job be the full-suite proof, documented in PR body.                 
+  • 03:19Z friction: long-running processes are being killed on this machine  
+  tonight — my background watch loops were killed 4x and B lost its cargo     
+  suite twice. Dropped to bounded 8-min watches. Candidate: babysitter watches
+  must be bounded and self-re-arming, never open-ended.                       
+  • 03:30Z A(0711) PR #2561 ALL GREEN after 2 fix rounds (clippy, then check- 
+  schema x2). Worker 747 retired. Tester pane 756 spawned.                    
+  • 03:40Z B(0617+0698) PR #2563 opened; both stints covered (font threading +
+  image drop to notes/assets with rollback). Full local suite unproven under  
+  contention; CI is proof of record per head ruling.                          
+  • 03:40Z friction: a TESTER install (cargo build --release) is a build lane 
+  too. My one-build-at-a-time reservation only counted workers, so lane B     
+  starved behind the 2561 install and blocked twice on the same question.     
+  Candidate rule: count tester installs in the build cap.                     
+  • 03:50Z A(0711) PR #2561 tester PASS. MERGE HELD on its Human Gate (audible
+  cue). pr-2561 install left on disk. HUMAN_CHECKS entry buffered.            
+  • 03:50Z C(0700) worker pane 759 dispatched.                                
+  • 03:58Z C(0700) blocked: alpha dirty (babysitter SKILL.md = Ian edits;     
+  plexi-cli SKILL.md = unattributed deletion of the release-gate feature-map  
+  list). Ian ruled: save patch aside, commit only his. Patch at /tmp/bs-      
+  2/plexi-cli-SKILL.patch. C unblocked.                                       
+  • 03:58Z friction: a worker preflight is the FIRST thing that notices a     
+  dirty alpha, and by then a lane is already stalled. The head should check   
+  git status at every batch boundary, not just run start.                     
+
