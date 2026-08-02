@@ -233,6 +233,37 @@ class V3AppRuntime:
             if isinstance(payload, dict):
                 self._default_values().update(payload)
                 self._set_state(in_view=False)
+        elif t == "state_changed":
+            self._handle_state_changed(ev)
+
+    def _handle_state_changed(self, ev: dict) -> None:
+        """A scope's backing file changed outside our own persist flow.
+
+        Replaces the scope's values WHOLESALE (deleted keys must vanish —
+        never a merge), then dispatches ``events.StateChanged`` through the
+        normal update path so ``update()`` runs against the fresh snapshot
+        and a render is scheduled. On a decode error the host kept the
+        previous values, so we keep ours too and only surface the error.
+        """
+        scope = ev.get("scope") or self._scopes[0]
+        if scope not in self._scoped_values:
+            _host_log(
+                "error",
+                f"state_changed for undeclared scope '{scope}' ignored "
+                f"(declared: {self._scopes})",
+            )
+            return
+        payload = ev.get("payload")
+        error = ev.get("error")
+        values = dict(payload) if isinstance(payload, dict) else {}
+        if error is None:
+            self._scoped_values[scope] = values
+        self._dispatch(events.StateChanged(
+            scope=scope,
+            values=dict(self._scoped_values[scope]),
+            source=str(ev.get("source", "external")),
+            error=error,
+        ))
 
     def _handle_init(self, ev: dict) -> None:
         self._app_id = ev.get("app_id", "")

@@ -2724,6 +2724,19 @@ impl PlexiApp {
                     "pane_ipc: kind=set_context_root root={} context_id={context_id:?}",
                     root.display()
                 );
+                // Standing ruling: every path that establishes a context root
+                // ensures app_states/ is gitignored there (personal local
+                // data, never committed). Non-fatal; guarded so a bad root
+                // never gains directories as a side effect.
+                if root.is_dir() {
+                    if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root)
+                    {
+                        log::warn!(
+                            "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+                            root.display()
+                        );
+                    }
+                }
                 self.set_context_root(root.clone(), *context_id);
                 self.save_workspace();
             }

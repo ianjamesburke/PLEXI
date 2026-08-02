@@ -906,6 +906,25 @@ impl AppRuntime {
         }
     }
 
+    /// Every state file this runtime persists to, resolved against its live
+    /// context root. Only file-backed runtimes (Python today) have any.
+    pub fn state_paths(&self) -> Vec<(crate::host::state_scope::StateScope, std::path::PathBuf)> {
+        match self {
+            AppRuntime::Python(app) => app.state_paths(),
+            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => Vec::new(),
+        }
+    }
+
+    /// Re-read one scope's state file after an external change (see
+    /// `LivePythonPane::apply_external_state`). No-op for runtimes without
+    /// file-backed state.
+    pub fn apply_external_state(&mut self, scope: crate::host::state_scope::StateScope) {
+        match self {
+            AppRuntime::Python(app) => app.apply_external_state(scope),
+            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => {}
+        }
+    }
+
     pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
         match self {
             AppRuntime::Builtin(app) => app.queue_outbound_event(event),

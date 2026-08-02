@@ -20,7 +20,14 @@ class PersistState:
     to disk. The host owns path construction: ``global`` state lives in
     ``~/.plexi/app_states/``, ``context`` state in
     ``<context_root>/.plexi/app_states/`` — resolved against the pane's
-    context root at call time. ``scope=None`` targets the default scope."""
+    context root at call time. ``scope=None`` targets the default scope.
+
+    Read-back rule (disk wins): the host checks the file before writing. A
+    persist that loses to a concurrent external write is dropped — the host
+    reloads the on-disk state instead and answers with an
+    ``events.StateChanged``, so re-apply your change from that event rather
+    than assuming the persist landed. Writes are atomic (temp + rename) in
+    both directions; a reader never sees a partial file."""
     data: dict
     scope: str | None = None
 

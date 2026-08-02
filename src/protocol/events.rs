@@ -203,6 +203,21 @@ pub enum PlexiEvent {
     /// Sent at startup with persisted app state (workspace if available, else global).
     /// Also usable from `pgap_test_harness` to seed deterministic state.
     InjectState { payload: serde_json::Value },
+    /// A state scope's backing file changed outside the app's own persist
+    /// flow — an external edit, or a persist the app lost to a concurrent
+    /// external write (disk wins; the dropped persist is answered with this
+    /// event). `payload` is the scope's full on-disk value set; the SDK
+    /// replaces the scope wholesale (deleted keys vanish — never a merge).
+    /// `error` is set when the file exists but could not be decoded; the
+    /// previous values are kept in that case and persists to the scope are
+    /// blocked until a successful re-read.
+    StateChanged {
+        scope: String,
+        payload: serde_json::Value,
+        #[serde(default)]
+        error: Option<String>,
+        source: String,
+    },
     /// DEPRECATED: superseded by the `state` field on Init.
     /// Kept for backwards compatibility with older SDK versions. The headless
     /// renderer no longer sends this event.

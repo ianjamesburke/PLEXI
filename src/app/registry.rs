@@ -88,6 +88,11 @@ pub struct StateSection {
     /// Required within the section: a present-but-empty `[state]` table is a
     /// manifest error, not a default.
     pub scopes: Vec<String>,
+    /// Optional `[state] format` — `"json"` (default) or `"markdown"`.
+    /// Validated at install and launch via [`AppManifest::state_format`];
+    /// an unknown value fails loudly.
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 impl AppManifest {
@@ -97,6 +102,16 @@ impl AppManifest {
         match &self.state {
             Some(section) => crate::host::state_scope::parse_scopes(&section.scopes),
             None => Ok(crate::host::state_scope::default_scopes()),
+        }
+    }
+
+    /// The validated `[state] format`. Omitted → JSON. An unknown value is a
+    /// loud install/launch error, never a silent fallback to JSON.
+    pub fn state_format(&self) -> Result<crate::host::state_scope::StateFormat, String> {
+        match self.state.as_ref().and_then(|s| s.format.as_deref()) {
+            Some(raw) => crate::host::state_scope::StateFormat::parse(raw)
+                .map_err(|error| format!("manifest [state] format: {error}")),
+            None => Ok(crate::host::state_scope::StateFormat::default()),
         }
     }
 }
@@ -456,6 +471,16 @@ pub struct InstalledApp {
     /// For `LocalApp`/`LocalAgent` entries: the workspace root they belong to.
     /// `None` for global entries.
     pub workspace_root: Option<PathBuf>,
+    /// Validated `[state] scopes` from the manifest, ordered; the first entry
+    /// is the app's default scope. The default scope list when `[state]` is
+    /// omitted.
+    pub state_scopes: Vec<crate::host::state_scope::StateScope>,
+    /// Validated `[state] format` from the manifest; JSON when omitted.
+    pub state_format: crate::host::state_scope::StateFormat,
+    /// Whether the manifest declared a `[state]` section at all — lets
+    /// tooling distinguish an explicit `scopes = ["global"]` from the
+    /// implicit default.
+    pub state_declared: bool,
 }
 
 pub struct AppRegistry {
@@ -565,7 +590,7 @@ impl AppRegistry {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
                     log::debug!(
-                        "AppRegistry: contract id={} target={:?} world={:?} python_compat={:?} min_sdk={:?} watch={:?} background={} keyboard_capture={} min_size={:?}x{:?} widths={:?}/{:?} startup={:?} secrets={}",
+                        "AppRegistry: contract id={} target={:?} world={:?} python_compat={:?} min_sdk={:?} watch={:?} background={} keyboard_capture={} min_size={:?}x{:?} widths={:?}/{:?} startup={:?} secrets={} state_scopes={:?} state_format={} state_declared={}",
                         id,
                         installed.runtime.target,
                         installed.runtime.world,
@@ -580,6 +605,9 @@ impl AppRegistry {
                         installed.launch.regular,
                         installed.launch.startup_message,
                         installed.secrets.len(),
+                        installed.state_scopes,
+                        installed.state_format.as_str(),
+                        installed.state_declared,
                     );
                     if let Some(existing) = self.apps.get(&id) {
                         if source != existing.source {
@@ -698,12 +726,14 @@ impl AppRegistry {
             }
         }
 
-        // An invalid `[state] scopes` declaration fails install loudly, same
-        // discipline as capabilities and on_launch above: a typo silently
-        // creating an unreachable scope would orphan the app's data. The
-        // launch path re-reads the manifest and re-validates in
+        // An invalid `[state]` declaration (scopes or format) fails install
+        // loudly, same discipline as capabilities and on_launch above: a typo
+        // silently creating an unreachable scope would orphan the app's data.
+        // The launch path re-reads the manifest and re-validates in
         // `PythonLaunchConfig::from_manifest_file`.
-        manifest.state_scopes()?;
+        let state_scopes = manifest.state_scopes()?;
+        let state_format = manifest.state_format()?;
+        let state_declared = manifest.state.is_some();
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry, manifest.app.manifest_type)?;
 
@@ -726,6 +756,9 @@ impl AppRegistry {
             // Placeholders — `scan_dir` overwrites both with real values.
             source: RegistrySource::Global,
             workspace_root: None,
+            state_scopes,
+            state_format,
+            state_declared,
         })
     }
 
@@ -1566,6 +1599,57 @@ entry = "run.sh"
         assert!(
             registry.get("empty-scope-app").is_none(),
             "a present-but-empty [state] scopes must refuse to install"
+        );
+    }
+
+    #[test]
+    fn installed_app_carries_declared_scopes_format_and_declared_flag() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_state_section(
+            global.path(),
+            "md-app",
+            "\n[state]\nscopes = [\"context\"]\nformat = \"markdown\"\n",
+        );
+        write_app_with_state_section(global.path(), "plain-app", "");
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+
+        let md = registry.get("md-app").expect("markdown app installs");
+        assert_eq!(
+            md.state_scopes,
+            vec![crate::host::state_scope::StateScope::Context]
+        );
+        assert_eq!(
+            md.state_format,
+            crate::host::state_scope::StateFormat::Markdown
+        );
+        assert!(md.state_declared, "explicit [state] must set the flag");
+
+        let plain = registry.get("plain-app").expect("plain app installs");
+        assert_eq!(
+            plain.state_scopes,
+            crate::host::state_scope::default_scopes()
+        );
+        assert_eq!(
+            plain.state_format,
+            crate::host::state_scope::StateFormat::Json
+        );
+        assert!(!plain.state_declared, "omitted [state] must clear the flag");
+    }
+
+    #[test]
+    fn manifest_with_unknown_state_format_fails_install_loudly() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_state_section(
+            global.path(),
+            "typo-format-app",
+            "\n[state]\nscopes = [\"global\"]\nformat = \"yaml\"\n",
+        );
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            registry.get("typo-format-app").is_none(),
+            "an unknown state format must refuse to install, never silently fall back to json"
         );
     }
 

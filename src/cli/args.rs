@@ -666,6 +666,15 @@ pub enum AppCmd {
     },
     /// Show details about an installed app: id, name, version, and available tools.
     Info { id: String },
+    /// Read or replace a file-backed app's state document (stint 0645).
+    ///
+    /// Only apps that declare a `[state]` section are addressable. The state
+    /// path is resolved from the manifest and the calling context — callers
+    /// never pass a path, and there is no flag to address another context.
+    State {
+        #[command(subcommand)]
+        cmd: AppStateCmd,
+    },
     /// Create a new app from a template.
     ///
     /// Scaffolds the folder structure and files you need to build a Plexi app:
@@ -1283,6 +1292,30 @@ pub enum PaneCmd {
     Slot {
         #[command(subcommand)]
         cmd: PaneSlotCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AppStateCmd {
+    /// Print an app's current state document to stdout.
+    Get {
+        /// App id (from `plexi app list`)
+        app: String,
+        /// Which declared scope to read. Defaults to the app's first declared
+        /// scope; a scope the app did not declare is an error.
+        #[arg(long, value_parser = ["global", "context"])]
+        scope: Option<String>,
+    },
+    /// Replace an app's state document, reading from a file or stdin.
+    Set {
+        /// App id (from `plexi app list`)
+        app: String,
+        /// File to read the new document from. Reads stdin when omitted.
+        file: Option<std::path::PathBuf>,
+        /// Which declared scope to write. Defaults to the app's first declared
+        /// scope; a scope the app did not declare is an error.
+        #[arg(long, value_parser = ["global", "context"])]
+        scope: Option<String>,
     },
 }
 

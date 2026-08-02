@@ -48,6 +48,13 @@ to disk. The host owns path construction: ``global`` state lives in
 ``<context_root>/.plexi/app_states/`` — resolved against the pane's
 context root at call time. ``scope=None`` targets the default scope.
 
+Read-back rule (disk wins): the host checks the file before writing. A
+persist that loses to a concurrent external write is dropped — the host
+reloads the on-disk state instead and answers with an
+``events.StateChanged``, so re-apply your change from that event rather
+than assuming the persist landed. Writes are atomic (temp + rename) in
+both directions; a reader never sees a partial file.
+
 ### `SetSchedulerMode`
 
 ```python
@@ -444,6 +451,24 @@ PipeClosed(handle: int)
 ```python
 PipeError(handle: int, error: str)
 ```
+
+### `StateChanged`
+
+```python
+StateChanged(scope: str, values: dict, source: str = 'external', error: Optional[str] = None)
+```
+
+A state scope's backing file changed outside this app's own persist
+flow — an external edit (CLI, agent, editor), or a persist this app lost
+to a concurrent external write (disk wins: the dropped persist is
+answered with this event).
+
+``values`` is the scope's full value set after the change; the runtime
+has already replaced the scope wholesale (deleted keys are gone — never a
+merge) before dispatching this event, so ``state.get`` reads are fresh
+inside ``update()``. When ``error`` is set the file could not be decoded:
+the previous values are kept and persists to the scope are blocked until
+a successful re-read.
 
 ### `CapabilityGranted`
 

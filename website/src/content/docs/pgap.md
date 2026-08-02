@@ -1284,6 +1284,17 @@ Drop a JSON payload into the app's `on_inject` hook. Sent at startup with persis
 |-------|------|----------|
 | `payload` | `any` | yes |
 
+### `state_changed`
+
+A state scope's backing file changed outside the app's own persist flow — an external edit, or a persist the app lost...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `error` | `string?` | no |
+| `payload` | `any` | yes |
+| `scope` | `string` | yes |
+| `source` | `string` | yes |
+
 ### `render_seed`
 
 DEPRECATED: superseded by the `state` field on Init. Kept for backwards compatibility with older SDK versions. The he...

@@ -4226,6 +4226,36 @@
           "type": "object"
         },
         {
+          "description": "A state scope's backing file changed outside the app's own persist\nflow — an external edit, or a persist the app lost to a concurrent\nexternal write (disk wins; the dropped persist is answered with this\nevent). `payload` is the scope's full on-disk value set; the SDK\nreplaces the scope wholesale (deleted keys vanish — never a merge).\n`error` is set when the file exists but could not be decoded; the\nprevious values are kept in that case and persists to the scope are\nblocked until a successful re-read.",
+          "properties": {
+            "error": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "payload": true,
+            "scope": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "type": {
+              "const": "state_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "scope",
+            "payload",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
           "description": "DEPRECATED: superseded by the `state` field on Init.\nKept for backwards compatibility with older SDK versions. The headless\nrenderer no longer sends this event.",
           "properties": {
             "payload": true,
