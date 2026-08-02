@@ -1936,6 +1936,133 @@ fn quick_note_paste_consumed_from_queue() {
     });
 }
 
+/// The QuickNote editor must lay out with the configured shared font size,
+/// rather than egui's default body style.
+#[test]
+fn quick_note_editor_galley_uses_configured_font_size() {
+    let profile = tempfile::tempdir().expect("isolated config profile");
+    let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+    std::fs::write(crate::config::config_path(), "font_size = 27.0\n")
+        .expect("write isolated config override");
+    let config = crate::config::PlexiConfig::load();
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _mailbox) =
+        crate::app::PlexiApp::new_for_test_with_config(ctx.clone(), frame_tick, config);
+    use eframe::App as _;
+    let _ = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        },
+        |ui| {
+            app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());
+            app.ui(ui, &mut eframe::Frame::_new_kittest());
+        },
+    );
+
+    let font = app.quick_note_font();
+    let galley = app.ctx.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(
+            "configured quick note".to_owned(),
+            font.clone(),
+            app.colors.text_primary,
+        )
+    });
+
+    assert_eq!(font.size, 27.0);
+    assert!(
+        galley.rows[0].rect().height() >= 27.0,
+        "QuickNote galley must use the configured 27pt font, got {:?}",
+        galley.rows[0].rect()
+    );
+}
+
+/// A real raw host drop while Cmd+0 QuickNote is focused stages the image,
+/// persists it into the collection assets directory on save, and writes the
+/// inbox-relative Markdown reference into the new note.
+#[test]
+fn quick_note_raw_image_drop_stages_and_persists_collection_asset_on_save() {
+    let mut h = HostHarness::new();
+    h.app.open_quick_note_modal();
+    h.run_frames(2);
+
+    let source =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/notes-drop.png");
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        dropped_files: vec![egui::DroppedFile {
+            path: Some(source),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+
+    assert_eq!(h.app.quick_note_attachments.len(), 1);
+    let text = "image attached from QuickNote".to_string();
+    h.app.quick_note_text = text.clone();
+    assert!(h.app.commit_quick_note_to_inbox(&text));
+
+    let notes_dir = crate::config::config_dir().join("notes");
+    let inbox = notes_dir.join("inbox");
+    let saved = std::fs::read_dir(&inbox)
+        .expect("QuickNote must create inbox")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .expect("QuickNote must save an inbox note");
+    let content = std::fs::read_to_string(saved).expect("saved QuickNote must be readable");
+    assert!(content.contains("image attached from QuickNote"));
+    assert!(content.contains("![](../assets/notes-drop-"), "{content}");
+    assert!(
+        std::fs::read_dir(notes_dir.join("assets"))
+            .expect("QuickNote must create collection assets")
+            .next()
+            .is_some(),
+        "staged image must persist beside inbox, in notes/assets"
+    );
+}
+
+/// A failed inbox write after attachment persistence must not strand an asset
+/// that no saved note can reference.
+#[test]
+fn quick_note_attachment_rolls_back_new_asset_when_inbox_write_fails() {
+    let mut h = HostHarness::new();
+    let source =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/notes-drop.png");
+    h.app
+        .stage_quick_note_image(source)
+        .expect("fixture must be a valid image");
+
+    let notes_dir = crate::config::config_dir().join("notes");
+    let inbox = notes_dir.join("inbox");
+    std::fs::create_dir_all(&notes_dir).expect("create notes directory");
+    std::fs::write(&inbox, "block inbox directory creation")
+        .expect("make the later inbox write fail after asset persistence");
+
+    assert!(
+        !h.app
+            .commit_quick_note_to_inbox("this note cannot be written"),
+        "a file where notes/inbox belongs must prevent creating the note"
+    );
+
+    let assets_dir = notes_dir.join("assets");
+    assert!(
+        !assets_dir.exists()
+            || std::fs::read_dir(&assets_dir)
+                .expect("assets directory must remain readable")
+                .next()
+                .is_none(),
+        "failed QuickNote save must roll back newly persisted assets"
+    );
+}
+
 // -- Layer 2 post-CentralPanel focus guard (#1601) -------------------------
 
 /// Helper: simulate a CentralPanel pane widget stealing egui focus between two frames.

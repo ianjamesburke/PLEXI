@@ -1,0 +1,21 @@
+# Cmd+0 QuickNote with a realistic multi-line capture. This is the visual
+# regression surface for its configured FontId and attachment status text.
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+0" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "host", value = "Follow up with the design team about the image-drop flow.\n\nInclude the screenshots and persistence notes in tomorrow's review." }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "host", label = "Enter to save  ·  Shift+Enter for new line  ·  Esc to discard" }
+
+[[steps]]
+shot = "quick-note.png"

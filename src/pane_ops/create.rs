@@ -1738,7 +1738,7 @@ impl PlexiApp {
             context_root: Some(self.router.active().root.clone()),
         };
         let dir = crate::config::config_dir().join("notes").join("inbox");
-        let Some(path) = Self::write_inbox_note("", "scratchpad", &dir, &ctx) else {
+        let Some(path) = Self::write_inbox_note("", "scratchpad", &dir, &ctx, &[]) else {
             log::warn!("scratchpad: failed to create scratch note in {:?}", dir);
             return;
         };
@@ -1783,6 +1783,7 @@ impl PlexiApp {
         let workspace_root = crate::config::active_workspace_root();
         let context_root = Some(self.router.active().root.clone());
         self.quick_note_text = String::new();
+        self.quick_note_attachments.clear();
         self.quick_note_ctx = crate::app::QuickNoteCtx {
             cwd,
             workspace_root,
@@ -1800,8 +1801,42 @@ impl PlexiApp {
     pub(crate) fn commit_quick_note_to_inbox(&mut self, text: &str) -> bool {
         let ctx = self.quick_note_ctx.clone();
         let dir = crate::config::config_dir().join("notes").join("inbox");
-        log::info!("QuickNote: committing to notes/inbox/");
-        Self::write_inbox_note(text, "quick-note", &dir, &ctx).is_some()
+        log::info!(
+            "QuickNote: committing to notes/inbox/ attachments={}",
+            self.quick_note_attachments.len()
+        );
+        Self::write_inbox_note(
+            text,
+            "quick-note",
+            &dir,
+            &ctx,
+            &self.quick_note_attachments,
+        )
+        .is_some()
+    }
+
+    /// Validate and stage one local image for the open QuickNote modal. The
+    /// file remains at its original path until the note is saved, preventing
+    /// discarded modals from creating unattached collection assets.
+    pub(crate) fn stage_quick_note_image(&mut self, source: PathBuf) -> Result<(), String> {
+        let bytes = std::fs::read(&source)
+            .map_err(|e| format!("failed to read dropped image {}: {e}", source.display()))?;
+        image::load_from_memory(&bytes)
+            .map_err(|e| format!("not a decodable image ({}): {e}", source.display()))?;
+        if self.quick_note_attachments.iter().any(|path| path == &source) {
+            log::info!(
+                "QuickNote: drop already staged source={}",
+                source.display()
+            );
+            return Ok(());
+        }
+        log::info!(
+            "QuickNote: staged image source={} bytes={}",
+            source.display(),
+            bytes.len()
+        );
+        self.quick_note_attachments.push(source);
+        Ok(())
     }
 
     /// Write a timestamped note with capture-context frontmatter into `dir`.
@@ -1811,6 +1846,7 @@ impl PlexiApp {
         source: &str,
         dir: &PathBuf,
         ctx: &crate::app::QuickNoteCtx,
+        attachments: &[PathBuf],
     ) -> Option<PathBuf> {
         use chrono::Utc;
         let now = Utc::now();
@@ -1833,9 +1869,29 @@ impl PlexiApp {
         let frontmatter = format!(
             "---\ntitle: \"\"\ncaptured_at: \"{captured_at}\"\nsource: \"{source}\"\ncwd: \"{cwd_str}\"\nworkspace: \"{workspace}\"\ncontext_root: \"{context_root_str}\"\n---\n\n"
         );
-        let content = format!("{frontmatter}{}\n", text.trim());
+        let persisted_attachments = match persist_quick_note_attachments(attachments, dir) {
+            Ok(attachments) => attachments,
+            Err(e) => {
+                log::error!("QuickNote: failed to persist staged image: {e}");
+                return None;
+            }
+        };
+        let attachment_markdown = persisted_attachments
+            .references
+            .iter()
+            .map(|reference| format!("![]({reference})"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = match (text.trim(), attachment_markdown.is_empty()) {
+            ("", true) => String::new(),
+            ("", false) => attachment_markdown,
+            (body, true) => body.to_string(),
+            (body, false) => format!("{body}\n\n{attachment_markdown}"),
+        };
+        let content = format!("{frontmatter}{body}\n");
 
         if let Err(e) = std::fs::create_dir_all(dir) {
+            rollback_quick_note_assets(&persisted_attachments.newly_written);
             log::error!(
                 "QuickNote: failed to create inbox dir {}: {e}",
                 dir.display()
@@ -1865,6 +1921,7 @@ impl PlexiApp {
                             // a partial write doesn't leave a ghost file blocking
                             // any future attempt at the same path.
                             let _ = std::fs::remove_file(&path);
+                            rollback_quick_note_assets(&persisted_attachments.newly_written);
                             log::error!("QuickNote: save failed {}: {e}", path.display());
                             return None;
                         }
@@ -1875,11 +1932,166 @@ impl PlexiApp {
                     n += 1;
                 }
                 Err(e) => {
+                    rollback_quick_note_assets(&persisted_attachments.newly_written);
                     log::error!("QuickNote: save failed {}: {e}", path.display());
                     return None;
                 }
             }
         }
+    }
+}
+
+/// Persist QuickNote attachments into the collection-level `notes/assets/`
+/// directory. Inbox notes live under `notes/inbox/`, so their Markdown paths
+/// are always relative `../assets/<name>` references.
+struct PersistedQuickNoteAttachments {
+    references: Vec<String>,
+    newly_written: Vec<PathBuf>,
+}
+
+fn persist_quick_note_attachments(
+    attachments: &[PathBuf],
+    inbox_dir: &Path,
+) -> Result<PersistedQuickNoteAttachments, String> {
+    if attachments.is_empty() {
+        return Ok(PersistedQuickNoteAttachments {
+            references: Vec::new(),
+            newly_written: Vec::new(),
+        });
+    }
+    let notes_dir = inbox_dir.parent().ok_or_else(|| {
+        format!(
+            "inbox directory has no notes parent: {}",
+            inbox_dir.display()
+        )
+    })?;
+    let assets_dir = notes_dir.join("assets");
+    std::fs::create_dir_all(&assets_dir)
+        .map_err(|e| format!("failed to create {}: {e}", assets_dir.display()))?;
+
+    let mut references = Vec::with_capacity(attachments.len());
+    let mut newly_written = Vec::new();
+    for source in attachments {
+        let bytes = match std::fs::read(source) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                rollback_quick_note_assets(&newly_written);
+                return Err(format!(
+                    "failed to read staged image {}: {e}",
+                    source.display()
+                ));
+            }
+        };
+        if let Err(e) = image::load_from_memory(&bytes) {
+            rollback_quick_note_assets(&newly_written);
+            return Err(format!("not a decodable image ({}): {e}", source.display()));
+        }
+        let format = match image::guess_format(&bytes) {
+            Ok(format) => format,
+            Err(e) => {
+                rollback_quick_note_assets(&newly_written);
+                return Err(format!(
+                    "unrecognized image container ({}): {e}",
+                    source.display()
+                ));
+            }
+        };
+        let ext = format.extensions_str().first().copied().unwrap_or("img");
+        let hash = quick_note_asset_hash(&bytes);
+        let stem = quick_note_asset_stem(source);
+        let mut name = format!("{stem}-{hash:016x}.{ext}");
+        let mut suffix = 2usize;
+        let deduped = loop {
+            let candidate = assets_dir.join(&name);
+            if !candidate.exists() {
+                if let Err(e) = std::fs::write(&candidate, &bytes) {
+                    if let Err(cleanup_error) = std::fs::remove_file(&candidate) {
+                        if cleanup_error.kind() != std::io::ErrorKind::NotFound {
+                            log::error!(
+                                "QuickNote: failed to remove partially written image asset {} after save failure: {cleanup_error}",
+                                candidate.display()
+                            );
+                        }
+                    }
+                    rollback_quick_note_assets(&newly_written);
+                    return Err(format!("failed to save {}: {e}", candidate.display()));
+                }
+                newly_written.push(candidate);
+                break false;
+            }
+            match std::fs::read(&candidate) {
+                Ok(existing) if existing == bytes => break true,
+                Ok(_) => {
+                    name = format!("{stem}-{hash:016x}-{suffix}.{ext}");
+                    suffix += 1;
+                }
+                Err(e) => {
+                    rollback_quick_note_assets(&newly_written);
+                    return Err(format!(
+                        "failed to inspect existing asset {}: {e}",
+                        candidate.display()
+                    ));
+                }
+            }
+        };
+        let reference = format!("../assets/{name}");
+        log::info!(
+            "QuickNote: persisted image asset={reference} bytes={} hash={hash:016x} deduped={deduped}",
+            bytes.len()
+        );
+        references.push(reference);
+    }
+    Ok(PersistedQuickNoteAttachments {
+        references,
+        newly_written,
+    })
+}
+
+fn rollback_quick_note_assets(paths: &[PathBuf]) {
+    if paths.is_empty() {
+        return;
+    }
+    log::info!(
+        "QuickNote: rolling back {} newly persisted image assets",
+        paths.len()
+    );
+    for path in paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            log::error!(
+                "QuickNote: failed to roll back image asset {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn quick_note_asset_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+fn quick_note_asset_stem(source: &Path) -> String {
+    let raw = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("image");
+    let sanitized: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = sanitized.trim_matches('-');
+    if stem.is_empty() {
+        "image".to_string()
+    } else {
+        stem.to_string()
     }
 }
 

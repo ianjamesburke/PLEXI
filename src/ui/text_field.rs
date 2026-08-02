@@ -328,11 +328,6 @@ impl<'a> TextArea<'a> {
         self
     }
 
-    pub(crate) fn monospace(mut self, size: f32) -> Self {
-        self.font_id = egui::FontId::monospace(size);
-        self
-    }
-
     pub(crate) fn text_color(mut self, text_color: egui::Color32) -> Self {
         self.text_color = Some(text_color);
         self

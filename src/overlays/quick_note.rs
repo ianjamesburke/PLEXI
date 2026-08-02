@@ -11,8 +11,29 @@ impl PlexiApp {
         if esc {
             self.pop_focus_layer(&crate::app::FocusKind::QuickNote);
             self.quick_note_text.clear();
+            self.quick_note_attachments.clear();
             log::info!("QuickNote: modal dismissed");
             return;
+        }
+
+        // The modal owns raw file drops before tiled panes render. Taking the
+        // events here routes Cmd+0 drops through the same egui host input that
+        // production window drops use, without leaking them into a pane behind
+        // the modal.
+        let dropped_files = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+        for file in dropped_files {
+            match file.path {
+                Some(path) => match self.stage_quick_note_image(path.clone()) {
+                    Ok(()) => log::info!("QuickNote: drop accepted source={}", path.display()),
+                    Err(error) => {
+                        log::info!(
+                            "QuickNote: drop rejected source={} reason={error}",
+                            path.display()
+                        );
+                    }
+                },
+                None => log::info!("QuickNote: drop rejected reason=missing_local_path"),
+            }
         }
 
         // Explicitly consume paste events before the TextEdit renders.
@@ -73,11 +94,14 @@ impl PlexiApp {
                 false
             }
         });
-        if commit && !self.quick_note_text.trim().is_empty() {
+        if commit
+            && (!self.quick_note_text.trim().is_empty() || !self.quick_note_attachments.is_empty())
+        {
             let text = self.quick_note_text.clone();
             if self.commit_quick_note_to_inbox(&text) {
                 self.pop_focus_layer(&crate::app::FocusKind::QuickNote);
                 self.quick_note_text.clear();
+                self.quick_note_attachments.clear();
                 log::info!("QuickNote: committed to inbox");
             }
             return;
@@ -88,7 +112,8 @@ impl PlexiApp {
         // Modal — grows from ~25% to ~80% of screen height as the user types.
         let modal_w = (screen_rect.width() * 0.72).clamp(480.0, 864.0);
         let max_text_h = (screen_rect.height() * 0.8).max(80.0);
-        let line_h = style::TEXT_BODY + 4.0;
+        let font = self.quick_note_font();
+        let line_h = font.size + 4.0;
         let initial_rows = ((screen_rect.height() * 0.25) / line_h).round() as usize;
         let initial_rows = initial_rows.max(3);
         let colors = self.colors;
@@ -103,21 +128,37 @@ impl PlexiApp {
                                 "Enter to save  ·  Shift+Enter for new line  ·  Esc to discard",
                             )
                             .color(self.colors.text_dim.linear_multiply(0.5))
-                            .size(style::TEXT_HINT)
-                            .family(egui::FontFamily::Monospace),
+                            .font(font.clone()),
                         );
                         ui.add_space(style::SPACE_SM);
 
+                        if !self.quick_note_attachments.is_empty() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} image{} attached",
+                                    self.quick_note_attachments.len(),
+                                    if self.quick_note_attachments.len() == 1 {
+                                        ""
+                                    } else {
+                                        "s"
+                                    }
+                                ))
+                                .color(self.colors.text_dim.linear_multiply(0.7))
+                                .font(font.clone()),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                        }
+
                         crate::ui::text_field::TextArea::multiline(
                             egui::Id::new("quick_note_text"),
-                            RichText::new("What's on your mind?").size(style::TEXT_BODY),
+                            RichText::new("What's on your mind?").font(font.clone()),
                         )
                         .surface(crate::ui::focus::SurfaceKey::Overlay(
                             crate::app::input_owner::OverlaySurface::Layer(
                                 crate::app::FocusKind::QuickNote,
                             ),
                         ))
-                        .monospace(style::TEXT_BODY)
+                        .font(font.clone())
                         .text_color(self.colors.text_primary)
                         .hint_color(self.colors.text_dim.linear_multiply(0.3))
                         .rows(initial_rows)
@@ -131,8 +172,15 @@ impl PlexiApp {
         if response.dismissed {
             self.pop_focus_layer(&crate::app::FocusKind::QuickNote);
             self.quick_note_text.clear();
+            self.quick_note_attachments.clear();
             log::info!("QuickNote: modal dismissed via click-away");
         }
+    }
+
+    /// The configured shared terminal family at the current application font
+    /// size. Every QuickNote text surface uses this exact `FontId`.
+    pub(crate) fn quick_note_font(&self) -> egui::FontId {
+        egui::FontId::monospace(self.default_font_size)
     }
 
     pub(crate) fn quick_note_handle_key(
