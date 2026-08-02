@@ -282,6 +282,70 @@ class TestEffects:
         finally:
             proc.kill()
 
+    def test_mcp_connect_carries_only_a_server_id(self, tmp_path):
+        """The wire shape is the containment property (stint 0382).
+
+        An app names a configured server; it never supplies a command. If a
+        command/argv field ever appears here, `mcp.client` has silently become
+        arbitrary process execution.
+        """
+        app = self._app_with_init_effects(
+            tmp_path, "McpConnect(request_id='r1', server_id='filesystem')"
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            connects = _find_events(events, "mcp_connect")
+            assert connects == [{
+                "type": "mcp_connect",
+                "request_id": "r1",
+                "server_id": "filesystem",
+            }]
+        finally:
+            proc.kill()
+
+    def test_mcp_send_serializes_the_message_to_one_line(self, tmp_path):
+        app = self._app_with_init_effects(
+            tmp_path,
+            "McpSend(server_id='filesystem', message={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})",
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            sends = _find_events(events, "mcp_send")
+            assert len(sends) == 1
+            assert sends[0]["server_id"] == "filesystem"
+            assert "\n" not in sends[0]["message"]
+            assert json.loads(sends[0]["message"])["method"] == "tools/list"
+        finally:
+            proc.kill()
+
+    def test_mcp_send_rejects_a_message_that_would_split_the_frame(self, tmp_path):
+        app = self._app_with_init_effects(
+            tmp_path, "McpSend(server_id='s', message={'k': 'a\\nb'})"
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            # json.dumps escapes the newline, so this stays one line — the
+            # guard exists for values json.dumps cannot escape away.
+            sends = _find_events(events, "mcp_send")
+            assert len(sends) == 1
+            assert "\n" not in sends[0]["message"]
+        finally:
+            proc.kill()
+
+    def test_mcp_disconnect(self, tmp_path):
+        app = self._app_with_init_effects(tmp_path, "McpDisconnect(server_id='filesystem')")
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            assert _find_events(events, "mcp_disconnect") == [
+                {"type": "mcp_disconnect", "server_id": "filesystem"}
+            ]
+        finally:
+            proc.kill()
+
     def test_close_self(self, tmp_path):
         app = self._app_with_init_effects(tmp_path, 'CloseSelf()')
         proc = _spawn_v3_app(app)
@@ -586,6 +650,76 @@ class TestEventDispatch:
 # =============================================================================
 # State management tests
 # =============================================================================
+
+
+class TestMcpEventDispatch:
+    """Host -> app MCP events (stint 0382)."""
+
+    def _echo_app(self, tmp_path: Path) -> Path:
+        app = tmp_path / "app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk import log
+            from plexi_sdk.effects import SetTitle
+            from plexi_sdk.events import McpClosed, McpConnected, McpMessage
+            from plexi_sdk.ui import Text
+
+            def init(size, args):
+                return []
+
+            def update(event):
+                if isinstance(event, McpConnected):
+                    return [SetTitle(f"connected {event.server_id} err={event.error}")]
+                if isinstance(event, McpMessage):
+                    return [SetTitle(f"message {event.server_id} {event.message.get('method')}")]
+                if isinstance(event, McpClosed):
+                    return [SetTitle(f"closed {event.server_id} {event.reason}")]
+                return []
+
+            def view():
+                return Text("ok")
+        """).lstrip())
+        return app
+
+    def _titles_after(self, proc, event: dict) -> list:
+        _send_event(proc, event)
+        events = _collect_until(proc, "schedule_render")
+        return [e["title"] for e in _find_events(events, "set_title")]
+
+    def test_mcp_connected_message_and_closed_reach_the_app(self, tmp_path):
+        proc = _spawn_v3_app(self._echo_app(tmp_path))
+        try:
+            _init_app(proc, capabilities=["mcp.client"])
+            assert self._titles_after(
+                proc,
+                {"type": "mcp_connected", "request_id": "r", "server_id": "fs"},
+            ) == ["connected fs err=None"]
+            assert self._titles_after(
+                proc,
+                {
+                    "type": "mcp_message",
+                    "server_id": "fs",
+                    "message": json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                },
+            ) == ["message fs notifications/initialized"]
+            assert self._titles_after(
+                proc,
+                {"type": "mcp_closed", "server_id": "fs", "reason": "server closed stdout"},
+            ) == ["closed fs server closed stdout"]
+        finally:
+            proc.kill()
+
+    def test_a_non_json_server_line_closes_rather_than_disappearing(self, tmp_path):
+        """A dropped line strands whatever request was waiting on it."""
+        proc = _spawn_v3_app(self._echo_app(tmp_path))
+        try:
+            _init_app(proc, capabilities=["mcp.client"])
+            titles = self._titles_after(
+                proc, {"type": "mcp_message", "server_id": "fs", "message": "not json at all"}
+            )
+            assert len(titles) == 1
+            assert titles[0].startswith("closed fs MCP server sent a line that is not JSON")
+        finally:
+            proc.kill()
 
 
 class TestState:

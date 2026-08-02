@@ -4619,6 +4619,107 @@ fn app_commands_execute_while_window_hidden() {
     );
 }
 
+/// MCP delivery must complete on hidden (logic-only) passes — stint 0382 fix
+/// round. Both directions of the MCP bridge lived only in the paint path
+/// (`LivePythonPane::ui` → `drain_runtime`), so an idle or occluded pane never
+/// moved server lines into the guest nor dispatched the guest's own requests:
+/// a healthy real server's handshake reply sat undelivered for 88 s and was
+/// then killed by the bridge's 90 s deadline, while polling `plexi pane state`
+/// (which forces paints) made the identical setup succeed in 3 s. The fix
+/// services Python pane runtimes from `App::logic`
+/// (`service_python_pane_runtimes`); this drives a real probe app and a real
+/// server process through `hidden_frame` passes alone and requires the reply
+/// to land with `App::ui` never running.
+#[cfg(unix)]
+#[test]
+fn mcp_reply_reaches_guest_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    // A real server process: answers the probe's one request after a delay
+    // long enough that the reply arrives only once the window is hidden.
+    let server = tmp.path().join("probe-server.sh");
+    std::fs::write(
+        &server,
+        "#!/bin/sh\nIFS= read -r line\nsleep 1\nprintf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\\n'\nexec sleep 300\n",
+    )
+    .expect("write probe server");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod probe server");
+    }
+    let config_dir = crate::config::config_dir();
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("mcp_servers.toml"),
+        format!("[servers.probe]\ncommand = \"{}\"\n", server.display()),
+    )
+    .expect("write mcp_servers.toml");
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/mcp-hidden-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch mcp-hidden-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching mcp-hidden-probe");
+
+    // `display_name` surfaces the guest's `set_title` (falling back to the
+    // app id before the first one lands) — host-side state updated on
+    // logic-only passes, observable with no paint.
+    let python_title = |h: &HostHarness| -> Option<String> {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .and_then(|pane| match &pane.runtime {
+                AppRuntime::Python(p) => Some(p.display_name()),
+                _ => None,
+            })
+    };
+
+    // Visible frames only for startup: init → mcp_connect → mcp_connected →
+    // the probe sends its request and reports "sent".
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let title = python_title(&h);
+        if title.as_deref() == Some("mcp-probe:sent") {
+            break;
+        }
+        assert!(
+            !matches!(title.as_deref(), Some(t) if t.starts_with("mcp-probe:error") || t.starts_with("mcp-probe:closed")),
+            "probe failed during setup: {title:?}"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "probe did not reach the sent phase in time (last title: {title:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // From here the window is hidden: logic-only passes. The server's reply
+    // (due in ~1 s) must still reach the guest, and the guest's set_title must
+    // still reach the host — with `App::ui` never running.
+    let start = std::time::Instant::now();
+    loop {
+        h.run_hidden_frames(1);
+        let title = python_title(&h);
+        if title.as_deref() == Some("mcp-probe:reply") {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "MCP reply must be delivered on hidden (logic-only) passes alone (last title: {title:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 /// Companion to `pane_ipc_serviced_while_window_hidden`: queued pane inputs
 /// must NOT be swallowed by hidden passes. A hidden pass has no widget pass to
 /// receive events, so `raw_input_hook` must leave `pending_pane_inputs` queued

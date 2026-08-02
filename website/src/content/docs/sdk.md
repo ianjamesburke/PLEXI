@@ -127,6 +127,42 @@ denied).
 HttpFetch(url: str, method: str = 'GET', headers: dict = dict(), body: Optional[bytes] = None)
 ```
 
+### `McpConnect`
+
+```python
+McpConnect(request_id: str, server_id: str)
+```
+
+Open a connection to an MCP server the *user* configured (stint 0382).
+
+``server_id`` names a ``[servers.<id>]`` entry in the user's
+``mcp_servers.toml``. The host resolves it to a command and owns the
+resulting process; the app never supplies argv. Requires the
+``mcp.client`` capability. Answered by :class:`events.McpConnected`.
+
+### `McpSend`
+
+```python
+McpSend(server_id: str, message: dict)
+```
+
+Send one JSON-RPC message to a connected MCP server.
+
+``message`` is a JSON-RPC object; the SDK serializes it. The transport is
+line-delimited, so the serialized form must not contain a newline — the
+host rejects one rather than splitting the message. Replies arrive
+asynchronously as :class:`events.McpMessage`, correlated by the app
+through the JSON-RPC ``id`` it chose.
+
+### `McpDisconnect`
+
+```python
+McpDisconnect(server_id: str)
+```
+
+Close a connection and kill the server process. Answered by
+:class:`events.McpClosed`.
+
 ### `AiMessage`
 
 ```python
@@ -361,6 +397,35 @@ created.
 ```python
 HttpResponse(status: int, headers: list, body: bytes)
 ```
+
+### `McpConnected`
+
+```python
+McpConnected(request_id: str, server_id: str, error: Optional[str])
+```
+
+Host reply to :class:`effects.McpConnect`. ``error`` is ``None`` on
+success; otherwise it names why — an unknown server id, a spawn failure,
+or a missing ``mcp.client`` capability.
+
+### `McpMessage`
+
+```python
+McpMessage(server_id: str, message: dict, raw: str)
+```
+
+One JSON-RPC message from a connected MCP server. ``message`` is the
+parsed object; ``raw`` keeps the exact line for diagnostics.
+
+### `McpClosed`
+
+```python
+McpClosed(server_id: str, reason: str)
+```
+
+A connection ended — the server exited, a send failed, or the app
+disconnected. Every in-flight request against that server will never be
+answered; the app must fail them rather than wait.
 
 ### `AiStreamChunk`
 

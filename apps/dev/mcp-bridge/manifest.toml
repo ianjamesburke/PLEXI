@@ -1,0 +1,18 @@
+schema_version = 1
+
+[app]
+id = "mcp-bridge"
+type = "app"
+name = "MCP Bridge"
+entry = "mcp_bridge.py"
+version = "0.1.0"
+description = "Bridges configured MCP servers onto the Plexi connector tool plane"
+watch = true
+
+[runtime]
+python_compat = true
+
+[app.capabilities]
+capabilities = ["mcp.client"]
+
+[launch]

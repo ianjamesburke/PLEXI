@@ -90,6 +90,16 @@ pub enum Capability {
     /// the launch-granted set), so a withheld sensitive cap could never be
     /// granted at runtime. Auto-granted when declared, exactly like `fs.read`.
     LogsRead,
+    /// Connect to an MCP server the *user* configured in
+    /// `<config_dir>/mcp_servers.toml` (stint 0382). Gates
+    /// `Effect::McpConnect` / `McpSend` / `McpDisconnect`: the host spawns and
+    /// owns the server process, the app speaks the MCP protocol over it.
+    ///
+    /// The app names a server by id only. Argv comes from user-owned config
+    /// and never from the app, so this capability authorizes "talk to a server
+    /// the user configured", never "run this command" — an app holding it
+    /// cannot reach a binary the user has not already listed.
+    McpClient,
 }
 
 impl fmt::Display for Capability {
@@ -125,6 +135,7 @@ impl Capability {
             Self::PanesControl => "Control your panes: focus, close, send input, and drive apps",
             Self::PermissionsManage => "See and change what other apps are allowed to do",
             Self::LogsRead => "Read the Plexi host log",
+            Self::McpClient => "Talk to the MCP servers you have configured",
         }
     }
 
@@ -152,6 +163,7 @@ impl Capability {
             Self::PanesControl => "panes.control",
             Self::PermissionsManage => "permissions.manage",
             Self::LogsRead => "logs.read",
+            Self::McpClient => "mcp.client",
         }
     }
 
@@ -182,6 +194,7 @@ impl Capability {
         Self::PanesControl,
         Self::PermissionsManage,
         Self::LogsRead,
+        Self::McpClient,
     ];
 
     /// All capability wire strings, derived from [`Capability::ALL`].
@@ -308,6 +321,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "panes.control" => Ok(Self::PanesControl),
             "permissions.manage" => Ok(Self::PermissionsManage),
             "logs.read" => Ok(Self::LogsRead),
+            "mcp.client" => Ok(Self::McpClient),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -939,7 +953,7 @@ mod tests {
         }
         assert_eq!(
             Capability::ALL.len(),
-            22,
+            23,
             "update Capability::ALL (and this count) when adding a variant"
         );
         assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());

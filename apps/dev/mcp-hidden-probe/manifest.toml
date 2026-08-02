@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "mcp-hidden-probe"
+type = "app"
+name = "MCP Hidden Probe"
+entry = "main.py"
+version = "0.1.0"
+description = "POC: HostHarness MCP fixture (stint 0382 fix round) — connects to the configured 'probe' server, sends one request, and reports each phase via set_title so a hidden-window (logic-only) harness test can observe MCP delivery without a paint pass."
+watch = true
+
+[app.capabilities]
+capabilities = ["mcp.client"]
+
+[launch]

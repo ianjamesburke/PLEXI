@@ -153,6 +153,40 @@ tips = true
 
 Set `tips = false` to hide contextual tips after CLI commands.
 
+## MCP servers
+
+MCP servers live in their own file next to `config.toml` in the active channel
+profile: `mcp_servers.toml`. It is user-owned — Plexi reads it and never writes
+it — and it is the only source of a server's command line.
+
+```toml
+[servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/projects"]
+
+[servers.git]
+command = "uvx"
+args = ["mcp-server-git"]
+env = { GIT_AUTHOR_NAME = "plexi" }
+cwd = "/Users/you/projects/repo"
+```
+
+`command` is required; `args`, `env`, and `cwd` are optional, and an unknown key
+is an error rather than a silent no-op. `cwd` defaults to the calling pane's
+workspace root. A server child gets `PATH` and `HOME` plus whatever `env`
+declares — nothing else from the host environment.
+
+A server runs in its own process group and is killed — including anything an
+`npx`/`uvx` launcher spawned — when the pane that opened it closes. A server
+that never produces output, or never completes the MCP handshake, is
+disconnected after a deadline with a visible error rather than left running.
+
+An app never supplies a command: it names a server id and the host resolves the
+rest here, so the `mcp.client` capability means "talk to a server you
+configured", not "run this command". Servers reach the assistant through the
+bridge app (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
+connector tools. Format and process contract: `src/host/mcp_client.rs`.
+
 ## Default config.toml
 
 This is the built-in template Plexi writes when it creates or resets the active channel config.
