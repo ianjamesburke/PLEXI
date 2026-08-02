@@ -289,6 +289,12 @@ For each **batch**, in order:
    ```
    Brief every successor with distilled state (PR numbers, results, decisions, gotchas) — never rely on "warm repo knowledge" to justify keeping a pane alive. Testers: same rule, fresh pane per validation, closed after each verdict.
 
+   **Never hand new work to a pane that already did work. Ever.** Not a fix round, not a follow-up, not "one more small thing", not a pane that looks idle and available. A pane is single-use: one assignment, one deliverable, then closed. New work means a **new pane**, spawned by the babysitter, briefed from written state.
+
+   This is not about context rot alone. A pane that already ran carries a stale picture of the world — the alpha it branched from, the CI shape it saw, the PR state at its last look — and none of that is re-read when you drop a second task into its prompt. It will act on the old picture with full confidence. The head then spends more effort correcting a warm pane than it would have spent briefing a cold one, and every correction is a round trip that reads, from the outside, exactly like progress.
+
+   The corollary binds the head too: **the head does not adopt orphaned work.** If a worker is closed, dies, or is stood down mid-task, its unfinished work goes to a fresh pane with a written brief — the head does not quietly finish it in-place. The head routes; it does not absorb.
+
 7. **Hand off the head after every merge.** See "Head handoff" below.
 
 ## Head handoff — `RUN_STATE.md` and the fresh-head relay
@@ -398,4 +404,5 @@ If `plexi pane send --help` does not list `--submit`, you're on a pre-build; use
 ## Rules
 
 - Never write code, run git, or merge yourself — spawn, label, route, observe.
+- **One pane, one assignment. Never re-task a pane that has already worked** — every new unit of work gets a fresh pane spawned by the babysitter and briefed from written state. A warm pane holds a stale picture of alpha, CI, and PR state that a second prompt does not refresh, and it will act on that picture confidently. This includes the head: orphaned work goes to a new pane, never absorbed in place.
 - **Worktree hygiene.** Merge/cancel already reap their own trees. At every batch boundary and run end, the head reaps orphans (a lane that died, hard-rejected, or was abandoned): `wtp rm`, run by the worker pane, not the head. Clean tree → remove. Dirty tree → remove only if a merged/superseding PR covers its scope, else hold and list in `RUN_STATE.md` under `ORPHANED_WORKTREES` with one line on what's uncommitted. Unpushed commits → never remove, hold and list. A run may not close its final `LOG.md` recap while orphans are unlisted.
