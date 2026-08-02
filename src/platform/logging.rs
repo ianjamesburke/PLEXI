@@ -261,6 +261,30 @@ pub(crate) enum UiPhase {
     CloseRequest = 5,
     WorkspaceSave = 6,
     Exit = 7,
+    // Preamble-level phases (`update_preamble`), in call order.
+    PreambleAdoptedContext = 8,
+    PreambleFinderService = 9,
+    PreambleSpawnQueue = 10,
+    PreambleTerminalActivity = 11,
+    PreambleScheduler = 12,
+    PreambleNotifyTimeouts = 13,
+    PreambleUpdateCheck = 14,
+    PreambleRuntimePoll = 15,
+    PreamblePaneCmds = 16,
+    PreamblePtyEvents = 17,
+    PreambleSnapshot = 18,
+    PreambleFocusSync = 19,
+    // Logic-level phases (`PlexiApp::logic`), in call order.
+    Screenshots = 20,
+    SlotWaits = 21,
+    AgentBoots = 22,
+    Submits = 23,
+    PaneHeartbeats = 24,
+    SubscriptionReplies = 25,
+    EventDeliveries = 26,
+    PythonRuntimes = 27,
+    AgentTick = 28,
+    AppCommands = 29,
 }
 
 impl UiPhase {
@@ -274,6 +298,28 @@ impl UiPhase {
             Self::CloseRequest => "close_request",
             Self::WorkspaceSave => "workspace_save",
             Self::Exit => "exit",
+            Self::PreambleAdoptedContext => "preamble_adopted_context",
+            Self::PreambleFinderService => "preamble_finder_service",
+            Self::PreambleSpawnQueue => "preamble_spawn_queue",
+            Self::PreambleTerminalActivity => "preamble_terminal_activity",
+            Self::PreambleScheduler => "preamble_scheduler",
+            Self::PreambleNotifyTimeouts => "preamble_notify_timeouts",
+            Self::PreambleUpdateCheck => "preamble_update_check",
+            Self::PreambleRuntimePoll => "preamble_runtime_poll",
+            Self::PreamblePaneCmds => "preamble_pane_cmds",
+            Self::PreamblePtyEvents => "preamble_pty_events",
+            Self::PreambleSnapshot => "preamble_snapshot",
+            Self::PreambleFocusSync => "preamble_focus_sync",
+            Self::Screenshots => "screenshots",
+            Self::SlotWaits => "slot_waits",
+            Self::AgentBoots => "agent_boots",
+            Self::Submits => "submits",
+            Self::PaneHeartbeats => "pane_heartbeats",
+            Self::SubscriptionReplies => "subscription_replies",
+            Self::EventDeliveries => "event_deliveries",
+            Self::PythonRuntimes => "python_runtimes",
+            Self::AgentTick => "agent_tick",
+            Self::AppCommands => "app_commands",
         }
     }
 
@@ -286,6 +332,28 @@ impl UiPhase {
             5 => Self::CloseRequest,
             6 => Self::WorkspaceSave,
             7 => Self::Exit,
+            8 => Self::PreambleAdoptedContext,
+            9 => Self::PreambleFinderService,
+            10 => Self::PreambleSpawnQueue,
+            11 => Self::PreambleTerminalActivity,
+            12 => Self::PreambleScheduler,
+            13 => Self::PreambleNotifyTimeouts,
+            14 => Self::PreambleUpdateCheck,
+            15 => Self::PreambleRuntimePoll,
+            16 => Self::PreamblePaneCmds,
+            17 => Self::PreamblePtyEvents,
+            18 => Self::PreambleSnapshot,
+            19 => Self::PreambleFocusSync,
+            20 => Self::Screenshots,
+            21 => Self::SlotWaits,
+            22 => Self::AgentBoots,
+            23 => Self::Submits,
+            24 => Self::PaneHeartbeats,
+            25 => Self::SubscriptionReplies,
+            26 => Self::EventDeliveries,
+            27 => Self::PythonRuntimes,
+            28 => Self::AgentTick,
+            29 => Self::AppCommands,
             _ => Self::Startup,
         }
     }
@@ -334,6 +402,39 @@ fn unpack_ui_phase(packed: u64, now_ms: u64) -> UiPhaseSnapshot {
         name: phase.name(),
         age: Duration::from_millis(now_ms.saturating_sub(marked_at_ms)),
     }
+}
+
+/// Test-only accessor: the last phase name reached by the tracker, without
+/// locking. Lets integration tests (e.g. `HostHarness` smoke tests in other
+/// modules) assert on host progress without exposing `UiPhaseSnapshot`.
+#[cfg(test)]
+pub(crate) fn current_ui_phase_name(tracker: &UiPhaseTracker) -> &'static str {
+    ui_phase_snapshot(tracker).name
+}
+
+/// Pure threshold decision for the slow-drain log line: only worth a log line
+/// once a single drain call has eaten a meaningful slice of one frame budget.
+/// Kept separate from `time_drain` so it's directly unit-testable, matching
+/// this file's existing pattern (see `freeze_verdict`).
+pub(crate) fn should_log_slow_drain(elapsed: Duration) -> bool {
+    elapsed > Duration::from_millis(100)
+}
+
+/// Time a drain call and log at `info` when it crosses `should_log_slow_drain`'s
+/// threshold. No allocation on the happy path — the format! only runs when the
+/// drain was actually slow.
+pub(crate) fn time_drain<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
+    let start = Instant::now();
+    let result = f();
+    let elapsed = start.elapsed();
+    if should_log_slow_drain(elapsed) {
+        log::info!(
+            target: "plexi::logging",
+            "logic_drain: {name} took {}ms",
+            elapsed.as_millis()
+        );
+    }
+    result
 }
 
 /// Create a new frame tick counter. Pass the clone to `spawn_heartbeat`, store the
@@ -463,6 +564,68 @@ mod tests {
         let snapshot = unpack_ui_phase(tracker.load(Ordering::Acquire), 100);
         assert_eq!(snapshot.name, "workspace_save");
         assert_eq!(snapshot.age, Duration::from_millis(58));
+    }
+
+    /// Every `UiPhase` variant must round-trip through `from_byte`, including
+    /// the preamble- and logic-level phases added in stint 0716. A gap here
+    /// means a variant silently decodes back to `Startup`.
+    #[test]
+    fn every_ui_phase_variant_round_trips_through_from_byte() {
+        let variants = [
+            UiPhase::Startup,
+            UiPhase::Logic,
+            UiPhase::LogicComplete,
+            UiPhase::UiRender,
+            UiPhase::RendererPresent,
+            UiPhase::CloseRequest,
+            UiPhase::WorkspaceSave,
+            UiPhase::Exit,
+            UiPhase::PreambleAdoptedContext,
+            UiPhase::PreambleFinderService,
+            UiPhase::PreambleSpawnQueue,
+            UiPhase::PreambleTerminalActivity,
+            UiPhase::PreambleScheduler,
+            UiPhase::PreambleNotifyTimeouts,
+            UiPhase::PreambleUpdateCheck,
+            UiPhase::PreambleRuntimePoll,
+            UiPhase::PreamblePaneCmds,
+            UiPhase::PreamblePtyEvents,
+            UiPhase::PreambleSnapshot,
+            UiPhase::PreambleFocusSync,
+            UiPhase::Screenshots,
+            UiPhase::SlotWaits,
+            UiPhase::AgentBoots,
+            UiPhase::Submits,
+            UiPhase::PaneHeartbeats,
+            UiPhase::SubscriptionReplies,
+            UiPhase::EventDeliveries,
+            UiPhase::PythonRuntimes,
+            UiPhase::AgentTick,
+            UiPhase::AppCommands,
+        ];
+        for variant in variants {
+            let round_tripped = UiPhase::from_byte(variant as u8);
+            assert_eq!(
+                round_tripped,
+                variant,
+                "variant {} (byte {}) did not round-trip; from_byte returned {}",
+                variant.name(),
+                variant as u8,
+                round_tripped.name()
+            );
+        }
+    }
+
+    #[test]
+    fn should_log_slow_drain_below_threshold_is_false() {
+        assert!(!should_log_slow_drain(Duration::from_millis(50)));
+        assert!(!should_log_slow_drain(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn should_log_slow_drain_above_threshold_is_true() {
+        assert!(should_log_slow_drain(Duration::from_millis(101)));
+        assert!(should_log_slow_drain(Duration::from_secs(1)));
     }
 
     /// Zero frames with no pending repaint is healthy idle — never a freeze.

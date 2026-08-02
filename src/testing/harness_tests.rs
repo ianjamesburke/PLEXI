@@ -6910,3 +6910,25 @@ fn scheduled_mode_app_never_suppresses_its_frame_wake() {
         "an input-driven app must never trade presentation latency for saved paints"
     );
 }
+
+/// Smoke test for stint 0716's `UiPhase` instrumentation: both visible and
+/// hidden-window frame passes must run every `logic` drain without panicking.
+/// A visible pass continues on into `ui`/present phases past `logic_complete`,
+/// but the hidden path is the one that matters here: `App::ui` never runs
+/// while the window is occluded (see the eframe-hidden-window trap in
+/// `CLAUDE.md`), so a hidden pass must still reach `logic_complete` — proof
+/// every external-client drain in `App::logic` ran to the end without a panic.
+#[test]
+fn logic_drains_run_without_panic_visible_and_hidden() {
+    let mut h = HostHarness::new();
+    let _term = h.add_focused_terminal();
+
+    h.run_frames(2);
+
+    h.run_hidden_frames(2);
+    assert_eq!(
+        crate::platform::logging::current_ui_phase_name(&h.app.ui_phase),
+        "logic_complete",
+        "hidden frame pass must still run every logic drain and end at logic_complete"
+    );
+}
