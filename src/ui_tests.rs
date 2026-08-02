@@ -1441,6 +1441,204 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Push a second spatial window onto `context_id` and return its index, so
+    /// a sidebar row can be seeded with more than one pip capsule.
+    fn push_window_for_context(
+        h: &mut PlexiUiHarness,
+        context_id: u64,
+        grid_x: u32,
+        path: &str,
+    ) -> usize {
+        h.with_app_mut(|app| {
+            let window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: std::path::PathBuf::from(path),
+                tree: egui_tiles::Tree::empty("sidebar-row-states"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x,
+                grid_y: 0,
+                window_id,
+                context_id,
+            });
+            app.windows.len() - 1
+        })
+    }
+
+    /// Fill `window_index` with `count` app panes wired into one horizontal
+    /// container, so the window's tree really reports every pane — inserting
+    /// panes without attaching them to the root leaves them invisible to the
+    /// spatial walk the sidebar pips are built from.
+    fn fill_window_with_panes(h: &mut PlexiUiHarness, window_index: usize, count: usize) {
+        let browser_root = h.workspace.path().to_path_buf();
+        h.with_app_mut(|app| {
+            let mut tiles = Vec::with_capacity(count);
+            for _ in 0..count {
+                let pane_id = app.host.alloc_pane_id();
+                let app_pane = AppPane {
+                    pip_status: None,
+                    id: pane_id,
+                    runtime: AppRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    )),
+                    workspace_root: browser_root.clone(),
+                    permissions: AppPermissions::builtin(),
+                    manifest_id: "test".to_string(),
+                    name: "Test App".to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    hidden: false,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                };
+                let win = &mut app.windows[window_index];
+                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                tiles.push(win.tree.tiles.insert_pane(pane_id));
+            }
+            let win = &mut app.windows[window_index];
+            let container = win.tree.tiles.insert_horizontal_tile(tiles.clone());
+            win.tree.root = Some(container);
+            win.focused_pane = tiles.first().copied();
+        });
+    }
+
+    /// Seed a context with a name, a root path, and its own window, returning
+    /// `(router index, context id, window index)`.
+    fn push_sidebar_context(h: &mut PlexiUiHarness, name: &str, root: &str) -> (usize, u64, usize) {
+        let (idx, context_id) = h.with_app_mut(|app| {
+            let context_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.router.push(crate::host::context::Context {
+                name: name.to_string(),
+                root: std::path::PathBuf::from(root),
+                description: None,
+                context_id,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+            (app.router.len() - 1, context_id)
+        });
+        let window_idx = push_window_for_context(h, context_id, 0, root);
+        (idx, context_id, window_idx)
+    }
+
+    fn seeded_notification(
+        notify_id: &str,
+        source_context_id: u64,
+        source_window_id: u64,
+    ) -> crate::app::PendingNotification {
+        crate::app::PendingNotification {
+            notify_id: notify_id.to_string(),
+            sender_pane_id: 0,
+            source_context_id,
+            source_window_id,
+            title: "Preview badge".to_string(),
+            body: "Seeded sidebar notification".to_string(),
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            scope: crate::app_protocol::NotifyScope::Context,
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: None,
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now(),
+            tombstoned: false,
+            deliver_after: None,
+        }
+    }
+
+    /// Stint 0717: the whole vocabulary of the rebuilt context row in one
+    /// frame, at HiDPI — index numbers beside their names, per-window pip
+    /// capsules with the return-target pin on the active window, agent
+    /// activity colors, pip overflow past the visible cap, notification badges
+    /// inboard of the close slot, an active row, and a hovered row showing its
+    /// close glyph. Read the PNG: the number must sit on the name's optical
+    /// center, no two trailing slots may touch, and the capsule's top edge must
+    /// be unbroken except where the pin meets it.
+    #[test]
+    fn screenshot_sidebar_row_states() {
+        const SHOT_PPP: f32 = 2.0;
+        let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, SHOT_PPP);
+        h.step();
+
+        let (active_context_id, active_window_id) = h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            let idx = app.router.active_idx();
+            app.router.get_mut(idx).name = "PLEXI Workspace".to_string();
+            app.router.get_mut(idx).root = std::path::PathBuf::from("/projects/PLEXI");
+            (
+                app.router.get(idx).context_id,
+                app.windows[app.active_window].window_id,
+            )
+        });
+
+        // Active context: two spatial windows, so the row carries two capsules
+        // and the pin marks the one activation will return to.
+        let active_window = h.with_app(|app| app.active_window);
+        fill_window_with_panes(&mut h, active_window, 3);
+        let second_window =
+            push_window_for_context(&mut h, active_context_id, 1, "/projects/PLEXI");
+        fill_window_with_panes(&mut h, second_window, 2);
+
+        // A long name that must elide, and enough panes to overflow the cap.
+        let (_, narrator_id, narrator_window) = push_sidebar_context(
+            &mut h,
+            "Narrator Video Production Workspace",
+            "/projects/narrator-site",
+        );
+        fill_window_with_panes(&mut h, narrator_window, 11);
+        let narrator_window_id = h.with_app(|app| app.windows[narrator_window].window_id);
+
+        let (_, _, scratch_window) = push_sidebar_context(&mut h, "scratch", "/tmp/scratch");
+        fill_window_with_panes(&mut h, scratch_window, 1);
+
+        // Agent activity across the pips, and badges on two rows.
+        h.with_app_mut(|app| {
+            let statuses = [
+                crate::app_protocol::PipStatus::Yellow,
+                crate::app_protocol::PipStatus::Green,
+                crate::app_protocol::PipStatus::Red,
+            ];
+            for (i, pane) in app.windows[0].panes.values_mut().enumerate() {
+                if let Pane::App(app_pane) = pane {
+                    app_pane.pip_status = Some(statuses[i % statuses.len()]);
+                }
+            }
+            app.pending_notifications.extend([
+                seeded_notification("active-one", active_context_id, active_window_id),
+                seeded_notification("active-two", active_context_id, active_window_id),
+                seeded_notification("active-three", active_context_id, active_window_id),
+                seeded_notification("narrator-one", narrator_id, narrator_window_id),
+                seeded_notification("narrator-two", narrator_id, narrator_window_id),
+            ]);
+        });
+        h.run_steps(3);
+
+        // Hover the inactive "scratch" row so one row shows its close glyph
+        // while the active row shows its badge — the two states that used to
+        // share a single trailing zone.
+        // kittest reports node rects in physical pixels; pointer events are in
+        // points, so the HiDPI scale has to come back out.
+        let scratch_row = h.harness().get_by_label("scratch").rect().center() / SHOT_PPP;
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(scratch_row));
+        h.step();
+
+        h.save_screenshot("/tmp/plexi-0717-sidebar-row-states.png")
+            .expect("render failed");
+    }
+
     /// Stint 0605: `NextContext`/`PrevContext` cycle the same enumeration the
     /// sidebar draws. Against a live router carrying a real subcontext wedged
     /// between two masters, cycling steps master → master and wraps, so it can
