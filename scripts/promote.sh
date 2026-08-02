@@ -160,7 +160,7 @@ check_clean "$MAIN_TREE" "main worktree"
 # tree's own clap tree: every subcommand and flag the skill documents must
 # exist, and plexi_version must match Cargo.toml. See src/cli/skill_surface.rs.
 echo "Verifying agent skill against the release CLI surface..."
-(cd "$BETA_TREE" && cargo test --quiet --bin plexi skill_surface) \
+(cd "$BETA_TREE" && bash scripts/cargo-with-lease.sh cargo test --quiet --bin plexi skill_surface) \
     || die "skill surface gate failed — the skill documents CLI surface this release does not have (src/cli/skill_surface.rs)"
 
 version=$(grep '^version' "$BETA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')

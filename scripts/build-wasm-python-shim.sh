@@ -9,8 +9,8 @@ WASM_OUT="${ROOT}/target/wasm32-wasip1/release/python_shim.wasm"
 FIXTURE_OUT="${ROOT}/tests/wasm-fixtures/python-shim.wasm"
 
 cd "$CRATE_DIR"
-cargo test
-cargo component build --release --target wasm32-wasip2
+bash "$ROOT/scripts/cargo-with-lease.sh" cargo test
+bash "$ROOT/scripts/cargo-with-lease.sh" cargo component build --release --target wasm32-wasip2
 wasm-tools validate "$WASM_OUT"
 
 mkdir -p "$(dirname "$FIXTURE_OUT")"

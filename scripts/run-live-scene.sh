@@ -30,4 +30,4 @@ PLEXI_SCENE_NO_SHOTS=1 \
 PLEXI_SCENE_BACKEND=live \
 PLEXI_SCENE_CHANNEL="$channel" \
 PLEXI_SCENE_OWNER_FILE="$owner_file" \
-cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+bash scripts/cargo-with-lease.sh cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture

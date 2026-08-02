@@ -18,6 +18,11 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TEST_RE = re.compile(r"^\s*#\s*\[\s*(?:[\w:]+::)?test[^\]]*\]\s*$")
 FN_RE = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(")
+CARGO_ENV_STRIP = [
+    "env", "-u", "PLEXI_CHANNEL", "-u", "PLEXI_CONTEXT_ROOT", "-u",
+    "PLEXI_CONTEXT_ID", "-u", "PLEXI_CONTEXT_NAME", "-u", "PLEXI_SOCKET",
+    "-u", "PLEXI_RUNNING", "-u", "PLEXI_PANE_ID",
+]
 
 
 def roadmap_evidence(path: pathlib.Path) -> list[str]:
@@ -73,7 +78,7 @@ def run(command: list[str], cwd: pathlib.Path) -> bool:
 def execute(root: pathlib.Path, resolved: dict[str, pathlib.Path]) -> list[str]:
     failures: list[str] = []
     listing = subprocess.run(
-        ["cargo", "test", "--workspace", "--", "--list"],
+        ["bash", "scripts/cargo-with-lease.sh", *CARGO_ENV_STRIP, "cargo", "test", "--workspace", "--", "--list"],
         cwd=root,
         text=True,
         capture_output=True,
@@ -103,6 +108,9 @@ def execute(root: pathlib.Path, resolved: dict[str, pathlib.Path]) -> list[str]:
     # roadmap evidence and fails reproducibly on clean alpha.
     if not run(
         [
+            "bash",
+            "scripts/cargo-with-lease.sh",
+            *CARGO_ENV_STRIP,
             "cargo",
             "test",
             "--workspace",

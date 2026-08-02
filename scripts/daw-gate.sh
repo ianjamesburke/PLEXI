@@ -132,7 +132,7 @@ echo "daw-gate: started channel=$channel scenes=${#scenes[@]} out=$out_dir"
 core_artifact="${TMPDIR:-/tmp}/plexi-daw-gate/daw-gate-core.json"
 rm -f "$core_artifact"
 echo "daw-gate: running core qualification (cargo test daw_gate core artifact)"
-if ! (cd "$repo_root" && env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
+if ! (cd "$repo_root" && bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
     -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
     cargo test --bin plexi daw_gate::daw_gate_core_qualification_artifact \
     > "$out_dir/core-qualification.log" 2>&1); then
