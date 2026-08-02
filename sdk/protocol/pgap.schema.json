@@ -1334,6 +1334,89 @@
         },
         {
           "additionalProperties": false,
+          "description": "Acquire a host-owned named lease for the calling pane. The reply is\nparked by the host until FIFO capacity grants it or its deadline passes.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "timeout_secs": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "lock_acquire",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "pane_id",
+            "timeout_secs",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Release a named lease held by the calling pane.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "lock_release",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Report the current holders, queue depth, and oldest queued wait.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "lock_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "List named host-managed pane file slots.",
           "properties": {
             "pane_id": {
