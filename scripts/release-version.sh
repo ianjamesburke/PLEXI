@@ -95,6 +95,10 @@ sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$TREE/Cargo.toml"
 sdk_toml="$TREE/sdk/python/pyproject.toml"
 sdk_current=$(grep '^version' "$sdk_toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 sed -i '' "s/^version = \"$sdk_current\"/version = \"$new\"/" "$sdk_toml"
+# uv.lock records the workspace's own editable package with its version, the
+# same way Cargo.lock records the crate's. Re-lock in the same breath as the
+# bump or the lock trails one release behind, every release.
+(cd "$TREE/sdk/python" && uv lock --quiet)
 echo "SDK: $sdk_current → $new"
 
 # ── stamp agent skill ─────────────────────────────────────────────────────────
@@ -122,7 +126,7 @@ echo "Regenerating CLI docs..."
 
 # ── commit ────────────────────────────────────────────────────────────────────
 
-git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md website/src/content/docs/cli.md sdk/python/pyproject.toml skills/plexi-cli/SKILL.md
+git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md website/src/content/docs/cli.md sdk/python/pyproject.toml sdk/python/uv.lock skills/plexi-cli/SKILL.md
 git -C "$TREE" commit -m "chore: release v$new"
 git -C "$TREE" tag "$tag"
 

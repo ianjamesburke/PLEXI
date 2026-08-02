@@ -206,7 +206,18 @@ check-authoring-docs:
     python3 tools/check_authoring_docs.py
 
 # Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage + authoring drift).
-check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs
+# Verify sdk/python/uv.lock matches sdk/python/pyproject.toml.
+# Fails when a version bump moved pyproject.toml without re-locking.
+check-sdk-lock:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! (cd sdk/python && uv lock --check); then
+        echo "ERROR: sdk/python/uv.lock is stale. Run 'uv lock' in sdk/python/."
+        exit 1
+    fi
+    echo "SDK lock is up to date."
+
+check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
 
 run:
     bash scripts/cargo-with-lease.sh cargo build --release
