@@ -1,8 +1,9 @@
 [build]
 target-dir = "target"
 
-# THROTTLE: limits cargo to 3 of 10 logical cores to keep the machine
-# responsive during parallel agent builds. Builds take ~3x longer.
-# When on a faster machine, remove this line and cargo will default to
-# using all available cores.
-jobs = 3
+# THROTTLE: limits cargo to 6 of 10 logical cores so the machine stays
+# responsive during a build. Builds are serialized machine-wide by
+# scripts/cargo-with-lease.sh (kernel flock), so this only needs to leave
+# headroom for one build, not N parallel ones. On a faster machine, remove
+# this line and cargo will default to all available cores.
+jobs = 6
