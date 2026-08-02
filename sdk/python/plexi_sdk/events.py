@@ -149,6 +149,34 @@ class HttpResponse:
 
 
 @dataclass
+class McpConnected:
+    """Host reply to :class:`effects.McpConnect`. ``error`` is ``None`` on
+    success; otherwise it names why — an unknown server id, a spawn failure,
+    or a missing ``mcp.client`` capability."""
+    request_id: str
+    server_id: str
+    error: Optional[str]
+
+
+@dataclass
+class McpMessage:
+    """One JSON-RPC message from a connected MCP server. ``message`` is the
+    parsed object; ``raw`` keeps the exact line for diagnostics."""
+    server_id: str
+    message: dict
+    raw: str
+
+
+@dataclass
+class McpClosed:
+    """A connection ended — the server exited, a send failed, or the app
+    disconnected. Every in-flight request against that server will never be
+    answered; the app must fail them rather than wait."""
+    server_id: str
+    reason: str
+
+
+@dataclass
 class AiStreamChunk:
     request_id: str
     delta: str

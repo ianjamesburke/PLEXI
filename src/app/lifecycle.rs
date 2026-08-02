@@ -3449,6 +3449,24 @@ impl PlexiApp {
         }
     }
 
+    /// Service every WASM Python pane's external I/O from the logic pass.
+    /// `LivePythonPane::ui` also drains, but eframe skips `App::ui` entirely
+    /// while the window is hidden — a drain that lives only in the paint path
+    /// wedges whenever the pane is idle or the window is occluded (CLAUDE.md
+    /// trap; the MCP handshake stall this fixes is documented on
+    /// `LivePythonPane::service_external_io`).
+    pub(super) fn service_python_pane_runtimes(&mut self) {
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(app) = pane.as_app_mut() {
+                    if let crate::host::pane::AppRuntime::Python(python) = &mut app.runtime {
+                        python.service_external_io();
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn drain_pty_events(&mut self) {
         let mut panes_to_close: Vec<u64> = Vec::new();
 

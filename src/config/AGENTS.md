@@ -10,6 +10,7 @@ Configuration loading, validation, channel-scoped profile dirs, and workspace co
 
 - `src/config/mod.rs` — authoritative source for every config key, type, and default.
 - `scripts/default-config.toml` — the template seeded on `just install`. Must stay in sync with `mod.rs`.
+- `mcp_servers.toml` (next to `config.toml` in the channel profile) is a separate, user-owned file — Plexi reads it and never writes it. Format and process contract: `src/host/mcp_client.rs`; user docs: `docs/CONFIG.md`.
 
 ## Rules
 

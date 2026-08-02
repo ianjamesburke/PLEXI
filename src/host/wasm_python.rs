@@ -48,29 +48,144 @@ struct InputState {
     bytes: VecDeque<u8>,
     closed: bool,
     waker: Option<Waker>,
+    /// One-shot consumption wake: fires (and disarms) when a guest read drops
+    /// the buffered level below the armed threshold. Armed only via
+    /// [`AppendableStdin::arm_low_water_wake`], which refuses to arm below the
+    /// threshold — so an armed wake always has a stalled producer behind it.
+    low_water: Option<(usize, StdinWake)>,
 }
 
+/// Wake fired from the guest's consumption side (`poll_read`) when buffered
+/// stdin drops below an armed threshold. Runs on the guest runtime thread;
+/// must be cheap and non-reentrant (in production: a repaint request, the
+/// same shape as [`crate::host::mcp_client::McpWake`]).
+pub type StdinWake = Arc<dyn Fn() + Send + Sync>;
+
+/// Outcome of [`AppendableStdin::arm_low_water_wake`]. `Armed` is the only
+/// case that installs anything, and no accepted waiter is ever silently
+/// discarded: an armed wake fires exactly once — when a guest read drops the
+/// level below the threshold, when [`AppendableStdin::close`] runs, or
+/// immediately upon being superseded by a *different* wake (a spurious wake
+/// at worst; silence would strand whatever work the waiter was parked on).
+/// Re-arming the *same* wake refreshes the threshold without firing — that is
+/// the MCP pump's per-pass pattern while a line stays parked, and firing
+/// there would be a self-wake loop. "Armed a wake nothing will ever fire" is
+/// unrepresentable — a closed stdin reports `Closed` instead of arming,
+/// because no future read will ever drain it.
+#[must_use]
+pub enum LowWaterArm {
+    /// Buffered level is already below the threshold: deliver now; nothing
+    /// was armed.
+    BelowThreshold,
+    /// Wake installed; fires exactly once — on the consumption edge, at
+    /// close, or on supersession by a different wake.
+    Armed,
+    /// Stdin is closed — checked before the level, because delivery can never
+    /// reach the guest regardless of how empty the buffer is. Nothing was
+    /// armed; the caller's pending data is undeliverable and must not be
+    /// parked.
+    Closed,
+}
+
+/// Hard ceiling on bytes buffered in a guest's stdin queue. This is the
+/// enforced boundary that makes the host structurally incapable of unbounded
+/// buffering on behalf of a guest: [`AppendableStdin::push`] refuses (loudly)
+/// instead of growing past it. Producers that relay *externally controlled*
+/// volume (the MCP pump) must gate on [`AppendableStdin::buffered_bytes`]
+/// against their own watermark so backpressure engages long before this cap;
+/// the cap exists so any future ungated producer — or a guest that stopped
+/// consuming stdin — becomes a dropped-message error in the log, not a
+/// host-killing heap. Sized far above any legitimate single message
+/// (`mcp_client::MAX_LINE_BYTES` is 8 MiB) plus normal bridge traffic.
+const STDIN_BUFFER_HARD_CAP_BYTES: usize = 64 * 1024 * 1024;
+
+/// Watermark at which the MCP inbound pump stops moving server lines into
+/// guest stdin. While the guest has this much unread, further lines wait in
+/// the bounded [`crate::host::mcp_client::inbound_channel`], then in the OS
+/// pipe, then in the server itself — the full backpressure chain. One max-size
+/// MCP message may land on top of the watermark, so the hard cap keeps a wide
+/// margin above `watermark + MAX_LINE_BYTES`.
+const MCP_STDIN_HIGH_WATER_BYTES: usize = 8 * 1024 * 1024;
+
 /// Cloneable WASI stdin whose producer can append bytes after instantiation.
+/// Bounded: see [`STDIN_BUFFER_HARD_CAP_BYTES`].
 #[derive(Clone, Default)]
 pub struct AppendableStdin {
     state: Arc<Mutex<InputState>>,
 }
 
 impl AppendableStdin {
-    pub fn push(&self, bytes: &[u8]) {
+    /// Append one message's bytes, all-or-nothing. Fails without buffering
+    /// anything when stdin is closed or the hard cap would be exceeded — the
+    /// caller drops the message and logs; it must never retry-loop on the host
+    /// thread. Checking `closed` under the same lock as the append closes the
+    /// arm-below-watermark versus teardown race.
+    pub fn push(&self, bytes: &[u8]) -> Result<(), WasmPythonError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.closed {
+            return Err(WasmPythonError::StdinClosed);
+        }
+        if state.bytes.len().saturating_add(bytes.len()) > STDIN_BUFFER_HARD_CAP_BYTES {
+            return Err(WasmPythonError::StdinBufferFull {
+                buffered: state.bytes.len(),
+                cap: STDIN_BUFFER_HARD_CAP_BYTES,
+            });
+        }
         state.bytes.extend(bytes);
         if let Some(waker) = state.waker.take() {
             waker.wake();
         }
+        Ok(())
     }
 
     pub fn push_json_line(&self, value: &Value) -> Result<(), WasmPythonError> {
         let mut line = serde_json::to_vec(value)
             .map_err(|error| WasmPythonError::BridgeJson(error.to_string()))?;
         line.push(b'\n');
-        self.push(&line);
-        Ok(())
+        self.push(&line)
+    }
+
+    /// Bytes queued but not yet consumed by the guest. Producers relaying
+    /// external volume gate on this before pushing more.
+    pub fn buffered_bytes(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .bytes
+            .len()
+    }
+
+    /// Arm a one-shot wake that fires when guest consumption drops the
+    /// buffered level below `threshold`. The closed check, the level check,
+    /// and the arm are one atomic step under the state lock, so neither a
+    /// concurrent guest read nor a concurrent [`AppendableStdin::close`] can
+    /// slip between them: arm-then-close is fired by `close`, and
+    /// close-then-arm returns [`LowWaterArm::Closed`] without arming.
+    ///
+    /// The slot holds one waiter. Arming while a *different* wake is armed
+    /// fires the superseded wake immediately (see [`LowWaterArm`]); re-arming
+    /// the same wake only refreshes the threshold.
+    pub fn arm_low_water_wake(&self, threshold: usize, wake: StdinWake) -> LowWaterArm {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.closed {
+            return LowWaterArm::Closed;
+        }
+        if state.bytes.len() < threshold {
+            return LowWaterArm::BelowThreshold;
+        }
+        let superseded = match state.low_water.take() {
+            Some((_, prev)) if !Arc::ptr_eq(&prev, &wake) => Some(prev),
+            _ => None,
+        };
+        state.low_water = Some((threshold, wake));
+        drop(state);
+        if let Some(prev) = superseded {
+            // The previous waiter was armed on behalf of its own pending
+            // work; firing it now (a spurious wake at worst) is the only
+            // outcome that cannot strand that work.
+            prev();
+        }
+        LowWaterArm::Armed
     }
 
     pub fn close(&self) {
@@ -78,6 +193,13 @@ impl AppendableStdin {
         state.closed = true;
         if let Some(waker) = state.waker.take() {
             waker.wake();
+        }
+        // A producer waiting on consumption must not stall forever on a guest
+        // that is gone: fire once so it observes the closure on its next pass.
+        let low_water = state.low_water.take().map(|(_, wake)| wake);
+        drop(state);
+        if let Some(wake) = low_water {
+            wake();
         }
     }
 }
@@ -105,6 +227,16 @@ impl AsyncRead for AppendableStdin {
             let count = buf.remaining().min(state.bytes.len());
             let bytes: Vec<u8> = state.bytes.drain(..count).collect();
             buf.put_slice(&bytes);
+            let low_water = match &state.low_water {
+                Some((threshold, _)) if state.bytes.len() < *threshold => {
+                    state.low_water.take().map(|(_, wake)| wake)
+                }
+                _ => None,
+            };
+            drop(state);
+            if let Some(wake) = low_water {
+                wake();
+            }
             return Poll::Ready(Ok(()));
         }
         if state.closed {
@@ -312,6 +444,10 @@ pub enum WasmPythonError {
     BridgeJson(String),
     #[error("start CPython WASM runtime: {0}")]
     RuntimeStart(String),
+    #[error("guest stdin is closed — message dropped")]
+    StdinClosed,
+    #[error("guest stdin buffer full ({buffered} of {cap} bytes unread) — guest is not consuming stdin; message dropped")]
+    StdinBufferFull { buffered: usize, cap: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -796,6 +932,36 @@ pub struct LivePythonPane {
     context_root: PathBuf,
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
+    /// Live MCP server processes this pane opened (stint 0382), keyed by the
+    /// configured server id. Dropped with the pane, which kills every child.
+    mcp_connections: HashMap<String, crate::host::mcp_client::McpConnection>,
+    /// User-owned `mcp_servers.toml`, loaded on first connect. `None` until
+    /// then so a pane that never touches MCP never reads the file.
+    mcp_registry: Option<crate::host::mcp_client::McpServerRegistry>,
+    /// Bounded by `mcp_client::inbound_channel` — a flooding server blocks on
+    /// its own pipe instead of growing this pane's heap.
+    mcp_tx: std::sync::mpsc::SyncSender<(String, crate::host::mcp_client::McpLine)>,
+    mcp_rx: std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
+    /// Edge-latch for backpressure logging: `pump_mcp_inbound` stalling behind
+    /// the stdin watermark is logged once on engage and once on release, never
+    /// per frame.
+    mcp_backpressured: bool,
+    /// A closed guest makes all later MCP input undeliverable. Latch the
+    /// diagnostic so teardown cannot turn one flood into one error per late
+    /// reader-thread send.
+    mcp_stdin_closed_logged: bool,
+    /// One MCP line pulled from the channel but undeliverable behind the
+    /// stdin watermark. Parked here with a consumption wake armed on the
+    /// stdin; the next pump pass delivers it first. Parking happens only
+    /// against a live stdin — once the stdin closes, pending lines are
+    /// dropped loudly instead, because nothing would ever deliver them.
+    mcp_held: Option<(String, crate::host::mcp_client::McpLine)>,
+    /// Armed on guest stdin whenever `mcp_held` is parked: requests one
+    /// repaint when the guest drains below the watermark, so the parked line
+    /// is delivered exactly when it becomes deliverable. Counterpart to the
+    /// connection's `McpWake` (which covers new server data); together they
+    /// make every MCP delivery wake progress-driven — no timers.
+    mcp_stdin_wake: StdinWake,
     /// File-picker backend (stint 0508). Native rfd dialog in production, a
     /// scripted queue under `PLEXI_PICKER_SCRIPT` / harness override so agent
     /// tests can drive the full pick → grant → read/write flow headlessly.
@@ -1662,14 +1828,179 @@ fn load_python_states(
         .collect()
 }
 
+/// Move inbound MCP lines into guest stdin, bounded by the guest's own
+/// consumption: delivery stops while [`AppendableStdin::buffered_bytes`] is
+/// at or above [`MCP_STDIN_HIGH_WATER_BYTES`]. The one undeliverable line in
+/// hand is parked in `held`; everything behind it waits in the bounded
+/// channel → OS pipe → server, so a flooding server stalls in its own pipe
+/// instead of accumulating in host memory (the defect behind the 3 GiB-RSS
+/// host kill this replaces: the old drain moved every line into the unbounded
+/// stdin queue as fast as frames ran).
+///
+/// Returns `true` only when a line was parked — MCP work actually pending
+/// behind the watermark. Parking arms `wake` as a one-shot consumption wake
+/// on the stdin ([`AppendableStdin::arm_low_water_wake`]), so the next pass
+/// is triggered by the guest genuinely draining below the watermark — never
+/// by a timer. With nothing queued, nothing is armed and nothing repaints: a
+/// full stdin with no MCP traffic (or a guest that stopped reading after the
+/// server went quiet) leaves the host fully idle.
+///
+/// A closed stdin ([`LowWaterArm::Closed`]) can never be drained, so lines
+/// bound for it are dropped instead of parked, all live connections are torn
+/// down, and one latched error is logged for the pane — parking against a
+/// stdin no read will ever touch would strand them forever.
+fn pump_mcp_inbound(
+    app_id: &str,
+    rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
+    stdin: &AppendableStdin,
+    connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
+    held: &mut Option<(String, crate::host::mcp_client::McpLine)>,
+    wake: &StdinWake,
+    closed_logged: &mut bool,
+) -> bool {
+    loop {
+        let Some((server_id, line)) = held.take().or_else(|| rx.try_recv().ok()) else {
+            return false;
+        };
+        match stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(wake)) {
+            LowWaterArm::Armed => {
+                *held = Some((server_id, line));
+                return true;
+            }
+            LowWaterArm::Closed => {
+                // No read will ever drain a closed stdin, so this line — and
+                // everything queued behind it — can never reach the guest.
+                // Parking would strand it forever with no wake to deliver it
+                // (the close-versus-arm race).
+                drop_undeliverable_mcp_backlog(
+                    app_id,
+                    rx,
+                    connections,
+                    Some((server_id, line)),
+                    closed_logged,
+                );
+                return false;
+            }
+            LowWaterArm::BelowThreshold => {}
+        }
+        match deliver_mcp_line(
+            app_id,
+            server_id,
+            line,
+            rx,
+            stdin,
+            connections,
+            closed_logged,
+        ) {
+            McpDelivery::Delivered => {}
+            McpDelivery::GuestGone => return false,
+        }
+    }
+}
+
+/// Outcome of [`deliver_mcp_line`]: either the line reached guest stdin (or
+/// was individually dropped with its own error), or the guest's stdin turned
+/// out to be closed — nothing on this channel can ever deliver again and the
+/// pump must stop.
+enum McpDelivery {
+    Delivered,
+    GuestGone,
+}
+
+/// Deliver one MCP line into guest stdin. `BelowThreshold` from the arm is
+/// only an observation made under the stdin lock — teardown can close the
+/// stdin between that observation and this push, so the closed boundary is
+/// enforced here too: [`WasmPythonError::StdinClosed`] routes into the same
+/// full cleanup as [`LowWaterArm::Closed`] (backlog dropped, connections torn
+/// down, one latched error), never a per-line error. Other push failures
+/// (malformed JSON, hard cap) drop only this line, loudly.
+fn deliver_mcp_line(
+    app_id: &str,
+    server_id: String,
+    line: crate::host::mcp_client::McpLine,
+    rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
+    stdin: &AppendableStdin,
+    connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
+    closed_logged: &mut bool,
+) -> McpDelivery {
+    let event = match &line {
+        crate::host::mcp_client::McpLine::Message(message_json) => json!({
+            "type": "mcp_message",
+            "server_id": server_id,
+            "message": message_json,
+        }),
+        crate::host::mcp_client::McpLine::Closed(reason) => json!({
+            "type": "mcp_closed",
+            "server_id": server_id,
+            "reason": reason,
+        }),
+    };
+    match stdin.push_json_line(&event) {
+        Ok(()) => {
+            if let crate::host::mcp_client::McpLine::Closed(reason) = &line {
+                connections.remove(&server_id);
+                log::info!("app::{app_id}: mcp server {server_id} closed: {reason}");
+            }
+            McpDelivery::Delivered
+        }
+        Err(WasmPythonError::StdinClosed) => {
+            drop_undeliverable_mcp_backlog(
+                app_id,
+                rx,
+                connections,
+                Some((server_id, line)),
+                closed_logged,
+            );
+            McpDelivery::GuestGone
+        }
+        Err(error) => {
+            log::error!("app::{app_id}: deliver MCP line to guest failed — dropped: {error}");
+            McpDelivery::Delivered
+        }
+    }
+}
+
+/// A closed guest stdin has no future read: the line in hand and the whole
+/// channel backlog are undeliverable, and no live connection's output can
+/// ever reach the guest again. Drop the backlog (keeping server-closure
+/// bookkeeping), tear down every connection now rather than waiting for
+/// terminal queue records that teardown may no longer service, and log one
+/// latched pane-level error — latched, never per line, so a teardown racing
+/// a flooding server cannot turn its output into log growth.
+fn drop_undeliverable_mcp_backlog(
+    app_id: &str,
+    rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
+    connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
+    in_hand: Option<(String, crate::host::mcp_client::McpLine)>,
+    closed_logged: &mut bool,
+) {
+    let mut dropped = 0usize;
+    let mut next = in_hand.or_else(|| rx.try_recv().ok());
+    while let Some((sid, l)) = next {
+        dropped += 1;
+        if let crate::host::mcp_client::McpLine::Closed(reason) = &l {
+            connections.remove(&sid);
+            log::info!("app::{app_id}: mcp server {sid} closed: {reason}");
+        }
+        next = rx.try_recv().ok();
+    }
+    connections.clear();
+    if !*closed_logged {
+        *closed_logged = true;
+        log::error!(
+            "app::{app_id}: guest stdin closed — dropped {dropped} undeliverable MCP line(s)"
+        );
+    }
+}
+
 impl LivePythonPane {
-    /// Send an event to the CPython subprocess. A failed send (broken pipe)
-    /// means the app runtime is dead — say so in the log instead of failing
-    /// silent, so a hung app is diagnosable from plexi.log.
+    /// Send an event to the CPython guest. Failure means the message was
+    /// dropped: malformed JSON, closed stdin, or the guest-stdin hard cap.
+    /// Log loudly so a dead or wedged app is diagnosable from plexi.log.
     fn send_to_runtime(&self, event: &Value) {
         if let Err(error) = self.runtime.send(event) {
-            log::warn!(
-                "app::{}: send to CPython runtime failed — runtime likely dead: {error}",
+            log::error!(
+                "app::{}: send to CPython runtime failed: {error}",
                 self.app_id
             );
         }
@@ -1680,6 +2011,7 @@ impl LivePythonPane {
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
+        let (mcp_tx, mcp_rx) = crate::host::mcp_client::inbound_channel();
         let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
         let repaint: RepaintHook = Arc::new(Mutex::new(None));
@@ -1690,6 +2022,20 @@ impl LivePythonPane {
             repaint.clone(),
             wake_schedule.clone(),
         );
+        // Consumption wake for a parked MCP line: fires from the guest's
+        // stdin `poll_read` when it drains below the watermark. Nonzero delay
+        // for the same reason as `McpWake` — a literal zero-delay request
+        // schedules an extra settling paint.
+        let stdin_wake_repaint = Arc::clone(&repaint);
+        let mcp_stdin_wake: StdinWake = Arc::new(move || {
+            if let Some((context, viewport)) = stdin_wake_repaint
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            }
+        });
         Ok(Self {
             runtime,
             config,
@@ -1723,6 +2069,14 @@ impl LivePythonPane {
             context_root,
             http_tx,
             http_rx,
+            mcp_connections: HashMap::new(),
+            mcp_registry: None,
+            mcp_tx,
+            mcp_rx,
+            mcp_backpressured: false,
+            mcp_stdin_closed_logged: false,
+            mcp_held: None,
+            mcp_stdin_wake,
             picker: crate::host::services::default_picker_service(),
             picker_tx,
             picker_rx,
@@ -2020,6 +2374,55 @@ impl LivePythonPane {
         self.perf_canvas_render = std::time::Duration::ZERO;
     }
 
+    /// Logic-pass servicing of everything external that feeds this pane: MCP
+    /// server lines, HTTP replies, file-pick outcomes, and decoded guest
+    /// messages (which carry the app's own `mcp_send` / `mcp_connect`
+    /// requests). `ui` drains too, but eframe never calls `App::ui` while the
+    /// window is hidden (minimized or fully occluded) — every external drain
+    /// must complete on logic-only passes alone (see the CLAUDE.md trap;
+    /// regression guard: `mcp_reply_reaches_guest_while_window_hidden`).
+    /// Before this ran from `logic`, an idle or occluded pane drained MCP data
+    /// only when something else forced a paint: a real `npx` filesystem
+    /// server's handshake sat undelivered for 88 s and was then killed by the
+    /// bridge's own 90 s deadline, while polling `plexi pane state` — which
+    /// forces paints — made the identical setup succeed in 3 s.
+    pub fn service_external_io(&mut self) {
+        if self.error.is_some() {
+            // A fatal pane never drains again (`ui` early-returns the same
+            // way); draining here would spam the decoder-disconnected error
+            // every pass.
+            return;
+        }
+        self.drain_runtime();
+    }
+
+    /// Edge-latched diagnostics for the MCP inbound watermark: engage and
+    /// release are each logged once, never per frame. Scheduling is not this
+    /// function's job — when the pump parks a line it arms a consumption
+    /// wake on the guest's stdin, so the host runs again exactly when the
+    /// guest drains below the watermark (new server data fires the
+    /// connection's `McpWake` the same way). No timer exists on this path:
+    /// with no MCP line pending, nothing is armed and an idle host stays
+    /// idle no matter how full guest stdin is.
+    fn note_mcp_backpressure(&mut self, backlogged: bool) {
+        if backlogged {
+            if !self.mcp_backpressured {
+                self.mcp_backpressured = true;
+                log::warn!(
+                    "app::{}: MCP inbound backpressure engaged — guest stdin has {} bytes unread; further server output waits in the bounded queue and the server's own pipe",
+                    self.app_id,
+                    self.runtime.stdin.buffered_bytes()
+                );
+            }
+        } else if self.mcp_backpressured {
+            self.mcp_backpressured = false;
+            log::info!(
+                "app::{}: MCP inbound backpressure released",
+                self.app_id
+            );
+        }
+    }
+
     fn drain_runtime(&mut self) {
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             self.send_to_runtime(&json!({
@@ -2028,6 +2431,16 @@ impl LivePythonPane {
                 "truncated": response.truncated, "headers": response.response_headers,
             }));
         }
+        let mcp_backlogged = pump_mcp_inbound(
+            &self.app_id,
+            &self.mcp_rx,
+            &self.runtime.stdin,
+            &mut self.mcp_connections,
+            &mut self.mcp_held,
+            &self.mcp_stdin_wake,
+            &mut self.mcp_stdin_closed_logged,
+        );
+        self.note_mcp_backpressure(mcp_backlogged);
         while let Ok((request_id, outcome)) = self.picker_rx.try_recv() {
             match outcome {
                 crate::host::services::FilePickOutcome::Picked(paths) => {
@@ -2247,6 +2660,9 @@ impl LivePythonPane {
             Some("open_file_picker") => self.handle_open_file_picker(&message),
             Some("read_host_log") => self.handle_read_host_log(&message),
             Some("http_request") => self.handle_http_request(&message),
+            Some("mcp_connect") => self.handle_mcp_connect(&message),
+            Some("mcp_send") => self.handle_mcp_send(&message),
+            Some("mcp_disconnect") => self.handle_mcp_disconnect(&message),
             Some("capability_request") => self.handle_capability_request(&message),
             Some("log") => log::info!(
                 "app::{}: {}",
@@ -2557,6 +2973,172 @@ impl LivePythonPane {
                 log::debug!("CPython WASM HTTP response dropped after pane closed");
             }
         });
+    }
+
+    /// Open a connection to a server the *user* configured. `server_id` is
+    /// resolved against `mcp_servers.toml`; the app never supplies argv, so
+    /// `mcp.client` cannot become arbitrary process execution (stint 0382).
+    fn handle_mcp_connect(&mut self, message: &Value) {
+        let request_id = message
+            .get("request_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let server_id = message
+            .get("server_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        log::info!(
+            "app::{}: mcp_connect request_id={request_id} server_id={server_id}",
+            self.app_id
+        );
+
+        let fail = |pane: &mut Self, error: String| {
+            log::warn!(
+                "app::{}: mcp_connect failed server_id={server_id}: {error}",
+                pane.app_id
+            );
+            pane.send_to_runtime(&json!({
+                "type": "mcp_connected",
+                "request_id": request_id,
+                "server_id": server_id,
+                "error": error,
+            }));
+        };
+
+        if !self.has_capability(crate::app::permissions::Capability::McpClient.as_str()) {
+            fail(self, "missing capability mcp.client".to_string());
+            return;
+        }
+        if server_id.is_empty() {
+            fail(self, "mcp_connect requires a server_id".to_string());
+            return;
+        }
+        if self.mcp_connections.contains_key(&server_id) {
+            fail(self, format!("already connected to MCP server '{server_id}'"));
+            return;
+        }
+        if self.mcp_registry.is_none() {
+            match crate::host::mcp_client::McpServerRegistry::load(&crate::config::config_dir()) {
+                Ok(registry) => self.mcp_registry = Some(registry),
+                Err(e) => {
+                    fail(self, e.to_string());
+                    return;
+                }
+            }
+        }
+        let config = match self
+            .mcp_registry
+            .as_ref()
+            .expect("registry loaded above or returned early")
+            .resolve(&server_id)
+        {
+            Ok(config) => config.clone(),
+            Err(e) => {
+                fail(self, e.to_string());
+                return;
+            }
+        };
+        let cwd = self.config.workspace_root.clone();
+        // Wake the host event loop when server data lands: MCP lines arrive on
+        // the server's schedule, and without this an idle (or occluded) host
+        // runs no pass at all — the line would sit in the channel until an
+        // unrelated repaint. Same pattern as the output decoder's repaint hook.
+        let repaint = Arc::clone(&self.repaint);
+        let wake: crate::host::mcp_client::McpWake = Arc::new(move || {
+            if let Some((context, viewport)) =
+                repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            {
+                context
+                    .request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            }
+        });
+        match crate::host::mcp_client::McpConnection::spawn(
+            &server_id,
+            &config,
+            &cwd,
+            self.mcp_tx.clone(),
+            wake,
+        ) {
+            Ok(connection) => {
+                log::info!("app::{}: mcp connected server_id={server_id}", self.app_id);
+                self.mcp_connections.insert(server_id.clone(), connection);
+                self.send_to_runtime(&json!({
+                    "type": "mcp_connected",
+                    "request_id": request_id,
+                    "server_id": server_id,
+                }));
+            }
+            Err(e) => fail(
+                self,
+                format!("spawn MCP server '{server_id}' ({}): {e}", config.command),
+            ),
+        }
+    }
+
+    /// Forward one already-serialized JSON-RPC message to a live server. A send
+    /// to an unopened server reports closed rather than vanishing — a request
+    /// that never gets a reply is the worst possible failure mode for an app
+    /// waiting on a response id.
+    fn handle_mcp_send(&mut self, message: &Value) {
+        let server_id = message
+            .get("server_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let payload = match message.get("message") {
+            Some(Value::String(text)) => text.clone(),
+            Some(value) => value.to_string(),
+            None => {
+                log::warn!("app::{}: mcp_send missing 'message'", self.app_id);
+                self.send_to_runtime(&json!({
+                    "type": "mcp_closed",
+                    "server_id": server_id,
+                    "reason": "mcp_send requires a 'message' field",
+                }));
+                return;
+            }
+        };
+        let Some(connection) = self.mcp_connections.get_mut(&server_id) else {
+            log::warn!("app::{}: mcp_send to unopened server {server_id}", self.app_id);
+            self.send_to_runtime(&json!({
+                "type": "mcp_closed",
+                "server_id": server_id,
+                "reason": "not connected",
+            }));
+            return;
+        };
+        if let Err(e) = connection.send(&payload) {
+            log::warn!("app::{}: mcp_send failed server={server_id}: {e}", self.app_id);
+            self.mcp_connections.remove(&server_id);
+            self.send_to_runtime(&json!({
+                "type": "mcp_closed",
+                "server_id": server_id,
+                "reason": e,
+            }));
+        }
+    }
+
+    fn handle_mcp_disconnect(&mut self, message: &Value) {
+        let server_id = message
+            .get("server_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if self.mcp_connections.remove(&server_id).is_some() {
+            log::info!("app::{}: mcp disconnect server_id={server_id}", self.app_id);
+            self.send_to_runtime(&json!({
+                "type": "mcp_closed",
+                "server_id": server_id,
+                "reason": "disconnected by app",
+            }));
+        } else {
+            log::info!(
+                "app::{}: mcp disconnect of unopened server_id={server_id} ignored",
+                self.app_id
+            );
+        }
     }
 
     fn handle_capability_request(&mut self, message: &Value) {
@@ -5494,6 +6076,513 @@ mod tests {
             .map(|entry| entry.expect("entry").file_name())
             .collect();
         assert_eq!(entries, [std::ffi::OsString::from("todo.json")]);
+    }
+
+    // ── Guest stdin bounds (stint 0382 fix round) ─────────────────────────
+
+    /// The enforced boundary behind the MCP flood fix: `AppendableStdin`
+    /// refuses to buffer past the hard cap, all-or-nothing, and guest
+    /// consumption frees capacity. With this in place no code path can turn
+    /// "push into guest stdin" into unbounded host memory.
+    #[test]
+    fn appendable_stdin_hard_cap_is_all_or_nothing_and_frees_on_consume() {
+        let stdin = AppendableStdin::default();
+        let chunk = vec![b'a'; STDIN_BUFFER_HARD_CAP_BYTES - 1];
+        stdin.push(&chunk).expect("push under the cap");
+        let err = stdin.push(&[b'b', b'c']).expect_err("cap breach must fail");
+        assert!(matches!(err, WasmPythonError::StdinBufferFull { .. }), "{err}");
+        assert_eq!(
+            stdin.buffered_bytes(),
+            STDIN_BUFFER_HARD_CAP_BYTES - 1,
+            "a failed push must buffer nothing"
+        );
+
+        // Guest-side consumption frees capacity for new pushes.
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut cx = Context::from_waker(&waker);
+        let mut storage = vec![0u8; 4096];
+        let mut read_buf = ReadBuf::new(&mut storage);
+        let mut reader = stdin.clone();
+        let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
+        assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
+        assert_eq!(stdin.buffered_bytes(), STDIN_BUFFER_HARD_CAP_BYTES - 1 - 4096);
+        stdin
+            .push(&vec![b'x'; 4096])
+            .expect("freed capacity must accept new bytes");
+    }
+
+    /// End-to-end flood containment minus the guest: a real server process
+    /// flooding ~200 KiB lines (the measured host-kill shape — RSS grew to
+    /// 3 GiB and the host died at 125 s) against a guest that never reads
+    /// stdin. The pump must stall at the watermark, report backlog, and leave
+    /// everything past it in the bounded channel / OS pipe — host-side
+    /// buffering stays within watermark + one line, orders of magnitude under
+    /// the old unbounded growth.
+    #[cfg(unix)]
+    #[test]
+    fn mcp_pump_stalls_at_high_water_when_guest_never_reads() {
+        use crate::host::mcp_client::{inbound_channel, McpConnection, McpServerConfig};
+
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("flood.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\npad=$(head -c 200000 /dev/zero | tr '\\0' 'x')\nwhile :; do printf '{\"pad\":\"%s\"}\\n' \"$pad\"; done\n",
+        )
+        .expect("write flood script");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod flood script");
+        }
+
+        let (tx, rx) = inbound_channel();
+        let config = McpServerConfig {
+            command: script.display().to_string(),
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            cwd: None,
+        };
+        let conn = McpConnection::spawn("flood", &config, dir.path(), tx, Arc::new(|| {}))
+            .expect("spawn flood server");
+        let mut connections = HashMap::new();
+        connections.insert("flood".to_string(), conn);
+
+        // A guest that never consumes stdin — the worst case the old code
+        // turned into unbounded heap growth.
+        let stdin = AppendableStdin::default();
+        let mut held = None;
+        let mut closed_logged = false;
+        let wake: StdinWake = Arc::new(|| {});
+        let started = std::time::Instant::now();
+        let mut backlogged = false;
+        while started.elapsed() < std::time::Duration::from_secs(2) {
+            backlogged = pump_mcp_inbound(
+                "flood-test",
+                &rx,
+                &stdin,
+                &mut connections,
+                &mut held,
+                &wake,
+                &mut closed_logged,
+            );
+            if backlogged && stdin.buffered_bytes() >= MCP_STDIN_HIGH_WATER_BYTES {
+                // Keep pumping a little longer to prove it stays stalled.
+                for _ in 0..20 {
+                    backlogged = pump_mcp_inbound(
+                        "flood-test",
+                        &rx,
+                        &stdin,
+                        &mut connections,
+                        &mut held,
+                        &wake,
+                        &mut closed_logged,
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert!(backlogged, "a flooding server must report backlog");
+        let buffered = stdin.buffered_bytes();
+        assert!(
+            buffered >= MCP_STDIN_HIGH_WATER_BYTES,
+            "pump must fill up to the watermark, buffered {buffered}"
+        );
+        // Watermark is checked before each pull, so overshoot is at most one
+        // line (~200 KiB payload plus JSON framing).
+        assert!(
+            buffered < MCP_STDIN_HIGH_WATER_BYTES + 300_000,
+            "pump must stall at the watermark, buffered {buffered}"
+        );
+    }
+
+    /// Regression guard for the third-round defect: backlog used to be
+    /// reported whenever guest stdin sat above the watermark, with no check
+    /// that any MCP line was actually queued — `note_mcp_backpressure` then
+    /// scheduled 25 ms repaints forever, a permanent 40 Hz loop on an idle
+    /// host whose guest had merely stopped reading (the stdin level can stay
+    /// high indefinitely on non-MCP traffic alone). Backlog must mean MCP
+    /// work pending: a full stdin with an empty channel is not backlog, and
+    /// no consumption wake may be armed.
+    #[test]
+    fn mcp_pump_reports_no_backlog_without_queued_lines() {
+        let (_tx, rx) = crate::host::mcp_client::inbound_channel();
+        let stdin = AppendableStdin::default();
+        stdin
+            .push(&vec![b'x'; MCP_STDIN_HIGH_WATER_BYTES + 1])
+            .expect("fill past the watermark with non-MCP traffic");
+        let mut connections = HashMap::new();
+        let mut held = None;
+        let mut closed_logged = false;
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&wakes);
+        let wake: StdinWake = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let backlogged = pump_mcp_inbound(
+            "idle-test",
+            &rx,
+            &stdin,
+            &mut connections,
+            &mut held,
+            &wake,
+            &mut closed_logged,
+        );
+        assert!(
+            !backlogged,
+            "stdin level alone is not MCP backlog — nothing is queued, so there is no work to wake for"
+        );
+        assert!(held.is_none());
+
+        // Nothing was armed either: the guest draining later must not fire a
+        // wake and drag the host into a pass with no MCP work.
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut cx = Context::from_waker(&waker);
+        let mut storage = vec![0u8; MCP_STDIN_HIGH_WATER_BYTES + 1];
+        let mut read_buf = ReadBuf::new(&mut storage);
+        let mut reader = stdin.clone();
+        let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
+        assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
+        assert_eq!(stdin.buffered_bytes(), 0);
+        assert_eq!(
+            wakes.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no wake may fire when none was armed"
+        );
+    }
+
+    /// The parked-line lifecycle: host passes while the guest sits above the
+    /// watermark park the line and fire nothing (no timer, no repaint storm),
+    /// the armed wake fires exactly once when the guest genuinely drains
+    /// below the watermark, the next pump pass delivers the parked line, and
+    /// once the channel is dry the pump reports no backlog and the disarmed
+    /// wake stays silent through further guest reads.
+    #[test]
+    fn mcp_holdback_wake_fires_once_on_guest_consumption() {
+        let (tx, rx) = crate::host::mcp_client::inbound_channel();
+        let stdin = AppendableStdin::default();
+        stdin
+            .push(&vec![b'x'; MCP_STDIN_HIGH_WATER_BYTES])
+            .expect("fill to the watermark");
+        tx.send((
+            "srv".to_string(),
+            crate::host::mcp_client::McpLine::Message(r#"{"jsonrpc":"2.0"}"#.to_string()),
+        ))
+        .expect("queue one MCP line");
+        let mut connections = HashMap::new();
+        let mut held = None;
+        let mut closed_logged = false;
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&wakes);
+        let wake: StdinWake = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        // Two passes with no guest progress: parked both times, zero wakes —
+        // the host schedules nothing on its own.
+        for _ in 0..2 {
+            let backlogged = pump_mcp_inbound(
+                "hold-test",
+                &rx,
+                &stdin,
+                &mut connections,
+                &mut held,
+                &wake,
+                &mut closed_logged,
+            );
+            assert!(backlogged, "a queued line behind the watermark is backlog");
+            assert!(
+                held.is_some(),
+                "the undeliverable line is parked, not dropped"
+            );
+            assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+
+        // The guest drains below the watermark: exactly one wake.
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut cx = Context::from_waker(&waker);
+        let mut storage = vec![0u8; MCP_STDIN_HIGH_WATER_BYTES];
+        let mut read_buf = ReadBuf::new(&mut storage);
+        let mut reader = stdin.clone();
+        let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
+        assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // The woken pass delivers the parked line and reports drained.
+        let backlogged = pump_mcp_inbound(
+            "hold-test",
+            &rx,
+            &stdin,
+            &mut connections,
+            &mut held,
+            &wake,
+            &mut closed_logged,
+        );
+        assert!(!backlogged, "channel dry and nothing parked — no backlog");
+        assert!(held.is_none());
+        assert!(
+            stdin.buffered_bytes() > 0,
+            "the parked line must reach guest stdin"
+        );
+
+        // Disarmed: further guest reads fire nothing.
+        let mut storage = vec![0u8; MCP_STDIN_HIGH_WATER_BYTES];
+        let mut read_buf = ReadBuf::new(&mut storage);
+        let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
+        assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Regression guard for the fourth-round defect: `close()` racing ahead
+    /// of the arm. Arming used to ignore `closed`, so an arm that lost the
+    /// race installed a wake no future read could ever fire — the parked
+    /// line was stranded forever, a silent permanent hang. A closed stdin
+    /// must report [`LowWaterArm::Closed`] instead of arming, and the pump
+    /// must drop the undeliverable line loudly rather than park it.
+    #[test]
+    fn mcp_pump_drops_lines_when_stdin_closes_before_arm() {
+        let (tx, rx) = crate::host::mcp_client::inbound_channel();
+        let dir = tempdir().expect("tempdir");
+        let config = crate::host::mcp_client::McpServerConfig {
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 30".to_string()],
+            env: std::collections::BTreeMap::new(),
+            cwd: None,
+        };
+        let connection = crate::host::mcp_client::McpConnection::spawn(
+            "srv",
+            &config,
+            dir.path(),
+            tx.clone(),
+            Arc::new(|| {}),
+        )
+        .expect("spawn quiet server");
+        let stdin = AppendableStdin::default();
+        stdin
+            .push(&vec![b'x'; MCP_STDIN_HIGH_WATER_BYTES])
+            .expect("fill to the watermark");
+        tx.send((
+            "srv".to_string(),
+            crate::host::mcp_client::McpLine::Message(r#"{"jsonrpc":"2.0"}"#.to_string()),
+        ))
+        .expect("queue one MCP line");
+        let mut connections = HashMap::from([("srv".to_string(), connection)]);
+        let mut held = None;
+        let mut closed_logged = false;
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&wakes);
+        let wake: StdinWake = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        // Close BEFORE the pump gets a chance to arm — the reviewer's race.
+        stdin.close();
+
+        let backlogged = pump_mcp_inbound(
+            "close-race",
+            &rx,
+            &stdin,
+            &mut connections,
+            &mut held,
+            &wake,
+            &mut closed_logged,
+        );
+        assert!(
+            !backlogged,
+            "a closed stdin has no deliverable future — parking here strands the line forever"
+        );
+        assert!(
+            held.is_none(),
+            "nothing may be parked against a closed stdin"
+        );
+        assert!(
+            connections.is_empty(),
+            "closed guest stdin must tear down every connection immediately"
+        );
+        assert!(closed_logged, "the closed-input diagnostic is latched");
+        // Nothing was armed and nothing may ever fire: the guest is gone, so
+        // a wake here would wait on a read that will never happen.
+        assert!(matches!(
+            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::new(|| {})),
+            LowWaterArm::Closed
+        ));
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// `BelowThreshold` is only an observation while the arm lock is held.
+    /// Teardown may close stdin before the caller appends, so `push` must
+    /// enforce the closed boundary too instead of accepting stranded bytes.
+    #[test]
+    fn appendable_stdin_rejects_push_after_close() {
+        let stdin = AppendableStdin::default();
+        assert!(matches!(
+            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::new(|| {})),
+            LowWaterArm::BelowThreshold
+        ));
+
+        stdin.close();
+
+        let error = stdin
+            .push(b"undeliverable")
+            .expect_err("closed stdin must reject bytes");
+        assert!(matches!(error, WasmPythonError::StdinClosed), "{error}");
+        assert_eq!(stdin.buffered_bytes(), 0);
+    }
+
+    /// Regression guard for the sixth-round defect 1 — the interleaving the
+    /// per-check tests missed: arm observes `BelowThreshold`, teardown closes
+    /// stdin, THEN the push runs and rejects. That reject used to fall into
+    /// the generic per-line error branch: connections stayed live (a quiet
+    /// server was never torn down) and the diagnostic was never latched, so
+    /// later input kept logging per line. The closed-push reject must run the
+    /// same full cleanup as the closed-arm outcome: backlog dropped,
+    /// connections cleared, one latched error.
+    #[cfg(unix)]
+    #[test]
+    fn mcp_delivery_tears_down_when_stdin_closes_between_arm_and_push() {
+        let (tx, rx) = crate::host::mcp_client::inbound_channel();
+        let dir = tempdir().expect("tempdir");
+        let config = crate::host::mcp_client::McpServerConfig {
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 30".to_string()],
+            env: std::collections::BTreeMap::new(),
+            cwd: None,
+        };
+        let connection = crate::host::mcp_client::McpConnection::spawn(
+            "srv",
+            &config,
+            dir.path(),
+            tx.clone(),
+            Arc::new(|| {}),
+        )
+        .expect("spawn quiet server");
+        let mut connections = HashMap::from([("srv".to_string(), connection)]);
+        let mut closed_logged = false;
+        let stdin = AppendableStdin::default();
+
+        // The real interleaving, step by step: the pump's arm observes an
+        // open, below-watermark stdin...
+        assert!(matches!(
+            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::new(|| {})),
+            LowWaterArm::BelowThreshold
+        ));
+        // ...teardown closes it before the pump's push runs...
+        stdin.close();
+        // ...and a second line is already queued behind the one in hand.
+        tx.send((
+            "srv".to_string(),
+            crate::host::mcp_client::McpLine::Message(r#"{"id":2}"#.to_string()),
+        ))
+        .expect("queue trailing line");
+
+        let outcome = deliver_mcp_line(
+            "close-mid-delivery",
+            "srv".to_string(),
+            crate::host::mcp_client::McpLine::Message(r#"{"id":1}"#.to_string()),
+            &rx,
+            &stdin,
+            &mut connections,
+            &mut closed_logged,
+        );
+        assert!(
+            matches!(outcome, McpDelivery::GuestGone),
+            "a closed-stdin reject means nothing on this channel can ever deliver"
+        );
+        assert!(
+            connections.is_empty(),
+            "the quiet server must be torn down, not left live"
+        );
+        assert!(closed_logged, "the diagnostic must latch on this path too");
+        // The queued message backlog is equally undeliverable and must be
+        // drained. Tearing down the server can race a late `Closed`
+        // notification from its reader thread into the channel — that is
+        // fine (the next pass drops it under the latch) — but no Message
+        // line may survive.
+        while let Ok((_, l)) = rx.try_recv() {
+            assert!(
+                matches!(l, crate::host::mcp_client::McpLine::Closed(_)),
+                "queued message lines must be drained, found {l:?}"
+            );
+        }
+
+        // Later input must not add per-line errors: the latch stays set and
+        // cleanup stays idempotent.
+        drop_undeliverable_mcp_backlog(
+            "close-mid-delivery",
+            &rx,
+            &mut connections,
+            Some((
+                "srv".to_string(),
+                crate::host::mcp_client::McpLine::Message(r#"{"id":3}"#.to_string()),
+            )),
+            &mut closed_logged,
+        );
+        assert!(closed_logged);
+        assert!(connections.is_empty());
+    }
+
+    /// Regression guard for the sixth-round defect 2 — the arm-then-arm
+    /// interleaving: arming while a *different* wake is armed used to
+    /// silently replace it, contradicting the documented every-armed-wake-
+    /// fires guarantee; a discarded waiter is exactly how parked work gets
+    /// stranded. Supersession must fire the replaced wake immediately, while
+    /// re-arming the *same* wake (the pump's per-pass pattern) stays silent.
+    #[test]
+    fn stdin_low_water_supersession_never_strands_a_waiter() {
+        let stdin = AppendableStdin::default();
+        stdin
+            .push(&vec![b'x'; MCP_STDIN_HIGH_WATER_BYTES])
+            .expect("fill to the watermark");
+
+        let a_fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a_counter = Arc::clone(&a_fired);
+        let wake_a: StdinWake = Arc::new(move || {
+            a_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let b_fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let b_counter = Arc::clone(&b_fired);
+        let wake_b: StdinWake = Arc::new(move || {
+            b_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        // Arm A, then re-arm the SAME wake: refresh only, no fire.
+        assert!(matches!(
+            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(&wake_a)),
+            LowWaterArm::Armed
+        ));
+        assert!(matches!(
+            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(&wake_a)),
+            LowWaterArm::Armed
+        ));
+        assert_eq!(a_fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // A DIFFERENT wake supersedes: A fires immediately instead of being
+        // silently discarded.
+        assert!(matches!(
+            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(&wake_b)),
+            LowWaterArm::Armed
+        ));
+        assert_eq!(
+            a_fired.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a superseded waiter must fire, never be silently dropped"
+        );
+        assert_eq!(b_fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // The consumption edge fires the current occupant exactly once.
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut cx = Context::from_waker(&waker);
+        let mut storage = vec![0u8; MCP_STDIN_HIGH_WATER_BYTES];
+        let mut read_buf = ReadBuf::new(&mut storage);
+        let mut reader = stdin.clone();
+        let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
+        assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
+        assert_eq!(b_fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(a_fired.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     // ── resolve_app_fs_path (stint 0508: workspace jail + picker grants) ──

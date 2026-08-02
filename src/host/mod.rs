@@ -19,6 +19,7 @@ pub mod event_log;
 pub mod event_subscriptions;
 pub mod hot_reload;
 pub mod keys;
+pub mod mcp_client;
 pub mod launch_failed;
 pub mod model;
 pub mod pane;

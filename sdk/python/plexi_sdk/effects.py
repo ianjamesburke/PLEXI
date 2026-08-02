@@ -122,6 +122,40 @@ class HttpFetch:
 
 
 @dataclass
+class McpConnect:
+    """Open a connection to an MCP server the *user* configured (stint 0382).
+
+    ``server_id`` names a ``[servers.<id>]`` entry in the user's
+    ``mcp_servers.toml``. The host resolves it to a command and owns the
+    resulting process; the app never supplies argv. Requires the
+    ``mcp.client`` capability. Answered by :class:`events.McpConnected`.
+    """
+    request_id: str
+    server_id: str
+
+
+@dataclass
+class McpSend:
+    """Send one JSON-RPC message to a connected MCP server.
+
+    ``message`` is a JSON-RPC object; the SDK serializes it. The transport is
+    line-delimited, so the serialized form must not contain a newline — the
+    host rejects one rather than splitting the message. Replies arrive
+    asynchronously as :class:`events.McpMessage`, correlated by the app
+    through the JSON-RPC ``id`` it chose.
+    """
+    server_id: str
+    message: dict
+
+
+@dataclass
+class McpDisconnect:
+    """Close a connection and kill the server process. Answered by
+    :class:`events.McpClosed`."""
+    server_id: str
+
+
+@dataclass
 class AiMessage:
     role: str
     content: str

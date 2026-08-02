@@ -34,6 +34,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   declare a `[state]` section are addressable; the path is resolved from the
   manifest and the calling context, never passed in. A running app picks the
   write up on its own event loop.
+- **MCP servers** — bridge a configured MCP server's tools onto the assistant's
+  connector plane. Servers are declared in the channel profile's
+  `mcp_servers.toml` and named by id; the host resolves the command, so an app
+  can never supply argv. `plexi app open --mcp` is a different thing: it wraps a
+  server in a viewer pane and exposes nothing to the assistant.
 - **Notifications** — show scoped information to the person using the host:
   `plexi notify --help`.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
@@ -150,6 +155,25 @@ directories first, then remove them through the CLI.
 ```bash
 plexi workspace clean --dry-run
 plexi workspace clean
+```
+
+### Bridge an MCP server's tools to the assistant
+
+Declare the server in the channel profile's `mcp_servers.toml` (next to
+`config.toml`; user-owned, format in `docs/CONFIG.md`), then open the MCP bridge
+app with the server ids as trailing arguments. Its tools arrive on the connector
+plane as `mcp.<server>.<tool>`, ask-gated and never auto-allowed. The bridge app
+must declare the `mcp.client` capability.
+
+```toml
+# ~/.plexi-<channel>/mcp_servers.toml
+[servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+```
+
+```bash
+plexi app open <mcp-bridge-app-id> -- filesystem
 ```
 
 ### Post and dismiss a scoped notification

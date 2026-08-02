@@ -156,6 +156,19 @@ class V3AppRuntime:
             self._handle_text_submitted(ev)
         elif t == "http_response":
             self._handle_http_response(ev)
+        elif t == "mcp_connected":
+            self._dispatch(events.McpConnected(
+                request_id=ev.get("request_id", ""),
+                server_id=ev.get("server_id", ""),
+                error=ev.get("error"),
+            ))
+        elif t == "mcp_message":
+            self._handle_mcp_message(ev)
+        elif t == "mcp_closed":
+            self._dispatch(events.McpClosed(
+                server_id=ev.get("server_id", ""),
+                reason=ev.get("reason", ""),
+            ))
         elif t == "tool_call":
             self._dispatch(events.ToolCall(
                 call_id=ev.get("call_id", ""),
@@ -518,6 +531,29 @@ class V3AppRuntime:
             status = 200
         self._dispatch(events.HttpResponse(status=status, headers=[], body=body))
 
+    def _handle_mcp_message(self, ev: dict) -> None:
+        """Parse one server line. A server that emits non-JSON is a protocol
+        violation the app must see — it is reported as a close, never dropped,
+        because a silently skipped reply strands the request that asked for
+        it."""
+        server_id = ev.get("server_id", "")
+        raw = ev.get("message", "")
+        try:
+            message = json.loads(raw)
+        except json.JSONDecodeError as e:
+            self._dispatch(events.McpClosed(
+                server_id=server_id,
+                reason=f"MCP server sent a line that is not JSON: {e}",
+            ))
+            return
+        if not isinstance(message, dict):
+            self._dispatch(events.McpClosed(
+                server_id=server_id,
+                reason=f"MCP server sent a {type(message).__name__}, expected a JSON-RPC object",
+            ))
+            return
+        self._dispatch(events.McpMessage(server_id=server_id, message=message, raw=raw))
+
     def _handle_capability_decision(self, ev: dict) -> None:
         granted = ev.get("granted", False)
         capability = ev.get("capability", "")
@@ -614,6 +650,28 @@ class V3AppRuntime:
                 if effect.body is not None:
                     payload["body"] = effect.body.decode("utf-8")
                 _emit(payload)
+            elif isinstance(effect, effects.McpConnect):
+                _emit({
+                    "type": "mcp_connect",
+                    "request_id": effect.request_id,
+                    "server_id": effect.server_id,
+                })
+            elif isinstance(effect, effects.McpSend):
+                # Serialized here, not host-side: the app owns the MCP
+                # protocol, and the transport only moves lines.
+                line = json.dumps(effect.message, separators=(",", ":"))
+                if "\n" in line:
+                    raise ValueError(
+                        "McpSend.message serializes to a string containing a newline; "
+                        "JSON-RPC framing is line-delimited and the message would split"
+                    )
+                _emit({
+                    "type": "mcp_send",
+                    "server_id": effect.server_id,
+                    "message": line,
+                })
+            elif isinstance(effect, effects.McpDisconnect):
+                _emit({"type": "mcp_disconnect", "server_id": effect.server_id})
             elif isinstance(effect, effects.FileRead):
                 _emit({"type": "file_read", "path": effect.path})
             elif isinstance(effect, effects.OpenFilePicker):

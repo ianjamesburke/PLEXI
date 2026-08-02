@@ -2659,6 +2659,14 @@ impl eframe::App for PlexiApp {
         self.drain_app_subscription_replies();
         self.deliver_app_event_subscriptions();
 
+        // WASM Python panes are fed by external clients too — MCP server
+        // processes, HTTP workers — and their guest runtimes run on their own
+        // threads regardless of paint. Service their I/O here so an occluded
+        // host still moves server data into the guest and guest replies out
+        // (stint 0382 fix round; guard:
+        // `mcp_reply_reaches_guest_while_window_hidden`).
+        self.service_python_pane_runtimes();
+
         // Host agent runtime (Phase C): consume queued event deliveries and
         // finished agent turns. Cheap no-op when nothing is pending. While a
         // turn runs on a worker thread, keep frames coming so its outcome is
