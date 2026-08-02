@@ -34,6 +34,10 @@ impl PlexiApp {
     /// pane command draining, update channel checks, PTY event draining, and
     /// focus-stack reconciliation.
     pub(super) fn update_preamble(&mut self, ctx: &egui::Context) {
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PreambleAdoptedContext,
+        );
         if let Some(ctx_path) = crate::config::take_adopted_context_path() {
             log::info!("adopted context path: {}", ctx_path.display());
             self.new_context_at_path(ctx_path);
@@ -41,22 +45,52 @@ impl PlexiApp {
         }
         #[cfg(target_os = "macos")]
         {
-            let finder_paths = crate::platform::finder_service::drain();
-            if !finder_paths.is_empty() {
-                for path in finder_paths {
-                    log::info!("finder_service: opening context for {}", path.display());
-                    self.new_context_at_path(path);
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::PreambleFinderService,
+            );
+            crate::platform::logging::time_drain("finder_service::drain", || {
+                let finder_paths = crate::platform::finder_service::drain();
+                if !finder_paths.is_empty() {
+                    for path in finder_paths {
+                        log::info!("finder_service: opening context for {}", path.display());
+                        self.new_context_at_path(path);
+                    }
+                    self.save_workspace();
                 }
-                self.save_workspace();
-            }
+            });
         }
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             let now = std::time::Instant::now();
             self.last_notify_poll = now;
-            self.drain_spawn_queue();
-            self.tick_terminal_activity();
-            self.tick_scheduler();
-            self.tick_notification_timeouts();
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::PreambleSpawnQueue,
+            );
+            crate::platform::logging::time_drain("drain_spawn_queue", || self.drain_spawn_queue());
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::PreambleTerminalActivity,
+            );
+            crate::platform::logging::time_drain("tick_terminal_activity", || {
+                self.tick_terminal_activity()
+            });
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::PreambleScheduler,
+            );
+            crate::platform::logging::time_drain("tick_scheduler", || self.tick_scheduler());
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::PreambleNotifyTimeouts,
+            );
+            crate::platform::logging::time_drain("tick_notification_timeouts", || {
+                self.tick_notification_timeouts()
+            });
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::PreambleUpdateCheck,
+            );
             if update_check_due(self.last_update_check, now) {
                 let config_dir = crate::config::config_dir();
                 if !crate::cli::updater::update_cache_fresh(&config_dir) {
@@ -71,8 +105,20 @@ impl PlexiApp {
                 }
             }
         }
-        self.poll_app_runtime_state();
-        self.drain_pane_cmd_channel();
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PreambleRuntimePoll,
+        );
+        crate::platform::logging::time_drain("poll_app_runtime_state", || {
+            self.poll_app_runtime_state()
+        });
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PreamblePaneCmds,
+        );
+        crate::platform::logging::time_drain("drain_pane_cmd_channel", || {
+            self.drain_pane_cmd_channel()
+        });
         if self.shutdown_requested {
             // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).
             // eframe 0.34's macOS CloseRequested path may destroy the window
@@ -110,18 +156,31 @@ impl PlexiApp {
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        self.drain_pty_events();
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PreamblePtyEvents,
+        );
+        crate::platform::logging::time_drain("drain_pty_events", || self.drain_pty_events());
 
         // Update the global pane context snapshot so that AiQuery dispatches
         // include all open panes in the workspace context (#396).
-        self.update_pane_context_snapshot();
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PreambleSnapshot,
+        );
+        crate::platform::logging::time_drain("update_pane_context_snapshot", || {
+            self.update_pane_context_snapshot()
+        });
 
         // Auto-dismiss notifications from the focused pane before reconciling
         // the focus stack so modal state is already correct this frame.
-        self.auto_dismiss_sender_focused_notifications();
-
         // Focus stack: reconcile layer state BEFORE any input routing so
         // `input_captured_by_overlay()` answers correctly this frame.
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PreambleFocusSync,
+        );
+        self.auto_dismiss_sender_focused_notifications();
         self.sync_notification_modal_focus();
         self.sync_confirm_close_focus();
         self.sync_context_close_focus();
