@@ -22,11 +22,14 @@
 //!    app launch, not here.
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use zeroize::Zeroizing;
 
 // ── Keychain naming ──────────────────────────────────────────────────────────
+
+/// Keychain generic-password service every Plexi secret is stored under.
+pub const KEYCHAIN_SERVICE: &str = "plexi";
 
 /// Build the workspace-namespaced Keychain account: `plexi:<workspace-id>:<friendly>`.
 pub fn keychain_workspace_name(workspace_id: &str, friendly: &str) -> String {
@@ -40,24 +43,57 @@ pub fn keychain_user_name(friendly: &str) -> String {
 
 // ── SecretStore trait + impls ────────────────────────────────────────────────
 
-/// Abstraction over the actual storage backend so tests can swap in an
-/// in-memory implementation. `account` is the full namespaced key
-/// (e.g. `plexi:abc-123:openai_prod`).
-pub trait SecretStore: Send + Sync {
+/// The non-destructive storage surface — the **only** trait migration and
+/// reconciliation code takes. Invariant: no method on this trait can overwrite
+/// or unconditionally destroy a value the caller did not write, so a
+/// destructive op in a migration is a compile error, not a review catch.
+/// `account` is the full namespaced key (e.g. `plexi:abc-123:openai_prod`).
+pub trait NonDestructiveStore: Send + Sync {
     fn get(&self, account: &str) -> Option<Zeroizing<String>>;
-    fn set(&self, account: &str, value: &str) -> Result<(), SecretError>;
-    fn delete(&self, account: &str) -> Result<(), SecretError>;
+    /// Create-only write: stores `value` **only** if `account` does not
+    /// already exist, and returns [`SecretError::AlreadyExists`] if it does.
+    /// Never updates — the backend itself refuses the duplicate, so the check
+    /// and the write cannot race.
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError>;
+    /// Value-guarded delete: removes `account` only while it still holds
+    /// exactly `expected`. Any other stored value returns
+    /// [`SecretError::ValueChanged`] and leaves the item untouched; an
+    /// already-missing item is success. See each impl for its atomicity.
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError>;
     /// Best-effort listing of accounts with a given prefix. Used by the host
     /// to enumerate `plexi:<workspace-id>:*` entries for the missing-secret
     /// modal. macOS Keychain has no clean prefix-list — production impl
     /// reads from `secrets-index.json`.
     fn list_with_prefix(&self, prefix: &str) -> Vec<String>;
+    /// Enumerate every account in the backend itself, bypassing the index
+    /// cache. Attributes-only on macOS — never reads values, so it never
+    /// crosses the keychain ACL prompt boundary (value reads of items another
+    /// binary wrote are what prompt; attribute enumeration does not).
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError>;
+}
+
+/// The full store surface. Adds the destructive ops — upsert and
+/// unconditional delete — that only user-initiated flows (the Secrets app
+/// editor, `plexi secret set`/`delete`) may express. Migration and
+/// reconciliation signatures take [`NonDestructiveStore`] and cannot name
+/// these methods.
+pub trait SecretStore: NonDestructiveStore {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError>;
+    fn delete(&self, account: &str) -> Result<(), SecretError>;
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
     #[error("keychain backend error: {0}")]
     Backend(String),
+    /// A create-only write lost the race: the account already exists. Callers
+    /// must treat the existing value as authoritative and never overwrite it.
+    #[error("keychain account already exists: {0}")]
+    AlreadyExists(String),
+    /// A value-guarded delete refused: the account no longer holds the value
+    /// the caller copied. Callers must keep the item and report a conflict.
+    #[error("keychain account value changed since it was read: {0}")]
+    ValueChanged(String),
 }
 
 /// The process-wide secret store handle — the ONLY way to reach a store
@@ -97,10 +133,10 @@ pub fn system_store() -> &'static dyn SecretStore {
 struct MacKeychain;
 
 #[cfg(all(target_os = "macos", not(test)))]
-impl SecretStore for MacKeychain {
+impl NonDestructiveStore for MacKeychain {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
         use security_framework::passwords::get_generic_password;
-        match get_generic_password("plexi", account) {
+        match get_generic_password(KEYCHAIN_SERVICE, account) {
             Ok(data) => Some(Zeroizing::new(
                 String::from_utf8_lossy(&data).trim().to_string(),
             )),
@@ -114,24 +150,57 @@ impl SecretStore for MacKeychain {
         }
     }
 
-    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
-        use security_framework::passwords::set_generic_password;
-        set_generic_password("plexi", account, value.as_bytes())
-            .map_err(|e| SecretError::Backend(format!("{e}")))?;
-        index_add(account);
-        Ok(())
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        use core_foundation::data::CFData;
+        use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass, Location};
+
+        // `SecItemAdd` (via `ItemAddOptions::add`) is create-only and reports
+        // `errSecDuplicateItem` for an existing account. `set_generic_password`
+        // cannot be used here: it upserts, silently rewriting the duplicate.
+        let result = ItemAddOptions::new(ItemAddValue::Data {
+            class: ItemClass::generic_password(),
+            data: CFData::from_buffer(value.as_bytes()),
+        })
+        .set_service(KEYCHAIN_SERVICE)
+        .set_account_name(account)
+        .set_location(Location::DefaultFileKeychain)
+        .add();
+
+        match result {
+            Ok(()) => {
+                index_add(account);
+                Ok(())
+            }
+            // errSecDuplicateItem
+            Err(e) if e.code() == -25299 => Err(SecretError::AlreadyExists(account.to_string())),
+            Err(e) => Err(SecretError::Backend(format!(
+                "create-only add of '{account}' failed: {e}"
+            ))),
+        }
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
-        use security_framework::passwords::delete_generic_password;
-        match delete_generic_password("plexi", account) {
-            Ok(()) => {}
-            // Already gone — treat as success.
-            Err(e) if e.code() == -25300 => {}
-            Err(e) => return Err(SecretError::Backend(format!("{e}"))),
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        // Read-compare-delete. macOS Security.framework has no atomic
+        // compare-and-delete (and no multi-item transaction), so the guard is
+        // best-effort: a cross-process write landing in the one-syscall gap
+        // between this read and the delete below can still be lost. The
+        // in-memory test impl IS atomic; this one is honestly not, and the
+        // residual window is irreducible — do not document it as closed.
+        match self.get(account) {
+            None => Ok(()), // already gone — nothing to lose
+            Some(current) if current.as_str() == expected => {
+                use security_framework::passwords::delete_generic_password;
+                match delete_generic_password(KEYCHAIN_SERVICE, account) {
+                    Ok(()) => {}
+                    // Already gone — treat as success.
+                    Err(e) if e.code() == -25300 => {}
+                    Err(e) => return Err(SecretError::Backend(format!("{e}"))),
+                }
+                index_remove(account);
+                Ok(())
+            }
+            Some(_) => Err(SecretError::ValueChanged(account.to_string())),
         }
-        index_remove(account);
-        Ok(())
     }
 
     fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
@@ -139,6 +208,69 @@ impl SecretStore for MacKeychain {
             .into_iter()
             .filter(|a| a.starts_with(prefix))
             .collect()
+    }
+
+    /// Attributes-only: the query asks for `kSecReturnAttributes` and never
+    /// `kSecReturnData`, so it reads item metadata without unlocking any
+    /// value and never raises a keychain-access prompt.
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+
+        let results = match ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(KEYCHAIN_SERVICE)
+            .load_attributes(true)
+            .limit(Limit::All)
+            .search()
+        {
+            Ok(results) => results,
+            // errSecItemNotFound — no Plexi secrets stored yet.
+            Err(e) if e.code() == -25300 => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(SecretError::Backend(format!(
+                    "keychain scan for service '{KEYCHAIN_SERVICE}' failed: {e}"
+                )))
+            }
+        };
+
+        let mut accounts = Vec::with_capacity(results.len());
+        for result in &results {
+            match result.simplify_dict().and_then(|d| d.get("acct").cloned()) {
+                Some(account) => accounts.push(account),
+                None => log::warn!(
+                    "workspace_secrets::scan: keychain item under service '{KEYCHAIN_SERVICE}' \
+                     has no account attribute; skipping"
+                ),
+            }
+        }
+        log::info!(
+            "workspace_secrets::scan: found {} keychain item(s) under service '{KEYCHAIN_SERVICE}'",
+            accounts.len()
+        );
+        Ok(accounts)
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+impl SecretStore for MacKeychain {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        use security_framework::passwords::set_generic_password;
+        set_generic_password(KEYCHAIN_SERVICE, account, value.as_bytes())
+            .map_err(|e| SecretError::Backend(format!("{e}")))?;
+        index_add(account);
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        use security_framework::passwords::delete_generic_password;
+        match delete_generic_password(KEYCHAIN_SERVICE, account) {
+            Ok(()) => {}
+            // Already gone — treat as success.
+            Err(e) if e.code() == -25300 => {}
+            Err(e) => return Err(SecretError::Backend(format!("{e}"))),
+        }
+        index_remove(account);
+        Ok(())
     }
 }
 
@@ -184,7 +316,9 @@ fn index_read() -> Vec<String> {
                 .map(|e| keychain_user_name(&e.key))
                 .collect();
             // Persist the migrated form so we don't re-do this every run.
-            index_write(&migrated);
+            if let Err(e) = index_write(&migrated) {
+                log::error!("workspace_secrets: failed to persist migrated index: {e}");
+            }
             log::info!(
                 "workspace_secrets: migrated {} legacy index entries to plexi:user:* form",
                 migrated.len()
@@ -199,30 +333,31 @@ fn index_read() -> Vec<String> {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
-fn index_write(entries: &[String]) {
+fn index_write(entries: &[String]) -> Result<(), SecretError> {
     let path = index_path();
     if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::error!("workspace_secrets: failed to create config dir: {e}");
-            return;
-        }
+        std::fs::create_dir_all(parent).map_err(|e| {
+            SecretError::Backend(format!("create config dir {}: {e}", parent.display()))
+        })?;
     }
-    match serde_json::to_string_pretty(entries) {
-        Ok(s) => {
-            if let Err(e) = std::fs::write(&path, s) {
-                log::error!("workspace_secrets: failed to write index: {e}");
-            }
-        }
-        Err(e) => log::error!("workspace_secrets: failed to serialize index: {e}"),
-    }
+    let serialized = serde_json::to_string_pretty(entries)
+        .map_err(|e| SecretError::Backend(format!("serialize secrets index: {e}")))?;
+    std::fs::write(&path, serialized)
+        .map_err(|e| SecretError::Backend(format!("write {}: {e}", path.display())))
 }
 
+/// Index maintenance that rides along with a Keychain write. The value is
+/// already stored at this point, so an index failure is logged rather than
+/// propagated — the index is a cache, and failing the write would tell the
+/// caller their secret was not saved.
 #[cfg(all(target_os = "macos", not(test)))]
 fn index_add(account: &str) {
     let mut entries = index_read();
     if !entries.iter().any(|a| a == account) {
         entries.push(account.to_string());
-        index_write(&entries);
+        if let Err(e) = index_write(&entries) {
+            log::error!("workspace_secrets: failed to index '{account}': {e}");
+        }
     }
 }
 
@@ -230,7 +365,9 @@ fn index_add(account: &str) {
 fn index_remove(account: &str) {
     let mut entries = index_read();
     entries.retain(|a| a != account);
-    index_write(&entries);
+    if let Err(e) = index_write(&entries) {
+        log::error!("workspace_secrets: failed to unindex '{account}': {e}");
+    }
 }
 
 /// One-shot migration on startup: any legacy `plexi-run/.../<key>` Keychain
@@ -247,7 +384,7 @@ fn index_remove(account: &str) {
 /// `src/workspace/AGENTS.md` — contract-banned; stint 0603 owns the real
 /// close). (No test calls this; only `main()` does.)
 #[cfg(all(target_os = "macos", not(test)))]
-pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
+pub fn migrate_legacy_global_secrets(store: &dyn NonDestructiveStore) -> usize {
     use security_framework::passwords::get_generic_password;
     let path = index_path();
     let raw = match std::fs::read_to_string(&path) {
@@ -266,7 +403,7 @@ pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
     for entry in &legacy {
         // Read the legacy Keychain account: `{app_id}/{directory}/{key}`.
         let legacy_account = format!("{}/{}/{}", entry.app_id, entry.directory, entry.key);
-        let value = match get_generic_password("plexi", &legacy_account) {
+        let value = match get_generic_password(KEYCHAIN_SERVICE, &legacy_account) {
             Ok(data) => String::from_utf8_lossy(&data).trim().to_string(),
             Err(e) if e.code() == -25300 => {
                 continue; // legacy entry already gone; index is stale
@@ -277,19 +414,322 @@ pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
             }
         };
         let new_account = keychain_user_name(&entry.key);
-        if let Err(e) = store.set(&new_account, &value) {
-            log::warn!("workspace_secrets::migrate: failed to write {new_account}: {e}");
-            continue;
+        if migrate_legacy_value(store, &legacy_account, &new_account, &value) {
+            migrated += 1;
         }
-        log::info!("workspace_secrets::migrate: {legacy_account} → {new_account}");
-        migrated += 1;
     }
     migrated
 }
 
+/// Copy one legacy secret value to its new account, create-only. An existing
+/// value under `new_account` is authoritative and is never overwritten — the
+/// legacy Keychain item is left in place either way (this migration never
+/// deletes). Returns whether the copy happened.
+#[cfg(any(target_os = "macos", test))]
+fn migrate_legacy_value(
+    store: &dyn NonDestructiveStore,
+    legacy_account: &str,
+    new_account: &str,
+    value: &str,
+) -> bool {
+    match store.add_new(new_account, value) {
+        Ok(()) => {
+            log::info!("workspace_secrets::migrate: {legacy_account} → {new_account}");
+            true
+        }
+        Err(SecretError::AlreadyExists(_)) => {
+            log::warn!(
+                "workspace_secrets::migrate: '{new_account}' already exists — keeping its current \
+                 value; legacy item '{legacy_account}' left in place"
+            );
+            false
+        }
+        Err(e) => {
+            log::warn!("workspace_secrets::migrate: failed to write {new_account}: {e}");
+            false
+        }
+    }
+}
+
 #[cfg(any(not(target_os = "macos"), test))]
-pub fn migrate_legacy_global_secrets(_store: &dyn SecretStore) -> usize {
+pub fn migrate_legacy_global_secrets(_store: &dyn NonDestructiveStore) -> usize {
     0
+}
+
+// ── Index ↔ keychain reconciliation ──────────────────────────────────────────
+//
+// `secrets-index.json` is a cache of the keychain, written only when a secret
+// goes through `SecretStore::set`. A key that reached the keychain any other
+// way (`security add-generic-password`, a pre-index build) is readable by the
+// resolver but invisible to every listing. Reconciliation makes the keychain
+// the source of truth: the index is rebuilt from a real scan, and legacy
+// account spellings are collapsed onto one canonical name.
+
+/// Legacy → canonical friendly-name spellings. One canonical form per secret;
+/// anything on the left is migrated to the right on the next reconcile.
+const FRIENDLY_NAME_ALIASES: &[(&str, &str)] = &[("openrouter-api-key", "OPENROUTER_API_KEY")];
+
+/// Split `plexi:<scope>:<friendly>` into its scope and friendly parts. `None`
+/// for any account that is not in the namespaced form (e.g. the pre-#322
+/// `plexi-run/<dir>/<key>` accounts, which `migrate_legacy_global_secrets`
+/// owns).
+fn split_account(account: &str) -> Option<(&str, &str)> {
+    account.strip_prefix("plexi:")?.split_once(':')
+}
+
+/// The canonical spelling for a friendly name, or `None` when `friendly` is
+/// already canonical. The single authority for legacy spellings — every code
+/// path that interprets a persisted friendly name (keychain accounts, route
+/// values in `secrets.toml`) resolves it through this table.
+fn canonical_friendly(friendly: &str) -> Option<&'static str> {
+    FRIENDLY_NAME_ALIASES
+        .iter()
+        .find(|(legacy, _)| *legacy == friendly)
+        .map(|(_, canonical)| *canonical)
+}
+
+/// The canonical account for `account`, or `None` when it is already canonical
+/// (or not a namespaced Plexi account).
+pub fn canonical_account(account: &str) -> Option<String> {
+    let (scope, friendly) = split_account(account)?;
+    let canonical = canonical_friendly(friendly)?;
+    Some(format!("plexi:{scope}:{canonical}"))
+}
+
+/// One legacy→canonical account migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRename {
+    pub from: String,
+    pub to: String,
+}
+
+/// Outcome of one reconcile pass. Every field is reported to the caller so the
+/// UI can surface what changed; `index` is the contents the caller must persist.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// Keychain accounts that were missing from the index and are now listed.
+    pub adopted: Vec<String>,
+    /// Index entries with no backing keychain item — dropped as stale.
+    pub stale: Vec<String>,
+    /// Legacy spellings migrated to their canonical account.
+    pub renamed: Vec<AccountRename>,
+    /// Legacy spellings whose canonical account already holds a value.
+    /// Migrating would destroy one of them, so both are left alone.
+    pub conflicts: Vec<AccountRename>,
+    /// Keychain accounts under the Plexi service that are not in namespaced
+    /// form — never adopted into the index.
+    pub ignored: Vec<String>,
+    /// Reconciled index: every namespaced account that really exists, canonical.
+    pub index: Vec<String>,
+}
+
+impl ReconcileReport {
+    /// True when the pass left the index exactly as it found it.
+    pub fn is_noop(&self) -> bool {
+        self.adopted.is_empty()
+            && self.stale.is_empty()
+            && self.renamed.is_empty()
+            && self.conflicts.is_empty()
+    }
+}
+
+/// Reconcile `index` against a real keychain scan.
+///
+/// `scanned` is every account under [`KEYCHAIN_SERVICE`]. Alias migration is
+/// the only step that touches secret values, and it goes through `store` so
+/// tests can drive it without the real keychain. The returned `index` is what
+/// the caller persists — this function never writes the index file itself.
+pub fn reconcile(
+    scanned: &[String],
+    index: &[String],
+    store: &dyn NonDestructiveStore,
+) -> ReconcileReport {
+    let mut report = ReconcileReport::default();
+
+    let mut live: BTreeSet<String> = BTreeSet::new();
+    for account in scanned {
+        if split_account(account).is_some() {
+            live.insert(account.clone());
+        } else if !report.ignored.iter().any(|a| a == account) {
+            report.ignored.push(account.clone());
+        }
+    }
+    if !report.ignored.is_empty() {
+        log::info!(
+            "workspace_secrets::reconcile: ignoring {} non-namespaced keychain account(s) under service '{KEYCHAIN_SERVICE}'",
+            report.ignored.len()
+        );
+    }
+
+    // Alias normalization. Runs before the adopt/stale diff so renamed
+    // accounts are reported as renames, not as an adopt + a stale.
+    for account in live.clone() {
+        let Some(canonical) = canonical_account(&account) else {
+            continue;
+        };
+        let rename = AccountRename {
+            from: account.clone(),
+            to: canonical.clone(),
+        };
+        if live.contains(&canonical) {
+            log::warn!(
+                "workspace_secrets::reconcile: both '{}' and canonical '{}' exist in the keychain — \
+                 leaving both in place; delete the legacy one manually",
+                rename.from,
+                rename.to
+            );
+            report.conflicts.push(rename);
+            continue;
+        }
+        let Some(value) = store.get(&account) else {
+            log::warn!(
+                "workspace_secrets::reconcile: could not read '{account}' to migrate it to '{canonical}' \
+                 (keychain access denied or item removed mid-scan) — leaving it under the legacy name"
+            );
+            continue;
+        };
+        // Create-only. The `live` check above is a snapshot; this is the guard
+        // that actually holds, because the Keychain itself refuses a duplicate.
+        match store.add_new(&canonical, &value) {
+            Ok(()) => {}
+            Err(SecretError::AlreadyExists(_)) => {
+                log::warn!(
+                    "workspace_secrets::reconcile: canonical account '{canonical}' already exists \
+                     (created after the scan) — leaving both it and '{account}' untouched; delete \
+                     the legacy one manually"
+                );
+                live.insert(canonical);
+                report.conflicts.push(rename);
+                continue;
+            }
+            Err(e) => {
+                log::warn!(
+                    "workspace_secrets::reconcile: failed to write canonical account '{canonical}': {e} — \
+                     leaving '{account}' in place"
+                );
+                continue;
+            }
+        }
+        // Verified read-back before anything destructive. The legacy account is
+        // the only copy of the secret until the canonical one provably holds
+        // the same value.
+        match store.get(&canonical) {
+            Some(written) if written.as_str() == value.as_str() => {}
+            _ => {
+                log::warn!(
+                    "workspace_secrets::reconcile: '{canonical}' did not read back the value written \
+                     from '{account}' — keeping the legacy account; resolve the duplicate manually"
+                );
+                live.insert(canonical);
+                report.conflicts.push(rename);
+                continue;
+            }
+        }
+        // Value-guarded delete: the legacy item is removed only while it still
+        // holds exactly the value that was copied. A write that landed since
+        // the read above refuses the delete instead of being lost. The
+        // symmetric race — the canonical item being deleted between the
+        // read-back above and this call — is NOT closed: the Keychain has no
+        // multi-item transaction, and that syscall-wide window is irreducible.
+        match store.delete_if_value(&account, &value) {
+            Ok(()) => {}
+            Err(SecretError::ValueChanged(_)) => {
+                log::warn!(
+                    "workspace_secrets::reconcile: legacy account '{account}' changed value after \
+                     it was copied to '{canonical}' — keeping both; resolve the duplicate manually"
+                );
+                live.insert(canonical);
+                report.conflicts.push(rename);
+                continue;
+            }
+            Err(e) => {
+                // The copy landed, so the canonical account now really exists —
+                // but so does the legacy one. Report a conflict rather than a
+                // completed rename; hiding a live keychain item is the exact bug
+                // this reconciliation exists to fix.
+                log::warn!(
+                    "workspace_secrets::reconcile: value copied to '{canonical}' but legacy account \
+                     '{account}' could not be deleted: {e} — both spellings now exist; delete the \
+                     legacy one manually"
+                );
+                live.insert(canonical);
+                report.conflicts.push(rename);
+                continue;
+            }
+        }
+        log::info!(
+            "workspace_secrets::reconcile: normalized keychain account '{}' → '{}'",
+            rename.from,
+            rename.to
+        );
+        live.remove(&rename.from);
+        live.insert(rename.to.clone());
+        report.renamed.push(rename);
+    }
+
+    let indexed: BTreeSet<&str> = index.iter().map(String::as_str).collect();
+    for account in &live {
+        if indexed.contains(account.as_str()) || report.renamed.iter().any(|r| &r.to == account) {
+            continue;
+        }
+        log::info!(
+            "workspace_secrets::reconcile: adopted keychain account '{account}' that was missing from the index"
+        );
+        report.adopted.push(account.clone());
+    }
+    for account in &indexed {
+        if live.contains(*account) || report.renamed.iter().any(|r| r.from == **account) {
+            continue;
+        }
+        log::warn!(
+            "workspace_secrets::reconcile: index entry '{account}' has no keychain item — dropping as stale"
+        );
+        report.stale.push((*account).to_string());
+    }
+
+    report.index = live.into_iter().collect();
+    log::info!(
+        "workspace_secrets::reconcile: {} account(s) live — {} adopted, {} stale, {} renamed, {} conflict(s)",
+        report.index.len(),
+        report.adopted.len(),
+        report.stale.len(),
+        report.renamed.len(),
+        report.conflicts.len()
+    );
+    report
+}
+
+/// Scan the store backend, reconcile `secrets-index.json` against it, and
+/// persist the result. Called when the Secrets app loads or is refreshed.
+#[cfg(all(target_os = "macos", not(test)))]
+pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
+    let store = system_store();
+    let scanned = store.scan_accounts()?;
+    let index = index_read();
+    let report = reconcile(&scanned, &index, store);
+    // Persist only when the index contents actually changed — a standing
+    // conflict makes `is_noop` permanently false and must not rewrite an
+    // unchanged file on every load.
+    if report.index != index {
+        index_write(&report.index)?;
+        log::info!(
+            "workspace_secrets::reconcile: rewrote secrets index with {} account(s)",
+            report.index.len()
+        );
+    }
+    Ok(report)
+}
+
+/// Test variant. The index-file layer is compiled out of test binaries
+/// entirely — its only possible target is the user's real
+/// `secrets-index.json` — so there is no file to read back or persist and the
+/// scan is the whole truth. Keeps the Secrets app's load path callable under
+/// test without giving a test binary a route to the real index.
+#[cfg(all(target_os = "macos", test))]
+pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
+    let store = system_store();
+    let scanned = store.scan_accounts()?;
+    Ok(reconcile(&scanned, &[], store))
 }
 
 /// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
@@ -297,6 +737,14 @@ pub fn migrate_legacy_global_secrets(_store: &dyn SecretStore) -> usize {
 #[cfg(test)]
 pub struct InMemoryKeychain {
     store: std::sync::Mutex<HashMap<String, String>>,
+    /// Models a Keychain that serves reads and writes but refuses removal.
+    delete_fails: bool,
+    /// Account whose reads always miss, however it was written.
+    unreadable: Option<String>,
+    /// `(account, stale_value)` — the FIRST read of `account` returns
+    /// `stale_value` instead of the stored value. Models a cross-process
+    /// write landing between a caller's read and its later guarded delete.
+    stale_read: std::sync::Mutex<Option<(String, String)>>,
 }
 
 #[cfg(test)]
@@ -304,6 +752,35 @@ impl InMemoryKeychain {
     pub fn new() -> Self {
         Self {
             store: std::sync::Mutex::new(HashMap::new()),
+            delete_fails: false,
+            unreadable: None,
+            stale_read: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Models a concurrent writer: the first read of `account` returns
+    /// `stale_value`; the store's real contents are what later reads (and the
+    /// guarded delete) see.
+    pub fn with_stale_read(account: &str, stale_value: &str) -> Self {
+        Self {
+            stale_read: std::sync::Mutex::new(Some((account.to_string(), stale_value.to_string()))),
+            ..Self::new()
+        }
+    }
+
+    pub fn with_failing_delete() -> Self {
+        Self {
+            delete_fails: true,
+            ..Self::new()
+        }
+    }
+
+    /// Models a Keychain whose write appears to succeed but whose read-back of
+    /// `account` does not return the value that was written.
+    pub fn with_unreadable_account(account: &str) -> Self {
+        Self {
+            unreadable: Some(account.to_string()),
+            ..Self::new()
         }
     }
 }
@@ -316,8 +793,17 @@ impl Default for InMemoryKeychain {
 }
 
 #[cfg(test)]
-impl SecretStore for InMemoryKeychain {
+impl NonDestructiveStore for InMemoryKeychain {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        if self.unreadable.as_deref() == Some(account) {
+            return None;
+        }
+        if let Ok(mut hook) = self.stale_read.lock() {
+            if hook.as_ref().is_some_and(|(a, _)| a == account) {
+                let (_, stale) = hook.take().expect("checked above");
+                return Some(Zeroizing::new(stale));
+            }
+        }
         self.store
             .lock()
             .ok()?
@@ -326,22 +812,38 @@ impl SecretStore for InMemoryKeychain {
             .map(Zeroizing::new)
     }
 
-    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
         let mut g = self
             .store
             .lock()
             .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        if g.contains_key(account) {
+            return Err(SecretError::AlreadyExists(account.to_string()));
+        }
         g.insert(account.to_string(), value.to_string());
         Ok(())
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        if self.delete_fails {
+            return Err(SecretError::Backend(
+                "delete refused by test store".to_string(),
+            ));
+        }
+        // Genuinely atomic under the store lock — unlike MacKeychain's
+        // read-compare-delete, no window exists here.
         let mut g = self
             .store
             .lock()
             .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
-        g.remove(account);
-        Ok(())
+        match g.get(account) {
+            None => Ok(()),
+            Some(current) if current == expected => {
+                g.remove(account);
+                Ok(())
+            }
+            Some(_) => Err(SecretError::ValueChanged(account.to_string())),
+        }
     }
 
     fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
@@ -353,6 +855,40 @@ impl SecretStore for InMemoryKeychain {
             .filter(|k| k.starts_with(prefix))
             .cloned()
             .collect()
+    }
+
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        let g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        Ok(g.keys().cloned().collect())
+    }
+}
+
+#[cfg(test)]
+impl SecretStore for InMemoryKeychain {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        let mut g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        g.insert(account.to_string(), value.to_string());
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        if self.delete_fails {
+            return Err(SecretError::Backend(
+                "delete refused by test store".to_string(),
+            ));
+        }
+        let mut g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        g.remove(account);
+        Ok(())
     }
 }
 
@@ -492,7 +1028,7 @@ pub fn resolve(
     app_id: &str,
     canonical_name: &str,
     router: &WorkspaceSecrets,
-    store: &dyn SecretStore,
+    store: &dyn NonDestructiveStore,
 ) -> ResolveOutcome {
     match resolve_with_source(workspace_id, app_id, canonical_name, router, store) {
         ResolveWithSourceOutcome::Found(found) => ResolveOutcome::Found(found.value),
@@ -516,7 +1052,7 @@ pub fn resolve_with_source(
     app_id: &str,
     canonical_name: &str,
     router: &WorkspaceSecrets,
-    store: &dyn SecretStore,
+    store: &dyn NonDestructiveStore,
 ) -> ResolveWithSourceOutcome {
     // Step 1+2: workspace route (apps.<id> first, then [default]).
     if let Some(friendly) = router.route_for(app_id, canonical_name) {
@@ -526,6 +1062,25 @@ pub fn resolve_with_source(
                 value,
                 source: ResolvedSecretSource::WorkspaceRoute,
             });
+        }
+        // The route value is a persisted friendly name that reconcile cannot
+        // rewrite (secrets.toml lives per-workspace; reconcile is
+        // workspace-blind). If it is a legacy spelling whose keychain account
+        // was renamed to canonical, honor the route through the same alias
+        // table that renamed it — loudly, until the file is fixed.
+        if let Some(canonical) = canonical_friendly(friendly) {
+            let renamed = keychain_workspace_name(workspace_id, canonical);
+            if let Some(value) = store.get(&renamed) {
+                log::warn!(
+                    "workspace_secrets: route for '{canonical_name}' (app '{app_id}') points at \
+                     legacy spelling '{friendly}' but the keychain account is now '{renamed}' — \
+                     resolving anyway; update the route value in .plexi/secrets.toml to '{canonical}'"
+                );
+                return ResolveWithSourceOutcome::Found(ResolvedSecret {
+                    value,
+                    source: ResolvedSecretSource::WorkspaceRoute,
+                });
+            }
         }
         // Route declared but Keychain is empty — prompt the user (don't
         // silently fall through to user-scope; the route was explicit).
@@ -564,7 +1119,7 @@ pub fn resolve_with_source(
 
 pub fn resolve_terminal_env(
     workspace_root: &Path,
-    store: &dyn SecretStore,
+    store: &dyn NonDestructiveStore,
 ) -> Result<HashMap<String, Zeroizing<String>>, String> {
     let cfg = WorkspaceConfig::load(workspace_root)?
         .ok_or_else(|| format!("workspace.toml missing at {}", workspace_root.display()))?;
@@ -973,6 +1528,413 @@ mod tests {
             "fallback = true\n\n[terminal.env]\ninject = [\"OPENROUTER_API_KEY\"]\n",
         )
         .unwrap();
+    }
+
+    // ── reconcile ─────────────────────────────────────────────────────────────
+
+    fn accounts(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn reconcile_adopts_keychain_accounts_missing_from_index() {
+        let store = InMemoryKeychain::new();
+        let scanned = accounts(&["plexi:user:OPENAI_API_KEY", "plexi:ws-1:GITHUB_TOKEN"]);
+        let index = accounts(&["plexi:user:OPENAI_API_KEY"]);
+
+        let report = reconcile(&scanned, &index, &store);
+
+        assert_eq!(report.adopted, accounts(&["plexi:ws-1:GITHUB_TOKEN"]));
+        assert!(report.stale.is_empty(), "{:?}", report.stale);
+        assert_eq!(
+            report.index,
+            accounts(&["plexi:user:OPENAI_API_KEY", "plexi:ws-1:GITHUB_TOKEN"])
+        );
+    }
+
+    #[test]
+    fn reconcile_drops_index_entries_with_no_keychain_item() {
+        let store = InMemoryKeychain::new();
+        let scanned = accounts(&["plexi:user:OPENAI_API_KEY"]);
+        let index = accounts(&["plexi:user:OPENAI_API_KEY", "plexi:user:DELETED_BY_HAND"]);
+
+        let report = reconcile(&scanned, &index, &store);
+
+        assert_eq!(report.stale, accounts(&["plexi:user:DELETED_BY_HAND"]));
+        assert!(report.adopted.is_empty(), "{:?}", report.adopted);
+        assert_eq!(report.index, accounts(&["plexi:user:OPENAI_API_KEY"]));
+    }
+
+    #[test]
+    fn reconcile_is_noop_when_index_matches_keychain() {
+        let store = InMemoryKeychain::new();
+        let scanned = accounts(&["plexi:user:OPENAI_API_KEY"]);
+
+        let report = reconcile(&scanned, &scanned, &store);
+
+        assert!(report.is_noop(), "{report:?}");
+        assert_eq!(report.index, scanned);
+    }
+
+    #[test]
+    fn reconcile_never_adopts_non_namespaced_legacy_accounts() {
+        let store = InMemoryKeychain::new();
+        // Pre-#322 accounts still live under the same keychain service.
+        let scanned = accounts(&["plexi-run//Users/me/project/TEST_KEY", "plexi:user:AGE"]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert_eq!(
+            report.ignored,
+            accounts(&["plexi-run//Users/me/project/TEST_KEY"])
+        );
+        assert_eq!(report.index, accounts(&["plexi:user:AGE"]));
+    }
+
+    #[test]
+    fn reconcile_normalizes_legacy_openrouter_spelling() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:user:openrouter-api-key", "sk-legacy")
+            .unwrap();
+        let scanned = accounts(&["plexi:user:openrouter-api-key"]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert_eq!(
+            report.renamed,
+            vec![AccountRename {
+                from: "plexi:user:openrouter-api-key".to_string(),
+                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
+            }]
+        );
+        assert_eq!(report.index, accounts(&["plexi:user:OPENROUTER_API_KEY"]));
+        // Value moved, legacy account gone.
+        assert_eq!(
+            store
+                .get("plexi:user:OPENROUTER_API_KEY")
+                .map(|v| v.to_string()),
+            Some("sk-legacy".to_string())
+        );
+        assert!(store.get("plexi:user:openrouter-api-key").is_none());
+        // A rename is neither an adoption nor a stale entry.
+        assert!(report.adopted.is_empty(), "{:?}", report.adopted);
+        assert!(report.stale.is_empty(), "{:?}", report.stale);
+    }
+
+    #[test]
+    fn reconcile_leaves_both_spellings_alone_when_canonical_already_exists() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:user:openrouter-api-key", "sk-legacy")
+            .unwrap();
+        store
+            .set("plexi:user:OPENROUTER_API_KEY", "sk-canonical")
+            .unwrap();
+        let scanned = accounts(&[
+            "plexi:user:openrouter-api-key",
+            "plexi:user:OPENROUTER_API_KEY",
+        ]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert_eq!(
+            report.conflicts,
+            vec![AccountRename {
+                from: "plexi:user:openrouter-api-key".to_string(),
+                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
+            }]
+        );
+        assert!(report.renamed.is_empty(), "{:?}", report.renamed);
+        // Neither value was overwritten, and both stay listed.
+        assert_eq!(
+            store
+                .get("plexi:user:OPENROUTER_API_KEY")
+                .map(|v| v.to_string()),
+            Some("sk-canonical".to_string())
+        );
+        assert_eq!(
+            store
+                .get("plexi:user:openrouter-api-key")
+                .map(|v| v.to_string()),
+            Some("sk-legacy".to_string())
+        );
+        assert_eq!(
+            report.index,
+            accounts(&[
+                "plexi:user:OPENROUTER_API_KEY",
+                "plexi:user:openrouter-api-key",
+            ])
+        );
+    }
+
+    #[test]
+    fn add_new_refuses_an_existing_account_and_leaves_its_value_alone() {
+        let store = InMemoryKeychain::new();
+        store.add_new("plexi:user:AGE", "first").expect("first add");
+
+        let err = store
+            .add_new("plexi:user:AGE", "second")
+            .expect_err("a second add of the same account must fail");
+
+        assert!(
+            matches!(err, SecretError::AlreadyExists(ref a) if a == "plexi:user:AGE"),
+            "expected AlreadyExists, got {err:?}"
+        );
+        assert_eq!(
+            store.get("plexi:user:AGE").map(|v| v.to_string()),
+            Some("first".to_string()),
+            "a refused add must not change the stored value"
+        );
+    }
+
+    #[test]
+    fn reconcile_never_overwrites_a_canonical_account_created_after_the_scan() {
+        // The scan is a snapshot. If the canonical account is created between
+        // the scan and the migration, an upsert would silently destroy it and
+        // then delete the legacy item too — losing two values at once.
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:user:openrouter-api-key", "sk-legacy")
+            .unwrap();
+        store
+            .set("plexi:user:OPENROUTER_API_KEY", "NEW-VALUE")
+            .unwrap();
+        // Snapshot taken before the canonical account existed.
+        let scanned = accounts(&["plexi:user:openrouter-api-key"]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert_eq!(
+            store
+                .get("plexi:user:OPENROUTER_API_KEY")
+                .map(|v| v.to_string()),
+            Some("NEW-VALUE".to_string()),
+            "an existing canonical value must never be overwritten"
+        );
+        assert_eq!(
+            store
+                .get("plexi:user:openrouter-api-key")
+                .map(|v| v.to_string()),
+            Some("sk-legacy".to_string()),
+            "the legacy secret must survive a migration that could not complete"
+        );
+        assert!(report.renamed.is_empty(), "{:?}", report.renamed);
+        assert_eq!(
+            report.conflicts,
+            vec![AccountRename {
+                from: "plexi:user:openrouter-api-key".to_string(),
+                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn reconcile_does_not_delete_the_legacy_account_when_read_back_fails() {
+        // The write reported success but the canonical account does not read
+        // back the value. Deleting the legacy item here would destroy the only
+        // surviving copy of the secret.
+        let store = InMemoryKeychain::with_unreadable_account("plexi:user:OPENROUTER_API_KEY");
+        store
+            .set("plexi:user:openrouter-api-key", "sk-legacy")
+            .unwrap();
+        let scanned = accounts(&["plexi:user:openrouter-api-key"]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert_eq!(
+            store
+                .get("plexi:user:openrouter-api-key")
+                .map(|v| v.to_string()),
+            Some("sk-legacy".to_string()),
+            "legacy must be retained until the canonical copy is verified"
+        );
+        assert!(report.renamed.is_empty(), "{:?}", report.renamed);
+        assert_eq!(
+            report.conflicts,
+            vec![AccountRename {
+                from: "plexi:user:openrouter-api-key".to_string(),
+                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn legacy_global_migration_never_overwrites_an_existing_new_account() {
+        // The startup migration (main.rs → migrate_legacy_global_secrets) used
+        // to upsert: a legacy index entry whose new account already held a
+        // different value silently overwrote it. Create-only refuses instead.
+        let store = InMemoryKeychain::new();
+        store.set("plexi:user:MY_KEY", "current-value").unwrap();
+
+        let copied = migrate_legacy_value(
+            &store,
+            "old-app/dir/MY_KEY",
+            "plexi:user:MY_KEY",
+            "stale-legacy-value",
+        );
+
+        assert!(!copied, "a refused copy must not count as migrated");
+        assert_eq!(
+            store.get("plexi:user:MY_KEY").map(|v| v.to_string()),
+            Some("current-value".to_string()),
+            "an existing value must never be overwritten by the startup migration"
+        );
+    }
+
+    #[test]
+    fn delete_if_value_refuses_when_the_stored_value_changed() {
+        let store = InMemoryKeychain::new();
+        store.set("plexi:user:X", "current").unwrap();
+
+        let refused = store.delete_if_value("plexi:user:X", "what-i-read-earlier");
+        assert!(
+            matches!(refused, Err(SecretError::ValueChanged(_))),
+            "{refused:?}"
+        );
+        assert_eq!(
+            store.get("plexi:user:X").map(|v| v.to_string()),
+            Some("current".to_string()),
+            "a refused guarded delete must leave the value untouched"
+        );
+
+        store.delete_if_value("plexi:user:X", "current").unwrap();
+        assert!(
+            store.get("plexi:user:X").is_none(),
+            "matching value deletes"
+        );
+        // Already gone — success, nothing to lose.
+        store.delete_if_value("plexi:user:X", "anything").unwrap();
+    }
+
+    #[test]
+    fn reconcile_keeps_a_legacy_value_written_after_it_was_copied() {
+        // A concurrent writer updates the legacy account between reconcile's
+        // read and its delete. An unconditional delete would destroy that
+        // update; the value-guarded delete refuses and keeps both accounts.
+        let store =
+            InMemoryKeychain::with_stale_read("plexi:user:openrouter-api-key", "sk-as-read");
+        store
+            .set("plexi:user:openrouter-api-key", "sk-updated-concurrently")
+            .unwrap();
+        let scanned = accounts(&["plexi:user:openrouter-api-key"]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert_eq!(
+            store
+                .get("plexi:user:openrouter-api-key")
+                .map(|v| v.to_string()),
+            Some("sk-updated-concurrently".to_string()),
+            "a legacy value written mid-pass must never be deleted"
+        );
+        assert_eq!(
+            store
+                .get("plexi:user:OPENROUTER_API_KEY")
+                .map(|v| v.to_string()),
+            Some("sk-as-read".to_string()),
+            "the copied value stays under the canonical account"
+        );
+        assert!(report.renamed.is_empty(), "{:?}", report.renamed);
+        assert_eq!(
+            report.conflicts,
+            vec![AccountRename {
+                from: "plexi:user:openrouter-api-key".to_string(),
+                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn routed_workspace_still_resolves_after_reconcile_renames_the_account() {
+        // `secret set --alias openrouter-api-key` writes a route whose value
+        // is the legacy friendly name. Reconcile renames the keychain account
+        // to canonical but cannot rewrite per-workspace secrets.toml — the
+        // resolver must honor the routed legacy spelling through the alias
+        // table, or the secret silently vanishes from PTY env injection,
+        // PGAP, and `plexi run` (found live by tester-6 on PR 2503).
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:openrouter-api-key", "sk-routed")
+            .unwrap();
+        let scanned = accounts(&["plexi:ws-1:openrouter-api-key"]);
+        let report = reconcile(&scanned, &[], &store);
+        assert_eq!(report.renamed.len(), 1, "{report:?}");
+        assert!(
+            store.get("plexi:ws-1:openrouter-api-key").is_none(),
+            "precondition: the legacy account was renamed"
+        );
+
+        let router =
+            router("fallback = false\n\n[default]\nOPENROUTER_API_KEY = \"openrouter-api-key\"\n");
+        let outcome =
+            resolve_with_source("ws-1", "terminal", "OPENROUTER_API_KEY", &router, &store);
+        match outcome {
+            ResolveWithSourceOutcome::Found(found) => {
+                assert_eq!(found.value.to_string(), "sk-routed");
+                assert!(matches!(found.source, ResolvedSecretSource::WorkspaceRoute));
+            }
+            other => panic!("routed secret must survive the rename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconcile_reports_a_conflict_when_the_legacy_account_cannot_be_deleted() {
+        // Copy succeeds, delete is refused: both spellings are live, so the
+        // legacy one must stay listed instead of being hidden by a rename that
+        // only half happened.
+        let store = InMemoryKeychain::with_failing_delete();
+        store
+            .set("plexi:user:openrouter-api-key", "sk-legacy")
+            .unwrap();
+        let scanned = accounts(&["plexi:user:openrouter-api-key"]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert!(report.renamed.is_empty(), "{:?}", report.renamed);
+        assert_eq!(
+            report.conflicts,
+            vec![AccountRename {
+                from: "plexi:user:openrouter-api-key".to_string(),
+                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
+            }]
+        );
+        assert_eq!(
+            report.index,
+            accounts(&[
+                "plexi:user:OPENROUTER_API_KEY",
+                "plexi:user:openrouter-api-key",
+            ])
+        );
+    }
+
+    #[test]
+    fn reconcile_keeps_legacy_account_visible_when_its_value_is_unreadable() {
+        // Keychain ACL denial: the value cannot be moved, but the secret must
+        // still show up in listings rather than staying invisible.
+        let store = InMemoryKeychain::new();
+        let scanned = accounts(&["plexi:user:openrouter-api-key"]);
+
+        let report = reconcile(&scanned, &[], &store);
+
+        assert!(report.renamed.is_empty(), "{:?}", report.renamed);
+        assert_eq!(report.index, scanned);
+        assert_eq!(report.adopted, scanned);
+    }
+
+    #[test]
+    fn canonical_account_maps_only_known_aliases() {
+        assert_eq!(
+            canonical_account("plexi:user:openrouter-api-key").as_deref(),
+            Some("plexi:user:OPENROUTER_API_KEY")
+        );
+        assert_eq!(
+            canonical_account("plexi:ws-1:openrouter-api-key").as_deref(),
+            Some("plexi:ws-1:OPENROUTER_API_KEY")
+        );
+        assert!(canonical_account("plexi:user:OPENROUTER_API_KEY").is_none());
+        assert!(canonical_account("plexi:user:GITHUB_TOKEN").is_none());
+        assert!(canonical_account("plexi-run//Users/me/TEST_KEY").is_none());
     }
 
     #[test]

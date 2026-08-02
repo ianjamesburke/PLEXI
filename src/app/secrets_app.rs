@@ -31,19 +31,64 @@ impl ManagedSecret {
     }
 }
 
-fn load_entries() -> Vec<ManagedSecret> {
+/// One-line summary of what a reconcile pass changed, or `None` when the index
+/// already matched the keychain.
+fn reconcile_status_line(report: &crate::workspace::secrets::ReconcileReport) -> Option<String> {
+    if report.is_noop() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if !report.adopted.is_empty() {
+        parts.push(format!("{} found in keychain", report.adopted.len()));
+    }
+    if !report.renamed.is_empty() {
+        parts.push(format!("{} renamed", report.renamed.len()));
+    }
+    if !report.stale.is_empty() {
+        parts.push(format!("{} stale removed", report.stale.len()));
+    }
+    if !report.conflicts.is_empty() {
+        parts.push(format!(
+            "{} duplicate name(s) need manual cleanup — check logs",
+            report.conflicts.len()
+        ));
+    }
+    Some(format!("Reconciled with keychain: {}.", parts.join(", ")))
+}
+
+/// List every managed secret, first reconciling the index against a real
+/// keychain scan so keys written out-of-band are visible. Returns the entries
+/// plus a status line describing any reconciliation the user should know about.
+fn load_entries() -> (Vec<ManagedSecret>, Option<String>) {
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace::secrets::system_store;
-        system_store()
-            .list_with_prefix("plexi:")
+        use crate::workspace::secrets::{
+            reconcile_index_with_keychain, system_store,
+        };
+        let (accounts, status) = match reconcile_index_with_keychain() {
+            Ok(report) => {
+                let status = reconcile_status_line(&report);
+                (report.index, status)
+            }
+            Err(e) => {
+                log::warn!(
+                    "secrets_manager: keychain reconcile failed: {e}; listing from the index only"
+                );
+                (
+                    system_store().list_with_prefix("plexi:"),
+                    Some("Could not scan keychain — showing indexed secrets only.".to_string()),
+                )
+            }
+        };
+        let entries = accounts
             .into_iter()
             .filter_map(ManagedSecret::from_account)
-            .collect()
+            .collect();
+        (entries, status)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Vec::new()
+        (Vec::new(), None)
     }
 }
 
@@ -101,7 +146,7 @@ pub struct SecretsApp {
 
 impl SecretsApp {
     pub fn new(cwd: PathBuf) -> Self {
-        let entries = load_entries();
+        let (entries, status_msg) = load_entries();
         let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&cwd);
         Self {
             entries,
@@ -117,12 +162,14 @@ impl SecretsApp {
             pending_delete: false,
             copy_pending: false,
             pending_cmds: Vec::new(),
-            status_msg: None,
+            status_msg,
         }
     }
 
     fn refresh(&mut self) {
-        self.entries = load_entries();
+        let (entries, status_msg) = load_entries();
+        self.entries = entries;
+        self.status_msg = status_msg;
         let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&self.cwd);
         self.workspace_root = workspace_root;
         self.workspace_id = workspace_id;
@@ -157,7 +204,8 @@ impl SecretsApp {
         #[cfg(target_os = "macos")]
         {
             use crate::workspace::secrets::{
-                keychain_user_name, keychain_workspace_name, system_store, WorkspaceConfig,
+                keychain_user_name, keychain_workspace_name, system_store,
+                WorkspaceConfig,
             };
 
             // Resolve scope: workspace-scoped if cwd is inside an initialized workspace.
@@ -760,5 +808,52 @@ impl SecretsApp {
                     self.toggle_terminal_env(name);
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::secrets::{AccountRename, ReconcileReport};
+
+    #[test]
+    fn reconcile_status_line_is_silent_when_nothing_changed() {
+        assert_eq!(reconcile_status_line(&ReconcileReport::default()), None);
+    }
+
+    #[test]
+    fn reconcile_status_line_names_every_kind_of_change() {
+        let report = ReconcileReport {
+            adopted: vec!["plexi:user:AGE".to_string()],
+            stale: vec!["plexi:user:GONE".to_string()],
+            renamed: vec![AccountRename {
+                from: "plexi:user:openrouter-api-key".to_string(),
+                to: "plexi:user:OPENROUTER_API_KEY".to_string(),
+            }],
+            conflicts: Vec::new(),
+            ignored: Vec::new(),
+            index: vec!["plexi:user:AGE".to_string()],
+        };
+
+        let line = reconcile_status_line(&report).expect("changes must be surfaced");
+
+        assert!(line.contains("1 found in keychain"), "{line}");
+        assert!(line.contains("1 renamed"), "{line}");
+        assert!(line.contains("1 stale removed"), "{line}");
+    }
+
+    #[test]
+    fn managed_secret_parses_scope_and_name() {
+        let user = ManagedSecret::from_account("plexi:user:OPENAI_API_KEY".to_string())
+            .expect("user account parses");
+        assert_eq!(user.scope, "global");
+        assert_eq!(user.name, "OPENAI_API_KEY");
+
+        let workspace = ManagedSecret::from_account("plexi:ws-1:GITHUB_TOKEN".to_string())
+            .expect("workspace account parses");
+        assert_eq!(workspace.scope, "ws-1");
+        assert_eq!(workspace.name, "GITHUB_TOKEN");
+
+        assert!(ManagedSecret::from_account("plexi-run//Users/me/KEY".to_string()).is_none());
     }
 }

@@ -4029,6 +4029,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "core-foundation 0.10.1",
  "coremidi",
  "cpal",
  "crossbeam-queue",
