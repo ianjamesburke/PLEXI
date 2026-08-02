@@ -46,35 +46,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v4
+      - name: Set up Plexi CI environment
+        uses: ./.github/actions/plexi-ci-env
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
-
-      - name: Restore CPython WASI bundle cache
-        if: env.WASI_BUNDLE_MODE == 'prefetch'
-        uses: actions/cache@v4
-        with:
-          path: /Users/runner/.plexi-ci/wasm-bundles
-          # Key pins the exact verified release; bump when
-          # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
-          key: cpython-wasi-3.12.12-wasi_sdk-20
-
-      - name: Prefetch verified CPython WASI bundle
-        if: env.WASI_BUNDLE_MODE == 'prefetch'
-        # No-op on cache hit (script verifies sha256 and exits). On miss this
-        # is the ONLY step that touches the network for the bundle, so a fetch
-        # failure is attributed here instead of inside the test binary.
-        run: bash scripts/fetch-cpython-bundle.sh
+          cache-key: test
+          cpython-bundle: ${{ env.WASI_BUNDLE_MODE == 'prefetch' }}
 
       - name: Test host
         # One documented skip. headless_frame_fails_fast_when_the_guest_dies_at_import
@@ -102,19 +78,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v4
+      - name: Set up Plexi CI environment
+        uses: ./.github/actions/plexi-ci-env
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
+          cache-key: clippy
 
       - name: Lint host
         run: cargo clippy --bin plexi -- -D warnings

@@ -40,38 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install just
-        uses: taiki-e/install-action@v2.85.6
+      - name: Set up Plexi CI environment
+        uses: ./.github/actions/plexi-ci-env
         with:
-          # taiki-e/install-action does not enforce `required` inputs for
-          # composite actions: omitting `tool` installs nothing, exits 0, and
-          # renders green. Never remove this block.
-          tool: just
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-evidence-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-evidence-
-
-      - name: Restore CPython WASI bundle cache
-        uses: actions/cache@v4
-        with:
-          path: /Users/runner/.plexi-ci/wasm-bundles
-          # Same pinned release as rust-host.yml; bump both together when
-          # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
-          key: cpython-wasi-3.12.12-wasi_sdk-20
-
-      - name: Prefetch verified CPython WASI bundle
-        run: bash scripts/fetch-cpython-bundle.sh
+          cache-key: evidence
+          # Scene evidence spawns real Python guests. Without the bundle every
+          # such scene reports wait_app_frame_failed and no deadline can fix it.
+          cpython-bundle: 'true'
+          just: 'true'
 
       - name: Evidence resolver fixtures
         run: just roadmap-evidence-fixtures

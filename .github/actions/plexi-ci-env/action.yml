@@ -1,0 +1,73 @@
+name: Plexi CI environment
+description: >
+  Rust toolchain, cargo cache, and the verified CPython-WASI bundle. The single
+  definition of what a Plexi CI job needs to build and to run Python guests.
+
+# Why this exists: rust-host.yml and roadmap-evidence.yml both need this setup,
+# and the second was written by hand-copying the first. The CPython-WASI bundle
+# steps were dropped in the copy, so every scene spawning a Python guest failed
+# with wait_app_frame_failed and no deadline could have fixed it — there was no
+# interpreter to produce a first frame. Define it once; a new workflow cannot
+# then be born missing a piece.
+
+inputs:
+  cache-key:
+    description: >
+      Distinct cargo cache namespace for the calling job (e.g. "test", "clippy",
+      "evidence"). Jobs hold different artifact kinds in target/ — a debug bin,
+      a --test cfg build, clippy metadata — so sharing one key means only one
+      write survives and later runs restore a cache matching none of them.
+    required: true
+  cpython-bundle:
+    description: >
+      "true" when the job runs Python guests (any scene with wait_app_frame).
+      Restores and verifies the pinned CPython-WASI bundle.
+    required: false
+    default: 'false'
+  just:
+    description: '"true" when the job invokes a justfile recipe.'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install just
+      if: inputs.just == 'true'
+      uses: taiki-e/install-action@v2.85.6
+      with:
+        # taiki-e/install-action does not enforce `required` inputs for
+        # composite actions: omit `tool` and it installs nothing, exits 0, and
+        # renders green. Never remove this line.
+        tool: just
+
+    - name: Restore Cargo cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ inputs.cache-key }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-${{ inputs.cache-key }}-
+
+    - name: Restore CPython WASI bundle cache
+      if: inputs.cpython-bundle == 'true'
+      uses: actions/cache@v4
+      with:
+        path: /Users/runner/.plexi-ci/wasm-bundles
+        # Pins the exact verified release. Bump when
+        # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
+        key: cpython-wasi-3.12.12-wasi_sdk-20
+
+    - name: Prefetch verified CPython WASI bundle
+      if: inputs.cpython-bundle == 'true'
+      # No-op on a cache hit (the script verifies sha256 and exits). On a miss
+      # this is the only step that touches the network for the bundle, so a
+      # fetch failure is attributed here rather than inside a test binary.
+      shell: bash
+      run: bash scripts/fetch-cpython-bundle.sh
