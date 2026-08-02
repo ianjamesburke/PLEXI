@@ -411,3 +411,22 @@ against state the head has NOT yet ruled on, never against raw current state.
   locator results across the test suite, making the rule mechanically enforced.
 - fired: 2026-08-01
 - runs: 0
+
+### L021a — L021 fired the same night it was written
+- class: RULE (evidence for L021)
+- promoted: 2026-08-01 (queue 0701 0702 0703 0591)
+- incident: PR #2555 merged as `cf444208` with the new roadmap-evidence gate never once executed —
+  it cannot run on the PR path by design, and `schedule:`/`workflow_dispatch` only run from the
+  default branch. The head dispatched it on alpha immediately after merge (run 30724105791): it
+  FAILED, 16 tests, all `wait_app_frame_failed: timed out after 60s waiting for first app frame`.
+  Root cause: `roadmap-evidence.yml` omits the `WASI_BUNDLE_MODE`/`PLEXI_CPYTHON_BUNDLE_DIR` env and
+  both CPython WASI bundle steps that `rust-host.yml`'s `test` job has, so no Python app pane can
+  render a frame. Without the attended dispatch this would have surfaced as a silent 09:00 UTC
+  nightly failure with nobody reading it, on the gate that IS the stable-v1 release authority.
+- rule: (L021 stands as written) — a gate's first successful execution belongs to the PR that
+  introduces it. Corollary learned here: when a new workflow runs a suite an existing workflow
+  already runs, diff the two jobs' SETUP, not just their commands. The tests were identical; the
+  environment was not.
+- falsification: same as L021.
+- fired: 2026-08-01 (immediately)
+- runs: 0
