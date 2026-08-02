@@ -3212,6 +3212,142 @@ mod tests {
         render_sidebar_pane_dots_pixel_grid(2.0, "/tmp/plexi-0564-sidebar-pips-ppp2.png");
     }
 
+    /// Stint 0700: the Contexts header keeps both close-affordance candidates
+    /// live for visual review. This exercises the real header response, then
+    /// renders realistic names, root paths, pane pips, and notification badges
+    /// in each candidate state.
+    #[test]
+    fn screenshot_sidebar_close_affordance_previews_are_live_switchable() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 700.0);
+        h.step();
+        let inactive_window_idx = h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            let active_context_idx = app.router.active_idx();
+            let active_context_id = app.router.get(active_context_idx).context_id;
+            let active_window_id = app.windows[app.active_window].window_id;
+            app.router.get_mut(active_context_idx).name = "PLEXI Workspace".to_string();
+            app.router.get_mut(active_context_idx).root =
+                std::path::PathBuf::from("/projects/PLEXI");
+
+            let inactive_context_id = app.next_window_id;
+            app.next_window_id += 1;
+            let inactive_root = std::path::PathBuf::from("/projects/narrator-site");
+            app.router.push(crate::host::context::Context {
+                name: "Narrator Site".to_string(),
+                root: inactive_root.clone(),
+                description: None,
+                context_id: inactive_context_id,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+            let inactive_window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: inactive_root,
+                tree: egui_tiles::Tree::empty("sidebar-close-affordance-preview"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 0,
+                window_id: inactive_window_id,
+                context_id: inactive_context_id,
+            });
+
+            let notification = |notify_id: &str, source_context_id, source_window_id| {
+                crate::app::PendingNotification {
+                    notify_id: notify_id.to_string(),
+                    sender_pane_id: 0,
+                    source_context_id,
+                    source_window_id,
+                    level: "info".to_string(),
+                    title: "Preview badge".to_string(),
+                    body: "Seeded sidebar notification".to_string(),
+                    kind: crate::app_protocol::NotifyKind::Message,
+                    options: vec![],
+                    input_prompt: None,
+                    required: false,
+                    priority: 0,
+                    scope: crate::app_protocol::NotifyScope::Context,
+                    image_inline: None,
+                    image_pipe_id: None,
+                    response_file: None,
+                    timeout_secs: None,
+                    on_dismiss: None,
+                    enqueued_at: std::time::Instant::now(),
+                    tombstoned: false,
+                    deliver_after: None,
+                }
+            };
+            app.pending_notifications.extend([
+                notification("active-one", active_context_id, active_window_id),
+                notification("active-two", active_context_id, active_window_id),
+                notification("active-three", active_context_id, active_window_id),
+                notification("inactive-one", inactive_context_id, inactive_window_id),
+                notification("inactive-two", inactive_context_id, inactive_window_id),
+            ]);
+            app.windows.len() - 1
+        });
+        add_focused_pane(&mut h);
+        add_focused_pane_to_window(&mut h, inactive_window_idx);
+        h.run_steps(3);
+
+        // The default preview puts the close control after the count. Hover a
+        // sidebar row so the hand-painted close glyph is visible in the PNG.
+        let active_title = h.harness().get_by_label("PLEXI Workspace").rect().center();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(active_title));
+        h.step();
+        h.harness().get_by_label("X: end");
+        h.save_screenshot("/tmp/plexi-0700-sidebar-trailing-delete.png")
+            .expect("trailing close-affordance render");
+
+        // Use the actual header widget's semantic rect rather than a guessed
+        // coordinate, then assert the re-rendered UI exposes the other state.
+        let toggle = h.harness().get_by_label("X: end").rect().center();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(toggle));
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: toggle,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: toggle,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.run_steps(2);
+        h.harness().get_by_label("X: inline");
+        assert!(
+            !h.host_has_label("X: end"),
+            "clicking the real header toggle must replace the preview state"
+        );
+
+        let active_title = h.harness().get_by_label("PLEXI Workspace").rect().center();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(active_title));
+        h.step();
+        h.save_screenshot("/tmp/plexi-0700-sidebar-inline-delete.png")
+            .expect("inline close-affordance render");
+    }
+
     /// Stint 0528 evidence: file browser rows + preview panel at ppp 2.0 —
     /// integer point sizes only (was 9.5/10.5).
     #[test]

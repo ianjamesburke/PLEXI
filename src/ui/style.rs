@@ -37,7 +37,7 @@ pub const SPACE_XL: f32 = 24.0;
 pub const TEXT_HINT: f32 = 11.0; // Keyboard hints, meta labels.
 pub const TEXT_CAPTION: f32 = 12.0; // Secondary info, small labels.
 pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
-pub const TEXT_SIDEBAR_TITLE: f32 = 13.0; // Sidebar context row titles.
+pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
 pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
                                   // `theme::font_medium` for weight contrast.

@@ -1,12 +1,27 @@
 use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
-use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
+use crate::ui::sidebar_row::{CloseAffordance, ContextItem, PaneDots, SidebarAction};
 use crate::workspace::router::ContextMove;
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
+
+const CLOSE_AFFORDANCE_PREVIEW_ID: &str = "sidebar_close_affordance_preview";
+
+fn close_affordance_preview(ctx: &egui::Context) -> CloseAffordance {
+    ctx.data(|data| {
+        data.get_temp(egui::Id::new(CLOSE_AFFORDANCE_PREVIEW_ID))
+            .unwrap_or_default()
+    })
+}
+
+fn set_close_affordance_preview(ctx: &egui::Context, affordance: CloseAffordance) {
+    ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::new(CLOSE_AFFORDANCE_PREVIEW_ID), affordance);
+    });
+}
 
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     for (i, rect) in rects.iter().enumerate() {
@@ -165,6 +180,7 @@ impl PlexiApp {
 impl PlexiApp {
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
+        let mut close_affordance = close_affordance_preview(ui.ctx());
 
         // Header
         ui.add_space(8.0);
@@ -180,6 +196,20 @@ impl PlexiApp {
                 ui.add_space(12.0);
                 if button::icon_button(ui, "+", "New context", &self.colors).clicked() {
                     add_clicked = true;
+                }
+                if button::toolbar_button(
+                    ui,
+                    close_affordance.preview_label(),
+                    "Switch sidebar close-affordance preview",
+                )
+                .clicked()
+                {
+                    close_affordance = close_affordance.toggled();
+                    set_close_affordance_preview(ui.ctx(), close_affordance);
+                    log::info!(
+                        "sidebar: close_affordance_preview={}",
+                        close_affordance.log_name()
+                    );
                 }
             });
         });
@@ -315,6 +345,7 @@ impl PlexiApp {
                 badge_count,
                 subtitle,
                 pane_dots,
+                close_affordance,
                 draggable: true,
             }
             .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
@@ -453,6 +484,7 @@ impl PlexiApp {
                         badge_count: 0,
                         subtitle,
                         pane_dots,
+                        close_affordance,
                         draggable: true,
                     }
                     .draw(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
