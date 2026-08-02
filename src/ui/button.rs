@@ -99,14 +99,14 @@ pub(crate) fn toolbar_button(
     label: impl Into<egui::WidgetText>,
     hover_text: &str,
 ) -> egui::Response {
-    let resp = ui.add(
+    ui.add(
         egui::Button::new(label)
             .frame(false)
-            .min_size(egui::vec2(style::BUTTON_H_MD - style::SPACE_SM, 0.0)),
-    );
-    resp.surrender_focus();
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(hover_text)
+            .min_size(egui::vec2(style::BUTTON_H_MD - style::SPACE_SM, 0.0))
+            .sense(egui::Sense::CLICK),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    .on_hover_text(hover_text)
 }
 
 pub(crate) fn icon_button(
