@@ -80,9 +80,9 @@ fi
 # for every real channel so an inherited shell variable cannot taint a
 # production build.
 if [[ "$channel" =~ ^pr-[0-9]+$ ]]; then
-  PLEXI_BUILD_TEST_CHANNEL="$channel" cargo bundle --release
+  PLEXI_BUILD_TEST_CHANNEL="$channel" bash scripts/cargo-with-lease.sh cargo bundle --release
 else
-  env -u PLEXI_BUILD_TEST_CHANNEL cargo bundle --release
+  env -u PLEXI_BUILD_TEST_CHANNEL bash scripts/cargo-with-lease.sh cargo bundle --release
 fi
 
 if [[ ! -d "$app_src" ]]; then

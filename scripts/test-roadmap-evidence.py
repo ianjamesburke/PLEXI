@@ -37,6 +37,13 @@ def fixture(name: str, evidence: str) -> tuple[tempfile.TemporaryDirectory[str],
     write(roadmap, f'[[node]]\nid = "fixture"\nevidence = ["{evidence}"]\n')
     bin_dir = root / "bin"
     write(bin_dir / "cargo", "#!/bin/sh\nexit 0\n", True)
+    # The production gate invokes cargo through the host-lease wrapper. Keep
+    # fixture roots hermetic while preserving their fake cargo boundary.
+    write(
+        root / "scripts/cargo-with-lease.sh",
+        "#!/bin/sh\nexec \"$@\"\n",
+        True,
+    )
     return temp, root, roadmap, bin_dir
 
 

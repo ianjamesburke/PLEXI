@@ -754,7 +754,7 @@ impl PlexiApp {
 
     /// Close a tile in a specific context by its TileId. Handles sibling focus
     /// transfer, container cleanup, and pane removal.
-    pub(super) fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
+    pub(crate) fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
         // Snapshot focus/zoom state before any mutation so Phase 2 guards are accurate.
         let is_focused = self.windows[ctx_idx].focused_pane == Some(tile_id);
         let is_zoomed = self.windows[ctx_idx].zoomed_pane == Some(tile_id);
@@ -890,6 +890,7 @@ impl PlexiApp {
         // without it a closed run would block its routine forever), then park
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
+            self.build_leases.release_pane(pane_id, "pane_closed");
             if self.pane_heartbeats.remove(&pane_id).is_some() {
                 log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");
             }

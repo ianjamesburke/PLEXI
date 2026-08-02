@@ -222,6 +222,7 @@ pub mod host;
 pub mod install;
 pub mod install_host;
 pub mod list;
+pub mod lock;
 pub mod marketplace;
 pub mod notes;
 pub mod notify;

@@ -50,8 +50,8 @@ A diff can hit multiple layers; produce evidence for each.
 Run the test modules nearest the touched code, then the full bin suite:
 
 ```bash
-cargo test --bin plexi <module_filter>
-cargo test --bin plexi
+bash scripts/cargo-with-lease.sh cargo test --bin plexi <module_filter>
+bash scripts/cargo-with-lease.sh cargo test --bin plexi
 ```
 
 Record pass/fail counts and the module filters used. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test (`src/testing/mod.rs`) — written first, per repo discipline.
@@ -69,7 +69,7 @@ and against which diff it ran.
 ```bash
 just scene tests/scenes/<name>.toml              # run one scene; PNGs + SceneReport JSON to /tmp/plexi-scenes
 just scene <file> /tmp/out 0                     # state-only: skip screenshot steps
-cargo test --bin plexi scene_suite               # all committed scenes (suite = true)
+bash scripts/cargo-with-lease.sh cargo test --bin plexi scene_suite               # all committed scenes (suite = true)
 ```
 
 For a new or changed overlay/widget/pane type: **add a committed scene file** under `tests/scenes/` — it is automatically a regression test. Scenes that spawn real app processes set `suite = false` and run via `just scene`.

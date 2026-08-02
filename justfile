@@ -24,7 +24,8 @@ wasm-python-shim:
     bash scripts/build-wasm-python-shim.sh
 
 dev:
-    cargo run
+    bash scripts/cargo-with-lease.sh cargo build
+    target/debug/plexi
 
 # Run the website dev server at http://localhost:4321
 web:
@@ -38,7 +39,7 @@ website-deploy:
 # under website/public/registry/v1/. Republishing after an app fix is one
 # command. Builds the binary first so packaging uses the current tree.
 website-registry:
-    cargo build --bin plexi
+    bash scripts/cargo-with-lease.sh cargo build --bin plexi
     python3 website/scripts/build-registry.py
 
 # Smoke-check production: pages, install redirect, registry index + artifact checksums.
@@ -47,12 +48,12 @@ website-smoke:
 
 # Run the full test suite — HostHarness regression tests + unit tests.
 test:
-    env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test
+    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
 roadmap-evidence:
-    env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID python3 scripts/roadmap-evidence.py
+    python3 scripts/roadmap-evidence.py
 
 roadmap-evidence-fixtures:
     python3 scripts/test-roadmap-evidence.py
@@ -62,49 +63,49 @@ roadmap-evidence-fixtures:
 # apps/wasm-poc/* source. Requires cargo-component + the wasm32-wasip2 target.
 # Note: cargo-component emits the adapted component under the wasip1 path.
 wasm-fixtures:
-    cd apps/wasm-poc/sysmon && cargo component build --release --target wasm32-wasip2
+    cd apps/wasm-poc/sysmon && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/sysmon.wasm tests/wasm-fixtures/sysmon.wasm
-    cd apps/wasm-poc/audio-synth && cargo component build --release --target wasm32-wasip2
+    cd apps/wasm-poc/audio-synth && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/audio_synth.wasm tests/wasm-fixtures/audio-synth.wasm
-    cd apps/wasm-poc/pong && cargo component build --release --target wasm32-wasip2
+    cd apps/wasm-poc/pong && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/pong.wasm tests/wasm-fixtures/pong.wasm
-    cd apps/wasm-poc/counter && cargo component build --release --target wasm32-wasip2
+    cd apps/wasm-poc/counter && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/counter.wasm tests/wasm-fixtures/counter.wasm
-    cd apps/wasm-poc/daw-engine && cargo component build --release --target wasm32-wasip2
+    cd apps/wasm-poc/daw-engine && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/daw_engine_poc.wasm tests/wasm-fixtures/daw-engine.wasm
-    cd apps/wasm-poc/jukebox && cargo component build --release --target wasm32-wasip2
+    cd apps/wasm-poc/jukebox && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/jukebox.wasm tests/wasm-fixtures/jukebox.wasm
     bash scripts/build-wasm-python-shim.sh
 
 # Generate an HTML line-coverage report and open it in the browser.
 # Requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview
 coverage:
-    cargo llvm-cov --bin plexi --html --open -- --skip "welcome_tab_falls_back_to_home_dir_when_no_root"
+    bash scripts/cargo-with-lease.sh cargo llvm-cov --bin plexi --html --open -- --skip "welcome_tab_falls_back_to_home_dir_when_no_root"
 
 # Print per-file coverage summary to stdout (no browser).
 coverage-summary:
-    cargo llvm-cov --bin plexi --summary-only -- --skip "welcome_tab_falls_back_to_home_dir_when_no_root"
+    bash scripts/cargo-with-lease.sh cargo llvm-cov --bin plexi --summary-only -- --skip "welcome_tab_falls_back_to_home_dir_when_no_root"
 
 # Perf lint gate — run before and after any perf work; must exit clean.
 # Scoped to the perf lint set only (`-A clippy::all` silences unrelated lints);
 # vendored deps/egui_term opts out via crate-level allows in its lib.rs.
 perf-clippy:
-    RUSTC_WRAPPER= RUSTFLAGS= cargo clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
+    RUSTC_WRAPPER= RUSTFLAGS= bash scripts/cargo-with-lease.sh cargo clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
 
 build:
-    cargo build --release
+    bash scripts/cargo-with-lease.sh cargo build --release
 
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
 # Run after any change to src/app_protocol.rs.
 gen-schema:
-    cargo run -p gen_schema > sdk/protocol/pgap.schema.json
+    bash scripts/cargo-with-lease.sh cargo run -p gen_schema > sdk/protocol/pgap.schema.json
     python3 tools/gen_protocol_py.py
     @echo "Schema and Python protocol models regenerated."
 
 # Regenerate the CLI reference docs from the clap Command tree.
 # Run after any change to src/cli_args.rs.
 gen-cli-docs:
-    cargo run -p gen_cli_docs > website/src/content/docs/cli.md
+    bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs > website/src/content/docs/cli.md
     @echo "CLI reference regenerated."
     git add website/src/content/docs/cli.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate CLI reference docs"
@@ -115,7 +116,7 @@ gen-cli-docs:
 check-cli-docs:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run -p gen_cli_docs > /tmp/plexi_check_cli.md
+    bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs > /tmp/plexi_check_cli.md
     if ! diff -q website/src/content/docs/cli.md /tmp/plexi_check_cli.md > /dev/null; then
         echo "ERROR: website/src/content/docs/cli.md is stale. Run 'just gen-cli-docs'."
         diff website/src/content/docs/cli.md /tmp/plexi_check_cli.md || true
@@ -126,7 +127,7 @@ check-cli-docs:
 # Regenerate the config reference docs from the serde config structs.
 # Run after any change to src/config/mod.rs or scripts/default-config.toml.
 gen-config-docs:
-    cargo run -p gen_config_docs > website/src/content/docs/config.md
+    bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs > website/src/content/docs/config.md
     @echo "Config reference regenerated."
     git add website/src/content/docs/config.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate config reference docs"
@@ -137,7 +138,7 @@ gen-config-docs:
 check-config-docs:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run -p gen_config_docs > /tmp/plexi_check_config.md
+    bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs > /tmp/plexi_check_config.md
     if ! diff -q website/src/content/docs/config.md /tmp/plexi_check_config.md > /dev/null; then
         echo "ERROR: website/src/content/docs/config.md is stale. Run 'just gen-config-docs'."
         diff website/src/content/docs/config.md /tmp/plexi_check_config.md || true
@@ -150,7 +151,7 @@ check-config-docs:
 check-schema:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run -p gen_schema > /tmp/pgap_check.schema.json
+    bash scripts/cargo-with-lease.sh cargo run -p gen_schema > /tmp/pgap_check.schema.json
     if ! diff -q sdk/protocol/pgap.schema.json /tmp/pgap_check.schema.json > /dev/null; then
         echo "ERROR: sdk/protocol/pgap.schema.json is stale. Run 'just gen-schema'."
         diff sdk/protocol/pgap.schema.json /tmp/pgap_check.schema.json || true
@@ -208,7 +209,8 @@ check-authoring-docs:
 check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs
 
 run:
-    cargo run --release
+    bash scripts/cargo-with-lease.sh cargo build --release
+    target/release/plexi
 
 # Regenerate generated artifacts only when their source files changed.
 # When adding a new generated artifact, add a stale check here.
@@ -226,15 +228,15 @@ regen-if-stale:
     set -euo pipefail
     if [[ Cargo.toml -nt website/src/content/docs/cli.md || src/cli/args.rs -nt website/src/content/docs/cli.md ]]; then
         echo "CLI docs source changed — regenerating CLI docs..."
-        cargo run -p gen_cli_docs > website/src/content/docs/cli.md
+        bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs > website/src/content/docs/cli.md
     fi
     if [[ src/config/mod.rs -nt website/src/content/docs/config.md || scripts/default-config.toml -nt website/src/content/docs/config.md ]]; then
         echo "Config source changed — regenerating config docs..."
-        cargo run -p gen_config_docs > website/src/content/docs/config.md
+        bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs > website/src/content/docs/config.md
     fi
     if [[ src/app_protocol.rs -nt sdk/protocol/pgap.schema.json ]]; then
         echo "app_protocol.rs changed — regenerating schema..."
-        cargo run -p gen_schema > sdk/protocol/pgap.schema.json
+        bash scripts/cargo-with-lease.sh cargo run -p gen_schema > sdk/protocol/pgap.schema.json
         python3 tools/gen_protocol_py.py
     fi
 
@@ -278,6 +280,7 @@ pr-install number:
     # pick a worktree that provably contains it, and build from THAT.
     _repo_root="$(git rev-parse --path-format=absolute --git-common-dir)"
     _repo_root="${_repo_root%/.git}"
+    _driver_root="$(git rev-parse --show-toplevel)"
     _head_json="$(gh pr view {{number}} --json headRefName,headRefOid 2>/dev/null || echo "")"
     if [[ -z "$_head_json" ]]; then
       echo "Error: could not resolve PR #{{number}} via gh (gh pr view failed)."
@@ -333,7 +336,15 @@ pr-install number:
     # Pre-install tests and the build both run inside the resolved worktree,
     # never the caller's cwd.
     ( cd "$_wt" && just fetch-python-runtime sdk-smoke )
-    ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} && bash scripts/install.sh "pr-{{number}}" )
+    ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} )
+    if rg -q 'cargo-with-lease\.sh' "$_wt/scripts/install.sh"; then
+      ( cd "$_wt" && bash scripts/install.sh "pr-{{number}}" )
+    else
+      # Older PR heads predate the leaf wrapper. Treat their opaque install
+      # script as the compatibility leaf; newer heads acquire inside their
+      # own bundle invocation and must never acquire twice.
+      ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh "pr-{{number}}" )
+    fi
     # Provenance trace: which head this channel is actually running. Written
     # after install.sh (pr-clean wipes the profile dir); path matches
     # install.sh's profile_dir for channel pr-{{number}}.
@@ -522,7 +533,7 @@ ship +issues:
 scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
-    env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
 
 # Run the same TOML scene against an explicit installed host channel.
 # The runner owns and tears down the host unless PLEXI_SCENE_ATTACH=1 is set.

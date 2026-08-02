@@ -242,7 +242,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
-        EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, RegistryCmd,
+        EventsCmd, HookAction, HostCmd, LockCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
+        RegistryCmd,
         RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
@@ -679,6 +680,13 @@ fn main() -> eframe::Result {
                         HostCmd::Screenshot { pane, output } => {
                             std::process::exit(cli::host_screenshot_cli(pane, output.as_deref()))
                         }
+                    },
+                    Commands::Lock { cmd } => match cmd {
+                        LockCmd::Acquire { name, timeout } => {
+                            std::process::exit(cli::lock::acquire(&name, timeout))
+                        }
+                        LockCmd::Release { name } => std::process::exit(cli::lock::release(&name)),
+                        LockCmd::Status { name } => std::process::exit(cli::lock::status(&name)),
                     },
                     Commands::Notify { cmd, post } => {
                         // The caller's own identity, stamped by the pane env.
