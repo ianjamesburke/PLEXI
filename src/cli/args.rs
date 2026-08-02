@@ -280,9 +280,6 @@ pub struct NotifyPostArgs {
     /// Notification body text
     #[arg(long, default_value = "")]
     pub body: String,
-    /// Severity level: info, warn, or error
-    #[arg(long, default_value = "info", value_parser = ["info", "warn", "error"])]
-    pub level: String,
     /// Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or
     /// `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked).
     /// Repeatable.
@@ -1850,6 +1847,15 @@ mod tests {
             panic!("expected notify dismiss");
         };
         assert_eq!(notify_id, "cli:42:abc");
+    }
+
+    #[test]
+    fn notify_rejects_removed_level_flag() {
+        assert!(
+            Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--level", "info"])
+                .is_err(),
+            "removed notification level flag must fail loudly"
+        );
     }
 
     #[test]

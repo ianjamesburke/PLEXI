@@ -114,17 +114,12 @@ pub enum AppCommand {
         sender_pane_id: u64,
         /// Stable context identity the notification originated from.
         source_context_id: u64,
-        level: String,
         title: String,
         body: String,
         kind: crate::app_protocol::NotifyKind,
         options: Vec<crate::app_protocol::NotifyOption>,
         input_prompt: Option<String>,
         required: bool,
-        /// Higher = more urgent. Used to pick the next front-most notification
-        /// after dismiss, and to order preview cycling via Cmd+] / Cmd+[.
-        /// Insertion order breaks ties (oldest first).
-        priority: u32,
         /// Visibility scope. `Global` notifications are always visible;
         /// `Context` notifications are only visible in their source context.
         scope: crate::app_protocol::NotifyScope,

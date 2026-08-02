@@ -3410,14 +3410,12 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             notify_id: text("notify_id"),
             sender_pane_id: 0,
             source_context_id: 0,
-            level: text("level"),
             title: text("title"),
             body: text("body"),
             kind: crate::app_protocol::NotifyKind::Message,
             options: Vec::new(),
             input_prompt: None,
             required: false,
-            priority: 0,
             // The bridge message carries no scope, so it takes the shared
             // default rather than an invented one.
             scope: crate::app_protocol::NotifyScope::default(),

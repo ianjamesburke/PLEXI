@@ -716,7 +716,6 @@ fn main() -> eframe::Result {
                             std::process::exit(1);
                         };
                         let body = post.body;
-                        let level = post.level;
                         let choices = post.choices;
                         let host_actions = post.host_actions;
                         let no_wait = post.no_wait;
@@ -790,7 +789,6 @@ fn main() -> eframe::Result {
                         std::process::exit(cli::notify_cli(
                             &title,
                             &body,
-                            &level,
                             &parsed_choices,
                             !no_wait,
                             timeout,
@@ -1422,7 +1420,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
     // Skip argv[0] (binary name).
     let _ = iter.next();
     while let Some((_, a)) = iter.next() {
-        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" || a == "--level" {
+        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" {
             // Skip the value paired with this flag.
             let _ = iter.next();
             continue;

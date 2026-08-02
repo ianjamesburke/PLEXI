@@ -34,14 +34,12 @@ fn snoozed_notification_invisible_then_visible() {
         sender_pane_id: 0,
         source_context_id: h.app.router.active().context_id,
         source_window_id: h.app.windows[h.app.active_window].window_id,
-        level: "info".into(),
         title: "Snoozed".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        priority: 100,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
@@ -82,14 +80,12 @@ fn snoozed_notification_exempt_from_timeout() {
         sender_pane_id: sender_id,
         source_context_id: h.app.router.active().context_id,
         source_window_id: h.app.windows[h.app.active_window].window_id,
-        level: "info".into(),
         title: "ShouldNotTimeout".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        priority: 100,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
@@ -121,14 +117,12 @@ fn persist_roundtrip() {
         sender_pane_id: 0,
         source_context_id: 1,
         source_window_id: 1,
-        level: "info".into(),
         title: "Test".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        priority: 50,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
@@ -174,7 +168,7 @@ fn persist_ttl_drops_old_notifications() {
         .unwrap_or(0);
     let eight_days_ago = now_sys.saturating_sub(8 * 24 * 3600);
     let json = format!(
-        r#"[{{"notify_id":"old","sender_pane_id":0,"source_context_id":1,"level":"info","title":"Old","body":"","kind":"message","options":[],"required":false,"priority":0,"scope":"global","enqueued_at_secs":{},"tombstoned":false}}]"#,
+        r#"[{{"notify_id":"old","sender_pane_id":0,"source_context_id":1,"title":"Old","body":"","kind":"message","options":[],"required":false,"scope":"global","enqueued_at_secs":{},"tombstoned":false}}]"#,
         eight_days_ago
     );
     std::fs::write(&path, json).unwrap();
@@ -261,14 +255,12 @@ fn window_scoped_notification_visible_only_on_source_window() {
         sender_pane_id: 0,
         source_context_id: h.app.router.active().context_id,
         source_window_id: win0_id,
-        level: "info".into(),
         title: "Window Notification".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        priority: 100,
         scope: crate::app_protocol::NotifyScope::Window,
         image_inline: None,
         image_pipe_id: None,
@@ -325,14 +317,12 @@ fn auto_dismiss_removes_non_required_notification_when_sender_focused() {
         sender_pane_id: pane_id,
         source_context_id: ctx_id,
         source_window_id: win_id,
-        level: "info".into(),
         title: "Should go away".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        priority: 100,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
@@ -380,14 +370,12 @@ fn auto_dismiss_spares_required_notifications() {
         sender_pane_id: pane_id,
         source_context_id: ctx_id,
         source_window_id: win_id,
-        level: "info".into(),
         title: "Must stay".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: true, // <-- required
-        priority: 100,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
@@ -426,14 +414,12 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         sender_pane_id: sender_id, // different from focused_id
         source_context_id: ctx_id,
         source_window_id: win_id,
-        level: "info".into(),
         title: "From other pane".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        priority: 100,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
@@ -555,20 +541,18 @@ fn quicknote_does_not_preempt_context_close_confirm() {
 // mute by construction; whether the cue is actually audible is a human check.
 
 /// Build a minimal notification for choke-point tests.
-fn cue_test_notification(id: &str, priority: u32) -> PendingNotification {
+fn cue_test_notification(id: &str) -> PendingNotification {
     PendingNotification {
         notify_id: id.into(),
         sender_pane_id: 0,
         source_context_id: 0,
         source_window_id: 0,
-        level: "info".into(),
         title: "Title".into(),
         body: "Body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        priority,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
@@ -579,6 +563,32 @@ fn cue_test_notification(id: &str, priority: u32) -> PendingNotification {
         tombstoned: false,
         deliver_after: None,
     }
+}
+
+#[test]
+fn notification_queue_orders_required_then_arrival() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::Cli,
+        cue_test_notification("first"),
+    );
+
+    let mut required = cue_test_notification("required");
+    required.required = true;
+    h.app
+        .enqueue_notification(crate::app::notifications::NotifySource::Cli, required);
+
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::Cli,
+        cue_test_notification("later"),
+    );
+
+    assert_eq!(
+        h.app.sorted_notification_ids(),
+        vec!["required", "first", "later"]
+    );
 }
 
 /// 0566: the master switch is enforced inside the choke point, so the WASM and
@@ -597,7 +607,7 @@ fn enqueue_notification_honours_master_switch() {
     ] {
         let queued = h
             .app
-            .enqueue_notification(source, cue_test_notification("dropped", 200));
+            .enqueue_notification(source, cue_test_notification("dropped"));
         assert!(!queued, "{source:?} must be dropped while disabled");
     }
 
@@ -620,36 +630,35 @@ fn enqueue_notification_queues_when_enabled() {
 
     let queued = h.app.enqueue_notification(
         crate::app::notifications::NotifySource::Wasm,
-        cue_test_notification("wasm-1", 200),
+        cue_test_notification("wasm-1"),
     );
 
     assert!(queued, "enabled host must queue the notification");
     assert_eq!(h.app.pending_notifications.len(), 1);
     assert!(
         h.app.show_notification_modal,
-        "priority 200 >= default threshold 100 must auto-open"
+        "a visible notification outside focus mode must auto-open"
     );
     assert_eq!(h.app.current_notify_id.as_deref(), Some("wasm-1"));
 }
 
-/// 0566: the auto-open threshold is applied uniformly. A low-priority arrival
-/// queues silently instead of popping the modal.
+/// Every visible notification uses the same interruption decision.
 #[test]
-fn enqueue_notification_below_threshold_queues_silently() {
+fn enqueue_notification_interrupts_when_enabled() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
     h.app.enqueue_notification(
         crate::app::notifications::NotifySource::App,
-        cue_test_notification("quiet", 0),
+        cue_test_notification("visible"),
     );
 
-    assert_eq!(h.app.pending_notifications.len(), 1, "still queued");
+    assert_eq!(h.app.pending_notifications.len(), 1, "notification is queued");
     assert!(
-        !h.app.show_notification_modal,
-        "priority 0 < threshold 100 must not auto-open"
+        h.app.show_notification_modal,
+        "visible notification must auto-open"
     );
-    assert!(h.app.current_notify_id.is_none());
+    assert_eq!(h.app.current_notify_id.as_deref(), Some("visible"));
 }
 
 /// 0566: no `[notifications] sound` configured → no cue requested.
@@ -659,7 +668,7 @@ fn notification_cue_silent_without_configured_sound() {
     assert!(h.app.notifications_sound.is_none(), "unset by default");
     assert!(
         h.app
-            .notification_cue_request(&cue_test_notification("no-sound", 200))
+            .notification_cue_request(&cue_test_notification("no-sound"))
             .is_none(),
         "unset sound must request no cue"
     );
@@ -674,7 +683,7 @@ fn notification_cue_uses_configured_sound() {
 
     let request = h
         .app
-        .notification_cue_request(&cue_test_notification("with-sound", 200))
+        .notification_cue_request(&cue_test_notification("with-sound"))
         .expect("configured sound must request a cue");
     assert_eq!(request.source, "/tmp/cue.wav");
     assert_eq!(request.volume, 1.0);
@@ -690,7 +699,7 @@ fn notification_cue_suppressed_in_focus_mode() {
 
     assert!(
         h.app
-            .notification_cue_request(&cue_test_notification("focused", 200))
+            .notification_cue_request(&cue_test_notification("focused"))
             .is_none(),
         "focus mode must suppress the cue"
     );
@@ -698,7 +707,7 @@ fn notification_cue_suppressed_in_focus_mode() {
 
 /// Fix round 1 blocker 1: a notification the user cannot see must not make a
 /// sound. Context-scoped with a source context that is not active → invisible
-/// → silent, even at critical priority with a sound configured. Driven through
+/// → silent with a sound configured. Driven through
 /// the real enqueue path; the cue decision is asserted, never played.
 #[test]
 fn cue_suppressed_for_invisible_notification() {
@@ -706,7 +715,7 @@ fn cue_suppressed_for_invisible_notification() {
     h.app.notifications_enabled = true;
     h.app.notifications_sound = Some("/tmp/cue.wav".to_string());
 
-    let mut n = cue_test_notification("invisible", 200);
+    let mut n = cue_test_notification("invisible");
     n.scope = crate::app_protocol::NotifyScope::Context;
     n.source_context_id = 999_999; // not the active context
     assert!(
@@ -729,25 +738,31 @@ fn cue_suppressed_for_invisible_notification() {
     );
 }
 
-/// Fix round 1 blocker 1: below the interrupt threshold the arrival is
-/// passive — no modal, and no sound either. The cue and the modal consume the
-/// same interruption decision.
+/// A plain CLI notification is visible, opens the modal, and starts its cue
+/// when sound is configured. Focus mode shares the same gate and mutes both.
 #[test]
-fn cue_suppressed_below_interrupt_threshold() {
+fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
     h.app.notifications_sound = Some("/tmp/cue.wav".to_string());
 
-    h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::Cli,
-        cue_test_notification("quiet-cue", 0), // < default threshold 100
+    h.inject_ipc(cli_notify_request(None, None, None));
+    h.run_frames(2);
+
+    assert!(h.app.show_notification_modal, "plain CLI notify interrupts");
+    assert!(
+        h.app.notification_cue_playback.is_some(),
+        "plain CLI notify starts the configured cue"
     );
 
-    assert_eq!(h.app.pending_notifications.len(), 1, "still queued");
-    assert!(
-        h.app.notification_cue_playback.is_none(),
-        "a below-threshold notification must not start a cue"
-    );
+    let mut focused = HostHarness::new();
+    focused.app.notifications_enabled = true;
+    focused.app.notifications_sound = Some("/tmp/cue.wav".to_string());
+    focused.app.notifications_focus_mode = true;
+    focused.inject_ipc(cli_notify_request(None, None, None));
+    focused.run_frames(2);
+    assert!(!focused.app.show_notification_modal, "focus mode prevents interrupt");
+    assert!(focused.app.notification_cue_playback.is_none(), "focus mode mutes cue");
 }
 
 /// 0566: the session is held on the app — a local binding would drop at end of
@@ -761,7 +776,7 @@ fn enqueue_notification_holds_cue_session() {
 
     h.app.enqueue_notification(
         crate::app::notifications::NotifySource::Cli,
-        cue_test_notification("with-cue", 200),
+        cue_test_notification("with-cue"),
     );
 
     assert!(
@@ -779,7 +794,7 @@ fn disabled_notifications_never_play_a_cue() {
 
     h.app.enqueue_notification(
         crate::app::notifications::NotifySource::Cli,
-        cue_test_notification("dropped", 200),
+        cue_test_notification("dropped"),
     );
 
     assert!(
@@ -795,7 +810,6 @@ fn cli_notify_request(
     source_pane_id: Option<u64>,
 ) -> crate::app_protocol::AppRequest {
     crate::app_protocol::AppRequest::Notify {
-        level: "info".into(),
         title: "CLI notify".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
@@ -804,7 +818,6 @@ fn cli_notify_request(
         required: false,
         actions: vec![],
         notify_id: None,
-        priority: 50,
         image_inline: None,
         image_pipe_id: None,
         timeout_secs: None,
@@ -834,14 +847,12 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
             sender_pane_id: 0,
             source_context_id: context_id,
             source_window_id,
-            level: "info".into(),
             title: "Parked".into(),
             body: "body".into(),
             kind: crate::app_protocol::NotifyKind::Message,
             options: vec![],
             input_prompt: None,
             required: false,
-            priority: 50,
             scope,
             image_inline: None,
             image_pipe_id: None,
@@ -876,7 +887,6 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let response_file = response_dir.path().join("dismiss-response");
 
     h.inject_ipc(crate::app_protocol::AppRequest::Notify {
-        level: "info".into(),
         title: "sticky".into(),
         body: "body".into(),
         kind: crate::app_protocol::NotifyKind::Message,
@@ -885,7 +895,6 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         required: false,
         actions: vec![],
         notify_id: Some(format!("cli:{owner_pane_id}:sticky")),
-        priority: 50,
         image_inline: None,
         image_pipe_id: None,
         timeout_secs: Some(30),

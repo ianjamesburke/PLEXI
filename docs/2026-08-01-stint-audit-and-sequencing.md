@@ -93,7 +93,7 @@ Older PRs — **#1604, #2316, #2318, #2323, #2353** — predate this audit's win
 - **0577** (p0) — no `sandbox_init`, `seatbelt`, or `sandbox-exec` anywhere in the tree. Untrusted MCP subprocesses run with ambient authority, violating commandment 10. Also blocks #2499. **Conflicts with the v1-cut doc, which lists sandboxing as Post-v1. Owner must rule — see §8.**
 - **0707** — `plexi ai setup` destroys `[ai.local]` and budget caps via a hand-rolled line scanner at `src/cli/ai.rs:492`. Corrupts the Meridian config on alpha today.
 - **0636** — `plexi notify` takes `source_pane_id` as a caller-supplied parameter rather than deriving it from the socket peer. Sender identity is spoofable, at exactly the moment the mesh multiplies cross-agent messages.
-- **0693** — `plexi notify` hardcodes `priority: 50` at `src/cli/notify.rs:98`; the audible cue never fires from the CLI.
+- **0711** — delete notification tiers and the unreachable cue gate so visible, non-muted CLI notifications interrupt.
 - **0680 → 0682 → 0681 → 0683** — Python app state silently corrupts and clobbers today. Do as one cluster.
 - **0601** — unbounded stdin buffer growth; a slow OOM under long-running agent MCP clients.
 

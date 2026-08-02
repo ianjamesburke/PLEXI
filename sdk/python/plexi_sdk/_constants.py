@@ -17,17 +17,6 @@ PAD_TIGHT =  8.0
 HEADER_H  = 48.0
 STATUS_H  = 44.0
 
-# ── Notification priority tiers ───────────────────────────────────────────────
-# Higher = more urgent. Queue sorts priority DESC, arrival ASC. See the
-# NOTIFICATIONS block in the module docstring for guidance on which tier to
-# pick. Range 0..200 is the "app band" — stay inside it. A future release
-# may reserve priorities above 200 for user overrides so apps can't yell
-# themselves to the top; staying in-band today keeps you forward-compatible.
-PRIORITY_LOW      = 0
-PRIORITY_NORMAL   = 50
-PRIORITY_HIGH     = 100
-PRIORITY_CRITICAL = 200
-
 
 # ── Color constants (dark-mode defaults; derive from _theme._DEFAULTS) ────────
 BG        = _TD["bg"]

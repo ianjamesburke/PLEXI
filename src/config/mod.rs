@@ -123,7 +123,7 @@ const KNOWN_THEME: &[&str] = &[
 ];
 const KNOWN_EFFECTS: &[&str] = &["crt", "ghost", "ghost_opacity"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
-const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "interrupt_threshold"];
+const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "sound"];
 const KNOWN_AI: &[&str] = &[
     "backend",
     "openrouter",
@@ -747,17 +747,10 @@ pub struct NotificationsConfig {
     /// apps still send them, but the modal never appears and the queue stays
     /// empty. Defaults to true.
     pub enabled: Option<bool>,
-    /// Focus mode. When true, NO notification auto-surfaces regardless of
-    /// priority. Everything queues silently; the user reviews via Cmd+Shift+A.
+    /// Focus mode. When true, no notification auto-surfaces. Everything queues
+    /// silently; the user reviews via Cmd+Shift+A.
     /// Defaults to false.
     pub focus_mode: Option<bool>,
-    /// Minimum priority that may auto-open the modal. Notifications below
-    /// this value queue silently (badge ticks, Cmd+Shift+A reveals them).
-    /// At or above it, arrival auto-opens the modal. Defaults to 100
-    /// (`PRIORITY_HIGH`) — NORMAL and LOW are passive; HIGH and CRITICAL
-    /// interrupt. Set to 0 to auto-open everything; set to 201 to match
-    /// `focus_mode = true`.
-    pub interrupt_threshold: Option<u32>,
     /// Path to an audio file (WAV, MP3, FLAC, OGG) played once when a
     /// notification arrives, so an agent waiting on input can pull a human
     /// back while Plexi is in the background. Unset (the default) means no
@@ -765,8 +758,7 @@ pub struct NotificationsConfig {
     /// overlay can set `sound = ""` to silence a globally configured cue.
     /// The cue only fires for a notification that may interrupt: `enabled =
     /// false` drops it before the cue, `focus_mode = true` suppresses it, and
-    /// a notification that is invisible or below `interrupt_threshold`
-    /// arrives silently.
+    /// an invisible notification arrives silently.
     pub sound: Option<String>,
 }
 
@@ -1704,9 +1696,6 @@ impl NotificationsConfig {
         }
         if other.focus_mode.is_some() {
             self.focus_mode = other.focus_mode;
-        }
-        if other.interrupt_threshold.is_some() {
-            self.interrupt_threshold = other.interrupt_threshold;
         }
         if other.sound.is_some() {
             self.sound = other.sound;

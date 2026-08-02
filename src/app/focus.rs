@@ -965,14 +965,12 @@ impl PlexiApp {
                     sender_pane_id: 0,
                     source_context_id: 0,
                     source_window_id: 0,
-                    level: "error".to_string(),
                     title: "Config Error".to_string(),
                     body: error_msg,
                     kind: crate::app_protocol::NotifyKind::Message,
                     options: vec![],
                     input_prompt: None,
                     required: false,
-                    priority: 100,
                     // A broken config is not a property of one context — it
                     // affects the whole workspace, so this stays the explicit
                     // global case rather than taking the shared default.
@@ -1047,11 +1045,6 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.focus_mode)
             .unwrap_or(false);
-        self.notifications_interrupt_threshold = fresh
-            .notifications
-            .as_ref()
-            .and_then(|n| n.interrupt_threshold)
-            .unwrap_or(100);
         self.notifications_sound = fresh.notifications.as_ref().and_then(|n| n.cue_sound());
 
         self.focus_history_depth = fresh.focus_history_depth.unwrap_or(100);

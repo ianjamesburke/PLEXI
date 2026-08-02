@@ -11,17 +11,12 @@ pub(crate) struct PendingNotification {
     /// Stable window identity the notification originated from. Used by
     /// `NotifyScope::Window` to restrict visibility to the originating window.
     pub source_window_id: u64,
-    pub level: String,
     pub title: String,
     pub body: String,
     pub kind: crate::app_protocol::NotifyKind,
     pub options: Vec<crate::app_protocol::NotifyOption>,
     pub input_prompt: Option<String>,
     pub required: bool,
-    /// Higher = more urgent. Used to pick next after dismiss + to order
-    /// Cmd+]/Cmd+[ preview traversal. Arrival order (index in the queue
-    /// Vec) breaks ties — oldest wins.
-    pub priority: u32,
     /// Visibility scope. Affects which contexts the notification appears in.
     pub scope: crate::app_protocol::NotifyScope,
     /// Optional inline image attachment (#74). Decoded lazily on first
@@ -62,7 +57,6 @@ struct PersistedNotification {
     source_context_id: u64,
     #[serde(default)]
     source_window_id: u64,
-    level: String,
     title: String,
     body: String,
     kind: crate::app_protocol::NotifyKind,
@@ -70,7 +64,6 @@ struct PersistedNotification {
     #[serde(default)]
     input_prompt: Option<String>,
     required: bool,
-    priority: u32,
     scope: crate::app_protocol::NotifyScope,
     #[serde(default)]
     image_inline: Option<crate::app_protocol::NotificationImage>,
@@ -107,14 +100,12 @@ pub(crate) fn save_pending_notifications_to(
                 sender_pane_id: n.sender_pane_id,
                 source_context_id: n.source_context_id,
                 source_window_id: n.source_window_id,
-                level: n.level.clone(),
                 title: n.title.clone(),
                 body: n.body.clone(),
                 kind: n.kind.clone(),
                 options: n.options.clone(),
                 input_prompt: n.input_prompt.clone(),
                 required: n.required,
-                priority: n.priority,
                 scope: n.scope,
                 image_inline: n.image_inline.clone(),
                 timeout_secs: n.timeout_secs,
@@ -169,14 +160,12 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 sender_pane_id: p.sender_pane_id,
                 source_context_id: p.source_context_id,
                 source_window_id: p.source_window_id,
-                level: p.level,
                 title: p.title,
                 body: p.body,
                 kind: p.kind,
                 options: p.options,
                 input_prompt: p.input_prompt,
                 required: p.required,
-                priority: p.priority,
                 scope: p.scope,
                 image_inline: p.image_inline,
                 image_pipe_id: None, // pipe handle gone after restart
@@ -312,14 +301,11 @@ impl PlexiApp {
         }
 
         let notify_id = notification.notify_id.clone();
-        let priority = notification.priority;
-        let level = notification.level.clone();
         let title = notification.title.clone();
 
         crate::host::event_log::emit(crate::host::event_log::HostEvent::NotificationPosted {
             id: notify_id.clone(),
             title: title.clone(),
-            urgency: level,
             timestamp: crate::host::event_log::now_timestamp(),
         });
 
@@ -332,19 +318,16 @@ impl PlexiApp {
         if may_interrupt {
             self.show_notification_modal = true;
             // Only pin the arrival as current when nothing is already pinned.
-            // A low-priority passive notification never steals the front slot;
-            // the highest-priority remaining is picked at modal-open time.
             if self.current_notify_id.is_none() {
                 self.current_notify_id = Some(notify_id.clone());
             }
         }
 
         log::info!(
-            "notify: queued source={} id={} title={:?} priority={} visible={} interrupt={} cue={}",
+            "notify: queued source={} id={} title={:?} visible={} interrupt={} cue={}",
             source.as_str(),
             notify_id,
             title,
-            priority,
             is_visible,
             may_interrupt,
             cue_played
@@ -361,15 +344,12 @@ impl PlexiApp {
     ///   1. Visibility — Global always; Window/Context only when the source
     ///      matches the active window/context (and the entry is not snoozed).
     ///   2. focus_mode off — the global mute gate.
-    ///   3. priority >= interrupt_threshold — low-urgency arrivals like
-    ///      "note saved" stay passive.
     ///
-    /// A notification that fails any gate still queues (the badge ticks); it
-    /// just arrives silently.
+    /// A notification that fails either gate still queues and only updates the
+    /// badge.
     pub(crate) fn notification_may_interrupt(&self, n: &PendingNotification) -> bool {
         self.notification_is_visible(n)
             && !self.notifications_focus_mode
-            && n.priority >= self.notifications_interrupt_threshold
     }
 
     /// The audible cue to play for an arriving notification, or `None` to stay
@@ -431,10 +411,10 @@ impl PlexiApp {
     //
     // The notification modal tracks the currently-displayed entry by
     // `notify_id`, not by index. These helpers centralise the
-    // priority-sort / selection logic so callers can't accidentally reach
+    // selection logic so callers can't accidentally reach
     // past the end of the Vec or pick by stale offset.
     //
-    // Sort order: `priority DESC, arrival-index ASC`. Arrival index = the
+    // Sort order: `required DESC, arrival-index ASC`. Arrival index is the
     // entry's current position in `pending_notifications`, which reflects
     // push order (we never reorder the Vec; dismissal removes by id).
     //
@@ -466,26 +446,25 @@ impl PlexiApp {
     }
 
     /// Return ids of all *visible* notifications (for the current context),
-    /// ordered by (required desc, priority desc, arrival asc). Empty Vec when none visible.
+    /// ordered by (required desc, arrival asc). Empty Vec when none visible.
     pub(crate) fn sorted_notification_ids(&self) -> Vec<String> {
-        let mut indexed: Vec<(usize, u32, bool, &str)> = self
+        let mut indexed: Vec<(usize, bool, &str)> = self
             .pending_notifications
             .iter()
             .enumerate()
             .filter(|(_, n)| self.notification_is_visible(n))
-            .map(|(i, n)| (i, n.priority, n.required, n.notify_id.as_str()))
+            .map(|(i, n)| (i, n.required, n.notify_id.as_str()))
             .collect();
-        // required pins to top, then priority DESC, ties broken by arrival ASC.
-        indexed.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
+        // Required notifications stay first; otherwise the oldest arrival wins.
+        indexed.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         indexed
             .into_iter()
-            .map(|(_, _, _, id)| id.to_string())
+            .map(|(_, _, id)| id.to_string())
             .collect()
     }
 
-    /// Return the id of the highest-priority *visible* notification,
-    /// breaking ties by oldest arrival. `None` when none visible.
-    pub(crate) fn select_highest_priority(&self) -> Option<String> {
+    /// Return the first *visible* notification by required then arrival order.
+    pub(crate) fn select_next_notification(&self) -> Option<String> {
         self.sorted_notification_ids().into_iter().next()
     }
 
@@ -500,7 +479,7 @@ impl PlexiApp {
     }
 
     /// Move `current_notify_id` forward (`direction = 1`) or backward
-    /// (`direction = -1`) through the visible priority-sorted queue. No wrap
+    /// (`direction = -1`) through the visible queue. No wrap
     /// at the ends. Called by Cmd+] / Cmd+[.
     pub(crate) fn cycle_notification(&mut self, direction: i32) {
         if !self.show_notification_modal {
@@ -511,13 +490,13 @@ impl PlexiApp {
             return;
         }
         let Some(current) = self.current_notify_id.as_ref() else {
-            // Queue has entries but nothing is current — pick highest.
+            // Queue has entries but nothing is current — pick the next entry.
             self.current_notify_id = sorted.into_iter().next();
             return;
         };
         let Some(pos) = sorted.iter().position(|id| id == current) else {
             // Current id not in visible queue any more (context switch or dismiss).
-            // Fall back to highest-priority visible.
+            // Fall back to the next visible entry.
             self.current_notify_id = sorted.into_iter().next();
             return;
         };
@@ -532,7 +511,7 @@ impl PlexiApp {
     /// Check every pending notification for expiry. For each that has exceeded
     /// its `timeout_secs`, deliver a `NotifyAction` dismiss event and remove it.
     /// Also wakes snoozed notifications whose `deliver_after` has elapsed and
-    /// auto-reopens the modal when a high-priority one wakes. Called once per
+    /// auto-reopens the modal when one may interrupt. Called once per
     /// second from `update()`.
     pub(crate) fn tick_notification_timeouts(&mut self) {
         let now = std::time::Instant::now();
@@ -558,15 +537,15 @@ impl PlexiApp {
         // A wake is a second arrival for interruption purposes, so it takes
         // the same single decision as enqueue — a snoozed notification from an
         // inactive context no longer reopens the modal where it isn't visible.
-        let woken_priority_met = self
+        let woken_notification_may_interrupt = self
             .pending_notifications
             .iter()
             .filter(|n| woken_ids.contains(&n.notify_id))
             .any(|n| self.notification_may_interrupt(n));
-        if woken_priority_met {
+        if woken_notification_may_interrupt {
             self.show_notification_modal = true;
             if self.current_notify_id.is_none() {
-                self.current_notify_id = self.select_highest_priority();
+                self.current_notify_id = self.select_next_notification();
             }
         }
         for id in &expired_ids {
