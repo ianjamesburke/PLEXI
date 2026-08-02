@@ -190,16 +190,22 @@ fn main() -> eframe::Result {
     // workspace-namespaced layout (issue #322). Idempotent: a no-op once the
     // index is in the new flat-string form. (Under cfg(test) this is a zero
     // stub — test binaries never run main(), and the migration is the one
-    // direct keychain value-read outside MacKeychain.)
+    // direct keychain value-read outside MacKeychain.) Host startups only: a
+    // keychain value read from a freshly compiled binary fires a credential
+    // dialog (macOS ACLs are per-binary), so ephemeral CLI processes must
+    // never run it. An attended host launch is the one place a prompt can be
+    // answered.
     #[cfg(target_os = "macos")]
     {
-        let migrated = crate::workspace::secrets::migrate_legacy_global_secrets(
-            crate::workspace::secrets::system_store(),
-        );
-        if migrated > 0 {
-            log::info!(
-                "workspace_secrets: migrated {migrated} legacy global secrets to plexi:user:* namespace"
+        if !cli_mode {
+            let migrated = crate::workspace::secrets::migrate_legacy_global_secrets(
+                crate::workspace::secrets::system_store(),
             );
+            if migrated > 0 {
+                log::info!(
+                    "workspace_secrets: migrated {migrated} legacy global secrets to plexi:user:* namespace"
+                );
+            }
         }
     }
 

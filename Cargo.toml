@@ -106,6 +106,9 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 # Keychain access via Security.framework C API — no subprocess, distinct error
 # types for ItemNotFound vs AuthFailed (locked keychain). Replaces security CLI.
 security-framework = "3"
+# CFData for create-only Keychain adds (SecItemAdd). Must track the version
+# security-framework itself uses, or the CF types will not unify.
+core-foundation = "0.10"
 # CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl
 # stays available under `cfg(test)`).
 coremidi = "0.9"

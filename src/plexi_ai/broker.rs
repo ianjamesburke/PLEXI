@@ -361,7 +361,7 @@ fn resolve_openrouter_api_key_from_store(
     api_key_env: &str,
     workspace_root: Option<&std::path::Path>,
     process_env: Option<&str>,
-    store: &dyn crate::workspace::secrets::SecretStore,
+    store: &dyn crate::workspace::secrets::NonDestructiveStore,
 ) -> Result<Option<String>, String> {
     use crate::workspace::secrets::{
         keychain_user_name, resolve_with_source, ResolveWithSourceOutcome, WorkspaceConfig,
