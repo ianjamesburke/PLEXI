@@ -1,6 +1,38 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.4] — 2026-08-02
+
+### Changes
+- fix(host): eliminate UI-thread cwd probe stalls (#2562)
+- feat: improve QuickNote font and image drops (#2563)
+- host: arbitrate Cargo builds with host-owned leases (#2560)
+- fix(ci): evidence workflow needs the CPython WASI bundle
+- fix(host): surface failed Python guest lifecycle (#2532)
+- fix(cli): pane command --enter races the interactive shell (#2557)
+- release: stub v1 surfaces and verify roadmap evidence (#2555)
+- fix: stamp pane context env explicitly (#2522)
+- fix(ci): rust-host drop redundant build job, fix cache key collision (#2556)
+- fix: deliver Plexi themes to running apps (#2554)
+- fix: todo input and chrome ownership (#2552)
+- stint 0695: rewrite plexi-cli skill as map + worked examples (Ian's read)
+- human-check: 0241 all four sub-checks PASSED by Ian
+- human-check: 0241 sub-check 3 (park/unpark with children) passed
+- human-check: 0241 sub-checks 1-2 passed by Ian
+- human-check: DAW UI deferred indefinitely per Ian — PoC for audio pipes, not a product surface
+- stints 0693/0694: notify cue unreachable from CLI, UI freeze on quit
+- human-check: 0569 notify scope PASSED by Ian
+- human-check: 0562 soft-wrap visuals PASSED by Ian
+- human-check: 0564 sidebar status dots PASSED by Ian
+- human-check: 0563 paste-URL-over-selection PASSED by Ian
+- human-check: 0627 fullscreen terminal input PASSED by Ian
+- fix(ui): render pane id badge in single-pane windows (#2551)
+- fix: service app panes that are not rendering (#2550)
+- feat: rebuild todo on clean SDK primitives (#2546)
+- Context-scoped state persistence audit + duplicate-root/rollup design brief (#2544)
+- fix(navigation): cycle contexts through the master-only enumeration (#2543)
+- feat(build): bs- recipe namespace — deterministic babysitter lane mechanics (#2542)
+- fix(config): channel-named binary wins over ambient PLEXI_CHANNEL (#2540)
 ## [0.2.3] — 2026-07-31
 
 ### Changes

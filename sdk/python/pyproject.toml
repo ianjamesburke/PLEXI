@@ -1,6 +1,6 @@
 [project]
 name = "plexi-sdk"
-version = "0.2.3"
+version = "0.2.4"
 description = "Python SDK v3 for Plexi apps running through the CPython-in-WASM runtime"
 readme = "README.md"
 requires-python = ">=3.12"
