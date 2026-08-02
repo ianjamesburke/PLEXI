@@ -61,6 +61,16 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - fired: 2026-08-01
 - runs: 1
 
+### L003 — A send is not delivered until `pane status` says `working`
+- class: RULE
+- promoted: 2026-08-01 (queue 0677 0678 0679 0674)
+- incident: Collapsed paste six times in one run. `pane send --submit` returns exit 0 while the text sits unsubmitted, and it happens to short single-line sends on freshly-booted panes too. Once it idled a held cargo token for ~8 minutes.
+- rule: After any control message, confirm `pane status` reaches `working`; press enter once if it has not. Never treat exit 0 as proof of delivery, and never re-send on exit code alone.
+- falsification: delete if a host fix makes `--submit` reliable and two consecutive runs show zero collapsed pastes.
+- incident: Still reproduces after 0654: pane 735 received a ruling through `pane send --submit`, returned exit 0, and remained idle with the full text visible in its composer until `plexi pane key 735 enter`.
+- fired: 2026-08-02 (pane 735, post-0654 build)
+- runs: 2
+
 ### L004 — Attribute a build by its owner, never by its directory
 - class: RULE
 - promoted: 2026-08-01 (queue 0677 0678 0679 0674)
