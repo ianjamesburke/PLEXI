@@ -871,28 +871,6 @@ impl PlexiApp {
                                                         });
                                                     },
                                                 );
-                                            } else if hovered_files {
-                                                // Skip TerminalView render while a file is being
-                                                // dragged over the zoomed pane. TerminalView::show()
-                                                // calls backend.sync() which clones the full grid
-                                                // under FairMutex contention — on a large terminal
-                                                // (e.g. a full-window Claude Code session) this
-                                                // blocked the main thread for several seconds.
-                                                // The drop itself is handled above (dropped_to_zoom
-                                                // guard), so we skip only the hover-frame renders.
-                                                log::debug!("[DRAG] zoom overlay: skipping TerminalView render during file hover");
-                                                let rect = ui.max_rect();
-                                                ui.scope_builder(
-                                                    egui::UiBuilder::new().max_rect(rect),
-                                                    |ui| {
-                                                        ui.centered_and_justified(|ui| {
-                                                            ui.colored_label(
-                                                                self.colors.text_dim,
-                                                                "Drop to paste path",
-                                                            );
-                                                        });
-                                                    },
-                                                );
                                             } else {
                                                 let font_size = t.font_size;
                                                 log::debug!("[DRAG] zoom overlay: TerminalView render start");
