@@ -10,7 +10,7 @@ date_added: "2026-06-19"
 
 Task creation flow only. Do not implement anything. The goal is a single, well-scoped stint task in `.stint/tasks/` with correct metadata, optionally linked to a GitHub issue.
 
-Stint is the operating graph. Sprint order, size, blocking, and area tags. A task without correct metadata derails `stint next` and bottleneck analysis.
+Stint is the operating graph. Priority, size, blocking, and area tags. A task without correct metadata derails `stint next` and bottleneck analysis.
 
 The stint task body owns all implementation detail, acceptance criteria, priority, and dependency order. `.stint/` is the only live work graph; do not maintain a separate priority projection.
 
@@ -65,24 +65,16 @@ Grep `GOTCHAS.md` for related pitfalls if it exists.
 
 ---
 
-## Step 3 -- Sprint Selection
+## Step 3 -- No Sprints
 
-```bash
-stint sprint list 2>&1
-```
+**This repo runs a flat task list. There are no sprints.** The sprint index files were deleted on 2026-08-02 and the `sprint` frontmatter field stripped from every task, so there is nothing to place a task into and nothing to ask the user about. Do not run `stint sprint ...`, do not add a `sprint` field, and do not ask which sprint a task belongs to.
 
-For any sprint that looks relevant:
+Ordering comes from `priority` plus `blocked_by`. `stint next` reads those directly and surfaces every unblocked `todo` task, so a well-prioritized task is scheduled by virtue of existing. That is the whole mechanism now — get the priority right and the task lands where it should.
 
-```bash
-stint sprint show <id> 2>&1
-```
+Two facts worth keeping, in case sprints ever come back:
 
-**Never assign a sprint on your own judgement.** Sprint placement is a scheduling decision the human owns, and an agent guessing at it silently corrupts the sprint graph — dates drift, goals blur, and `stint next` starts recommending work that was never scheduled.
-
-Rules:
-- **Human in the loop:** propose a sprint (or "no sprint") with a one-line reason and get an explicit answer. This is one of the few questions this skill is always allowed to ask.
-- **Autonomous mode:** omit the `sprint` field entirely. An unsprinted task is visible and triageable; a wrongly-sprinted one is invisible noise inside someone else's plan. Never default to "the current active sprint."
-- Never infer a sprint from priority, size, or area.
+- Membership was never the task frontmatter. stint's parser accepts a `sprint` field only to tolerate old files and then discards it (`/// Silently ignored if present in old task files` — `src/parse.rs`), and nothing serializes it back. A task claiming `s2` in frontmatter was simply unsprinted, silently, and `stint check` never flagged it.
+- The pre-flattening membership snapshot is archived at `.stint/archive/RESTORE-MANIFEST.md` alongside the original sprint files, recording every sprint's goal and ordered task list. Note `.stint/` is git-ignored, so this is local-only.
 
 ---
 
@@ -170,7 +162,6 @@ title: "<title>"
 status: todo
 priority: <p0-p4>
 size: <S|M|L>
-sprint: "<sN>"
 blocked_by: []
 gh_issue: []
 area:
@@ -222,7 +213,11 @@ Then confirm each new task is visible to stint:
 stint list 2>&1 | grep "<NNNN>"
 ```
 
-If a task is missing from `stint list`, the file landed in the wrong place. Find it with `find . -name "<NNNN>-*.md"`, move it to `.stint/tasks/`, and re-run validation.
+The SPRINT column is always `-`; that is correct and expected on a flat list.
+Read the row to confirm priority, size, and status came through as intended —
+`stint check` validates structure, not whether the metadata says what you meant.
+
+If a task is missing from `stint list` entirely, the file landed in the wrong place. Find it with `find . -name "<NNNN>-*.md"`, move it to `.stint/tasks/`, and re-run validation.
 
 Fix any errors before returning.
 
@@ -234,5 +229,5 @@ Return the task ID, file path, and GitHub issue URL if created.
 
 ```
 RECOMMENDATION:
-1. <one call -- either "dispatch via /implement-stint <NNNN>" or "park it -- task is ready when the sprint opens">
+1. <one call -- either "dispatch via /implement-stint <NNNN>" or "park it -- task is filed and will surface in stint next by priority">
 ```

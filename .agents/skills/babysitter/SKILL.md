@@ -1,6 +1,6 @@
 ---
 name: babysitter
-description: "Land a queue of stints by orchestrating ai agents in Plexi panes. You give it stints (or sprints); it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Waits for pane state event-driven. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
+description: "Land a queue of stints by orchestrating ai agents in Plexi panes. You give it stints; it spawns every pane it needs: a WORKER pane implements each batch and opens one PR, a separate fresh TESTER pane validates the PR against the real install build, bugs route between them until it passes, then merge and fresh panes for the next batch. The head relays itself to a fresh pane after every merge via RUN_STATE.md. You are the router, never the coder. Waits for pane state event-driven. Triggered by /babysitter, \"babysit the queue\", \"queue these stints\"."
 source: local
 date_added: "2026-07-11"
 ---
@@ -39,13 +39,12 @@ Tier is chosen at launch (`plexi pane new --agent <alias>`) — resolve the alia
 
 ```
 /babysitter [<PANE_ID>] <STINT_ID> [<STINT_ID> ...]
-/babysitter [<PANE_ID>] sprints <SPRINT_ID> [<SPRINT_ID> ...]
 /babysitter resume
 ```
 
 - `<PANE_ID>` optional: an already-idle agent pane to use as worker-1. Omitted (normal case) → spawn worker-1 yourself. A bare number is a pane id only if `plexi pane list` confirms a live agent pane with it; otherwise it's a stint id.
 - `<STINT_ID...>` — stints to land, in order.
-- `sprints <SPRINT_ID...>` — queue is every open task in the named sprints. Resolve with `stint sprint show <id>` at start, **re-resolve after every merge** (a merge can unblock tasks not in the initial snapshot). Run ends when the named sprints have no claimable tasks left. Tasks blocked on work outside the named sprints: report as skipped, never wait on them.
+- **Sprint mode is gone.** This repo flattened to a single task list on 2026-08-02; the sprint index files were deleted, so `stint sprint show` resolves nothing and a sprint-named queue would silently be empty. Pass an explicit stint list instead, or build one from `stint next` / `stint list` and hand over the IDs.
 - `resume` — fresh-head takeover: read `RUN_STATE.md`, re-resolve the queue, append a takeover line to `LOG.md`, continue at the next batch. Also the crash-recovery path.
 
 First action — **check that alpha is clean before spawning anything.** `just bs-start` refuses to branch a worktree from a dirty alpha, so a stray uncommitted edit blocks the first worker before it can claim. Your own edits to this file are the usual culprit. Get them committed as `chore(babysitter):` at run start, not at merge time — commit, never `git checkout --`. The head does not run git: hand the commit to the worker as its first instruction, or to a throwaway pane.
@@ -306,13 +305,13 @@ The head rots the same way workers do — single-use applies to it too. Each hea
 ```
 # Babysitter run state — overwritten at each merge boundary
 updated: <UTC timestamp>
-mode: sprints s9 s8 s4 | stints <remaining ids verbatim>
+mode: stints <remaining ids verbatim>
 auto_merge: yes|no
 merged: batch1 (0503+0532+0507) -> PR #2470; batch2 (0536+0534) -> PR #2471
 next: batch3 = 0535+0457 (small, default tier); note: 0531 unblocks after s8 four
 gotchas: <run-scoped only>
 ```
-The full sprint queue is never carried in context or the baton — sprint mode re-resolves it from `stint sprint show` at takeover. Only an explicit stint list is copied verbatim into `mode:`.
+The queue is always an explicit stint list, copied verbatim into `mode:` — there is no sprint indirection left to re-resolve at takeover.
 
 Relay, at each merge boundary (after step 6):
 1. Overwrite `RUN_STATE.md`.
@@ -348,7 +347,7 @@ Telemetry about the workflow, not the codebase. Append as you go.
 
 Log an entry (UTC timestamp) at: worker briefed (stints, tier, pane, time), PR opened (elapsed), each tester verdict (PASS/bugs, elapsed, attempt #), merge (total wall-clock, round count), and any workflow friction immediately (forgotten brief item, wasted tool call, thrash caught, unclear brief, a gotcha not yet in this skill — these are the highest-value lines).
 
-End of each sprint: append a Sprint Recap — what landed, per-worker timing/try-count, learnings, concrete workflow suggestions.
+End of each run: append a Run Recap — what landed, per-worker timing/try-count, learnings, concrete workflow suggestions.
 
 **Promotion goes through `LEARNINGS.md`, both halves, every run end:**
 - **WRITE.** Every suggestion promoted into this SKILL.md gets a `LEARNINGS.md` entry with a falsification trigger — the condition under which the rule gets deleted. No entry/trigger = not a promotion, revert it. Not-ready observations go in as `CANDIDATE`.
@@ -357,14 +356,14 @@ End of each sprint: append a Sprint Recap — what landed, per-worker timing/try
 
 Format:
 ```
-## 2026-07-21 — sprint <name/ids>
+## 2026-07-21 — run <name/ids>
 - 18:04 worker-1 briefed: stints 0501+0502, com (medium)
 - 18:41 PR #2460 open (37m)
 - 19:10 tester-1: 2 bugs (attempt 1)
 - 19:12 friction: worker ran /validate-pr despite brief clause — reword?
 - 20:02 tester-2: PASS (attempt 2)
 - 20:05 merged (2h01m, 2 rounds)
-### Sprint recap
+### Run recap
 ...
 ```
 
@@ -379,7 +378,7 @@ Applies to worker or tester, whichever hit the wall.
 ## Stop conditions
 
 - **"Queue empty" = every dispatched lane has reached a terminal state** (merged, or parked with a written reason in `RUN_STATE.md`) — not "the stint graph has no claimable tasks left." Enumerate every lane you dispatched this run, original queue or added mid-run, before declaring done. A lane still awaiting a tester verdict blocks close-out like an unclaimed stint would.
-- Queue drained (per above) → write the sprint recap, run both halves of the `LEARNINGS.md` ledger, report a summary (batch → stints → PR# → merged), stop scheduling wakeups.
+- Queue drained (per above) → write the run recap, run both halves of the `LEARNINGS.md` ledger, report a summary (batch → stints → PR# → merged), stop scheduling wakeups.
 - A batch hard-fails repeatedly (worker can't clear tester bugs after a couple of full rounds) → stop, leave it, surface the last tester report. Don't thrash.
 - User says stop / takes over.
 

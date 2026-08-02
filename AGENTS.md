@@ -9,7 +9,7 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 - **What shipped** → `git log --oneline -20`
 - **Product direction** → `NORTH_STAR.md`
 - **Feature specs** → `docs/*.md` (active PRMs; see `docs/AGENTS.md` for lifecycle rules)
-- **Sprint graph** → `.stint/` (`stint next`, `stint status`)
+- **Task graph** → `.stint/` (`stint next`, `stint status`). Flat list, no sprints — ordering is `priority` plus `blocked_by`.
 - **Implementation tickets** → `.stint/` tasks (GitHub issues are optional; stint is authoritative)
 
 Do not track in-progress work or completion status in this file.
@@ -48,7 +48,7 @@ Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main` o
 
 ## Tasks and Issues
 
-Always use the `/create-stint` skill to create tasks. It owns the full flow: duplicate check, sizing, sprint placement, blocking, and optional GitHub issue creation. Never create stint tasks or GitHub issues manually.
+Always use the `/create-stint` skill to create tasks. It owns the full flow: duplicate check, sizing, priority, blocking, and optional GitHub issue creation. Never create stint tasks or GitHub issues manually.
 
 `.stint/` is git-ignored by design. New or updated stint tasks may not appear in `git status`; that is OK. Validate task state with `stint check`, `stint list`, `stint show <id>`, and `stint status`.
 
