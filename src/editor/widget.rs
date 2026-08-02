@@ -569,6 +569,14 @@ impl<'a> EditorWidget<'a> {
             let events = ui.input(|i| i.events.clone());
             for event in &events {
                 match event {
+                    // Text input represents printable characters. Editing controls
+                    // arrive as `Event::Key` (and deliberate clipboard content as
+                    // `Event::Paste`), so accepting a control-text echo here can
+                    // insert a stray tab after an unrelated interaction changed
+                    // focus to this editor.
+                    Event::Text(text) if text.chars().any(char::is_control) => {
+                        log::info!("editor: ignored control-character text event");
+                    }
                     Event::Text(text) => commands.push(EditorCommand::InsertText(text.clone())),
                     Event::Paste(text) => {
                         let replacement = if self.mode.is_markdown()
@@ -1724,6 +1732,19 @@ mod tests {
         h.step();
         assert_eq!(semantic(&h).text, "hello\nworld");
         assert!(semantic(&h).can_redo);
+    }
+
+    #[test]
+    fn control_text_events_do_not_edit_document() {
+        let mut h = harness("before");
+        h.event(Event::Text("\t".into()));
+        h.step();
+
+        assert_eq!(
+            semantic(&h).text,
+            "before",
+            "physical Tab is handled by its key event; a control-text echo must not create a rogue tab"
+        );
     }
 
     #[test]
