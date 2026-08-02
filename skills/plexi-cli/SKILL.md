@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.
-skill_version: "5.0.0"
+skill_version: "5.0.1"
 plexi_version: "0.2.3"
 last_verified: "2026-08-01"
 ---
@@ -25,6 +25,8 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   and `pane new --agent` is the dedicated verb for booting another agent.
 - **Slots** — store a small, named pane result that another pane can inspect or
   wait for: `plexi pane slot --help`.
+- **Locks** — coordinate host-owned named leases between panes with FIFO grants,
+  timeouts, and pane-death cleanup: `plexi lock --help`.
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
@@ -49,6 +51,7 @@ The release gate verifies these feature-map entry points:
 ```
 pane
 pane slot
+lock
 context
 app
 notify

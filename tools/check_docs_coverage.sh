@@ -18,6 +18,7 @@ SKIP=(
   "demo"         # self-documenting interactive tutorial
   "doctor"       # diagnostic tool, no standalone docs yet
   "events"       # developer API, covered in sdk-emitter
+  "lock"         # build-recipe primitive; generated CLI reference + plexi-cli skill are canonical
   "note"         # alias for notes, covered in quick-note
   "notify"       # developer API, covered in sdk-emitter
   "registry"     # internal developer tool

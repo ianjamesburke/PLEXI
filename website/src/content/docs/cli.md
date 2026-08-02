@@ -1045,6 +1045,41 @@ Delete a named pane slot
 | `<name>` | string | yes | Slot name |
 | `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
 
+## `plexi lock`
+
+Coordinate a named host-owned lease between panes
+
+| Subcommand | Description |
+|---|---|
+| `acquire` | Block until the host grants this pane the named lease |
+| `release` | Release this pane's named lease |
+| `status` | Print holder pane id(s), FIFO queue depth, and oldest wait time |
+
+### `plexi lock acquire`
+
+Block until the host grants this pane the named lease
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes |  |
+| `--timeout` | string | no | Default: `900`. |
+
+### `plexi lock release`
+
+Release this pane's named lease
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes |  |
+
+### `plexi lock status`
+
+Print holder pane id(s), FIFO queue depth, and oldest wait time
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes |  |
+
 ## `plexi events`
 
 Subscribe to a Plexi app's event streams and receive brokered deliveries.

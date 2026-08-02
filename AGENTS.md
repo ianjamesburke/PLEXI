@@ -97,6 +97,7 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 - **Orient from the document, not the issues.** The PRM IS the plan.
 - **Never serialize issue reads.** Use `gh issue list --search` with filters.
 - **Context is a budget.** Before fetching, ask: do I already have enough?
+- **Checkpoint before another audit.** Once a coherent implementation slice has passed its targeted validation, commit it before starting a fresh review or broad suite. Fix review findings in that next slice, then commit; do not run repeated review cycles against one uncommitted pile unless the user explicitly asks for an adversarial audit.
 - **Pipeline phases flow inline.** implement → open-pr → validate → merge. No stopping to ask.
 - **Match user energy.** When the user says "do it," start building.
 - **Sequential sub-agents only.** Never parallel in one worktree.

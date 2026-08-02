@@ -54,7 +54,7 @@ This skill is not complete when the worktree exists. Completion means the task w
 - **The gate is automated + headless only.** Never install, boot, foreground, or drive the GUI host — even when a task's Done-When asks for live validation; the tester round satisfies that requirement. Headless renders (`just scene` / `just scene-live` → PNG) are allowed. A worker told to foreground the host can wedge in AppKit activation long after its code is green (proven live).
 - **Run every suite env-stripped.** Worker panes run inside a live Plexi host, so `PLEXI_CHANNEL` / `PLEXI_CONTEXT_*` / `PLEXI_SOCKET` leak into `cargo test`, which resolves workspace/config state to the host's real channel profile and produces flaky `.plexi-<channel>` / `config_dir` / `temp_dir` failures that look like the diff's own. Always run:
   ```bash
-  env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi
+  bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi
   ```
   When the diff touches the Python SDK or generated docs, also run `mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py` and every `just gen-*-docs` / `just check-*-docs` generator the diff touches, committing regenerated output.
 - **Memory watchdog on every suite run.** `ulimit -v` does not work on macOS — XNU does not enforce `RLIMIT_AS`, so a `( ulimit -v ...; cargo test )` wrap constrains nothing (proven live). Instead, run the suite alongside a background poller that kills any `target/debug/deps/plexi-*` process exceeding ~8 GB RSS, sampling `top -l 1 -o mem -n 5 -stats mem,pid,command` every 15 s. A multi-GB test balloon is a real bug in the diff (unbounded queue, wake feedback loop, an accumulating test adapter) — never flake to re-run.
@@ -276,8 +276,8 @@ Spawn **Sub-agent I** with the spec from Phase 3 and the worktree path. Sub-agen
 >
 > Rules:
 > - Write tests before implementation for host logic. New `AppRequest` or `HostEffect` behavior needs a `HostHarness` test first.
-> - Always run `cargo build` after edits.
-> - Run the narrower relevant test command: `cargo test --bin plexi <test_name>` (adjust filter as needed).
+> - Always run `bash scripts/cargo-with-lease.sh cargo build` after edits.
+> - Run the narrower relevant test command through `bash scripts/cargo-with-lease.sh cargo test --bin plexi <test_name>` (adjust filter as needed).
 - After tests pass, run a Codex review against alpha (maximum 2 runs; iterate on findings between runs). Write output to a tmp file; only read it if findings are present:
 >   ```bash
 >   CODEX_OUT="/tmp/plexi-codex-review-$$.txt"
