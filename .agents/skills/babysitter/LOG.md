@@ -2130,3 +2130,11 @@ Still unfixed from the previous run's suggestion list:
         than respawning. Worth a host primitive request if it recurs.
 - 20:14Z friction: collapsed paste again on a freshly-booted pane (L003, 7th observed occurrence).
         `pane key 712 enter` submitted it; confirmed `pane status` -> working.
+
+## 2026-08-02 — queue 0670 0690
+- 00:05 head pane 733 (babysitter-1, Claude). Prior run closed: PR #2555 merged 23:38Z, #2557 merged.
+- 00:05 alpha clean at start; no chore(babysitter) commit needed.
+- 00:05 worker-0690 briefed: stint 0690 (host build lease, size l), com (medium), pane 734
+- 00:05 worker-0670 briefed: stint 0670 (atomic stint id reservation, size s), com (medium), pane 735
+- 00:05 note: 0670 spans two repos (ianjamesburke/stint + PLEXI skill) -> two PRs, repo boundary not scope creep. Cannot batch with 0690.
+- 00:05 both briefs carry an enumeration-first checkpoint (blocked-for-review before gating code).
