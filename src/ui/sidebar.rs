@@ -1,7 +1,7 @@
 use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
-use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
+use crate::ui::sidebar_row::{PaneDots, SidebarAction, SidebarRow};
 use crate::workspace::router::ContextMove;
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
@@ -227,7 +227,7 @@ impl PlexiApp {
             let ctx_id = self.router.get(i).context_id;
             let pane_dots = self.sidebar_pane_dots(ctx_id, is_active);
 
-            // --- Renaming: special-cased before ContextItem path ---
+            // --- Renaming: special-cased before the SidebarRow path ---
             if is_renaming {
                 let fill = if is_active {
                     self.colors.bg_active
@@ -295,7 +295,7 @@ impl PlexiApp {
                 continue;
             }
 
-            // --- Normal row via ContextItem ---
+            // --- Normal row via SidebarRow ---
             let ctx_name = self.router.get(i).name.clone();
             let badge_count = if is_active {
                 self.visible_notification_count()
@@ -304,7 +304,7 @@ impl PlexiApp {
             };
             let subtitle = Some(self.router.get(i).root.display().to_string());
 
-            let (action, response) = ContextItem {
+            let (action, response) = SidebarRow {
                 is_active,
                 is_dragging,
                 any_dragging,
@@ -316,7 +316,7 @@ impl PlexiApp {
                 pane_dots,
                 draggable: true,
             }
-            .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
+            .show(ui, egui::Id::new(("ctx", i)), &self.colors);
 
             active_rects.push(response.rect);
 
@@ -442,7 +442,7 @@ impl PlexiApp {
 
                     let pane_dots = self.sidebar_pane_dots(ctx_id, false);
 
-                    let (action, response) = ContextItem {
+                    let (action, response) = SidebarRow {
                         is_active: false,
                         is_dragging: self.drag_context == Some(i),
                         any_dragging: self.drag_context.is_some(),
@@ -454,7 +454,7 @@ impl PlexiApp {
                         pane_dots,
                         draggable: true,
                     }
-                    .draw(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
+                    .show(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
 
                     parked_rects.push(response.rect);
 

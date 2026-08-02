@@ -6932,3 +6932,44 @@ fn logic_drains_run_without_panic_visible_and_hidden() {
         "hidden frame pass must still run every logic drain and end at logic_complete"
     );
 }
+
+/// Stint 0715: the sidebar's context row used to allocate `available_width`
+/// plus one unbudgeted `item_spacing.x`. egui stores a panel's *content* rect
+/// as that panel's size, so the overflow was read back as the panel width on
+/// the next frame and re-overflowed — a monotonic ramp (+8pt/frame here) that
+/// pinned the sidebar at its `size_range` maximum and undid any user resize.
+/// The first-run state, exactly one context, is the one that showed it.
+#[cfg(test)]
+mod sidebar_panel_width_tests {
+    use super::*;
+
+    fn sidebar_width(h: &HostHarness) -> f32 {
+        egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("sidebar"))
+            .expect("sidebar panel state must exist after a frame")
+            .rect
+            .width()
+    }
+
+    #[test]
+    fn single_context_sidebar_settles_at_default_width() {
+        let mut h = HostHarness::new();
+        h.app.sidebar_visible = true;
+        assert_eq!(h.app.router.len(), 1, "setup: first-run is one context");
+
+        h.run_frames(2);
+        let settled = sidebar_width(&h);
+        assert_eq!(
+            settled,
+            crate::ui::style::SIDEBAR_DEFAULT_W,
+            "a single-context sidebar must settle at SIDEBAR_DEFAULT_W"
+        );
+
+        h.run_frames(20);
+        assert_eq!(
+            sidebar_width(&h),
+            settled,
+            "the sidebar must not grow frame over frame — a widening panel means \
+             the context row is again allocating more than the panel's width"
+        );
+    }
+}

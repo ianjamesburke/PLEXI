@@ -9,6 +9,7 @@ Host overlays should use these instead of raw egui layout wherever a primitive e
 - `overlay::ModalShell` for modal frame, scrim, title, body, scroll body, and dismissal.
 - `typography` for modal titles, section labels, body text, captions, and muted text.
 - `list::ListRow`, `row`, `text_field::TextField`, `button`, `hints::HintBar`, and `surface` for repeated chrome.
+- `sidebar_row::SidebarRow` for context-list rows. Two tiers, the same convention `ListRow` uses for a secondary line: identity on top (index gutter, name, close action), pane state below (per-window pip capsules, overflow count, notification badge, root path). It resolves every slot rect in one `measure` pass; never hand-place a piece of a sidebar row.
 
 ## Design Tokens (`src/style.rs`)
 

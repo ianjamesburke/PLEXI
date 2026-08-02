@@ -1,27 +1,89 @@
-use crate::ui::list::{paint_selection, paint_text_centered};
+//! The sidebar context row.
+//!
+//! `SidebarRow` is the context list's counterpart to [`crate::ui::list::ListRow`]:
+//! same shared internals (selection painting, text elision, pixel snapping),
+//! plus the affordances a list row has no business carrying — a leading index
+//! gutter aligned to the title, a numeric badge slot distinct from the trailing
+//! action, drag-reorder sensing, and pane pips grouped into per-window capsules.
+//!
+//! The row is two tiers, the same convention [`crate::ui::list::ListRow`] uses
+//! when it has a secondary line: identity on top (index gutter, context name,
+//! and the close action pinned to the row's top-right corner), pane state
+//! below (per-window pip capsules, the overflow count, the notification badge,
+//! and the root path filling whatever is left).
+//!
+//! Geometry is resolved exactly once, by [`RowGeometry::measure`], into explicit
+//! slot rects in row-local space; [`RowGeometry::translated`] moves the whole set
+//! onto the allocated rect. Painting and hit testing both read those rects, so no
+//! position is ever reconstructed from a captured height after the fact, and the
+//! row's width is a fixed budget that cannot exceed what the panel offered.
+
+use crate::ui::list::{elide_to_width, paint_selection, paint_text_centered, selection_inset};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::emath::GuiRounding;
-use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
+use egui::{Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
-pub const ACTION_ZONE_WIDTH: f32 = 22.0;
-
+/// Left inset before the index gutter. Every sidebar row is a top-level
+/// context, so there is no nesting level to indent for.
+const ROW_INDENT: f32 = 4.0;
 /// Fixed-width left gutter that holds the context index number.
 const GUTTER_W: f32 = 18.0;
-const ROW_INDENT: f32 = 4.0;
-
 /// Top and bottom padding added inside each row for vertical breathing room.
-const ROW_PAD_V: f32 = 7.0;
+const ROW_PAD_V: f32 = style::SPACE_MD;
+/// Right margin for row content, measured from the row edge. The selection
+/// card insets by `SPACE_XS`, so this leaves visible air inside its outline.
+const ROW_PAD_RIGHT: f32 = style::SPACE_MD;
+/// Vertical gap between the identity tier and the pane-state tier. The two
+/// tiers are separate readings of the row, so the gap has to be wide enough
+/// that they do not scan as one wrapped line.
+const TIER_GAP: f32 = style::SPACE_SM;
+
+/// The close action is the row's card-level dismiss, pinned to the top-right
+/// corner of the identity tier — a touch larger than body chrome so it reads
+/// as closing the whole card, not editing a field.
+const CLOSE_SLOT_W: f32 = 26.0;
+const CLOSE_GLYPH_SIZE: f32 = style::TEXT_TITLE;
+/// Gap between the pip strip and the notification badge. The badge is a
+/// separate kind of thing from the pips and must never look glued to them.
+const PIP_BADGE_GAP: f32 = style::SPACE_SM;
+/// Gap before the root path, which fills whatever the pane state leaves.
+const PATH_GAP: f32 = style::SPACE_SM;
+/// Below this the path is dropped rather than elided down to a stub — pane
+/// state is the tier's job, and "/pro…" is noise, not information.
+const PATH_MIN_W: f32 = 48.0;
+/// Gap between the last capsule and the "+N" overflow count.
+const PIP_TEXT_GAP: f32 = style::SPACE_SM;
 
 /// Status-pip radius. Shared with the portal minimap so activity dots are the
 /// same size everywhere they appear (sidebar rows + portal previews).
 pub(crate) const PANE_DOT_RADIUS: f32 = 4.0;
 const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
-const WINDOW_GROUP_PAD_X: f32 = 5.0;
-const WINDOW_GROUP_PAD_Y: f32 = 4.0;
+/// Air between the dots and the capsule's stroke, on each axis.
+const WINDOW_GROUP_PAD_X: f32 = 7.0;
+const WINDOW_GROUP_PAD_Y: f32 = 6.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
-const SIDEBAR_BADGE_W: f32 = 18.0;
+const WINDOW_GROUP_RADIUS: CornerRadius = CornerRadius::same(4);
+/// Width reserved for the "+N" label when the pane count exceeds the cap.
+const PIP_OVERFLOW_W: f32 = 20.0;
+const GROUP_STROKE_W: f32 = 1.0;
+const GROUP_STROKE_W_RETURN: f32 = 1.5;
+/// Return-target marker: a small triangle whose base sits flush on the
+/// capsule's inner top edge and whose tip points down at the dots. It is a
+/// fixed size rather than a fraction of the capsule's padding — the marker
+/// should not grow when the capsule gets roomier — and the assertion below is
+/// what keeps its tip clear of the dot row.
+const PIN_HALF_W: f32 = 2.5;
+const PIN_H: f32 = 3.0;
+const _: () = assert!(
+    PIN_H > 0.0 && PIN_H < WINDOW_GROUP_PAD_Y,
+    "the pin must fit inside the capsule's top padding without touching the dot row"
+);
+const _: () = assert!(
+    PIN_HALF_W * 2.0 < PANE_DOT_SPACING,
+    "the pin must not reach the neighbouring dot"
+);
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
@@ -82,7 +144,7 @@ pub struct PaneDotWindow {
     pub is_active: bool,
 }
 
-pub struct ContextItem {
+pub struct SidebarRow {
     pub is_active: bool,
     pub is_dragging: bool,
     pub any_dragging: bool,
@@ -90,43 +152,305 @@ pub struct ContextItem {
     pub ctx_name: String,
     pub ctx_index: Option<usize>,
     pub badge_count: usize,
-    /// Root path shown on its own line below the name row.
+    /// Root path, trailing the pane-state tier.
     pub subtitle: Option<String>,
-    /// Dots rendered below the name row representing panes.
+    /// Pane pips, leading the pane-state tier.
     pub pane_dots: Option<PaneDots>,
     /// Whether this row supports drag reordering. When false, hover shows
     /// PointingHand instead of Grab and drag actions are suppressed.
     pub draggable: bool,
 }
 
-/// Render pane-indicator dots into the current horizontal layout position.
-/// Shared by both the subtitle+pips path and the pips-only fallback path.
-fn draw_pips(
-    ui: &mut egui::Ui,
-    pane_dots: &Option<PaneDots>,
+/// One window's capsule inside the pip strip, in strip-local coordinates.
+struct PipGroup {
+    /// Dot range this capsule covers, already clamped to the visible cap.
+    start: usize,
+    end: usize,
+    is_return_target: bool,
+    is_active: bool,
+    x: f32,
+    width: f32,
+}
+
+/// The measured pip strip: the single source of truth for its width, used both
+/// to budget the title text and to paint the capsules.
+struct PipLayout {
+    width: f32,
+    height: f32,
+    groups: Vec<PipGroup>,
+    /// Number of panes past the visible cap, when there are any.
+    overflow: Option<usize>,
+}
+
+impl PipLayout {
+    /// The widest strip that fits `max_width`. The visible dot count shrinks
+    /// until it does — panes past it fold into the "+N" overflow — so a narrow
+    /// panel loses dots rather than pushing the strip under the context name.
+    fn measure(dots: &PaneDots, max_width: f32) -> Option<Self> {
+        let mut cap = dots.count.min(PANE_DOT_MAX);
+        loop {
+            match Self::at_cap(dots, cap) {
+                Some(layout) if layout.width <= max_width => return Some(layout),
+                _ if cap == 0 => return None,
+                _ => cap -= 1,
+            }
+        }
+    }
+
+    fn at_cap(dots: &PaneDots, capped: usize) -> Option<Self> {
+        if dots.count == 0 {
+            return None;
+        }
+        // A context always reports its spatial windows; a caller that supplies
+        // none still gets one capsule, so there is exactly one layout path.
+        let ranges: Vec<(usize, usize, bool, bool)> = if capped == 0 {
+            Vec::new()
+        } else if dots.windows.is_empty() {
+            vec![(0, capped, false, false)]
+        } else {
+            dots.windows
+                .iter()
+                .filter(|window| window.count > 0 && window.start < capped)
+                .map(|window| {
+                    (
+                        window.start,
+                        (window.start + window.count).min(capped),
+                        window.is_return_target,
+                        window.is_active,
+                    )
+                })
+                .collect()
+        };
+
+        let mut groups = Vec::with_capacity(ranges.len());
+        let mut x = 0.0_f32;
+        for (i, &(start, end, is_return_target, is_active)) in ranges.iter().enumerate() {
+            let width = (end - start).saturating_sub(1) as f32 * PANE_DOT_SPACING
+                + PANE_DOT_RADIUS * 2.0
+                + WINDOW_GROUP_PAD_X * 2.0;
+            groups.push(PipGroup {
+                start,
+                end,
+                is_return_target,
+                is_active,
+                x,
+                width,
+            });
+            x += width;
+            if i + 1 < ranges.len() {
+                x += WINDOW_GROUP_GAP;
+            }
+        }
+
+        let overflow = (dots.count > capped).then(|| dots.count - capped);
+        if overflow.is_some() {
+            if !groups.is_empty() {
+                x += PIP_TEXT_GAP;
+            }
+            x += PIP_OVERFLOW_W;
+        }
+
+        Some(Self {
+            width: x,
+            height: PANE_DOT_RADIUS * 2.0 + WINDOW_GROUP_PAD_Y * 2.0,
+            groups,
+            overflow,
+        })
+    }
+
+    /// Center x of dot `idx`, in strip-local coordinates.
+    fn dot_center_x(&self, idx: usize) -> Option<f32> {
+        self.groups
+            .iter()
+            .find(|group| (group.start..group.end).contains(&idx))
+            .map(|group| {
+                group.x
+                    + WINDOW_GROUP_PAD_X
+                    + PANE_DOT_RADIUS
+                    + (idx - group.start) as f32 * PANE_DOT_SPACING
+            })
+    }
+}
+
+/// Every rect the row paints or hit tests. Measured in row-local space (origin
+/// at the row's top-left), then translated onto the allocated rect.
+struct RowGeometry {
+    rect: Rect,
+    /// Index-number cell. Its center y is the title's center y, so the number
+    /// shares the name's optical baseline instead of the whole row's.
+    gutter: Rect,
+    title: Rect,
+    title_galley: std::sync::Arc<egui::Galley>,
+    /// Close action, pinned to the identity tier's right edge.
+    close: Option<Rect>,
+    /// Strip origin (left edge, vertical center) plus its measured layout.
+    pips: Option<(Pos2, PipLayout)>,
+    /// Badge pill and its centered count text.
+    badge: Option<(Rect, std::sync::Arc<egui::Galley>)>,
+    /// Root path, right-aligned in whatever the pane-state tier has left.
+    path: Option<(Rect, std::sync::Arc<egui::Galley>)>,
+}
+
+impl RowGeometry {
+    fn measure(ui: &egui::Ui, row: &SidebarRow, width: f32) -> Self {
+        let content_left = ROW_INDENT + GUTTER_W;
+        let content_right = width - ROW_PAD_RIGHT;
+
+        // ── Identity tier: gutter, name, close ────────────────────────────
+        // The close action is the only thing that shares this line, so the
+        // name's budget is one subtraction and does not vary with pane state.
+        let close_left = row.action_enabled.then_some(content_right - CLOSE_SLOT_W);
+        let title_max = (close_left.unwrap_or(content_right) - content_left).max(0.0);
+        let title_galley = elided_galley(
+            ui,
+            &row.ctx_name,
+            egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE),
+            title_max,
+        );
+        // The close slot is a hit target, not a text line: it is centered on
+        // the title and allowed to overhang into the row's padding rather than
+        // stretching the tier and bulking up every row.
+        let identity_h = title_galley.size().y;
+        let identity_top = ROW_PAD_V;
+        let identity_center_y = identity_top + identity_h / 2.0;
+
+        // ── Pane-state tier: pips, badge, path ────────────────────────────
+        // Laid out left to right with fixed reservations, so the path is the
+        // only elastic element and no two of them can ever collide.
+        let lane = (content_right - content_left).max(0.0);
+        let badge_galley = (row.badge_count > 0).then(|| {
+            let label = if row.badge_count > 9 {
+                "9+".to_string()
+            } else {
+                row.badge_count.to_string()
+            };
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    label,
+                    egui::FontId::proportional(style::TEXT_META),
+                    Color32::PLACEHOLDER,
+                )
+            })
+        });
+        let badge_size = badge_galley.as_ref().map(|galley| {
+            let h = galley.size().y + style::BADGE_PAD_V * 2.0;
+            Vec2::new((galley.size().x + style::BADGE_PAD_H * 2.0).max(h), h)
+        });
+        let badge_reserved = badge_size.map_or(0.0, |size| size.x + PIP_BADGE_GAP);
+
+        let pips = row
+            .pane_dots
+            .as_ref()
+            .and_then(|dots| PipLayout::measure(dots, lane - badge_reserved));
+        let mut state_x = content_left + pips.as_ref().map_or(0.0, |layout| layout.width);
+        let badge_left = badge_size.map(|size| {
+            let left = if pips.is_some() {
+                state_x + PIP_BADGE_GAP
+            } else {
+                state_x
+            };
+            state_x = left + size.x;
+            left
+        });
+
+        let path_avail = (content_right - state_x - PATH_GAP).max(0.0);
+        let path_galley = row
+            .subtitle
+            .as_ref()
+            .filter(|_| path_avail >= PATH_MIN_W)
+            .map(|path| {
+                elided_galley(
+                    ui,
+                    &shorten_path(path),
+                    egui::FontId::proportional(style::TEXT_META),
+                    path_avail,
+                )
+            });
+
+        let state_h = pips
+            .as_ref()
+            .map_or(0.0, |layout| layout.height)
+            .max(badge_size.map_or(0.0, |size| size.y))
+            .max(path_galley.as_ref().map_or(0.0, |g| g.size().y));
+        // A row with no pane state at all is one tier tall, gap included.
+        let state_top = identity_top + identity_h + if state_h > 0.0 { TIER_GAP } else { 0.0 };
+        let state_center_y = state_top + state_h / 2.0;
+        let height = state_top + state_h + ROW_PAD_V;
+
+        let centered = |left: f32, size: Vec2| {
+            Rect::from_min_size(Pos2::new(left, state_center_y - size.y / 2.0), size)
+        };
+
+        Self {
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)),
+            gutter: Rect::from_min_size(
+                Pos2::new(ROW_INDENT, identity_top),
+                Vec2::new(GUTTER_W, identity_h),
+            ),
+            title: Rect::from_min_size(
+                Pos2::new(content_left, identity_center_y - identity_h / 2.0),
+                title_galley.size(),
+            ),
+            title_galley,
+            close: close_left.map(|left| {
+                Rect::from_center_size(
+                    Pos2::new(left + CLOSE_SLOT_W / 2.0, identity_center_y),
+                    Vec2::splat(CLOSE_SLOT_W),
+                )
+            }),
+            pips: pips.map(|layout| (Pos2::new(content_left, state_center_y), layout)),
+            badge: badge_galley
+                .zip(badge_left)
+                .zip(badge_size)
+                .map(|((galley, left), size)| (centered(left, size), galley)),
+            path: path_galley.map(|galley| {
+                let size = galley.size();
+                (centered(content_right - size.x, size), galley)
+            }),
+        }
+    }
+
+    fn translated(self, offset: Vec2) -> Self {
+        Self {
+            rect: self.rect.translate(offset),
+            gutter: self.gutter.translate(offset),
+            title: self.title.translate(offset),
+            title_galley: self.title_galley,
+            close: self.close.map(|rect| rect.translate(offset)),
+            pips: self.pips.map(|(origin, layout)| (origin + offset, layout)),
+            badge: self
+                .badge
+                .map(|(rect, galley)| (rect.translate(offset), galley)),
+            path: self
+                .path
+                .map(|(rect, galley)| (rect.translate(offset), galley)),
+        }
+    }
+}
+
+fn elided_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font_id: egui::FontId,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let text = elide_to_width(ui, text, font_id.clone(), max_width);
+    // PLACEHOLDER defers the color to paint time, so measurement never has to
+    // know which of the row's alpha-modulated tones this text will end up in.
+    ui.fonts_mut(|f| f.layout_no_wrap(text, font_id, Color32::PLACEHOLDER))
+}
+
+/// Paint the pip strip: one capsule per spatial window, the dots inside them,
+/// the return-target pin, and the overflow count.
+fn paint_pips(
+    ui: &egui::Ui,
+    dots: &PaneDots,
+    origin: Pos2,
+    layout: &PipLayout,
     colors: &Colors,
     row_alpha: f32,
     is_dragging: bool,
 ) {
-    let Some(dots) = pane_dots else { return };
-    if dots.count == 0 {
-        return;
-    }
-    let capped = dots.count.min(PANE_DOT_MAX);
-    let groups: Vec<&PaneDotWindow> = dots
-        .windows
-        .iter()
-        .filter(|group| group.count > 0 && group.start < capped)
-        .collect();
-    let group_count = groups.len().max(1);
-    let mut dot_area_width = (capped as f32) * PANE_DOT_SPACING
-        + (group_count as f32) * WINDOW_GROUP_PAD_X * 2.0
-        + (group_count.saturating_sub(1) as f32) * WINDOW_GROUP_GAP;
-    if dots.count > PANE_DOT_MAX {
-        dot_area_width += 20.0;
-    }
-    let dot_size = Vec2::new(dot_area_width, PANE_DOT_RADIUS * 2.0 + 4.0);
-    let (rect, _) = ui.allocate_exact_size(dot_size, Sense::hover());
     let t = ui.input(|i| i.time);
     let has_working = dots
         .activities
@@ -139,167 +463,125 @@ fn draw_pips(
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
     }
+
     let painter = ui.painter();
-    let cy = rect
-        .center()
-        .y
-        .round_to_pixel_center(painter.pixels_per_point());
-    let mut dot_centers = vec![0.0; capped];
-    let mut group_rects = Vec::with_capacity(groups.len());
-    let mut cursor_x = rect.min.x;
-    if groups.is_empty() {
-        for (dot_i, center) in dot_centers.iter_mut().enumerate() {
-            *center = (cursor_x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS)
-                .round_to_pixel_center(painter.pixels_per_point());
-            cursor_x += PANE_DOT_SPACING;
-            if dot_i + 1 == capped {
-                let group_rect = egui::Rect::from_min_max(
-                    egui::pos2(rect.min.x, cy - PANE_DOT_RADIUS - WINDOW_GROUP_PAD_Y),
-                    egui::pos2(
-                        cursor_x - PANE_DOT_SPACING
-                            + PANE_DOT_RADIUS * 2.0
-                            + WINDOW_GROUP_PAD_X * 2.0,
-                        cy + PANE_DOT_RADIUS + WINDOW_GROUP_PAD_Y,
-                    ),
-                )
-                .round_to_pixels(painter.pixels_per_point());
-                painter.rect_filled(
-                    group_rect,
-                    egui::CornerRadius::same(4),
-                    with_alpha(colors.bg_hover, 0.7 * row_alpha),
-                );
-            }
-        }
-    } else {
-        for (group_i, group) in groups.iter().enumerate() {
-            let start = group.start;
-            let end = (group.start + group.count).min(capped);
-            let group_width = (end - start - 1) as f32 * PANE_DOT_SPACING
-                + PANE_DOT_RADIUS * 2.0
-                + WINDOW_GROUP_PAD_X * 2.0;
-            let group_rect = egui::Rect::from_min_size(
-                egui::pos2(cursor_x, cy - PANE_DOT_RADIUS - WINDOW_GROUP_PAD_Y),
-                egui::vec2(
-                    group_width,
-                    PANE_DOT_RADIUS * 2.0 + WINDOW_GROUP_PAD_Y * 2.0,
-                ),
-            )
-            .round_to_pixels(painter.pixels_per_point());
-            let fill = if group.is_active {
-                with_alpha(colors.accent, 0.16 * row_alpha)
-            } else {
-                // Keep group fill darker than a hovered row, so hover remains
-                // a row-level wash instead of erasing window boundaries.
-                with_alpha(colors.bg_darkest, 0.3 * row_alpha)
-            };
-            let stroke = if group.is_active {
-                egui::Stroke::new(1.0_f32, with_alpha(colors.accent, row_alpha))
-            } else if group.is_return_target {
-                egui::Stroke::new(
-                    1.5_f32,
-                    // `border` is the theme's quiet structural outline; the
-                    // previous high-contrast text color made this capsule
-                    // compete with the context name and activity dots.
-                    with_alpha(colors.border, row_alpha),
-                )
-            } else {
-                egui::Stroke::new(1.0_f32, with_alpha(colors.text_dim, 0.72 * row_alpha))
-            };
-            painter.rect_filled(group_rect, egui::CornerRadius::same(4), fill);
-            painter.rect_stroke(
-                group_rect,
-                egui::CornerRadius::same(4),
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            group_rects.push((group, group_rect));
-            for (dot_i, center) in dot_centers
-                .iter_mut()
-                .enumerate()
-                .take(end)
-                .skip(start)
-            {
-                *center = (cursor_x
-                    + WINDOW_GROUP_PAD_X
-                    + PANE_DOT_RADIUS
-                    + (dot_i - start) as f32 * PANE_DOT_SPACING)
-                    .round_to_pixel_center(painter.pixels_per_point());
-            }
-            cursor_x += group_width;
-            if group_i + 1 < groups.len() {
-                cursor_x += WINDOW_GROUP_GAP;
-            }
-        }
-    }
-    for (dot_i, &cx) in dot_centers.iter().enumerate().take(capped) {
-        let is_hidden = dots.hidden_set.contains(&dot_i);
-        let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
-        let focused = dots.focused_idx == Some(dot_i);
-        let mut color = crate::ui::activity::pip_color(agent_state, focused, colors, t, dot_i)
-            .gamma_multiply(row_alpha);
-        if is_dragging && agent_state.is_none() && !focused {
-            color = color.gamma_multiply(0.4);
-        }
-        let center = egui::pos2(cx, cy).round_to_pixel_center(painter.pixels_per_point());
-        if is_hidden {
-            painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0_f32, color));
+    let ppp = painter.pixels_per_point();
+    let cy = origin.y.round_to_pixel_center(ppp);
+
+    for group in &layout.groups {
+        let group_rect = Rect::from_min_size(
+            Pos2::new(origin.x + group.x, cy - layout.height / 2.0),
+            Vec2::new(group.width, layout.height),
+        )
+        .round_to_pixels(ppp);
+        let fill = if group.is_active {
+            with_alpha(colors.accent, 0.16 * row_alpha)
         } else {
-            painter.circle_filled(center, PANE_DOT_RADIUS, color);
-        }
-    }
-    // The pin is intentionally neutral: dot color describes agent activity,
-    // while this tiny direction marker describes where a context will return.
-    if let Some(focused_idx) = dots.focused_idx {
-        if let Some((group, group_rect)) = group_rects.iter().find(|(group, _)| {
-            group.is_return_target
-                && (group.start..group.start + group.count).contains(&focused_idx)
-        }) {
-            // `focused_idx` indexes the full pane list, but `dot_centers` is
-            // capped at PANE_DOT_MAX. A focused pane past the cap has no dot in
-            // the strip — it is represented by the "+N" overflow label (which
-            // highlights via `overflow_color` below), so the pin is skipped.
-            if let Some(&cx) = dot_centers.get(focused_idx) {
-                let tip_y = (cy - PANE_DOT_RADIUS - 0.5).max(group_rect.min.y + 2.0);
-                let pin_color = with_alpha(
-                    colors.text_primary,
-                    if group.is_active {
-                        row_alpha
-                    } else {
-                        0.78 * row_alpha
-                    },
-                );
-                painter.add(egui::Shape::convex_polygon(
-                    vec![
-                        egui::pos2(cx - 2.5, group_rect.min.y + 1.5),
-                        egui::pos2(cx + 2.5, group_rect.min.y + 1.5),
-                        egui::pos2(cx, tip_y),
-                    ],
-                    pin_color,
-                    egui::Stroke::NONE,
-                ));
-            }
-        }
-    }
-    if dots.count > PANE_DOT_MAX {
-        let overflow_x = cursor_x + PANE_DOT_RADIUS * 0.5;
-        let overflow_color = if dots.focused_idx.is_some_and(|idx| idx >= PANE_DOT_MAX) {
-            with_alpha(colors.accent, row_alpha)
-        } else {
-            with_alpha(colors.text_dim, 0.5)
+            // Keep group fill darker than a hovered row, so hover remains a
+            // row-level wash instead of erasing window boundaries.
+            with_alpha(colors.bg_darkest, 0.3 * row_alpha)
         };
+        let stroke = if group.is_active {
+            Stroke::new(GROUP_STROKE_W, with_alpha(colors.accent, row_alpha))
+        } else if group.is_return_target {
+            // `border` is the theme's quiet structural outline; a
+            // high-contrast text color made this capsule compete with the
+            // context name and the activity dots.
+            Stroke::new(GROUP_STROKE_W_RETURN, with_alpha(colors.border, row_alpha))
+        } else {
+            Stroke::new(
+                GROUP_STROKE_W,
+                with_alpha(colors.text_dim, 0.72 * row_alpha),
+            )
+        };
+        painter.rect_filled(group_rect, WINDOW_GROUP_RADIUS, fill);
+        painter.rect_stroke(group_rect, WINDOW_GROUP_RADIUS, stroke, StrokeKind::Inside);
+
+        for dot_i in group.start..group.end {
+            let cx = origin.x
+                + group.x
+                + WINDOW_GROUP_PAD_X
+                + PANE_DOT_RADIUS
+                + (dot_i - group.start) as f32 * PANE_DOT_SPACING;
+            let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
+            let focused = dots.focused_idx == Some(dot_i);
+            let mut color = crate::ui::activity::pip_color(agent_state, focused, colors, t, dot_i)
+                .gamma_multiply(row_alpha);
+            if is_dragging && agent_state.is_none() && !focused {
+                color = color.gamma_multiply(0.4);
+            }
+            let center = Pos2::new(cx, cy).round_to_pixel_center(ppp);
+            if dots.hidden_set.contains(&dot_i) {
+                painter.circle_stroke(center, PANE_DOT_RADIUS, Stroke::new(1.0_f32, color));
+            } else {
+                painter.circle_filled(center, PANE_DOT_RADIUS, color);
+            }
+        }
+
+        // The pin is intentionally neutral: dot color describes agent activity,
+        // while this direction marker describes where a context will return.
+        // Its base sits on the capsule's inner top edge — the stroke is drawn
+        // inside the rect, so that edge is `min.y + stroke.width` — and both are
+        // on the same pixel grid, leaving no seam.
+        if group.is_return_target {
+            let Some(focused_idx) = dots.focused_idx else {
+                continue;
+            };
+            // A focused pane past the visible cap has no dot; the overflow
+            // label carries the highlight instead.
+            let Some(local_cx) = layout
+                .dot_center_x(focused_idx)
+                .filter(|_| (group.start..group.end).contains(&focused_idx))
+            else {
+                continue;
+            };
+            let cx = (origin.x + local_cx).round_to_pixel_center(ppp);
+            let base_y = (group_rect.min.y + stroke.width).round_to_pixels(ppp);
+            let pin_color = with_alpha(
+                colors.text_primary,
+                if group.is_active {
+                    row_alpha
+                } else {
+                    0.78 * row_alpha
+                },
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(cx - PIN_HALF_W, base_y),
+                    Pos2::new(cx + PIN_HALF_W, base_y),
+                    Pos2::new(cx, base_y + PIN_H),
+                ],
+                pin_color,
+                Stroke::NONE,
+            ));
+        }
+    }
+
+    if let Some(hidden) = layout.overflow {
+        // The overflow count stands in for dots, so it is painted in a dot's
+        // own color — never the accent the notification badge owns, which is
+        // what made a collapsed pip strip read as a badge. A focused pane with
+        // no dot of its own is the one this count represents, so it takes the
+        // focused dot color.
+        let collapsed_is_focused = dots
+            .focused_idx
+            .is_some_and(|idx| layout.dot_center_x(idx).is_none());
+        let overflow_color =
+            crate::ui::activity::pip_color(None, collapsed_is_focused, colors, t, 0)
+                .gamma_multiply(row_alpha);
         crate::ui::snap::text_snapped(
             painter,
-            egui::pos2(overflow_x, cy),
+            Pos2::new(origin.x + layout.width - PIP_OVERFLOW_W, cy),
             egui::Align2::LEFT_CENTER,
-            format!("+{}", dots.count - PANE_DOT_MAX),
+            format!("+{hidden}"),
             egui::FontId::proportional(style::TEXT_META),
             overflow_color,
         );
     }
 }
 
-impl ContextItem {
-    pub fn draw(
+impl SidebarRow {
+    pub fn show(
         self,
         ui: &mut egui::Ui,
         id: Id,
@@ -307,291 +589,167 @@ impl ContextItem {
     ) -> (SidebarAction, egui::Response) {
         let row_alpha = if self.is_dragging { 0.4_f32 } else { 1.0_f32 };
 
-        // Reserve background shape slot before rendering content.
-        let bg_idx = ui.painter().add(egui::Shape::Noop);
+        // The row claims exactly the width it was offered, never more: egui
+        // stores a panel's content rect as the panel's size and reads it back
+        // as the width next frame, so an overflowing row ramps the sidebar to
+        // its `size_range` maximum and swallows user resizes (stint 0715).
+        let width = ui.available_width();
+        let geom = RowGeometry::measure(ui, &self, width);
+        let (rect, _) = ui.allocate_exact_size(geom.rect.size(), Sense::hover());
+        let geom = geom.translated(rect.min.to_vec2());
 
-        // Every sidebar row is a top-level context, so the gutter is a fixed
-        // There is no nesting level to indent for, so the compact inset leaves
-        // room for the primary label rather than a second visual gutter.
-        let indent = ROW_INDENT;
+        let response = ui.interact(rect, id, Sense::click_and_drag());
+        // The row paints its own text, so nothing else puts the context name
+        // into the accessibility tree that scene `assert_label` and
+        // `host_has_label` read. The full name is reported even when the
+        // painted title is elided.
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                true,
+                self.is_active,
+                &self.ctx_name,
+            )
+        });
+        let hovered = response.hovered();
 
-        let is_active = self.is_active;
-        let is_dragging = self.is_dragging;
-        let any_dragging = self.any_dragging;
-        let action_enabled = self.action_enabled;
-        let ctx_name = self.ctx_name.clone();
-        let ctx_index = self.ctx_index;
-        let badge_count = self.badge_count;
-        let subtitle = self.subtitle.clone();
-        let pane_dots = self.pane_dots;
-        let accent_color = colors.accent;
-        let text_primary = colors.text_primary;
-        let text_dim = colors.text_dim;
-        let bg_active = colors.bg_active;
-        let bg_hover = colors.bg_hover;
+        // --- Background ---------------------------------------------------
+        // A 4pt horizontal inset gives the pill breathing room from the
+        // sidebar edges, matching the visual weight of palette rows.
+        let card = Rect::from_min_max(
+            Pos2::new(rect.min.x + style::SPACE_XS, rect.min.y),
+            Pos2::new(rect.max.x - style::SPACE_XS, rect.max.y),
+        );
+        if self.is_active {
+            if row_alpha < 1.0 {
+                // Dragging: a dim solid fill, no outline.
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::ZERO,
+                    with_alpha(colors.bg_active, row_alpha),
+                );
+            } else {
+                paint_selection(ui.painter(), card, colors);
+            }
+        } else if hovered && !self.is_dragging {
+            ui.painter().rect_filled(
+                selection_inset(card),
+                style::RADIUS_SM,
+                with_alpha(colors.bg_hover, row_alpha),
+            );
+        }
 
+        // --- Index gutter ---------------------------------------------------
+        if let Some(idx) = self.ctx_index.filter(|idx| *idx < 9) {
+            paint_text_centered(
+                ui,
+                format!("{}", idx + 1),
+                egui::FontId::proportional(style::TEXT_HINT),
+                with_alpha(colors.text_dim, row_alpha),
+                geom.gutter.center(),
+            );
+        }
+
+        // --- Title + path ---------------------------------------------------
         // Context names are primary labels: inactive rows read constantly, so
         // they get the contrast-floored secondary tone, not raw `text_dim`
         // (stint 0528).
-        let text_color = with_alpha(
-            if is_active {
-                text_primary
+        let title_color = with_alpha(
+            if self.is_active {
+                colors.text_primary
             } else {
                 colors.text_secondary(colors.bg_sidebar)
             },
             row_alpha,
         );
+        crate::ui::snap::galley_snapped(
+            ui.painter(),
+            geom.title.min,
+            geom.title_galley.clone(),
+            title_color,
+        );
 
-        let scope_out = ui.scope(|ui| {
-            ui.set_width(ui.available_width());
-
-            ui.add_space(ROW_PAD_V);
-
-            // --- Outer row: left gutter (index number) + content column ---
-            let y_before = ui.cursor().min.y;
-            // name_row_h and close_rect are captured from inside the horizontal
-            // closure so the number and delete hit target stay on the headline,
-            // not the full two-line row.
-            let mut name_row_h_capture = 0.0_f32;
-            let mut close_rect_capture = None;
-            ui.horizontal(|ui| {
-                ui.add_space(indent);
-
-                // Gutter: fixed-width column for the 1-9 index number.
-                // Width is reserved here; the number is painted post-scope
-                // centered across the full row height.
-                ui.add_space(GUTTER_W);
-
-                // Content column: name row + optional path row.
-                // Pips live on the name row, right-aligned before the action zone.
-                let name_row_h = ui
-                    .vertical(|ui| {
-                        // --- Name row ---
-                        let name_y_before = ui.cursor().min.y;
-                        ui.horizontal(|ui| {
-                            // Compute pip strip width so we can budget the name text.
-                            let pip_strip_w = if let Some(ref dots) = pane_dots {
-                                if dots.count > 0 {
-                                    let capped = dots.count.min(PANE_DOT_MAX);
-                                    let group_count = dots
-                                        .windows
-                                        .iter()
-                                        .filter(|group| group.count > 0 && group.start < capped)
-                                        .count()
-                                        .max(1);
-                                    let mut w = (capped as f32) * PANE_DOT_SPACING
-                                        + (group_count as f32) * WINDOW_GROUP_PAD_X * 2.0
-                                        + (group_count.saturating_sub(1) as f32) * WINDOW_GROUP_GAP;
-                                    if dots.count > PANE_DOT_MAX {
-                                        w += 20.0;
-                                    }
-                                    w + 4.0 // gap between name text and dots
-                                } else {
-                                    0.0
-                                }
-                            } else {
-                                0.0
-                            };
-
-                            let badge_w = if badge_count > 0 {
-                                SIDEBAR_BADGE_W
-                            } else {
-                                0.0
-                            };
-                            let close_w = if action_enabled {
-                                ACTION_ZONE_WIDTH
-                            } else {
-                                0.0
-                            };
-                            let text_max =
-                                (ui.available_width() - badge_w - close_w - pip_strip_w).max(0.0);
-
-                            let title_width = ui
-                                .scope(|ui| {
-                                    ui.set_max_width(text_max);
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&ctx_name)
-                                                .size(style::TEXT_SIDEBAR_TITLE)
-                                                .color(text_color),
-                                        )
-                                        .selectable(false)
-                                        .truncate(),
-                                    )
-                                    .rect
-                                    .width()
-                                })
-                                .inner;
-                            // Keep the trailing layout at the budget boundary
-                            // even for short names, so it cannot begin after
-                            // the pips and overlap the count.
-                            ui.add_space((text_max - title_width).max(0.0));
-
-                            // Pips stay beside the headline, before the trailing state.
-                            draw_pips(ui, &pane_dots, colors, row_alpha, is_dragging);
-
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                // The close target follows the count at the physical trailing edge.
-                                if action_enabled {
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        Vec2::new(ACTION_ZONE_WIDTH, ui.spacing().interact_size.y),
-                                        Sense::hover(),
-                                    );
-                                    close_rect_capture = Some(rect);
-                                }
-                                if badge_count > 0 {
-                                    let badge_text = if badge_count > 9 {
-                                        "9+".to_string()
-                                    } else {
-                                        badge_count.to_string()
-                                    };
-                                    ui.add_sized(
-                                        Vec2::new(SIDEBAR_BADGE_W, 0.0),
-                                        egui::Label::new(
-                                            egui::RichText::new(badge_text)
-                                                .size(style::TEXT_META)
-                                                .color(with_alpha(accent_color, row_alpha)),
-                                        )
-                                        .halign(Align::RIGHT),
-                                    );
-                                }
-                            });
-                        });
-                        // Capture name-row height before the subtitle row is added.
-                        let name_h = ui.cursor().min.y - name_y_before;
-
-                        // --- Path row (subtitle only, no pips) ---
-                        if let Some(ref path) = subtitle {
-                            ui.horizontal(|ui| {
-                                let path_max = (ui.available_width() - style::SPACE_SM).max(0.0);
-                                ui.scope(|ui| {
-                                    ui.set_max_width(path_max);
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(shorten_path(path))
-                                                .size(style::TEXT_META)
-                                                .color(with_alpha(text_dim, row_alpha)),
-                                        )
-                                        .selectable(false)
-                                        .truncate(),
-                                    );
-                                });
-                            });
-                        }
-
-                        name_h
-                    })
-                    .inner;
-                name_row_h_capture = name_row_h;
-            });
-
-            ui.add_space(ROW_PAD_V);
-
-            (
-                ui.cursor().min.y - y_before,
-                name_row_h_capture,
-                close_rect_capture,
-            )
-        });
-
-        let row_rect = scope_out.response.rect;
-        let (_total_h, name_row_h, close_rect) = scope_out.inner;
-
-        let response = ui.interact(row_rect, id, Sense::click_and_drag());
-        let hovered = response.hovered();
-
-        // Selection: use paint_selection (inset tinted pill + soft outline) to
-        // match palette/picker rows. Hover keeps the flat sidebar fill.
-        if is_active {
-            // Clear the bg placeholder — paint_selection draws its own rect.
-            ui.painter().set(bg_idx, egui::Shape::Noop);
-            if row_alpha < 1.0 {
-                // Dragging: just a dim solid fill, no outline.
-                ui.painter().rect_filled(
-                    row_rect,
-                    CornerRadius::ZERO,
-                    with_alpha(bg_active, row_alpha),
-                );
-            } else {
-                // 4px horizontal inset gives the pill breathing room from the
-                // sidebar edges, matching the visual weight of palette rows.
-                let pill_rect = Rect::from_min_max(
-                    egui::pos2(row_rect.min.x + 4.0, row_rect.min.y),
-                    egui::pos2(row_rect.max.x - 4.0, row_rect.max.y),
-                );
-                paint_selection(ui.painter(), pill_rect, colors);
-            }
-        } else {
-            let fill = if hovered && !is_dragging {
-                with_alpha(bg_hover, row_alpha)
-            } else {
-                Color32::TRANSPARENT
-            };
-            let hover_rect = crate::ui::list::selection_inset(Rect::from_min_max(
-                egui::pos2(row_rect.min.x + 4.0, row_rect.min.y),
-                egui::pos2(row_rect.max.x - 4.0, row_rect.max.y),
-            ));
-            ui.painter().set(
-                bg_idx,
-                egui::Shape::rect_filled(hover_rect, crate::ui::style::RADIUS_SM, fill),
+        // --- Pips -------------------------------------------------------------
+        if let (Some(dots), Some((origin, layout))) = (&self.pane_dots, &geom.pips) {
+            paint_pips(
+                ui,
+                dots,
+                *origin,
+                layout,
+                colors,
+                row_alpha,
+                self.is_dragging,
             );
         }
 
-        // Paint the index number centered on the title line. Rows can include
-        // subtitle/pip content below the title, so full-row centering makes the
-        // number read as too low beside the context name.
-        if let Some(idx) = ctx_index {
-            if idx < 9 {
-                let title_center_y = row_rect.min.y + ROW_PAD_V + name_row_h / 2.0;
-                let gutter_rect = Rect::from_min_size(
-                    egui::pos2(row_rect.min.x + indent, row_rect.min.y),
-                    Vec2::new(GUTTER_W, ROW_PAD_V + name_row_h),
-                );
-                paint_text_centered(
-                    ui,
-                    format!("{}", idx + 1),
-                    egui::FontId::proportional(style::TEXT_HINT),
-                    with_alpha(text_dim, row_alpha),
-                    egui::pos2(gutter_rect.center().x, title_center_y),
-                );
-            }
+        // --- Badge ------------------------------------------------------------
+        // A filled accent pill: taller than a pip, a different shape, and a
+        // different color family, so a notification count can never be
+        // mistaken for a collapsed pip strip sitting next to it.
+        if let Some((badge_rect, galley)) = &geom.badge {
+            let text_color = with_alpha(colors.text_on(colors.accent), row_alpha);
+            ui.painter().rect_filled(
+                *badge_rect,
+                style::RADIUS_BADGE,
+                with_alpha(colors.accent, row_alpha),
+            );
+            crate::ui::snap::galley_snapped(
+                ui.painter(),
+                Pos2::new(
+                    badge_rect.center().x - galley.size().x / 2.0,
+                    badge_rect.center().y - galley.size().y / 2.0,
+                ),
+                galley.clone(),
+                text_color,
+            );
         }
 
-        let in_action = close_rect.is_some_and(|rect| ui.rect_contains_pointer(rect));
+        // --- Path ---------------------------------------------------------
+        if let Some((path_rect, galley)) = &geom.path {
+            crate::ui::snap::galley_snapped(
+                ui.painter(),
+                path_rect.min,
+                galley.clone(),
+                with_alpha(colors.text_dim, row_alpha),
+            );
+        }
 
-        if let Some(close_rect) = close_rect {
-            if hovered && !is_dragging {
-                let glyph_color =
-                    with_alpha(if in_action { text_primary } else { text_dim }, row_alpha);
+        // --- Close ------------------------------------------------------------
+        // The glyph is centered in the same rect the pointer is tested against,
+        // so the target is exactly where the X appears.
+        let in_close = geom
+            .close
+            .is_some_and(|close| ui.rect_contains_pointer(close));
+        if let Some(close) = geom.close {
+            if hovered && !self.is_dragging {
                 paint_text_centered(
                     ui,
                     "\u{2715}",
-                    egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE),
-                    glyph_color,
-                    close_rect.center(),
+                    egui::FontId::proportional(CLOSE_GLYPH_SIZE),
+                    with_alpha(
+                        if in_close {
+                            colors.text_primary
+                        } else {
+                            colors.text_dim
+                        },
+                        row_alpha,
+                    ),
+                    close.center(),
                 );
             }
         }
 
-        if in_action {
+        if in_close {
             response.clone().on_hover_text("Delete context");
-        }
-
-        if in_action {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         } else {
-            let content_max_x = if action_enabled {
-                row_rect.max.x - ACTION_ZONE_WIDTH
-            } else {
-                row_rect.max.x
-            };
-            let in_content = ui.rect_contains_pointer(Rect::from_min_max(
-                row_rect.min,
-                egui::pos2(content_max_x, row_rect.max.y),
-            ));
-            if in_content || is_dragging {
+            let content = Rect::from_min_max(
+                rect.min,
+                Pos2::new(geom.close.map_or(rect.max.x, |c| c.left()), rect.max.y),
+            );
+            if ui.rect_contains_pointer(content) || self.is_dragging {
                 ui.ctx().set_cursor_icon(if self.draggable {
-                    if any_dragging {
+                    if self.any_dragging {
                         CursorIcon::Grabbing
                     } else {
                         CursorIcon::Grab
@@ -608,7 +766,7 @@ impl ContextItem {
             SidebarAction::DragStart
         } else if self.draggable && response.drag_stopped() {
             SidebarAction::DragEnd
-        } else if response.clicked() && in_action && hovered {
+        } else if response.clicked() && in_close && hovered {
             SidebarAction::Delete
         } else if response.clicked() {
             SidebarAction::Activate
@@ -624,29 +782,304 @@ impl ContextItem {
 mod tests {
     use super::*;
 
-    /// Regression: session restore can leave focus on a pane past PANE_DOT_MAX
-    /// (dot_centers len == 8, focused_idx == 8). The pin must be skipped, not
-    /// index out of bounds.
-    #[test]
-    fn draw_pips_focused_pane_past_dot_cap_does_not_panic() {
-        let dots = Some(PaneDots {
-            count: PANE_DOT_MAX + 1,
-            focused_idx: Some(PANE_DOT_MAX),
+    fn test_dots(pane_count: usize, windows: Vec<PaneDotWindow>) -> PaneDots {
+        PaneDots {
+            count: pane_count,
+            focused_idx: Some(0),
             hidden_set: std::collections::HashSet::new(),
-            activities: vec![None; PANE_DOT_MAX + 1],
-            windows: vec![PaneDotWindow {
-                start: 0,
-                count: PANE_DOT_MAX + 1,
-                is_return_target: true,
-                is_active: true,
-            }],
+            activities: vec![None; pane_count],
+            windows,
+        }
+    }
+
+    fn one_window(pane_count: usize) -> Vec<PaneDotWindow> {
+        vec![PaneDotWindow {
+            start: 0,
+            count: pane_count,
+            is_return_target: true,
+            is_active: true,
+        }]
+    }
+
+    fn row(action_enabled: bool, badge_count: usize, pane_count: usize) -> SidebarRow {
+        SidebarRow {
+            is_active: true,
+            is_dragging: false,
+            any_dragging: false,
+            action_enabled,
+            ctx_name: "Default".to_string(),
+            ctx_index: Some(0),
+            badge_count,
+            subtitle: Some("/Users/someone/code/project".to_string()),
+            pane_dots: (pane_count > 0).then(|| test_dots(pane_count, one_window(pane_count))),
+            draggable: true,
+        }
+    }
+
+    /// Run `f` inside a real egui frame at `panel_w` points wide.
+    fn in_frame<R>(panel_w: f32, f: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(panel_w, 600.0))),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut f = Some(f);
+        let mut out = None;
+        let _ = ctx.run_ui(input, |ui| {
+            if let Some(f) = f.take() {
+                out = Some(f(ui));
+            }
         });
+        out.expect("frame body ran")
+    }
+
+    /// Lay one context row out in a `panel_w`-wide viewport and return the
+    /// width the row actually claimed.
+    fn measure_row(
+        panel_w: f32,
+        action_enabled: bool,
+        badge_count: usize,
+        pane_count: usize,
+    ) -> f32 {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        in_frame(panel_w, |ui| {
+            row(action_enabled, badge_count, pane_count)
+                .show(ui, Id::new("row"), &colors)
+                .1
+                .rect
+                .width()
+        })
+    }
+
+    /// Stint 0715: a row wider than the space it was given inflates the
+    /// enclosing panel, because egui stores a panel's content rect as the
+    /// panel's size and reads it back as the width on the next frame. No
+    /// combination of badge, pips, and close zone may exceed the budget.
+    #[test]
+    fn context_row_never_exceeds_available_width() {
+        for &panel_w in &[160.0_f32, 220.0, 320.0, 400.0] {
+            for &action_enabled in &[false, true] {
+                for &badge_count in &[0_usize, 3, 42] {
+                    for &pane_count in &[0_usize, 1, PANE_DOT_MAX + 3] {
+                        let row_w = measure_row(panel_w, action_enabled, badge_count, pane_count);
+                        assert!(
+                            row_w <= panel_w,
+                            "row overflowed: panel_w={panel_w} row_w={row_w} \
+                             action_enabled={action_enabled} badge={badge_count} panes={pane_count}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The two tiers each hold their own things and nothing crosses between
+    /// them: the close action owns the identity tier's right edge, and the
+    /// pane-state tier lays pips, badge, and path out left to right without
+    /// any pair ever overlapping, at every panel width.
+    #[test]
+    fn tiers_never_overlap_at_any_width() {
+        for &panel_w in &[140.0_f32, 180.0, 220.0, 320.0, 480.0] {
+            for &action_enabled in &[false, true] {
+                for &badge_count in &[0_usize, 4, 42] {
+                    for &pane_count in &[0_usize, 1, 5, PANE_DOT_MAX + 3] {
+                        in_frame(panel_w, |ui| {
+                            let item = row(action_enabled, badge_count, pane_count);
+                            let geom = RowGeometry::measure(ui, &item, panel_w);
+                            let label = format!(
+                                "panel_w={panel_w} action={action_enabled} \
+                                 badge={badge_count} panes={pane_count}"
+                            );
+
+                            // Identity tier.
+                            if let Some(close) = geom.close {
+                                assert!(
+                                    geom.title.right() <= close.left() + f32::EPSILON,
+                                    "name runs into the close action ({label})"
+                                );
+                                assert!(
+                                    close.right() <= geom.rect.right(),
+                                    "close escapes the row ({label})"
+                                );
+                                assert!(
+                                    close.center().y < geom.rect.center().y,
+                                    "close must sit on the identity tier ({label})"
+                                );
+                            }
+
+                            // Pane-state tier, left to right.
+                            let mut cursor = geom.gutter.right();
+                            for (name, rect) in [
+                                (
+                                    "pips",
+                                    geom.pips.as_ref().map(|(origin, layout)| {
+                                        Rect::from_min_size(
+                                            Pos2::new(origin.x, origin.y - layout.height / 2.0),
+                                            Vec2::new(layout.width, layout.height),
+                                        )
+                                    }),
+                                ),
+                                ("badge", geom.badge.as_ref().map(|(rect, _)| *rect)),
+                                ("path", geom.path.as_ref().map(|(rect, _)| *rect)),
+                            ] {
+                                let Some(rect) = rect else { continue };
+                                assert!(
+                                    rect.left() >= cursor - f32::EPSILON,
+                                    "{name} overlaps what precedes it ({label})"
+                                );
+                                assert!(
+                                    rect.right() <= geom.rect.right() + f32::EPSILON,
+                                    "{name} escapes the row ({label})"
+                                );
+                                assert!(
+                                    rect.center().y > geom.title.bottom(),
+                                    "{name} must sit below the identity tier ({label})"
+                                );
+                                cursor = rect.right();
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The index number shares the title's optical center, not the whole
+    /// row's — with a pane-state tier underneath, row-centering reads as the
+    /// number sitting low beside the name.
+    #[test]
+    fn index_gutter_is_centered_on_the_title_line() {
+        in_frame(220.0, |ui| {
+            let item = row(true, 3, 4);
+            let geom = RowGeometry::measure(ui, &item, 220.0);
+            assert!(
+                geom.pips.is_some(),
+                "setup: this row has a pane-state tier below the title"
+            );
+            assert!(
+                (geom.gutter.center().y - geom.title.center().y).abs() < 0.01,
+                "gutter center {} must match title center {}",
+                geom.gutter.center().y,
+                geom.title.center().y
+            );
+            assert!(
+                geom.gutter.center().y < geom.rect.center().y,
+                "a two-tier row's title sits above the row center, so the \
+                 number must too"
+            );
+        });
+    }
+
+    /// The badge cannot be mistaken for a collapsed pip strip: it is a taller
+    /// filled pill, and it is separated from the pips by a visible gap rather
+    /// than butted against them.
+    #[test]
+    fn badge_is_visually_distinct_from_collapsed_pips() {
+        in_frame(220.0, |ui| {
+            let item = row(true, 4, PANE_DOT_MAX + 3);
+            let geom = RowGeometry::measure(ui, &item, 220.0);
+            let (pip_origin, layout) = geom.pips.as_ref().expect("many panes render pips");
+            let (badge, _) = geom.badge.as_ref().expect("a badge count renders a badge");
+            assert!(
+                layout.overflow.is_some(),
+                "setup: this many panes must collapse into an overflow count"
+            );
+            assert!(
+                badge.left() - (pip_origin.x + layout.width) >= PIP_BADGE_GAP - 0.01,
+                "the badge must not read as glued to the pip strip"
+            );
+            assert!(
+                badge.height() > PANE_DOT_RADIUS * 2.0 + 1.0,
+                "the badge pill must be taller than a pip so the two never \
+                 read as the same kind of thing"
+            );
+        });
+    }
+
+    /// The pip strip's width is measured once and reused: the budget the tier
+    /// is laid out against is the same number the capsules are painted with.
+    #[test]
+    fn pip_strip_width_is_measured_once() {
+        in_frame(320.0, |ui| {
+            let item = row(true, 0, 5);
+            let geom = RowGeometry::measure(ui, &item, 320.0);
+            let (origin, layout) = geom.pips.as_ref().expect("five panes render pips");
+            let last = layout.groups.last().expect("one capsule per window");
+            assert!(
+                (last.x + last.width - layout.width).abs() < 0.01,
+                "capsules must fill exactly the width the strip reserved"
+            );
+            assert!(
+                (origin.x - geom.gutter.right()).abs() < 0.01,
+                "the strip must start at the content lane, under the name"
+            );
+        });
+    }
+
+    /// Regression: session restore can leave focus on a pane past PANE_DOT_MAX
+    /// (the strip caps at 8 dots, focused_idx == 8). The pin must be skipped,
+    /// not index out of bounds.
+    #[test]
+    fn pips_focused_pane_past_dot_cap_does_not_panic() {
+        let dots = PaneDots {
+            focused_idx: Some(PANE_DOT_MAX),
+            ..test_dots(PANE_DOT_MAX + 1, one_window(PANE_DOT_MAX + 1))
+        };
+        let layout = PipLayout::measure(&dots, 200.0).expect("nine panes render pips");
+        assert_eq!(layout.overflow, Some(1));
+        assert!(layout.dot_center_x(PANE_DOT_MAX).is_none());
+
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let ctx = egui::Context::default();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                draw_pips(ui, &dots, &colors, 1.0, false);
+                paint_pips(
+                    ui,
+                    &dots,
+                    Pos2::new(10.0, 20.0),
+                    &layout,
+                    &colors,
+                    1.0,
+                    false,
+                );
             });
         });
+    }
+
+    /// Multi-window contexts get one capsule per window, in order, separated by
+    /// a visible gap — the boundary is what tells a user which panes will come
+    /// back together.
+    #[test]
+    fn each_spatial_window_gets_its_own_capsule() {
+        let dots = test_dots(
+            5,
+            vec![
+                PaneDotWindow {
+                    start: 0,
+                    count: 2,
+                    is_return_target: true,
+                    is_active: true,
+                },
+                PaneDotWindow {
+                    start: 2,
+                    count: 3,
+                    is_return_target: false,
+                    is_active: false,
+                },
+            ],
+        );
+        let layout = PipLayout::measure(&dots, 200.0).expect("five panes render pips");
+        assert_eq!(layout.groups.len(), 2);
+        assert!(
+            (layout.groups[1].x - (layout.groups[0].x + layout.groups[0].width))
+                >= WINDOW_GROUP_GAP - 0.01,
+            "capsules must be separated by the window gap"
+        );
+        for idx in 0..5 {
+            assert!(
+                layout.dot_center_x(idx).is_some(),
+                "every visible dot belongs to a capsule"
+            );
+        }
     }
 }
