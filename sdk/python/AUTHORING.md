@@ -129,9 +129,11 @@ pointing at a JSON array of `{"paths": [...]}` / `{"cancel": true}` outcomes
 
 ## App Tools
 
-Apps can expose tools to the Assistant with `ExposeTools`. Declare the full
-set in `init()`. When the Assistant calls one, `update()` receives a
-`ToolCall`; return one `ToolResult` with the matching `call_id`.
+Apps can expose tools with `ExposeTools`. The Assistant can call them directly;
+external MCP agents in the same workspace see them as
+`<app_id>__<tool>` through the config printed by `plexi events mcp-config`.
+Declare the full set in `init()`. When any caller invokes one, `update()`
+receives a `ToolCall`; return one `ToolResult` with the matching `call_id`.
 
 ```python
 import json
@@ -191,15 +193,15 @@ Reach for the raw `AiTool`/`ExposeTools`/`ToolResult` types below only for a
 schema the decorator's type map cannot express.
 
 `input_schema` and `output_schema` are JSON Schema objects. `ToolCall.input_json`
-is the JSON string supplied by the Assistant. Return `output_json` matching the
-declared output schema for success or `error` for failure, never both. A
-declaration replaces the pane's previous tool set, so send every current tool
-when it changes.
+is the caller-supplied JSON string. Return `output_json` matching the declared
+output schema for success or `error` for failure, never both. A declaration
+replaces the pane's previous tool set, so send every current tool when it
+changes.
 
 Set `read_only=True` only for tools that never mutate app or workspace state.
-The Assistant runs read-only tools without a write-grant prompt, while still
-recording every call. Mutating tools prompt for an allow-once or persisted
-narrow grant before they run.
+For Assistant calls specifically, read-only tools run without a write-grant
+prompt while every call is still recorded. Mutating Assistant calls prompt for
+an allow-once or persisted narrow grant before they run.
 
 ## Cross-app events
 

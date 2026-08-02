@@ -43,6 +43,10 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   and refresh CLI-tool knowledge: `plexi account --help`, `plexi registry --help`.
 - **Notes** — capture, browse, and process scratchpad notes: `plexi note --help`
   and `plexi notes --help`.
+- **Events** — subscribe to an app's event stream, declare/emit events, and print
+  the singleton host MCP config for this pane's scoped credential (exposes event
+  tools and `<app_id>__<tool>` for live apps in the pane's workspace):
+  `plexi events --help`.
 
 The release gate verifies these feature-map entry points:
 
@@ -56,6 +60,7 @@ workspace
 run
 secret
 routine
+events
 agent
 config
 ai

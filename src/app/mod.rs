@@ -1144,7 +1144,7 @@ impl PlexiApp {
             event_subscribe_mailbox.with_source("host_mcp_subscribe"),
             &crate::config::config_dir(),
         ) {
-            log::warn!("host_mcp: failed to start event MCP server: {e}");
+            log::warn!("host_mcp: failed to start host MCP server: {e}");
         }
 
         // One-time migration: remove the legacy file-queue directory if it
@@ -1271,7 +1271,7 @@ impl PlexiApp {
                             .get(&saved_win.context_id)
                             .copied()
                             .unwrap_or(0);
-                        let settings = Self::make_backend_settings(
+                        let (settings, pending_credential) = Self::make_backend_settings(
                             saved_pane.id,
                             cwd,
                             &colors,
@@ -1290,6 +1290,7 @@ impl PlexiApp {
                         ) {
                             pane.name = saved_pane.name.clone();
                             pane_entry = Some(Pane::Terminal(Box::new(pane)));
+                            pending_credential.mark_live();
                         }
                     }
 
@@ -2328,7 +2329,7 @@ impl PlexiApp {
         context_description: &str,
         context_root: Option<&PathBuf>,
         context_depth: u32,
-    ) -> BackendSettings {
+    ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
         log::info!(
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
              context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
@@ -2340,12 +2341,15 @@ impl PlexiApp {
             .to_string_lossy()
             .into_owned();
         env.insert("PLEXI_SOCKET".into(), socket);
-        // Host-level event MCP server discovery (stint 0214). Lets an MCP-aware
-        // agent in this pane configure the Plexi host MCP server without a
-        // wrapper subprocess.
-        if let Some((port, token)) = host_mcp::discovery() {
+        // Host MCP discovery. The bearer is registered against this trusted
+        // pane/context identity; requests cannot supply their own workspace.
+        let workspace_root = context_root
+            .cloned()
+            .or_else(|| working_directory.clone())
+            .unwrap_or_default();
+        if let Some((port, token)) = host_mcp::discovery_for_pane(pane_id, workspace_root) {
             env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
-            env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.clone());
+            env.insert("PLEXI_HOST_MCP_TOKEN".into(), token);
         }
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
@@ -2360,13 +2364,16 @@ impl PlexiApp {
             );
         }
         env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
-        BackendSettings {
-            shell: shell::detect_shell(),
-            args: vec!["-l".to_string()],
-            env,
-            dynamic_colors: theme::terminal_dynamic_colors(colors),
-            working_directory,
-        }
+        (
+            BackendSettings {
+                shell: shell::detect_shell(),
+                args: vec!["-l".to_string()],
+                env,
+                dynamic_colors: theme::terminal_dynamic_colors(colors),
+                working_directory,
+            },
+            host_mcp::PendingPaneCredential::new(pane_id),
+        )
     }
 
     /// Single entry point for Cmd+R. Opens the pane rename modal for the

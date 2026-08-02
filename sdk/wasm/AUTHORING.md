@@ -68,7 +68,8 @@ The `effects` module constructs every effect in the standard app world:
   `subscribe_event_streams(SubscribeEventStreamsEffect)` expose their full WIT
   payload records. `unsubscribe_event_streams(request_id, subscription_id)`
   stops a pane-session subscription.
-- `declare_tools(Vec<ToolDecl>)` exposes Assistant-callable tools, and
+- `declare_tools(Vec<ToolDecl>)` exposes tools to the Assistant and same-workspace
+  external MCP agents, and
   `tool_result(call_id, output_json, error)` completes a matching call.
 - `set_timer(id, delay_ms, repeat)`, `cancel_timer(id)`, and
   `get_system_stats()` return timer and system-stat events through `update`.
@@ -157,10 +158,12 @@ fn handle_tool(event: InputEvent) -> Vec<Effect> {
 
 Both schemas are JSON Schema encoded as strings in WIT. Invalid schema JSON is
 rejected at declaration time. `read_only` must be true only when a call cannot
-mutate app or workspace state. The Assistant auto-grants read-only calls unless
-an explicit deny applies. Mutating calls use the normal app-connector permission
-prompt, and denied calls never enter the component. The host audit logs every
-allowed invocation.
+mutate app or workspace state. External MCP agents in the same workspace see
+tools namespaced as `<app_id>__<tool>` through the config printed by
+`plexi events mcp-config`. For Assistant calls specifically, read-only calls
+are auto-granted unless an explicit deny applies. Mutating Assistant calls use
+the normal app-connector permission prompt, and denied calls never enter the
+component. The host audit logs every allowed invocation.
 
 ## UI nodes
 

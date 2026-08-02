@@ -303,13 +303,6 @@ pub enum PlexiEvent {
         /// this call is being serviced.
         caller_id: String,
     },
-    /// External MCP client called a tool declared in `[app.mcp]`. The app must
-    /// reply with `DrawCommand::Host(AppRequest::McpToolResult { call_id, … })`.
-    McpToolCall {
-        call_id: String,
-        tool_name: String,
-        arguments: serde_json::Value,
-    },
     /// Response to a `DrawCommand::ListAudioDevices` request (#277).
     /// Both vectors are always present — empty when enumeration finds no
     /// devices of that direction. `error` is set only when device

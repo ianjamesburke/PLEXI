@@ -822,16 +822,6 @@ pub enum AppRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// App returns the result of a `PlexiEvent::McpToolCall` invocation.
-    /// `call_id` must match the `call_id` from the `McpToolCall` event.
-    /// Either `result` or `error` must be set.
-    McpToolResult {
-        call_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        result: Option<serde_json::Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
     /// Host-owned audio playback via `rodio`.
     AudioPlay {
         #[serde(default)]

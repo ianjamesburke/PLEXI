@@ -152,8 +152,11 @@ impl ToolRegistry {
     /// Silently picking a winner would dispatch to an arbitrary pane — callers
     /// instead get `tool_not_found`, which is the correct fail-visible signal
     /// until the apps are fixed or namespaced.
-    fn snapshot_for_caller(&self, caller_workspace: &Path) -> HashMap<String, (u64, AiTool)> {
-        let mut map: HashMap<String, (u64, AiTool)> = HashMap::new();
+    fn snapshot_for_caller(
+        &self,
+        caller_workspace: &Path,
+    ) -> HashMap<String, (u64, String, AiTool)> {
+        let mut map: HashMap<String, (u64, String, AiTool)> = HashMap::new();
         // Use component-by-component comparison to avoid false mismatches from
         // trailing separators or platform path normalization differences.
         let mut pane_ids: Vec<u64> = self
@@ -178,7 +181,10 @@ impl ToolRegistry {
                     .entry(tool.name.clone())
                     .or_default()
                     .push(pane_id);
-                map.insert(tool.name.clone(), (pane_id, tool.clone()));
+                map.insert(
+                    tool.name.clone(),
+                    (pane_id, tool.name.clone(), tool.clone()),
+                );
             }
         }
         for (name, mut owners) in owners_by_name {
@@ -194,6 +200,65 @@ impl ToolRegistry {
             }
         }
         map
+    }
+
+    /// Snapshot for the host MCP server, where every app tool is externally
+    /// named `<app_id>__<tool>`. The original tool name remains attached to
+    /// the target so dispatch sends the provider exactly what it registered.
+    ///
+    /// Multiple live instances of the same app expose the same external name.
+    /// Those collisions are withheld instead of selecting an arbitrary pane.
+    fn namespaced_snapshot_for_caller(
+        &self,
+        caller_workspace: &Path,
+    ) -> HashMap<String, (u64, String, AiTool)> {
+        let mut pane_ids: Vec<u64> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| {
+                entry
+                    .workspace_root
+                    .components()
+                    .eq(caller_workspace.components())
+            })
+            .map(|(&pane_id, _)| pane_id)
+            .collect();
+        pane_ids.sort_unstable();
+
+        let mut candidates: HashMap<String, Vec<(u64, String, AiTool)>> = HashMap::new();
+        for pane_id in pane_ids {
+            let Some(entry) = self.entries.get(&pane_id) else {
+                continue;
+            };
+            for tool in &entry.tools {
+                let external_name = format!("{}__{}", entry.app_id, tool.name);
+                let mut external_tool = tool.clone();
+                external_tool.name = external_name.clone();
+                candidates.entry(external_name).or_default().push((
+                    pane_id,
+                    tool.name.clone(),
+                    external_tool,
+                ));
+            }
+        }
+
+        let mut snapshot = HashMap::new();
+        for (external_name, mut owners) in candidates {
+            if owners.len() == 1 {
+                snapshot.insert(external_name, owners.pop().unwrap());
+            } else {
+                let mut pane_ids: Vec<u64> =
+                    owners.iter().map(|(pane_id, _, _)| *pane_id).collect();
+                pane_ids.sort_unstable();
+                log::error!(
+                    "tool_dispatch: namespaced tool {:?} conflict — exposed by panes {:?}; \
+                     tool withheld from external MCP callers",
+                    external_name,
+                    pane_ids
+                );
+            }
+        }
+        snapshot
     }
 
     /// Map from app_id to tool list for all panes in `caller_workspace`.
@@ -314,9 +379,9 @@ pub trait ToolCallHooks: Send + Sync {
 /// workspace tools are excluded at construction time and never visible to the
 /// dispatching app or the model it drives.
 pub struct ToolDispatcher {
-    /// Snapshot: tool_name → (provider_pane_id, AiTool).
+    /// Snapshot: exposed_name → (provider_pane_id, provider_tool_name, AiTool).
     /// Already filtered to the caller's workspace.
-    tools: HashMap<String, (u64, AiTool)>,
+    tools: HashMap<String, (u64, String, AiTool)>,
     /// Caller-local host tools (Phase D3: the Assistant's
     /// `host.events.subscribe`/`unsubscribe`). Dispatched through
     /// `host_handler`, never sent to a pane. Unaffected by `retain_allowed`
@@ -373,6 +438,31 @@ impl ToolDispatcher {
         }
     }
 
+    /// Build the workspace-scoped snapshot exposed by the singleton host MCP
+    /// server. Definitions are namespaced `<app_id>__<tool>` while dispatch
+    /// retains the provider's original tool name.
+    pub(crate) fn from_namespaced_registry(
+        caller_pane_id: u64,
+        caller_workspace: std::path::PathBuf,
+    ) -> Self {
+        let caller_app_id = format!("mcp:pane:{caller_pane_id}");
+        let registry = global_registry().lock().unwrap();
+        let tools = registry.namespaced_snapshot_for_caller(&caller_workspace);
+        log::info!(
+            "tool_dispatch: external MCP dispatcher caller={caller_app_id} workspace={} — {} tool(s) visible",
+            caller_workspace.display(),
+            tools.len(),
+        );
+        Self {
+            tools,
+            host_tools: HashMap::new(),
+            host_handler: None,
+            caller_app_id,
+            caller_pane_id,
+            hooks: None,
+        }
+    }
+
     /// Register caller-local host tools (Phase D3). They are visible in
     /// `all_tools()` and dispatched through `handler` on the broker worker
     /// thread — never routed to a pane. Hooks still observe these calls.
@@ -398,7 +488,7 @@ impl ToolDispatcher {
     pub fn all_tools(&self) -> Vec<AiTool> {
         self.tools
             .values()
-            .map(|(_, t)| t.clone())
+            .map(|(_, _, tool)| tool.clone())
             .chain(self.host_tools.values().cloned())
             .collect()
     }
@@ -491,7 +581,7 @@ impl ToolDispatcher {
     }
 
     fn dispatch_inner(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
-        let (pane_id, tool) = match self.tools.get(name) {
+        let (pane_id, provider_tool_name, tool) = match self.tools.get(name) {
             Some(entry) => entry,
             None => {
                 log::warn!(
@@ -528,7 +618,7 @@ impl ToolDispatcher {
                 sender
                     .send_event(&PlexiEvent::ToolCall {
                         call_id: call_id.clone(),
-                        name: name.to_string(),
+                        name: provider_tool_name.clone(),
                         input_json,
                         caller_id: self.caller_app_id.clone(),
                     })
@@ -771,6 +861,38 @@ mod tests {
             snap.contains_key("unique_b"),
             "non-conflicting tool from pane 20 must remain visible"
         );
+    }
+
+    #[test]
+    fn namespaced_snapshot_withholds_duplicate_app_instances() {
+        let mut reg = ToolRegistry::new();
+        let workspace = PathBuf::from("/workspace/mcp-duplicates");
+        let (tx1, _rx1) = std::sync::mpsc::channel();
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        reg.register(
+            30,
+            "same-app".to_string(),
+            vec![make_tool("echo")],
+            AppEventSender::Channel(tx1),
+            workspace.clone(),
+        );
+        reg.register(
+            20,
+            "same-app".to_string(),
+            vec![make_tool("echo"), make_tool("unique")],
+            AppEventSender::Channel(tx2),
+            workspace.clone(),
+        );
+
+        let snapshot = reg.namespaced_snapshot_for_caller(&workspace);
+        assert!(
+            !snapshot.contains_key("same-app__echo"),
+            "two live instances must not select an arbitrary provider"
+        );
+        let (pane_id, provider_name, tool) = &snapshot["same-app__unique"];
+        assert_eq!(*pane_id, 20);
+        assert_eq!(provider_name, "unique");
+        assert_eq!(tool.name, "same-app__unique");
     }
 
     /// A `before_call` error must block the call and skip `after_call`;

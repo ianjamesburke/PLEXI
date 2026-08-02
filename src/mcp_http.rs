@@ -1,10 +1,9 @@
 //! Shared minimal HTTP/1.1 JSON-RPC transport for Plexi's MCP servers.
 //!
-//! Both app-scoped tool bridges and the host-level
-//! event MCP server (`app::host_mcp`) speak the same wire protocol: a single
-//! `POST /mcp` request carrying a JSON-RPC body, authenticated with
-//! `Authorization: Bearer <token>`. This module owns the request framing, auth
-//! check, body-size guard, and response writer so neither server duplicates it.
+//! The host MCP server (`app::host_mcp`) speaks a single `POST /mcp` request
+//! carrying a JSON-RPC body, authenticated with `Authorization: Bearer
+//! <token>`. This module owns request framing, the caller-supplied credential
+//! lookup, the body-size guard, and response writing.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -13,9 +12,9 @@ use std::net::TcpStream;
 pub const MAX_BODY: usize = 10 * 1024 * 1024; // 10 MB
 
 /// Outcome of reading one request.
-pub enum RequestOutcome {
+pub enum RequestOutcome<A> {
     /// Authenticated `POST /mcp` with a parsed JSON-RPC body.
-    Json(serde_json::Value),
+    Json { body: serde_json::Value, auth: A },
     /// A non-200 HTTP response was already written; the caller should close.
     Handled,
 }
@@ -23,7 +22,10 @@ pub enum RequestOutcome {
 /// Read and authenticate one request on `stream`. On success returns the parsed
 /// JSON-RPC body. On any protocol or auth failure, writes the appropriate HTTP
 /// status to `stream` and returns [`RequestOutcome::Handled`].
-pub fn read_json_rpc_request(stream: &TcpStream, token: &str) -> std::io::Result<RequestOutcome> {
+pub fn read_json_rpc_request<A>(
+    stream: &TcpStream,
+    authenticate: impl FnOnce(&str) -> Option<A>,
+) -> std::io::Result<RequestOutcome<A>> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut write_stream = stream.try_clone()?;
 
@@ -37,8 +39,7 @@ pub fn read_json_rpc_request(stream: &TcpStream, token: &str) -> std::io::Result
     let is_post_mcp = method == "POST" && path == "/mcp";
 
     let mut content_length: usize = 0;
-    let mut auth_ok = false;
-    let expected_auth = format!("bearer {}", token.to_lowercase());
+    let mut bearer = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 {
@@ -48,19 +49,28 @@ pub fn read_json_rpc_request(stream: &TcpStream, token: &str) -> std::io::Result
         if trimmed.is_empty() {
             break; // blank line ends headers
         }
-        let lower = trimmed.to_lowercase();
+        let lower = trimmed.to_ascii_lowercase();
         if let Some(rest) = lower.strip_prefix("content-length:") {
             content_length = rest.trim().parse().unwrap_or(0);
         }
-        if let Some(rest) = lower.strip_prefix("authorization:") {
-            auth_ok = rest.trim() == expected_auth;
+        if lower.starts_with("authorization:") {
+            let value = trimmed
+                .split_once(':')
+                .map(|(_, value)| value.trim())
+                .unwrap_or("");
+            if value
+                .get(..7)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bearer "))
+            {
+                bearer = value.get(7..).map(|token| token.trim().to_string());
+            }
         }
     }
 
-    if !auth_ok {
+    let Some(auth) = bearer.as_deref().and_then(authenticate) else {
         write_http_response(&mut write_stream, 401, b"{\"error\":\"unauthorized\"}")?;
         return Ok(RequestOutcome::Handled);
-    }
+    };
     if !is_post_mcp || content_length == 0 {
         write_http_response(
             &mut write_stream,
@@ -77,7 +87,7 @@ pub fn read_json_rpc_request(stream: &TcpStream, token: &str) -> std::io::Result
     let mut buf = vec![0u8; content_length];
     reader.read_exact(&mut buf)?;
     match serde_json::from_slice(&buf) {
-        Ok(v) => Ok(RequestOutcome::Json(v)),
+        Ok(body) => Ok(RequestOutcome::Json { body, auth }),
         Err(e) => {
             log::warn!("mcp_http: invalid JSON body: {e}");
             write_http_response(&mut write_stream, 400, b"{\"error\":\"invalid json\"}")?;

@@ -371,36 +371,6 @@ Block until a named pane file slot's value matches `pattern`.
 | `slot_name` | `string` | yes |
 | `timeout_secs` | `number` | yes |
 
-### `lock_acquire`
-
-Acquire a host-owned named lease for the calling pane. The reply is parked by the host until FIFO capacity grants it ...
-
-| Field | Type | Required |
-|-------|------|----------|
-| `name` | `string` | yes |
-| `pane_id` | `integer` | yes |
-| `response_file` | `string` | yes |
-| `timeout_secs` | `number` | yes |
-
-### `lock_release`
-
-Release a named lease held by the calling pane.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `name` | `string` | yes |
-| `pane_id` | `integer` | yes |
-| `response_file` | `string` | yes |
-
-### `lock_status`
-
-Report the current holders, queue depth, and oldest queued wait.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `name` | `string` | yes |
-| `response_file` | `string` | yes |
-
 ### `slot_list`
 
 List named host-managed pane file slots.
@@ -720,16 +690,6 @@ v3.7 tool protocol (#399). App returns the result of a `PlexiEvent::ToolCall` in
 | `call_id` | `string` | yes |
 | `error` | `string?` | no |
 | `output_json` | `string?` | no |
-
-### `mcp_tool_result`
-
-App returns the result of a `PlexiEvent::McpToolCall` invocation. `call_id` must match the `call_id` from the `McpToo...
-
-| Field | Type | Required |
-|-------|------|----------|
-| `call_id` | `string` | yes |
-| `error` | `string?` | no |
-| `result` | `any` | no |
 
 ### `audio_play`
 
@@ -1431,16 +1391,6 @@ Host-to-app tool invocation (#399). The broker calls a tool exposed via `DrawCom
 | `caller_id` | `string` | yes |
 | `input_json` | `string` | yes |
 | `name` | `string` | yes |
-
-### `mcp_tool_call`
-
-External MCP client called a tool declared in `[app.mcp]`. The app must reply with `DrawCommand::Host(AppRequest::Mcp...
-
-| Field | Type | Required |
-|-------|------|----------|
-| `arguments` | `any` | yes |
-| `call_id` | `string` | yes |
-| `tool_name` | `string` | yes |
 
 ### `audio_devices_listed`
 
