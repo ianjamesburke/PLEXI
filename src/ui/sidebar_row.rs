@@ -30,12 +30,14 @@ const ROW_INDENT: f32 = 4.0;
 /// Fixed-width left gutter that holds the context index number.
 const GUTTER_W: f32 = 18.0;
 /// Top and bottom padding added inside each row for vertical breathing room.
-const ROW_PAD_V: f32 = 7.0;
+const ROW_PAD_V: f32 = style::SPACE_MD;
 /// Right margin for row content, measured from the row edge. The selection
 /// card insets by `SPACE_XS`, so this leaves visible air inside its outline.
 const ROW_PAD_RIGHT: f32 = style::SPACE_MD;
-/// Vertical gap between the identity tier and the pane-state tier.
-const TIER_GAP: f32 = 3.0;
+/// Vertical gap between the identity tier and the pane-state tier. The two
+/// tiers are separate readings of the row, so the gap has to be wide enough
+/// that they do not scan as one wrapped line.
+const TIER_GAP: f32 = style::SPACE_SM;
 
 /// The close action is the row's card-level dismiss, pinned to the top-right
 /// corner of the identity tier — a touch larger than body chrome so it reads
@@ -51,15 +53,16 @@ const PATH_GAP: f32 = style::SPACE_SM;
 /// state is the tier's job, and "/pro…" is noise, not information.
 const PATH_MIN_W: f32 = 48.0;
 /// Gap between the last capsule and the "+N" overflow count.
-const PIP_TEXT_GAP: f32 = style::SPACE_XS;
+const PIP_TEXT_GAP: f32 = style::SPACE_SM;
 
 /// Status-pip radius. Shared with the portal minimap so activity dots are the
 /// same size everywhere they appear (sidebar rows + portal previews).
 pub(crate) const PANE_DOT_RADIUS: f32 = 4.0;
 const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
-const WINDOW_GROUP_PAD_X: f32 = 5.0;
-const WINDOW_GROUP_PAD_Y: f32 = 4.0;
+/// Air between the dots and the capsule's stroke, on each axis.
+const WINDOW_GROUP_PAD_X: f32 = 7.0;
+const WINDOW_GROUP_PAD_Y: f32 = 6.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
 const WINDOW_GROUP_RADIUS: CornerRadius = CornerRadius::same(4);
 /// Width reserved for the "+N" label when the pane count exceeds the cap.
@@ -67,11 +70,12 @@ const PIP_OVERFLOW_W: f32 = 20.0;
 const GROUP_STROKE_W: f32 = 1.0;
 const GROUP_STROKE_W_RETURN: f32 = 1.5;
 /// Return-target marker: a small triangle whose base sits flush on the
-/// capsule's inner top edge and whose tip points down at the dots. Its height
-/// is one point short of the capsule's vertical padding, so the tip always
-/// stops clear of the dot row without any clamping.
+/// capsule's inner top edge and whose tip points down at the dots. It is a
+/// fixed size rather than a fraction of the capsule's padding — the marker
+/// should not grow when the capsule gets roomier — and the assertion below is
+/// what keeps its tip clear of the dot row.
 const PIN_HALF_W: f32 = 2.5;
-const PIN_H: f32 = WINDOW_GROUP_PAD_Y - 1.0;
+const PIN_H: f32 = 3.0;
 const _: () = assert!(
     PIN_H > 0.0 && PIN_H < WINDOW_GROUP_PAD_Y,
     "the pin must fit inside the capsule's top padding without touching the dot row"
