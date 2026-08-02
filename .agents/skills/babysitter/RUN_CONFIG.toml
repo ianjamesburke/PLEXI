@@ -24,7 +24,7 @@ attended_only = ["0601", "0439"]  # never queued unattended
 notes = "see .claude/skills/babysitter/SKILL.md Rules — no audible cue, no keychain security commands from agents, no sound/dialogs overnight"
 
 [briefing]
-style = "file-form, no slash commands for codex"
+style = "plexi pane send <id> --submit; use file-form only for genuinely large briefs to keep the payload out of head context"
 
 [cadence]
 check_interval_seconds = 900        # failsafe heartbeat only, not the wait mechanism — see SKILL.md

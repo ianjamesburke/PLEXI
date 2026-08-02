@@ -81,7 +81,7 @@ Label every pane (`worker-N`, `tester-N`) — find by name, not bare id.
 
 **Backtick trap:** never put backticks in text passed to `plexi pane send` from a double-quoted shell string — triggers command substitution. Write commands/paths bare in briefs.
 
-**Send once, don't re-fire to "confirm."** Exit code is the confirmation. An empty/unchanged capture means nothing — don't act on it, don't repeat the command. If you're about to run the exact same command a second time in a row, stop; the read path is wrong, not the pane.
+**Send once, don't re-fire the same send to "confirm."** `pane send --submit` remains the delivery primitive, but its exit code is not delivery proof: exit 0 can leave text silently unsubmitted, and exit 1 can report `submission not confirmed`. Confirm delivery with `plexi pane status <id>` reaching `working`. If it has not, correct it with exactly one `plexi pane key <id> enter`, then check status again; never repeat the same `pane send` to confirm. An empty/unchanged capture still means nothing.
 
 ### AI broker key on `pr-<N>` channels
 
@@ -137,7 +137,7 @@ Workers and testers write; the head reads. A successor head writes its own `head
 ```
 plexi pane send <id> "<prompt text>" --submit
 ```
-Host settles input, presses Enter, confirms, self-heals one collapsed paste. Exit 0 = confirmed. Use `pane command ... --enter` only for ordinary shell commands, not a pane's TUI.
+Host settles input, presses Enter, confirms, and self-heals one collapsed paste, but neither exit 0 nor exit 1 proves that the prompt reached the TUI. After one send, confirm `plexi pane status <id>` reaches `working`. If it has not — including exit 0 with silently unsubmitted text or exit 1 with `submission not confirmed` — issue one `plexi pane key <id> enter` and check status again. Do not re-send the prompt. Use `pane command ... --enter` only for ordinary shell commands, not a pane's TUI.
 
 ## Batch into as few PRs as possible (hard rule)
 
@@ -152,7 +152,7 @@ NEWID=$(plexi pane new -n "worker-<N>" --agent <tier alias>)  # or tester-<N>; r
 ```
 Blocks until the agent reports a booted idle prompt, then prints its pane id. Exit 2 = boot timeout (pane id is on stderr — close it, retry). Send the brief only after exit 0.
 
-Spawn with cwd inside the repo root (skills resolve from cwd). Launch bare, then `pane send` the slash command + `pane key <id> enter`; send only the command and its argument (`/validate-pr 2540`) — no extra prose. If a skill needs more context, fix the skill, don't pad the invocation.
+Spawn with cwd inside the repo root (skills resolve from cwd). On current channels, `pane new --agent` is the required spawn primitive above; if this channel lacks it, use the compatibility recipe below as a channel-floor fallback, not as the normal recipe. After the pane is ready, send only the command and its argument (`/validate-pr 2540`) with `pane send --submit` — no extra prose — then confirm `plexi pane status <id>` reaches `working`; if it has not, use one `plexi pane key <id> enter` and check status again, never another send. If a skill needs more context, fix the skill, don't pad the invocation.
 
 ## The loop
 
@@ -198,7 +198,7 @@ For each **batch**, in order:
 
    **A pane blocked on a permission prompt can't update its own slot** — a timeout with a `pane status` Bash-detail verdict names this. Approve once only after confirming the path is a self-created `/tmp` scratch dir.
 
-   **Kill the `rm -rf` prompt class in the brief.** The "don't ask again" allowlist is prefix-matched, so every new command shape re-prompts. Every brief: no `rm -rf`, write to a fresh unique output dir, leave scratch behind. On a fallback spawn (`--agent` unsupported), expect prompts and tighten check cadence to ~5 min.
+   **Kill the `rm -rf` prompt class in the brief.** The "don't ask again" allowlist is prefix-matched, so every new command shape re-prompts. Every brief: no `rm -rf`, write to a fresh unique output dir, leave scratch behind. If this channel lacks `--agent`, use the compatibility spawn recipe below as a channel-floor fallback; on 0654+ builds, its `pane command --enter` submission is host-confirmed rather than a raw-newline race. Expect prompts only where that older channel requires them and tighten check cadence to ~5 min.
 
    Fallback to capture only when the slot is empty/stale:
    ```
@@ -390,12 +390,12 @@ A worker, tester, or the head may surface a follow-up mid-run. File it with `sti
 
 Deliverable is a written summary, not tool output. Prose, leading with current state: what's merged (PR# → stints), what's in flight (batch, PR, pane, elapsed), incidents, what remains. Under ~8 lines.
 
-## Compatibility — pre-build fallback
+## Compatibility — channel-floor fallbacks
 
-If `plexi pane send --help` does not list `--submit`, you're on a pre-build; use these only for that build.
+Check the channel floor before dispatch: `plexi pane send --help` must list `--submit`, and `plexi pane new --help` must list `--agent`. If either capability is absent, use only its corresponding fallback below. These are compatibility-only, not the recommended current recipes. On builds containing 0654, `pane command --enter` uses the same host-confirmed settle -> Enter -> confirm path as `pane send --submit` for ordinary shell commands.
 
-- Submit: `plexi pane send <id> "<text>"`, then `plexi pane key <id> enter` once. Don't repeat to confirm.
-- Spawn: `NEWID=$(plexi pane new -n "<label>")`, then `plexi pane command "$NEWID" "<tier alias>" --enter`. Poll in bounded 4s pauses via `plexi pane capture "$NEWID" --from-cursor 0` until the booted prompt appears.
+- Submit (when `pane send --submit` is unavailable): `plexi pane send <id> "<text>"`, then `plexi pane key <id> enter` once. Don't repeat to confirm.
+- Spawn (when `pane new --agent` is unavailable): `NEWID=$(plexi pane new -n "<label>")`, then `plexi pane command "$NEWID" "<tier alias>" --enter`. Poll in bounded 4s pauses via `plexi pane capture "$NEWID" --from-cursor 0` until the booted prompt appears.
 - Slot wait: `ScheduleWakeup` at 600s; on wake, `plexi pane slot read <name> <pane_id>`; value ending `:done`/`:blocked`/`:failed` → act; else re-arm.
 - Raw capture: `RAW=$(plexi pane capture <id> --from-cursor <CURSOR>)`; `printf '%s\\n' "$RAW" | sed '1d' | jq -r '.lines[]'`. `CURSOR=0` for full buffer.
 - Pane status: `plexi pane list` + `plexi pane capture <id> --lines 16`. Idle only when `agent.state` is idle, no `esc to interrupt` in the status bar, and the trailing buffer is a completed reply.

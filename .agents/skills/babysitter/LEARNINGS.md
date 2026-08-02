@@ -67,8 +67,10 @@ We do not measure rules against control runs. Runs differ too much and n is too 
 - incident: Collapsed paste six times in one run. `pane send --submit` returns exit 0 while the text sits unsubmitted, and it happens to short single-line sends on freshly-booted panes too. Once it idled a held cargo token for ~8 minutes.
 - rule: After any control message, confirm `pane status` reaches `working`; press enter once if it has not. Never treat exit 0 as proof of delivery, and never re-send on exit code alone.
 - falsification: delete if a host fix makes `--submit` reliable and two consecutive runs show zero collapsed pastes.
+- incident: Still reproduces after 0654 across three firings tonight: ~00:30 UTC — collapsed paste, logged in `LOG.md`; ~00:33 UTC — collapsed paste, logged in `LOG.md`; 20:39 local — `plexi pane send 733 --submit` from Ian's own session exited 1 with "submission not confirmed" and required a manual `plexi pane key 733 enter`. Both shapes exist: exit 0 can falsely report delivery while text remains unsubmitted, and this case failed loudly with exit 1.
 - fired: 2026-08-01 (6x)
-- runs: 1
+- fired: 2026-08-02 (3x)
+- runs: 3
 
 ### L004 — Attribute a build by its owner, never by its directory
 - class: RULE
