@@ -2639,25 +2639,67 @@ impl eframe::App for PlexiApp {
         // `ui` at all — still captures, and still answers (stints 0495, 0504).
         // It follows `update_preamble` so a request arriving on this pass is
         // issued on this pass, not one frame later.
-        self.service_pending_screenshots(ctx, frame.wgpu_render_state());
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::Screenshots,
+        );
+        crate::platform::logging::time_drain("service_pending_screenshots", || {
+            self.service_pending_screenshots(ctx, frame.wgpu_render_state())
+        });
 
         // Same reasoning for parked `pane slot wait` requests: an occluded
         // host must still expire them on schedule, so the caller sees the
         // host's typed timeout instead of its own (stint 0585).
-        self.service_pending_slot_waits(ctx);
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::SlotWaits,
+        );
+        crate::platform::logging::time_drain("service_pending_slot_waits", || {
+            self.service_pending_slot_waits(ctx)
+        });
 
         // And for `pane new --agent`, whose reply is owed either an idle
         // report, an expired deadline, or a pane that went away (stint 0584).
-        self.service_pending_agent_boots(ctx);
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::AgentBoots,
+        );
+        crate::platform::logging::time_drain("service_pending_agent_boots", || {
+            self.service_pending_agent_boots(ctx)
+        });
 
         // And for `pane send --submit`, which drives its settle → Enter →
         // confirm sequence from here: an occluded host must still press the
         // Enter it promised and still read the grid to confirm it (stint 0583).
-        self.service_pending_submits(ctx);
-        self.service_pane_heartbeats(ctx);
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::Submits,
+        );
+        crate::platform::logging::time_drain("service_pending_submits", || {
+            self.service_pending_submits(ctx)
+        });
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PaneHeartbeats,
+        );
+        crate::platform::logging::time_drain("service_pane_heartbeats", || {
+            self.service_pane_heartbeats(ctx)
+        });
 
-        self.drain_app_subscription_replies();
-        self.deliver_app_event_subscriptions();
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::SubscriptionReplies,
+        );
+        crate::platform::logging::time_drain("drain_app_subscription_replies", || {
+            self.drain_app_subscription_replies()
+        });
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::EventDeliveries,
+        );
+        crate::platform::logging::time_drain("deliver_app_event_subscriptions", || {
+            self.deliver_app_event_subscriptions()
+        });
 
         // WASM Python panes are fed by external clients too — MCP server
         // processes, HTTP workers — and their guest runtimes run on their own
@@ -2665,13 +2707,23 @@ impl eframe::App for PlexiApp {
         // host still moves server data into the guest and guest replies out
         // (stint 0382 fix round; guard:
         // `mcp_reply_reaches_guest_while_window_hidden`).
-        self.service_python_pane_runtimes();
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::PythonRuntimes,
+        );
+        crate::platform::logging::time_drain("service_python_pane_runtimes", || {
+            self.service_python_pane_runtimes()
+        });
 
         // Host agent runtime (Phase C): consume queued event deliveries and
         // finished agent turns. Cheap no-op when nothing is pending. While a
         // turn runs on a worker thread, keep frames coming so its outcome is
         // collected promptly even when the UI is otherwise idle.
-        self.agent_host.tick();
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::AgentTick,
+        );
+        crate::platform::logging::time_drain("agent_host.tick", || self.agent_host.tick());
         if self.agent_host.turns_in_flight() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -2682,7 +2734,13 @@ impl eframe::App for PlexiApp {
         // occluded host executed no app command at all (see
         // `service_app_commands`). It runs last in `logic` because the services
         // above may queue work an app command then consumes on this same pass.
-        self.service_app_commands(ctx);
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::AppCommands,
+        );
+        crate::platform::logging::time_drain("service_app_commands", || {
+            self.service_app_commands(ctx)
+        });
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::LogicComplete,
