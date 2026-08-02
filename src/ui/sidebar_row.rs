@@ -22,6 +22,8 @@ const WINDOW_GROUP_PAD_X: f32 = 5.0;
 const WINDOW_GROUP_PAD_Y: f32 = 4.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
 const SIDEBAR_BADGE_W: f32 = 18.0;
+/// Gap between the context name and the pane-pip strip on the headline.
+const PIP_TEXT_GAP: f32 = 4.0;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
@@ -369,6 +371,17 @@ impl ContextItem {
                         // --- Name row ---
                         let name_y_before = ui.cursor().min.y;
                         ui.horizontal(|ui| {
+                            // Every horizontal gap on this row is budgeted
+                            // explicitly below, so implicit item spacing must be
+                            // off: an unbudgeted gap makes the row wider than
+                            // the panel, egui stores that overflowed content
+                            // rect as the panel's size, and the panel re-reads
+                            // it as its width next frame — a feedback loop that
+                            // ramps the sidebar to its size_range maximum and
+                            // swallows any user resize (stint 0715).
+                            let gap = ui.spacing().item_spacing.x;
+                            ui.spacing_mut().item_spacing.x = 0.0;
+
                             // Compute pip strip width so we can budget the name text.
                             let pip_strip_w = if let Some(ref dots) = pane_dots {
                                 if dots.count > 0 {
@@ -385,7 +398,7 @@ impl ContextItem {
                                     if dots.count > PANE_DOT_MAX {
                                         w += 20.0;
                                     }
-                                    w + 4.0 // gap between name text and dots
+                                    w + PIP_TEXT_GAP
                                 } else {
                                     0.0
                                 }
@@ -403,8 +416,18 @@ impl ContextItem {
                             } else {
                                 0.0
                             };
+                            // The trailing block keeps normal item spacing
+                            // between the close zone and the badge, so that gap
+                            // is part of its budget too.
+                            let trailing_w = badge_w
+                                + close_w
+                                + if badge_w > 0.0 && close_w > 0.0 {
+                                    gap
+                                } else {
+                                    0.0
+                                };
                             let text_max =
-                                (ui.available_width() - badge_w - close_w - pip_strip_w).max(0.0);
+                                (ui.available_width() - trailing_w - pip_strip_w).max(0.0);
 
                             let title_width = ui
                                 .scope(|ui| {
@@ -427,10 +450,16 @@ impl ContextItem {
                             // the pips and overlap the count.
                             ui.add_space((text_max - title_width).max(0.0));
 
-                            // Pips stay beside the headline, before the trailing state.
+                            // Pips stay beside the headline, before the trailing
+                            // state. `pip_strip_w` budgeted this gap; with
+                            // implicit spacing off it has to be added by hand.
+                            if pip_strip_w > 0.0 {
+                                ui.add_space(PIP_TEXT_GAP);
+                            }
                             draw_pips(ui, &pane_dots, colors, row_alpha, is_dragging);
 
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = gap;
                                 // The close target follows the count at the physical trailing edge.
                                 if action_enabled {
                                     let (rect, _) = ui.allocate_exact_size(
@@ -623,6 +652,77 @@ impl ContextItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lay one context row out in a `panel_w`-wide viewport and return the
+    /// width the row actually claimed.
+    fn measure_row(
+        panel_w: f32,
+        action_enabled: bool,
+        badge_count: usize,
+        pane_count: usize,
+    ) -> f32 {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let mut pane_dots = (pane_count > 0).then(|| PaneDots {
+            count: pane_count,
+            focused_idx: Some(0),
+            hidden_set: std::collections::HashSet::new(),
+            activities: vec![None; pane_count],
+            windows: vec![PaneDotWindow {
+                start: 0,
+                count: pane_count,
+                is_return_target: true,
+                is_active: true,
+            }],
+        });
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(panel_w, 600.0),
+            )),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut row_w = 0.0_f32;
+        let _ = ctx.run_ui(input, |ui| {
+            let (_, response) = ContextItem {
+                is_active: true,
+                is_dragging: false,
+                any_dragging: false,
+                action_enabled,
+                ctx_name: "Default".to_string(),
+                ctx_index: Some(0),
+                badge_count,
+                subtitle: Some("/Users/someone/code/project".to_string()),
+                pane_dots: pane_dots.take(),
+                draggable: true,
+            }
+            .draw(ui, Id::new("row"), &colors);
+            row_w = response.rect.width();
+        });
+        row_w
+    }
+
+    /// Stint 0715: a row wider than the space it was given inflates the
+    /// enclosing panel, because egui stores a panel's content rect as the
+    /// panel's size and reads it back as the width on the next frame. No
+    /// combination of badge, pips, and close zone may exceed the budget.
+    #[test]
+    fn context_row_never_exceeds_available_width() {
+        for &panel_w in &[160.0_f32, 220.0, 320.0, 400.0] {
+            for &action_enabled in &[false, true] {
+                for &badge_count in &[0_usize, 3, 42] {
+                    for &pane_count in &[0_usize, 1, PANE_DOT_MAX + 3] {
+                        let row_w = measure_row(panel_w, action_enabled, badge_count, pane_count);
+                        assert!(
+                            row_w <= panel_w,
+                            "row overflowed: panel_w={panel_w} row_w={row_w} \
+                             action_enabled={action_enabled} badge={badge_count} panes={pane_count}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// Regression: session restore can leave focus on a pane past PANE_DOT_MAX
     /// (dot_centers len == 8, focused_idx == 8). The pin must be skipped, not

@@ -1424,6 +1424,23 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Stint 0715: visual review surface for the first-run sidebar — exactly
+    /// one context, so the close zone is suppressed and the row is at its
+    /// widest text budget. This is the state that used to ramp the panel to
+    /// its `size_range` maximum, clip the row card, and leave a dead strip
+    /// between the sidebar and the central pane.
+    #[test]
+    fn screenshot_single_context_sidebar() {
+        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 2.0);
+        h.with_app_mut(|app| app.sidebar_visible = true);
+        h.run_steps(6);
+        h.with_app(|app| {
+            assert_eq!(app.router.len(), 1, "first-run is a single context");
+        });
+        h.save_screenshot("/tmp/plexi-0715-single-context-sidebar.png")
+            .expect("render failed");
+    }
+
     /// Stint 0605: `NextContext`/`PrevContext` cycle the same enumeration the
     /// sidebar draws. Against a live router carrying a real subcontext wedged
     /// between two masters, cycling steps master → master and wraps, so it can
