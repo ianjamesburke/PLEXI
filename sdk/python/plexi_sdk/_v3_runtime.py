@@ -27,15 +27,39 @@ from plexi_sdk._v3_state import StateSnapshot
 
 
 _LOCK = threading.Lock()
-_EMIT_BATCH: list[dict] | None = None
+_EMIT_BATCH: list[str] | None = None
+
+#: Protocol output carries no human reader, so the default `", "` / `": "`
+#: separators are pure wire weight on every key of every frame.
+_JSON_SEPARATORS = (",", ":")
+
+#: How many delta-eligible frames ride a previously measured full-vs-delta
+#: verdict before it is re-measured. Measuring means serialising the frame
+#: both ways, which costs more guest CPU than the byte difference it can
+#: recover — on a full-motion canvas the double serialisation alone measurably
+#: lowered achievable guest_fps. The winner is a property of the app's frame
+#: shape, not of any single frame, so it is stable between structural changes;
+#: every full frame resets the countdown so the first delta-eligible frame
+#: after one always re-measures.
+_TREE_SIZE_CHECK_INTERVAL = 30
+
+
+def _dump_line(obj: dict) -> str:
+    """Serialise one protocol message to its exact wire line."""
+    return json.dumps(obj, separators=_JSON_SEPARATORS) + "\n"
 
 
 def _emit(obj: dict) -> None:
+    _emit_line(_dump_line(obj))
+
+
+def _emit_line(line: str) -> None:
+    """Write an already-serialised protocol line, or queue it in the batch."""
     with _LOCK:
         if _EMIT_BATCH is not None:
-            _EMIT_BATCH.append(obj)
+            _EMIT_BATCH.append(line)
             return
-        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.write(line)
         sys.stdout.flush()
 
 
@@ -54,7 +78,7 @@ def _finish_emit_batch() -> None:
         _EMIT_BATCH = None
         if not batch:
             return
-        sys.stdout.write("".join(json.dumps(obj) + "\n" for obj in batch))
+        sys.stdout.write("".join(batch))
         sys.stdout.flush()
 
 
@@ -85,6 +109,8 @@ class V3AppRuntime:
         self._last_render_time: float | None = None
         self._last_tree: dict | None = None
         self._force_full_tree = True
+        self._prefer_full_tree = False
+        self._tree_size_check_in = 0
         self._frame_id = 0
         self._app_id = ""
         self._workspace_root = ""
@@ -349,29 +375,57 @@ class V3AppRuntime:
         the host never has to guess what a patch applies to. Relies on the
         documented `view()` purity contract: nodes are rebuilt every frame,
         never cached and mutated in place across frames.
+
+        A delta is only a win when it is actually smaller than the frame it
+        replaces. On a full-motion canvas, where every command changes every
+        frame, each changed command is re-sent wrapped in its own index — so
+        the delta can come out slightly *larger* than the full frame. Both
+        encodings are already supported by the host decoder, so the smaller of
+        the two wins — measured by serialising both on the first delta-eligible
+        frame after any full frame and every `_TREE_SIZE_CHECK_INTERVAL` frames
+        after, and remembered in between (see the interval's docstring for why
+        measuring every frame is not affordable).
         """
         prev = self._last_tree
         self._last_tree = encoded
         nodes = encoded["nodes"]
         force_full = self._force_full_tree
         self._force_full_tree = False
+        full = {"type": "component_tree", "frame_id": frame_id, "tree": encoded}
         if (
             force_full
             or prev is None
             or encoded["root"] != prev["root"]
             or len(nodes) != len(prev["nodes"])
         ):
-            _emit({"type": "component_tree", "frame_id": frame_id, "tree": encoded})
+            self._tree_size_check_in = 0
+            _emit(full)
+            return
+        measure = self._tree_size_check_in <= 0
+        if self._prefer_full_tree and not measure:
+            self._tree_size_check_in -= 1
+            _emit(full)
             return
         changed: list[dict] = []
         for node, old in zip(nodes, prev["nodes"]):
             if node == old:
                 continue
             if node["key"] != old["key"]:
-                _emit({"type": "component_tree", "frame_id": frame_id, "tree": encoded})
+                self._tree_size_check_in = 0
+                _emit(full)
                 return
             changed.append(_node_patch(node, old))
-        _emit({"type": "tree_delta", "frame_id": frame_id, "changed": changed})
+        delta_line = _dump_line(
+            {"type": "tree_delta", "frame_id": frame_id, "changed": changed}
+        )
+        if measure:
+            full_line = _dump_line(full)
+            self._prefer_full_tree = len(full_line) <= len(delta_line)
+            self._tree_size_check_in = _TREE_SIZE_CHECK_INTERVAL
+            _emit_line(full_line if self._prefer_full_tree else delta_line)
+            return
+        self._tree_size_check_in -= 1
+        _emit_line(delta_line)
 
     def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))

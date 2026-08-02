@@ -762,6 +762,9 @@ pub struct LivePythonPane {
     /// Egui repaint target for the decoder, installed on the first `ui()` and
     /// shared with the decoder so a ready frame wakes the paint loop.
     repaint: RepaintHook,
+    /// The repaint this pane last scheduled, published so the decoder can let a
+    /// frame ride it instead of forcing a second full-host repaint (stint 0549).
+    wake_schedule: WakeSchedule,
     wants_close: bool,
     error: Option<String>,
     /// stderr accumulated from a Python traceback until its unindented
@@ -857,6 +860,55 @@ enum DecodedOutput {
 /// shared across `relaunch` so a fresh decoder inherits it immediately.
 type RepaintHook = Arc<Mutex<Option<(egui::Context, egui::ViewportId)>>>;
 
+/// The repaint the paint thread has already scheduled, published for the
+/// decoder thread so a frame arrival does not request a second wake for a paint
+/// that is already coming.
+#[derive(Debug, Clone, Copy)]
+struct ScheduledWake {
+    at: std::time::Instant,
+    /// The guest's frame interval while it drives its own cadence in
+    /// continuous mode; `None` when the pending wake is not the frame cadence
+    /// (scheduled-mode apps, or a continuous app whose pipeline is full and
+    /// whose next admission therefore depends on this very frame arriving).
+    continuous_interval: Option<std::time::Duration>,
+}
+
+/// Shared with the decoder thread. `scheduled: None` means nothing is
+/// scheduled at all, so a frame arrival has to wake the paint loop itself.
+#[derive(Debug, Default)]
+struct WakeScheduleState {
+    scheduled: Option<ScheduledWake>,
+    /// Frame-arrival wakes the decoder let ride an already-scheduled paint,
+    /// drained into the periodic perf line so the saving is observable.
+    suppressed: u64,
+}
+
+type WakeSchedule = Arc<Mutex<WakeScheduleState>>;
+
+/// Whether a decoded frame needs its own immediate repaint wake, or can ride
+/// the repaint the paint thread already scheduled.
+///
+/// Suppression only applies to an app driving a continuous cadence, where the
+/// pending wake is by construction at most one frame interval away — so the
+/// cost is a fraction of a frame of presentation latency, in exchange for not
+/// forcing a second full-host repaint per guest frame. An input-driven
+/// (scheduled-mode) app never suppresses: its frames are the *response* to
+/// input, nothing else is scheduled to show them, and latency there is
+/// perceptible.
+///
+/// The schedule is published from `ui()`, which eframe skips entirely while the
+/// window is hidden, so an entry can go stale. A wake already overdue by more
+/// than an interval is not evidence a paint is coming; fall back to waking.
+fn decoder_wake_needed(scheduled: Option<ScheduledWake>, now: std::time::Instant) -> bool {
+    match scheduled {
+        None => true,
+        Some(wake) => match wake.continuous_interval {
+            None => true,
+            Some(interval) => wake.at > now + interval || wake.at + interval < now,
+        },
+    }
+}
+
 /// Owns the off-paint-thread decoder: the thread handle, the ready-frame queue,
 /// and the `stdout` handle it drains (kept so `Drop` can wake and join it).
 struct PythonOutputDecoder {
@@ -871,7 +923,12 @@ struct PythonOutputDecoder {
 }
 
 impl PythonOutputDecoder {
-    fn spawn(runtime: &WasmPythonRuntime, app_id: String, repaint: RepaintHook) -> Self {
+    fn spawn(
+        runtime: &WasmPythonRuntime,
+        app_id: String,
+        repaint: RepaintHook,
+        wake_schedule: WakeSchedule,
+    ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let stdout = runtime.stdout.clone();
         let stdin = runtime.stdin.clone();
@@ -881,7 +938,15 @@ impl PythonOutputDecoder {
         let thread = std::thread::Builder::new()
             .name(format!("plexi-python-decode-{app_id}"))
             .spawn(move || {
-                decode_loop(thread_stdout, stdin, app_id, tx, repaint, thread_queued);
+                decode_loop(
+                    thread_stdout,
+                    stdin,
+                    app_id,
+                    tx,
+                    repaint,
+                    thread_queued,
+                    wake_schedule,
+                );
             })
             .ok();
         Self {
@@ -929,6 +994,7 @@ fn decode_loop(
     tx: std::sync::mpsc::Sender<DecodedOutput>,
     repaint: RepaintHook,
     queued: Arc<std::sync::atomic::AtomicUsize>,
+    wake_schedule: WakeSchedule,
 ) {
     let mut partial: Vec<u8> = Vec::new();
     let mut last_tree: Option<Arc<PythonUiTree>> = None;
@@ -936,6 +1002,10 @@ fn decode_loop(
     while let Some(bytes) = stdout.wait_and_drain() {
         partial.extend(bytes);
         let mut produced = false;
+        // Only a batch of pure frame output can ride an already-scheduled
+        // paint. Anything else (a host command, a decode error) has no
+        // cadence behind it and must wake the paint loop to be serviced.
+        let mut cadence_only = true;
         while let Some(newline) = partial.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = partial.drain(..=newline).collect();
             let line = &line[..line.len().saturating_sub(1)];
@@ -1002,6 +1072,9 @@ fn decode_loop(
                 if matches!(output, DecodedOutput::Tree { .. }) {
                     awaiting_full = false;
                 }
+                if !is_frame_cadence_output(&output) {
+                    cadence_only = false;
+                }
                 queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 if tx.send(output).is_err() {
                     queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
@@ -1011,14 +1084,39 @@ fn decode_loop(
             }
         }
         if produced {
-            if let Some((context, viewport)) =
-                repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-            {
-                // A zero-delay egui request deliberately schedules an extra
-                // settling paint; a 1ns request wakes immediately without it.
-                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            let wake_needed = {
+                let mut state = wake_schedule.lock().unwrap_or_else(|e| e.into_inner());
+                let needed = !cadence_only
+                    || decoder_wake_needed(state.scheduled, std::time::Instant::now());
+                if !needed {
+                    state.suppressed = state.suppressed.saturating_add(1);
+                }
+                needed
+            };
+            if wake_needed {
+                if let Some((context, viewport)) =
+                    repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                {
+                    // A zero-delay egui request deliberately schedules an extra
+                    // settling paint; a 1ns request wakes immediately without it.
+                    context
+                        .request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+                }
             }
         }
+    }
+}
+
+/// Whether one decoded output belongs to the guest's frame cadence — the tree
+/// itself, or the `frame_done` that closes it. Everything else (a host command,
+/// a decode error) is out-of-band work with no scheduled paint behind it.
+fn is_frame_cadence_output(output: &DecodedOutput) -> bool {
+    match output {
+        DecodedOutput::Tree { .. } => true,
+        DecodedOutput::Message { value, .. } => {
+            value.get("type").and_then(Value::as_str) == Some("frame_done")
+        }
+        DecodedOutput::DecodeError(_) => false,
     }
 }
 
@@ -1243,6 +1341,14 @@ impl PythonFrameScheduler {
             return None;
         }
         Some(admission_deadline.max(now))
+    }
+
+    /// The guest's frame interval while it drives a continuous cadence.
+    fn continuous_interval(&self) -> Option<std::time::Duration> {
+        match self.mode {
+            PythonSchedulerMode::Continuous { interval } => Some(interval),
+            PythonSchedulerMode::Scheduled => None,
+        }
     }
 
     fn pipeline_capacity(&self) -> usize {
@@ -1577,7 +1683,13 @@ impl LivePythonPane {
         let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
         let repaint: RepaintHook = Arc::new(Mutex::new(None));
-        let decoder = PythonOutputDecoder::spawn(&runtime, app_id.clone(), repaint.clone());
+        let wake_schedule: WakeSchedule = Arc::new(Mutex::new(WakeScheduleState::default()));
+        let decoder = PythonOutputDecoder::spawn(
+            &runtime,
+            app_id.clone(),
+            repaint.clone(),
+            wake_schedule.clone(),
+        );
         Ok(Self {
             runtime,
             config,
@@ -1590,6 +1702,7 @@ impl LivePythonPane {
             frame_scheduler: PythonFrameScheduler::new(std::time::Instant::now()),
             decoder,
             repaint,
+            wake_schedule,
             wants_close: false,
             error: None,
             pending_traceback_stderr: String::new(),
@@ -1833,12 +1946,25 @@ impl LivePythonPane {
         let now = std::time::Instant::now();
         let render_deadline = self.frame_scheduler.next_repaint_deadline(now);
         let timer_deadline = self.timers.values().map(|timer| timer.deadline).min();
-        if let Some(next_wake) = render_deadline.into_iter().chain(timer_deadline).min() {
+        let next_wake = render_deadline.into_iter().chain(timer_deadline).min();
+        if let Some(next_wake) = next_wake {
             let predicted_frame =
                 std::time::Duration::from_secs_f32(ui.input(|input| input.predicted_dt));
             ui.ctx()
                 .request_repaint_after(repaint_delay_until(next_wake, now, predicted_frame));
         }
+        // Publish what the decoder can ride. The cadence tag only holds while
+        // the frame scheduler itself has a deadline pending: with the pipeline
+        // full, `next_repaint_deadline` yields nothing and the next admission
+        // depends on a frame arriving, so the decoder must wake for it.
+        let continuous_interval = render_deadline.and(self.frame_scheduler.continuous_interval());
+        self.wake_schedule
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .scheduled = next_wake.map(|at| ScheduledWake {
+            at,
+            continuous_interval,
+        });
     }
 
     fn record_render_perf(&mut self, host_time: std::time::Duration) {
@@ -1852,8 +1978,15 @@ impl LivePythonPane {
             let guest_fps = self.perf_guest_frames as f64 / elapsed.as_secs_f64();
             let avg_roundtrip_ms = self.perf_guest_roundtrip.as_secs_f64() * 1000.0
                 / self.perf_guest_frames.max(1) as f64;
+            let suppressed_wakes = std::mem::take(
+                &mut self
+                    .wake_schedule
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .suppressed,
+            );
             log::info!(
-                "app::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1}",
+                "app::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1} suppressed_wakes={suppressed_wakes}",
                 self.app_id,
                 self.perf_json_decode.as_secs_f64() * 1000.0,
                 self.perf_tree_decode.as_secs_f64() * 1000.0,
@@ -2931,14 +3064,31 @@ impl LivePythonPane {
     pub fn record_runtime_stderr_for_test(&mut self, stderr: &str) {
         self.record_runtime_stderr(stderr);
     }
+    /// Frame-arrival wakes this pane's decoder let ride an already-scheduled
+    /// paint (stint 0549). Also reported in the periodic perf line.
+    #[cfg(test)]
+    pub fn suppressed_wakes(&self) -> u64 {
+        self.wake_schedule
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .suppressed
+    }
     pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
         // Drop the old decoder (closes its stdout, joins the thread) before the
         // old runtime is replaced, then bind a fresh decoder to the new
         // runtime's stdout. The shared repaint hook carries over so the new
-        // decoder can wake the paint loop immediately.
+        // decoder can wake the paint loop immediately; the published wake
+        // schedule is cleared with the frame scheduler it describes, so the
+        // fresh decoder wakes for the relaunched app's first frames.
         let runtime = WasmPythonRuntime::launch(&self.config)?;
-        self.decoder =
-            PythonOutputDecoder::spawn(&runtime, self.app_id.clone(), self.repaint.clone());
+        *self.wake_schedule.lock().unwrap_or_else(|e| e.into_inner()) =
+            WakeScheduleState::default();
+        self.decoder = PythonOutputDecoder::spawn(
+            &runtime,
+            self.app_id.clone(),
+            self.repaint.clone(),
+            self.wake_schedule.clone(),
+        );
         self.runtime = runtime;
         self.tree = None;
         self.pending_trees.clear();
@@ -7420,6 +7570,138 @@ execution = "cloud"
         assert!(apply_tree_delta(&base, &changed).is_err());
     }
 
+    fn continuous_wake(
+        now: std::time::Instant,
+        ahead: std::time::Duration,
+        interval: std::time::Duration,
+    ) -> Option<ScheduledWake> {
+        Some(ScheduledWake {
+            at: now + ahead,
+            continuous_interval: Some(interval),
+        })
+    }
+
+    const FRAME_60HZ: std::time::Duration = std::time::Duration::from_micros(16_667);
+
+    #[test]
+    fn decoder_wakes_when_nothing_is_scheduled() {
+        assert!(decoder_wake_needed(None, std::time::Instant::now()));
+    }
+
+    #[test]
+    fn decoder_always_wakes_for_a_scheduled_mode_app() {
+        // An input-driven app's frame is the response to input; no cadence is
+        // scheduled to present it, so latency here would be perceptible.
+        let now = std::time::Instant::now();
+        for ahead in [
+            std::time::Duration::ZERO,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(5),
+        ] {
+            let scheduled = Some(ScheduledWake {
+                at: now + ahead,
+                continuous_interval: None,
+            });
+            assert!(
+                decoder_wake_needed(scheduled, now),
+                "scheduled-mode app must wake for a frame {ahead:?} before its next paint"
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_rides_a_continuous_paint_already_within_one_frame() {
+        let now = std::time::Instant::now();
+        for ahead in [
+            std::time::Duration::ZERO,
+            std::time::Duration::from_millis(4),
+            FRAME_60HZ,
+        ] {
+            assert!(
+                !decoder_wake_needed(continuous_wake(now, ahead, FRAME_60HZ), now),
+                "a paint {ahead:?} away already presents this frame within its interval"
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_wakes_when_the_continuous_paint_is_more_than_a_frame_away() {
+        let now = std::time::Instant::now();
+        let scheduled = continuous_wake(now, FRAME_60HZ * 2, FRAME_60HZ);
+        assert!(decoder_wake_needed(scheduled, now));
+    }
+
+    #[test]
+    fn decoder_wakes_when_the_published_schedule_has_gone_stale() {
+        // `ui()` does not run while the window is hidden, so a published wake
+        // long past its deadline is no evidence a paint is coming.
+        let now = std::time::Instant::now();
+        let stale = Some(ScheduledWake {
+            at: now - FRAME_60HZ * 4,
+            continuous_interval: Some(FRAME_60HZ),
+        });
+        assert!(decoder_wake_needed(stale, now));
+        // Merely overdue within one interval is normal jitter, not staleness.
+        let overdue = Some(ScheduledWake {
+            at: now - FRAME_60HZ / 2,
+            continuous_interval: Some(FRAME_60HZ),
+        });
+        assert!(!decoder_wake_needed(overdue, now));
+    }
+
+    #[test]
+    fn frame_done_rides_the_cadence_but_other_messages_do_not() {
+        // Every frame ends with `frame_done`; treating it as out-of-band would
+        // make every batch wake and suppress nothing at all.
+        let cadence = DecodedOutput::Message {
+            value: json!({"type": "frame_done", "frame_id": 7}),
+            json_time: std::time::Duration::ZERO,
+            bytes: 0,
+        };
+        assert!(is_frame_cadence_output(&cadence));
+        let command = DecodedOutput::Message {
+            value: json!({"type": "notify", "message": "hi"}),
+            json_time: std::time::Duration::ZERO,
+            bytes: 0,
+        };
+        assert!(!is_frame_cadence_output(&command));
+        assert!(!is_frame_cadence_output(&DecodedOutput::DecodeError(
+            "bad".to_string()
+        )));
+    }
+
+    #[test]
+    fn continuous_interval_is_reported_only_in_continuous_mode() {
+        let now = std::time::Instant::now();
+        let mut scheduler = PythonFrameScheduler::new(now);
+        assert_eq!(scheduler.continuous_interval(), None);
+        scheduler.set_mode(Some("continuous"), Some(60), now);
+        assert_eq!(
+            scheduler.continuous_interval(),
+            Some(scheduler_repaint_after(Some("continuous"), Some(60)))
+        );
+        scheduler.set_mode(Some("scheduled"), None, now);
+        assert_eq!(scheduler.continuous_interval(), None);
+    }
+
+    #[test]
+    fn a_full_continuous_pipeline_has_no_render_deadline_to_ride() {
+        // With the pipeline full there is no pending admission, so `ui()`
+        // publishes no cadence tag and the decoder wakes for the arrival that
+        // frees a slot.
+        let now = std::time::Instant::now();
+        let mut scheduler = PythonFrameScheduler::new(now);
+        scheduler.set_mode(Some("continuous"), Some(60), now);
+        let mut admitted = 0;
+        let mut clock = now;
+        while scheduler.poll_render(clock).is_some() {
+            admitted += 1;
+            clock += FRAME_60HZ;
+        }
+        assert_eq!(admitted, scheduler.pipeline_capacity());
+        assert_eq!(scheduler.next_repaint_deadline(clock), None);
+    }
+
     #[test]
     fn delta_commands_changed_on_non_canvas_is_a_desync_error() {
         let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
@@ -7449,7 +7731,15 @@ execution = "cloud"
         let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let thread_queued = queued.clone();
         let handle = std::thread::spawn(move || {
-            decode_loop(reader, stdin, "test".to_string(), tx, repaint, thread_queued);
+            decode_loop(
+                reader,
+                stdin,
+                "test".to_string(),
+                tx,
+                repaint,
+                thread_queued,
+                Arc::new(Mutex::new(WakeScheduleState::default())),
+            );
         });
 
         // Serialize to one line each — the decoder splits on '\n', so the
@@ -7514,6 +7804,7 @@ execution = "cloud"
                 tx,
                 repaint,
                 Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                Arc::new(Mutex::new(WakeScheduleState::default())),
             );
         });
 

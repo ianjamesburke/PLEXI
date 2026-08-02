@@ -6685,3 +6685,127 @@ mod pane_send_submit_tests {
         );
     }
 }
+
+/// Stint 0549: a continuous-cadence app's decoder must let ready frames ride
+/// the repaint the frame scheduler already scheduled, instead of forcing a
+/// second full-host repaint per guest frame. Drives the real `apps/dev/balls`
+/// subprocess — the exemplar the 0541 audit measured — and asserts the
+/// suppression path actually engages end to end.
+#[test]
+fn continuous_app_frames_ride_the_scheduled_repaint() {
+    let mut h = HostHarness::new();
+    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/balls");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch balls");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching balls");
+
+    let suppressed = |h: &HostHarness| {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .and_then(|pane| match &pane.runtime {
+                AppRuntime::Python(p) => Some(p.suppressed_wakes()),
+                _ => None,
+            })
+            .expect("balls runs on the Python runtime")
+    };
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        if suppressed(&h) > 0 {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "a continuous app produced no frame that could ride an already-scheduled repaint"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Stint 0549, the other direction: an input-driven (scheduled-mode) app must
+/// never have its frame-arrival wake suppressed. Its frames are the response
+/// to input, nothing else is scheduled to present them, and the latency would
+/// be perceptible. `apps/dev/key-event-probe` never sets a scheduler mode.
+#[test]
+fn scheduled_mode_app_never_suppresses_its_frame_wake() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/key-event-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch key-event-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching key-event-probe");
+
+    let probe = |h: &HostHarness| {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .and_then(|pane| match &pane.runtime {
+                AppRuntime::Python(p) => Some((p.has_rendered_tree(), p.suppressed_wakes())),
+                _ => None,
+            })
+            .expect("key-event-probe runs on the Python runtime")
+    };
+
+    let start = std::time::Instant::now();
+    while !probe(&h).0 {
+        h.run_frames(1);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "key-event-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // Drive real input and let the response frame land.
+    let key_response = temp_response(tmp.path(), "wake-probe-plus");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "plus".to_string(),
+        response_file: Some(key_response.clone()),
+    });
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let state = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.semantic_state());
+        let count = state.as_ref().and_then(|state| {
+            state
+                .nodes
+                .iter()
+                .find(|n| n.role == "text")
+                .and_then(|n| n.label.clone())
+        });
+        if count.as_deref() == Some("1") {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "key-event-probe did not reflect the key event in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    assert_eq!(
+        probe(&h).1,
+        0,
+        "an input-driven app must never trade presentation latency for saved paints"
+    );
+}
