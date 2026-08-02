@@ -371,36 +371,6 @@ Block until a named pane file slot's value matches `pattern`.
 | `slot_name` | `string` | yes |
 | `timeout_secs` | `number` | yes |
 
-### `lock_acquire`
-
-Acquire a host-owned named lease for the calling pane. The reply is parked by the host until FIFO capacity grants it ...
-
-| Field | Type | Required |
-|-------|------|----------|
-| `name` | `string` | yes |
-| `pane_id` | `integer` | yes |
-| `response_file` | `string` | yes |
-| `timeout_secs` | `number` | yes |
-
-### `lock_release`
-
-Release a named lease held by the calling pane.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `name` | `string` | yes |
-| `pane_id` | `integer` | yes |
-| `response_file` | `string` | yes |
-
-### `lock_status`
-
-Report the current holders, queue depth, and oldest queued wait.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `name` | `string` | yes |
-| `response_file` | `string` | yes |
-
 ### `slot_list`
 
 List named host-managed pane file slots.
