@@ -165,7 +165,6 @@ impl PlexiApp {
 impl PlexiApp {
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
-
         // Header
         ui.add_space(8.0);
         let mut add_clicked = false;

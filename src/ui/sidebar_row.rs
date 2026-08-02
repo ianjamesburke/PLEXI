@@ -4,10 +4,11 @@ use crate::ui::theme::Colors;
 use egui::emath::GuiRounding;
 use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
 
-pub const ACTION_ZONE_WIDTH: f32 = 30.0;
+pub const ACTION_ZONE_WIDTH: f32 = 22.0;
 
 /// Fixed-width left gutter that holds the context index number.
-const GUTTER_W: f32 = 24.0;
+const GUTTER_W: f32 = 18.0;
+const ROW_INDENT: f32 = 4.0;
 
 /// Top and bottom padding added inside each row for vertical breathing room.
 const ROW_PAD_V: f32 = 7.0;
@@ -20,7 +21,7 @@ const PANE_DOT_MAX: usize = 8;
 const WINDOW_GROUP_PAD_X: f32 = 5.0;
 const WINDOW_GROUP_PAD_Y: f32 = 4.0;
 const WINDOW_GROUP_GAP: f32 = 5.0;
-const SIDEBAR_BADGE_W: f32 = 26.0;
+const SIDEBAR_BADGE_W: f32 = 18.0;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
@@ -310,8 +311,9 @@ impl ContextItem {
         let bg_idx = ui.painter().add(egui::Shape::Noop);
 
         // Every sidebar row is a top-level context, so the gutter is a fixed
-        // 6px inset — there is no nesting level to indent for.
-        let indent = 6.0;
+        // There is no nesting level to indent for, so the compact inset leaves
+        // room for the primary label rather than a second visual gutter.
+        let indent = ROW_INDENT;
 
         let is_active = self.is_active;
         let is_dragging = self.is_dragging;
@@ -347,10 +349,11 @@ impl ContextItem {
 
             // --- Outer row: left gutter (index number) + content column ---
             let y_before = ui.cursor().min.y;
-            // name_row_h is captured from inside the horizontal closure and
-            // returned as part of the scope inner so the action zone can be
-            // limited to the header line height.
+            // name_row_h and close_rect are captured from inside the horizontal
+            // closure so the number and delete hit target stay on the headline,
+            // not the full two-line row.
             let mut name_row_h_capture = 0.0_f32;
+            let mut close_rect_capture = None;
             ui.horizontal(|ui| {
                 ui.add_space(indent);
 
@@ -363,18 +366,26 @@ impl ContextItem {
                 // Pips live on the name row, right-aligned before the action zone.
                 let name_row_h = ui
                     .vertical(|ui| {
-                        // --- Name row (includes pips right-aligned) ---
+                        // --- Name row ---
                         let name_y_before = ui.cursor().min.y;
                         ui.horizontal(|ui| {
                             // Compute pip strip width so we can budget the name text.
                             let pip_strip_w = if let Some(ref dots) = pane_dots {
                                 if dots.count > 0 {
                                     let capped = dots.count.min(PANE_DOT_MAX);
-                                    let mut w = (capped as f32) * PANE_DOT_SPACING;
+                                    let group_count = dots
+                                        .windows
+                                        .iter()
+                                        .filter(|group| group.count > 0 && group.start < capped)
+                                        .count()
+                                        .max(1);
+                                    let mut w = (capped as f32) * PANE_DOT_SPACING
+                                        + (group_count as f32) * WINDOW_GROUP_PAD_X * 2.0
+                                        + (group_count.saturating_sub(1) as f32) * WINDOW_GROUP_GAP;
                                     if dots.count > PANE_DOT_MAX {
                                         w += 20.0;
                                     }
-                                    w + 6.0 // gap between name text and dots
+                                    w + 4.0 // gap between name text and dots
                                 } else {
                                     0.0
                                 }
@@ -382,52 +393,66 @@ impl ContextItem {
                                 0.0
                             };
 
-                            let right_reserve = if action_enabled {
-                                ACTION_ZONE_WIDTH + 4.0
-                            } else {
-                                8.0
-                            };
                             let badge_w = if badge_count > 0 {
                                 SIDEBAR_BADGE_W
                             } else {
                                 0.0
                             };
+                            let close_w = if action_enabled {
+                                ACTION_ZONE_WIDTH
+                            } else {
+                                0.0
+                            };
                             let text_max =
-                                (ui.available_width() - right_reserve - badge_w - pip_strip_w)
-                                    .max(0.0);
+                                (ui.available_width() - badge_w - close_w - pip_strip_w).max(0.0);
 
-                            ui.scope(|ui| {
-                                ui.set_max_width(text_max);
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&ctx_name)
-                                            .size(style::TEXT_SIDEBAR_TITLE)
-                                            .color(text_color),
+                            let title_width = ui
+                                .scope(|ui| {
+                                    ui.set_max_width(text_max);
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&ctx_name)
+                                                .size(style::TEXT_SIDEBAR_TITLE)
+                                                .color(text_color),
+                                        )
+                                        .selectable(false)
+                                        .truncate(),
                                     )
-                                    .selectable(false)
-                                    .truncate(),
-                                );
-                            });
+                                    .rect
+                                    .width()
+                                })
+                                .inner;
+                            // Keep the trailing layout at the budget boundary
+                            // even for short names, so it cannot begin after
+                            // the pips and overlap the count.
+                            ui.add_space((text_max - title_width).max(0.0));
 
-                            // Pips: rendered inline right of the name, before badge/action.
+                            // Pips stay beside the headline, before the trailing state.
                             draw_pips(ui, &pane_dots, colors, row_alpha, is_dragging);
 
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add_space(if action_enabled {
-                                    ACTION_ZONE_WIDTH
-                                } else {
-                                    0.0
-                                });
+                                // The close target follows the count at the physical trailing edge.
+                                if action_enabled {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        Vec2::new(ACTION_ZONE_WIDTH, ui.spacing().interact_size.y),
+                                        Sense::hover(),
+                                    );
+                                    close_rect_capture = Some(rect);
+                                }
                                 if badge_count > 0 {
                                     let badge_text = if badge_count > 9 {
                                         "9+".to_string()
                                     } else {
                                         badge_count.to_string()
                                     };
-                                    ui.label(
-                                        egui::RichText::new(badge_text)
-                                            .size(style::TEXT_META)
-                                            .color(with_alpha(accent_color, row_alpha)),
+                                    ui.add_sized(
+                                        Vec2::new(SIDEBAR_BADGE_W, 0.0),
+                                        egui::Label::new(
+                                            egui::RichText::new(badge_text)
+                                                .size(style::TEXT_META)
+                                                .color(with_alpha(accent_color, row_alpha)),
+                                        )
+                                        .halign(Align::RIGHT),
                                     );
                                 }
                             });
@@ -462,11 +487,15 @@ impl ContextItem {
 
             ui.add_space(ROW_PAD_V);
 
-            (ui.cursor().min.y - y_before, name_row_h_capture)
+            (
+                ui.cursor().min.y - y_before,
+                name_row_h_capture,
+                close_rect_capture,
+            )
         });
 
         let row_rect = scope_out.response.rect;
-        let (_total_h, name_row_h) = scope_out.inner;
+        let (_total_h, name_row_h, close_rect) = scope_out.inner;
 
         let response = ui.interact(row_rect, id, Sense::click_and_drag());
         let hovered = response.hovered();
@@ -528,18 +557,9 @@ impl ContextItem {
             }
         }
 
-        let action_zone = if action_enabled {
-            Some(Rect::from_min_max(
-                egui::pos2(row_rect.max.x - ACTION_ZONE_WIDTH, row_rect.min.y),
-                egui::pos2(row_rect.max.x, row_rect.min.y + name_row_h),
-            ))
-        } else {
-            None
-        };
+        let in_action = close_rect.is_some_and(|rect| ui.rect_contains_pointer(rect));
 
-        let in_action = action_zone.is_some_and(|az| ui.rect_contains_pointer(az));
-
-        if let Some(az) = action_zone {
+        if let Some(close_rect) = close_rect {
             if hovered && !is_dragging {
                 let glyph_color =
                     with_alpha(if in_action { text_primary } else { text_dim }, row_alpha);
@@ -548,7 +568,7 @@ impl ContextItem {
                     "\u{2715}",
                     egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE),
                     glyph_color,
-                    az.center(),
+                    close_rect.center(),
                 );
             }
         }

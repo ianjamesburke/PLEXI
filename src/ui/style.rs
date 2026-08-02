@@ -37,7 +37,7 @@ pub const SPACE_XL: f32 = 24.0;
 pub const TEXT_HINT: f32 = 11.0; // Keyboard hints, meta labels.
 pub const TEXT_CAPTION: f32 = 12.0; // Secondary info, small labels.
 pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
-pub const TEXT_SIDEBAR_TITLE: f32 = 13.0; // Sidebar context row titles.
+pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
 pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
                                   // `theme::font_medium` for weight contrast.
@@ -79,6 +79,8 @@ pub const LIST_ROW_GAP: f32 = 8.0;
 /// Monospace line boxes sit optically low inside compact row chips.
 pub const LIST_CHIP_TEXT_OFFSET_Y: f32 = -1.0;
 pub const LIST_DROPDOWN_HEADER_H: f32 = 28.0;
+/// Default width leaves room for a readable context headline beside its state.
+pub const SIDEBAR_DEFAULT_W: f32 = 220.0;
 pub const LIST_DROPDOWN_CHEVRON_W: f32 = 24.0;
 pub const TABLE_HEADER_H: f32 = 28.0;
 
