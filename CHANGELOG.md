@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.5] — 2026-08-02
+
+### Changes
+- fix(editor): ignore control text echoes
+- fix(editor): support command and option deletion shortcuts
+- fix(file-browser): show dot directories
 ## [0.2.4] — 2026-08-02
 
 ### Changes
