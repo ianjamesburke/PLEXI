@@ -3,7 +3,7 @@
 size = [1000.0, 700.0]
 
 [[steps]]
-open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-editor-gate-persistence.md"] }
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["{tmp}/note.md"] }
 
 [[steps]]
 focus = "notes"
@@ -31,7 +31,7 @@ close = "notes"
 
 # A brand-new pane on the same path must load the saved bytes.
 [[steps]]
-open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["/tmp/plexi-editor-gate-persistence.md"] }
+open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["{tmp}/note.md"] }
 
 [[steps]]
 expect = { target = "reopened", source_text_contains = "persisted gate content", focused = true, timeout_s = 5.0 }

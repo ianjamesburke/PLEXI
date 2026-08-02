@@ -4,7 +4,7 @@
 size = [1000.0, 700.0]
 
 [[steps]]
-open = { kind = "builtin", id = "text-editor", as = "code", args = ["/tmp/plexi-code-mode.rs"] }
+open = { kind = "builtin", id = "text-editor", as = "code", args = ["{tmp}/note.rs"] }
 
 [[steps]]
 focus = "code"

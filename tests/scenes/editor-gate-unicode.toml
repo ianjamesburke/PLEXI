@@ -4,7 +4,7 @@
 size = [1000.0, 700.0]
 
 [[steps]]
-open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-editor-gate-unicode.md"] }
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["{tmp}/note.md"] }
 
 [[steps]]
 focus = "notes"
