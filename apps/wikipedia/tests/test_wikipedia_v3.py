@@ -11,6 +11,7 @@ sys.path.insert(0, str(SDK))
 
 import plexi_sdk as sdk  # noqa: E402
 from plexi_sdk import _v3_state  # noqa: E402
+from plexi_sdk._adapter import _encode_uitree  # noqa: E402
 from plexi_sdk.effects import ExposeTools, HttpFetch, ToolResult  # noqa: E402
 from plexi_sdk.events import HttpResponse, ToolCall  # noqa: E402
 
@@ -59,7 +60,6 @@ def test_search_response_moves_to_results():
 
     result = app._handle_http(data, event)
 
-    assert result["mode"] == "results"
     assert result["results"] == ["Plexi", "Plexiglass"]
     assert result["loading"] is False
     assert result["pending"] == ""
@@ -264,3 +264,33 @@ def test_unknown_tool_name_is_an_error():
     assert len(effects) == 1
     assert isinstance(effects[0], ToolResult)
     assert effects[0].error
+
+
+# --- view() Pending independence -----------------------------------------
+
+
+def test_article_pending_does_not_blank_the_results_list():
+    """The results and detail regions are each wrapped in their own Pending
+    -- an in-flight article fetch must not also skeleton the results list,
+    proving the two Pending regions fork on independent conditions rather
+    than one shared loading boolean."""
+    app = _load_app_module()
+    _set_state(
+        dict(
+            app.DEFAULT_STATE,
+            query="Plexi",
+            results=["Plexi", "Plexiglass"],
+            loading=True,
+            pending="article",
+        )
+    )
+
+    tree = _encode_uitree(app.view())
+    node_data = [node["data"] for node in tree["nodes"]]
+
+    assert any(d.get("type") == "ListView" for d in node_data), (
+        "results SelectList should still render as a live list, not a skeleton"
+    )
+    assert any(d.get("type") == "text" and d.get("text") == "Plexi" for d in node_data)
+    empty_badges = [d for d in node_data if d.get("type") == "badge" and d.get("text") == ""]
+    assert len(empty_badges) == 5, "article region should show its 5-row skeleton placeholder"
