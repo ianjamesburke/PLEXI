@@ -46,6 +46,7 @@ use super::wasm_frame::repaint_delay_until;
 struct InputState {
     bytes: VecDeque<u8>,
     lifecycle: InputLifecycle,
+    low_water_owner: Option<std::num::NonZeroU64>,
 }
 
 enum InputLifecycle {
@@ -60,7 +61,7 @@ struct OpenInput {
 
 struct LowWaterWaiter {
     token: LowWaterToken,
-    threshold: usize,
+    threshold: std::num::NonZeroUsize,
     wake: StdinWake,
 }
 
@@ -72,30 +73,53 @@ impl Default for InputState {
                 waker: None,
                 low_water: None,
             }),
+            low_water_owner: None,
         }
     }
 }
 
-static NEXT_LOW_WATER_TOKEN: std::sync::atomic::AtomicU64 =
+static NEXT_LOW_WATER_IDENTITY: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 
-/// Wake fired from the guest's consumption side (`poll_read`) when buffered
-/// stdin drops below an armed threshold. Runs on the guest runtime thread;
-/// must be cheap and non-reentrant (in production: a repaint request, the
-/// same shape as [`crate::host::mcp_client::McpWake`]).
+fn next_low_water_identity() -> Option<std::num::NonZeroU64> {
+    let raw = NEXT_LOW_WATER_IDENTITY
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |current| current.checked_add(1),
+        )
+        .ok()?;
+    std::num::NonZeroU64::new(raw)
+}
+
+/// Wake invoked after an accepted waiter is extracted from stdin state.
+/// Guest consumption invokes it on the guest runtime thread; close and
+/// supersession invoke it on the thread performing those operations. Every
+/// path invokes it outside the stdin mutex. It must therefore be cheap and
+/// non-reentrant (in production: a repaint request, the same shape as
+/// [`crate::host::mcp_client::McpWake`]).
 pub type StdinWake = Arc<dyn Fn(LowWaterToken) + Send + Sync>;
 
 /// Identity of one accepted low-water arming. It identifies pending work,
-/// never a callback allocation: distinct armings may share one [`StdinWake`]
-/// and still resolve independently.
+/// never a callback allocation. The owner component binds it to the stdin
+/// that accepted it, while the arming component distinguishes pending work on
+/// that stdin. Distinct armings may share one [`StdinWake`] and still resolve
+/// independently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LowWaterToken(std::num::NonZeroU64);
+pub struct LowWaterToken {
+    owner: std::num::NonZeroU64,
+    arming: std::num::NonZeroU64,
+}
+
+/// A fireable low-water boundary. Zero cannot be crossed by a byte count, so
+/// it cannot be represented at the arming boundary.
+pub type LowWaterThreshold = std::num::NonZeroUsize;
 
 /// A fresh pending operation supplies its callback. Later pump passes carry
 /// the returned token to prove they refer to the same logical operation.
 pub enum LowWaterArmRequest {
     Fresh {
-        threshold: usize,
+        threshold: LowWaterThreshold,
         wake: StdinWake,
     },
     Existing(LowWaterToken),
@@ -105,7 +129,8 @@ pub enum LowWaterArmRequest {
 /// `Superseded` accept new work. Every accepted token remains in the open
 /// state until exactly one path extracts it for callback delivery: guest
 /// consumption, close, or supersession. `Existing` can only observe the same
-/// token still armed or a stale token whose callback was already extracted.
+/// token still armed, a stale same-owner token whose callback was already
+/// extracted, or a token owned by another stdin.
 #[must_use = "every low-water arm outcome must be handled"]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LowWaterArm {
@@ -123,9 +148,13 @@ pub enum LowWaterArm {
         token: LowWaterToken,
         superseded: LowWaterToken,
     },
-    /// The supplied token is no longer installed. Its callback was already
-    /// extracted by a resolving path and may currently be in flight.
+    /// The supplied token belongs to this stdin but is no longer installed.
+    /// Its callback was already extracted by a resolving path and may
+    /// currently be in flight.
     Stale { token: LowWaterToken },
+    /// The supplied token belongs to another stdin. Its callback remains
+    /// owned by that stdin; this operation neither observes nor resolves it.
+    WrongInput { token: LowWaterToken },
     /// Stdin is closed — checked before the level, because delivery can never
     /// reach the guest regardless of how empty the buffer is. Nothing was
     /// armed; the caller's pending data is undeliverable and must not be
@@ -154,6 +183,8 @@ const STDIN_BUFFER_HARD_CAP_BYTES: usize = 64 * 1024 * 1024;
 /// MCP message may land on top of the watermark, so the hard cap keeps a wide
 /// margin above `watermark + MAX_LINE_BYTES`.
 const MCP_STDIN_HIGH_WATER_BYTES: usize = 8 * 1024 * 1024;
+const MCP_STDIN_HIGH_WATER: LowWaterThreshold =
+    LowWaterThreshold::new(MCP_STDIN_HIGH_WATER_BYTES).unwrap();
 
 /// Cloneable WASI stdin whose producer can append bytes after instantiation.
 /// Bounded: see [`STDIN_BUFFER_HARD_CAP_BYTES`].
@@ -173,6 +204,7 @@ impl AppendableStdin {
         let InputState {
             bytes: queued,
             lifecycle,
+            ..
         } = &mut *state;
         let open = match lifecycle {
             InputLifecycle::Open(open) => open,
@@ -216,13 +248,15 @@ impl AppendableStdin {
     /// invocation is deliberately outside that lock.
     pub fn arm_low_water_wake(&self, request: LowWaterArmRequest) -> LowWaterArm {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let buffered = state.bytes.len();
-        let open = match &mut state.lifecycle {
-            InputLifecycle::Open(open) => open,
-            InputLifecycle::Closed => return LowWaterArm::Closed,
-        };
         let (outcome, superseded) = match request {
             LowWaterArmRequest::Existing(token) => {
+                if state.low_water_owner != Some(token.owner) {
+                    return LowWaterArm::WrongInput { token };
+                }
+                let open = match &mut state.lifecycle {
+                    InputLifecycle::Open(open) => open,
+                    InputLifecycle::Closed => return LowWaterArm::Closed,
+                };
                 let outcome = match &open.low_water {
                     Some(waiter) if waiter.token == token => LowWaterArm::StillArmed { token },
                     _ => LowWaterArm::Stale { token },
@@ -230,20 +264,31 @@ impl AppendableStdin {
                 (outcome, None)
             }
             LowWaterArmRequest::Fresh { threshold, wake } => {
-                if buffered < threshold {
+                if matches!(&state.lifecycle, InputLifecycle::Closed) {
+                    return LowWaterArm::Closed;
+                }
+                let buffered = state.bytes.len();
+                if buffered < threshold.get() {
                     return LowWaterArm::BelowThreshold;
                 }
-                let Ok(raw_token) = NEXT_LOW_WATER_TOKEN.fetch_update(
-                    std::sync::atomic::Ordering::Relaxed,
-                    std::sync::atomic::Ordering::Relaxed,
-                    |current| current.checked_add(1),
-                ) else {
+                let owner = match state.low_water_owner {
+                    Some(owner) => owner,
+                    None => {
+                        let Some(owner) = next_low_water_identity() else {
+                            return LowWaterArm::IdentityExhausted;
+                        };
+                        state.low_water_owner = Some(owner);
+                        owner
+                    }
+                };
+                let Some(arming) = next_low_water_identity() else {
                     return LowWaterArm::IdentityExhausted;
                 };
-                let Some(raw_token) = std::num::NonZeroU64::new(raw_token) else {
-                    return LowWaterArm::IdentityExhausted;
+                let token = LowWaterToken { owner, arming };
+                let open = match &mut state.lifecycle {
+                    InputLifecycle::Open(open) => open,
+                    InputLifecycle::Closed => return LowWaterArm::Closed,
                 };
-                let token = LowWaterToken(raw_token);
                 let previous = open.low_water.replace(LowWaterWaiter {
                     token,
                     threshold,
@@ -310,7 +355,7 @@ impl AsyncRead for AppendableStdin {
             let buffered = state.bytes.len();
             let low_water = match &mut state.lifecycle {
                 InputLifecycle::Open(open) => match &open.low_water {
-                    Some(waiter) if buffered < waiter.threshold => open.low_water.take(),
+                    Some(waiter) if buffered < waiter.threshold.get() => open.low_water.take(),
                     _ => None,
                 },
                 InputLifecycle::Closed => None,
@@ -1963,7 +2008,7 @@ fn pump_mcp_inbound(
             let request = match pending.arm_token {
                 Some(token) => LowWaterArmRequest::Existing(token),
                 None => LowWaterArmRequest::Fresh {
-                    threshold: MCP_STDIN_HIGH_WATER_BYTES,
+                    threshold: MCP_STDIN_HIGH_WATER,
                     wake: Arc::clone(wake),
                 },
             };
@@ -1978,6 +2023,20 @@ fn pump_mcp_inbound(
                 LowWaterArm::Stale { token } => {
                     debug_assert_eq!(pending.arm_token, Some(token));
                     pending.arm_token = None;
+                }
+                LowWaterArm::WrongInput { token } => {
+                    log::error!(
+                        "app::{app_id}: guest stdin rejected foreign low-water token {token:?}; closing stdin"
+                    );
+                    stdin.close();
+                    drop_undeliverable_mcp_backlog(
+                        app_id,
+                        rx,
+                        connections,
+                        Some((pending.server_id, pending.line)),
+                        closed_logged,
+                    );
+                    return false;
                 }
                 LowWaterArm::Closed => {
                     drop_undeliverable_mcp_backlog(
@@ -5728,7 +5787,7 @@ mod tests {
 
     fn fresh_low_water_arm(
         stdin: &AppendableStdin,
-        threshold: usize,
+        threshold: LowWaterThreshold,
         wake: StdinWake,
     ) -> LowWaterArm {
         stdin.arm_low_water_wake(LowWaterArmRequest::Fresh { threshold, wake })
@@ -6548,7 +6607,7 @@ mod tests {
         assert!(matches!(
             fresh_low_water_arm(
                 &stdin,
-                MCP_STDIN_HIGH_WATER_BYTES,
+                MCP_STDIN_HIGH_WATER,
                 Arc::new(|_| {}),
             ),
             LowWaterArm::Closed
@@ -6565,7 +6624,7 @@ mod tests {
         assert!(matches!(
             fresh_low_water_arm(
                 &stdin,
-                MCP_STDIN_HIGH_WATER_BYTES,
+                MCP_STDIN_HIGH_WATER,
                 Arc::new(|_| {}),
             ),
             LowWaterArm::BelowThreshold
@@ -6616,7 +6675,7 @@ mod tests {
         assert!(matches!(
             fresh_low_water_arm(
                 &stdin,
-                MCP_STDIN_HIGH_WATER_BYTES,
+                MCP_STDIN_HIGH_WATER,
                 Arc::new(|_| {}),
             ),
             LowWaterArm::BelowThreshold
@@ -6703,7 +6762,7 @@ mod tests {
         // Arm A, then identify the SAME logical arming by its token: no fire.
         let token_a = match fresh_low_water_arm(
             &stdin,
-            MCP_STDIN_HIGH_WATER_BYTES,
+            MCP_STDIN_HIGH_WATER,
             Arc::clone(&wake_a),
         ) {
             LowWaterArm::Armed { token } => token,
@@ -6718,7 +6777,7 @@ mod tests {
         // Fresh work supersedes A even though callback identity is irrelevant.
         let token_b = match fresh_low_water_arm(
             &stdin,
-            MCP_STDIN_HIGH_WATER_BYTES,
+            MCP_STDIN_HIGH_WATER,
             Arc::clone(&wake_b),
         ) {
             LowWaterArm::Superseded { token, superseded } => {
@@ -6771,7 +6830,7 @@ mod tests {
 
         let token_a = match fresh_low_water_arm(
             &stdin,
-            MCP_STDIN_HIGH_WATER_BYTES,
+            MCP_STDIN_HIGH_WATER,
             Arc::clone(&wake),
         ) {
             LowWaterArm::Armed { token } => token,
@@ -6779,7 +6838,7 @@ mod tests {
         };
         let token_b = match fresh_low_water_arm(
             &stdin,
-            MCP_STDIN_HIGH_WATER_BYTES,
+            MCP_STDIN_HIGH_WATER,
             Arc::clone(&wake),
         ) {
             LowWaterArm::Superseded { token, superseded } => {
@@ -6798,6 +6857,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stdin_low_water_rejects_zero_threshold_instead_of_stranding_a_waiter() {
+        let stdin = AppendableStdin::default();
+        assert!(LowWaterThreshold::new(0).is_none());
+        let state = stdin.state.lock().unwrap_or_else(|error| error.into_inner());
+        let InputLifecycle::Open(open) = &state.lifecycle else {
+            panic!("new stdin must be open");
+        };
+        assert!(open.low_water.is_none(), "no zero-threshold arm can exist");
+        assert!(state.low_water_owner.is_none(), "no arming was accepted");
+    }
+
+    #[test]
+    fn stdin_low_water_token_reports_the_wrong_input_without_claiming_resolution() {
+        let stdin_a = AppendableStdin::default();
+        stdin_a.push(b"x").expect("seed stdin A");
+        let token = match fresh_low_water_arm(
+            &stdin_a,
+            LowWaterThreshold::new(1).expect("nonzero test threshold"),
+            Arc::new(|_| {}),
+        ) {
+            LowWaterArm::Armed { token } => token,
+            outcome => panic!("expected stdin A to arm, got {outcome:?}"),
+        };
+
+        let stdin_b = AppendableStdin::default();
+        stdin_b.push(b"x").expect("seed stdin B");
+        let token_b = match fresh_low_water_arm(
+            &stdin_b,
+            LowWaterThreshold::new(1).expect("nonzero test threshold"),
+            Arc::new(|_| {}),
+        ) {
+            LowWaterArm::Armed { token } => token,
+            outcome => panic!("expected stdin B to arm, got {outcome:?}"),
+        };
+        let outcome = stdin_b.arm_low_water_wake(LowWaterArmRequest::Existing(token));
+
+        assert_eq!(
+            outcome,
+            LowWaterArm::WrongInput { token },
+            "a foreign token remains owned by stdin A"
+        );
+        assert_eq!(
+            stdin_a.arm_low_water_wake(LowWaterArmRequest::Existing(token)),
+            LowWaterArm::StillArmed { token },
+            "probing stdin B must not resolve stdin A's token"
+        );
+        assert_eq!(
+            stdin_b.arm_low_water_wake(LowWaterArmRequest::Existing(token_b)),
+            LowWaterArm::StillArmed { token: token_b },
+            "probing with a foreign token must not disturb stdin B's waiter"
+        );
+        stdin_a.close();
+        stdin_b.close();
+    }
+
     /// Bounded transition-model check for the whole low-water boundary. The
     /// same callback allocation is reused for every fresh arming; only the
     /// returned token distinguishes logical work. Every action sequence is
@@ -6809,19 +6924,21 @@ mod tests {
         enum Action {
             ArmFresh,
             CheckLatest,
+            CheckForeign,
             Push,
             Drain,
             Close,
         }
 
-        const ACTIONS: [Action; 5] = [
+        const ACTIONS: [Action; 6] = [
             Action::ArmFresh,
             Action::CheckLatest,
+            Action::CheckForeign,
             Action::Push,
             Action::Drain,
             Action::Close,
         ];
-        const THRESHOLD: usize = 2;
+        const THRESHOLD: LowWaterThreshold = LowWaterThreshold::new(2).unwrap();
         const STEPS: usize = 5;
 
         let sequence_count = ACTIONS.len().pow(STEPS as u32);
@@ -6847,8 +6964,27 @@ mod tests {
                 coverage[8] |= triple == [Action::ArmFresh, Action::Close, Action::Push];
             }
 
+            let foreign_stdin = AppendableStdin::default();
+            foreign_stdin
+                .push(&[b'f'; THRESHOLD.get()])
+                .expect("seed foreign watermark");
+            let foreign_fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let foreign_counter = Arc::clone(&foreign_fired);
+            let foreign_token = match fresh_low_water_arm(
+                &foreign_stdin,
+                THRESHOLD,
+                Arc::new(move |_| {
+                    foreign_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }),
+            ) {
+                LowWaterArm::Armed { token } => token,
+                outcome => panic!("foreign stdin must arm, got {outcome:?}"),
+            };
+
             let stdin = AppendableStdin::default();
-            stdin.push(&[b'x'; THRESHOLD]).expect("seed watermark");
+            stdin
+                .push(&[b'x'; THRESHOLD.get()])
+                .expect("seed watermark");
             let fired = Arc::new(Mutex::new(Vec::<LowWaterToken>::new()));
             let callback_fired = Arc::clone(&fired);
             let shared_wake: StdinWake = Arc::new(move |token| {
@@ -6859,7 +6995,7 @@ mod tests {
             });
 
             let mut open = true;
-            let mut buffered = THRESHOLD;
+            let mut buffered = THRESHOLD.get();
             let mut current = None;
             let mut latest = None;
             let mut accepted = Vec::new();
@@ -6874,7 +7010,7 @@ mod tests {
                         );
                         if !open {
                             assert_eq!(outcome, LowWaterArm::Closed, "{sequence:?}");
-                        } else if buffered < THRESHOLD {
+                        } else if buffered < THRESHOLD.get() {
                             assert_eq!(
                                 outcome,
                                 LowWaterArm::BelowThreshold,
@@ -6911,6 +7047,24 @@ mod tests {
                             assert_eq!(outcome, expected, "{sequence:?}");
                         }
                     }
+                    Action::CheckForeign => {
+                        assert_eq!(
+                            stdin.arm_low_water_wake(LowWaterArmRequest::Existing(foreign_token)),
+                            LowWaterArm::WrongInput {
+                                token: foreign_token,
+                            },
+                            "{sequence:?}"
+                        );
+                        assert_eq!(
+                            foreign_stdin.arm_low_water_wake(LowWaterArmRequest::Existing(
+                                foreign_token,
+                            )),
+                            LowWaterArm::StillArmed {
+                                token: foreign_token,
+                            },
+                            "{sequence:?}: wrong-input probe must not resolve the owner"
+                        );
+                    }
                     Action::Push => {
                         let outcome = stdin.push(b"p");
                         if open {
@@ -6930,7 +7084,7 @@ mod tests {
                         if buffered > 0 {
                             assert!(matches!(outcome, Poll::Ready(Ok(()))), "{sequence:?}");
                             buffered = buffered.saturating_sub(read_buf.filled().len());
-                            if buffered < THRESHOLD {
+                            if buffered < THRESHOLD.get() {
                                 current = None;
                             }
                         } else if open {
@@ -6958,6 +7112,12 @@ mod tests {
             }
 
             stdin.close();
+            foreign_stdin.close();
+            assert_eq!(
+                foreign_fired.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{sequence:?}: foreign token must remain owned until its stdin resolves it"
+            );
             let observed = fired.lock().unwrap_or_else(|e| e.into_inner()).clone();
             for token in accepted {
                 assert_eq!(
@@ -6989,7 +7149,11 @@ mod tests {
             entered.wait();
             release.wait();
         });
-        let token = match fresh_low_water_arm(&stdin, 2, wake) {
+        let token = match fresh_low_water_arm(
+            &stdin,
+            LowWaterThreshold::new(2).expect("nonzero test threshold"),
+            wake,
+        ) {
             LowWaterArm::Armed { token } => token,
             outcome => panic!("expected fresh arm, got {outcome:?}"),
         };

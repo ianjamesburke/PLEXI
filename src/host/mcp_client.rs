@@ -65,12 +65,14 @@
 //!   bridge's own deadline killed the connection. When delivery stalls at the
 //!   guest-stdin watermark, the pump parks the line with the explicit token
 //!   returned by `AppendableStdin::arm_low_water_wake`. Repeated host passes
-//!   carry that token instead of creating new logical armings. Guest
-//!   consumption or close extracts the token and invokes its callback exactly
-//!   once; supersession, if another producer deliberately installs fresh work,
-//!   resolves the replaced token before returning the replacement. These are
-//!   state-transition wakes, never timer polling, and with no line pending
-//!   nothing is armed.
+//!   carry that token instead of creating new logical armings. The token binds
+//!   both the stdin owner and the arming, so another stdin rejects it rather
+//!   than reporting that still-owned work stale. Guest consumption or close
+//!   extracts the token and invokes its callback exactly once; supersession,
+//!   if another producer deliberately installs fresh work, resolves the
+//!   replaced token before returning the replacement. These are state-
+//!   transition wakes, never timer polling, and with no line pending nothing
+//!   is armed.
 //!
 //! Config lives at `<config_dir>/mcp_servers.toml`:
 //!
