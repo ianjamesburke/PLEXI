@@ -753,7 +753,7 @@ impl PlexiApp {
                 "context_auto_name: context_id={context_id} cwd={} name={name}",
                 cwd.display()
             );
-            self.save_workspace();
+            self.mark_workspace_dirty();
         }
     }
 
@@ -789,7 +789,7 @@ impl PlexiApp {
             name: displayed.clone(),
             timestamp: crate::host::event_log::now_timestamp(),
         });
-        self.save_workspace();
+        self.mark_workspace_dirty();
         displayed
     }
 

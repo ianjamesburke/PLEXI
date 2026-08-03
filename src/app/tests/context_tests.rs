@@ -3107,7 +3107,7 @@ fn perf_gate_delete_context_does_not_block_ui_thread() {
         let win_id = 9_200 + i;
         let pane_id = 9_300 + i;
         app.router.push(crate::host::context::Context {
-            name: format!("child-{i}"),
+            name: format!("child-{i}").into(),
             root: std::path::PathBuf::from(format!("/tmp/perf-gate-delete-context-{i}")),
             description: None,
             context_id: ctx_id,
