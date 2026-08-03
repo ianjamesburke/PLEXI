@@ -730,6 +730,10 @@ impl PlexiApp {
         for ctx_idx in 0..self.windows.len() {
             if let Some(tile_id) = self.windows[ctx_idx].tree.tiles.find_pane(&pane_id) {
                 let ctx_id = self.windows[ctx_idx].context_id;
+                self.emit_scope_invalidation(crate::host::scope::ScopeInvalidation::PaneClosed {
+                    pane_id,
+                    context_id: ctx_id,
+                });
                 self.close_tile(ctx_idx, tile_id);
                 // Mirror the guard in execute_close_pane: if the window is now empty
                 // and there are other pages in the same context, delete the zombie window.

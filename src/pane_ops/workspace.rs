@@ -1166,6 +1166,11 @@ impl PlexiApp {
             deleted.len() - 1,
             &deleted[1..]
         );
+        for &ctx_id in &deleted {
+            self.emit_scope_invalidation(crate::host::scope::ScopeInvalidation::ContextRemoved {
+                context_id: ctx_id,
+            });
+        }
 
         // 3. Remove all windows belonging to any deleted context. Release
         // their host MCP credentials before dropping the panes: a context
@@ -1675,6 +1680,7 @@ impl PlexiApp {
         let idx = self.resolve_context_idx(context_id, "set_context_root");
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
+        let old_root = self.router.get(idx).root.clone();
         for pane_id in self
             .windows
             .iter()
@@ -1700,6 +1706,12 @@ impl PlexiApp {
             if is_auto { "auto" } else { "custom" }
         );
         self.mark_workspace_dirty();
+        self.emit_scope_invalidation(crate::host::scope::ScopeInvalidation::ContextRootChanged {
+            context_id,
+            old_root,
+            new_root: root,
+        });
+
 
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.

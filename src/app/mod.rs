@@ -1144,6 +1144,16 @@ fn handle_events_publish(
     let _ = write_half.flush();
 }
 
+/// Test-only observability for `PlexiApp::emit_scope_invalidation`. Phase A
+/// (stint 0724) has no real consumer of `ScopeInvalidation` — later phases
+/// add handling inside that method as they migrate onto the scope model — so
+/// this counter is the smoke-test seam proving the emit call sites actually
+/// fire, without inventing a log-capture harness for a method that is
+/// otherwise side-effect-free logging.
+#[cfg(test)]
+pub(crate) static SCOPE_INVALIDATION_COUNT_FOR_TEST: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 impl PlexiApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -2057,6 +2067,68 @@ impl PlexiApp {
             "pane_ipc: peer identity: ancestry {peer_ancestry:?} resolved to no live pane — treating as outside-pane caller"
         );
         None
+    }
+
+    /// Resolve the host-established `ScopeOrigin` for a live pane: the
+    /// window's `context_id`, the router's canonical `Context.root` for that
+    /// context, the window's `window_id`, `pane_id` itself, and — for an app
+    /// pane — its manifest id. Never reads `router.active()` or
+    /// `active_window`; every field comes from the pane's owning window,
+    /// found via `find_pane_in_any_window`, so a caller in one context can
+    /// never be resolved against another context's active state.
+    pub(crate) fn origin_for_pane(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<crate::host::scope::ScopeOrigin> {
+        let (window_index, _tile_id) = self.find_pane_in_any_window(pane_id)?;
+        let window = &self.windows[window_index];
+        let context_id = window.context_id;
+        let context_root = self
+            .router
+            .position(|c| c.context_id == context_id)
+            .map(|idx| self.router.get(idx).root.clone())?;
+        let app_id = window
+            .panes
+            .get(&pane_id)
+            .and_then(crate::host::pane::Pane::as_app)
+            .map(|app_pane| app_pane.manifest_id.clone());
+        Some(crate::host::scope::ScopeOrigin {
+            context_id,
+            context_root,
+            window_id: window.window_id,
+            pane_id,
+            app_id,
+        })
+    }
+
+    /// Resolve a `ScopeOrigin` from a notify-socket peer's captured ancestry.
+    /// Wraps `resolve_socket_peer_pane` (stint 0636's trustworthy sender
+    /// identity, host-captured from the kernel credential at accept time,
+    /// never from the wire) and hands the resolved pane straight to
+    /// `origin_for_pane` — never re-deriving context/window from the caller's
+    /// own claims.
+    pub(crate) fn origin_for_socket_peer(
+        &self,
+        peer_ancestry: &[u32],
+    ) -> Option<crate::host::scope::ScopeOrigin> {
+        let (pane_id, _context_id, _window_id) = self.resolve_socket_peer_pane(peer_ancestry)?;
+        self.origin_for_pane(pane_id)
+    }
+
+    /// Single choke point for every scope-affecting lifecycle event: a
+    /// context's root moving, a context or pane being removed, a package
+    /// being installed/replaced, or a watched source reporting a new
+    /// generation. Phase A (stint 0724) only logs — no consumers subscribe
+    /// yet. Later phases add real invalidation handling here as state
+    /// routing, connector tools, the event bus, and notifications migrate
+    /// onto the scope model, so every future consumer reacts to one shared
+    /// vocabulary of "what changed" instead of re-deriving it from ad hoc
+    /// call sites. Never logs secrets, notification bodies, or event
+    /// payloads — `ScopeInvalidation` carries only ids and paths.
+    pub(crate) fn emit_scope_invalidation(&mut self, ev: crate::host::scope::ScopeInvalidation) {
+        log::info!(target: "plexi::scope", "invalidation: {ev:?}");
+        #[cfg(test)]
+        SCOPE_INVALIDATION_COUNT_FOR_TEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn complete_wasm_host_effect(
@@ -3807,6 +3879,11 @@ impl eframe::App for PlexiApp {
         });
         if registry_changed {
             let root = self.router.active().root.clone();
+            self.emit_scope_invalidation(
+                crate::host::scope::ScopeInvalidation::SourceGenerationChanged {
+                    source_path: root.clone(),
+                },
+            );
             self.reload_app_registry_for_root(&root);
         }
 
