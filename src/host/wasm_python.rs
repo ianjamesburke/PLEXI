@@ -128,9 +128,9 @@ pub enum LowWaterArmRequest {
 /// Total outcome of [`AppendableStdin::arm_low_water_wake`]. Only `Armed` and
 /// `Superseded` accept new work. Every accepted token remains in the open
 /// state until exactly one path extracts it for callback delivery: guest
-/// consumption, close, or supersession. `Existing` can only observe the same
-/// token still armed, a stale same-owner token whose callback was already
-/// extracted, or a token owned by another stdin.
+/// consumption, close, or supersession. `Existing` observes the same token
+/// still armed, the owning stdin closed, a stale same-owner token whose
+/// callback was already extracted, or a token owned by another stdin.
 #[must_use = "every low-water arm outcome must be handled"]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LowWaterArm {
@@ -158,7 +158,8 @@ pub enum LowWaterArm {
     /// Stdin is closed — checked before the level, because delivery can never
     /// reach the guest regardless of how empty the buffer is. Nothing was
     /// armed; the caller's pending data is undeliverable and must not be
-    /// parked.
+    /// parked. An existing token owned by this stdin also returns `Closed`
+    /// after close has resolved its callback.
     Closed,
     /// The identity space was exhausted. Nothing was armed.
     IdentityExhausted,
@@ -243,9 +244,9 @@ impl AppendableStdin {
     }
 
     /// Arm fresh pending work, or confirm that the token carried by an
-    /// existing pending operation is still armed. The closed check, level
-    /// check, and state transition are atomic under the state lock. Callback
-    /// invocation is deliberately outside that lock.
+    /// existing pending operation is still armed. Owner validation, the
+    /// closed and level checks, and the state transition are atomic under the
+    /// state lock. Callback invocation is deliberately outside that lock.
     pub fn arm_low_water_wake(&self, request: LowWaterArmRequest) -> LowWaterArm {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let (outcome, superseded) = match request {
@@ -3851,7 +3852,15 @@ impl LivePythonPane {
             self.repaint.clone(),
             self.wake_schedule.clone(),
         );
-        self.runtime = runtime;
+        let old_runtime = std::mem::replace(&mut self.runtime, runtime);
+        drop(old_runtime);
+        if let Some(held) = &mut self.mcp_held {
+            // The held line survives hot reload, but its arming identity was
+            // owned by the stdin just closed by `old_runtime`'s drop. The old
+            // callback is resolved before this reset; the next pump pass must
+            // freshly arm or deliver the same line against the new stdin.
+            held.arm_token = None;
+        }
         self.tree = None;
         self.pending_trees.clear();
         self.initialized = false;
@@ -6533,6 +6542,83 @@ mod tests {
         let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
         assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
         assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn mcp_held_line_rearms_against_relaunched_runtime_stdin() {
+        let app = tempdir().expect("app dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "def init(size, args): return []\ndef update(event): return []\ndef view(): return None\n",
+        )
+        .expect("write app");
+        let mut pane =
+            LivePythonPane::launch(state_test_config(app.path(), "test.mcp-relaunch-held-line"))
+                .expect("launch pane");
+
+        // Replace the live runtime with a controlled old stdin. Dropping the
+        // real runtime first preserves its normal shutdown/join contract.
+        let old_stdin = AppendableStdin::default();
+        let old_runtime = std::mem::replace(
+            &mut pane.runtime,
+            WasmPythonRuntime {
+                stdin: old_stdin.clone(),
+                stdout: DrainableOutput::default(),
+                stderr: DrainableOutput::default(),
+                thread: None,
+                partial_stdout: Vec::new(),
+            },
+        );
+        drop(old_runtime);
+
+        old_stdin.push(b"x").expect("seed old stdin watermark");
+        let old_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let old_wake_counter = Arc::clone(&old_wakes);
+        let old_token = match fresh_low_water_arm(
+            &old_stdin,
+            LowWaterThreshold::new(1).expect("nonzero test threshold"),
+            Arc::new(move |_| {
+                old_wake_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        ) {
+            LowWaterArm::Armed { token } => token,
+            outcome => panic!("old stdin must arm, got {outcome:?}"),
+        };
+        pane.mcp_held = Some(McpHeldLine {
+            server_id: "srv".to_string(),
+            line: crate::host::mcp_client::McpLine::Message(r#"{"id":1}"#.to_string()),
+            arm_token: Some(old_token),
+        });
+
+        pane.relaunch().expect("relaunch pane");
+
+        assert_eq!(
+            old_wakes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "dropping the old runtime must resolve its accepted waiter"
+        );
+        assert!(pane.mcp_held.is_some(), "relaunch must preserve held work");
+        assert_eq!(
+            pane.mcp_held.as_ref().and_then(|held| held.arm_token),
+            None,
+            "held work must not carry the old stdin's token into the new runtime"
+        );
+
+        let backlogged = pump_mcp_inbound(
+            &pane.app_id,
+            &pane.mcp_rx,
+            &pane.runtime.stdin,
+            &mut pane.mcp_connections,
+            &mut pane.mcp_held,
+            &pane.mcp_stdin_wake,
+            &mut pane.mcp_stdin_closed_logged,
+        );
+        assert!(!backlogged, "new stdin can accept the preserved held line");
+        assert!(pane.mcp_held.is_none(), "held line was delivered");
+        assert!(
+            !pane.mcp_stdin_closed_logged,
+            "controlled replacement must not look like a wrong-input violation"
+        );
     }
 
     /// Regression guard for the fourth-round defect: `close()` racing ahead
