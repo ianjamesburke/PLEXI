@@ -22,5 +22,11 @@ wait 15 seconds and make sure it is reporting on plexi pane slots
 
 if so, wait for 5 minutes, check again, repeat untill agent finishes and reads as COMPLETE, then close the pane, start the next task the same way and repeat.
 
+check status with 'plexi pane slot read status 870 2>&1; echo "---"; plexi pane slot read pipeline_phase 870 2>&1'
+
 if the agent gets stuck, use plexi cli to capture it's content and send responces to it to get it moving.
+
+when starting a wait say 'napping... wake up at <the-utc-time it will be>'
+
+
 
