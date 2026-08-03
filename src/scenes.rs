@@ -2520,6 +2520,7 @@ impl HeadlessBackend {
                             enqueued_at: std::time::Instant::now(),
                             tombstoned: false,
                             deliver_after: None,
+                            origin_in_view: false,
                         });
                     app.show_notification_modal = true;
                     if app.current_notify_id.is_none() {

@@ -50,6 +50,7 @@ fn snoozed_notification_invisible_then_visible() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         deliver_after: Some(wake_past), // already elapsed → visible
+        origin_in_view: false,
     });
 
     assert_eq!(
@@ -97,6 +98,7 @@ fn snoozed_notification_exempt_from_timeout() {
         enqueued_at: std::time::Instant::now() - std::time::Duration::from_secs(600),
         tombstoned: false,
         deliver_after: Some(std::time::Instant::now() + std::time::Duration::from_secs(300)),
+        origin_in_view: false,
     });
 
     h.app.tick_notification_timeouts();
@@ -135,6 +137,7 @@ fn persist_roundtrip() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         deliver_after: None,
+        origin_in_view: false,
     };
 
     save_pending_notifications_to(&[n], &path);
@@ -274,6 +277,7 @@ fn window_scoped_notification_visible_only_on_source_window() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         deliver_after: None,
+        origin_in_view: false,
     });
 
     // Visible on window 0.
@@ -337,6 +341,7 @@ fn auto_dismiss_removes_non_required_notification_when_sender_focused() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         deliver_after: None,
+        origin_in_view: false,
     });
     h.app.show_notification_modal = true;
     h.app.current_notify_id = Some("n-auto-dismiss".into());
@@ -391,6 +396,7 @@ fn auto_dismiss_spares_required_notifications() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         deliver_after: None,
+        origin_in_view: false,
     });
 
     h.app.auto_dismiss_sender_focused_notifications();
@@ -436,6 +442,7 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         deliver_after: None,
+        origin_in_view: false,
     });
 
     h.app.auto_dismiss_sender_focused_notifications();
@@ -570,6 +577,7 @@ fn cue_test_notification(id: &str) -> PendingNotification {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         deliver_after: None,
+        origin_in_view: false,
     }
 }
 
@@ -907,6 +915,7 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
             deliver_after: None,
+            origin_in_view: false,
         },
     );
 
@@ -1406,4 +1415,401 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
         "must attribute to the real shell-descendant pane, not the forged claim"
     );
     assert_ne!(posted.source_context_id, forged_ctx);
+}
+
+// ── stint 0727: resurface a notification when its origin pane's window
+// comes into view ───────────────────────────────────────────────────────────
+//
+// "In view" is a layout predicate (pane present in the currently-displayed
+// context of the currently-focused window), never a render/focus/paint
+// predicate. `origin_in_view` on `PendingNotification` doubles as the policy
+// state: a resurface only fires on a rising edge (out-of-view → in-view), so
+// an explicit dismissal while the pane stays in view is final, and it only
+// re-arms once the pane leaves view and returns.
+
+/// Build a Global-scope notification for resurface tests — scope stays out
+/// of the way so only `pane_is_in_view` gates visibility/interruption.
+fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotification {
+    PendingNotification {
+        notify_id: id.into(),
+        sender_pane_id,
+        dismiss_owner_pane_id: 0,
+        source_context_id: 0,
+        source_window_id: 0,
+        title: "Resurface me".into(),
+        body: "body".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        scope: crate::app_protocol::NotifyScope::Global,
+        image_inline: None,
+        image_pipe_id: None,
+        response_file: None,
+        timeout_secs: None,
+        on_dismiss: None,
+        enqueued_at: std::time::Instant::now(),
+        tombstoned: false,
+        deliver_after: None,
+        origin_in_view: false,
+    }
+}
+
+/// Push a second context with its own single-pane window, mirroring the
+/// pattern in `dispatch_notify_action_pane_focus_navigates`. Returns the new
+/// window's index.
+fn push_second_context_window(h: &mut HostHarness, ctx_id: u64, window_id: u64) -> usize {
+    h.app.windows.push(Window {
+        name: "Context B".into(),
+        path: std::env::temp_dir(),
+        tree: {
+            let mut tree = egui_tiles::Tree::empty("resurface_test_tree");
+            let tile = tree.tiles.insert_pane(9_000_000 + window_id);
+            tree.root = Some(tile);
+            tree
+        },
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id,
+        context_id: ctx_id,
+    });
+    h.app.router.push(crate::host::context::Context {
+        name: "Context B".into(),
+        root: std::env::temp_dir(),
+        description: None,
+        context_id: ctx_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.len() - 1
+}
+
+/// #727: a notification queued while its origin pane is out of view does not
+/// resurface until the pane's window actually comes into view — then it
+/// opens the modal exactly once for that navigation.
+#[test]
+fn resurfaces_when_origin_pane_window_comes_into_view() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let pane_id = h.add_test_pane();
+
+    // Navigate away to a second context/window so `pane_id` is out of view.
+    let win1_idx = push_second_context_window(&mut h, 2, 2);
+    h.app.active_window = win1_idx;
+    h.app.router.set_active(1);
+    assert!(
+        !h.app.pane_is_in_view(pane_id),
+        "precondition: origin pane must be out of view"
+    );
+
+    let notify_id = "resurface-basic";
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::App,
+        resurface_test_notification(notify_id, pane_id),
+    );
+    assert!(
+        !h.app.pending_notifications[0].origin_in_view,
+        "queuing while out of view must not itself count as a resurface"
+    );
+    // Raising while out of view must not force the modal open either.
+    h.app.show_notification_modal = false;
+    h.app.current_notify_id = None;
+
+    // Navigate back — the pane's window comes into view.
+    h.app.active_window = 0;
+    h.app.router.set_active(0);
+    assert!(
+        h.app.pane_is_in_view(pane_id),
+        "precondition: origin pane must now be in view"
+    );
+
+    h.app.resurface_in_view_notifications();
+
+    assert!(
+        h.app.show_notification_modal,
+        "modal must reopen on navigation into view"
+    );
+    assert_eq!(h.app.current_notify_id.as_deref(), Some(notify_id));
+    assert!(
+        h.app.pending_notifications[0].origin_in_view,
+        "origin_in_view must track the rising edge"
+    );
+}
+
+/// #727: "in view" is a layout predicate, not a focus predicate — a
+/// notification from a sibling pane in the same window resurfaces even
+/// though a *different* pane in that window holds focus.
+#[test]
+fn resurfaces_for_unfocused_sibling_pane_in_multi_pane_window() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane(); // orphan tile — not yet joined into the tree
+
+    let notify_id = "resurface-sibling";
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::App,
+        resurface_test_notification(notify_id, pane_b),
+    );
+    assert!(
+        !h.app.pending_notifications[0].origin_in_view,
+        "precondition: pane_b's tile is not yet part of the tree"
+    );
+
+    // Join pane_b into the same window as a horizontal sibling of pane_a —
+    // this is the pane's window "coming into view".
+    {
+        let win = &mut h.app.windows[0];
+        let tile_a = win.tree.tiles.find_pane(&pane_a).expect("tile_a exists");
+        let tile_b = win.tree.tiles.find_pane(&pane_b).expect("tile_b exists");
+        let root = win.tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        win.tree.root = Some(root);
+    }
+    // Focus stays on pane_a, never pane_b.
+    h.app.pane_navigate(pane_a);
+    let win = &h.app.windows[0];
+    let focused = win
+        .focused_pane
+        .and_then(|tile_id| PlexiApp::find_pane_in_tile(&win.tree, tile_id));
+    assert_eq!(
+        focused,
+        Some(pane_a),
+        "precondition: focus must be on pane_a"
+    );
+
+    h.app.resurface_in_view_notifications();
+
+    assert!(
+        h.app.show_notification_modal,
+        "sibling pane's notification must resurface even though it never held focus"
+    );
+    assert_eq!(h.app.current_notify_id.as_deref(), Some(notify_id));
+}
+
+/// #727: once resurfaced, the same notification must not reopen the modal on
+/// every subsequent frame while the origin pane stays in view — explicit
+/// dismissal (or a manual close) in that state is final until the pane
+/// leaves and returns.
+#[test]
+fn does_not_refire_while_pane_remains_in_view() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+
+    let notify_id = "resurface-no-refire";
+    h.app.pending_notifications.push({
+        let mut n = resurface_test_notification(notify_id, pane_id);
+        n.origin_in_view = true; // already resurfaced once
+        n
+    });
+    h.app.show_notification_modal = false; // user manually closed it
+    h.app.current_notify_id = None;
+
+    h.app.resurface_in_view_notifications();
+
+    assert!(
+        !h.app.show_notification_modal,
+        "no rising edge while still in view — must not reopen the modal"
+    );
+    assert!(h.app.current_notify_id.is_none());
+}
+
+/// #727: the resurface re-arms after the origin pane leaves view and comes
+/// back — a second navigation-into-view fires a second resurface.
+#[test]
+fn rearms_after_pane_leaves_view_and_returns() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+    let win1_idx = push_second_context_window(&mut h, 2, 2);
+
+    let notify_id = "resurface-rearm";
+    h.app.pending_notifications.push({
+        let mut n = resurface_test_notification(notify_id, pane_id);
+        n.origin_in_view = true; // already resurfaced once
+        n
+    });
+    h.app.show_notification_modal = false;
+    h.app.current_notify_id = None;
+
+    // Leave view.
+    h.app.active_window = win1_idx;
+    h.app.router.set_active(1);
+    h.app.resurface_in_view_notifications();
+    assert!(
+        !h.app.pending_notifications[0].origin_in_view,
+        "leaving view must clear the edge"
+    );
+    assert!(
+        !h.app.show_notification_modal,
+        "a falling edge must never open the modal"
+    );
+
+    // Return.
+    h.app.active_window = 0;
+    h.app.router.set_active(0);
+    h.app.resurface_in_view_notifications();
+
+    assert!(
+        h.app.show_notification_modal,
+        "returning to view must re-fire the resurface"
+    );
+    assert_eq!(h.app.current_notify_id.as_deref(), Some(notify_id));
+}
+
+/// #727: resurface evaluation must happen on hidden/occluded frames — it is
+/// wired into `update_preamble`, which runs from `App::logic`, never `ui`.
+/// Driven purely through `HostHarness::run_hidden_frames`, never a normal
+/// visible frame, so a regression that moves the call into `ui` fails this
+/// test even though a visible-frame test would still pass.
+#[test]
+fn resurface_runs_on_hidden_occluded_frames() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let pane_id = h.add_test_pane();
+    let win1_idx = push_second_context_window(&mut h, 2, 2);
+
+    h.app.active_window = win1_idx;
+    h.app.router.set_active(1);
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::App,
+        resurface_test_notification("resurface-hidden", pane_id),
+    );
+    h.app.show_notification_modal = false;
+    h.app.current_notify_id = None;
+
+    h.app.active_window = 0;
+    h.app.router.set_active(0);
+
+    // Only hidden/occluded passes from here — App::ui never runs.
+    h.run_hidden_frames(1);
+
+    assert!(
+        h.app.show_notification_modal,
+        "resurface must fire from App::logic even while the window is hidden/occluded"
+    );
+    assert_eq!(h.app.current_notify_id.as_deref(), Some("resurface-hidden"));
+}
+
+/// #727: a pane sitting in a background (inactive) tab of a Tabs container is
+/// not in view — only the active tab's pane counts.
+#[test]
+fn background_tab_pane_is_not_in_view() {
+    use egui_tiles::{Container, Tile};
+
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+
+    let (tile_a, tile_b, tab_tile) = {
+        let win = &mut h.app.windows[0];
+        let tile_a = win.tree.tiles.find_pane(&pane_a).expect("tile_a");
+        let tile_b = win.tree.tiles.find_pane(&pane_b).expect("tile_b");
+        let tab_tile = win.tree.tiles.insert_tab_tile(vec![tile_a, tile_b]);
+        win.tree.root = Some(tab_tile);
+        if let Some(Tile::Container(Container::Tabs(tabs))) = win.tree.tiles.get_mut(tab_tile) {
+            tabs.set_active(tile_a);
+        }
+        (tile_a, tile_b, tab_tile)
+    };
+    let _ = (tile_a, tile_b);
+
+    assert!(
+        h.app.pane_is_in_view(pane_a),
+        "active tab's pane must be in view"
+    );
+    assert!(
+        !h.app.pane_is_in_view(pane_b),
+        "background tab's pane must not be in view"
+    );
+
+    // Switching the active tab brings pane_b into view and fires a resurface.
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::App,
+        resurface_test_notification("resurface-tab", pane_b),
+    );
+    assert!(!h.app.pending_notifications[0].origin_in_view);
+
+    if let Some(Tile::Container(Container::Tabs(tabs))) =
+        h.app.windows[0].tree.tiles.get_mut(tab_tile)
+    {
+        tabs.set_active(tile_b);
+    }
+    h.app.resurface_in_view_notifications();
+
+    assert!(
+        h.app.show_notification_modal,
+        "activating pane_b's tab must resurface its notification"
+    );
+}
+
+/// #727: a zoomed (fullscreen) pane hides its siblings from view even though
+/// they remain in the same window/context.
+#[test]
+fn zoomed_window_hides_sibling_panes_from_view() {
+    let mut h = HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+
+    let tile_a = {
+        let win = &mut h.app.windows[0];
+        let tile_a = win.tree.tiles.find_pane(&pane_a).expect("tile_a");
+        let tile_b = win.tree.tiles.find_pane(&pane_b).expect("tile_b");
+        let root = win.tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        win.tree.root = Some(root);
+        tile_a
+    };
+
+    // Both panes are in view before zooming.
+    assert!(h.app.pane_is_in_view(pane_a));
+    assert!(h.app.pane_is_in_view(pane_b));
+
+    h.app.windows[0].zoomed_pane = Some(tile_a);
+
+    assert!(
+        h.app.pane_is_in_view(pane_a),
+        "the zoomed pane itself stays in view"
+    );
+    assert!(
+        !h.app.pane_is_in_view(pane_b),
+        "zoom hides the sibling pane from view"
+    );
+}
+
+/// #727: focus mode (the global interruption mute) still suppresses the
+/// resurface, mirroring every other interruption surface gated by
+/// `notification_may_interrupt`.
+#[test]
+fn focus_mode_suppresses_resurface() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let pane_id = h.add_test_pane();
+    let win1_idx = push_second_context_window(&mut h, 2, 2);
+
+    h.app.active_window = win1_idx;
+    h.app.router.set_active(1);
+    h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::App,
+        resurface_test_notification("resurface-focus-mode", pane_id),
+    );
+    h.app.show_notification_modal = false;
+    h.app.current_notify_id = None;
+
+    h.app.notifications_focus_mode = true;
+    h.app.active_window = 0;
+    h.app.router.set_active(0);
+
+    h.app.resurface_in_view_notifications();
+
+    assert!(
+        !h.app.show_notification_modal,
+        "focus mode must suppress the resurface interrupt"
+    );
+    assert!(
+        h.app.pending_notifications[0].origin_in_view,
+        "the in-view state is still tracked even when suppressed"
+    );
 }

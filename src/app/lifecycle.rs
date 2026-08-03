@@ -2430,6 +2430,7 @@ impl PlexiApp {
                         enqueued_at: std::time::Instant::now(),
                         tombstoned: false,
                         deliver_after: None,
+                        origin_in_view: false,
                     },
                 );
             }
@@ -3301,6 +3302,7 @@ impl PlexiApp {
                 enqueued_at: std::time::Instant::now(),
                 tombstoned: false,
                 deliver_after: None,
+                origin_in_view: false,
             },
         );
         log::info!("scheduler: routine notification queued={queued} title='{title}' body='{body}'");

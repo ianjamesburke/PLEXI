@@ -1554,6 +1554,7 @@ mod tests {
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
             deliver_after: None,
+            origin_in_view: false,
         }
     }
 
@@ -3497,6 +3498,7 @@ mod tests {
                     enqueued_at: std::time::Instant::now(),
                     tombstoned: false,
                     deliver_after: None,
+                    origin_in_view: false,
                 }
             };
             app.pending_notifications.extend([

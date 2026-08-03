@@ -984,6 +984,7 @@ impl PlexiApp {
                     enqueued_at: std::time::Instant::now(),
                     tombstoned: false,
                     deliver_after: None,
+                    origin_in_view: false,
                 },
             );
             return;
