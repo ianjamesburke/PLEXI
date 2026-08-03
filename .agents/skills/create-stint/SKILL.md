@@ -141,35 +141,10 @@ If a GitHub issue should be created for this work, create it in Step 6. If one a
 
 ## Step 5 -- Write the Task File
 
-Reserve the ID atomically and capture it once:
+There is no `stint reserve`. `stint add` creates the file and assigns the ID in one call -- write the body to a temp file first, then pass it via `--body-file`:
 
 ```bash
-ID="$(stint reserve)"
-```
-
-Use `$ID` for the filename and frontmatter below. The reservation remains
-spent, so never derive an ID by listing task files or call `stint reserve`
-again for the same task.
-
-File path: `.stint/tasks/$ID-<kebab-slug>.md`
-
-Template:
-
-```markdown
----
-id: "$ID"
-title: "<title>"
-status: todo
-priority: <p0-p4>
-size: <S|M|L>
-blocked_by: []
-gh_issue: []
-area:
-  - "<area/one>"
-tags:
-  - "<v1|v2>"
----
-
+cat > /tmp/stint-body.md <<'EOF'
 <One paragraph -- what this task is and why it exists.>
 
 ## Scope
@@ -187,9 +162,24 @@ tags:
 ## References
 
 - `<path>` -- <why relevant>
+EOF
+
+stint add "<title>" \
+  --priority <p0-p4> \
+  --size <s|m|l> \
+  --area "<area/one>" \
+  --tags "<v1|v2>" \
+  --blocked-by "<ref>" \
+  --gh-issue "<N>" \
+  --body-file /tmp/stint-body.md \
+  --no-edit
 ```
 
-Omit sections that have nothing to say.
+Omit `--blocked-by` / `--gh-issue` entirely when empty -- do not pass an empty string. Repeat `--area`/`--tags` flags for multiple values, or comma-separate them.
+
+`--no-edit` is required in agent context -- without it `stint add` opens `$EDITOR` and blocks. On success the command prints the created file's path (e.g. `.stint/tasks/0727-temp-syntax-check-task.md`); the ID is the leading number in that filename. Capture it from the printed path -- never derive an ID by listing task files beforehand.
+
+Omit body sections that have nothing to say.
 
 ---
 
