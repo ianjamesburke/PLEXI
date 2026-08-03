@@ -477,7 +477,7 @@ impl PlexiApp {
         });
         self.context_active_window.insert(ctx_id, win_id);
 
-        self.save_workspace();
+        self.mark_workspace_dirty();
         Ok(ChildContext {
             context_id: ctx_id,
             pane_ids: child_pane_ids,
@@ -677,7 +677,7 @@ impl PlexiApp {
             .expect("just-inserted subcontext must be in router");
         self.switch_workspace(new_ctx_idx);
 
-        self.save_workspace();
+        self.mark_workspace_dirty();
     }
 
     pub(crate) fn new_context(&mut self) {
@@ -746,7 +746,7 @@ impl PlexiApp {
 
         let new_ctx_idx = self.router.len() - 1;
         self.open_context_rename(new_ctx_idx);
-        self.save_workspace();
+        self.mark_workspace_dirty();
         log::info!(
             "new_context_empty: emitting ContextCreated context_id={ctx_id} name={}",
             self.rename_buffer
@@ -761,7 +761,7 @@ impl PlexiApp {
     /// Create a new context at a specific directory path. The terminal pane
     /// opens at `path` and the context root is set to it. Named after the
     /// directory basename, unless the path has a `.plexi/workspace.toml` with
-    /// `[context]` defaults. Callers must call `save_workspace()` afterward.
+    /// `[context]` defaults. Callers must call `mark_workspace_dirty()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
         log::info!("new_context_at_path: path={}", path.display());
 
@@ -1068,7 +1068,31 @@ impl PlexiApp {
         {
             revoke_window_pane_credentials(window);
         }
-        self.windows.retain(|c| !deleted.contains(&c.context_id));
+        let doomed: Vec<Window> = {
+            let mut kept = Vec::new();
+            let mut doomed = Vec::new();
+            for w in std::mem::take(&mut self.windows) {
+                if deleted.contains(&w.context_id) {
+                    doomed.push(w);
+                } else {
+                    kept.push(w);
+                }
+            }
+            self.windows = kept;
+            doomed
+        };
+        log::info!(
+            "delete_context: disposing {} window(s) off UI thread (ctx_id={target_ctx_id})",
+            doomed.len()
+        );
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            drop(doomed);
+            log::debug!(
+                "delete_context: window disposal thread finished in {:?}",
+                start.elapsed()
+            );
+        });
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
@@ -1257,7 +1281,18 @@ impl PlexiApp {
             .insert(removed_ws_id, self.minimap.visible);
 
         revoke_window_pane_credentials(&self.windows[index]);
-        self.windows.remove(index);
+        let removed_window = self.windows.remove(index);
+        log::info!(
+            "delete_window: disposing window off UI thread (window_id={removed_win_id}, ctx_id={removed_ws_id})"
+        );
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            drop(removed_window);
+            log::debug!(
+                "delete_window: window disposal thread finished in {:?}",
+                start.elapsed()
+            );
+        });
 
         // If the deleted window was the stored last-visited for its context,
         // point to another window in the same context so the palette doesn't
@@ -1447,7 +1482,7 @@ impl PlexiApp {
                 "context: unparked '{}' (idx={idx})",
                 self.router.get(idx).name
             );
-            self.save_workspace();
+            self.mark_workspace_dirty();
             return;
         }
 
@@ -1468,7 +1503,7 @@ impl PlexiApp {
         }
         // If all contexts are parked, stay on the current one (degenerate case).
 
-        self.save_workspace();
+        self.mark_workspace_dirty();
     }
 
     /// Park a specific context by index, moving focus to the nearest unparked neighbor.
@@ -1489,7 +1524,7 @@ impl PlexiApp {
                 self.switch_workspace(new_idx);
             }
         }
-        self.save_workspace();
+        self.mark_workspace_dirty();
     }
 
     /// Unpark a specific context by index and switch focus to it.
@@ -1500,7 +1535,7 @@ impl PlexiApp {
             self.router.get(idx).name
         );
         self.switch_workspace(idx);
-        self.save_workspace();
+        self.mark_workspace_dirty();
     }
 
     /// Resolve an optional context id to a router index. Falls back to the
@@ -1557,16 +1592,38 @@ impl PlexiApp {
     ///      must still get its agents attached.
     pub(crate) fn apply_context_transition_effects(&mut self) {
         let root = self.router.active().root.clone();
+        let context_id = self.router.active().context_id;
         log::info!(
-            "transition_context: ctx_id={} root={} — rescanning registry + reloading config + restarting watcher",
-            self.router.active().context_id,
+            "transition_context: ctx_id={context_id} root={} — rescanning registry off-thread + reloading config + restarting watcher",
             root.display()
         );
-        self.registry = crate::app::registry::AppRegistry::load(&root);
-        // Same workspace resolution the registry just performed (cwd-walk to
-        // the channel dir) — agents live in that workspace's `agents/` dir.
+        // The full registry rescan (apps/agents dir walk + every manifest.toml
+        // parse) is a filesystem-bound operation that can stall the UI thread
+        // on a workspace with many apps. Spawn it off-thread and apply the
+        // result later via `registry_load_rx`, guarded by `context_id` so a
+        // stale result (user already navigated elsewhere) is dropped instead
+        // of applied (stint 0548).
+        let (tx, rx) = crate::app::ui_mailbox::UiMailbox::channel(
+            std::sync::Arc::clone(&self.ui_wake),
+            "registry_load",
+        );
+        self.registry_load_rx = Some(rx);
+        let load_root = root.clone();
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let registry = crate::app::registry::AppRegistry::load(&load_root);
+            log::debug!(
+                "transition_context: registry load thread finished in {:?} (ctx_id={context_id})",
+                start.elapsed()
+            );
+            let _ = tx.send((context_id, registry));
+        });
+        // Same workspace resolution `AppRegistry::load` performs internally
+        // (cwd-walk to the channel dir) — cheap enough to run synchronously,
+        // and agents live in that workspace's `agents/` dir, so the agent host
+        // reload doesn't need to wait on the background registry scan.
         self.agent_host
-            .reload_workspace(self.registry.loaded_workspace.clone());
+            .reload_workspace(crate::app::registry::resolve_workspace_root(&root));
         let watch_dirs = crate::app::registry::registry_watch_dirs(&root);
         match crate::app::registry_watcher::start(watch_dirs, std::sync::Arc::clone(&self.ui_wake))
         {
@@ -1582,6 +1639,37 @@ impl PlexiApp {
         // Reload config so workspace-scoped config.toml applies immediately —
         // both on initial launch and on context switches.
         self.reload_config_for_active_context();
+    }
+
+    /// Drain the background `AppRegistry::load` result queued by
+    /// [`Self::apply_context_transition_effects`]. Only the newest queued
+    /// result is applied — anything older is superseded. Returns `true` when
+    /// a result was applied or discarded (i.e. a message was drained at
+    /// all), so tests can spin-wait on this instead of guessing a sleep.
+    pub(crate) fn drain_registry_load(&mut self) -> bool {
+        let Some(rx) = &self.registry_load_rx else {
+            return false;
+        };
+        let mut latest = None;
+        while let Ok((loaded_ctx_id, registry)) = rx.try_recv() {
+            latest = Some((loaded_ctx_id, registry));
+        }
+        let Some((loaded_ctx_id, registry)) = latest else {
+            return false;
+        };
+        if self.router.active().context_id == loaded_ctx_id {
+            let app_count = registry.list().len();
+            self.registry = registry;
+            log::info!(
+                "transition_context: registry reload applied for ctx_id={loaded_ctx_id} ({app_count} apps)"
+            );
+        } else {
+            log::debug!(
+                "transition_context: discarding stale registry load for ctx_id={loaded_ctx_id} — active context is now {}",
+                self.router.active().context_id
+            );
+        }
+        true
     }
 
     /// True when the active window holds a Portal tile targeting `child_ctx_id`,
@@ -1862,7 +1950,35 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn save_workspace(&self) {
+    /// Mark the workspace dirty so the debounce flush in `update_preamble`
+    /// picks it up on its next tick, instead of writing to disk synchronously
+    /// on the UI thread for every call site that used to call
+    /// `save_workspace_now` directly. No I/O here — just a flag.
+    ///
+    /// The debounce flush only runs inside a frame, and Plexi legitimately
+    /// produces zero frames while fully idle (App Nap trap). Without a
+    /// scheduled wake, a mutation that happens to be the host's last activity
+    /// before it goes idle would never reach a frame where the debounce
+    /// deadline is checked, and the workspace would stay unsaved
+    /// indefinitely. On the 0→1 transition, arm a one-shot background wake
+    /// through the sanctioned `ui_wake` seam (never a raw `request_repaint()`)
+    /// timed to land after the debounce window, guaranteeing at least one
+    /// later frame observes `workspace_dirty` and flushes it.
+    pub(crate) fn mark_workspace_dirty(&mut self) {
+        let was_clean = !self.workspace_dirty;
+        self.workspace_dirty = true;
+        if was_clean {
+            let wake = std::sync::Arc::clone(&self.ui_wake);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    crate::app::render::WORKSPACE_SAVE_DEBOUNCE_MS,
+                ));
+                wake.wake("workspace_dirty_flush");
+            });
+        }
+    }
+
+    pub(crate) fn save_workspace_now(&self) {
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::WorkspaceSave,

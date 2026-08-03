@@ -607,7 +607,7 @@ impl PlexiApp {
                         drop.slot
                     );
                 }
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
             self.drag_context = None;
         }
@@ -649,7 +649,7 @@ impl PlexiApp {
                     );
                     let ctx_id = self.router.get(i).context_id;
                     self.set_context_root(path, Some(ctx_id));
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 WindowMenuAction::OpenRootOverlay => {
                     let existing = self.router.get(i).root.display().to_string();

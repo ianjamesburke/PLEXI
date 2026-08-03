@@ -70,7 +70,7 @@ impl PlexiApp {
             if self.execute_close_pane() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
         } else if cancelled {
             self.pending_close = false;
@@ -177,7 +177,7 @@ impl PlexiApp {
                     state.context_name
                 );
                 self.delete_context(i);
-                self.save_workspace();
+                self.mark_workspace_dirty();
             } else {
                 log::warn!(
                     "context_close: close_all ctx={} not found in router",
@@ -191,7 +191,7 @@ impl PlexiApp {
                 state.context_name
             );
             self.dissolve_portal(state.context_id);
-            self.save_workspace();
+            self.mark_workspace_dirty();
         } else if cancelled {
             log::info!("context_close: cancelled ctx={}", state.context_id);
         } else {

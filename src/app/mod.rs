@@ -27,7 +27,7 @@ pub mod plexi_descriptor;
 pub(crate) mod python_env;
 pub mod registry;
 pub mod registry_watcher;
-mod render;
+pub(crate) mod render;
 pub(crate) mod screenshot;
 pub mod secrets_app;
 mod sync;
@@ -364,6 +364,23 @@ pub struct PlexiApp {
     /// is rescanned without a host restart.
     pub(crate) _registry_watcher: Option<crate::app::registry_watcher::AppRegistryWatcher>,
     pub(crate) registry_reload_rx: Option<ui_mailbox::MailboxReceiver<()>>,
+    /// Background `AppRegistry::load` result seam (stint 0548). A context
+    /// transition spawns the filesystem walk + manifest parse off the UI
+    /// thread and sends `(context_id, registry)` back here; drained in
+    /// `logic` each frame. The `context_id` guards staleness — if the user
+    /// has navigated away from the requesting context by the time the load
+    /// finishes, the result is discarded instead of applied.
+    pub(crate) registry_load_rx:
+        Option<ui_mailbox::MailboxReceiver<(u64, crate::app::registry::AppRegistry)>>,
+    /// True when workspace state changed since the last disk save. Set by
+    /// `mark_workspace_dirty()`, cleared by the debounce flush in
+    /// `update_preamble` (or by a forced `save_workspace_now()` on
+    /// shutdown/update-quit). Keeps a burst of workspace-changing calls from
+    /// each forcing a synchronous save on the UI thread (stint 0548).
+    pub(crate) workspace_dirty: bool,
+    /// Last time the workspace was flushed to disk, for the debounce tick in
+    /// `update_preamble`.
+    pub(crate) last_workspace_save: std::time::Instant,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
@@ -1617,6 +1634,9 @@ impl PlexiApp {
                     config_reload_rx: cfg_reload_rx.take(),
                     _registry_watcher: reg_watcher.take(),
                     registry_reload_rx: reg_reload_rx.take(),
+                    registry_load_rx: None,
+                    workspace_dirty: false,
+                    last_workspace_save: std::time::Instant::now(),
                     minimap: crate::render::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
                     context_active_window: ws.context_active_window,
@@ -1895,6 +1915,9 @@ impl PlexiApp {
             config_reload_rx: cfg_reload_rx.take(),
             _registry_watcher: default_reg_watcher.take(),
             registry_reload_rx: default_reg_reload_rx.take(),
+            registry_load_rx: None,
+            workspace_dirty: false,
+            last_workspace_save: std::time::Instant::now(),
             minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -2413,6 +2436,9 @@ impl PlexiApp {
                 config_reload_rx: None,
                 _registry_watcher: None,
                 registry_reload_rx: None,
+                registry_load_rx: None,
+                workspace_dirty: false,
+                last_workspace_save: std::time::Instant::now(),
                 minimap: crate::render::minimap::MinimapState::new(),
                 last_page_x_per_row: HashMap::new(),
                 context_active_window: HashMap::new(),
@@ -3209,22 +3235,22 @@ impl eframe::App for PlexiApp {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].clear_zoom();
                     self.split_focused(false, None, false, false, None);
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].clear_zoom();
                     self.split_focused(true, None, false, false, None);
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 Action::SplitRight => {
                     self.windows[self.active_window].clear_zoom();
                     self.split_focused_mirror(crate::host::command::Placement::Right);
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 Action::SplitDown => {
                     self.windows[self.active_window].clear_zoom();
                     self.split_focused_mirror(crate::host::command::Placement::Below);
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 Action::Navigate(dir) => {
                     let was_zoomed = self.windows[self.active_window].zoomed_pane.is_some();
@@ -3343,7 +3369,7 @@ impl eframe::App for PlexiApp {
                                 if let Some(i) = idx {
                                     log::info!("context_close: empty ctx={child_ctx_id} — closing immediately");
                                     self.delete_context(i);
-                                    self.save_workspace();
+                                    self.mark_workspace_dirty();
                                 }
                             } else {
                                 log::info!("context_close: ctx={child_ctx_id} has {} panes — showing dialog", state.items.len());
@@ -3354,7 +3380,7 @@ impl eframe::App for PlexiApp {
                         } else if self.execute_close_pane() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         } else {
-                            self.save_workspace();
+                            self.mark_workspace_dirty();
                         }
                     }
                 }
@@ -3369,7 +3395,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::NewTab => {
                     self.new_tab(self.active_window, None, false, None);
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {
                     let (focused_tile, portal_target) = {
@@ -3423,7 +3449,13 @@ impl eframe::App for PlexiApp {
                 Action::Quit => {
                     if !self.confirm_quit() {
                         self.quitting = true;
-                        self.save_workspace();
+                        // Closing the viewport is the last frame this host
+                        // will run — a debounced `mark_workspace_dirty()`
+                        // never gets a later tick to flush, so quit paths
+                        // save synchronously (stint 0548).
+                        self.save_workspace_now();
+                        self.workspace_dirty = false;
+                        log::info!("workspace: synchronous save (quit)");
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     } else {
                         let now = std::time::Instant::now();
@@ -3440,7 +3472,9 @@ impl eframe::App for PlexiApp {
                             self.quit_press_count = 0;
                             self.quit_last_press = None;
                             self.quitting = true;
-                            self.save_workspace();
+                            self.save_workspace_now();
+                            self.workspace_dirty = false;
+                            log::info!("workspace: synchronous save (quit)");
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     }
@@ -3505,7 +3539,7 @@ impl eframe::App for PlexiApp {
                                 log::info!(
                                     "pane_hide: pane={pane_id} name={name:?} hidden={new_val}"
                                 );
-                                self.save_workspace();
+                                self.mark_workspace_dirty();
                             }
                         }
                     }
@@ -3557,7 +3591,7 @@ impl eframe::App for PlexiApp {
                     let ctx_id = self.router.active().context_id;
                     if self.router.reorder_top_level(active, ContextMove::Up) {
                         log::info!("context: moved up — id={ctx_id}");
-                        self.save_workspace();
+                        self.mark_workspace_dirty();
                     }
                 }
                 Action::MoveContextDown => {
@@ -3565,7 +3599,7 @@ impl eframe::App for PlexiApp {
                     let ctx_id = self.router.active().context_id;
                     if self.router.reorder_top_level(active, ContextMove::Down) {
                         log::info!("context: moved down — id={ctx_id}");
-                        self.save_workspace();
+                        self.mark_workspace_dirty();
                     }
                 }
                 Action::IncreasePaneFontSize => {
@@ -3628,11 +3662,11 @@ impl eframe::App for PlexiApp {
                     } else {
                         self.new_page_right();
                     }
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 Action::NewContext => {
                     self.new_context();
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
                 Action::NewChildContext => {
                     self.new_child_context_from_keyboard();
@@ -3676,7 +3710,7 @@ impl eframe::App for PlexiApp {
                             let idx = self.router.active_idx();
                             log::info!("close_context: closing ctx={ctx_id} idx={idx} (empty={}, confirm={confirm})", state.items.is_empty());
                             self.delete_context(idx);
-                            self.save_workspace();
+                            self.mark_workspace_dirty();
                         } else {
                             log::info!(
                                 "close_context: ctx={ctx_id} has {} panes, showing confirm dialog",
@@ -3744,6 +3778,11 @@ impl eframe::App for PlexiApp {
             self.reload_app_registry_for_root(&root);
         }
 
+        // Context-transition registry rescan (stint 0548): drain the
+        // background `AppRegistry::load` result. Lives in `logic`, never
+        // `ui` — the load can finish while the window is hidden or occluded.
+        self.drain_registry_load();
+
         // Handle window close request (X button or macOS Cmd+Q OS event).
         //
         // On macOS, Cmd+Q fires BOTH a keyboard event (consumed by keys.rs →
@@ -3769,11 +3808,20 @@ impl eframe::App for PlexiApp {
                 self.quit_press_count
             );
             if self.quitting {
-                self.save_workspace();
+                // Triple-tap already completed and the window is closing this
+                // frame — no later tick will run the debounce flush, so save
+                // synchronously (stint 0548).
+                self.save_workspace_now();
+                self.workspace_dirty = false;
+                log::info!("workspace: synchronous save (quit)");
             } else if self.confirm_quit() && self.quit_press_count > 0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             } else {
-                self.save_workspace();
+                // X button / system close with no triple-tap in progress —
+                // the window closes immediately, same reasoning as above.
+                self.save_workspace_now();
+                self.workspace_dirty = false;
+                log::info!("workspace: synchronous save (quit)");
             }
         }
 

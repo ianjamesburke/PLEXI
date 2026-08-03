@@ -1534,12 +1534,12 @@ impl PlexiApp {
             PaletteCommand::SplitRight => {
                 self.windows[self.active_window].clear_zoom();
                 self.split_focused(false, None, false, false, None);
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
             PaletteCommand::SplitDown => {
                 self.windows[self.active_window].clear_zoom();
                 self.split_focused(true, None, false, false, None);
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
             PaletteCommand::OpenConfig => {
                 crate::config::open_config_file();
@@ -1563,7 +1563,7 @@ impl PlexiApp {
         self.windows[self.active_window].clear_zoom();
         let initial_cmd = format!("plexi run {}", shell_single_quote(name));
         self.split_focused(false, Some(&initial_cmd), false, false, cwd);
-        self.save_workspace();
+        self.mark_workspace_dirty();
     }
 
     /// Focus an agent pane selected in the palette. Routes through the same

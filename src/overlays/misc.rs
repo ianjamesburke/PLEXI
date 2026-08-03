@@ -528,7 +528,7 @@ impl PlexiApp {
                         let ctx_id = self.router.get(idx).context_id;
                         self.set_context_root(resolved, Some(ctx_id));
                     }
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
             }
         }
@@ -720,7 +720,7 @@ impl PlexiApp {
             };
             self.editing_description = None;
             self.pop_focus_layer(&crate::app::FocusKind::ContextDescription);
-            self.save_workspace();
+            self.mark_workspace_dirty();
             log::info!("context_description: updated ctx_idx={ctx_idx}");
         }
     }

@@ -99,6 +99,11 @@ fn switching_contexts_refreshes_workspace_app_registry() {
     });
 
     app.switch_workspace(1);
+    // Registry rescan is async (stint 0548) — spin-wait for the background
+    // load to land instead of asserting synchronously.
+    while !app.drain_registry_load() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 
     assert!(
         app.registry.get("local-tool").is_some(),
@@ -1069,6 +1074,11 @@ fn context_transition_rescans_registry() {
     let idx0 = app.router.active_idx();
     app.router.get_mut(idx0).root = dir_a.clone();
     app.apply_context_transition_effects();
+    // Registry rescan is async (stint 0548) — spin-wait for the background
+    // load to land instead of asserting synchronously.
+    while !app.drain_registry_load() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 
     let ids: Vec<String> = app
         .registry
@@ -1113,6 +1123,9 @@ fn context_transition_rescans_registry() {
     });
     let ctx_b_idx = app.router.len() - 1;
     app.switch_workspace(ctx_b_idx);
+    while !app.drain_registry_load() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 
     let ids: Vec<String> = app
         .registry
@@ -2979,3 +2992,100 @@ fn audit_0678_two_contexts_accept_the_same_root() {
 // test existed to catch drifting apart can no longer diverge: there is only
 // one field. The test was deleted rather than adapted; nothing here survives
 // the fix to assert.
+
+// ── Perf gate: long host operations off the UI thread (stint 0548) ────────
+//
+// `delete_context`/`delete_window` used to drop removed `Window`s (and their
+// `WasmPythonRuntime` panes) synchronously on the UI thread, which blocks on
+// `WasmPythonRuntime::drop`'s `thread.join()` shutdown handshake. The fix
+// hands the doomed windows to a background thread and returns immediately.
+// These gates lock that: the synchronous portion of each call must return in
+// single-digit milliseconds regardless of how many windows/panes are queued
+// for disposal. Timing assertions are inherently machine-dependent, so both
+// are `#[ignore]`d — run explicitly on a quiet machine, not in CI.
+
+#[test]
+#[ignore = "perf-gate: run explicitly on a quiet machine"]
+fn perf_gate_delete_context_does_not_block_ui_thread() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+
+    // A handful of child contexts, each with its own window+pane, all
+    // parented under root so a single `delete_context(root_idx)` cascades
+    // and disposes every one of them.
+    for i in 0..8u64 {
+        let ctx_id = 9_100 + i;
+        let win_id = 9_200 + i;
+        let pane_id = 9_300 + i;
+        app.router.push(crate::host::context::Context {
+            name: format!("child-{i}"),
+            root: std::path::PathBuf::from(format!("/tmp/perf-gate-delete-context-{i}")),
+            description: None,
+            context_id: ctx_id,
+            parent_id: Some(root_id),
+            depth: 1,
+            parked: false,
+        });
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(pane_id);
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(pane_id, test_app_pane(pane_id));
+        app.windows.push(crate::host::context::Window {
+            name: String::new(),
+            path: std::path::PathBuf::from(format!("/tmp/perf-gate-delete-context-{i}")),
+            tree: egui_tiles::Tree::new(format!("plexi_perf_gate_{i}"), root_tile, tiles),
+            panes,
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+    }
+
+    let root_idx = app.router.position(|c| c.context_id == root_id).unwrap();
+    let start = std::time::Instant::now();
+    app.delete_context(root_idx);
+    let elapsed = start.elapsed();
+    eprintln!("perf_gate_delete_context_does_not_block_ui_thread: elapsed={elapsed:?}");
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(20),
+        "delete_context must not block the UI thread on window disposal; took {elapsed:?}"
+    );
+}
+
+#[test]
+#[ignore = "perf-gate: run explicitly on a quiet machine"]
+fn perf_gate_context_transition_does_not_block_ui_thread() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root = tempfile::tempdir().expect("root");
+    app.router.get_mut(0).root = root.path().to_path_buf();
+
+    // The registry rescan itself now runs on a background thread (stint
+    // 0548), so this gate covers only the synchronous remainder: agent-host
+    // reload, watcher restart, and config reload.
+    let start = std::time::Instant::now();
+    app.apply_context_transition_effects();
+    let elapsed = start.elapsed();
+    eprintln!("perf_gate_context_transition_does_not_block_ui_thread: elapsed={elapsed:?}");
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(25),
+        "apply_context_transition_effects' synchronous remainder must not block \
+         the UI thread waiting on the registry rescan; took {elapsed:?}"
+    );
+
+    // Drain the background load so the test doesn't leak a dangling thread
+    // assertion for the next test in the binary.
+    while !app.drain_registry_load() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
