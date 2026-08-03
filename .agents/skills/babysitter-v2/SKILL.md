@@ -24,9 +24,15 @@ if so, wait for 5 minutes, check again, repeat untill agent finishes and reads a
 
 check status with 'plexi pane slot read status 870 2>&1; echo "---"; plexi pane slot read pipeline_phase 870 2>&1'
 
-if the agent gets stuck, use plexi cli to capture it's content and send responces to it to get it moving.
 
 when starting a wait say 'napping... wake up at <the-utc-time it will be>'
 
+
+
+if the agent gets stuck, use plexi cli to capture it's content and send responces to it to get it moving.
+
+if it ever needs clarifications just choose the robust option. 
+
+at the end it will surface a testing block, we can skip that and just tell it `Pass - to merge to alpha.`
 
 

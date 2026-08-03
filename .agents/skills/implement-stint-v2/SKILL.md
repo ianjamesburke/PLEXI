@@ -40,11 +40,11 @@ if stint is 's' - small
 - immediatly look for the code change and implement swiftly, run e2e cargo test and finish
 
 if m
-Have a subagent generate a plan by reading the stint description, looking at the relevant code, and creating an execution pla
-then close that subagent and send the exicution plan to a new subagent. 
+Have a opus subagent generate a plan by reading the stint description, looking at the relevant code, and creating an execution plan
+then close that subagent and send the exicution plan to a new sonnet subagent for implementation. 
 
 if l
-have one subagent do a reasearch pass to create a multiphase plan
+have one subagent (fable) do a reasearch pass to create a multiphase plan
 then spawn subagents in this order. 
 impl-phase-1 - Only handling the implementation of the code for phase one.
 test-phase-2 - only responible for testing and reviewing the code quality, and running host tests
