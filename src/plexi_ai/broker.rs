@@ -368,6 +368,11 @@ fn resolve_openrouter_api_key_from_store(
         WorkspaceSecrets,
     };
 
+    // Set when `resolve_with_source`'s user-scope fallback step already read
+    // `plexi:user:<api_key_env>` — the loop below must not read it again, or
+    // the same Keychain item raises its ACL prompt twice for one init.
+    let mut user_canonical_already_probed = false;
+
     if let Some(root) = workspace_root {
         match (WorkspaceConfig::load(root), WorkspaceSecrets::load(root)) {
             (Ok(Some(cfg)), Ok(Some(router))) => {
@@ -385,6 +390,10 @@ fn resolve_openrouter_api_key_from_store(
                                 "api_key_missing: {api_key_env} missing from workspace secret policy"
                             ));
                         }
+                        // No route means `resolve_with_source`'s Step 3 already
+                        // probed `keychain_user_name(api_key_env)` as its
+                        // user-scope fallback read.
+                        user_canonical_already_probed = true;
                         log::info!(
                             "ai_broker: workspace secret {api_key_env} missing; checking fallback sources"
                         );
@@ -435,6 +444,9 @@ fn resolve_openrouter_api_key_from_store(
 
     if api_key_env == "OPENROUTER_API_KEY" {
         for name in ["OPENROUTER_API_KEY", "openrouter-api-key"] {
+            if name == api_key_env && user_canonical_already_probed {
+                continue;
+            }
             let account = keychain_user_name(name);
             if let Some(key) = store.get(&account) {
                 if !key.is_empty() {
@@ -1500,6 +1512,104 @@ mod tests {
                 .expect("legacy global key");
 
         assert_eq!(resolved, "sk-legacy");
+    }
+
+    /// Wraps a [`crate::workspace::secrets::NonDestructiveStore`] and counts
+    /// `get` calls per account, so a resolution can assert it read each
+    /// Keychain item at most once — a second read of the same account is a
+    /// second ACL prompt for what the user experiences as one credential.
+    #[cfg(target_os = "macos")]
+    struct CountingStore<'a> {
+        inner: &'a dyn crate::workspace::secrets::NonDestructiveStore,
+        calls: std::sync::Mutex<std::collections::HashMap<String, u32>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl<'a> CountingStore<'a> {
+        fn new(inner: &'a dyn crate::workspace::secrets::NonDestructiveStore) -> Self {
+            Self {
+                inner,
+                calls: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+
+        fn get_calls(&self, account: &str) -> u32 {
+            self.calls
+                .lock()
+                .unwrap()
+                .get(account)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl<'a> crate::workspace::secrets::NonDestructiveStore for CountingStore<'a> {
+        fn get(&self, account: &str) -> Option<zeroize::Zeroizing<String>> {
+            *self
+                .calls
+                .lock()
+                .unwrap()
+                .entry(account.to_string())
+                .or_insert(0) += 1;
+            self.inner.get(account)
+        }
+
+        fn add_new(
+            &self,
+            account: &str,
+            value: &str,
+        ) -> Result<(), crate::workspace::secrets::SecretError> {
+            self.inner.add_new(account, value)
+        }
+
+        fn delete_if_value(
+            &self,
+            account: &str,
+            expected: &str,
+        ) -> Result<(), crate::workspace::secrets::SecretError> {
+            self.inner.delete_if_value(account, expected)
+        }
+
+        fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+            self.inner.list_with_prefix(prefix)
+        }
+
+        fn scan_accounts(&self) -> Result<Vec<String>, crate::workspace::secrets::SecretError> {
+            self.inner.scan_accounts()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn openrouter_key_reads_the_user_scope_account_at_most_once() {
+        use crate::workspace::secrets::{InMemoryKeychain, SecretStore};
+
+        let ws = tempfile::tempdir().unwrap();
+        write_secret_workspace(ws.path(), "ws-count");
+
+        let backing = InMemoryKeychain::new();
+        backing
+            .set("plexi:user:OPENROUTER_API_KEY", "sk-global")
+            .unwrap();
+        let store = CountingStore::new(&backing);
+
+        let resolved = resolve_openrouter_api_key_from_store(
+            "OPENROUTER_API_KEY",
+            Some(ws.path()),
+            None,
+            &store,
+        )
+        .expect("keychain lookup")
+        .expect("keychain key");
+
+        assert_eq!(resolved, "sk-global");
+        assert_eq!(
+            store.get_calls("plexi:user:OPENROUTER_API_KEY"),
+            1,
+            "the same Keychain item must be read at most once per resolution — \
+             every extra read is another ACL prompt for one credential"
+        );
     }
 
     #[cfg(target_os = "macos")]
