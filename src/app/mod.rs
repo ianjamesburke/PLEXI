@@ -3936,14 +3936,10 @@ impl PlexiApp {
             self.drag_window_last_seen = Some(now);
             return true;
         }
-        match self.drag_window_last_seen {
-            Some(last_seen)
-                if now.duration_since(last_seen) < std::time::Duration::from_millis(300) =>
-            {
-                true
-            }
-            _ => false,
-        }
+        matches!(
+            self.drag_window_last_seen,
+            Some(last_seen) if now.duration_since(last_seen) < std::time::Duration::from_millis(300)
+        )
     }
 
     pub(crate) fn open_notes_picker(&mut self) {
