@@ -1,6 +1,35 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.6] — 2026-08-03
+
+### Changes
+- perf(host/terminal): coalesce terminal reflow to the trailing edge of a drag (#2586)
+- fix(host/ai): stop double-probing the Keychain for the OpenRouter key (#2585)
+- fix(ui/sidebar): reserve pane-state tier height when a row has no pips (#2584)
+- perf: drag-resize frame profiling (#2583)
+- fix(ui/palette): add CONTEXTS section header (#2582)
+- feat(notifications): resurface notification when origin pane's window comes into view (#2581)
+- feat(apps/todo): convert to file-backed state (#2577)
+- design(sdk): search-to-results-to-detail pattern decision doc
+- perf: keep long host operations off the UI thread (#2578)
+- security(host/notifications): derive CLI sender identity from the socket peer (#2579)
+- fix(host/text-input): keep the draft while the guest echo is in flight; autofocus search fields (#2574)
+- apps(wikipedia): expose ExposeTools search surface (#2571)
+- fix(ui/sidebar): single-context sidebar inflates to max width with a dead gap strip and un-resizable panel (#2569)
+- feat(logging): fine-grained UiPhase instrumentation for logic() freeze (#2570)
+- gutting impl stint skill
+- feat(mcp): bridge configured MCP servers onto the connector tool plane (#2499)
+- fix(secrets): reconcile the alias index against a real keychain scan (#2503)
+- perf(wasm): coalesce decoder wakes, shrink the canvas wire payload, pick the smaller tree encoding (#2489)
+- feat(sdk/host/cli): file-backed app state and `plexi app state get/set` (#2566)
+- feat: expose app tools through host MCP (#2533)
+- fix(ui): stop toolbar buttons stealing keyboard focus without a per-frame surrender
+- fix(testing): repair suite compile break and scene /tmp state pollution (#2568)
+- fix(release): re-lock the Python SDK when the version bumps
+- fix: prevent toolbar buttons from stealing keyboard focus (#2353)
+- fix: polish sidebar context rows (#2564)
+- perf(terminal): snapshot only the visible viewport in backend sync (#2565)
 ## [0.2.5] — 2026-08-02
 
 ### Changes
