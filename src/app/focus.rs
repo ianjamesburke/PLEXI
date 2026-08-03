@@ -963,6 +963,7 @@ impl PlexiApp {
                 PendingNotification {
                     notify_id,
                     sender_pane_id: 0,
+                    dismiss_owner_pane_id: 0,
                     source_context_id: 0,
                     source_window_id: 0,
                     title: "Config Error".to_string(),

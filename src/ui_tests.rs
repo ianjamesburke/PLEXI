@@ -1536,6 +1536,7 @@ mod tests {
         crate::app::PendingNotification {
             notify_id: notify_id.to_string(),
             sender_pane_id: 0,
+            dismiss_owner_pane_id: 0,
             source_context_id,
             source_window_id,
             title: "Preview badge".to_string(),
@@ -3478,6 +3479,7 @@ mod tests {
                 crate::app::PendingNotification {
                     notify_id: notify_id.to_string(),
                     sender_pane_id: 0,
+                    dismiss_owner_pane_id: 0,
                     source_context_id,
                     source_window_id,
                     title: "Preview badge".to_string(),

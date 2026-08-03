@@ -147,6 +147,32 @@ pub fn notify_cli(
         return 1;
     }
 
+    // Block until the host confirms it captured our socket-peer identity
+    // (`PEER_IDENTITY_ACK`, `handle_socket_line` in `src/app/mod.rs`) before
+    // this call is allowed to proceed. Load-bearing specifically for the
+    // fire-and-forget branch just below: without it, this process can exit
+    // the instant its write completes — a real race against the host's own
+    // accept()-return latency under load, not just a spawned-thread delay.
+    // Losing that race means `get_pid_ppid` fails on an already-gone pid and
+    // the notification misattributes to "outside pane" (global scope, no
+    // dismiss) even though the caller really was a live, known pane. The
+    // blocking-choice branch below can't lose this race either way — it
+    // polls `response_file` until the host finishes processing, well past
+    // the ack point — so this read is belt-and-suspenders there, but it's
+    // cheap and correct to do unconditionally before committing to either
+    // branch. A short timeout keeps a stuck/uncooperative host — or one
+    // from before this change, mid-upgrade, that never sends an ack at all
+    // — from hanging this call for long; a missed ack is logged, not
+    // fatal, and the request was already delivered either way. A
+    // same-host unix-socket round trip normally completes in microseconds,
+    // so this bound is already generous, not a tight deadline being cut
+    // close.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    let mut ack = [0u8; 1];
+    if let Err(e) = std::io::Read::read_exact(&mut stream, &mut ack) {
+        log::warn!("notify:cli: peer identity ack not received: {e}");
+    }
+
     // Fire-and-forget path — command is delivered, nothing to wait for.
     let Some(response_file) = response_file_str else {
         println!("{notify_id}");
@@ -247,11 +273,15 @@ mod notify_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept notify connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone notify stream"));
             let mut line = String::new();
-            BufReader::new(stream)
-                .read_line(&mut line)
-                .expect("read notify payload");
+            reader.read_line(&mut line).expect("read notify payload");
             let payload = serde_json::from_str::<Value>(&line).expect("notify payload json");
+            // Real host behavior: ack once the peer identity would have been
+            // captured, so `notify_cli`'s blocking read doesn't stall this
+            // test on the 5s timeout every call.
+            use std::io::Write;
+            let _ = (&stream).write_all(&[0x06]);
             tx.send(payload).ok();
         });
 
@@ -384,11 +414,12 @@ mod notify_tests {
 
         let handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept notify connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone notify stream"));
             let mut line = String::new();
-            BufReader::new(stream)
-                .read_line(&mut line)
-                .expect("read notify payload");
+            reader.read_line(&mut line).expect("read notify payload");
             let payload: Value = serde_json::from_str(&line).expect("notify payload json");
+            use std::io::Write;
+            let _ = (&stream).write_all(&[0x06]);
             let response_file = payload["response_file"]
                 .as_str()
                 .expect("blocking choice response_file")

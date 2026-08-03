@@ -170,6 +170,18 @@ pub enum AppRequest {
         /// contexts after its env was stamped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pane_id: Option<u64>,
+        /// Host-established only: the socket peer credential check's ancestor
+        /// pid chain for this connection (`capture_peer_ancestry`, walked
+        /// eagerly at accept time — before the client's process can exit).
+        /// Never present on the wire — `serde(skip)` makes it impossible for
+        /// a client to set this field by sending JSON; it is stamped by
+        /// `handle_socket_line` after the host resolves the socket peer, and
+        /// is the trustworthy input the sender-identity resolution in
+        /// `handle_pane_ipc_request` uses instead of
+        /// `source_context_id`/`source_pane_id`, which are client-supplied and
+        /// must never be trusted for ownership decisions.
+        #[serde(skip)]
+        peer_pid: Option<Vec<u32>>,
     },
     /// Remove a notification posted by the caller. The host verifies the
     /// caller identity against the notification's stamped provenance.
@@ -180,6 +192,10 @@ pub enum AppRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pane_id: Option<u64>,
         response_file: String,
+        /// Host-established only: see `Notify::peer_pid`. `serde(skip)` — a
+        /// client can never set this over the wire.
+        #[serde(skip)]
+        peer_pid: Option<Vec<u32>>,
     },
     /// Report agent state for a pane. Called by hook scripts via `plexi agent report`.
     SetAgentState {

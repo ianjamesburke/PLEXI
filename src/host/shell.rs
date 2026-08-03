@@ -459,6 +459,50 @@ fn invoked_exec_basename(pid: u32) -> Option<String> {
     (!base.is_empty()).then(|| base.to_string())
 }
 
+/// Parent pid of `pid`, or `None` if the process is gone or the platform has
+/// no supported lookup. Used to walk a socket peer's ancestor chain back to
+/// the shell process a `TerminalPane` owns (`resolve_socket_peer_pane`).
+#[cfg(target_os = "macos")]
+pub fn get_pid_ppid(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let rc = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if rc != size {
+        log::warn!("get_pid_ppid: proc_pidinfo failed for pid {pid} (rc={rc})");
+        return None;
+    }
+    Some(info.pbi_ppid)
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_pid_ppid(pid: u32) -> Option<u32> {
+    // /proc/{pid}/stat: "pid (comm) state ppid ...". The comm field is
+    // parenthesized and may itself contain spaces/parens, so find the LAST
+    // ')' first, then split the remaining fields on whitespace — ppid is the
+    // 2nd field after that ')'.
+    let contents = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let close_paren = contents.rfind(')')?;
+    let rest = contents.get(close_paren + 1..)?;
+    let mut fields = rest.split_whitespace();
+    let _state = fields.next()?;
+    let ppid = fields.next()?;
+    ppid.parse::<u32>().ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn get_pid_ppid(pid: u32) -> Option<u32> {
+    let _ = pid;
+    None
+}
+
 /// Map a foreground process name to the canonical agent name the lifecycle
 /// hooks report (`PLEXI_AGENT_NAME`). This is the identity half of the shared
 /// agent detector: hooks are authoritative once they fire, but not every

@@ -287,6 +287,7 @@ impl PlexiApp {
                                     PendingNotification {
                                         notify_id,
                                         sender_pane_id: pane_id,
+                                        dismiss_owner_pane_id: 0,
                                         source_context_id,
                                         source_window_id,
                                         scope: crate::app_protocol::NotifyScope::default(),
@@ -1028,6 +1029,7 @@ impl PlexiApp {
                         PendingNotification {
                             notify_id,
                             sender_pane_id,
+                            dismiss_owner_pane_id: 0,
                             source_context_id,
                             source_window_id: notif_source_win_id,
                             title,

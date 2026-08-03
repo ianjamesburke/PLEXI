@@ -190,7 +190,7 @@ fn socket_line_queues_request_and_requests_repaint() {
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
-    handle_socket_line(r#"{"type":"wake"}"#, &mailbox);
+    handle_socket_line(r#"{"type":"wake"}"#, &mailbox, None, &mut std::io::sink());
     assert!(
         matches!(rx.try_recv(), Ok(crate::app_protocol::AppRequest::Wake)),
         "request must be queued on the pane-IPC channel"
@@ -209,7 +209,7 @@ fn socket_line_parse_error_queues_nothing() {
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
-    handle_socket_line("definitely not json", &mailbox);
+    handle_socket_line("definitely not json", &mailbox, None, &mut std::io::sink());
     assert!(
         rx.try_recv().is_err(),
         "parse failures must not queue anything"
@@ -239,7 +239,7 @@ fn run_socket_connection(
     client
         .shutdown(std::net::Shutdown::Write)
         .expect("close write half");
-    handle_socket_connection(server, mailbox, subscribe_mailbox, publish_mailbox);
+    handle_socket_connection(server, mailbox, subscribe_mailbox, publish_mailbox, None);
     rx
 }
 
@@ -816,7 +816,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
         "pane_ipc",
     );
     let line = r#"{"type":"log_marker","source":"test","message":"wake"}"#;
-    handle_socket_line(line, &mailbox);
+    handle_socket_line(line, &mailbox, None, &mut std::io::sink());
 
     match rx.try_recv() {
         Ok(crate::app_protocol::AppRequest::LogMarker { source, .. }) => {
@@ -838,6 +838,8 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     handle_socket_line(
         r#"{"type":"list_panes","response_file":"/tmp/second-pane-list.json"}"#,
         &mailbox,
+        None,
+        &mut std::io::sink(),
     );
     assert!(
         matches!(
@@ -885,7 +887,7 @@ fn socket_line_parse_error_does_not_wake() {
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
-    handle_socket_line("not json", &mailbox);
+    handle_socket_line("not json", &mailbox, None, &mut std::io::sink());
 
     assert!(rx.try_recv().is_err(), "malformed line must not queue");
     assert_eq!(*woke.lock().unwrap(), 0, "malformed line must not wake");

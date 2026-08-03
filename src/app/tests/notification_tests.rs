@@ -32,6 +32,7 @@ fn snoozed_notification_invisible_then_visible() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "snoozed-woken".into(),
         sender_pane_id: 0,
+        dismiss_owner_pane_id: 0,
         source_context_id: h.app.router.active().context_id,
         source_window_id: h.app.windows[h.app.active_window].window_id,
         title: "Snoozed".into(),
@@ -78,6 +79,7 @@ fn snoozed_notification_exempt_from_timeout() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "snoozed-no-timeout".into(),
         sender_pane_id: sender_id,
+        dismiss_owner_pane_id: 0,
         source_context_id: h.app.router.active().context_id,
         source_window_id: h.app.windows[h.app.active_window].window_id,
         title: "ShouldNotTimeout".into(),
@@ -115,6 +117,7 @@ fn persist_roundtrip() {
     let n = PendingNotification {
         notify_id: "test-id".into(),
         sender_pane_id: 0,
+        dismiss_owner_pane_id: 0,
         source_context_id: 1,
         source_window_id: 1,
         title: "Test".into(),
@@ -253,6 +256,7 @@ fn window_scoped_notification_visible_only_on_source_window() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "win-scoped-1774".into(),
         sender_pane_id: 0,
+        dismiss_owner_pane_id: 0,
         source_context_id: h.app.router.active().context_id,
         source_window_id: win0_id,
         title: "Window Notification".into(),
@@ -315,6 +319,7 @@ fn auto_dismiss_removes_non_required_notification_when_sender_focused() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "n-auto-dismiss".into(),
         sender_pane_id: pane_id,
+        dismiss_owner_pane_id: 0,
         source_context_id: ctx_id,
         source_window_id: win_id,
         title: "Should go away".into(),
@@ -368,6 +373,7 @@ fn auto_dismiss_spares_required_notifications() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "n-required".into(),
         sender_pane_id: pane_id,
+        dismiss_owner_pane_id: 0,
         source_context_id: ctx_id,
         source_window_id: win_id,
         title: "Must stay".into(),
@@ -412,6 +418,7 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "n-other-pane".into(),
         sender_pane_id: sender_id, // different from focused_id
+        dismiss_owner_pane_id: 0,
         source_context_id: ctx_id,
         source_window_id: win_id,
         title: "From other pane".into(),
@@ -545,6 +552,7 @@ fn cue_test_notification(id: &str) -> PendingNotification {
     PendingNotification {
         notify_id: id.into(),
         sender_pane_id: 0,
+        dismiss_owner_pane_id: 0,
         source_context_id: 0,
         source_window_id: 0,
         title: "Title".into(),
@@ -746,7 +754,7 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     h.app.notifications_enabled = true;
     h.app.notifications_sound = Some("/tmp/cue.wav".to_string());
 
-    h.inject_ipc(cli_notify_request(None, None, None));
+    h.inject_ipc(cli_notify_request(None, None, None, None));
     h.run_frames(2);
 
     assert!(h.app.show_notification_modal, "plain CLI notify interrupts");
@@ -759,7 +767,7 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     focused.app.notifications_enabled = true;
     focused.app.notifications_sound = Some("/tmp/cue.wav".to_string());
     focused.app.notifications_focus_mode = true;
-    focused.inject_ipc(cli_notify_request(None, None, None));
+    focused.inject_ipc(cli_notify_request(None, None, None, None));
     focused.run_frames(2);
     assert!(!focused.app.show_notification_modal, "focus mode prevents interrupt");
     assert!(focused.app.notification_cue_playback.is_none(), "focus mode mutes cue");
@@ -804,10 +812,16 @@ fn disabled_notifications_never_play_a_cue() {
 }
 
 /// Build the `AppRequest::Notify` a `plexi notify` invocation produces.
+/// `peer_pid` stands in for the host-established socket-peer identity
+/// (`None` reproduces an unresolvable/outside-pane caller). Internally
+/// expanded to the single-hop ancestry `resolve_socket_peer_pane` expects —
+/// callers pass the pid they want matched directly (typically a live pane's
+/// own `child_pid`), same as the pre-0636-fix single-pid API.
 fn cli_notify_request(
     scope: Option<crate::app_protocol::NotifyScope>,
     source_context_id: Option<u64>,
     source_pane_id: Option<u64>,
+    peer_pid: Option<u32>,
 ) -> crate::app_protocol::AppRequest {
     crate::app_protocol::AppRequest::Notify {
         title: "CLI notify".into(),
@@ -826,7 +840,37 @@ fn cli_notify_request(
         scope,
         source_context_id,
         source_pane_id,
+        peer_pid: peer_pid.map(|pid| vec![pid]),
     }
+}
+
+/// Create a real PTY-backed terminal pane at a fresh grid slot so its
+/// shell's `child_pid` can stand in for a genuine `plexi notify` socket
+/// peer. Returns `None` when the environment has no PTY (headless CI) —
+/// every caller must treat that as "skip this test", matching the
+/// `pty_available` pattern used elsewhere in this test suite.
+fn spawn_real_terminal_pane(
+    h: &mut HostHarness,
+    grid_x: u32,
+    grid_y: u32,
+    context_id: u64,
+) -> Option<(crate::spatial::tiling::PaneId, u32, u64, u64)> {
+    let before = h.app.windows.len();
+    h.app.create_page_at(grid_x, grid_y, context_id, None, false, None);
+    if h.app.windows.len() == before {
+        return None; // no PTY in this environment
+    }
+    let win_idx = h.app.windows.len() - 1;
+    let pane_id = *h.app.windows[win_idx].panes.keys().next()?;
+    let child_pid = h.app.windows[win_idx]
+        .panes
+        .get(&pane_id)?
+        .as_terminal()?
+        .backend
+        .child_pid();
+    let ctx_id = h.app.windows[win_idx].context_id;
+    let window_id = h.app.windows[win_idx].window_id;
+    Some((pane_id, child_pid, ctx_id, window_id))
 }
 
 /// 0608: a parked app has no sender window. Window-scoped delivery must stay
@@ -845,6 +889,7 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
         PendingNotification {
             notify_id: "parked-window-scope".into(),
             sender_pane_id: 0,
+            dismiss_owner_pane_id: 0,
             source_context_id: context_id,
             source_window_id,
             title: "Parked".into(),
@@ -874,15 +919,25 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
     assert_eq!(notification.source_context_id, context_id);
 }
 
-/// 0610/0611: the CLI's display timeout reaches the host payload, while a
-/// sticky CLI notification can be removed only by its posting pane.
+/// 0610/0611, re-verified after 0636: the CLI's display timeout reaches the
+/// host payload, while a sticky CLI notification can be removed only by its
+/// posting pane — ownership now decided from the real socket-peer identity
+/// (`peer_pid`), not the client-claimed `source_pane_id` this test used to
+/// drive directly.
 #[test]
 fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
-    let owner_pane_id = h.add_test_pane();
-    let foreign_pane_id = h.add_test_pane();
-    let context_id = h.app.router.active().context_id;
+    let Some((owner_pane_id, owner_peer_pid, owner_ctx, _)) =
+        spawn_real_terminal_pane(&mut h, 92, 92, 503)
+    else {
+        return; // no PTY in this environment
+    };
+    let Some((foreign_pane_id, foreign_peer_pid, _, _)) =
+        spawn_real_terminal_pane(&mut h, 93, 93, 504)
+    else {
+        return; // no PTY in this environment
+    };
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
 
@@ -901,8 +956,9 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         on_dismiss: None,
         response_file: None,
         scope: None,
-        source_context_id: Some(context_id),
+        source_context_id: Some(owner_ctx),
         source_pane_id: Some(owner_pane_id),
+        peer_pid: Some(vec![owner_peer_pid]),
     });
     h.run_frames(2);
 
@@ -913,43 +969,166 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         posted.sender_pane_id, 0,
         "CLI notifications must not auto-dismiss with their focused terminal"
     );
+    assert_eq!(
+        posted.dismiss_owner_pane_id, owner_pane_id,
+        "dismiss ownership must be stamped from the resolved socket peer"
+    );
 
+    // A different real pane (its own genuine socket peer) claims to be the
+    // owner via the wire fields — those claims must be ignored; only the
+    // resolved `peer_pid` decides ownership, and it names a stranger.
     h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
-        source_context_id: Some(context_id),
-        source_pane_id: Some(foreign_pane_id),
+        source_context_id: Some(owner_ctx),
+        source_pane_id: Some(owner_pane_id), // forged claim
         response_file: response_file.to_string_lossy().into_owned(),
+        peer_pid: Some(vec![foreign_peer_pid]), // true peer disagrees
     });
     h.run_frames(2);
     assert_eq!(
         h.app.pending_notifications.len(),
         1,
-        "foreign pane must not dismiss"
+        "foreign pane must not dismiss, even while claiming to be the owner"
     );
 
     h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
-        source_context_id: Some(context_id),
-        source_pane_id: Some(owner_pane_id),
+        source_context_id: Some(owner_ctx),
+        source_pane_id: Some(foreign_pane_id), // forged claim, must be ignored
         response_file: response_file.to_string_lossy().into_owned(),
+        peer_pid: Some(vec![owner_peer_pid]), // true peer is the real owner
     });
     h.run_frames(2);
     assert!(
         h.app.pending_notifications.is_empty(),
-        "owner dismissal removes sticky notification"
+        "owner dismissal removes sticky notification via the resolved peer"
     );
 }
 
+/// 0636: a socket peer that resolves to no live pane (outside-pane caller,
+/// or an already-closed pane) must not fall back to trusting the client's
+/// claimed identity — Notify escalates to Global and Dismiss is rejected,
+/// exactly like an absent identity.
+#[test]
+fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let real_context_id = h.app.router.active().context_id;
+
+    // No live terminal pane in this harness has this (or any) pid as an
+    // ancestor, so any peer_pid — including our own process — resolves to
+    // nothing.
+    let unresolvable_peer = std::process::id();
+
+    h.inject_ipc(crate::app_protocol::AppRequest::Notify {
+        title: "t".into(),
+        body: "b".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        actions: vec![],
+        notify_id: Some("unresolvable-peer".into()),
+        image_inline: None,
+        image_pipe_id: None,
+        timeout_secs: None,
+        on_dismiss: None,
+        response_file: None,
+        scope: Some(crate::app_protocol::NotifyScope::Context),
+        source_context_id: Some(real_context_id),
+        source_pane_id: None,
+        peer_pid: Some(vec![unresolvable_peer]),
+    });
+    h.run_frames(2);
+
+    let posted = &h.app.pending_notifications[0];
+    assert_eq!(
+        posted.scope,
+        crate::app_protocol::NotifyScope::Global,
+        "an unresolvable peer must escalate to Global rather than trust the claimed context"
+    );
+    assert_eq!(
+        posted.dismiss_owner_pane_id, 0,
+        "an unresolvable peer must not stamp any pane as the dismiss owner"
+    );
+
+    let response_dir = tempfile::tempdir().expect("tempdir");
+    let response_file = response_dir.path().join("dismiss-response");
+    h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
+        notify_id: "unresolvable-peer".into(),
+        source_context_id: Some(real_context_id),
+        source_pane_id: Some(424_242), // forged, irrelevant
+        response_file: response_file.to_string_lossy().into_owned(),
+        peer_pid: Some(vec![unresolvable_peer]),
+    });
+    h.run_frames(2);
+    assert_eq!(
+        h.app.pending_notifications.len(),
+        1,
+        "dismiss with no resolvable sender must not remove the notification"
+    );
+}
+
+/// 0636: a forged `source_pane_id`/`source_context_id` naming a REAL pane
+/// must be ignored whenever it disagrees with the host-resolved socket peer
+/// — the notification is attributed to the true peer, never the claim.
+#[test]
+fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+
+    let Some((_, real_peer_pid, real_ctx, _)) = spawn_real_terminal_pane(&mut h, 94, 94, 505)
+    else {
+        return; // no PTY in this environment
+    };
+    let Some((forged_pane_id, _, forged_ctx, _)) = spawn_real_terminal_pane(&mut h, 95, 95, 506)
+    else {
+        return; // no PTY in this environment
+    };
+    assert_ne!(real_ctx, forged_ctx);
+
+    h.inject_ipc(crate::app_protocol::AppRequest::Notify {
+        title: "t".into(),
+        body: "b".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        actions: vec![],
+        notify_id: Some("forged-claim".into()),
+        image_inline: None,
+        image_pipe_id: None,
+        timeout_secs: None,
+        on_dismiss: None,
+        response_file: None,
+        scope: Some(crate::app_protocol::NotifyScope::Context),
+        source_context_id: Some(forged_ctx),
+        source_pane_id: Some(forged_pane_id),
+        peer_pid: Some(vec![real_peer_pid]), // the true sender is the OTHER pane
+    });
+    h.run_frames(2);
+
+    let posted = &h.app.pending_notifications[0];
+    assert_eq!(
+        posted.source_context_id, real_ctx,
+        "must attribute to the host-resolved peer, not the claimed context"
+    );
+    assert_ne!(posted.source_context_id, forged_ctx);
+}
+
 /// 0569: an unscoped `plexi notify` from inside a pane is context-local, not
-/// global. Drives the real CLI surface end to end through pane_ipc, carrying
-/// the caller identity the CLI stamps from `PLEXI_CONTEXT_ID`.
+/// global. Drives the real CLI surface end to end through pane_ipc, with the
+/// caller identity coming from a real socket-peer resolution (0636) rather
+/// than a claimed `source_context_id`.
 #[test]
 fn cli_notify_without_scope_defaults_to_context() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
-    let caller_ctx = h.app.router.active().context_id;
+    let Some((_, peer_pid, real_ctx, _)) = spawn_real_terminal_pane(&mut h, 90, 90, 501) else {
+        return; // no PTY in this environment
+    };
 
-    h.inject_ipc(cli_notify_request(None, Some(caller_ctx), None));
+    h.inject_ipc(cli_notify_request(None, None, None, Some(peer_pid)));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1, "notification queued");
@@ -959,8 +1138,8 @@ fn cli_notify_without_scope_defaults_to_context() {
         "unscoped CLI notify must stay in its own context, not leak globally"
     );
     assert_eq!(
-        h.app.pending_notifications[0].source_context_id, caller_ctx,
-        "provenance is the caller's claimed context"
+        h.app.pending_notifications[0].source_context_id, real_ctx,
+        "provenance is the host-resolved socket-peer context"
     );
 }
 
@@ -974,6 +1153,7 @@ fn cli_notify_explicit_global_scope_survives_the_new_default() {
         Some(crate::app_protocol::NotifyScope::Global),
         None,
         None,
+        None,
     ));
     h.run_frames(2);
 
@@ -985,68 +1165,55 @@ fn cli_notify_explicit_global_scope_survives_the_new_default() {
     );
 }
 
-/// Fix round 1 blocker 2: the notification attaches to the context the caller
-/// named, never to whichever context happens to be active at dispatch time.
-/// An agent notifying from a background context must not have its notification
-/// stamped with — and hidden inside — a stranger's context.
+/// Fix round 1 blocker 2, re-verified after 0636: the notification attaches
+/// to the socket peer's real context, never to whichever context happens to
+/// be active at dispatch time. An agent notifying from a background context
+/// must not have its notification stamped with — and hidden inside — a
+/// stranger's context.
 #[test]
 fn cli_notify_attaches_to_callers_context_not_active() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
-    let parent_id = h.app.router.active().context_id;
-    let parent_name = h.app.router.active().name.clone();
+    let active_before = h.app.router.active().context_id;
 
-    h.app
-        .new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
-            Some(parent_id),
-            parent_name,
-            std::env::temp_dir(),
-            true,
-            false,
-            None,
-        ))
-        .expect("child context");
-    let child_id = h
-        .app
-        .router
-        .iter()
-        .map(|c| c.context_id)
-        .find(|id| *id != parent_id)
-        .expect("child context id");
-
-    // Whichever of the two contexts is NOT active plays the background caller.
-    let active_id = h.app.router.active().context_id;
-    let caller_id = if active_id == parent_id {
-        child_id
-    } else {
-        parent_id
+    // The real sender pane lives in a fresh window/context; the harness's
+    // originally-active context stays active throughout — the caller is
+    // never the active context, so any attribution to `active_before` would
+    // prove dispatch-time active state leaked in.
+    let Some((_, peer_pid, real_ctx, _)) = spawn_real_terminal_pane(&mut h, 91, 91, 502) else {
+        return; // no PTY in this environment
     };
-    assert_ne!(
-        caller_id, active_id,
-        "caller must not be the active context"
-    );
+    assert_ne!(real_ctx, active_before);
 
-    h.inject_ipc(cli_notify_request(None, Some(caller_id), None));
+    h.inject_ipc(cli_notify_request(None, None, None, Some(peer_pid)));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
     let n = &h.app.pending_notifications[0];
     assert_eq!(n.scope, crate::app_protocol::NotifyScope::Context);
     assert_eq!(
-        n.source_context_id, caller_id,
-        "provenance must be the caller's own context, not dispatch-time active state"
+        n.source_context_id, real_ctx,
+        "provenance must be the socket peer's own context, not dispatch-time active state"
     );
 }
 
-/// Fix round 1 blocker 2: an identity naming no live context is never
-/// reattributed to some other context — the notification escalates to global
-/// so it stays reachable everywhere instead of hiding in a fabricated home.
+/// Fix round 1 blocker 2, re-verified after 0636: an identity naming no
+/// resolvable socket peer is never reattributed to some other context — the
+/// notification escalates to global so it stays reachable everywhere instead
+/// of hiding in a fabricated home. `source_context_id`/`source_pane_id` are
+/// forged here to prove they are ignored entirely absent a host-resolved
+/// peer, not merely absent themselves.
 #[test]
 fn cli_notify_stale_identity_escalates_to_global() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
-    h.inject_ipc(cli_notify_request(None, Some(999_999), Some(888_888)));
+    h.inject_ipc(cli_notify_request(
+        None,
+        Some(999_999),
+        Some(888_888),
+        None, // no resolvable socket peer
+    ));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
@@ -1059,42 +1226,6 @@ fn cli_notify_stale_identity_escalates_to_global() {
     assert_eq!(n.source_context_id, 0, "0 = no context, the host sentinel");
 }
 
-/// Fix round 1 blocker 2 (Codex finding): `--scope window` from a context
-/// that resolved but has no live window narrows to context scope — the least
-/// widening that keeps the notification reachable — never all the way to
-/// global.
-#[test]
-fn cli_notify_window_scope_without_live_window_narrows_to_context() {
-    let mut h = HostHarness::new();
-    h.app.notifications_enabled = true;
-    // A live context with no window (parked): in the router, not in windows.
-    h.app.router.push(crate::host::context::Context {
-        name: "Parked".into(),
-        root: std::env::temp_dir(),
-        description: None,
-        context_id: 777,
-        parent_id: None,
-        depth: 0,
-        parked: true,
-    });
-
-    h.inject_ipc(cli_notify_request(
-        Some(crate::app_protocol::NotifyScope::Window),
-        Some(777),
-        None,
-    ));
-    h.run_frames(2);
-
-    assert_eq!(h.app.pending_notifications.len(), 1);
-    let n = &h.app.pending_notifications[0];
-    assert_eq!(
-        n.scope,
-        crate::app_protocol::NotifyScope::Context,
-        "window scope with no live window must narrow to context, not widen to global"
-    );
-    assert_eq!(n.source_context_id, 777);
-}
-
 /// Fix round 1 blocker 2: a caller outside any pane (PLEXI_SOCKET exported by
 /// hand, no PLEXI_CONTEXT_ID) has no home context — its unscoped notification
 /// is global, matching what such callers always got.
@@ -1103,7 +1234,7 @@ fn cli_notify_outside_pane_unscoped_escalates_to_global() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
-    h.inject_ipc(cli_notify_request(None, None, None));
+    h.inject_ipc(cli_notify_request(None, None, None, None));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
@@ -1148,4 +1279,131 @@ fn parse_notify_scope_maps_every_named_scope_explicitly() {
         Ok(Some(NotifyScope::Window))
     );
     assert!(crate::cli::parse_notify_scope(Some("nope")).is_err());
+}
+
+/// 0636 live regression: a genuine child process spawned as a real
+/// descendant of a HostHarness terminal pane's shell, connected to a real
+/// `UnixListener` (not `UnixStream::pair`, which only proves in-process
+/// wiring), sends a notify line with a DIFFERENT pane forged into
+/// `source_pane_id`/`source_context_id`. The host must attribute the
+/// notification to the true shell-descendant pane, never the forged claim.
+/// macOS-only: relies on `nc -U` (BSD netcat, always present on the
+/// project's dev/CI platform — see root `AGENTS.md`); the ancestor walk
+/// itself (`resolve_socket_peer_pane`) has an independent Linux path
+/// exercised indirectly by every other test in this module.
+#[cfg(target_os = "macos")]
+#[test]
+fn live_socket_peer_resolves_through_real_descendant_process() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+
+    let Some((real_pane_id, _real_shell_pid, real_ctx, _)) =
+        spawn_real_terminal_pane(&mut h, 96, 96, 507)
+    else {
+        return; // no PTY in this environment
+    };
+    let real_win_idx = h.app.windows.len() - 1;
+
+    let Some((forged_pane_id, _, forged_ctx, _)) = spawn_real_terminal_pane(&mut h, 97, 97, 508)
+    else {
+        return; // no PTY in this environment
+    };
+    assert_ne!(real_ctx, forged_ctx);
+
+    // A real kernel-backed AF_UNIX listener — not `UnixStream::pair`, which
+    // only proves the in-process handler wiring, never a genuine peer
+    // credential lookup across a real accept().
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sock_path = dir.path().join("live-notify.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock_path).expect("bind");
+
+    let mailbox = h.ipc_tx.clone();
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+        egui::Context::default(),
+    ));
+    let (subscribe_mailbox, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >::channel(wake.clone(), "event_subscribe");
+    let (publish_mailbox, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostPublishRequest,
+    >::channel(wake, "event_publish");
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            // Mirror `spawn_socket_listener`'s production accept loop:
+            // resolve the peer identity synchronously, right here, before
+            // any further work — never inside a spawned connection thread.
+            let peer_pid = resolve_socket_peer_pid(&stream);
+            let peer_ancestry = peer_pid.map(capture_peer_ancestry);
+            handle_socket_connection(
+                stream,
+                mailbox.clone(),
+                subscribe_mailbox.clone(),
+                publish_mailbox.clone(),
+                peer_ancestry,
+            );
+        }
+    });
+
+    // JSON payload forging `source_pane_id`/`source_context_id` as the
+    // OTHER (forged) pane. Sent by a real `nc` process spawned INSIDE the
+    // real pane's own shell — a genuine child of its `child_pid`, not a
+    // pid we merely compute.
+    let payload = serde_json::json!({
+        "type": "notify",
+        "notify_id": "live-descendant",
+        "title": "t",
+        "body": "b",
+        "kind": "message",
+        "options": [],
+        "scope": "context",
+        "source_context_id": forged_ctx,
+        "source_pane_id": forged_pane_id,
+    });
+    let payload_path = dir.path().join("payload.json");
+    std::fs::write(&payload_path, format!("{payload}\n")).expect("write payload");
+
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    // Absolute path, not bare `nc`: a dev machine with Homebrew's GNU
+    // netcat ahead of /usr/bin on PATH silently runs the wrong `nc` (GNU
+    // netcat rejects `-U` with "invalid option"), which would hang this
+    // test on the 10s deadline below instead of proving anything.
+    let cmd = format!(
+        "cat {} | /usr/bin/nc -U {}\n",
+        quote(payload_path.to_str().expect("utf8 path")),
+        quote(sock_path.to_str().expect("utf8 path")),
+    );
+    {
+        let win = &mut h.app.windows[real_win_idx];
+        let pane = win.panes.get_mut(&real_pane_id).expect("real pane exists");
+        let terminal = pane.as_terminal_mut().expect("terminal pane");
+        terminal
+            .backend
+            .process_command(egui_term::BackendCommand::Write(cmd.into_bytes()));
+    }
+
+    // The shell executes `nc` as a genuine OS process on its own schedule,
+    // independent of our frame pump — poll for delivery instead of assuming
+    // synchronous completion.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.run_frames(1);
+        if !h.app.pending_notifications.is_empty() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "live descendant notify did not arrive within 10s — check `nc -U` availability"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let posted = &h.app.pending_notifications[0];
+    assert_eq!(
+        posted.source_context_id, real_ctx,
+        "must attribute to the real shell-descendant pane, not the forged claim"
+    );
+    assert_ne!(posted.source_context_id, forged_ctx);
 }

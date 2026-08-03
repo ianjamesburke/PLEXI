@@ -508,14 +508,67 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
+/// Single-byte sentinel written back to the socket peer once the host has
+/// captured its ancestry (`capture_peer_ancestry`) for a `Notify`/
+/// `DismissNotification` request. `notify_cli`/`dismiss_notify_cli` block
+/// reading this before the fire-and-forget path is allowed to exit — see
+/// the long comment at the ack-write call site below for why this exists.
+const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
+
 /// Handle one newline-delimited JSON line from the notify socket: parse the
 /// `AppRequest` and queue it on the pane-IPC mailbox (which owns the UI wake).
+///
+/// `peer_ancestry` is the host-established ancestor-pid chain of the process
+/// on the other end of this connection, captured once per connection in
+/// `spawn_socket_listener`'s accept loop (`capture_peer_ancestry`, called at
+/// accept time — never from the request body, and never re-derived lazily
+/// here). It is stamped onto `Notify`/`DismissNotification` requests — the
+/// only variants that carry a `peer_pid` field — so `handle_pane_ipc_request`
+/// can resolve the sender pane from a value the client never controlled,
+/// instead of trusting the wire-supplied `source_context_id`/`source_pane_id`.
 fn handle_socket_line(
     line: &str,
     mailbox: &ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
+    peer_ancestry: Option<&[u32]>,
+    ack_writer: &mut impl std::io::Write,
 ) {
     match serde_json::from_str::<crate::app_protocol::AppRequest>(line) {
-        Ok(cmd) => {
+        Ok(mut cmd) => {
+            let needs_identity_ack = matches!(
+                cmd,
+                crate::app_protocol::AppRequest::Notify { .. }
+                    | crate::app_protocol::AppRequest::DismissNotification { .. }
+            );
+            match &mut cmd {
+                crate::app_protocol::AppRequest::Notify { peer_pid: p, .. }
+                | crate::app_protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
+                    *p = peer_ancestry.map(<[u32]>::to_vec);
+                }
+                _ => {}
+            }
+            if needs_identity_ack {
+                // `capture_peer_ancestry` already ran, synchronously, in the
+                // accept loop — strictly before this connection was ever
+                // handed to a thread, let alone reached this line-parsing
+                // step. Sending this ack now, rather than never (as before
+                // this fix), lets a cooperating fire-and-forget caller
+                // (`plexi notify`/`plexi notify dismiss`, which otherwise
+                // exits the instant its write completes) block on reading
+                // it before exiting. Without this, a short-lived CLI process
+                // can race the host's own accept()-return latency under
+                // scheduler load: it exits before the host code that reads
+                // its ancestry has even run, `get_pid_ppid` then fails on an
+                // already-gone pid, and the notification silently
+                // misattributes to "outside pane" (global scope, no
+                // dismiss) even though the sender really was a live, known
+                // pane. A write failure here is logged, not fatal — the
+                // request is still queued below; an uncooperative or
+                // already-gone peer just proceeds without the guarantee,
+                // exactly like today's behavior.
+                if let Err(e) = ack_writer.write_all(PEER_IDENTITY_ACK) {
+                    log::warn!("pane_ipc: peer identity ack write failed: {e}");
+                }
+            }
             if mailbox.send(cmd).is_ok() {
                 log::debug!("pane_ipc: request queued — mailbox wakes idle UI thread");
             }
@@ -576,11 +629,28 @@ fn spawn_socket_listener(
                     continue;
                 }
             };
+            // Capture the peer's identity HERE, synchronously in the accept
+            // loop, before `std::thread::spawn` — not inside the spawned
+            // connection thread. A fire-and-forget CLI process (the default
+            // for `plexi notify`) can exit essentially immediately after
+            // writing its request; a thread-spawn is a real scheduling gap
+            // under load (backlog, CPU contention) that a short-lived peer
+            // can lose the race against. Resolving and walking the ancestry
+            // right here, on the accept thread, removes that gap entirely —
+            // this runs before the OS has even scheduled a new thread.
+            let peer_pid = resolve_socket_peer_pid(&stream);
+            let peer_ancestry = peer_pid.map(capture_peer_ancestry);
             let mailbox = mailbox.clone();
             let subscribe_mailbox = subscribe_mailbox.clone();
             let publish_mailbox = publish_mailbox.clone();
             std::thread::spawn(move || {
-                handle_socket_connection(stream, mailbox, subscribe_mailbox, publish_mailbox);
+                handle_socket_connection(
+                    stream,
+                    mailbox,
+                    subscribe_mailbox,
+                    publish_mailbox,
+                    peer_ancestry,
+                );
             });
         }
     });
@@ -598,11 +668,22 @@ fn handle_socket_connection(
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
     publish_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
+    // The peer's host-established ancestor-pid chain, captured by the
+    // caller (the accept loop in `spawn_socket_listener`) BEFORE this
+    // connection was handed to a spawned thread — not resolved in here.
+    // `None` means the peer credential lookup itself failed (platform
+    // unsupported, or the kernel call errored); a resolved-but-empty or
+    // no-match ancestry is logged separately in `resolve_socket_peer_pane`.
+    // This is the only trustworthy sender identity for
+    // `Notify`/`DismissNotification` — the request body's
+    // `source_context_id`/`source_pane_id` are attacker controlled (any
+    // process that can write to the socket can claim any pane).
+    peer_ancestry: Option<Vec<u32>>,
 ) {
     use std::io::{BufRead, BufReader};
     // A writable clone so a streaming handler can push NDJSON back while the
     // BufReader owns the read side.
-    let write_half = match stream.try_clone() {
+    let mut write_half = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
             log::warn!("pane_ipc: try_clone failed: {e}");
@@ -643,7 +724,7 @@ fn handle_socket_connection(
         }
     }
     // Normal path: first line plus any remaining lines as AppRequests.
-    handle_socket_line(&first, &mailbox);
+    handle_socket_line(&first, &mailbox, peer_ancestry.as_deref(), &mut write_half);
     loop {
         let line = match read_socket_frame(&mut reader) {
             Ok(Some(line)) => line,
@@ -657,8 +738,74 @@ fn handle_socket_connection(
         if line.is_empty() {
             continue;
         }
-        handle_socket_line(&line, &mailbox);
+        handle_socket_line(&line, &mailbox, peer_ancestry.as_deref(), &mut write_half);
     }
+}
+
+/// Walk `peer_pid`'s ancestor chain and collect every visited pid
+/// (including `peer_pid` itself), using `get_pid_ppid`. Bounded to 32 hops
+/// so a lookup failure or a recycled pid mid-walk cannot spin forever;
+/// stops at pid 0/1 or a repeated pid (cycle guard). Called eagerly at
+/// socket-accept time — see the call site in `handle_socket_connection` for
+/// why this cannot be deferred to the UI thread.
+pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> Vec<u32> {
+    const MAX_ANCESTOR_HOPS: u32 = 32;
+
+    let mut ancestry = Vec::new();
+    let mut candidate = peer_pid;
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..MAX_ANCESTOR_HOPS {
+        if candidate == 0 || candidate == 1 || !seen.insert(candidate) {
+            break;
+        }
+        ancestry.push(candidate);
+        match shell::get_pid_ppid(candidate) {
+            Some(ppid) => candidate = ppid,
+            None => break,
+        }
+    }
+    ancestry
+}
+
+/// Resolve the pid of the process on the other end of a connected
+/// `AF_UNIX` `SOCK_STREAM` socket. macOS has no stable-std API for this
+/// (`getsockopt(SOL_LOCAL, LOCAL_PEERPID)`, verified against `libc` 0.2's
+/// apple bindings); Linux exposes it directly via `UnixStream::peer_cred`.
+#[cfg(target_os = "macos")]
+fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc != 0 || pid <= 0 {
+        log::warn!("pane_ipc: LOCAL_PEERPID getsockopt failed (rc={rc})");
+        return None;
+    }
+    Some(pid as u32)
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    match stream.peer_cred() {
+        Ok(cred) => cred.pid.map(|p| p as u32),
+        Err(e) => {
+            log::warn!("pane_ipc: peer_cred failed: {e}");
+            None
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn resolve_socket_peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    None
 }
 
 /// Stream one app's event deliveries to a CLI subscriber as NDJSON. Routes the
@@ -1815,6 +1962,54 @@ impl PlexiApp {
             .iter()
             .enumerate()
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
+    }
+
+    /// Resolve a notify-socket peer's pre-captured ancestor chain
+    /// (`capture_peer_ancestry`) to the pane that owns it, by matching each
+    /// candidate pid against every live terminal pane's shell pid
+    /// (`TerminalBackend::child_pid()`). This is the trustworthy sender
+    /// identity for CLI commands whose provenance controls scope/ownership
+    /// (`Notify`, `DismissNotification`) — the ancestry is host-established
+    /// (captured from the socket's kernel credential at accept time, never
+    /// from the wire), so a match here cannot be forged by the request body.
+    ///
+    /// Deliberately does no OS lookups: the ancestry was already walked
+    /// eagerly, at accept time, while the peer process was still guaranteed
+    /// connected. A short-lived CLI process (the common case — `plexi
+    /// notify` does not wait around) can have already exited by the time
+    /// this runs on the UI thread after the mailbox drains; walking
+    /// `get_pid_ppid` lazily here would then fail on the very first hop and
+    /// misattribute every fire-and-forget notification to "unresolvable".
+    ///
+    /// Known limitation: this does not cross-check process start time, so a
+    /// pid reused between the CLI's fork and the ancestry capture could in
+    /// principle misattribute — `TerminalBackend` exposes no spawn
+    /// timestamp to guard against this, and adding one is out of scope for
+    /// this stint.
+    ///
+    /// Returns `(pane_id, context_id, window_id)` — the same identity shape
+    /// `Notify`/`DismissNotification` need, sourced from the owning window's
+    /// live `context_id`/`window_id` rather than the caller's claim.
+    pub(crate) fn resolve_socket_peer_pane(
+        &self,
+        peer_ancestry: &[u32],
+    ) -> Option<(crate::spatial::tiling::PaneId, u64, u64)> {
+        for &candidate in peer_ancestry {
+            for window in self.windows.iter() {
+                for (pane_id, pane) in window.panes.iter() {
+                    let Some(terminal) = pane.as_terminal() else {
+                        continue;
+                    };
+                    if terminal.backend.child_pid() == candidate {
+                        return Some((*pane_id, window.context_id, window.window_id));
+                    }
+                }
+            }
+        }
+        log::info!(
+            "pane_ipc: peer identity: ancestry {peer_ancestry:?} resolved to no live pane — treating as outside-pane caller"
+        );
+        None
     }
 
     fn complete_wasm_host_effect(
