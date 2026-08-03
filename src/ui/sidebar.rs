@@ -258,17 +258,7 @@ impl PlexiApp {
                             if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
                                 self.renaming_window = None;
                             } else {
-                                let new_name = self.rename_buffer.trim().to_string();
-                                if !new_name.is_empty() {
-                                    self.router.get_mut(i).name = new_name.clone();
-                                    crate::host::event_log::emit(
-                                        crate::host::event_log::HostEvent::ContextRenamed {
-                                            context_id: self.router.get(i).context_id,
-                                            name: new_name,
-                                            timestamp: crate::host::event_log::now_timestamp(),
-                                        },
-                                    );
-                                }
+                                self.rename_context(i, &self.rename_buffer.clone());
                                 self.renaming_window = None;
                             }
                             ui.input_mut(|inp| {
@@ -296,7 +286,7 @@ impl PlexiApp {
             }
 
             // --- Normal row via SidebarRow ---
-            let ctx_name = self.router.get(i).name.clone();
+            let ctx_name = self.router.get(i).name.to_string();
             let badge_count = if is_active {
                 self.visible_notification_count()
             } else {
@@ -436,7 +426,7 @@ impl PlexiApp {
             if self.parked_section_expanded {
                 for &i in &parked_order {
                     let ctx = self.router.get(i);
-                    let ctx_name = ctx.name.clone();
+                    let ctx_name = ctx.name.to_string();
                     let ctx_id = ctx.context_id;
                     let subtitle = Some(ctx.root.display().to_string());
 
@@ -718,7 +708,7 @@ mod tests {
 
         let context_id = 41;
         app.router.push(crate::host::context::Context {
-            name: "return target".to_string(),
+            name: "return target".to_string().into(),
             root: std::path::PathBuf::from("/tmp"),
             description: None,
             context_id,

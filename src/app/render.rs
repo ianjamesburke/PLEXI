@@ -390,7 +390,7 @@ impl PlexiApp {
                     for &(pane_id, child_ctx_id) in &portal_panes {
                         let ctx_entry = self.router.iter().find(|c| c.context_id == child_ctx_id);
                         let ctx_name = ctx_entry
-                            .map(|c| c.name.clone())
+                            .map(|c| c.name.to_string())
                             .unwrap_or_else(|| "(deleted)".to_string());
                         let ctx_description = ctx_entry
                             .and_then(|c| c.description.clone())

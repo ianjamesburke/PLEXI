@@ -1357,7 +1357,7 @@ impl PlexiApp {
             let ctx_name_map: std::collections::HashMap<u64, String> = ws
                 .contexts
                 .iter()
-                .map(|c| (c.context_id, c.name.clone()))
+                .map(|c| (c.context_id, c.name.to_string()))
                 .collect();
             let ctx_desc_map: std::collections::HashMap<u64, String> = ws
                 .contexts
@@ -1821,7 +1821,7 @@ impl PlexiApp {
             ctx: cc.egui_ctx.clone(),
             router: crate::workspace::router::WorkspaceRouter::new(
                 vec![crate::host::context::Context {
-                    name: default_name,
+                    name: crate::host::context::ContextName::custom(default_name),
                     root: default_root,
                     description: default_description,
                     context_id: 1,
@@ -2719,7 +2719,7 @@ impl PlexiApp {
     /// pane (the portal's target subcontext). Renders inline in the sidebar
     /// when visible, otherwise as the centered overlay.
     pub(crate) fn open_context_rename(&mut self, ctx_idx: usize) {
-        self.rename_buffer = self.router.get(ctx_idx).name.clone();
+        self.rename_buffer = self.router.get(ctx_idx).name.to_string();
         self.renaming_window = Some(ctx_idx);
         log::info!(
             "context_rename: opened for context {:?} (idx {ctx_idx})",
@@ -2731,7 +2731,7 @@ impl PlexiApp {
         self.router
             .iter()
             .find(|c| c.context_id == context_id)
-            .map(|c| c.name.clone())
+            .map(|c| c.name.to_string())
             .unwrap_or_default()
     }
 
@@ -2988,6 +2988,7 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("service_app_commands", || {
             self.service_app_commands(ctx)
         });
+        self.resolve_auto_context_names();
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::LogicComplete,
@@ -3227,7 +3228,7 @@ impl eframe::App for PlexiApp {
             let context_label = if window_count > 1 {
                 format!("{} ({},{})", ws.name, context.grid_x, context.grid_y)
             } else {
-                ws.name.clone()
+                ws.name.to_string()
             };
             let title = match pane_name {
                 Some(name) => format!("{} — {}", context_label, name),

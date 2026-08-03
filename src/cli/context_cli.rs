@@ -10,15 +10,12 @@ pub fn context_new_cli(
     direction: &str,
     from: Option<u64>,
 ) -> i32 {
-    let explicit_root = match path {
-        Some(_) => match resolve_path(path) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                eprintln!("{e}");
-                return 1;
-            }
-        },
-        None => None,
+    let explicit_root = match resolve_path(path) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
     };
     // "--parent" with no value resolves to the current context via env.
     // "--parent <name>" passes that name directly.
@@ -53,11 +50,10 @@ pub fn context_new_cli(
             }
         }
     };
-    // Only request a response file when creating a sub-context (--parent set).
-    // Top-level context new stays fire-and-forget to preserve existing behaviour.
-    let response_file = explicit_parent
-        .is_some()
-        .then(|| crate::rpc::response_file("context-new-response", "json"));
+    // Every creation waits for the host's authoritative name. Top-level calls
+    // stay quiet on success; the response only becomes user-visible when an
+    // automatic directory name had to be disambiguated.
+    let response_file = Some(crate::rpc::response_file("context-new-response", "json"));
     // Portal split anchor: explicit --from wins; otherwise the caller's own pane
     // (PLEXI_PANE_ID, set in every Plexi terminal). Only meaningful with --parent.
     let anchor_pane = from.or_else(|| {
@@ -108,10 +104,25 @@ pub fn context_new_cli(
     if rc != 0 {
         return rc;
     }
-    // Poll for response JSON (sub-context only).
+    // Sub-context callers retain their structured response. For top-level
+    // creation, print only the collision note rather than changing the
+    // established quiet success path.
     if let Some(rf) = response_file {
         match super::poll_rpc(&rf, "context-new") {
-            Ok(content) => println!("{content}"),
+            Ok(content) => {
+                let response: serde_json::Value =
+                    serde_json::from_str(&content).unwrap_or_default();
+                if explicit_parent.is_some() {
+                    println!("{content}");
+                } else if let (Some(name), Some(existing)) = (
+                    response["name"].as_str(),
+                    response["auto_name_collision_with"].as_str(),
+                ) {
+                    println!(
+                        "note: context name '{name}' disambiguated from existing context '{existing}'"
+                    );
+                }
+            }
             Err(code) => return code,
         }
     }

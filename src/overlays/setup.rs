@@ -12,7 +12,7 @@ impl PlexiApp {
         let active_context = self.active_window;
         let colors = self.colors;
         let ws_id = self.router.active().context_id;
-        let ws_name = self.router.active().name.clone();
+        let ws_name = self.router.active().name.to_string();
 
         // Anchor the Area at the actual panel position so its bounding rect
         // doesn't overlap the sidebar. Previously anchored at content_rect.min

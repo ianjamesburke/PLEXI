@@ -1122,7 +1122,7 @@ impl PlexiApp {
             .router
             .iter()
             .find(|c| c.context_id == context_id)
-            .map(|c| c.name.clone())
+            .map(|c| c.name.to_string())
             .unwrap_or_default();
 
         let mut items = Vec::new();
@@ -1156,7 +1156,7 @@ impl PlexiApp {
                             .router
                             .iter()
                             .find(|c| c.context_id == p.target_context_id)
-                            .map(|c| c.name.clone())
+                            .map(|c| c.name.to_string())
                             .unwrap_or_else(|| "Portal".to_string());
                         items.push(ContextCloseItem {
                             kind: "Context",

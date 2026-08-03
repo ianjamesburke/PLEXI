@@ -787,7 +787,7 @@ mod tests {
             let child_ctx_id = active_ctx_id + 5000;
             // Register the child context so the portal header shows a real name.
             app.router.push(crate::host::context::Context {
-                name: "Notes".to_string(),
+                name: "Notes".to_string().into(),
                 root: editor_path.clone(),
                 description: Some("Editing notes".to_string()),
                 context_id: child_ctx_id,
@@ -1217,7 +1217,7 @@ mod tests {
             app.sidebar_visible = true;
             app.parked_section_expanded = false;
             let mk = |id: u64, name: &str| crate::host::context::Context {
-                name: name.to_string(),
+                name: name.to_string().into(),
                 root: std::env::temp_dir().join(name),
                 description: None,
                 context_id: id,
@@ -1290,7 +1290,7 @@ mod tests {
             app.parked_section_expanded = false;
             // Add a second active context so there is a drag source + a list.
             app.router.push(crate::host::context::Context {
-                name: "second".to_string(),
+                name: "second".to_string().into(),
                 root: std::env::temp_dir().join("second"),
                 description: None,
                 context_id: 71_001,
@@ -1326,7 +1326,7 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         let child_ctx_id = h.with_app_mut(|app| {
             app.sidebar_visible = true;
-            app.router.get_mut(0).name = "master-one".to_string();
+            app.router.get_mut(0).name = "master-one".to_string().into();
             let parent_ctx_id = app.router.get(0).context_id;
             let child_ctx_id = parent_ctx_id + 9_000;
 
@@ -1334,7 +1334,7 @@ mod tests {
             // masters in router order — the position that used to shift the
             // second master's sidebar number from 2 to 3.
             app.router.push(crate::host::context::Context {
-                name: "child-of-one".to_string(),
+                name: "child-of-one".to_string().into(),
                 root: std::env::temp_dir().join("child-of-one"),
                 description: None,
                 context_id: child_ctx_id,
@@ -1343,7 +1343,7 @@ mod tests {
                 parked: false,
             });
             app.router.push(crate::host::context::Context {
-                name: "master-two".to_string(),
+                name: "master-two".to_string().into(),
                 root: std::env::temp_dir().join("master-two"),
                 description: None,
                 context_id: 72_002,
@@ -1393,7 +1393,7 @@ mod tests {
             let order = app.router.top_level_order();
             let names: Vec<&str> = order
                 .iter()
-                .map(|&i| app.router.get(i).name.as_str())
+                .map(|&i| app.router.get(i).name.displayed())
                 .collect();
             assert_eq!(
                 names,
@@ -1438,6 +1438,23 @@ mod tests {
             assert_eq!(app.router.len(), 1, "first-run is a single context");
         });
         h.save_screenshot("/tmp/plexi-0715-single-context-sidebar.png")
+            .expect("render failed");
+    }
+
+    /// Stint 0388: visual proof that creating a context lands directly in the
+    /// workspace with its auto-derived sidebar label and no rename overlay.
+    #[test]
+    fn screenshot_new_context_without_rename_modal() {
+        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 2.0);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            let before = app.router.len();
+            app.new_context();
+            assert_eq!(app.router.len(), before + 1, "new context created");
+            assert_eq!(app.renaming_window, None, "rename overlay stays closed");
+        });
+        h.run_steps(6);
+        h.save_screenshot("/tmp/plexi-0388-new-context-auto-name.png")
             .expect("render failed");
     }
 
@@ -1514,7 +1531,7 @@ mod tests {
             let context_id = app.next_window_id;
             app.next_window_id += 1;
             app.router.push(crate::host::context::Context {
-                name: name.to_string(),
+                name: name.to_string().into(),
                 root: std::path::PathBuf::from(root),
                 description: None,
                 context_id,
@@ -1576,7 +1593,7 @@ mod tests {
         let (active_context_id, active_window_id) = h.with_app_mut(|app| {
             app.sidebar_visible = true;
             let idx = app.router.active_idx();
-            app.router.get_mut(idx).name = "PLEXI Workspace".to_string();
+            app.router.get_mut(idx).name = "PLEXI Workspace".to_string().into();
             app.router.get_mut(idx).root = std::path::PathBuf::from("/projects/PLEXI");
             (
                 app.router.get(idx).context_id,
@@ -1651,14 +1668,14 @@ mod tests {
     fn context_cycling_visits_master_contexts_only() {
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         let child_ctx_id = h.with_app_mut(|app| {
-            app.router.get_mut(0).name = "master-one".to_string();
+            app.router.get_mut(0).name = "master-one".to_string().into();
             let parent_ctx_id = app.router.get(0).context_id;
             let child_ctx_id = parent_ctx_id + 9_000;
 
             // Subcontext at router index 1, between the two masters — the
             // index the old raw-index walk would have landed on.
             app.router.push(crate::host::context::Context {
-                name: "child-of-one".to_string(),
+                name: "child-of-one".to_string().into(),
                 root: std::env::temp_dir().join("child-of-one"),
                 description: None,
                 context_id: child_ctx_id,
@@ -1667,7 +1684,7 @@ mod tests {
                 parked: false,
             });
             app.router.push(crate::host::context::Context {
-                name: "master-two".to_string(),
+                name: "master-two".to_string().into(),
                 root: std::env::temp_dir().join("master-two"),
                 description: None,
                 context_id: 72_002,
@@ -2690,7 +2707,7 @@ mod tests {
                 win.focused_pane = Some(first_tile);
             }
             let ctx_idx = app.router.active_idx();
-            app.router.get_mut(ctx_idx).name = "Command Palette Metadata".to_string();
+            app.router.get_mut(ctx_idx).name = "Command Palette Metadata".to_string().into();
             let ctx_id = app.router.get(ctx_idx).context_id;
             let extra_a = app.host.alloc_pane_id();
             let extra_b = app.host.alloc_pane_id();
@@ -2759,7 +2776,7 @@ mod tests {
 
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
-            app.router.get_mut(ctx_idx).name = "plexi".to_string();
+            app.router.get_mut(ctx_idx).name = "plexi".to_string().into();
 
             let agent_pane = |app: &mut crate::app::PlexiApp,
                               pane_name: &str,
@@ -2819,7 +2836,7 @@ mod tests {
             let squad_ctx_id = app.next_window_id;
             app.next_window_id += 1;
             app.router.push(crate::host::context::Context {
-                name: "squad-alpha".to_string(),
+                name: "squad-alpha".to_string().into(),
                 root: browser_root.clone(),
                 description: None,
                 context_id: squad_ctx_id,
@@ -3227,13 +3244,11 @@ mod tests {
         );
     }
 
-    /// Empty rename buffer must not overwrite the existing name.
+    /// Empty rename buffer returns the context to an auto-derived name.
     #[test]
-    fn context_rename_ignores_empty_buffer() {
+    fn context_rename_empty_buffer_reverts_to_auto() {
         let mut h = PlexiUiHarness::new();
         h.step();
-
-        let original_name = h.with_app(|app| app.router.active().name.clone());
 
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
@@ -3246,9 +3261,9 @@ mod tests {
         h.step();
 
         let name = h.with_app(|app| app.router.active().name.clone());
-        assert_eq!(
-            name, original_name,
-            "whitespace-only rename must be discarded"
+        assert!(
+            matches!(name, crate::host::context::ContextName::Auto(ref value) if !value.is_empty()),
+            "whitespace-only rename must restore a non-empty automatic name"
         );
     }
 
@@ -3482,7 +3497,7 @@ mod tests {
             app.next_window_id += 1;
             let plexi_root = std::env::temp_dir().join("GitHub/PLEXI");
             app.router.push(crate::host::context::Context {
-                name: "PLEXI".to_string(),
+                name: "PLEXI".to_string().into(),
                 root: plexi_root.clone(),
                 description: None,
                 context_id: plexi_ctx_id,
@@ -3511,7 +3526,7 @@ mod tests {
                 app.next_window_id += 1;
                 let root = std::env::temp_dir().join(dir);
                 app.router.push(crate::host::context::Context {
-                    name: name.to_string(),
+                    name: name.to_string().into(),
                     root: root,
                     description: None,
                     context_id: ctx_id,
@@ -3560,7 +3575,8 @@ mod tests {
             let active_context_idx = app.router.active_idx();
             let active_context_id = app.router.get(active_context_idx).context_id;
             let active_window_id = app.windows[app.active_window].window_id;
-            app.router.get_mut(active_context_idx).name = "PLEXI Workspace".to_string();
+            app.router.get_mut(active_context_idx).name =
+                "PLEXI Workspace".to_string().into();
             app.router.get_mut(active_context_idx).root =
                 std::path::PathBuf::from("/projects/PLEXI");
 
@@ -3571,7 +3587,7 @@ mod tests {
                 // Deliberately longer than a normal workspace title: the
                 // screenshot must exercise truncation without making the
                 // ordinary active title a false-positive fixture.
-                name: "Narrator Video Production Workspace".to_string(),
+                name: "Narrator Video Production Workspace".to_string().into(),
                 root: inactive_root.clone(),
                 description: None,
                 context_id: inactive_context_id,
@@ -3776,7 +3792,7 @@ mod tests {
                     app.next_window_id += 1;
                     let root = std::env::temp_dir().join(dir);
                     app.router.push(crate::host::context::Context {
-                        name: name.to_string(),
+                        name: name.to_string().into(),
                         root: root,
                         description: None,
                         context_id: ctx_id,

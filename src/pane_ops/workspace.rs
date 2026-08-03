@@ -2,7 +2,7 @@
 //! and on-disk workspace save.
 
 use crate::app::PlexiApp;
-use crate::host::context::Window;
+use crate::host::context::{ContextName, Window};
 use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
@@ -297,7 +297,9 @@ impl PlexiApp {
     pub(crate) fn resolve_parent_context(&self, id: Option<u64>, name: &str) -> Option<usize> {
         match id {
             Some(want) => self.router.position(|c| c.context_id == want),
-            None => self.router.position(|c| c.name.eq_ignore_ascii_case(name)),
+            None => self
+                .router
+                .position(|c| c.name.displayed().eq_ignore_ascii_case(name)),
         }
     }
 
@@ -455,7 +457,7 @@ impl PlexiApp {
         // 3. Register the child context + window.
         ensure_context_state_ignore(&path);
         self.router.push(crate::host::context::Context {
-            name: ctx_name,
+            name: ContextName::custom(ctx_name),
             root: path.clone(),
             description: ctx_description,
             context_id: ctx_id,
@@ -491,7 +493,7 @@ impl PlexiApp {
     /// the child's working directory and names the child "Sub-context N".
     pub(crate) fn new_child_context_from_keyboard(&mut self) {
         let parent_ctx_id = self.router.active().context_id;
-        let parent_name = self.router.active().name.clone();
+        let parent_name = self.router.active().name.to_string();
         let parent_path = self.router.active().root.clone();
         let current_win_id = self.windows[self.active_window].window_id;
         let current_focused = self.windows[self.active_window].focused_pane;
@@ -645,7 +647,7 @@ impl PlexiApp {
         self.router.insert_after_subtree(
             parent_ctx_id,
             crate::host::context::Context {
-                name: ctx_name,
+                name: ContextName::custom(ctx_name),
                 root: parent_root.clone(),
                 description: None,
                 context_id: ctx_id,
@@ -685,6 +687,112 @@ impl PlexiApp {
         self.new_context_empty();
     }
 
+    pub(crate) fn auto_context_name_for_path(
+        &self,
+        context_id: u64,
+        path: &std::path::Path,
+    ) -> String {
+        let base = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
+        let existing = self
+            .router
+            .iter()
+            .find(|context| context.context_id != context_id && context.name.displayed() == base);
+        let Some(existing) = existing else {
+            return base;
+        };
+
+        let mut suffix = 2;
+        loop {
+            let candidate = format!("{base} ({suffix})");
+            if !self.router.iter().any(|context| {
+                context.context_id != context_id && context.name.displayed() == candidate
+            }) {
+                log::info!(
+                    "context_auto_name: '{}' collides with context {} — using '{}'",
+                    base,
+                    existing.context_id,
+                    candidate
+                );
+                return candidate;
+            }
+            suffix += 1;
+        }
+    }
+
+    /// Resolve an empty auto name from a focused terminal exactly once. A
+    /// terminal may not have reported its cwd on the creation frame, so this
+    /// runs from the host logic loop until that first report arrives.
+    pub(crate) fn resolve_auto_context_names(&mut self) {
+        let unresolved: Vec<(usize, u64)> = self
+            .router
+            .iter()
+            .enumerate()
+            .filter(|(_, context)| context.name.is_unresolved_auto())
+            .map(|(idx, context)| (idx, context.context_id))
+            .collect();
+        for (idx, context_id) in unresolved {
+            let cwd = self
+                .windows
+                .iter()
+                .find(|window| window.context_id == context_id)
+                .and_then(|window| {
+                    window
+                        .focused_pane
+                        .and_then(|tile_id| window.get_focused_pane_cwd(tile_id))
+                });
+            let Some(cwd) = cwd else {
+                continue;
+            };
+            let name = self.auto_context_name_for_path(context_id, &cwd);
+            self.router.get_mut(idx).name = ContextName::auto(name.clone());
+            log::info!(
+                "context_auto_name: context_id={context_id} cwd={} name={name}",
+                cwd.display()
+            );
+            self.save_workspace();
+        }
+    }
+
+    /// Apply a rename submission. Blank submissions intentionally return the
+    /// label to automatic mode, using the focused cwd (or the context root if
+    /// that terminal is between cwd reports).
+    pub(crate) fn rename_context(&mut self, ctx_idx: usize, submitted: &str) -> String {
+        let context_id = self.router.get(ctx_idx).context_id;
+        let trimmed = submitted.trim();
+        let name = if trimmed.is_empty() {
+            let cwd = self
+                .windows
+                .iter()
+                .find(|window| window.context_id == context_id)
+                .and_then(|window| {
+                    window
+                        .focused_pane
+                        .and_then(|tile_id| window.get_focused_pane_cwd(tile_id))
+                        .or_else(|| Some(window.path.clone()))
+                });
+            match cwd {
+                Some(cwd) => ContextName::auto(self.auto_context_name_for_path(context_id, &cwd)),
+                None => ContextName::auto(String::new()),
+            }
+        } else {
+            ContextName::custom(trimmed)
+        };
+        let displayed = name.displayed().to_owned();
+        self.router.get_mut(ctx_idx).name = name;
+        log::info!("context_rename: context_id={context_id} name={displayed}");
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextRenamed {
+            context_id,
+            name: displayed.clone(),
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
+        self.save_workspace();
+        displayed
+    }
+
     /// Create a new standalone empty context at the home directory.
     fn new_context_empty(&mut self) {
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -695,7 +803,7 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let ctx_name = format!("Context {}", self.router.len() + 1);
+        let ctx_name = self.auto_context_name_for_path(ctx_id, &cwd);
         let context_env = super::create::PaneContextEnv {
             context_id: ctx_id,
             name: ctx_name.clone(),
@@ -730,7 +838,7 @@ impl PlexiApp {
 
         ensure_context_state_ignore(&cwd);
         self.router.push(crate::host::context::Context {
-            name: ctx_name,
+            name: ContextName::auto(String::new()),
             root: cwd,
             description: None,
             context_id: ctx_id,
@@ -744,16 +852,13 @@ impl PlexiApp {
         self.minimap.visible = false;
         self.apply_context_transition_effects();
 
-        let new_ctx_idx = self.router.len() - 1;
-        self.open_context_rename(new_ctx_idx);
         self.mark_workspace_dirty();
         log::info!(
-            "new_context_empty: emitting ContextCreated context_id={ctx_id} name={}",
-            self.rename_buffer
+            "new_context_empty: emitting ContextCreated context_id={ctx_id} name={ctx_name}"
         );
         crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextCreated {
             context_id: ctx_id,
-            name: self.rename_buffer.clone(),
+            name: ctx_name,
             timestamp: crate::host::event_log::now_timestamp(),
         });
     }
@@ -773,7 +878,7 @@ impl PlexiApp {
         // Resolve the identity before spawning: the root pane starts before this
         // context is registered in the router.
         let anchor = crate::host::anchor::Anchor::detect(&path);
-        let (ctx_name, ctx_description) =
+        let (ctx_name, ctx_description, name_is_custom) =
             match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
                 Some(defaults) => {
                     let name = defaults.name.clone().unwrap_or_else(|| {
@@ -786,19 +891,24 @@ impl PlexiApp {
                         name,
                         defaults.description
                     );
-                    (name, defaults.description.clone())
+                    (name, defaults.description.clone(), defaults.name.is_some())
                 }
                 None => {
                     let name = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
-                    (name, None)
+                    (name, None, false)
                 }
             };
+        let context_name = if name_is_custom {
+            ContextName::custom(ctx_name)
+        } else {
+            ContextName::auto(self.auto_context_name_for_path(ctx_id, &path))
+        };
         let context_env = super::create::PaneContextEnv {
             context_id: ctx_id,
-            name: ctx_name.clone(),
+            name: context_name.displayed().to_owned(),
             description: ctx_description.clone().unwrap_or_default(),
             root: Some(path.clone()),
             depth: 0,
@@ -833,7 +943,7 @@ impl PlexiApp {
 
         ensure_context_state_ignore(&path);
         self.router.push(crate::host::context::Context {
-            name: ctx_name,
+            name: context_name,
             root: path,
             description: ctx_description,
             context_id: ctx_id,

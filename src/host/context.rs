@@ -7,6 +7,93 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Whether a context label was derived by Plexi or explicitly chosen by the
+/// user (or a workspace anchor). Auto names are set exactly once from the
+/// first focused-pane cwd that becomes available.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextName {
+    Auto(String),
+    Custom(String),
+}
+
+impl ContextName {
+    pub(crate) fn auto(name: impl Into<String>) -> Self {
+        Self::Auto(name.into())
+    }
+
+    pub(crate) fn custom(name: impl Into<String>) -> Self {
+        Self::Custom(name.into())
+    }
+
+    pub(crate) fn displayed(&self) -> &str {
+        match self {
+            Self::Auto(name) | Self::Custom(name) => name,
+        }
+    }
+
+    pub(crate) fn is_unresolved_auto(&self) -> bool {
+        matches!(self, Self::Auto(name) if name.is_empty())
+    }
+}
+
+impl Default for ContextName {
+    fn default() -> Self {
+        Self::Custom(String::new())
+    }
+}
+
+impl From<String> for ContextName {
+    fn from(name: String) -> Self {
+        Self::Custom(name)
+    }
+}
+
+impl From<&str> for ContextName {
+    fn from(name: &str) -> Self {
+        Self::Custom(name.to_owned())
+    }
+}
+
+impl PartialEq<str> for ContextName {
+    fn eq(&self, other: &str) -> bool {
+        self.displayed() == other
+    }
+}
+
+impl PartialEq<&str> for ContextName {
+    fn eq(&self, other: &&str) -> bool {
+        self.displayed() == *other
+    }
+}
+
+impl std::fmt::Display for ContextName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.displayed())
+    }
+}
+
+impl<'de> Deserialize<'de> for ContextName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Legacy(String),
+            Auto { auto: String },
+            Custom { custom: String },
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Legacy(name) => Ok(Self::Custom(name)),
+            Wire::Auto { auto } => Ok(Self::Auto(auto)),
+            Wire::Custom { custom } => Ok(Self::Custom(custom)),
+        }
+    }
+}
+
 pub(crate) enum WindowMenuAction {
     Rename,
     EditDescription,
@@ -30,7 +117,7 @@ pub(crate) enum WindowMenuAction {
 /// former `SavedContext` and unifies with `HostContext`.
 #[derive(Serialize, Clone, Debug)]
 pub struct Context {
-    pub name: String,
+    pub name: ContextName,
     /// The single directory this context is anchored to. Non-optional: every
     /// context is anchored somewhere (creation defaults to the creating
     /// pane's cwd, or home). New panes in this context open here, context
@@ -70,7 +157,7 @@ impl<'de> Deserialize<'de> for Context {
     {
         #[derive(Deserialize)]
         struct RawContext {
-            name: String,
+            name: ContextName,
             #[serde(default)]
             root: Option<PathBuf>,
             /// Legacy pre-0651 field; folded into `root` on read.
@@ -451,6 +538,21 @@ pub(crate) fn replace_child(container: &mut Container, old: TileId, new: TileId)
 mod tests {
     use super::*;
     use egui::{Pos2, Rect};
+
+    #[test]
+    fn context_name_persists_state_and_reads_legacy_strings_as_custom() {
+        let auto = ContextName::auto("project");
+        let encoded = serde_json::to_string(&auto).expect("serialize auto name");
+        assert_eq!(encoded, r#"{"auto":"project"}"#);
+        assert_eq!(
+            serde_json::from_str::<ContextName>(&encoded).expect("deserialize auto name"),
+            auto
+        );
+        assert_eq!(
+            serde_json::from_str::<ContextName>(r#""legacy""#).expect("deserialize legacy string"),
+            ContextName::custom("legacy")
+        );
+    }
 
     /// 6-pane 2-row × 3-col grid:
     ///     ┌───┬───┬───┐
