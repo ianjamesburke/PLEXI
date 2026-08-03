@@ -76,6 +76,12 @@ const GROUP_STROKE_W_RETURN: f32 = 1.5;
 /// what keeps its tip clear of the dot row.
 const PIN_HALF_W: f32 = 2.5;
 const PIN_H: f32 = 3.0;
+/// Height the pane-state tier always occupies, whether or not this row has
+/// any panes to show pips for. A row with no pips still reserves this box —
+/// it just paints nothing inside it — so every row's pane-state tier
+/// measures the same height. Derived from the same geometry `PipLayout`
+/// uses to size a populated strip, so the two can never drift apart.
+const PIP_STRIP_H: f32 = PANE_DOT_RADIUS * 2.0 + WINDOW_GROUP_PAD_Y * 2.0;
 const _: () = assert!(
     PIN_H > 0.0 && PIN_H < WINDOW_GROUP_PAD_Y,
     "the pin must fit inside the capsule's top padding without touching the dot row"
@@ -252,7 +258,7 @@ impl PipLayout {
 
         Some(Self {
             width: x,
-            height: PANE_DOT_RADIUS * 2.0 + WINDOW_GROUP_PAD_Y * 2.0,
+            height: PIP_STRIP_H,
             groups,
             overflow,
         })
@@ -367,13 +373,14 @@ impl RowGeometry {
                 )
             });
 
-        let state_h = pips
-            .as_ref()
-            .map_or(0.0, |layout| layout.height)
+        // The pane-state tier always reserves PIP_STRIP_H, whether or not
+        // this row has pips to paint in it, so a row without panes measures
+        // identically to one with them.
+        let state_h = PIP_STRIP_H
+            .max(pips.as_ref().map_or(0.0, |layout| layout.height))
             .max(badge_size.map_or(0.0, |size| size.y))
             .max(path_galley.as_ref().map_or(0.0, |g| g.size().y));
-        // A row with no pane state at all is one tier tall, gap included.
-        let state_top = identity_top + identity_h + if state_h > 0.0 { TIER_GAP } else { 0.0 };
+        let state_top = identity_top + identity_h + TIER_GAP;
         let state_center_y = state_top + state_h / 2.0;
         let height = state_top + state_h + ROW_PAD_V;
 
@@ -942,6 +949,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Stint 0732: a row with a pane pip and one with no panes at all must
+    /// measure exactly the same height — the pane-state tier reserves its
+    /// box regardless of whether there is anything to paint inside it.
+    #[test]
+    fn row_height_is_identical_with_and_without_pips() {
+        in_frame(220.0, |ui| {
+            let with_pips = row(true, 0, 1);
+            let without_pips = row(true, 0, 0);
+            let geom_with = RowGeometry::measure(ui, &with_pips, 220.0);
+            let geom_without = RowGeometry::measure(ui, &without_pips, 220.0);
+            assert!(
+                geom_with.pips.is_some(),
+                "setup: this row must actually carry a pip"
+            );
+            assert!(
+                geom_without.pips.is_none(),
+                "setup: this row must actually carry no pips"
+            );
+            assert_eq!(
+                geom_with.rect.height(),
+                geom_without.rect.height(),
+                "row height must not depend on whether pips are present"
+            );
+        });
     }
 
     /// The index number shares the title's optical center, not the whole
