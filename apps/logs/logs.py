@@ -173,6 +173,7 @@ def view():
             value=data["query"],
             placeholder="filter by target or message",
             on_change=SEARCH_INPUT,
+            autofocus=True,
         )
         if data["searching"]
         else TabBar(LEVEL_TAB, LEVELS, active=LEVELS.index(data["filter"]))

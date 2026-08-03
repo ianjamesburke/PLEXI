@@ -1702,6 +1702,11 @@ pub struct LiveWasmPane {
     /// Concatenated text of the last rendered view tree. Lets the headless
     /// scene runner assert on rendered content without re-entering the guest.
     last_text: String,
+    /// Monotonic generation of the tree handed to the renderer. This runtime
+    /// re-evaluates `view()` every frame, so every painted tree is genuinely
+    /// new; the counter is what host-owned edit buffers reconcile against
+    /// (stint 0720).
+    tree_seq: u64,
     /// Runtime-neutral semantics retained from the last committed guest tree.
     semantic_state: crate::host::pane::SemanticPaneState,
     /// egui texture id of the guest surface, registered once into the host's
@@ -1749,6 +1754,7 @@ impl LiveWasmPane {
             pending_init: Some(snapshot),
             error: None,
             last_text: String::new(),
+            tree_seq: 0,
             semantic_state: crate::host::pane::SemanticPaneState::empty("wasm"),
             surface_id: None,
             surface_dims: None,
@@ -2227,6 +2233,7 @@ impl LiveWasmPane {
             },
             None => None,
         };
+        self.tree_seq += 1;
         let result = super::wasm_render::render_ui_tree_with_canvas_fits(
             ui,
             &tree,
@@ -2235,6 +2242,7 @@ impl LiveWasmPane {
             None,
             pending_click,
             Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
+            self.tree_seq,
         );
         match self.inner.apply_render_result(result, now) {
             Ok(true) => {
@@ -3738,13 +3746,17 @@ mod tests {
         assert!(tree_text(&p.view()?).contains("Count: 0"));
 
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let mut tree_seq: u64 = 0;
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(400.0, 300.0))
             .build_ui_state(
                 move |ui, pane| {
                     let tree = pane.view().expect("view");
+                    // This runtime re-evaluates `view()` every frame, so every
+                    // painted tree is a new generation — mirror the live pane.
+                    tree_seq += 1;
                     let result = crate::host::wasm_render::render_ui_tree_with_surface(
-                        ui, &tree, &colors, None, None,
+                        ui, &tree, &colors, None, None, tree_seq,
                     );
                     pane.apply_render_result(result, 0)
                         .expect("apply interactions");
