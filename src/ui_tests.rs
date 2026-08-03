@@ -1759,6 +1759,124 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_with_pane.png");
     }
 
+    /// Visual review for the terminal reflow debounce (stint 0719). The
+    /// debounce holds a resize while the layout is still moving and commits
+    /// once the drag settles, so the pixel risk is a *stranded* commit: a
+    /// terminal left wrapping to its pre-drag width inside a narrower pane.
+    /// Three real terminals are dragged narrower one frame at a time, then
+    /// held — the assertion proves the grid followed, the PNG proves the
+    /// glyphs did too.
+    #[test]
+    fn screenshot_terminals_settle_after_window_drag() {
+        const START_W: f32 = 1200.0;
+        const HEIGHT: f32 = 700.0;
+        let mut h = PlexiUiHarness::new_sized(START_W, HEIGHT);
+        h.step();
+        add_focused_pane(&mut h);
+        h.step();
+        for _ in 0..3 {
+            h.with_app_mut(|app| app.split_focused(false, None, false, false, None));
+            h.run_steps(2);
+        }
+
+        let terminals: Vec<crate::spatial::tiling::PaneId> = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .iter()
+                .filter(|(_, pane)| matches!(pane, Pane::Terminal(_)))
+                .map(|(id, _)| *id)
+                .collect()
+        });
+        assert!(
+            terminals.len() >= 2,
+            "need several real terminals for the drag to be meaningful"
+        );
+        let widest_before = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        seed_wrapping_text(&mut h, &terminals);
+
+        // Drag the window edge in: one frame per intermediate width, exactly
+        // as winit reports a live resize.
+        for step in 1..=6 {
+            h.harness()
+                .set_size(egui::vec2(START_W - step as f32 * 60.0, HEIGHT));
+            h.step();
+        }
+        h.run_steps(4);
+
+        let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        assert!(
+            widest_after < widest_before,
+            "the trailing-edge commit was stranded: terminals still {widest_before} cols \
+             wide after dragging the window narrower (now {widest_after})"
+        );
+
+        h.save_screenshot("/tmp/plexi_terminal_drag_settled.png")
+            .expect("render failed");
+        println!("Screenshot saved to /tmp/plexi_terminal_drag_settled.png");
+    }
+
+    /// Fill each terminal with a line long enough to wrap, so the screenshot
+    /// shows real reflowed content instead of an empty grid. Bounded: an
+    /// unresponsive shell degrades the visual evidence, never the assertions,
+    /// so this returns rather than failing the test.
+    fn seed_wrapping_text(h: &mut PlexiUiHarness, terminals: &[crate::spatial::tiling::PaneId]) {
+        let line = "the quick brown fox jumps over the lazy dog. ".repeat(6);
+        h.with_app_mut(|app| {
+            for id in terminals {
+                if let Some(terminal) = app.windows[app.active_window]
+                    .panes
+                    .get_mut(id)
+                    .and_then(|pane| pane.as_terminal_mut())
+                {
+                    terminal
+                        .backend
+                        .process_command(egui_term::BackendCommand::Write(
+                            line.as_bytes().to_vec(),
+                        ));
+                }
+            }
+        });
+        let deadline =
+            std::time::Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            h.run_steps(2);
+            let painted = h.with_app_mut(|app| {
+                terminals.iter().all(|id| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(id)
+                        .and_then(|pane| pane.as_terminal_mut())
+                        .is_some_and(|terminal| {
+                            terminal
+                                .backend
+                                .capture_lines(4)
+                                .iter()
+                                .any(|row| row.contains("quick brown fox"))
+                        })
+                })
+            });
+            if painted {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Widest committed PTY grid among `terminals`, in columns.
+    fn max_terminal_cols(app: &mut PlexiApp, terminals: &[crate::spatial::tiling::PaneId]) -> u16 {
+        terminals
+            .iter()
+            .filter_map(|id| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(id)
+                    .and_then(|pane| pane.as_terminal_mut())
+                    .map(|terminal| terminal.backend.committed_grid().0)
+            })
+            .max()
+            .expect("terminals must still be open")
+    }
+
     /// Visual review for the diffed WASM tree path (stint 0438): a real
     /// CPython-in-WASM app (breakout) opened and stepped past its first frame,
     /// so frame 2+ arrive as `tree_delta`s the decoder thread reconstructs and

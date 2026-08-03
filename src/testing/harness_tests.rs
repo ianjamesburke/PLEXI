@@ -7076,3 +7076,190 @@ mod sidebar_panel_width_tests {
         );
     }
 }
+
+/// Stint 0719: `TerminalView::ui` asks its backend to resize on every frame,
+/// so an in-flight pane-divider or window-edge drag used to run a full PTY
+/// `SIGWINCH` plus an alacritty grid reflow for *every* visible terminal on
+/// *every* intermediate frame — the reflow cost scales with scrollback, and it
+/// runs synchronously inside `App::ui`, which is where the reported drag
+/// stutter lives. These tests drive real terminal panes through real frames at
+/// changing widths and assert the reflow coalesces to the trailing edge of the
+/// drag instead of firing once per frame.
+#[cfg(test)]
+mod terminal_resize_debounce_tests {
+    use super::*;
+
+    /// Run one frame with the host window at `width`. A drag is simulated as a
+    /// sequence of these: each frame a slightly different window size, exactly
+    /// as winit reports a live resize.
+    fn frame_at_width(h: &mut HostHarness, width: f32) {
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 800.0),
+            )),
+            ..Default::default()
+        });
+    }
+
+    /// Three terminals side by side, so every window-width change changes every
+    /// terminal's column count — the freeze scales with pane count.
+    fn three_side_by_side_terminals(h: &mut HostHarness) -> [PaneId; 3] {
+        let first = h.add_focused_terminal();
+        let second = h
+            .app
+            .split_focused(false, None, false, false, None)
+            .expect("split must create a second terminal");
+        let third = h
+            .app
+            .split_focused(false, None, false, false, None)
+            .expect("split must create a third terminal");
+        [first, second, third]
+    }
+
+    fn commits(h: &mut HostHarness, terminals: &[PaneId]) -> Vec<u64> {
+        terminals
+            .iter()
+            .map(|id| h.terminal_backend(*id).resize_commits())
+            .collect()
+    }
+
+    fn grids(h: &mut HostHarness, terminals: &[PaneId]) -> Vec<(u16, u16)> {
+        terminals
+            .iter()
+            .map(|id| h.terminal_backend(*id).committed_grid())
+            .collect()
+    }
+
+    const START_WIDTH: f32 = 1280.0;
+    const DRAG_STEP: f32 = 40.0;
+
+    /// The core guard: a six-frame drag must produce one reflow per terminal
+    /// (at the trailing edge), not six. It also proves the trailing-edge commit
+    /// is never lost — the terminals end up narrower than they started and then
+    /// stay put.
+    #[test]
+    fn window_drag_coalesces_terminal_reflow_to_the_trailing_edge() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+
+        // Settle at the start width so the initial sizing is not counted.
+        for _ in 0..4 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        let before = commits(&mut h, &terminals);
+        let start_grids = grids(&mut h, &terminals);
+
+        const DRAG_FRAMES: u32 = 6;
+        for step in 1..=DRAG_FRAMES {
+            frame_at_width(&mut h, START_WIDTH - step as f32 * DRAG_STEP);
+        }
+        // The drag has ended; the pointer is up and the size now holds.
+        let final_width = START_WIDTH - DRAG_FRAMES as f32 * DRAG_STEP;
+        for _ in 0..4 {
+            frame_at_width(&mut h, final_width);
+        }
+
+        let after = commits(&mut h, &terminals);
+        let end_grids = grids(&mut h, &terminals);
+        for (i, id) in terminals.iter().enumerate() {
+            let reflows = after[i] - before[i];
+            assert_eq!(
+                reflows, 1,
+                "terminal {id} must reflow once for the whole {DRAG_FRAMES}-frame drag, \
+                 not once per frame (got {reflows})"
+            );
+            assert!(
+                end_grids[i].0 < start_grids[i].0,
+                "terminal {id} must end the drag actually narrower — the trailing-edge \
+                 commit was lost (start {:?}, end {:?})",
+                start_grids[i],
+                end_grids[i]
+            );
+        }
+
+        // Converged: holding the size costs nothing more.
+        for _ in 0..6 {
+            frame_at_width(&mut h, final_width);
+        }
+        assert_eq!(
+            commits(&mut h, &terminals),
+            after,
+            "a terminal at a stable size must not reflow again"
+        );
+        assert_eq!(
+            grids(&mut h, &terminals),
+            end_grids,
+            "a settled terminal's committed grid must not drift"
+        );
+    }
+
+    /// A long drag must not starve: the deferral is capped, so the grid keeps
+    /// tracking a sustained drag at a bounded rate instead of freezing at the
+    /// pre-drag size for the whole gesture.
+    #[test]
+    fn sustained_drag_reflow_is_bounded_and_does_not_starve() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+
+        for _ in 0..4 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        let before = commits(&mut h, &terminals);
+
+        const DRAG_FRAMES: u32 = 24;
+        for step in 1..=DRAG_FRAMES {
+            frame_at_width(&mut h, START_WIDTH - step as f32 * 20.0);
+        }
+        let during = commits(&mut h, &terminals);
+
+        for (i, id) in terminals.iter().enumerate() {
+            let reflows = during[i] - before[i];
+            assert!(
+                reflows >= 1,
+                "terminal {id} must keep tracking a {DRAG_FRAMES}-frame drag, \
+                 not freeze at the pre-drag size (got {reflows} reflows)"
+            );
+            assert!(
+                reflows <= DRAG_FRAMES as u64 / 4,
+                "terminal {id} reflowed {reflows} times across {DRAG_FRAMES} drag frames — \
+                 the per-frame reflow is back"
+            );
+        }
+    }
+
+    /// A single programmatic size change (no drag) must still land promptly. A
+    /// one-frame stability wait is the cost of the debounce; an indefinite
+    /// deferral would be a regression of its own.
+    #[test]
+    fn single_step_resize_commits_within_one_stable_frame() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+
+        for _ in 0..4 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        let before = commits(&mut h, &terminals);
+        let start_grids = grids(&mut h, &terminals);
+
+        // One step, then hold: two frames is the whole budget.
+        frame_at_width(&mut h, START_WIDTH - 200.0);
+        frame_at_width(&mut h, START_WIDTH - 200.0);
+
+        let after = commits(&mut h, &terminals);
+        let end_grids = grids(&mut h, &terminals);
+        for (i, id) in terminals.iter().enumerate() {
+            assert_eq!(
+                after[i] - before[i],
+                1,
+                "terminal {id} must commit a single-step resize within two frames"
+            );
+            assert!(
+                end_grids[i].0 < start_grids[i].0,
+                "terminal {id} must be narrower after the step (start {:?}, end {:?})",
+                start_grids[i],
+                end_grids[i]
+            );
+        }
+    }
+}
