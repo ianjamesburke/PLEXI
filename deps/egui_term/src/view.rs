@@ -247,10 +247,21 @@ impl<'a> TerminalView<'a> {
     }
 
     fn resize(self, layout: &Response) -> Self {
+        // Timed as a whole (stint 0731 drag profiling): process_command
+        // takes self.term.lock() for every command, so this captures lock
+        // contention with the PTY reader thread, not just the reflow math.
+        let timed = crate::diag::span_hook_installed();
+        let start = timed.then(std::time::Instant::now);
         self.backend.process_command(BackendCommand::Resize(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
         ));
+        if let Some(start) = start {
+            crate::diag::span_note(
+                "terminal_resize",
+                start.elapsed().as_nanos() as u64,
+            );
+        }
 
         self
     }

@@ -243,7 +243,7 @@ impl PlexiApp {
                     }),
             )
             .show_inside(ui, |ui| {
-                self.draw_toolbar(ui);
+                crate::platform::ui_profile::time("toolbar", || self.draw_toolbar(ui));
             });
 
         // Separator line under toolbar
@@ -278,7 +278,7 @@ impl PlexiApp {
                         .inner_margin(egui::Margin::same(0)),
                 )
                 .show_inside(ui, |ui| {
-                    self.draw_sidebar(ui);
+                    crate::platform::ui_profile::time("sidebar", || self.draw_sidebar(ui));
                 });
         }
 
@@ -472,7 +472,7 @@ impl PlexiApp {
                 // correctness regression while an extra recompute is not (#2023).
                 // The whole block (including any Context access) is skipped when
                 // the active window has no portal panes.
-                {
+                crate::platform::ui_profile::time("portal_state", || {
                     for &(pid, child_ctx_id) in &portal_panes {
                         let state = crate::host::context_state::ContextState::compute(
                             child_ctx_id,
@@ -493,7 +493,7 @@ impl PlexiApp {
                             portal.context_state = Some(state);
                         }
                     }
-                }
+                });
 
                 // Computed before the mutable borrow of `ctx`: the pane that
                 // owns input this frame (stint 0429). `None` while an overlay
@@ -712,7 +712,9 @@ impl PlexiApp {
                     if zoomed_pane.is_some() {
                         ui.disable();
                     }
-                    ctx.tree.ui(&mut behavior, ui);
+                    crate::platform::ui_profile::time("tile_tree_total", || {
+                        ctx.tree.ui(&mut behavior, ui);
+                    });
                 });
                 log::debug!("[DRAG] tiling: done");
 

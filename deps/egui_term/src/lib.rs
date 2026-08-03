@@ -19,7 +19,7 @@ mod view;
 pub use backend::settings::BackendSettings;
 pub use backend::{BackendCommand, PtyEvent, TerminalBackend, TerminalMode};
 pub use bindings::{Binding, BindingAction, InputKind, KeyboardBinding};
-pub use diag::set_repaint_diag_hook;
+pub use diag::{set_repaint_diag_hook, set_span_hook};
 pub use font::{FontSettings, TerminalFont};
 pub use theme::{ColorPalette, TerminalTheme};
 pub use view::{terminal_widget_id, TerminalView};
