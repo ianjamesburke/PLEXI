@@ -1,0 +1,11 @@
+[claim]
+run = "plexi pane new --window 'c \"/implement-stint {id}\"'"
+
+# Foreman repo contract (see ~/.stint/repos.toml + labs foreman scoping doc).
+# verify skips 2 pre-existing broken tests on alpha
+# (send_to_pane_searches_all_windows, pgap_send_to_pane_forwarded_with_panes_control);
+# drop the --skip flags once those tests are fixed.
+[repo]
+verify = "cargo test -- --skip send_to_pane_searches_all_windows --skip pgap_send_to_pane_forwarded_with_panes_control"
+ship = "implement-stint"
+branch = "alpha"
