@@ -5916,7 +5916,7 @@ mod tests {
             let live_address = live_state_address(&harness, pane_id);
             seed_items(&live_address, &serde_json::json!(["buy milk"]));
 
-            harness.app.save_workspace();
+            harness.app.save_workspace_now();
             let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
             let record = saved
                 .windows

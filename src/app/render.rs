@@ -15,6 +15,16 @@ fn update_check_due(last_update_check: std::time::Instant, now: std::time::Insta
     now.saturating_duration_since(last_update_check) >= crate::cli::updater::CHECK_INTERVAL
 }
 
+/// Debounce window for `mark_workspace_dirty()` → disk flush. Keeps a burst of
+/// workspace-changing calls (drag, resize, rapid pane churn) from each forcing
+/// a synchronous save on the UI thread. `pub(crate)` so `mark_workspace_dirty`
+/// can schedule its delayed wake at the same interval the flush tick checks.
+pub(crate) const WORKSPACE_SAVE_DEBOUNCE_MS: u64 = 1_000;
+
+fn workspace_save_due(last: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(last) >= std::time::Duration::from_millis(WORKSPACE_SAVE_DEBOUNCE_MS)
+}
+
 impl PlexiApp {
     /// Keep app runtime state truthful before serving pane IPC. This lives in
     /// the logic preamble because eframe can skip `ui()` while a host is
@@ -41,7 +51,7 @@ impl PlexiApp {
         if let Some(ctx_path) = crate::config::take_adopted_context_path() {
             log::info!("adopted context path: {}", ctx_path.display());
             self.new_context_at_path(ctx_path);
-            self.save_workspace();
+            self.mark_workspace_dirty();
         }
         #[cfg(target_os = "macos")]
         {
@@ -56,7 +66,7 @@ impl PlexiApp {
                         log::info!("finder_service: opening context for {}", path.display());
                         self.new_context_at_path(path);
                     }
-                    self.save_workspace();
+                    self.mark_workspace_dirty();
                 }
             });
         }
@@ -104,6 +114,12 @@ impl PlexiApp {
                     self.last_update_check = now;
                 }
             }
+            if self.workspace_dirty && workspace_save_due(self.last_workspace_save, now) {
+                self.save_workspace_now();
+                self.workspace_dirty = false;
+                self.last_workspace_save = now;
+                log::debug!("workspace: debounce flush after churn");
+            }
         }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -125,7 +141,9 @@ impl PlexiApp {
             // without terminating the process. Save synchronously, then exit
             // successfully so launchd also treats this as a clean stop.
             log::info!("host: shutdown requested — saving workspace and exiting");
-            self.save_workspace();
+            self.save_workspace_now();
+            self.workspace_dirty = false;
+            log::info!("workspace: synchronous save (shutdown/update-quit)");
             std::process::exit(0);
         }
         if let Some(rx) = &self.update_rx {
@@ -135,7 +153,9 @@ impl PlexiApp {
             }
         }
         if self.update_quit_pending {
-            self.save_workspace();
+            self.save_workspace_now();
+            self.workspace_dirty = false;
+            log::info!("workspace: synchronous save (shutdown/update-quit)");
             log::info!("ui: restarting for update");
             if let Some(bundle) = std::env::current_exe().ok().and_then(|p| {
                 p.ancestors()
@@ -297,7 +317,7 @@ impl PlexiApp {
                                 self.welcome_delete_press_count = 0;
                                 self.welcome_delete_last_press = None;
                                 self.delete_context(ctx_idx);
-                                self.save_workspace();
+                                self.mark_workspace_dirty();
                                 return;
                             }
                         }
@@ -1067,7 +1087,7 @@ impl PlexiApp {
                         }
                         crate::spatial::tiling::TabBarAction::Reorder { from_idx, to_idx } => {
                             if self.reorder_tab(container_tile, from_idx, to_idx) {
-                                self.save_workspace();
+                                self.mark_workspace_dirty();
                             }
                         }
                     }

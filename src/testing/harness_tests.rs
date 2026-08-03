@@ -216,6 +216,12 @@ fn pane_heartbeat_persists_with_pane_state() {
     });
     h.run_frames(1);
 
+    // Workspace saves are debounced off the UI thread (stint 0548); the
+    // heartbeat handler only marks the workspace dirty. Force the flush here
+    // so the test observes deterministic persistence instead of racing the
+    // 1s debounce tick.
+    h.app.save_workspace_now();
+
     let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
     let heartbeat = saved
         .windows

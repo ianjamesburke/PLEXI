@@ -1431,7 +1431,7 @@ impl PlexiApp {
                 let result: Result<serde_json::Value, String> = (|| {
                     if *off {
                         self.pane_heartbeats.remove(pane_id);
-                        self.save_workspace();
+                        self.mark_workspace_dirty();
                         log::info!("pane_heartbeat: pane_id={pane_id} disabled");
                         Ok(serde_json::json!({"ok": true, "heartbeat": null}))
                     } else {
@@ -1462,7 +1462,7 @@ impl PlexiApp {
                                         + std::time::Duration::from_millis(every_ms),
                                 },
                             );
-                            self.save_workspace();
+                            self.mark_workspace_dirty();
                             log::info!(
                                 "pane_heartbeat: pane_id={pane_id} configured every_ms={every_ms} while_idle_only={while_idle_only}"
                             );
@@ -2629,7 +2629,7 @@ impl PlexiApp {
                         write_json_response(rf, response);
                     }
                 }
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
             crate::app_protocol::AppRequest::CreateSubContext {
                 name,
@@ -2756,7 +2756,7 @@ impl PlexiApp {
                         }),
                     );
                 }
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
             crate::app_protocol::AppRequest::FocusContext { root } => {
                 log::warn!(
@@ -2783,7 +2783,7 @@ impl PlexiApp {
                     }
                 }
                 self.set_context_root(root.clone(), *context_id);
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
             crate::app_protocol::AppRequest::SetContextDescription {
                 description,
@@ -2797,7 +2797,7 @@ impl PlexiApp {
                 } else {
                     Some(trimmed)
                 };
-                self.save_workspace();
+                self.mark_workspace_dirty();
             }
             crate::app_protocol::AppRequest::ZoomIntoContext { context_id } => {
                 log::info!("pane_ipc: kind=zoom_into_context context_id={context_id}");
