@@ -51,6 +51,14 @@ pub(crate) struct PendingNotification {
     /// When `Some(t)`, the notification is invisible and exempt from timeout
     /// until `t` has elapsed (snooze). `None` means deliver immediately.
     pub deliver_after: Option<std::time::Instant>,
+    /// Session-only (never persisted — see `PersistedNotification`): whether
+    /// `sender_pane_id` was in view (per `PlexiApp::pane_is_in_view`) as of
+    /// the last frame. Drives the resurface-on-navigation-into-view policy in
+    /// `PlexiApp::resurface_in_view_notifications` — a rising edge (false →
+    /// true) re-opens the modal once; it stays flat while the pane remains in
+    /// view, so an explicit dismissal in that state is final until the pane
+    /// leaves view and returns. Restored notifications always start `false`.
+    pub origin_in_view: bool,
 }
 
 /// Serializable snapshot of a `PendingNotification`. Session-only handles
@@ -189,8 +197,9 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 timeout_secs: p.timeout_secs,
                 on_dismiss: p.on_dismiss,
                 enqueued_at,
-                tombstoned: true,    // source pane is gone
-                deliver_after: None, // snooze is session-only
+                tombstoned: true,      // source pane is gone
+                deliver_after: None,   // snooze is session-only
+                origin_in_view: false, // session-only, re-derived each frame
             })
         })
         .collect();
@@ -313,7 +322,7 @@ impl PlexiApp {
     pub(crate) fn enqueue_notification(
         &mut self,
         source: NotifySource,
-        notification: PendingNotification,
+        mut notification: PendingNotification,
     ) -> bool {
         if !self.notifications_enabled {
             log::info!(
@@ -323,6 +332,12 @@ impl PlexiApp {
             );
             return false;
         }
+
+        // Stamp the arrival-time in-view state so the very act of raising a
+        // notification is never itself counted as a resurface — only a later
+        // transition from out-of-view to in-view fires
+        // `resurface_in_view_notifications`.
+        notification.origin_in_view = self.pane_is_in_view(notification.sender_pane_id);
 
         let notify_id = notification.notify_id.clone();
         let title = notification.title.clone();
@@ -743,5 +758,88 @@ impl PlexiApp {
         }
 
         self.save_notifications();
+    }
+
+    /// True when `pane_id` is a pane a person would actually be looking at
+    /// right now: it sits in the currently-displayed context of the
+    /// currently-focused window. This is a *layout* predicate — it does not
+    /// consult focus, keyboard input, or paint/occlusion state, so it answers
+    /// the same way on a hidden/occluded frame as on a visible one.
+    ///
+    /// `pane_id == 0` (CLI-raised notifications have no origin pane) is
+    /// always out of view — there is no pane to resurface toward.
+    pub(crate) fn pane_is_in_view(&self, pane_id: u64) -> bool {
+        if pane_id == 0 {
+            return false;
+        }
+        let win = &self.windows[self.active_window];
+        if win.context_id != self.router.active().context_id {
+            return false;
+        }
+        if let Some(zoomed_tile) = win.zoomed_pane {
+            // Zoomed fullscreen hides every sibling pane from view — only the
+            // zoomed pane itself counts.
+            return Self::find_pane_in_tile(&win.tree, zoomed_tile) == Some(pane_id);
+        }
+        let Some(root) = win.tree.root else {
+            return false;
+        };
+        crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, root).contains(&pane_id)
+    }
+
+    /// Resurface any notification whose origin pane has just come into view
+    /// (a rising edge on `pane_is_in_view`). Called once per frame from
+    /// `update_preamble`, which runs from `App::logic` — this must never move
+    /// into a `ui`-only path, or a hidden/occluded host would never resurface
+    /// a notification for a pane the user just navigated to.
+    ///
+    /// One resurface per navigation-into-view: `origin_in_view` is the policy
+    /// state itself, not just a cache. It only re-fires after the pane leaves
+    /// view (edge goes low) and returns (edge goes high again), so an
+    /// explicit dismissal while the pane stays in view is final.
+    pub(crate) fn resurface_in_view_notifications(&mut self) {
+        // Read-only pass first — collecting rising-edge ids avoids mutating
+        // `self.pending_notifications` while borrowing `self` immutably for
+        // `pane_is_in_view` / `notification_may_interrupt`.
+        let mut rising_edges: Vec<(String, u64, bool)> = Vec::new();
+        for n in &self.pending_notifications {
+            let in_view = self.pane_is_in_view(n.sender_pane_id);
+            let rose = in_view && !n.origin_in_view;
+            rising_edges.push((n.notify_id.clone(), n.sender_pane_id, rose));
+        }
+
+        let active_window_id = self.windows[self.active_window].window_id;
+        let active_context_id = self.router.active().context_id;
+
+        for (notify_id, sender_pane_id, rose) in rising_edges {
+            let Some(pos) = self
+                .pending_notifications
+                .iter()
+                .position(|n| n.notify_id == notify_id)
+            else {
+                continue;
+            };
+            // Always track the latest in-view state, whether or not this pass
+            // fires a resurface.
+            let in_view = self.pane_is_in_view(sender_pane_id);
+            self.pending_notifications[pos].origin_in_view = in_view;
+
+            if !rose {
+                continue;
+            }
+            if !self.notification_may_interrupt(&self.pending_notifications[pos]) {
+                continue;
+            }
+
+            self.show_notification_modal = true;
+            if self.current_notify_id.is_none() {
+                self.current_notify_id = Some(notify_id.clone());
+            }
+
+            log::info!(
+                "notify:resurface: notify_id={notify_id} title={:?} origin_pane={sender_pane_id} window_id={active_window_id} context_id={active_context_id}",
+                self.pending_notifications[pos].title
+            );
+        }
     }
 }
