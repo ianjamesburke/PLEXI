@@ -2138,7 +2138,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
     let child_ctx_id = 77001u64;
     let child_win_id = 77002u64;
     h.app.router.push(crate::host::context::Context {
-        name: "child".to_string(),
+        name: "child".to_string().into(),
         root: std::path::PathBuf::from("/tmp/harness_2023_child"),
         description: None,
         context_id: child_ctx_id,
@@ -5270,7 +5270,7 @@ mod routine_firing {
     fn root_default_context(h: &mut HostHarness, root: &std::path::Path) {
         let ctx = h.app.router.get_mut(0);
         ctx.root = root.to_path_buf();
-        ctx.name = "main".to_string();
+        ctx.name = "main".to_string().into();
     }
 
     /// Insert a builtin app pane (rooted at `root`, never a real machine dir)
@@ -5328,7 +5328,7 @@ mod routine_firing {
         let win_idx = h.app.windows.len() - 1;
         add_focused_app_pane(h, win_idx, root);
         h.app.router.push(Context {
-            name: name.to_string(),
+            name: name.to_string().into(),
             // Anchored beside (not at) the routines root: tick_scheduler
             // scans every context root, and this context must not load them.
             root: root.join("no-routines-anchor"),

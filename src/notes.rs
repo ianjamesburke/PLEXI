@@ -309,7 +309,7 @@ pub(crate) fn context_notes_scopes(
         }
         scopes.push(ContextNotesScope {
             dir: context_notes_dir(root),
-            label: Some(ctx.name.clone()),
+            label: Some(ctx.name.to_string()),
         });
     }
     scopes
@@ -816,7 +816,7 @@ mod tests {
 
     fn ctx(id: u64, name: &str, root: &str, depth: u32) -> Context {
         Context {
-            name: name.to_string(),
+            name: name.to_string().into(),
             root: PathBuf::from(root),
             description: None,
             context_id: id,

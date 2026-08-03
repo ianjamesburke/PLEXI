@@ -60,7 +60,7 @@ impl ContextState {
         let label = contexts
             .iter()
             .find(|c| c.context_id == context_id)
-            .map(|c| c.name.clone())
+            .map(|c| c.name.to_string())
             .unwrap_or_else(|| "(unknown)".to_string());
 
         let mut pane_summaries = Vec::new();
@@ -164,7 +164,7 @@ mod tests {
 
     fn make_context(id: u64, name: &str, parent: Option<u64>) -> Context {
         Context {
-            name: name.to_string(),
+            name: name.to_string().into(),
             root: PathBuf::from("/tmp"),
             description: None,
             context_id: id,

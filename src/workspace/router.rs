@@ -329,7 +329,7 @@ mod tests {
 
     fn make_ctx(id: u64, parent_id: Option<u64>, depth: u32) -> Context {
         Context {
-            name: format!("ctx{id}"),
+            name: format!("ctx{id}").into(),
             root: PathBuf::from("/tmp"),
             description: None,
             context_id: id,

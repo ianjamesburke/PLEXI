@@ -630,7 +630,7 @@ impl PlexiApp {
         let context_names: Vec<(u64, String)> = self
             .router
             .iter()
-            .map(|c| (c.context_id, c.name.clone()))
+            .map(|c| (c.context_id, c.name.to_string()))
             .collect();
 
         // ── Agent panes (every window, every context) ───────────────────────
@@ -689,7 +689,7 @@ impl PlexiApp {
                 };
                 contexts.push(CtxInfo {
                     ctx_id: ctx_meta.context_id,
-                    name: ctx_meta.name.clone(),
+                    name: ctx_meta.name.to_string(),
                     win_idx,
                     window_id: win.window_id,
                 });
@@ -2280,7 +2280,7 @@ mod tests {
         );
         h.app.windows.push(target);
         h.app.router.push(crate::host::context::Context {
-            name: "squad-alpha".to_string(),
+            name: "squad-alpha".to_string().into(),
             root: std::env::temp_dir(),
             description: None,
             context_id: 7,

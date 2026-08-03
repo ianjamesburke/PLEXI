@@ -641,17 +641,7 @@ impl PlexiApp {
         if cancel {
             self.renaming_window = None;
         } else if commit {
-            let new_name = self.rename_buffer.trim().to_string();
-            if !new_name.is_empty() {
-                self.router.get_mut(ctx_idx).name = new_name;
-                let context_id = self.router.get(ctx_idx).context_id;
-                let name = self.router.get(ctx_idx).name.clone();
-                crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextRenamed {
-                    context_id,
-                    name,
-                    timestamp: crate::host::event_log::now_timestamp(),
-                });
-            }
+            self.rename_context(ctx_idx, &self.rename_buffer.clone());
             self.renaming_window = None;
         }
     }
@@ -675,7 +665,7 @@ impl PlexiApp {
         });
 
         let colors = self.colors;
-        let ctx_name = self.router.get(ctx_idx).name.clone();
+        let ctx_name = self.router.get(ctx_idx).name.to_string();
         let title = format!("Description for \"{ctx_name}\"");
         crate::ui::overlay::ModalShell::centered("edit_description_overlay")
             .title(&title)

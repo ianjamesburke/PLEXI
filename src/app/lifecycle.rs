@@ -238,7 +238,7 @@ impl PlexiApp {
                         .router
                         .iter()
                         .find(|ctx| ctx.context_id == win.context_id)
-                        .map(|ctx| ctx.name.clone())
+                        .map(|ctx| ctx.name.to_string())
                         .unwrap_or_default();
                     for (pane_id, pane) in &win.panes {
                         // Only emit panes that have a corresponding tile in the tree.
@@ -2519,6 +2519,15 @@ impl PlexiApp {
                     anchor_pane
                 );
                 let mut ctx_ok = true;
+                let requested_auto_name = name
+                    .is_none()
+                    .then(|| {
+                        root.as_ref().and_then(|path| {
+                            path.file_name()
+                                .map(|component| component.to_string_lossy().into_owned())
+                        })
+                    })
+                    .flatten();
                 // Track which context was active before and which context was just created.
                 // Windows must be placed in the new context regardless of focus state.
                 let orig_ctx_id = self.router.active().context_id;
@@ -2548,9 +2557,15 @@ impl PlexiApp {
                         log::warn!("pane_ipc: create_context with parent failed: {e}");
                         ctx_ok = false;
                     } else {
+                        let idx = self.router.len() - 1;
                         if let Some(n) = name {
-                            let idx = self.router.len() - 1;
-                            self.router.get_mut(idx).name = n.clone();
+                            self.router.get_mut(idx).name =
+                                crate::host::context::ContextName::custom(n);
+                        } else if let Some(path) = root {
+                            let context_id = self.router.get(idx).context_id;
+                            let auto_name = self.auto_context_name_for_path(context_id, path);
+                            self.router.get_mut(idx).name =
+                                crate::host::context::ContextName::auto(auto_name);
                         }
                         let new_ctx_idx = self.router.len() - 1;
                         new_ctx_id = self.router.get(new_ctx_idx).context_id;
@@ -2575,7 +2590,8 @@ impl PlexiApp {
                     }
                     if let Some(n) = name {
                         let idx = self.router.len() - 1;
-                        self.router.get_mut(idx).name = n.clone();
+                        self.router.get_mut(idx).name =
+                            crate::host::context::ContextName::custom(n);
                     }
                     new_ctx_id = self.router.get(self.router.len() - 1).context_id;
                 }
@@ -2623,9 +2639,24 @@ impl PlexiApp {
                                 })
                             })
                             .collect();
+                        let created_context = self
+                            .router
+                            .iter()
+                            .find(|context| context.context_id == new_ctx_id);
+                        let created_name = created_context
+                            .map(|context| context.name.displayed())
+                            .unwrap_or_default();
+                        let auto_name_collision_with = created_context
+                            .filter(|context| {
+                                matches!(context.name, crate::host::context::ContextName::Auto(_))
+                            })
+                            .and(requested_auto_name.as_deref())
+                            .filter(|base| created_name != *base);
                         let response = serde_json::json!({
                             "context_id": new_ctx_id,
                             "windows": windows_info,
+                            "name": created_name,
+                            "auto_name_collision_with": auto_name_collision_with,
                         });
                         write_json_response(rf, response);
                     }

@@ -154,7 +154,7 @@ fn new_child_context_does_not_adopt_focused_pane() {
 
     app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
         None,
-        parent_name.clone(),
+        parent_name.to_string(),
         std::path::PathBuf::from("/tmp/no_adopt"),
         true,
         false,
@@ -263,7 +263,7 @@ fn new_child_context_anchor_pane_overrides_focused() {
 
     app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
         None,
-        parent_name.clone(),
+        parent_name.to_string(),
         std::path::PathBuf::from("/tmp/anchor_pane"),
         true,
         false,
@@ -318,7 +318,7 @@ fn create_context_ipc_anchor_pane_places_portal() {
     let tile_b = h.app.windows[0].tree.tiles.find_pane(&pane_b).unwrap();
     h.app.windows[0].focused_pane = Some(tile_a);
     let parent_id = h.app.router.active().context_id;
-    let parent_name = h.app.router.active().name.clone();
+    let parent_name = h.app.router.active().name.to_string();
 
     let payload = serde_json::json!({
         "type": "create_context",
@@ -379,7 +379,7 @@ fn new_child_context_unknown_anchor_falls_back_to_focused() {
 
     app.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
         None,
-        parent_name.clone(),
+        parent_name.to_string(),
         std::path::PathBuf::from("/tmp/anchor_missing"),
         true,
         false,
@@ -568,7 +568,7 @@ fn depth_four_chain_has_portal_tiles() {
 
     // Rename the initial context to "Root" for predictability.
     let root_idx = app.router.active_idx();
-    app.router.get_mut(root_idx).name = "Root".to_string();
+    app.router.get_mut(root_idx).name = "Root".to_string().into();
 
     let names = ["A", "B", "C", "D"];
     let mut parent_name = "Root".to_string();
@@ -589,7 +589,7 @@ fn depth_four_chain_has_portal_tiles() {
             break;
         }
         let new_idx = app.router.len() - 1;
-        app.router.get_mut(new_idx).name = child.to_string();
+        app.router.get_mut(new_idx).name = child.to_string().into();
         chain_ids.push(app.router.get(new_idx).context_id);
         parent_name = child.to_string();
     }
@@ -639,7 +639,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
     let child_id = 9901u64;
     let child_win_id = 9902u64;
     app.router.push(crate::host::context::Context {
-        name: "Child".to_string(),
+        name: "Child".to_string().into(),
         root: std::path::PathBuf::from("/tmp/child_1854"),
         description: None,
         context_id: child_id,
@@ -717,7 +717,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
     let root_idx = app.router.active_idx();
-    app.router.get_mut(root_idx).name = "Root".to_string();
+    app.router.get_mut(root_idx).name = "Root".to_string().into();
     let root_id = app.router.active().context_id;
 
     // Manually insert child context A and grandchild B without PTY.
@@ -738,7 +738,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     );
 
     app.router.push(crate::host::context::Context {
-        name: "A".to_string(),
+        name: "A".to_string().into(),
         root: std::path::PathBuf::from("/tmp/a"),
         description: None,
         context_id: a_id,
@@ -747,7 +747,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
         parked: false,
     });
     app.router.push(crate::host::context::Context {
-        name: "B".to_string(),
+        name: "B".to_string().into(),
         root: std::path::PathBuf::from("/tmp/b"),
         description: None,
         context_id: b_id,
@@ -901,14 +901,14 @@ fn delete_context_refuses_cascade_that_would_empty_router() {
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
     let root_idx = app.router.active_idx();
-    app.router.get_mut(root_idx).name = "Root".to_string();
+    app.router.get_mut(root_idx).name = "Root".to_string().into();
     let root_id = app.router.active().context_id;
 
     let child_id = 9101u64;
     let grandchild_id = 9102u64;
 
     app.router.push(crate::host::context::Context {
-        name: "Child".to_string(),
+        name: "Child".to_string().into(),
         root: std::path::PathBuf::from("/tmp/child"),
         description: None,
         context_id: child_id,
@@ -917,7 +917,7 @@ fn delete_context_refuses_cascade_that_would_empty_router() {
         parked: false,
     });
     app.router.push(crate::host::context::Context {
-        name: "Grandchild".to_string(),
+        name: "Grandchild".to_string().into(),
         root: std::path::PathBuf::from("/tmp/grandchild"),
         description: None,
         context_id: grandchild_id,
@@ -955,7 +955,7 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
     let root_idx = app.router.active_idx();
-    app.router.get_mut(root_idx).name = "Root".to_string();
+    app.router.get_mut(root_idx).name = "Root".to_string().into();
     let root_id = app.router.active().context_id;
 
     let a_id = 9201u64;
@@ -963,7 +963,7 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
     let sibling_id = 9203u64;
 
     app.router.push(crate::host::context::Context {
-        name: "A".to_string(),
+        name: "A".to_string().into(),
         root: std::path::PathBuf::from("/tmp/a"),
         description: None,
         context_id: a_id,
@@ -972,7 +972,7 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
         parked: false,
     });
     app.router.push(crate::host::context::Context {
-        name: "B".to_string(),
+        name: "B".to_string().into(),
         root: std::path::PathBuf::from("/tmp/b"),
         description: None,
         context_id: b_id,
@@ -981,7 +981,7 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
         parked: false,
     });
     app.router.push(crate::host::context::Context {
-        name: "Sibling".to_string(),
+        name: "Sibling".to_string().into(),
         root: std::path::PathBuf::from("/tmp/sibling"),
         description: None,
         context_id: sibling_id,
@@ -1204,12 +1204,96 @@ fn new_context_creates_top_level_empty_context() {
         "original pane still present"
     );
 
-    // Inline rename was opened for the new context.
+    // New contexts are immediately usable; the rename overlay is strictly
+    // user-initiated now.
     assert_eq!(
-        app.renaming_window,
-        Some(app.router.len() - 1),
-        "inline rename opened for new context"
+        app.renaming_window, None,
+        "new context must not open a rename overlay"
     );
+    assert!(matches!(
+        new_ctx.name,
+        crate::host::context::ContextName::Auto(_)
+    ));
+}
+
+#[test]
+fn context_rename_switches_between_custom_and_auto_name() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    app.rename_context(0, "Manual workspace");
+    assert!(matches!(
+        app.router.active().name,
+        crate::host::context::ContextName::Custom(ref name) if name == "Manual workspace"
+    ));
+
+    app.rename_context(0, "  ");
+    assert!(matches!(
+        app.router.active().name,
+        crate::host::context::ContextName::Auto(ref name) if !name.is_empty()
+    ));
+}
+
+#[test]
+fn unresolved_auto_name_uses_first_focused_pane_cwd_then_freezes() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let context_idx = app.router.active_idx();
+    let context_id = app.router.active().context_id;
+    app.router.get_mut(context_idx).name = crate::host::context::ContextName::auto("");
+    let pane_id = app.host.alloc_pane_id();
+
+    let window = app
+        .windows
+        .iter_mut()
+        .find(|window| window.context_id == context_id)
+        .expect("active context window");
+    let tile_id = window.tree.tiles.insert_pane(pane_id);
+    window.focused_pane = Some(tile_id);
+    let mut pane = test_app_pane(pane_id);
+    pane.as_app_mut().expect("app pane").workspace_root =
+        std::path::PathBuf::from("/projects/first-project");
+    window.panes.insert(pane_id, pane);
+
+    app.resolve_auto_context_names();
+    assert_eq!(app.router.active().name.displayed(), "first-project");
+
+    app.windows
+        .iter_mut()
+        .find(|window| window.context_id == context_id)
+        .and_then(|window| window.panes.get_mut(&pane_id))
+        .and_then(|pane| pane.as_app_mut())
+        .expect("focused app pane")
+        .workspace_root = std::path::PathBuf::from("/projects/later-project");
+    app.resolve_auto_context_names();
+
+    assert_eq!(app.router.active().name.displayed(), "first-project");
+}
+
+#[test]
+fn contexts_with_matching_auto_names_are_disambiguated() {
+    let mut h = crate::testing::HostHarness::new();
+    let left = tempfile::tempdir().expect("left root");
+    let right = tempfile::tempdir().expect("right root");
+    let first = left.path().join("project");
+    let second = right.path().join("project");
+    std::fs::create_dir(&first).expect("first project");
+    std::fs::create_dir(&second).expect("second project");
+
+    let before = h.app.router.len();
+    h.app.new_context_at_path(first);
+    if h.app.router.len() == before {
+        return; // PTY unavailable in this test environment.
+    }
+    h.app.new_context_at_path(second);
+    if h.app.router.len() == before + 1 {
+        return; // PTY became unavailable between the two requests.
+    }
+
+    assert_eq!(h.app.router.get(before).name.displayed(), "project");
+    assert_eq!(h.app.router.get(before + 1).name.displayed(), "project (2)");
 }
 
 /// Regression for stint 0607: a top-level context's root PTY must receive the
@@ -1221,6 +1305,7 @@ fn new_context_root_pty_env_uses_its_own_context_identity() {
     let previous_context_id = h.app.router.active().context_id;
 
     h.app.new_context();
+    h.app.resolve_auto_context_names();
 
     let new_context = h.app.router.active().clone();
     if new_context.context_id == previous_context_id {
@@ -1242,9 +1327,10 @@ fn new_context_root_pty_env_uses_its_own_context_identity() {
         terminal.spawn_env.get("PLEXI_CONTEXT_ID"),
         Some(&new_context.context_id.to_string())
     );
+    let new_context_name = new_context.name.to_string();
     assert_eq!(
         terminal.spawn_env.get("PLEXI_CONTEXT_NAME"),
-        Some(&new_context.name)
+        Some(&new_context_name)
     );
 }
 
@@ -1287,7 +1373,7 @@ fn delete_context_collapses_empty_portal_window() {
     let child_id = 77710u64;
     let child_win_id = 77711u64;
     app.router.push(crate::host::context::Context {
-        name: "Child2029".to_string(),
+        name: "Child2029".to_string().into(),
         root: std::path::PathBuf::from("/tmp/test_2029_child"),
         description: None,
         context_id: child_id,
@@ -1408,7 +1494,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
     let child_id = 88810u64;
     let child_win_id = 88811u64;
     app.router.push(crate::host::context::Context {
-        name: "ChildEdge".to_string(),
+        name: "ChildEdge".to_string().into(),
         root: std::path::PathBuf::from("/tmp/test_2029_edge_child"),
         description: None,
         context_id: child_id,
@@ -1511,7 +1597,7 @@ fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
 
 fn test_context(id: u64, parent_id: u64, name: &str) -> crate::host::context::Context {
     crate::host::context::Context {
-        name: name.to_string(),
+        name: name.to_string().into(),
         root: std::path::PathBuf::from(format!("/tmp/{name}")),
         description: None,
         context_id: id,
@@ -2003,7 +2089,7 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
     let root_id = app.router.active().context_id;
     let child_id = 7701u64;
     app.router.push(crate::host::context::Context {
-        name: "Child".to_string(),
+        name: "Child".to_string().into(),
         root: std::path::PathBuf::from("/tmp/child_rename"),
         description: None,
         context_id: child_id,
@@ -2681,7 +2767,7 @@ fn resolve_parent_context_prefers_id_over_duplicate_name() {
     let name = app.router.active().name.clone();
 
     let by_id = app
-        .resolve_parent_context(Some(duplicate_id), &name)
+        .resolve_parent_context(Some(duplicate_id), name.displayed())
         .expect("id must resolve");
     assert_eq!(
         app.router.get(by_id).context_id,
@@ -2691,7 +2777,7 @@ fn resolve_parent_context_prefers_id_over_duplicate_name() {
 
     // No id → first name match, the historical behaviour.
     let by_name = app
-        .resolve_parent_context(None, &name)
+        .resolve_parent_context(None, name.displayed())
         .expect("name must resolve");
     assert_eq!(app.router.get(by_name).context_id, first_id);
 
@@ -2699,7 +2785,7 @@ fn resolve_parent_context_prefers_id_over_duplicate_name() {
     // deleted; resolving its name would silently attach the child to whichever
     // unrelated context happens to share it.
     assert_eq!(
-        app.resolve_parent_context(Some(999_999), &name),
+        app.resolve_parent_context(Some(999_999), name.displayed()),
         None,
         "an id naming no live context must fail, not guess by name"
     );
@@ -3021,7 +3107,7 @@ fn perf_gate_delete_context_does_not_block_ui_thread() {
         let win_id = 9_200 + i;
         let pane_id = 9_300 + i;
         app.router.push(crate::host::context::Context {
-            name: format!("child-{i}"),
+            name: format!("child-{i}").into(),
             root: std::path::PathBuf::from(format!("/tmp/perf-gate-delete-context-{i}")),
             description: None,
             context_id: ctx_id,

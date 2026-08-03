@@ -106,7 +106,7 @@ pub enum Action {
     /// Create a new window to the right of the active one on the same
     /// grid row. Bound to Cmd+N.
     NewPageRight,
-    /// Create a new context (sidebar item) and immediately open the rename modal.
+    /// Create a new context (sidebar item) with an automatic cwd-derived name.
     /// Bound to Cmd+Shift+N.
     NewContext,
     /// Toggle the minimap overlay. Bound to Cmd+Shift+M.

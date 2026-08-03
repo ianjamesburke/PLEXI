@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn context_serde_round_trip() {
         let ctx = Context {
-            name: "dev".to_string(),
+            name: "dev".to_string().into(),
             root: PathBuf::from("/projects/dev/src"),
             description: Some("main workspace".to_string()),
             context_id: 42,
