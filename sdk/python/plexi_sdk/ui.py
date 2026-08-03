@@ -922,6 +922,31 @@ class Skeleton(Component):
 
 
 @dataclass
+class Pending(Component):
+    """Declarative loading region: renders `placeholder` while `active`,
+    otherwise `child`. One call site per pending region -- never thread a
+    loading boolean through multiple view branches.
+
+    Tree-mode counterpart of the canvas-mode `loading_pill`.
+    """
+    active: bool
+    child: Component
+    placeholder: Component
+
+    def __post_init__(self) -> None:
+        for name, value in (("child", self.child), ("placeholder", self.placeholder)):
+            if not isinstance(value, Component):
+                raise TypeError(
+                    f"Pending {name} must be a Component, got {type(value).__name__}. "
+                    "Example: Pending(active=data['loading'], child=Text(...), "
+                    "placeholder=Skeleton(rows=5))"
+                )
+
+    def to_node(self) -> "dict | None":
+        return (self.placeholder if self.active else self.child).to_node()
+
+
+@dataclass
 class Modal(Component):
     node_id: str
     title: str
@@ -1771,7 +1796,12 @@ import time as _ct_time  # noqa: E402  # `time` collides with some example apps'
 
 
 def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
-    """Render a small spinner+label pill at (x, y). Returns rendered width.
+    """Canvas-mode only: render a small spinner+label pill at (x, y).
+    Returns rendered width.
+
+    For a declarative tree (`view()` returning a component tree), use
+    `Pending` instead -- it is the tree-mode equivalent of this
+    stale-while-revalidate pattern.
 
     The pill uses host-measured `badge()` rendering (so widths are
     correct), with a wall-clock-driven Braille spinner glyph that ticks
@@ -2589,104 +2619,6 @@ class ButtonRow(Component):
                 "on_click": self.id, "disabled": False}
 
 
-# ── ListView row helpers ───────────────────────────────────────────────────────
-
-@dataclass
-class LeadingBadge:
-    """Badge leading slot for :class:`ListRow`.
-
-    Renders a pill badge with ``label`` text and the given ``color``.
-    """
-    label: str
-    color: str = "accent"
-
-    def to_dict(self) -> dict:
-        return {"variant": "badge", "label": self.label, "color": self.color}
-
-
-@dataclass
-class LeadingAvatar:
-    """Circular avatar leading slot for :class:`ListRow`.
-
-    ``handle`` must be a UUID returned by ``emit.load_image(url)``.
-    """
-    handle: str
-
-    def to_dict(self) -> dict:
-        return {"variant": "avatar", "handle": self.handle}
-
-
-@dataclass
-class LeadingIcon:
-    """Text/emoji icon leading slot for :class:`ListRow`."""
-    name: str
-
-    def to_dict(self) -> dict:
-        return {"variant": "icon", "name": self.name}
-
-
-@dataclass
-class RowChip:
-    """A small colored chip label on a :class:`ListRow`."""
-    label: str
-    color: str = "accent"
-
-    def to_dict(self) -> dict:
-        return {"label": self.label, "color": self.color}
-
-
-@dataclass
-class ListRow:
-    """Typed row descriptor for list views.
-
-    Example::
-
-        rows = [
-            ListRow(
-                id=f"issue-{issue['number']}",
-                leading=LeadingBadge(f"#{issue['number']}", color="accent"),
-                primary=issue["title"],
-                chips=[RowChip(lbl["name"], _label_color(lbl["name"])) for lbl in issue["labels"][:2]],
-            ).to_dict()
-            for issue in self._issues
-        ]
-        ctx.list_view("issues", rows, selected=self._sel, y=float(HEADER_H))
-    """
-    id: str
-    primary: str
-    leading: "LeadingBadge | LeadingAvatar | LeadingIcon | None" = None
-    secondary: "str | None" = None
-    chips: "list[RowChip]" = field(default_factory=list)
-    trailing: "str | None" = None
-
-    def __post_init__(self):
-        if self.leading is not None and not isinstance(
-            self.leading, (LeadingBadge, LeadingAvatar, LeadingIcon)
-        ):
-            raise TypeError(
-                f"ListRow leading must be LeadingBadge, LeadingAvatar, LeadingIcon, or None, "
-                f"got {type(self.leading).__name__}. "
-                f"Example: ListRow(id='x', primary='text', leading=LeadingBadge('label'))"
-            )
-        for i, chip in enumerate(self.chips):
-            if not isinstance(chip, RowChip):
-                raise TypeError(
-                    f"ListRow chips[{i}] must be a RowChip, got {type(chip).__name__}. "
-                    f"Example: chips=[RowChip('tag', 'accent')]"
-                )
-
-    def to_dict(self) -> dict:
-        return {
-            "type": "row",
-            "id": self.id,
-            "leading": self.leading.to_dict() if self.leading else {"variant": "none"},
-            "primary": self.primary,
-            "secondary": self.secondary,
-            "chips": [c.to_dict() for c in self.chips],
-            "trailing": self.trailing,
-        }
-
-
 # ── UiNode component tree (PGAP v3.5) ─────────────────────────────────────
 #
 # These classes produce ``dict`` values matching the ``UiNode`` wire format
@@ -2906,7 +2838,7 @@ __all__ = [
     "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
     "CanvasText", "Scrollable", "FooterKeys",
     "TextInput", "TextEdit",
-    "SelectList",
+    "SelectList", "Pending",
     "ButtonRow",
     # badge primitive
     "badge",
@@ -2914,8 +2846,6 @@ __all__ = [
     "ensure_visible",
     # entry
     "render_tree",
-    # ListView row helpers
-    "ListRow", "RowChip", "LeadingBadge", "LeadingAvatar", "LeadingIcon",
     # UiNode component tree (PGAP v3.5)
     "Tabs", "Grid", "Toggle", "ProgressBar",
 ]

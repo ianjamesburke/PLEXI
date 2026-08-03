@@ -71,9 +71,6 @@ _NOT_A_WIDGET = {
     "badge",  # canvas-mode drawing helper function, not a Component
     "ensure_visible",  # scroll-math helper function
     "render_tree",  # the render entry point itself, not a node
-    "ListRow", "RowChip", "LeadingBadge", "LeadingAvatar", "LeadingIcon",
-    # ^ ctx.list_view() row descriptors -- to_dict(), not to_node(); they
-    # describe raw host list rows, not a UiNode tree.
     "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
     # ^ Canvas draw commands -- to_command(), not to_node(); only meaningful
     # nested inside a Canvas(commands=[...]) node, never as a tree node.
@@ -102,6 +99,9 @@ _FACTORIES = {
     "TextEdit": lambda: ui.TextEdit("field-id"),
     "SelectList": lambda: ui.SelectList(
         [{"name": "one", "leading": "*", "trailing": ">"}]
+    ),
+    "Pending": lambda: ui.Pending(
+        active=True, child=ui.Label("content"), placeholder=ui.Skeleton(rows=3)
     ),
     "ButtonRow": lambda: ui.ButtonRow("btn-id", "Click"),
     "Tabs": lambda: ui.Tabs([("Tab", ui.Label("content"))]),
@@ -179,3 +179,14 @@ def test_button_row_emits_required_on_click() -> None:
     (required_string) -- ButtonRow used to omit it entirely."""
     node = ui.ButtonRow("action-id", "Go").to_node()
     assert node["on_click"] == "action-id"
+
+
+def test_pending_renders_placeholder_or_child_by_active() -> None:
+    child = ui.Label("content")
+    placeholder = ui.Skeleton(rows=3)
+    assert ui.Pending(active=True, child=child, placeholder=placeholder).to_node() == (
+        placeholder.to_node()
+    )
+    assert ui.Pending(active=False, child=child, placeholder=placeholder).to_node() == (
+        child.to_node()
+    )
