@@ -23,13 +23,6 @@ plexi pane slot write status
       write pipeline_phase
       "implement-stint-v2:0728" --replace
 
-
-name the conversation:
-i.e 'plexi pane name $PLEXI_PANE_ID impl-1234-sidebar-padding-fix'
-
-
-
-
 then create a worktree with 'wtp add -b <stint-is-number>-impl-<stint title/short desc>
 
 ALL WORK LIVES IN THIS WORKTREE
