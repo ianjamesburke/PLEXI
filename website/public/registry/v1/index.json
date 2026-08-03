@@ -17,7 +17,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "2965a4d3007b435cb2ddf57d2fb170c1a6b6fb9315aa67ee79a4e9c65517522e"
+      "checksum": "7bc3e9b9bd1f71aef5453b9842306212b82fc7b99e6b3202b1f51951fbde7721"
     },
     {
       "id": "logs",
@@ -38,7 +38,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "4c5bcaff06daccf1fdfe1cae73da1b465d80db669187f7f124c330d4a0b38018"
+      "checksum": "32dd04ca9e8d842805d010c1f79b270cc8e17b6374c5e2b26e9135fde67baf03"
     },
     {
       "id": "permissions",
@@ -58,7 +58,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "f64b374679280108a6bcdb943e23d16c3de97713be8c71974fda7a5d86b7027d"
+      "checksum": "6860dd9d1a771424496492882da920629ffd1e5731ce168fb6ddd01dd34fa711"
     },
     {
       "id": "todo",
@@ -76,12 +76,12 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "182f8ad88ea3ba5defd77e4b168458709a563ce494d3aaefb7c61dbc328f56bc"
+      "checksum": "25331f7f24807cd6446885b4818c1334345789756e74e5aa8fe24f976b8fe85e"
     },
     {
       "id": "wikipedia",
       "name": "Wikipedia",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Search Wikipedia and browse article summaries.",
       "publisher": "plexi",
       "capabilities": [
@@ -96,7 +96,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "e370cde1d4964389b59e9cbd1d86616a15a3b5a94977a023ff9ec6296aa30ecf"
+      "checksum": "c5ddfba414ad988ca8694b503855db3b83d6357f9f817870f622d1e3f7cbc02d"
     }
   ]
 }

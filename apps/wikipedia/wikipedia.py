@@ -7,8 +7,16 @@ import json
 from typing import Any
 
 from plexi_sdk import log, state
-from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTitle
-from plexi_sdk.events import HttpResponse, KeyEvent, UiAction, UiValueChange
+from plexi_sdk.effects import (
+    AiTool,
+    ExposeTools,
+    HttpFetch,
+    SetState,
+    SetStatus,
+    SetTitle,
+    ToolResult,
+)
+from plexi_sdk.events import HttpResponse, KeyEvent, ToolCall, UiAction, UiValueChange
 from plexi_sdk.ui import (
     AppBar,
     Button,
@@ -39,10 +47,40 @@ DEFAULT_STATE: dict[str, Any] = {
     "mode": "search",
 }
 
+_SEARCH_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "description": "Article title or search phrase."},
+    },
+    "required": ["query"],
+}
+
+_SEARCH_RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+    },
+    "required": ["title", "summary"],
+}
+
+# Correlates an in-flight assistant tool call across the HTTP round trip(s) it
+# takes to resolve (search -> article). Module-level global rather than
+# state/SetState: the HttpFetch/HttpResponse transport is single-flight with
+# no request id, so at most one fetch (UI or tool) can be outstanding at a
+# time, and this bookkeeping is purely about that transport, not app state.
+_pending_tool: dict | None = None
+
 
 def init(size, args) -> list:
     data = _state()
-    effects: list = [SetTitle("Wikipedia"), SetState(data), SetStatus("Wikipedia")]
+    tools_effect = ExposeTools(_tools())
+    effects: list = [
+        SetTitle("Wikipedia"),
+        SetState(data),
+        SetStatus("Wikipedia"),
+        tools_effect,
+    ]
     if args:
         data["query"] = " ".join(args)
         data["loading"] = True
@@ -52,14 +90,32 @@ def init(size, args) -> list:
             SetState(data),
             SetStatus("Searching"),
             _fetch_search(data["query"]),
+            tools_effect,
         ]
     log.info("wikipedia: SDK v3 initialized")
     return effects
 
 
+def _tools() -> list[AiTool]:
+    return [
+        AiTool(
+            name="wikipedia.search",
+            description="Search Wikipedia for an article and return its summary.",
+            input_schema=_SEARCH_TOOL_SCHEMA,
+            output_schema=_SEARCH_RESULT_SCHEMA,
+            read_only=True,
+        )
+    ]
+
+
 def update(event) -> list:
+    global _pending_tool
+    if isinstance(event, ToolCall):
+        return _handle_tool_call(event)
     data = _state()
     if isinstance(event, HttpResponse):
+        if _pending_tool is not None:
+            return _handle_tool_http(event)
         data.update(_handle_http(data, event))
         return [SetState(data), SetStatus(_status(data))]
     if isinstance(event, UiValueChange) and event.handler_id == "wiki-query":
@@ -132,6 +188,9 @@ def _start_search(data: dict) -> list:
     query = data["query"].strip()
     if not query:
         return []
+    if _pending_tool is not None:
+        log.info("wikipedia: UI search blocked, tool fetch in flight")
+        return []
     log.info(f"wikipedia: searching for {query!r}")
     data["loading"] = True
     data["pending"] = "search"
@@ -140,6 +199,9 @@ def _start_search(data: dict) -> list:
 
 
 def _start_article(data: dict, selected: int) -> list:
+    if _pending_tool is not None:
+        log.info("wikipedia: UI article load blocked, tool fetch in flight")
+        return []
     title = data["results"][selected]
     log.info(f"wikipedia: loading article {title!r}")
     data["selected"] = selected
@@ -176,6 +238,77 @@ def _quote(value: str) -> str:
     return "".join(
         chr(byte) if byte in safe else f"%{byte:02X}" for byte in value.encode("utf-8")
     )
+
+
+def _handle_tool_call(call: ToolCall) -> list:
+    global _pending_tool
+    log.info(f"wikipedia: tool call {call.name} from {call.caller_id}")
+    if call.name != "wikipedia.search":
+        return [ToolResult(call.call_id, error=f"unknown tool '{call.name}'")]
+    try:
+        payload = json.loads(call.input_json or "{}")
+    except ValueError as e:
+        return [ToolResult(call.call_id, error=f"input_json is not valid JSON: {e}")]
+    if not isinstance(payload, dict):
+        return [ToolResult(call.call_id, error="input must be a JSON object")]
+    query = payload.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return [ToolResult(call.call_id, error="'query' must be a non-empty string")]
+    query = query.strip()
+
+    data = _state()
+    if data["loading"] or _pending_tool is not None:
+        log.info(f"wikipedia: tool call {call.name} rejected, request in flight")
+        return [
+            ToolResult(
+                call.call_id,
+                error="Wikipedia is busy with another request; try again shortly.",
+            )
+        ]
+
+    _pending_tool = {"call_id": call.call_id, "stage": "search", "query": query}
+    log.info(f"wikipedia: tool search stage started for {query!r}")
+    return [_fetch_search(query)]
+
+
+def _handle_tool_http(event: HttpResponse) -> list:
+    global _pending_tool
+    assert _pending_tool is not None
+    call_id = _pending_tool["call_id"]
+
+    if event.status < 200 or event.status >= 300:
+        log.warn(f"wikipedia: tool request failed {event.status}")
+        _pending_tool = None
+        return [
+            ToolResult(call_id, error=f"HTTP {event.status}: {_body_text(event)[:240]}")
+        ]
+
+    try:
+        payload = json.loads(_body_text(event))
+    except json.JSONDecodeError as exc:
+        _pending_tool = None
+        return [ToolResult(call_id, error=f"invalid JSON response: {exc}")]
+
+    if _pending_tool["stage"] == "search":
+        results = _parse_search(payload)
+        if not results:
+            log.info(f"wikipedia: tool search for {_pending_tool['query']!r} -> 0 results")
+            _pending_tool = None
+            return [ToolResult(call_id, error="No Wikipedia article found for that query.")]
+        title = results[0]
+        log.info(f"wikipedia: tool search stage -> article stage for {title!r}")
+        _pending_tool["stage"] = "article"
+        _pending_tool["title"] = title
+        return [_fetch_article(title)]
+
+    # stage == "article"
+    title = _pending_tool["title"]
+    summary = str(payload.get("extract") or "No extract available.")
+    _pending_tool = None
+    log.info(f"wikipedia: tool article stage complete for {title!r}")
+    return [
+        ToolResult(call_id, output_json=json.dumps({"title": title, "summary": summary}))
+    ]
 
 
 def _handle_http(data: dict, event: HttpResponse) -> dict:

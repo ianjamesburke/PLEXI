@@ -16,10 +16,14 @@ first see if alpha is clean, if not set state to blocked and send a plexi notifi
 
 
 if clean, `stint claim <task-id>` to claim on alpha, marking as in progress
+name the conversation "impl-<stint-id>"
+i.e 'plexi pane name $PLEXI_PANE_ID impl-1234'
 
 then create a worktree with 'wtp add -b <stint-is-number>-impl-<stint title/short desc>
 
 ALL WORK LIVES IN THIS WORKTREE
+
+you only need to run test relevent to the code change, not the full suite. 
 
 if stint is 's' - small
 - immediatly look for the code change and implement swiftly, run e2e cargo test and finish
@@ -60,7 +64,7 @@ TESTING:
 ```
 
 if:
-PASS - Spawning sub-agent to merge pr into alpha, Addressing any merge conflicts, running just clean up commands. finally mark stint complete at the end, then say COMPLETE
+PASS - Spawning sub-agent to merge pr into alpha, rebasing if needed, Addressing any merge conflicts, running just clean up commands. finally mark stint complete at the end, then say COMPLETE
 FOLLOW-UP - a list of improvments that need to be made, have a subagent go implemment those chages on the same worktree, commit to the same pr, and reinstall the new version with just pr-install. continue this till PASS
 FAIL - Add a section on the stint file that explains the fail, List some possible gotchas if there are any, as well as the user's feedback for the next attempt at implementation. mark stint as todo again. 
 
