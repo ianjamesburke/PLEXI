@@ -65,3 +65,11 @@ surface that binary does not have or the version stamp is off.
 - Frontmatter: `plexi_version` = the tree's `Cargo.toml` version (stamped by
   `just bump`); `skill_version` bumps when content changes; `last_verified` =
   date the prose was last re-read against the CLI.
+
+## Traps
+
+- **Always pin the installer CLI in published `skills` install commands.** Use
+  `npx -y skills@latest add …`, including release refs such as
+  `ianjamesburke/plexi-skills#v<version>`. Older cached or globally shadowing
+  `skills` CLIs predate ref support and embed `#v…` in the clone URL, ending
+  with `not valid`.
