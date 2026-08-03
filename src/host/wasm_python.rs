@@ -43,48 +43,96 @@ use super::wasm_app::Alignment;
 use super::wasm_app::{Effect, Grants, StateStore, WasmApp};
 use super::wasm_frame::repaint_delay_until;
 
-#[derive(Default)]
 struct InputState {
     bytes: VecDeque<u8>,
-    closed: bool,
-    waker: Option<Waker>,
-    /// One-shot consumption wake: fires (and disarms) when a guest read drops
-    /// the buffered level below the armed threshold. Armed only via
-    /// [`AppendableStdin::arm_low_water_wake`], which refuses to arm below the
-    /// threshold — so an armed wake always has a stalled producer behind it.
-    low_water: Option<(usize, StdinWake)>,
+    lifecycle: InputLifecycle,
 }
+
+enum InputLifecycle {
+    Open(OpenInput),
+    Closed,
+}
+
+struct OpenInput {
+    waker: Option<Waker>,
+    low_water: Option<LowWaterWaiter>,
+}
+
+struct LowWaterWaiter {
+    token: LowWaterToken,
+    threshold: usize,
+    wake: StdinWake,
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self {
+            bytes: VecDeque::new(),
+            lifecycle: InputLifecycle::Open(OpenInput {
+                waker: None,
+                low_water: None,
+            }),
+        }
+    }
+}
+
+static NEXT_LOW_WATER_TOKEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 /// Wake fired from the guest's consumption side (`poll_read`) when buffered
 /// stdin drops below an armed threshold. Runs on the guest runtime thread;
 /// must be cheap and non-reentrant (in production: a repaint request, the
 /// same shape as [`crate::host::mcp_client::McpWake`]).
-pub type StdinWake = Arc<dyn Fn() + Send + Sync>;
+pub type StdinWake = Arc<dyn Fn(LowWaterToken) + Send + Sync>;
 
-/// Outcome of [`AppendableStdin::arm_low_water_wake`]. `Armed` is the only
-/// case that installs anything, and no accepted waiter is ever silently
-/// discarded: an armed wake fires exactly once — when a guest read drops the
-/// level below the threshold, when [`AppendableStdin::close`] runs, or
-/// immediately upon being superseded by a *different* wake (a spurious wake
-/// at worst; silence would strand whatever work the waiter was parked on).
-/// Re-arming the *same* wake refreshes the threshold without firing — that is
-/// the MCP pump's per-pass pattern while a line stays parked, and firing
-/// there would be a self-wake loop. "Armed a wake nothing will ever fire" is
-/// unrepresentable — a closed stdin reports `Closed` instead of arming,
-/// because no future read will ever drain it.
-#[must_use]
+/// Identity of one accepted low-water arming. It identifies pending work,
+/// never a callback allocation: distinct armings may share one [`StdinWake`]
+/// and still resolve independently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LowWaterToken(std::num::NonZeroU64);
+
+/// A fresh pending operation supplies its callback. Later pump passes carry
+/// the returned token to prove they refer to the same logical operation.
+pub enum LowWaterArmRequest {
+    Fresh {
+        threshold: usize,
+        wake: StdinWake,
+    },
+    Existing(LowWaterToken),
+}
+
+/// Total outcome of [`AppendableStdin::arm_low_water_wake`]. Only `Armed` and
+/// `Superseded` accept new work. Every accepted token remains in the open
+/// state until exactly one path extracts it for callback delivery: guest
+/// consumption, close, or supersession. `Existing` can only observe the same
+/// token still armed or a stale token whose callback was already extracted.
+#[must_use = "every low-water arm outcome must be handled"]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LowWaterArm {
     /// Buffered level is already below the threshold: deliver now; nothing
     /// was armed.
     BelowThreshold,
-    /// Wake installed; fires exactly once — on the consumption edge, at
-    /// close, or on supersession by a different wake.
-    Armed,
+    /// A fresh token was installed into an empty waiter slot.
+    Armed { token: LowWaterToken },
+    /// The supplied token is still the installed waiter. This accepts no new
+    /// operation and never fires a callback.
+    StillArmed { token: LowWaterToken },
+    /// A fresh token replaced another accepted token. The superseded token's
+    /// callback is invoked before this operation returns.
+    Superseded {
+        token: LowWaterToken,
+        superseded: LowWaterToken,
+    },
+    /// The supplied token is no longer installed. Its callback was already
+    /// extracted by a resolving path and may currently be in flight.
+    Stale { token: LowWaterToken },
     /// Stdin is closed — checked before the level, because delivery can never
     /// reach the guest regardless of how empty the buffer is. Nothing was
     /// armed; the caller's pending data is undeliverable and must not be
     /// parked.
     Closed,
+    /// The identity space was exhausted. Nothing was armed.
+    IdentityExhausted,
 }
 
 /// Hard ceiling on bytes buffered in a guest's stdin queue. This is the
@@ -122,17 +170,24 @@ impl AppendableStdin {
     /// arm-below-watermark versus teardown race.
     pub fn push(&self, bytes: &[u8]) -> Result<(), WasmPythonError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.closed {
-            return Err(WasmPythonError::StdinClosed);
-        }
-        if state.bytes.len().saturating_add(bytes.len()) > STDIN_BUFFER_HARD_CAP_BYTES {
+        let InputState {
+            bytes: queued,
+            lifecycle,
+        } = &mut *state;
+        let open = match lifecycle {
+            InputLifecycle::Open(open) => open,
+            InputLifecycle::Closed => return Err(WasmPythonError::StdinClosed),
+        };
+        if queued.len().saturating_add(bytes.len()) > STDIN_BUFFER_HARD_CAP_BYTES {
             return Err(WasmPythonError::StdinBufferFull {
-                buffered: state.bytes.len(),
+                buffered: queued.len(),
                 cap: STDIN_BUFFER_HARD_CAP_BYTES,
             });
         }
-        state.bytes.extend(bytes);
-        if let Some(waker) = state.waker.take() {
+        queued.extend(bytes);
+        let waker = open.waker.take();
+        drop(state);
+        if let Some(waker) = waker {
             waker.wake();
         }
         Ok(())
@@ -155,51 +210,76 @@ impl AppendableStdin {
             .len()
     }
 
-    /// Arm a one-shot wake that fires when guest consumption drops the
-    /// buffered level below `threshold`. The closed check, the level check,
-    /// and the arm are one atomic step under the state lock, so neither a
-    /// concurrent guest read nor a concurrent [`AppendableStdin::close`] can
-    /// slip between them: arm-then-close is fired by `close`, and
-    /// close-then-arm returns [`LowWaterArm::Closed`] without arming.
-    ///
-    /// The slot holds one waiter. Arming while a *different* wake is armed
-    /// fires the superseded wake immediately (see [`LowWaterArm`]); re-arming
-    /// the same wake only refreshes the threshold.
-    pub fn arm_low_water_wake(&self, threshold: usize, wake: StdinWake) -> LowWaterArm {
+    /// Arm fresh pending work, or confirm that the token carried by an
+    /// existing pending operation is still armed. The closed check, level
+    /// check, and state transition are atomic under the state lock. Callback
+    /// invocation is deliberately outside that lock.
+    pub fn arm_low_water_wake(&self, request: LowWaterArmRequest) -> LowWaterArm {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.closed {
-            return LowWaterArm::Closed;
-        }
-        if state.bytes.len() < threshold {
-            return LowWaterArm::BelowThreshold;
-        }
-        let superseded = match state.low_water.take() {
-            Some((_, prev)) if !Arc::ptr_eq(&prev, &wake) => Some(prev),
-            _ => None,
+        let buffered = state.bytes.len();
+        let open = match &mut state.lifecycle {
+            InputLifecycle::Open(open) => open,
+            InputLifecycle::Closed => return LowWaterArm::Closed,
         };
-        state.low_water = Some((threshold, wake));
+        let (outcome, superseded) = match request {
+            LowWaterArmRequest::Existing(token) => {
+                let outcome = match &open.low_water {
+                    Some(waiter) if waiter.token == token => LowWaterArm::StillArmed { token },
+                    _ => LowWaterArm::Stale { token },
+                };
+                (outcome, None)
+            }
+            LowWaterArmRequest::Fresh { threshold, wake } => {
+                if buffered < threshold {
+                    return LowWaterArm::BelowThreshold;
+                }
+                let Ok(raw_token) = NEXT_LOW_WATER_TOKEN.fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |current| current.checked_add(1),
+                ) else {
+                    return LowWaterArm::IdentityExhausted;
+                };
+                let Some(raw_token) = std::num::NonZeroU64::new(raw_token) else {
+                    return LowWaterArm::IdentityExhausted;
+                };
+                let token = LowWaterToken(raw_token);
+                let previous = open.low_water.replace(LowWaterWaiter {
+                    token,
+                    threshold,
+                    wake,
+                });
+                match previous {
+                    Some(previous) => (
+                        LowWaterArm::Superseded {
+                            token,
+                            superseded: previous.token,
+                        },
+                        Some(previous),
+                    ),
+                    None => (LowWaterArm::Armed { token }, None),
+                }
+            }
+        };
         drop(state);
-        if let Some(prev) = superseded {
-            // The previous waiter was armed on behalf of its own pending
-            // work; firing it now (a spurious wake at worst) is the only
-            // outcome that cannot strand that work.
-            prev();
+        if let Some(previous) = superseded {
+            (previous.wake)(previous.token);
         }
-        LowWaterArm::Armed
+        outcome
     }
 
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.closed = true;
-        if let Some(waker) = state.waker.take() {
+        let open = match std::mem::replace(&mut state.lifecycle, InputLifecycle::Closed) {
+            InputLifecycle::Open(open) => open,
+            InputLifecycle::Closed => return,
+        };
+        drop(state);
+        if let Some(waker) = open.waker {
             waker.wake();
         }
-        // A producer waiting on consumption must not stall forever on a guest
-        // that is gone: fire once so it observes the closure on its next pass.
-        let low_water = state.low_water.take().map(|(_, wake)| wake);
-        drop(state);
-        if let Some(wake) = low_water {
-            wake();
+        if let Some(waiter) = open.low_water {
+            (waiter.wake)(waiter.token);
         }
     }
 }
@@ -227,23 +307,27 @@ impl AsyncRead for AppendableStdin {
             let count = buf.remaining().min(state.bytes.len());
             let bytes: Vec<u8> = state.bytes.drain(..count).collect();
             buf.put_slice(&bytes);
-            let low_water = match &state.low_water {
-                Some((threshold, _)) if state.bytes.len() < *threshold => {
-                    state.low_water.take().map(|(_, wake)| wake)
-                }
-                _ => None,
+            let buffered = state.bytes.len();
+            let low_water = match &mut state.lifecycle {
+                InputLifecycle::Open(open) => match &open.low_water {
+                    Some(waiter) if buffered < waiter.threshold => open.low_water.take(),
+                    _ => None,
+                },
+                InputLifecycle::Closed => None,
             };
             drop(state);
-            if let Some(wake) = low_water {
-                wake();
+            if let Some(waiter) = low_water {
+                (waiter.wake)(waiter.token);
             }
             return Poll::Ready(Ok(()));
         }
-        if state.closed {
-            return Poll::Ready(Ok(()));
+        match &mut state.lifecycle {
+            InputLifecycle::Closed => Poll::Ready(Ok(())),
+            InputLifecycle::Open(open) => {
+                open.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
         }
-        state.waker = Some(cx.waker().clone());
-        Poll::Pending
     }
 }
 
@@ -955,12 +1039,13 @@ pub struct LivePythonPane {
     /// stdin; the next pump pass delivers it first. Parking happens only
     /// against a live stdin — once the stdin closes, pending lines are
     /// dropped loudly instead, because nothing would ever deliver them.
-    mcp_held: Option<(String, crate::host::mcp_client::McpLine)>,
-    /// Armed on guest stdin whenever `mcp_held` is parked: requests one
-    /// repaint when the guest drains below the watermark, so the parked line
-    /// is delivered exactly when it becomes deliverable. Counterpart to the
-    /// connection's `McpWake` (which covers new server data); together they
-    /// make every MCP delivery wake progress-driven — no timers.
+    mcp_held: Option<McpHeldLine>,
+    /// Callback shared by tokenized guest-stdin armings. Each parked line
+    /// carries its returned token, so repeated pump passes identify the same
+    /// pending work instead of inferring identity from this `Arc`. Token
+    /// resolution requests a repaint after consumption, close, or explicit
+    /// supersession. Counterpart to the connection's `McpWake`; no timer
+    /// polls this boundary.
     mcp_stdin_wake: StdinWake,
     /// File-picker backend (stint 0508). Native rfd dialog in production, a
     /// scripted queue under `PLEXI_PICKER_SCRIPT` / harness override so agent
@@ -1838,55 +1923,93 @@ fn load_python_states(
 /// stdin queue as fast as frames ran).
 ///
 /// Returns `true` only when a line was parked — MCP work actually pending
-/// behind the watermark. Parking arms `wake` as a one-shot consumption wake
-/// on the stdin ([`AppendableStdin::arm_low_water_wake`]), so the next pass
-/// is triggered by the guest genuinely draining below the watermark — never
-/// by a timer. With nothing queued, nothing is armed and nothing repaints: a
-/// full stdin with no MCP traffic (or a guest that stopped reading after the
-/// server went quiet) leaves the host fully idle.
+/// behind the watermark. The parked value carries the explicit token returned
+/// by [`AppendableStdin::arm_low_water_wake`], and later passes check that token
+/// rather than manufacturing a fresh arming. Consumption resolves it and
+/// requests the next pass; close resolves it so that pass can perform teardown.
+/// No timer polls this boundary. With nothing queued, nothing is armed and
+/// nothing repaints: a full stdin with no MCP traffic leaves the host idle.
 ///
 /// A closed stdin ([`LowWaterArm::Closed`]) can never be drained, so lines
 /// bound for it are dropped instead of parked, all live connections are torn
 /// down, and one latched error is logged for the pane — parking against a
 /// stdin no read will ever touch would strand them forever.
+struct McpHeldLine {
+    server_id: String,
+    line: crate::host::mcp_client::McpLine,
+    arm_token: Option<LowWaterToken>,
+}
+
 fn pump_mcp_inbound(
     app_id: &str,
     rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
     stdin: &AppendableStdin,
     connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
-    held: &mut Option<(String, crate::host::mcp_client::McpLine)>,
+    held: &mut Option<McpHeldLine>,
     wake: &StdinWake,
     closed_logged: &mut bool,
 ) -> bool {
     loop {
-        let Some((server_id, line)) = held.take().or_else(|| rx.try_recv().ok()) else {
+        let Some(mut pending) = held.take().or_else(|| {
+            rx.try_recv().ok().map(|(server_id, line)| McpHeldLine {
+                server_id,
+                line,
+                arm_token: None,
+            })
+        }) else {
             return false;
         };
-        match stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(wake)) {
-            LowWaterArm::Armed => {
-                *held = Some((server_id, line));
-                return true;
+        loop {
+            let request = match pending.arm_token {
+                Some(token) => LowWaterArmRequest::Existing(token),
+                None => LowWaterArmRequest::Fresh {
+                    threshold: MCP_STDIN_HIGH_WATER_BYTES,
+                    wake: Arc::clone(wake),
+                },
+            };
+            match stdin.arm_low_water_wake(request) {
+                LowWaterArm::Armed { token }
+                | LowWaterArm::StillArmed { token }
+                | LowWaterArm::Superseded { token, .. } => {
+                    pending.arm_token = Some(token);
+                    *held = Some(pending);
+                    return true;
+                }
+                LowWaterArm::Stale { token } => {
+                    debug_assert_eq!(pending.arm_token, Some(token));
+                    pending.arm_token = None;
+                }
+                LowWaterArm::Closed => {
+                    drop_undeliverable_mcp_backlog(
+                        app_id,
+                        rx,
+                        connections,
+                        Some((pending.server_id, pending.line)),
+                        closed_logged,
+                    );
+                    return false;
+                }
+                LowWaterArm::BelowThreshold => break,
+                LowWaterArm::IdentityExhausted => {
+                    log::error!(
+                        "app::{app_id}: guest stdin low-water identity space exhausted; closing stdin"
+                    );
+                    stdin.close();
+                    drop_undeliverable_mcp_backlog(
+                        app_id,
+                        rx,
+                        connections,
+                        Some((pending.server_id, pending.line)),
+                        closed_logged,
+                    );
+                    return false;
+                }
             }
-            LowWaterArm::Closed => {
-                // No read will ever drain a closed stdin, so this line — and
-                // everything queued behind it — can never reach the guest.
-                // Parking would strand it forever with no wake to deliver it
-                // (the close-versus-arm race).
-                drop_undeliverable_mcp_backlog(
-                    app_id,
-                    rx,
-                    connections,
-                    Some((server_id, line)),
-                    closed_logged,
-                );
-                return false;
-            }
-            LowWaterArm::BelowThreshold => {}
         }
         match deliver_mcp_line(
             app_id,
-            server_id,
-            line,
+            pending.server_id,
+            pending.line,
             rx,
             stdin,
             connections,
@@ -2027,7 +2150,7 @@ impl LivePythonPane {
         // for the same reason as `McpWake` — a literal zero-delay request
         // schedules an extra settling paint.
         let stdin_wake_repaint = Arc::clone(&repaint);
-        let mcp_stdin_wake: StdinWake = Arc::new(move || {
+        let mcp_stdin_wake: StdinWake = Arc::new(move |_token| {
             if let Some((context, viewport)) = stdin_wake_repaint
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -2398,12 +2521,10 @@ impl LivePythonPane {
 
     /// Edge-latched diagnostics for the MCP inbound watermark: engage and
     /// release are each logged once, never per frame. Scheduling is not this
-    /// function's job — when the pump parks a line it arms a consumption
-    /// wake on the guest's stdin, so the host runs again exactly when the
-    /// guest drains below the watermark (new server data fires the
-    /// connection's `McpWake` the same way). No timer exists on this path:
-    /// with no MCP line pending, nothing is armed and an idle host stays
-    /// idle no matter how full guest stdin is.
+    /// function's job — the parked line carries a token resolved by guest
+    /// consumption or close, while new server data fires the connection's
+    /// `McpWake`. No timer exists on this path: with no MCP line pending,
+    /// nothing is armed and an idle host stays idle regardless of stdin level.
     fn note_mcp_backpressure(&mut self, backlogged: bool) {
         if backlogged {
             if !self.mcp_backpressured {
@@ -5605,6 +5726,14 @@ mod tests {
         fn wake(self: Arc<Self>) {}
     }
 
+    fn fresh_low_water_arm(
+        stdin: &AppendableStdin,
+        threshold: usize,
+        wake: StdinWake,
+    ) -> LowWaterArm {
+        stdin.arm_low_water_wake(LowWaterArmRequest::Fresh { threshold, wake })
+    }
+
     fn state_test_config(workspace_root: &Path, app_id: &str) -> PythonLaunchConfig {
         PythonLaunchConfig {
             app_id: app_id.to_string(),
@@ -6153,7 +6282,7 @@ mod tests {
         let stdin = AppendableStdin::default();
         let mut held = None;
         let mut closed_logged = false;
-        let wake: StdinWake = Arc::new(|| {});
+        let wake: StdinWake = Arc::new(|_| {});
         let started = std::time::Instant::now();
         let mut backlogged = false;
         while started.elapsed() < std::time::Duration::from_secs(2) {
@@ -6219,7 +6348,7 @@ mod tests {
         let mut closed_logged = false;
         let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&wakes);
-        let wake: StdinWake = Arc::new(move || {
+        let wake: StdinWake = Arc::new(move |_| {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
 
@@ -6278,12 +6407,14 @@ mod tests {
         let mut closed_logged = false;
         let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&wakes);
-        let wake: StdinWake = Arc::new(move || {
+        let wake: StdinWake = Arc::new(move |_| {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
 
         // Two passes with no guest progress: parked both times, zero wakes —
-        // the host schedules nothing on its own.
+        // the host schedules nothing on its own and carries one logical
+        // arming token instead of manufacturing another.
+        let mut parked_token = None;
         for _ in 0..2 {
             let backlogged = pump_mcp_inbound(
                 "hold-test",
@@ -6299,6 +6430,14 @@ mod tests {
                 held.is_some(),
                 "the undeliverable line is parked, not dropped"
             );
+            let token = held
+                .as_ref()
+                .and_then(|pending| pending.arm_token)
+                .expect("parked line carries its arming identity");
+            if let Some(previous) = parked_token {
+                assert_eq!(token, previous, "repeated passes preserve logical identity");
+            }
+            parked_token = Some(token);
             assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
         }
 
@@ -6375,7 +6514,7 @@ mod tests {
         let mut closed_logged = false;
         let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&wakes);
-        let wake: StdinWake = Arc::new(move || {
+        let wake: StdinWake = Arc::new(move |_| {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
 
@@ -6407,7 +6546,11 @@ mod tests {
         // Nothing was armed and nothing may ever fire: the guest is gone, so
         // a wake here would wait on a read that will never happen.
         assert!(matches!(
-            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::new(|| {})),
+            fresh_low_water_arm(
+                &stdin,
+                MCP_STDIN_HIGH_WATER_BYTES,
+                Arc::new(|_| {}),
+            ),
             LowWaterArm::Closed
         ));
         assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -6420,7 +6563,11 @@ mod tests {
     fn appendable_stdin_rejects_push_after_close() {
         let stdin = AppendableStdin::default();
         assert!(matches!(
-            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::new(|| {})),
+            fresh_low_water_arm(
+                &stdin,
+                MCP_STDIN_HIGH_WATER_BYTES,
+                Arc::new(|_| {}),
+            ),
             LowWaterArm::BelowThreshold
         ));
 
@@ -6467,7 +6614,11 @@ mod tests {
         // The real interleaving, step by step: the pump's arm observes an
         // open, below-watermark stdin...
         assert!(matches!(
-            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::new(|| {})),
+            fresh_low_water_arm(
+                &stdin,
+                MCP_STDIN_HIGH_WATER_BYTES,
+                Arc::new(|_| {}),
+            ),
             LowWaterArm::BelowThreshold
         ));
         // ...teardown closes it before the pump's push runs...
@@ -6529,8 +6680,8 @@ mod tests {
     /// interleaving: arming while a *different* wake is armed used to
     /// silently replace it, contradicting the documented every-armed-wake-
     /// fires guarantee; a discarded waiter is exactly how parked work gets
-    /// stranded. Supersession must fire the replaced wake immediately, while
-    /// re-arming the *same* wake (the pump's per-pass pattern) stays silent.
+    /// stranded. Supersession resolves the replaced token immediately, while
+    /// checking the same token (the pump's per-pass pattern) stays silent.
     #[test]
     fn stdin_low_water_supersession_never_strands_a_waiter() {
         let stdin = AppendableStdin::default();
@@ -6540,32 +6691,42 @@ mod tests {
 
         let a_fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let a_counter = Arc::clone(&a_fired);
-        let wake_a: StdinWake = Arc::new(move || {
+        let wake_a: StdinWake = Arc::new(move |_| {
             a_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
         let b_fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let b_counter = Arc::clone(&b_fired);
-        let wake_b: StdinWake = Arc::new(move || {
+        let wake_b: StdinWake = Arc::new(move |_| {
             b_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
 
-        // Arm A, then re-arm the SAME wake: refresh only, no fire.
-        assert!(matches!(
-            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(&wake_a)),
-            LowWaterArm::Armed
-        ));
-        assert!(matches!(
-            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(&wake_a)),
-            LowWaterArm::Armed
-        ));
+        // Arm A, then identify the SAME logical arming by its token: no fire.
+        let token_a = match fresh_low_water_arm(
+            &stdin,
+            MCP_STDIN_HIGH_WATER_BYTES,
+            Arc::clone(&wake_a),
+        ) {
+            LowWaterArm::Armed { token } => token,
+            outcome => panic!("fresh arm must install A, got {outcome:?}"),
+        };
+        assert_eq!(
+            stdin.arm_low_water_wake(LowWaterArmRequest::Existing(token_a)),
+            LowWaterArm::StillArmed { token: token_a }
+        );
         assert_eq!(a_fired.load(std::sync::atomic::Ordering::SeqCst), 0);
 
-        // A DIFFERENT wake supersedes: A fires immediately instead of being
-        // silently discarded.
-        assert!(matches!(
-            stdin.arm_low_water_wake(MCP_STDIN_HIGH_WATER_BYTES, Arc::clone(&wake_b)),
-            LowWaterArm::Armed
-        ));
+        // Fresh work supersedes A even though callback identity is irrelevant.
+        let token_b = match fresh_low_water_arm(
+            &stdin,
+            MCP_STDIN_HIGH_WATER_BYTES,
+            Arc::clone(&wake_b),
+        ) {
+            LowWaterArm::Superseded { token, superseded } => {
+                assert_eq!(superseded, token_a);
+                token
+            }
+            outcome => panic!("fresh B must supersede A, got {outcome:?}"),
+        };
         assert_eq!(
             a_fired.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -6583,6 +6744,275 @@ mod tests {
         assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
         assert_eq!(b_fired.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(a_fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            stdin.arm_low_water_wake(LowWaterArmRequest::Existing(token_b)),
+            LowWaterArm::Stale { token: token_b }
+        );
+    }
+
+    /// Logical arming identity cannot come from the callback allocation: two
+    /// pending operations may deliberately share one callback. Each accepted
+    /// operation must still be resolved exactly once.
+    #[test]
+    fn stdin_low_water_distinct_armings_can_share_callback_allocation() {
+        let stdin = AppendableStdin::default();
+        stdin
+            .push(&vec![b'x'; MCP_STDIN_HIGH_WATER_BYTES])
+            .expect("fill to the watermark");
+
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let fired_tokens = Arc::clone(&fired);
+        let wake: StdinWake = Arc::new(move |token| {
+            fired_tokens
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(token);
+        });
+
+        let token_a = match fresh_low_water_arm(
+            &stdin,
+            MCP_STDIN_HIGH_WATER_BYTES,
+            Arc::clone(&wake),
+        ) {
+            LowWaterArm::Armed { token } => token,
+            outcome => panic!("fresh arm must install A, got {outcome:?}"),
+        };
+        let token_b = match fresh_low_water_arm(
+            &stdin,
+            MCP_STDIN_HIGH_WATER_BYTES,
+            Arc::clone(&wake),
+        ) {
+            LowWaterArm::Superseded { token, superseded } => {
+                assert_eq!(superseded, token_a);
+                token
+            }
+            outcome => panic!("fresh B must supersede A, got {outcome:?}"),
+        };
+        assert_eq!(*fired.lock().unwrap_or_else(|e| e.into_inner()), vec![token_a]);
+
+        stdin.close();
+        assert_eq!(
+            *fired.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![token_a, token_b],
+            "close must resolve the remaining accepted arming"
+        );
+    }
+
+    /// Bounded transition-model check for the whole low-water boundary. The
+    /// same callback allocation is reused for every fresh arming; only the
+    /// returned token distinguishes logical work. Every action sequence is
+    /// checked against a small independent model, then closed to prove no
+    /// accepted token is stranded or resolved more than once.
+    #[test]
+    fn appendable_stdin_low_water_matches_transition_model() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Action {
+            ArmFresh,
+            CheckLatest,
+            Push,
+            Drain,
+            Close,
+        }
+
+        const ACTIONS: [Action; 5] = [
+            Action::ArmFresh,
+            Action::CheckLatest,
+            Action::Push,
+            Action::Drain,
+            Action::Close,
+        ];
+        const THRESHOLD: usize = 2;
+        const STEPS: usize = 5;
+
+        let sequence_count = ACTIONS.len().pow(STEPS as u32);
+        let mut coverage = [false; 9];
+        for encoded in 0..sequence_count {
+            let mut value = encoded;
+            let mut sequence = [Action::ArmFresh; STEPS];
+            for action in &mut sequence {
+                *action = ACTIONS[value % ACTIONS.len()];
+                value /= ACTIONS.len();
+            }
+            for pair in sequence.windows(2) {
+                coverage[0] |= pair == [Action::ArmFresh, Action::Close];
+                coverage[1] |= pair == [Action::Close, Action::ArmFresh];
+                coverage[2] |= pair == [Action::ArmFresh, Action::ArmFresh];
+                coverage[3] |= pair == [Action::Close, Action::Drain];
+                coverage[4] |= pair == [Action::Drain, Action::Close];
+                coverage[5] |= pair == [Action::Close, Action::Close];
+            }
+            for triple in sequence.windows(3) {
+                coverage[6] |= triple == [Action::ArmFresh, Action::Drain, Action::Push];
+                coverage[7] |= triple == [Action::ArmFresh, Action::Push, Action::Drain];
+                coverage[8] |= triple == [Action::ArmFresh, Action::Close, Action::Push];
+            }
+
+            let stdin = AppendableStdin::default();
+            stdin.push(&[b'x'; THRESHOLD]).expect("seed watermark");
+            let fired = Arc::new(Mutex::new(Vec::<LowWaterToken>::new()));
+            let callback_fired = Arc::clone(&fired);
+            let shared_wake: StdinWake = Arc::new(move |token| {
+                callback_fired
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(token);
+            });
+
+            let mut open = true;
+            let mut buffered = THRESHOLD;
+            let mut current = None;
+            let mut latest = None;
+            let mut accepted = Vec::new();
+
+            for action in sequence {
+                match action {
+                    Action::ArmFresh => {
+                        let outcome = fresh_low_water_arm(
+                            &stdin,
+                            THRESHOLD,
+                            Arc::clone(&shared_wake),
+                        );
+                        if !open {
+                            assert_eq!(outcome, LowWaterArm::Closed, "{sequence:?}");
+                        } else if buffered < THRESHOLD {
+                            assert_eq!(
+                                outcome,
+                                LowWaterArm::BelowThreshold,
+                                "{sequence:?}"
+                            );
+                        } else if let Some(previous) = current {
+                            let LowWaterArm::Superseded { token, superseded } = outcome else {
+                                panic!("{sequence:?}: expected supersession, got {outcome:?}");
+                            };
+                            assert_eq!(superseded, previous, "{sequence:?}");
+                            accepted.push(token);
+                            latest = Some(token);
+                            current = Some(token);
+                        } else {
+                            let LowWaterArm::Armed { token } = outcome else {
+                                panic!("{sequence:?}: expected fresh arm, got {outcome:?}");
+                            };
+                            accepted.push(token);
+                            latest = Some(token);
+                            current = Some(token);
+                        }
+                    }
+                    Action::CheckLatest => {
+                        if let Some(token) = latest {
+                            let outcome = stdin
+                                .arm_low_water_wake(LowWaterArmRequest::Existing(token));
+                            let expected = if !open {
+                                LowWaterArm::Closed
+                            } else if current == Some(token) {
+                                LowWaterArm::StillArmed { token }
+                            } else {
+                                LowWaterArm::Stale { token }
+                            };
+                            assert_eq!(outcome, expected, "{sequence:?}");
+                        }
+                    }
+                    Action::Push => {
+                        let outcome = stdin.push(b"p");
+                        if open {
+                            outcome.expect("open push");
+                            buffered += 1;
+                        } else {
+                            assert!(matches!(outcome, Err(WasmPythonError::StdinClosed)));
+                        }
+                    }
+                    Action::Drain => {
+                        let waker = Waker::from(Arc::new(NoopWake));
+                        let mut cx = Context::from_waker(&waker);
+                        let mut storage = [0u8; 16];
+                        let mut read_buf = ReadBuf::new(&mut storage);
+                        let mut reader = stdin.clone();
+                        let outcome = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
+                        if buffered > 0 {
+                            assert!(matches!(outcome, Poll::Ready(Ok(()))), "{sequence:?}");
+                            buffered = buffered.saturating_sub(read_buf.filled().len());
+                            if buffered < THRESHOLD {
+                                current = None;
+                            }
+                        } else if open {
+                            assert!(matches!(outcome, Poll::Pending), "{sequence:?}");
+                        } else {
+                            assert!(matches!(outcome, Poll::Ready(Ok(()))), "{sequence:?}");
+                        }
+                    }
+                    Action::Close => {
+                        stdin.close();
+                        open = false;
+                        current = None;
+                    }
+                }
+
+                let observed = fired.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                for token in &observed {
+                    assert!(accepted.contains(token), "{sequence:?}: unknown token fired");
+                    assert_eq!(
+                        observed.iter().filter(|candidate| *candidate == token).count(),
+                        1,
+                        "{sequence:?}: token {token:?} resolved more than once"
+                    );
+                }
+            }
+
+            stdin.close();
+            let observed = fired.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            for token in accepted {
+                assert_eq!(
+                    observed.iter().filter(|candidate| **candidate == token).count(),
+                    1,
+                    "{sequence:?}: accepted token {token:?} was stranded or double-resolved"
+                );
+            }
+        }
+
+        assert!(
+            coverage.into_iter().all(|covered| covered),
+            "the enumerated model must include every named ordering"
+        );
+    }
+
+    /// The callback may still be running after the waiter has been extracted.
+    /// A producer push racing that callback must neither block on the stdin
+    /// mutex nor resurrect the resolved token.
+    #[test]
+    fn appendable_stdin_push_racing_low_water_fire_keeps_token_resolved() {
+        let stdin = AppendableStdin::default();
+        stdin.push(b"xx").expect("seed watermark");
+        let callback_entered = Arc::new(std::sync::Barrier::new(2));
+        let callback_release = Arc::new(std::sync::Barrier::new(2));
+        let entered = Arc::clone(&callback_entered);
+        let release = Arc::clone(&callback_release);
+        let wake: StdinWake = Arc::new(move |_| {
+            entered.wait();
+            release.wait();
+        });
+        let token = match fresh_low_water_arm(&stdin, 2, wake) {
+            LowWaterArm::Armed { token } => token,
+            outcome => panic!("expected fresh arm, got {outcome:?}"),
+        };
+
+        let mut reader = stdin.clone();
+        let read = std::thread::spawn(move || {
+            let waker = Waker::from(Arc::new(NoopWake));
+            let mut cx = Context::from_waker(&waker);
+            let mut storage = [0u8; 1];
+            let mut read_buf = ReadBuf::new(&mut storage);
+            Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf)
+        });
+
+        callback_entered.wait();
+        stdin
+            .push(b"p")
+            .expect("callback runs outside the stdin mutex");
+        assert_eq!(
+            stdin.arm_low_water_wake(LowWaterArmRequest::Existing(token)),
+            LowWaterArm::Stale { token }
+        );
+        callback_release.wait();
+        assert!(matches!(read.join().expect("join reader"), Poll::Ready(Ok(()))));
     }
 
     // ── resolve_app_fs_path (stint 0508: workspace jail + picker grants) ──
