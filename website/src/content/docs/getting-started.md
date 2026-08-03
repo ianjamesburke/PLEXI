@@ -31,10 +31,20 @@ only when a feature uses them.
 Plexi is built to be driven by coding agents. If you use Claude Code, Cursor, Codex, or any agent that supports [skills](https://skills.sh/), install the Plexi skill so your agent knows the CLI:
 
 ```sh
-npx skills add ianjamesburke/plexi-skills
+npx -y skills@latest add ianjamesburke/plexi-skills
 ```
 
 Run it in a project to install for that project, or add `-g` for a global install. The skill documents the `plexi` CLI surface — panes, apps, contexts, notifications — so your agent can drive Plexi without trial and error. To update it later, run `npx skills update`.
+
+To pin the skill to a Plexi release, use the same current CLI:
+
+```sh
+npx -y skills@latest add "ianjamesburke/plexi-skills#v0.2.0"
+```
+
+If a pinned install reports a clone URL with the `#v…` ref embedded in it and
+ends with `not valid`, a stale `skills` CLI is being used. Run the command above
+instead of bare `npx skills add`.
 
 ## Your First Session
 
