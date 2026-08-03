@@ -11,7 +11,7 @@ sys.path.insert(0, str(SDK))
 
 import plexi_sdk as sdk  # noqa: E402
 from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import ExposeTools, HttpFetch, SetState, ToolResult  # noqa: E402
+from plexi_sdk.effects import ExposeTools, HttpFetch, ToolResult  # noqa: E402
 from plexi_sdk.events import HttpResponse, ToolCall  # noqa: E402
 
 
@@ -144,6 +144,7 @@ def test_tool_call_happy_path_search_then_article():
     assert isinstance(result, ToolResult)
     assert result.call_id == "call-1"
     assert result.error is None
+    assert result.output_json is not None
     output = json.loads(result.output_json)
     assert output == {"title": "Plexi", "summary": "Plexi is a brand of acrylic glass."}
     assert app._pending_tool is None
