@@ -1152,6 +1152,7 @@ impl PlexiApp {
                 let mut hover_select: Option<usize> = None;
                 let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
                 let should_scroll = self.palette_selected != prev_selected;
+                let mut shown_contexts_header = false;
                 let mut shown_agents_header = false;
                 let mut shown_apps_header = false;
                 let mut shown_notes_header = false;
@@ -1220,6 +1221,16 @@ impl PlexiApp {
                                 pane_id,
                                 ..
                             } => {
+                                if !shown_contexts_header {
+                                    shown_contexts_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("CONTEXTS")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
+                                }
                                 let mut row = ListRow::new(name.as_str())
                                     .metadata_chips(std::slice::from_ref(metadata_chip))
                                     .secondary(workspace_name.as_str())
@@ -1715,6 +1726,68 @@ mod tests {
         assert!(matches!(entries[0], PaletteEntry::Context { .. }));
         assert!(matches!(entries[1], PaletteEntry::App { .. }));
         assert!(matches!(entries[2], PaletteEntry::Command { .. }));
+    }
+
+    /// The render loop's `shown_contexts_header` flag prints CONTEXTS the
+    /// first time it sees a `PaletteEntry::Context` row and never again;
+    /// that's gated on group_rank() putting every Context row in one
+    /// contiguous leading block on an empty query, and on there being no
+    /// Context row at all to key off of when the group is empty.
+    #[test]
+    fn contexts_header_shows_once_for_a_leading_context_block_and_never_without_one() {
+        let mut with_contexts = vec![
+            PaletteEntry::App {
+                id: "balls".to_string(),
+                name: "Balls".to_string(),
+                description: "Demo".to_string(),
+                running_in_background: false,
+                is_workspace_local: false,
+                search_text: "balls demo".to_string(),
+            },
+            PaletteEntry::Context {
+                ctx_idx: 0,
+                context_id: 1,
+                name: "Workspace A".to_string(),
+                workspace_name: String::new(),
+                metadata_chip: "ctx",
+                pane_pips: None,
+                pane_id: None,
+                search_text: "workspace a".to_string(),
+            },
+            PaletteEntry::Context {
+                ctx_idx: 1,
+                context_id: 2,
+                name: "Workspace B".to_string(),
+                workspace_name: String::new(),
+                metadata_chip: "ctx",
+                pane_pips: None,
+                pane_id: None,
+                search_text: "workspace b".to_string(),
+            },
+        ];
+        sort_palette_entries(&mut with_contexts, "");
+
+        // Both Context rows land in one leading block, so the render loop's
+        // shown_contexts_header flag flips true on the first and stays true
+        // (never fires again) through the second.
+        assert!(matches!(with_contexts[0], PaletteEntry::Context { .. }));
+        assert!(matches!(with_contexts[1], PaletteEntry::Context { .. }));
+        assert!(matches!(with_contexts[2], PaletteEntry::App { .. }));
+
+        let without_contexts = vec![PaletteEntry::App {
+            id: "balls".to_string(),
+            name: "Balls".to_string(),
+            description: "Demo".to_string(),
+            running_in_background: false,
+            is_workspace_local: false,
+            search_text: "balls demo".to_string(),
+        }];
+        assert!(
+            !without_contexts
+                .iter()
+                .any(|e| matches!(e, PaletteEntry::Context { .. })),
+            "no Context row means shown_contexts_header never flips true, so CONTEXTS never renders"
+        );
     }
 
     #[test]
