@@ -70,6 +70,7 @@ pub fn render_ui_tree_with_surface(
     render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None, surface_key, tree_seq)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_ui_tree_with_canvas_fits(
     ui: &mut egui::Ui,
     tree: &UiTree,
