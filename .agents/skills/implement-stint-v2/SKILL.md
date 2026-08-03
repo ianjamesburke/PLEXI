@@ -59,9 +59,12 @@ during testing, try to use the plexi scens test to create screenshots if you can
 Output on successful implementation:
 
 open a pr against alpha and wait for CI CD to pass
-then run just pr-install the pr number
+then stop. 
 
-and send this to the user.
+if you are being babysat, skip the install and pass automatically. 
+
+
+otherwise return:
 
 ```text
 [IMPLEMENTED]
