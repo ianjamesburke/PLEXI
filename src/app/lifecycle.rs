@@ -2650,7 +2650,7 @@ impl PlexiApp {
                             .filter(|context| {
                                 matches!(context.name, crate::host::context::ContextName::Auto(_))
                             })
-                            .and_then(|_| requested_auto_name.as_deref())
+                            .and(requested_auto_name.as_deref())
                             .filter(|base| created_name != *base);
                         let response = serde_json::json!({
                             "context_id": new_ctx_id,
