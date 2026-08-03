@@ -17,7 +17,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "7bc3e9b9bd1f71aef5453b9842306212b82fc7b99e6b3202b1f51951fbde7721"
+      "checksum": "f40b37e43b32d877b99d9f006136c005a408bfab763ba8908d9971ecb4dafbb8"
     },
     {
       "id": "logs",
@@ -38,7 +38,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "32dd04ca9e8d842805d010c1f79b270cc8e17b6374c5e2b26e9135fde67baf03"
+      "checksum": "a025b2b5b76500fde47eae716332038078402d1d6b69434aebf9893389ce4a85"
     },
     {
       "id": "permissions",
@@ -58,13 +58,13 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "6860dd9d1a771424496492882da920629ffd1e5731ce168fb6ddd01dd34fa711"
+      "checksum": "9d6a55626f8de3bef240c1d93a54678fe5960f3d9b514ec7a0f6f38f5fec439d"
     },
     {
       "id": "todo",
       "name": "Todo",
       "version": "0.1.0",
-      "description": "Context-scoped todo list. Items persist across relaunches in host-owned app state.",
+      "description": "Context-scoped todo list, backed by a markdown checklist file a human or agent can edit directly.",
       "publisher": "plexi",
       "capabilities": [],
       "tags": [
@@ -76,7 +76,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "25331f7f24807cd6446885b4818c1334345789756e74e5aa8fe24f976b8fe85e"
+      "checksum": "53719652c827d23f3b862068a981fed895773b5207d8c5a10d022b1dd609d126"
     },
     {
       "id": "wikipedia",
@@ -96,7 +96,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "c5ddfba414ad988ca8694b503855db3b83d6357f9f817870f622d1e3f7cbc02d"
+      "checksum": "22fbb746879a1b3a5e211bc456b9872bebe2709353d963400ef2f0b6a3276022"
     }
   ]
 }
