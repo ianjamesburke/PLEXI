@@ -2305,6 +2305,7 @@ impl PlexiApp {
                 scope,
                 source_context_id,
                 source_pane_id,
+                peer_pid,
                 ..
             } => {
                 let internal_id = notify_id.clone().unwrap_or_else(|| {
@@ -2317,49 +2318,62 @@ impl PlexiApp {
                     )
                 });
                 log::info!(
-                    "pane_ipc: kind=notify title={:?} choices={} scope={:?} source_context_id={:?} source_pane_id={:?} response_file={:?}",
+                    "pane_ipc: kind=notify title={:?} choices={} scope={:?} peer_pid={:?} response_file={:?}",
                     title,
                     options.len(),
                     scope,
-                    source_context_id,
-                    source_pane_id,
+                    peer_pid,
                     response_file
                 );
-                // Caller identity comes from the command's own fields, never
-                // from dispatch-time active state — by dispatch, the active
-                // context may be one the sender has never seen, and stamping
-                // it can hide a context-scoped notification from everyone.
-                // The sending pane's live location is the ground truth (a
-                // pane can move between contexts after its env was stamped);
-                // the claimed context id covers callers whose pane is gone.
-                let pane_window_idx = source_pane_id
-                    .and_then(|pid| self.find_pane_in_any_window(pid))
-                    .map(|(win_idx, _)| win_idx);
-                let (caller_context_id, caller_window_id) = match pane_window_idx {
-                    Some(win_idx) => (
-                        Some(self.windows[win_idx].context_id),
-                        Some(self.windows[win_idx].window_id),
-                    ),
-                    None => match source_context_id
-                        .filter(|id| self.router.iter().any(|c| c.context_id == *id))
-                    {
-                        Some(ctx_id) => (
-                            Some(ctx_id),
-                            self.windows
-                                .iter()
-                                .find(|w| w.context_id == ctx_id)
-                                .map(|w| w.window_id),
-                        ),
-                        None => (None, None),
-                    },
+                // Caller identity is resolved from the socket peer's OS
+                // credential (`peer_pid`, host-established in
+                // `handle_socket_connection`), never from dispatch-time
+                // active state and never from the client-claimed
+                // `source_context_id`/`source_pane_id` fields — those are
+                // attacker-controlled and, before this fix, let any process
+                // with socket access widen or misattribute a notification's
+                // scope by lying about which pane sent it.
+                let resolved = peer_pid
+                    .as_deref()
+                    .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry));
+                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) =
+                    resolved
+                {
+                    log::info!(
+                        "pane_ipc: peer identity: notify sender resolved to pane={resolved_pane_id} context={resolved_context_id} window={resolved_window_id} peer_pid={peer_pid:?}"
+                    );
+                }
+                if source_pane_id.is_some() || source_context_id.is_some() {
+                    let claimed_matches = resolved
+                        .is_some_and(|(pane_id, context_id, _)| {
+                            source_pane_id.is_none_or(|claimed| claimed == pane_id)
+                                && source_context_id.is_none_or(|claimed| claimed == context_id)
+                        });
+                    if !claimed_matches {
+                        log::warn!(
+                            "pane_ipc: notify: claimed identity (source_context_id={source_context_id:?} source_pane_id={source_pane_id:?}) \
+                             disagrees with host-resolved sender {resolved:?} — using the host-resolved identity only"
+                        );
+                    }
+                }
+                let (caller_context_id, caller_window_id) = match resolved {
+                    Some((_, context_id, window_id)) => (Some(context_id), Some(window_id)),
+                    None => (None, None),
                 };
                 // Unscoped `plexi notify` belongs to the context that produced
                 // it; `--scope global` is the opt-in. A context or window
-                // scope with no resolvable sender (outside-pane caller, or a
-                // stale identity) escalates to global: showing the
-                // notification everywhere is the only resolution that cannot
-                // hide it, and attaching it to some other context would
-                // fabricate provenance.
+                // scope with no resolvable sender (outside-pane caller, a
+                // dead peer pid, or a peer that matches no live terminal
+                // pane) escalates to global: showing the notification
+                // everywhere is the only resolution that cannot hide it, and
+                // attaching it to some other context would fabricate
+                // provenance. `caller_context_id` and `caller_window_id` are
+                // always both `Some` or both `None` — they come from the
+                // same resolved `(pane_id, context_id, window_id)` tuple, so
+                // there is no "context resolved but window didn't" case to
+                // narrow separately; the pre-fix `source_context_id`-only
+                // fallback that produced that case is exactly the forgeable
+                // input this stint removes.
                 let effective_scope = match scope.unwrap_or_default() {
                     crate::app_protocol::NotifyScope::Global => {
                         crate::app_protocol::NotifyScope::Global
@@ -2370,17 +2384,6 @@ impl PlexiApp {
                     crate::app_protocol::NotifyScope::Window if caller_window_id.is_some() => {
                         crate::app_protocol::NotifyScope::Window
                     }
-                    crate::app_protocol::NotifyScope::Window if caller_context_id.is_some() => {
-                        // The context resolved but has no live window (parked).
-                        // Narrow to the sender's own context — the least
-                        // widening that keeps the notification reachable;
-                        // global would expose it to every stranger's context.
-                        log::warn!(
-                            "pane_ipc: notify: window scope requested but context \
-                             {caller_context_id:?} has no live window — narrowing to context scope"
-                        );
-                        crate::app_protocol::NotifyScope::Context
-                    }
                     unresolvable => {
                         log::warn!(
                             "pane_ipc: notify: scope {unresolvable:?} needs a caller identity but none resolved \
@@ -2390,11 +2393,24 @@ impl PlexiApp {
                         crate::app_protocol::NotifyScope::Global
                     }
                 };
+                // The host-resolved sender pane, so `dismiss_notification_from_sender`
+                // can check ownership against a value the requester never
+                // controlled instead of re-parsing it out of `notify_id` (the
+                // pre-fix behavior — `notify_id` is itself client-generated,
+                // so that check was comparing two attacker-controlled values
+                // against each other). 0 = no resolvable sender — the
+                // notification can never be dismissed via `plexi notify
+                // dismiss`, same as before this fix for any non-CLI-format
+                // notify_id. Deliberately NOT `sender_pane_id`: that field
+                // drives auto-dismiss-on-focus (`notifications.rs`), which
+                // CLI notifications opt out of on purpose.
+                let dismiss_owner_pane_id = resolved.map(|(pane_id, ..)| pane_id).unwrap_or(0);
                 self.enqueue_notification(
                     crate::app::notifications::NotifySource::Cli,
                     PendingNotification {
                         notify_id: internal_id,
                         sender_pane_id: 0,
+                        dismiss_owner_pane_id,
                         // 0 = no context / no window, the same sentinel
                         // host-internal notifications use. Real ids start at 1.
                         source_context_id: caller_context_id.unwrap_or(0),
@@ -2422,12 +2438,41 @@ impl PlexiApp {
                 source_context_id,
                 source_pane_id,
                 response_file,
+                peer_pid,
             } => {
-                let result = match (source_context_id, source_pane_id) {
-                    (Some(_), Some(pane_id)) => self
-                        .dismiss_notification_from_sender(notify_id, *pane_id)
+                // Same trust boundary as `Notify`: ownership is decided from
+                // the socket peer's host-resolved pane, never from the
+                // client-claimed `source_context_id`/`source_pane_id` — those
+                // are attacker-controlled and, before this fix, were the
+                // entire ownership check (compared against a pane id
+                // re-parsed out of the equally client-generated `notify_id`).
+                let resolved = peer_pid
+                    .as_deref()
+                    .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry));
+                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) =
+                    resolved
+                {
+                    log::info!(
+                        "pane_ipc: peer identity: dismiss sender resolved to pane={resolved_pane_id} context={resolved_context_id} window={resolved_window_id} peer_pid={peer_pid:?}"
+                    );
+                }
+                if source_pane_id.is_some() || source_context_id.is_some() {
+                    let claimed_matches = resolved.is_some_and(|(pane_id, context_id, _)| {
+                        source_pane_id.is_none_or(|claimed| claimed == pane_id)
+                            && source_context_id.is_none_or(|claimed| claimed == context_id)
+                    });
+                    if !claimed_matches {
+                        log::warn!(
+                            "pane_ipc: notify dismiss: claimed identity (source_context_id={source_context_id:?} source_pane_id={source_pane_id:?}) \
+                             disagrees with host-resolved sender {resolved:?} — using the host-resolved identity only"
+                        );
+                    }
+                }
+                let result = match resolved {
+                    Some((pane_id, _, _)) => self
+                        .dismiss_notification_from_sender(notify_id, pane_id)
                         .map(|()| "dismissed"),
-                    _ => Err("notify dismiss requires caller pane and context"),
+                    None => Err("notify dismiss requires a resolvable caller pane"),
                 };
                 match result {
                     Ok(message) => {
@@ -3238,6 +3283,7 @@ impl PlexiApp {
             crate::app::notifications::PendingNotification {
                 notify_id: format!("routine-{millis}-{seq}"),
                 sender_pane_id: 0,
+                dismiss_owner_pane_id: 0,
                 source_context_id,
                 source_window_id: 0,
                 title: title.to_string(),

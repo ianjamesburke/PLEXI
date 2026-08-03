@@ -6,6 +6,13 @@ use super::PlexiApp;
 pub(crate) struct PendingNotification {
     pub notify_id: String,
     pub sender_pane_id: u64,
+    /// Host-resolved pane id allowed to dismiss this notification via
+    /// `plexi notify dismiss` (`DismissNotification`'s `peer_pid` resolved
+    /// through `resolve_socket_peer_pane`). 0 = no verified sender —
+    /// unreachable by any dismiss request. Distinct from `sender_pane_id`,
+    /// which drives auto-dismiss-on-focus and is deliberately left 0 for CLI
+    /// notifications regardless of sender identity.
+    pub dismiss_owner_pane_id: u64,
     /// Stable context identity the notification originated from (stamped at drain time).
     pub source_context_id: u64,
     /// Stable window identity the notification originated from. Used by
@@ -54,6 +61,8 @@ pub(crate) struct PendingNotification {
 struct PersistedNotification {
     notify_id: String,
     sender_pane_id: u64,
+    #[serde(default)]
+    dismiss_owner_pane_id: u64,
     source_context_id: u64,
     #[serde(default)]
     source_window_id: u64,
@@ -98,6 +107,7 @@ pub(crate) fn save_pending_notifications_to(
             PersistedNotification {
                 notify_id: n.notify_id.clone(),
                 sender_pane_id: n.sender_pane_id,
+                dismiss_owner_pane_id: n.dismiss_owner_pane_id,
                 source_context_id: n.source_context_id,
                 source_window_id: n.source_window_id,
                 title: n.title.clone(),
@@ -158,6 +168,12 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
             Some(PendingNotification {
                 notify_id: p.notify_id,
                 sender_pane_id: p.sender_pane_id,
+                // Forced to 0 (unowned) on restore, same reasoning as
+                // `tombstoned: true` below: pane ids are re-issued fresh each
+                // session, so a persisted owner id could otherwise
+                // misattribute a restored notification to an unrelated pane
+                // that happens to reuse the same id post-restart.
+                dismiss_owner_pane_id: 0,
                 source_context_id: p.source_context_id,
                 source_window_id: p.source_window_id,
                 title: p.title,
@@ -239,18 +255,21 @@ impl PlexiApp {
     /// Remove a CLI notification only when the caller owns its stamped pane.
     /// This is deliberately a queue mutation rather than
     /// a UI-only close so sticky entries cannot survive a CLI dismissal.
+    ///
+    /// `resolved_pane_id` is the host-established sender pane — resolved by
+    /// `handle_pane_ipc_request` from the socket peer's OS credential via
+    /// `resolve_socket_peer_pane`, never from the request's own fields.
+    /// Ownership is checked against `PendingNotification::dismiss_owner_pane_id`
+    /// (stamped the same way at enqueue time), not by re-parsing `notify_id` —
+    /// `notify_id` is client-generated (`plexi notify`'s `"cli:{pane_id}:{uuid}"`),
+    /// so comparing it against a client-supplied pane id was comparing two
+    /// attacker-controlled values against each other and proved nothing.
+    /// `0` means either side has no verified owner and can never match.
     pub(crate) fn dismiss_notification_from_sender(
         &mut self,
         notify_id: &str,
-        source_pane_id: u64,
+        resolved_pane_id: u64,
     ) -> Result<(), &'static str> {
-        let expected_owner = notify_id
-            .strip_prefix("cli:")
-            .and_then(|rest| rest.split_once(':'))
-            .and_then(|(pane_id, _)| pane_id.parse::<u64>().ok());
-        if expected_owner != Some(source_pane_id) {
-            return Err("notification not found or not owned by caller");
-        }
         let Some(position) = self
             .pending_notifications
             .iter()
@@ -258,6 +277,11 @@ impl PlexiApp {
         else {
             return Err("notification not found or not owned by caller");
         };
+        if resolved_pane_id == 0
+            || self.pending_notifications[position].dismiss_owner_pane_id != resolved_pane_id
+        {
+            return Err("notification not found or not owned by caller");
+        }
         self.pending_notifications.remove(position);
         if self.current_notify_id.as_deref() == Some(notify_id) {
             self.current_notify_id = None;
@@ -267,9 +291,9 @@ impl PlexiApp {
         }
         self.save_notifications();
         log::info!(
-            "notify: dismissed id={} source_pane_id={}",
+            "notify: dismissed id={} resolved_pane_id={}",
             notify_id,
-            source_pane_id
+            resolved_pane_id
         );
         Ok(())
     }

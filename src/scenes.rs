@@ -2502,6 +2502,7 @@ impl HeadlessBackend {
                         .push(crate::app::PendingNotification {
                             notify_id: id.clone(),
                             sender_pane_id: 0,
+                            dismiss_owner_pane_id: 0,
                             source_context_id: 0,
                             source_window_id: 0,
                             title,
