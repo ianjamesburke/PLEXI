@@ -41,6 +41,10 @@ impl-phase-1-b - If test phase 2 comes back with errors or suggestions on code q
 
 repeat impl and test loop untill all work in the plan lands
 
+during testing, try to use the plexi scens test to create screenshots if you can fo better verification
+
+---
+
 Output on successful implementation:
 
 open a pr against alpha and wait for CI CD to pass
