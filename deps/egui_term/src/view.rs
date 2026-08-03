@@ -16,6 +16,7 @@ use egui::{Id, PointerButton};
 use std::time::{Duration, Instant};
 
 use crate::backend::BackendCommand;
+use crate::backend::ResizeOutcome;
 use crate::backend::TerminalBackend;
 use crate::backend::{LinkAction, MouseButton, SelectionType};
 use crate::bindings::Binding;
@@ -247,20 +248,29 @@ impl<'a> TerminalView<'a> {
     }
 
     fn resize(self, layout: &Response) -> Self {
-        // Timed as a whole (stint 0731 drag profiling): process_command
-        // takes self.term.lock() for every command, so this captures lock
-        // contention with the PTY reader thread, not just the reflow math.
+        // Timed as a whole (stint 0731 drag profiling): a committing frame
+        // takes self.term.lock(), so this captures lock contention with the
+        // PTY reader thread, not just the reflow math. A frame the debounce
+        // defers takes no lock at all, which is most of the win during a drag.
         let timed = crate::diag::span_hook_installed();
         let start = timed.then(std::time::Instant::now);
-        self.backend.process_command(BackendCommand::Resize(
+        let outcome = self.backend.request_resize(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
-        ));
+        );
         if let Some(start) = start {
             crate::diag::span_note(
                 "terminal_resize",
                 start.elapsed().as_nanos() as u64,
             );
+        }
+
+        if outcome == ResizeOutcome::Deferred {
+            // The commit runs on the next frame that reports the same
+            // geometry, so a drag that ends between frames must still produce
+            // one more pass — otherwise the final size is stranded and the
+            // shell keeps wrapping to the pre-drag width (stint 0719).
+            layout.ctx.request_repaint();
         }
 
         self

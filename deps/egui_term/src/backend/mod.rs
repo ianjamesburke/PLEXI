@@ -41,7 +41,6 @@ pub enum BackendCommand {
     Scroll(i32),
     ScrollToTop,
     ScrollToBottom,
-    Resize(Size, Size),
     SelectStart(SelectionType, f32, f32, f32),
     SelectUpdate(f32, f32, f32),
     ClearSelection,
@@ -86,6 +85,74 @@ pub enum LinkAction {
     Clear,
     Hover,
     Open,
+}
+
+/// What [`TerminalBackend::request_resize`] did with a frame's layout geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeOutcome {
+    /// The cell grid is already what the shell has; nothing was sent.
+    Unchanged,
+    /// The geometry changed this frame and is being held for the trailing edge
+    /// of the drag. The caller must schedule another frame so the commit
+    /// cannot be stranded by a gesture that ends between frames.
+    Deferred,
+    /// `SIGWINCH` and the grid reflow ran for this geometry.
+    Committed,
+}
+
+/// Longest run of consecutive frames a pending resize may be held back. A drag
+/// that reports a new size on literally every frame never produces the stable
+/// frame the debounce waits for, so without a cap the grid would stay frozen
+/// at its pre-drag size for the entire gesture. The cap turns that into a
+/// bounded one-reflow-per-`MAX_DEFERRED_RESIZE_FRAMES` and keeps the visible
+/// grid tracking a long drag.
+const MAX_DEFERRED_RESIZE_FRAMES: u32 = 8;
+
+/// The cell grid a layout implies. Cell dimensions are part of it because a
+/// font-size change reflows the shell exactly like a pane-size change does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResizeGeometry {
+    lines: u16,
+    cols: u16,
+    cell_height: u16,
+    cell_width: u16,
+}
+
+impl ResizeGeometry {
+    /// `None` for a layout that yields no rows or no columns — a zero-sized or
+    /// not-yet-laid-out pane, which the shell must never be told about.
+    fn derive(layout_size: Size, font_size: Size) -> Option<Self> {
+        let lines = (layout_size.height / font_size.height.floor()) as u16;
+        let cols = (layout_size.width / font_size.width.floor()) as u16;
+        if lines == 0 || cols == 0 {
+            return None;
+        }
+        Some(Self {
+            lines,
+            cols,
+            cell_height: font_size.height as u16,
+            cell_width: font_size.width as u16,
+        })
+    }
+
+    fn of(size: &TerminalSize) -> Self {
+        Self {
+            lines: size.num_lines,
+            cols: size.num_cols,
+            cell_height: size.cell_height,
+            cell_width: size.cell_width,
+        }
+    }
+}
+
+/// Geometry seen on a frame but not yet committed. See
+/// [`TerminalBackend::request_resize`].
+#[derive(Debug, Clone, Copy)]
+struct PendingResize {
+    geometry: ResizeGeometry,
+    /// Consecutive frames the reflow has been held back, including the frame
+    /// that produced this record.
+    deferred_frames: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -169,6 +236,13 @@ pub struct TerminalBackend {
     /// terminal — without depending on a live child process echoing it back.
     /// Mirrors the cross-crate observation rationale of [`crate::diag`].
     input_tap: Mutex<Option<Vec<u8>>>,
+    /// Number of grid reflows actually committed to the PTY and the alacritty
+    /// grid. Observable so the resize-debounce regression test can assert a
+    /// multi-frame drag coalesces instead of reflowing once per frame.
+    resize_commits: u64,
+    /// Layout geometry seen but not yet committed, held by the frame-stability
+    /// debounce in [`Self::request_resize`].
+    pending_resize: Option<PendingResize>,
 }
 
 #[derive(Default)]
@@ -286,6 +360,8 @@ impl TerminalBackend {
             capture_state: Mutex::new(CaptureState::default()),
             max_scroll_limit: 10_000,
             input_tap: Mutex::new(None),
+            resize_commits: 0,
+            pending_resize: None,
         })
     }
 
@@ -307,9 +383,6 @@ impl TerminalBackend {
             BackendCommand::ScrollToBottom => {
                 log::info!("terminal scroll: jump to bottom");
                 term.grid_mut().scroll_display(Scroll::Bottom);
-            },
-            BackendCommand::Resize(layout_size, font_size) => {
-                self.resize(&mut term, layout_size, font_size);
             },
             BackendCommand::SelectStart(selection_type, x, y, ppp) => {
                 self.start_selection(&mut term, selection_type, x, y, ppp);
@@ -892,41 +965,107 @@ impl TerminalBackend {
         }
     }
 
-    fn resize(
+    /// Ask the terminal to adopt this frame's layout geometry.
+    ///
+    /// The render pass calls this once per frame per visible terminal, so it is
+    /// the frequency gate for the whole reflow path: committing means a PTY
+    /// `SIGWINCH` plus an alacritty grid reflow whose cost scales with
+    /// scrollback, all synchronous inside the host's `ui` pass. During a
+    /// pane-divider or window-edge drag the geometry changes on every
+    /// intermediate frame, so committing each one stutters the drag for every
+    /// visible pane at once (stint 0719).
+    ///
+    /// Geometry is therefore held until it stops moving: a change is recorded
+    /// as pending and only committed once a later frame reports the *same*
+    /// geometry — the trailing edge of the drag. A `Deferred` outcome obliges
+    /// the caller to schedule another frame, otherwise a drag that ends between
+    /// frames would strand the last size.
+    pub fn request_resize(
+        &mut self,
+        layout_size: Size,
+        font_size: Size,
+    ) -> ResizeOutcome {
+        let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
+        else {
+            // Degenerate layout (zero rows or columns): there is no grid to
+            // give the shell, and a pending one would be equally meaningless.
+            self.pending_resize = None;
+            return ResizeOutcome::Unchanged;
+        };
+
+        if geometry == ResizeGeometry::of(&self.size) {
+            // Sub-pixel layout drift with an identical cell grid: record it,
+            // but the shell's view of the world has not changed.
+            self.pending_resize = None;
+            self.size.layout_size = layout_size;
+            return ResizeOutcome::Unchanged;
+        }
+
+        let held = self.pending_resize.take();
+        let settled = held.is_some_and(|pending| pending.geometry == geometry);
+        let deferred_frames =
+            held.map_or(0, |pending| pending.deferred_frames) + 1;
+
+        if !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
+            self.pending_resize = Some(PendingResize {
+                geometry,
+                deferred_frames,
+            });
+            return ResizeOutcome::Deferred;
+        }
+
+        log::info!(
+            "terminal {} resize commit: {}x{} cells, {} frame(s) coalesced ({})",
+            self.id,
+            geometry.cols,
+            geometry.lines,
+            deferred_frames - 1,
+            if settled {
+                "layout settled"
+            } else {
+                "defer cap reached"
+            },
+        );
+
+        let term = self.term.clone();
+        let mut term = term.lock();
+        self.commit_resize(&mut term, layout_size, geometry);
+        ResizeOutcome::Committed
+    }
+
+    fn commit_resize(
         &mut self,
         terminal: &mut Term<EventProxy>,
         layout_size: Size,
-        font_size: Size,
+        geometry: ResizeGeometry,
     ) {
-        let lines = (layout_size.height / font_size.height.floor()) as u16;
-        let cols = (layout_size.width / font_size.width.floor()) as u16;
-        if lines == 0 || cols == 0 {
-            return;
-        }
-
-        // Skip SIGWINCH if row/col count and cell dimensions are unchanged —
-        // sub-pixel layout changes don't affect the shell's grid.
-        if lines == self.size.num_lines
-            && cols == self.size.num_cols
-            && font_size.height as u16 == self.size.cell_height
-            && font_size.width as u16 == self.size.cell_width
-        {
-            self.size.layout_size = layout_size;
-            return;
-        }
-
         self.size = TerminalSize {
             layout_size,
-            cell_height: font_size.height as u16,
-            cell_width: font_size.width as u16,
-            num_lines: lines,
-            num_cols: cols,
+            cell_height: geometry.cell_height,
+            cell_width: geometry.cell_width,
+            num_lines: geometry.lines,
+            num_cols: geometry.cols,
         };
         *self.shared_size.lock().unwrap() = self.size;
+        self.resize_commits += 1;
 
         self.notifier.on_resize(self.size.into());
-        terminal.resize(TermSize::new(cols as usize, lines as usize));
+        terminal.resize(TermSize::new(
+            geometry.cols as usize,
+            geometry.lines as usize,
+        ));
         terminal.scroll_display(Scroll::Bottom);
+    }
+
+    /// How many grid reflows (PTY `SIGWINCH` + alacritty reflow) this terminal
+    /// has committed. Monotonic for the life of the backend.
+    pub fn resize_commits(&self) -> u64 {
+        self.resize_commits
+    }
+
+    /// The grid geometry the PTY was last told about, as `(cols, lines)`.
+    pub fn committed_grid(&self) -> (u16, u16) {
+        (self.size.num_cols, self.size.num_lines)
     }
 
     fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
