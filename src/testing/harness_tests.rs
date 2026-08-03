@@ -3744,6 +3744,103 @@ fn focused_text_input_receives_typing_and_enter_submits() {
     wait_for_text_label(&mut h, pane_id, "keys:", "keys:2");
 }
 
+/// Stint 0720: typing faster than the guest's render round trip must not lose
+/// characters. The app path re-renders the last *committed* guest tree every
+/// host frame, and a real subprocess can never echo a keystroke in the same
+/// frame it was typed — so between the keystroke and the echo there are frames
+/// whose tree still carries the stale value. Those frames must leave the local
+/// draft alone. `focused_text_input_receives_typing_and_enter_submits` types one
+/// character and then waits, so it never enters that window; this drives two
+/// keystrokes on consecutive frames, then a keystroke on the frame right after
+/// Enter, where the guest has cleared the draft but its committed tree has not
+/// caught up.
+#[test]
+fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/text-input-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch text-input-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching text-input-probe");
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "text-input-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+
+    let input_node_id = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .map(|pane| pane.semantic_state())
+        .and_then(|state| {
+            state
+                .nodes
+                .iter()
+                .find(|n| n.role == "text_input")
+                .map(|n| n.id.clone())
+        })
+        .expect("semantic tree exposes the TextInput node");
+    h.inject_node_click(pane_id, &input_node_id, "left", None);
+    h.run_frames(2);
+
+    // Two keystrokes on two consecutive host frames, with no wait between —
+    // the second lands while the first is still round-tripping to the guest.
+    frame_with_events(
+        &mut h,
+        vec![
+            pressed_key(egui::Key::H),
+            egui::Event::Text("h".to_string()),
+        ],
+    );
+    frame_with_events(
+        &mut h,
+        vec![
+            pressed_key(egui::Key::I),
+            egui::Event::Text("i".to_string()),
+        ],
+    );
+    wait_for_text_label(&mut h, pane_id, "draft:", "draft:hi");
+
+    // Enter submits, then a keystroke on the very next frame — before the
+    // guest's cleared-draft tree arrives. The new character must start a fresh
+    // draft, never re-extend the submitted text.
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::Enter)]);
+    frame_with_events(
+        &mut h,
+        vec![
+            pressed_key(egui::Key::Z),
+            egui::Event::Text("z".to_string()),
+        ],
+    );
+    wait_for_text_label(&mut h, pane_id, "submitted:", "submitted:hi");
+    wait_for_text_label(&mut h, pane_id, "draft:", "draft:z");
+}
+
 // ─── Editor release gate: host-driven layer (stint 0479) ─────────────────────
 
 /// One host-level input step for the notes pane: either raw text through

@@ -888,6 +888,10 @@ pub struct LivePythonPane {
     app_id: String,
     title: Option<String>,
     tree: Option<Arc<PythonUiTree>>,
+    /// Monotonic generation of `tree`. Bumped on every swap (commit, reset) so
+    /// the renderer's host-owned edit buffers can tell a newly committed guest
+    /// tree from a repaint of the same stale one (stint 0720).
+    tree_seq: u64,
     pending_trees: HashMap<u64, Arc<PythonUiTree>>,
     initialized: bool,
     ready: bool,
@@ -2042,6 +2046,7 @@ impl LivePythonPane {
             app_id,
             title: None,
             tree: None,
+            tree_seq: 0,
             pending_trees: HashMap::new(),
             initialized: false,
             ready: false,
@@ -2260,6 +2265,7 @@ impl LivePythonPane {
                 Some(&tree.canvas_fits),
                 pending_click,
                 Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
+                self.tree_seq,
             );
             self.perf_ui_render += render_started.elapsed();
             self.perf_canvas_render += result.canvas_time;
@@ -2638,6 +2644,7 @@ impl LivePythonPane {
                         &mut self.frame_scheduler,
                         &mut self.pending_trees,
                         &mut self.tree,
+                        &mut self.tree_seq,
                         frame_id,
                     )
                 });
@@ -3673,6 +3680,7 @@ impl LivePythonPane {
         );
         self.runtime = runtime;
         self.tree = None;
+        self.tree_seq += 1;
         self.pending_trees.clear();
         self.initialized = false;
         self.ready = false;
@@ -4069,11 +4077,13 @@ fn commit_python_frame(
     scheduler: &mut PythonFrameScheduler,
     pending_trees: &mut HashMap<u64, Arc<PythonUiTree>>,
     visible_tree: &mut Option<Arc<PythonUiTree>>,
+    visible_tree_seq: &mut u64,
     frame_id: u64,
 ) -> Option<std::time::Instant> {
     let sent_at = scheduler.complete_frame(frame_id)?;
     if let Some(tree) = pending_trees.remove(&frame_id) {
         *visible_tree = Some(tree);
+        *visible_tree_seq += 1;
     }
     Some(sent_at)
 }
@@ -7309,13 +7319,23 @@ mod tests {
         .expect("pending tree");
         let mut pending = HashMap::from([(frame_id, Arc::new(pending_tree))]);
         let mut visible = None;
+        let mut visible_seq = 0;
 
         assert!(visible.is_none());
-        assert!(
-            commit_python_frame(&mut scheduler, &mut pending, &mut visible, frame_id,).is_some()
-        );
+        assert!(commit_python_frame(
+            &mut scheduler,
+            &mut pending,
+            &mut visible,
+            &mut visible_seq,
+            frame_id,
+        )
+        .is_some());
         assert!(pending.is_empty());
         assert!(visible.is_some());
+        assert_eq!(
+            visible_seq, 1,
+            "committing a tree bumps the generation the renderer reconciles against"
+        );
     }
 
     #[test]

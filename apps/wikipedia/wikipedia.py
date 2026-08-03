@@ -373,6 +373,7 @@ def _search_view(data: dict):
                     placeholder="Try “Detroit”, “Tetris”, or “Ada Lovelace”",
                     on_change="wiki-query",
                     on_submit="wiki-submit",
+                    autofocus=True,
                 ),
                 Button(
                     "Search Wikipedia",

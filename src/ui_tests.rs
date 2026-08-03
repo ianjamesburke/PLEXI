@@ -3974,4 +3974,88 @@ mod tests {
             }
         }
     }
+
+    /// Stint 0720 visual review: the todo app's add form, autofocused and
+    /// mid-draft. Drives the real app process through the production paths —
+    /// `a` opens the form on the guest's raw KeyEvent path, `autofocus` hands
+    /// the cursor to the host TextEdit with no click, and the typed draft is
+    /// painted from the host-owned buffer while it round-trips to the guest.
+    /// The assertion is the gate; the PNG is for a human/agent to look at.
+    #[test]
+    fn screenshot_todo_add_form_autofocused_draft() {
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        let pane_id = h.open_app_at(&app_dir, &[]).expect("launch todo");
+        h.wait_for_app_frame(pane_id, Duration::from_secs(30))
+            .expect("todo renders its first frame");
+        h.focus_pane(pane_id).expect("focus todo pane");
+        h.run_steps(2);
+
+        // `a` opens the add form (the guest's raw KeyEvent path — no text
+        // surface is focused yet).
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+
+        let pane_text = |h: &PlexiUiHarness| -> String {
+            h.with_app(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get(&pane_id)
+                    .and_then(Pane::as_app)
+                    .map(|pane| {
+                        pane.semantic_state()
+                            .nodes
+                            .iter()
+                            .flat_map(|n| {
+                                n.label
+                                    .clone()
+                                    .into_iter()
+                                    .chain(n.value.clone().map(|v| format!("value:{v}")))
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        let start = Instant::now();
+        while !pane_text(&h).contains("What needs doing?") {
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "todo add form never appeared:\n{}",
+                pane_text(&h)
+            );
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        // Type without clicking: `autofocus` must already own the cursor. One
+        // character per frame, faster than the guest can echo any of them.
+        for ch in "Buy oat milk".chars() {
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::Text(ch.to_string()));
+            h.step();
+        }
+        let start = Instant::now();
+        while !pane_text(&h).contains("value:Buy oat milk") {
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "autofocused draft never round-tripped to the guest:\n{}",
+                pane_text(&h)
+            );
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        h.save_screenshot("/tmp/plexi-render-0720-todo-add-form.png")
+            .expect("render todo add form");
+    }
 }

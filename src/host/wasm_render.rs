@@ -7,7 +7,7 @@
 // back to the guest. A depth cap guards against malformed/cyclic trees.
 
 use egui::{Color32, RichText};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -53,14 +53,21 @@ pub struct RenderResult {
 
 /// Render a view tree, compositing `surface` into the first surface-node
 /// (the guest's GPU output). Pass `None` to draw a placeholder instead.
+///
+/// `tree_seq` identifies the *generation* of the tree being painted: callers
+/// bump it every time they swap in a newly committed guest tree, and repaint
+/// the same tree under the same value. Host-owned edit buffers use it to tell
+/// "the app pushed me a new value" apart from "I am painting the same stale
+/// tree again" — see `reconcile_text_input_buffer`.
 pub fn render_ui_tree_with_surface(
     ui: &mut egui::Ui,
     tree: &UiTree,
     colors: &Colors,
     surface: Option<egui::TextureId>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
 ) -> RenderResult {
-    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None, surface_key)
+    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None, surface_key, tree_seq)
 }
 
 pub fn render_ui_tree_with_canvas_fits(
@@ -71,6 +78,7 @@ pub fn render_ui_tree_with_canvas_fits(
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
 ) -> RenderResult {
     let mut out = RenderResult::default();
     let render_root = |ui: &mut egui::Ui, out: &mut RenderResult| {
@@ -85,6 +93,7 @@ pub fn render_ui_tree_with_canvas_fits(
             canvas_fits,
             pending_click,
             surface_key,
+            tree_seq,
         );
     };
     // Good-by-default spacing (stint 0445): a declarative app with no layout
@@ -116,6 +125,7 @@ pub fn render_ui_tree_with_canvas_fits(
             canvas_fits,
             pending_click,
             surface_key,
+            tree_seq,
         ) {
             egui::Frame::NONE
                 .inner_margin(root_content_inset())
@@ -142,6 +152,7 @@ fn render_root_with_chrome_bands(
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
 ) -> bool {
     let nodes = &tree.nodes;
     let Some(UiNodeData::Column(c)) = find_node(nodes, tree.root).map(|n| &n.data) else {
@@ -187,6 +198,7 @@ fn render_root_with_chrome_bands(
                         canvas_fits,
                         pending_click,
                         surface_key,
+                        tree_seq,
                     );
                 }
             });
@@ -230,6 +242,7 @@ fn render_root_with_chrome_bands(
                 canvas_fits,
                 pending_click,
                 surface_key,
+                tree_seq,
             );
         });
     }
@@ -252,6 +265,7 @@ fn render_root_with_chrome_bands(
                 canvas_fits,
                 pending_click,
                 surface_key,
+                tree_seq,
             );
         });
     }
@@ -321,7 +335,7 @@ pub fn render_ui_tree_to_png(
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
-                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
+                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
                 });
         });
     harness.run();
@@ -393,21 +407,105 @@ fn node_click_matches(pending_click: Option<crate::host::pane::PendingPaneClick>
     )
 }
 
-/// Resolve a `TextInput`'s edit buffer for this frame (stint 0456).
-/// `stored` is `(buffer, last_app_value)` from egui temp memory; returns the
-/// pair to edit this frame. The app's reported `value` wins only when it
-/// *changed* since we last saw it (a reset after submit, an external
-/// `SetState`) — an unchanged value (or the echo of our own `on_change`,
-/// which the caller records into `last_app_value`) never clobbers a local
-/// draft still round-tripping to the guest.
+/// Maximum un-echoed `on_change` values tracked per `TextInput`. A guest that
+/// stops answering must not grow this without bound; dropping the oldest entry
+/// only costs an adoption of a value the user typed many keystrokes ago.
+const TEXT_INPUT_PENDING_LIMIT: usize = 32;
+
+/// Host-owned edit state for one `TextInput`, held in egui temp memory
+/// (stints 0456, 0720).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TextInputEditState {
+    /// The draft the user is editing. Painted, not `ti.value`.
+    buf: String,
+    /// Generation of the committed guest tree this state last reconciled
+    /// against. Equal generations mean the same tree is being repainted.
+    seen_seq: u64,
+    /// Values already sent to the guest through `on_change` that have not yet
+    /// come back in a committed tree, oldest first.
+    pending: VecDeque<String>,
+    /// Set when `on_submit` fired: the guest is about to redefine the value
+    /// (clear it, keep it, transform it), so the next genuinely new tree is
+    /// authoritative — unless the user has typed since, in which case their
+    /// fresh draft wins.
+    awaiting_submit: bool,
+}
+
+/// Outcome of one reconcile, so the caller can log the lossy branch without
+/// re-deriving it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TextInputReconcile {
+    /// The local draft survived this frame.
+    KeptDraft,
+    /// The app's value replaced the local draft.
+    Adopted,
+}
+
+/// Resolve a `TextInput`'s edit buffer for this frame (stints 0456, 0720).
+///
+/// The app's `value` is a controlled input that round-trips asynchronously: a
+/// keystroke goes out as `on_change` and only comes back one or more guest
+/// frames later. Meanwhile the host repaints the *last committed* tree every
+/// frame, so the same stale `value` is presented over and over. Comparing
+/// values alone cannot separate that stale repaint from a genuine app-side
+/// reset, which is why typing faster than the guest's round trip used to drop
+/// characters. Two signals fix it:
+///
+/// - `seq` — the committed tree's generation. Unchanged generation means we are
+///   looking at a tree we already reconciled; it can never carry news, so the
+///   draft is kept verbatim.
+/// - `pending` — the values we sent out and are still waiting to see echoed. A
+///   new tree whose value is one of them is our own echo (possibly several
+///   keystrokes behind), so the draft is kept and the queue drained past it.
+///
+/// Anything else on a new tree is genuine app news (`SetState`, a post-submit
+/// reset) and is adopted.
+///
+/// Accepted residual: an app that *transforms* the value (uppercasing,
+/// filtering characters) emits a tree value that was never in `pending`, so it
+/// is adopted and the caret can jump to the end. Transforming controlled inputs
+/// are not supported by this contract; an app that needs one must own its own
+/// key handling.
 fn reconcile_text_input_buffer(
-    stored: Option<(String, String)>,
+    stored: Option<TextInputEditState>,
     app_value: &str,
-) -> (String, String) {
-    match stored {
-        Some((buf, last_app_value)) if app_value == last_app_value => (buf, last_app_value),
-        _ => (app_value.to_string(), app_value.to_string()),
+    seq: u64,
+) -> (TextInputEditState, TextInputReconcile) {
+    let adopt = |mut state: TextInputEditState| {
+        state.buf = app_value.to_string();
+        state.seen_seq = seq;
+        state.pending.clear();
+        state.awaiting_submit = false;
+        (state, TextInputReconcile::Adopted)
+    };
+
+    let Some(mut state) = stored else {
+        return adopt(TextInputEditState::default());
+    };
+
+    // Same committed tree as last frame: no news, never clobber the draft.
+    if state.seen_seq == seq {
+        return (state, TextInputReconcile::KeptDraft);
     }
+    state.seen_seq = seq;
+
+    // A submit hands the value back to the app — unless the user has already
+    // started a fresh draft in the gap, which outranks the app's answer.
+    if state.awaiting_submit {
+        state.awaiting_submit = false;
+        if state.buf.is_empty() {
+            return adopt(state);
+        }
+        return (state, TextInputReconcile::KeptDraft);
+    }
+
+    // Our own echo, possibly lagging several keystrokes behind.
+    if let Some(index) = state.pending.iter().position(|value| value == app_value) {
+        state.pending.drain(..=index);
+        return (state, TextInputReconcile::KeptDraft);
+    }
+
+    adopt(state)
 }
 
 fn find_node(nodes: &[IndexedNode], id: u32) -> Option<&IndexedNode> {
@@ -470,6 +568,7 @@ fn render_column_children(
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
 ) {
     let render_span = |ui: &mut egui::Ui, span: &[u32], out: &mut RenderResult| {
         ui.spacing_mut().item_spacing.y = gap;
@@ -485,6 +584,7 @@ fn render_column_children(
                 canvas_fits,
                 pending_click,
                 surface_key,
+                tree_seq,
             );
         }
     };
@@ -553,6 +653,7 @@ fn render_node(
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -610,9 +711,19 @@ fn render_node(
             // external SetState) still wins over any local draft.
             let widget_id = ui.id().with(("l1_text_input", id));
             let state_id = widget_id.with("edit_state");
-            let stored: Option<(String, String)> =
+            let stored: Option<TextInputEditState> =
                 ui.ctx().memory_mut(|m| m.data.get_temp(state_id));
-            let (mut buf, mut last_app_value) = reconcile_text_input_buffer(stored, &ti.value);
+            let previous_draft = stored.as_ref().map(|s| s.buf.clone());
+            let (mut state, outcome) = reconcile_text_input_buffer(stored, &ti.value, tree_seq);
+            if outcome == TextInputReconcile::Adopted {
+                if let Some(draft) = previous_draft.filter(|d| !d.is_empty() && *d != ti.value) {
+                    log::info!(
+                        "l1_text_input: adopting app value node={id} app={:?} discarding draft={draft:?}",
+                        ti.value
+                    );
+                }
+            }
+            let mut buf = std::mem::take(&mut state.buf);
             let resp = crate::ui::text_field::TextField::singleline(widget_id, &ti.placeholder)
                 .password(ti.password)
                 .log_name("l1_text_input")
@@ -624,6 +735,21 @@ fn render_node(
                 // entry form gets a live cursor with no imperative focus
                 // command and no key-routing code of its own (stint 0674).
                 if ti.autofocus {
+                    // Edge-triggered: one line the first time this widget id
+                    // claims the pane default, so a duplicate registration for
+                    // one node in one frame is visible in the log.
+                    let logged_id = resp.id.with("plexi_autofocus_logged");
+                    let already: bool = ui.ctx().memory_mut(|m| {
+                        let seen = m.data.get_temp::<bool>(logged_id).unwrap_or(false);
+                        m.data.insert_temp(logged_id, true);
+                        seen
+                    });
+                    if !already {
+                        log::info!(
+                            "l1_text_input: autofocus claiming pane default surface pane={key:?} id={:?}",
+                            resp.id
+                        );
+                    }
                     crate::ui::focus::register_default_text_surface(ui.ctx(), key, resp.id);
                 } else {
                     crate::ui::focus::register_text_surface(ui.ctx(), key, resp.id);
@@ -639,12 +765,25 @@ fn render_node(
             }
             if resp.changed() {
                 out.value_changes.push((ti.on_change.clone(), buf.clone()));
-                // Treat our own change as already-seen so the app's echo
-                // doesn't reset the buffer mid-typing.
-                last_app_value = buf.clone();
+                // Remember what we sent so the guest's echo — however many
+                // keystrokes behind it arrives — is recognized as ours and
+                // never mistaken for an app-pushed reset.
+                if state.pending.len() >= TEXT_INPUT_PENDING_LIMIT {
+                    state.pending.pop_front();
+                }
+                state.pending.push_back(buf.clone());
             }
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 out.actions.push(ti.on_submit.clone());
+                // Submitting hands the value back to the app, so the draft
+                // ends here: clearing it locally means a character typed
+                // before the guest's cleared tree arrives starts the next
+                // entry instead of re-extending the submitted one. If the app
+                // keeps its value instead of clearing it (a search field), the
+                // next committed tree is adopted and restores it.
+                buf.clear();
+                state.pending.clear();
+                state.awaiting_submit = true;
                 // Keep focus for consecutive entries — Enter submits, it
                 // doesn't dismiss the field. Escape leaves the field via
                 // egui's native focus surrender in `begin_pass`; the
@@ -654,8 +793,8 @@ fn render_node(
                     crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
                 }
             }
-            ui.ctx()
-                .memory_mut(|m| m.data.insert_temp(state_id, (buf, last_app_value)));
+            state.buf = buf;
+            ui.ctx().memory_mut(|m| m.data.insert_temp(state_id, state));
         }
 
         UiNodeData::Row(r) => {
@@ -673,6 +812,7 @@ fn render_node(
                         canvas_fits,
                         pending_click,
                         surface_key,
+                        tree_seq,
                     );
                 }
             });
@@ -712,6 +852,7 @@ fn render_node(
                         canvas_fits,
                         pending_click,
                         surface_key,
+                        tree_seq,
                     );
                 });
 
@@ -734,6 +875,7 @@ fn render_node(
                         canvas_fits,
                         pending_click,
                         surface_key,
+                        tree_seq,
                     );
                 });
             } else {
@@ -750,6 +892,7 @@ fn render_node(
                     canvas_fits,
                     pending_click,
                     surface_key,
+                    tree_seq,
                 );
             }
         }
@@ -810,6 +953,7 @@ fn render_node(
                             canvas_fits,
                             pending_click,
                             surface_key,
+                            tree_seq,
                         );
                     })
                     .response
@@ -840,6 +984,7 @@ fn render_node(
                     canvas_fits,
                     pending_click,
                     surface_key,
+                    tree_seq,
                 );
             });
         }
@@ -864,6 +1009,7 @@ fn render_node(
                         canvas_fits,
                         pending_click,
                         surface_key,
+                        tree_seq,
                     );
                 });
         }
@@ -1080,6 +1226,7 @@ fn render_node(
                 canvas_fits,
                 pending_click,
                 surface_key,
+                tree_seq,
             );
         }
 
@@ -1255,39 +1402,80 @@ mod tests {
         }
     }
 
-    /// Stint 0456: the TextInput edit buffer only resets when the app
-    /// *pushes a different value* — our own echo and unchanged app frames
-    /// never clobber a local draft mid-round-trip.
+    /// Build an edit state as the render arm would leave it.
+    fn edit_state(buf: &str, seen_seq: u64, pending: &[&str]) -> TextInputEditState {
+        TextInputEditState {
+            buf: buf.to_string(),
+            seen_seq,
+            pending: pending.iter().map(|v| v.to_string()).collect(),
+            awaiting_submit: false,
+        }
+    }
+
+    /// Stints 0456/0720: the TextInput edit buffer only resets when the app
+    /// pushes news — a repaint of the same committed tree and the echo of our
+    /// own `on_change` never clobber a local draft mid-round-trip.
     #[test]
     fn text_input_buffer_reconciliation() {
         // Fresh widget: adopt the app's value.
-        assert_eq!(
-            reconcile_text_input_buffer(None, "seed"),
-            ("seed".to_string(), "seed".to_string())
-        );
+        let (state, outcome) = reconcile_text_input_buffer(None, "seed", 7);
+        assert_eq!(outcome, TextInputReconcile::Adopted);
+        assert_eq!(state, edit_state("seed", 7, &[]));
 
-        // Local draft survives frames where the app still reports the value
-        // we last saw (the typed change is still round-tripping).
+        // Stint 0720 regression: the SAME committed tree repainted, carrying a
+        // value that differs from the draft because the guest has not echoed
+        // yet. Value comparison alone called this an app reset and dropped the
+        // keystroke; the generation says there is no news.
+        let (state, outcome) =
+            reconcile_text_input_buffer(Some(edit_state("hi", 3, &["h", "hi"])), "", 3);
         assert_eq!(
-            reconcile_text_input_buffer(Some(("typed".to_string(), "".to_string())), ""),
-            ("typed".to_string(), "".to_string()),
-            "stale app value must not clobber the draft"
+            outcome,
+            TextInputReconcile::KeptDraft,
+            "a repaint of an already-reconciled tree must never clobber the draft"
         );
+        assert_eq!(state, edit_state("hi", 3, &["h", "hi"]));
 
-        // The caller records our own change into last_app_value, so the
-        // app's echo of it is a no-op.
-        assert_eq!(
-            reconcile_text_input_buffer(Some(("typed".to_string(), "typed".to_string())), "typed"),
-            ("typed".to_string(), "typed".to_string())
-        );
+        // A new tree carrying an echo we are still waiting on: keep the draft
+        // and drain the queue through that entry.
+        let (state, outcome) =
+            reconcile_text_input_buffer(Some(edit_state("hi", 3, &["h", "hi"])), "h", 4);
+        assert_eq!(outcome, TextInputReconcile::KeptDraft);
+        assert_eq!(state, edit_state("hi", 4, &["hi"]));
 
-        // An app-pushed change (reset after submit, external SetState) wins
-        // over any local draft.
-        assert_eq!(
-            reconcile_text_input_buffer(Some(("typed".to_string(), "typed".to_string())), ""),
-            ("".to_string(), "".to_string()),
-            "app reset must clear the draft"
-        );
+        // A new tree with a value we never sent is genuine app news (external
+        // SetState, post-submit reset) and wins over the draft.
+        let (state, outcome) =
+            reconcile_text_input_buffer(Some(edit_state("typed", 3, &["typed"])), "", 4);
+        assert_eq!(outcome, TextInputReconcile::Adopted);
+        assert_eq!(state, edit_state("", 4, &[]));
+    }
+
+    /// Stint 0720: after `on_submit` the app redefines the value, but a
+    /// character typed before its tree lands starts the next entry rather than
+    /// re-extending the submitted one.
+    #[test]
+    fn text_input_submit_hands_the_value_back_unless_the_user_typed_first() {
+        let submitted = TextInputEditState {
+            buf: String::new(),
+            seen_seq: 3,
+            pending: VecDeque::new(),
+            awaiting_submit: true,
+        };
+
+        // Untouched since submit: whatever the app decided is authoritative —
+        // cleared here, but a search field that keeps its query is restored the
+        // same way.
+        let (state, outcome) = reconcile_text_input_buffer(Some(submitted.clone()), "query", 4);
+        assert_eq!(outcome, TextInputReconcile::Adopted);
+        assert_eq!(state, edit_state("query", 4, &[]));
+
+        // Typed in the gap: the fresh draft outranks the app's answer.
+        let mut typed_after = submitted;
+        typed_after.buf = "z".to_string();
+        typed_after.pending.push_back("z".to_string());
+        let (state, outcome) = reconcile_text_input_buffer(Some(typed_after), "hi", 4);
+        assert_eq!(outcome, TextInputReconcile::KeptDraft);
+        assert_eq!(state, edit_state("z", 4, &["z"]));
     }
     use std::path::PathBuf;
 
@@ -1327,7 +1515,7 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
-                    let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None);
+                    let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None, 0);
                 });
         });
         output
@@ -1776,7 +1964,7 @@ mod tests {
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| {
                         let _ =
-                            render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key));
+                            render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key), 0);
                     });
             });
             let registry = crate::ui::focus::drain_text_surfaces(&ctx);
@@ -1860,7 +2048,7 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
-                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
+                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
                     allocated_height = ui.min_rect().height();
                 });
         });
@@ -1930,6 +2118,7 @@ mod tests {
                         Some(&fits),
                         None,
                         None,
+                        0,
                     );
                 });
         });
@@ -1969,6 +2158,7 @@ mod tests {
                         Some(&fits),
                         None,
                         None,
+                        0,
                     );
                 });
         });
@@ -2023,7 +2213,7 @@ mod tests {
         let mut captured = RenderResult::default();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                captured = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
+                captured = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
             });
         });
 

@@ -262,6 +262,7 @@ def _list_view(data: dict):
                 value=data["filter"],
                 placeholder="filter labels or title",
                 on_change="issues-filter",
+                autofocus=True,
             ),
             body,
             Spacer(grow=True),
