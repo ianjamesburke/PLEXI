@@ -1458,6 +1458,32 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Stint 0726: visual proof that the sidebar shows the new project's
+    /// basename immediately after an explicit root change, not the stale
+    /// automatic name from before the move.
+    #[test]
+    fn screenshot_sidebar_auto_name_follows_root_change() {
+        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 2.0);
+        let parent = tempfile::tempdir().expect("tempdir");
+        let new_root = parent.path().join("plexi-target-project");
+        std::fs::create_dir(&new_root).expect("target project dir");
+
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            let idx = app.router.active_idx();
+            app.router.get_mut(idx).name = crate::host::context::ContextName::auto("stale-name");
+            app.set_context_root(new_root.clone(), None);
+            assert_eq!(
+                app.router.get(idx).name.displayed(),
+                "plexi-target-project",
+                "sidebar label must resolve to the new root's basename"
+            );
+        });
+        h.run_steps(6);
+        h.save_screenshot("/tmp/plexi-0726-sidebar-auto-name-root-change.png")
+            .expect("render failed");
+    }
+
     /// Push a second spatial window onto `context_id` and return its index, so
     /// a sidebar row can be seeded with more than one pip capsule.
     fn push_window_for_context(

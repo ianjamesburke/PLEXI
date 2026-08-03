@@ -1665,13 +1665,14 @@ impl PlexiApp {
 
     /// Set the `root` of a context. `context_id` targets a specific context
     /// (the caller's PLEXI_CONTEXT_ID over IPC); `None` means the active one.
+    ///
+    /// This is the single invariant boundary for explicit root changes: every
+    /// caller (Cmd+Shift+I, sidebar Set Root, the context-root text overlay,
+    /// the `SetContextRoot` IPC command) routes through here, so an `Auto`
+    /// name is reconciled to the new root's basename exactly once, in one
+    /// place, rather than in each caller.
     pub(crate) fn set_context_root(&mut self, root: PathBuf, context_id: Option<u64>) {
         let idx = self.resolve_context_idx(context_id, "set_context_root");
-        log::info!(
-            "set_context_root: ctx_id={} root={}",
-            self.router.get(idx).context_id,
-            root.display()
-        );
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
         for pane_id in self
@@ -1682,7 +1683,24 @@ impl PlexiApp {
         {
             crate::app::host_mcp::rebind_pane_credential(*pane_id, root.clone());
         }
-        self.router.get_mut(idx).root = root;
+        self.router.get_mut(idx).root = root.clone();
+
+        let is_auto = matches!(self.router.get(idx).name, ContextName::Auto(_));
+        let name_changed = if is_auto {
+            let new_name = self.auto_context_name_for_path(context_id, &root);
+            let changed = self.router.get(idx).name.displayed() != new_name;
+            self.router.get_mut(idx).name = ContextName::auto(new_name);
+            changed
+        } else {
+            false
+        };
+        log::info!(
+            "set_context_root: ctx_id={context_id} root={} name_mode={} name_changed={name_changed}",
+            root.display(),
+            if is_auto { "auto" } else { "custom" }
+        );
+        self.mark_workspace_dirty();
+
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.
         if idx == self.router.active_idx() {
