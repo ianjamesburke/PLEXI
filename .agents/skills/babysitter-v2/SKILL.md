@@ -16,7 +16,9 @@ MESSEGE="you are being babysat by an export coder that will be reviewing your wo
 
 `plexi pane new "c '/implement-stint-v2 1234 $MESSEGE'" --name "impl-1234"`
 
-then wait for 15 seconds and make sure it is reporting on plexi pane slots
+
+use ScheduleWakeup for waiting
+wait 15 seconds and make sure it is reporting on plexi pane slots
 
 if so, wait for 5 minutes, check again, repeat untill agent finishes and reads as COMPLETE, then close the pane, start the next task the same way and repeat.
 
