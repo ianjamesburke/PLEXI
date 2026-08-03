@@ -5,11 +5,15 @@ id = "todo"
 type = "app"
 name = "Todo"
 version = "0.1.0"
-description = "Context-scoped todo list. Items persist across relaunches in host-owned app state."
+description = "Context-scoped todo list, backed by a markdown checklist file a human or agent can edit directly."
 entry = "todo.py"
 
 [runtime]
 python_compat = true
+
+[state]
+scopes = ["context"]
+format = "markdown"
 
 [app.capabilities]
 capabilities = []

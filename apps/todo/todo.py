@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Todo — the reference PGAP app: every need is an SDK primitive, none is local.
 
-State is context-scoped and persisted, so a pane reopened in the same context
-shows the same list. The Assistant reads and writes that list through the tools
-declared below whether or not the app is on screen.
+Items live in this context's `[state]` document — a markdown checklist a
+human or agent can edit directly (`plexi app state set todo`) while the pane
+repaints. Selection, the add-form's open/closed flag, and its draft text are
+process-local UI state and are never written to disk.
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ from typing import Any
 
 from plexi_sdk import log, state, tools
 from plexi_sdk.effects import PersistState, SetState, SetStatus, SetTitle
-from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
+from plexi_sdk.events import KeyEvent, StateChanged, UiAction, UiValueChange
+from plexi_sdk.state_format import ChecklistItem, parse_checklist, render_checklist
 from plexi_sdk.ui import (
     Actions,
     AppBar,
@@ -25,8 +27,7 @@ from plexi_sdk.ui import (
     Text,
 )
 
-DEFAULT_TODO_STATE: dict[str, Any] = {
-    "items": [],
+DEFAULT_UI_STATE: dict[str, Any] = {
     "selected": 0,
     "adding": False,
     "draft": "",
@@ -40,29 +41,50 @@ TOGGLE = "todo:toggle"
 DELETE = "todo:delete"
 
 
+def _items() -> list[dict]:
+    document = str(state.get("document", "") or "")
+    return [{"text": item.text, "done": item.done} for item in parse_checklist(document)]
+
+
 def _data() -> dict:
-    data = {key: state.get(key, value) for key, value in DEFAULT_TODO_STATE.items()}
-    data["items"] = [dict(item) for item in data["items"] or []]
-    data["selected"] = _clamp(data["items"], int(data["selected"] or 0))
-    data["adding"] = bool(data["adding"])
-    data["draft"] = str(data["draft"] or "")
-    return data
+    items = _items()
+    return {
+        "items": items,
+        "selected": _clamp(items, int(state.get("selected", 0) or 0)),
+        "adding": bool(state.get("adding", False)),
+        "draft": str(state.get("draft", "") or ""),
+    }
 
 
 def _clamp(items: list, selected: int) -> int:
     return max(0, min(selected, len(items) - 1)) if items else 0
 
 
-def _save(data: dict) -> list:
-    """Persist the whole snapshot. `PersistState` is the durable, context-scoped
-    write — the same keys `view()` reads back after a restart."""
-    data["selected"] = _clamp(data["items"], data["selected"])
-    return [PersistState(data), SetStatus(_status(data))]
-
-
 def _status(data: dict) -> str:
     open_count = sum(1 for item in data["items"] if not item["done"])
     return f"{open_count} open · {len(data['items'])} total"
+
+
+def _ui_effects(data: dict) -> list:
+    """Selection/form change only — process-local, no disk write."""
+    data["selected"] = _clamp(data["items"], data["selected"])
+    return [
+        SetState({"selected": data["selected"], "adding": data["adding"], "draft": data["draft"]}),
+        SetStatus(_status(data)),
+    ]
+
+
+def _item_effects(data: dict) -> list:
+    """The items changed: re-render the checklist and persist it to disk."""
+    data["selected"] = _clamp(data["items"], data["selected"])
+    document = render_checklist(
+        [ChecklistItem(item["text"], item["done"]) for item in data["items"]]
+    )
+    return [
+        PersistState({"document": document}),
+        SetState({"selected": data["selected"], "adding": data["adding"], "draft": data["draft"]}),
+        SetStatus(_status(data)),
+    ]
 
 
 def _add(data: dict, text: str) -> dict:
@@ -85,7 +107,7 @@ def _tool_list() -> dict:
 @tools.tool("todo.add", "Add a todo item to this context's list.", {"text": str})
 def _tool_add(text: str) -> tools.Reply:
     data = _add(_data(), text)
-    return tools.Reply({"count": len(data["items"])}, _save(data))
+    return tools.Reply({"count": len(data["items"])}, _item_effects(data))
 
 
 @tools.tool("todo.set_done", "Mark the todo item at `index` done or not done.",
@@ -96,7 +118,7 @@ def _tool_set_done(index: int, done: bool) -> tools.Reply:
         raise IndexError(f"no todo item at index {index} ({len(data['items'])} items)")
     data["items"][index]["done"] = done
     log.info(f"todo: item {index} done={done} via assistant")
-    return tools.Reply({"text": data["items"][index]["text"], "done": done}, _save(data))
+    return tools.Reply({"text": data["items"][index]["text"], "done": done}, _item_effects(data))
 
 
 @tools.tool("todo.remove", "Remove the todo item at `index`.", {"index": int})
@@ -106,17 +128,13 @@ def _tool_remove(index: int) -> tools.Reply:
         raise IndexError(f"no todo item at index {index} ({len(data['items'])} items)")
     removed = data["items"].pop(index)
     log.info(f"todo: removed item {index} via assistant")
-    return tools.Reply({"removed": removed["text"]}, _save(data))
+    return tools.Reply({"removed": removed["text"]}, _item_effects(data))
 
 
 def init(size, args) -> list:
     data = _data()
     log.info("todo: ready")
-    effects: list = [SetTitle("Todo"), SetStatus(_status(data)), tools.expose()]
-    missing = {k: v for k, v in DEFAULT_TODO_STATE.items() if state.get(k, None) is None}
-    if missing:
-        effects.append(PersistState(missing))
-    return effects
+    return [SetTitle("Todo"), SetStatus(_status(data)), tools.expose()]
 
 
 def update(event) -> list:
@@ -124,45 +142,52 @@ def update(event) -> list:
     if handled is not None:
         return handled
 
+    if isinstance(event, StateChanged):
+        if event.error:
+            log.warn(f"todo: state file error: {event.error}")
+            return [SetStatus(f"todo: {event.error}")]
+        log.info("todo: external write to the state file repainted the list")
+        return [SetStatus(_status(_data()))]
+
     data = _data()
 
     if isinstance(event, UiValueChange) and event.handler_id == DRAFT:
         data["draft"] = event.value
-        return [SetState(data)]
+        return [SetState({"draft": data["draft"]})]
 
     action = event.handler_id if isinstance(event, UiAction) else None
     key = event.key if isinstance(event, KeyEvent) and event.pressed else None
 
     if action == ADD:
-        return _save(_add(data, data["draft"]))
+        return _item_effects(_add(data, data["draft"]))
     if action == CANCEL or (data["adding"] and key == "escape"):
         data["adding"] = False
         data["draft"] = ""
-        return _save(data)
+        return _ui_effects(data)
     if data["adding"]:
         return []
 
     if action == START or key == "a":
         data["adding"] = True
         data["draft"] = ""
-        return _save(data)
+        return _ui_effects(data)
     if action == TOGGLE or key == "space":
         if not data["items"]:
             return []
         item = data["items"][data["selected"]]
         item["done"] = not item["done"]
-        return _save(data)
+        return _item_effects(data)
     if action == DELETE or key == "d":
         if not data["items"]:
             return []
         data["items"].pop(data["selected"])
-        return _save(data)
+        return _item_effects(data)
     if key in ("up", "k"):
         data["selected"] = _clamp(data["items"], data["selected"] - 1)
-        return _save(data)
+        return _ui_effects(data)
     if key in ("down", "j"):
         data["selected"] = _clamp(data["items"], data["selected"] + 1)
-        return _save(data)
+        return _ui_effects(data)
     return []
 
 
