@@ -181,6 +181,14 @@ pub struct PlexiApp {
     /// Repaint-cause diagnostics sample window (#2019): start instant and
     /// frame count. `None` until the first frame opens a window.
     pub(crate) frame_diag_window: Option<(std::time::Instant, u32)>,
+    /// Previous frame's `ui_contents_rect`, for detecting a window resize
+    /// (stint 0731 drag profiling): compared each frame in `detect_drag_active`.
+    pub(crate) prev_screen_rect: Option<egui::Rect>,
+    /// Last frame a drag/resize signal (pointer-drag or screen_rect change)
+    /// was observed. `detect_drag_active` holds the drag window open for
+    /// 300ms past the last signal so it doesn't flap between frames
+    /// (stint 0731).
+    pub(crate) drag_window_last_seen: Option<std::time::Instant>,
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `AppRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
@@ -1185,6 +1193,18 @@ impl PlexiApp {
         });
         log::info!(target: "plexi::frame_diag", "frame diagnostics active; summary every 10s");
 
+        // Drag-resize frame profiling (stint 0731): only installed when the
+        // env flag is set, so an uninstrumented run pays zero cost.
+        if crate::platform::ui_profile::enabled() {
+            egui_term::set_span_hook(|label, nanos| {
+                crate::platform::ui_profile::note_nanos(label, nanos)
+            });
+            log::info!(
+                target: "plexi::ui_profile",
+                "ui_profile: PLEXI_UI_PROFILE=1 — per-frame ui() profiling active"
+            );
+        }
+
         theme::setup_fonts(&cc.egui_ctx);
         if crate::release::feature_enabled(crate::release::ReleaseFeature::Accessibility) {
             cc.egui_ctx.enable_accesskit();
@@ -1566,6 +1586,8 @@ impl PlexiApp {
                     frame_tick,
                     ui_phase: ui_phase.clone(),
                     frame_diag_window: None,
+                    prev_screen_rect: None,
+                    drag_window_last_seen: None,
                     pending_screenshots: Vec::new(),
                     pending_slot_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
@@ -1847,6 +1869,8 @@ impl PlexiApp {
             frame_tick,
             ui_phase,
             frame_diag_window: None,
+            prev_screen_rect: None,
+            drag_window_last_seen: None,
             pending_screenshots: Vec::new(),
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
@@ -2367,6 +2391,8 @@ impl PlexiApp {
                 frame_tick,
                 ui_phase: crate::platform::logging::new_ui_phase_tracker(),
                 frame_diag_window: None,
+                prev_screen_rect: None,
+                drag_window_last_seen: None,
                 pending_screenshots: Vec::new(),
                 pending_slot_waits: Vec::new(),
                 pending_agent_boots: Vec::new(),
@@ -2970,10 +2996,15 @@ impl eframe::App for PlexiApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::UiRender,
         );
+        if crate::platform::ui_profile::enabled() {
+            let drag_active = self.detect_drag_active(ctx);
+            crate::platform::ui_profile::set_drag_active(drag_active);
+        }
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Repaint-cause diagnostics (#2019): count this frame, attribute
@@ -3844,6 +3875,9 @@ impl eframe::App for PlexiApp {
         // widget focus (stint 0429). Everything above may change host focus
         // state; nothing after this may touch egui focus.
         self.reconcile_egui_focus(ctx);
+        if let Some(start) = ui_profile_start {
+            crate::platform::ui_profile::end_frame(start.elapsed());
+        }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::RendererPresent,
@@ -3887,6 +3921,31 @@ fn read_display_version() -> String {
 }
 
 impl PlexiApp {
+    /// True while a drag/resize gesture appears active: the pointer is down
+    /// and moving, the screen rect changed since last frame (window resize),
+    /// or either signal fired within the last 300ms (stint 0731). The
+    /// trailing hold prevents the drag window from flapping open/closed
+    /// between frames when a gesture pauses briefly mid-drag.
+    fn detect_drag_active(&mut self, ctx: &egui::Context) -> bool {
+        let screen_rect = ctx.content_rect();
+        let rect_changed = self.prev_screen_rect.replace(screen_rect) != Some(screen_rect);
+        let pointer_dragging = ctx.input(|i| i.pointer.any_down() && i.pointer.is_moving());
+
+        let now = std::time::Instant::now();
+        if rect_changed || pointer_dragging {
+            self.drag_window_last_seen = Some(now);
+            return true;
+        }
+        match self.drag_window_last_seen {
+            Some(last_seen)
+                if now.duration_since(last_seen) < std::time::Duration::from_millis(300) =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn open_notes_picker(&mut self) {
         let notes_base = crate::config::config_dir().join("notes");
 
