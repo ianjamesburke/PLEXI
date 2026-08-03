@@ -16,10 +16,14 @@ first see if alpha is clean, if not set state to blocked and send a plexi notifi
 
 
 if clean, `stint claim <task-id>` to claim on alpha, marking as in progress
+name the conversation "impl-<stint-id>"
+i.e 'plexi pane name $PLEXI_PANE_ID impl-1234'
 
 then create a worktree with 'wtp add -b <stint-is-number>-impl-<stint title/short desc>
 
 ALL WORK LIVES IN THIS WORKTREE
+
+you only need to run test relevent to the code change, not the full suite. 
 
 if stint is 's' - small
 - immediatly look for the code change and implement swiftly, run e2e cargo test and finish
