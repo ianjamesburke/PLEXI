@@ -3455,6 +3455,12 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
 
     let ctx_a_id = app.router.active().context_id;
     let root_a = app.router.active().root.clone();
+    // `PlexiApp::new_for_test`'s isolated workspace has no channel dir of
+    // its own either — same reasoning as root_b below applies symmetrically,
+    // so create it here too rather than let this assertion depend on the
+    // ambient global apps dir.
+    std::fs::create_dir_all(root_a.join(crate::config::workspace_channel_dir()))
+        .expect("create root_a channel dir");
 
     // A second, inactive context with its own root. Create its channel dir
     // up front so `registry_watch_dirs` recognizes root_b as a real
