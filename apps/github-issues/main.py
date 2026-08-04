@@ -45,6 +45,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "sort_mode": "created_desc",
     "view": "list",
     "detail": None,
+    "filter_autofocus": True,
 }
 
 
@@ -89,6 +90,9 @@ def update(event) -> list:
         return []
 
     key = event.key
+    if key == "escape" and data["view"] == "list":
+        data["filter_autofocus"] = False
+        return [SetState(data), SetStatus(_status(data))]
     if data["view"] == "detail":
         if key == "escape":
             data["view"] = "list"
@@ -262,7 +266,7 @@ def _list_view(data: dict):
                 value=data["filter"],
                 placeholder="filter labels or title",
                 on_change="issues-filter",
-                autofocus=True,
+                autofocus=bool(data["filter_autofocus"]),
             ),
             body,
             Spacer(grow=True),

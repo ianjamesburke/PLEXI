@@ -2392,6 +2392,37 @@ impl LiveWasmPane {
             KeyDisposition::Passthrough
         }
     }
+
+    /// Forward the one bare Escape that released a declarative TextInput.
+    /// Ordinary `handle_key` continues to reserve Escape for host CloseApp.
+    pub fn handle_text_input_escape(
+        &mut self,
+        input: &crate::app::input_router::PlexiInput,
+    ) -> KeyDisposition {
+        let mut consumed = false;
+        for event in input.events() {
+            let is_bare_escape = matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Escape,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.is_none()
+            );
+            if is_bare_escape {
+                if let Some(key) = translate_key_event(event) {
+                    self.inner.push_input(InputEvent::Key(key));
+                    consumed = true;
+                }
+            }
+        }
+        if consumed {
+            KeyDisposition::Consumed
+        } else {
+            KeyDisposition::Passthrough
+        }
+    }
 }
 
 /// Join every text node in a view tree into a single string (newline-joined),
@@ -4237,6 +4268,16 @@ mod tests {
             ),
             KeyDisposition::Consumed,
             "normal keys are consumed and forwarded to the WASM guest"
+        );
+    }
+
+    #[test]
+    fn text_input_escape_bridge_encodes_bare_escape() {
+        let event = egui_key(egui::Key::Escape, true, false, egui::Modifiers::NONE);
+        let translated = translate_key_event(&event).expect("bare Escape has a guest encoding");
+        assert_eq!(
+            (translated.key.as_str(), translated.pressed),
+            ("escape", true)
         );
     }
 

@@ -3688,7 +3688,23 @@ impl LivePythonPane {
         &mut self,
         input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
-        let events = python_key_events(input.events());
+        self.send_key_events(python_key_events(input.events()))
+    }
+
+    /// The sole exception to the normal host-owned Escape rule: the Escape
+    /// that caused a declarative TextInput to release focus is delivered back
+    /// to its guest so it can leave its local form/search state too.
+    pub fn handle_text_input_escape(
+        &mut self,
+        input: &crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        self.send_key_events(python_text_input_escape_events(input.events()))
+    }
+
+    fn send_key_events(
+        &mut self,
+        events: Vec<Value>,
+    ) -> crate::app::app_trait::KeyDisposition {
         if events.is_empty() {
             crate::app::app_trait::KeyDisposition::Passthrough
         } else {
@@ -4220,6 +4236,33 @@ fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
                     "meta": modifiers.mac_cmd || modifiers.command,
                 }
             }))
+        })
+        .collect()
+}
+
+/// Encode only a physical, unmodified Escape press for the TextInput
+/// focus-loss handoff. Keeping this separate from [`python_key_events`] makes
+/// the host CloseApp reservation the normal bridge contract.
+fn python_text_input_escape_events(events: &[egui::Event]) -> Vec<Value> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let egui::Event::Key {
+                key,
+                pressed,
+                modifiers,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            (*key == egui::Key::Escape && *pressed && modifiers.is_none()).then(|| {
+                json!({
+                    "key": "escape",
+                    "pressed": true,
+                    "modifiers": {"ctrl": false, "shift": false, "alt": false, "meta": false}
+                })
+            })
         })
         .collect()
 }
@@ -7799,6 +7842,34 @@ mod tests {
             python_key_events(&cmd_d).is_empty(),
             "Cmd+D must never arrive at a Python app as bare delete input"
         );
+    }
+
+    #[test]
+    fn text_input_escape_bridge_encodes_only_bare_escape_press() {
+        let bare_escape = [egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        assert_eq!(
+            python_text_input_escape_events(&bare_escape),
+            vec![json!({
+                "key": "escape",
+                "pressed": true,
+                "modifiers": {"ctrl": false, "shift": false, "alt": false, "meta": false}
+            })]
+        );
+
+        let cmd_escape = [egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }];
+        assert!(python_text_input_escape_events(&cmd_escape).is_empty());
     }
 
     #[test]

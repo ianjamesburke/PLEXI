@@ -4302,6 +4302,91 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
     wait_for_text_label(&mut h, pane_id, "draft:", "draft:z");
 }
 
+// -- Declarative TextInput key routing -------------------------------------
+
+/// Escape that releases a real process app's focused `FormField` must also
+/// reach the guest exactly once, then stay consumed by the host so CloseApp
+/// cannot reclaim the pane. This drives the full physical-key route:
+/// focus -> egui TextInput focus-loss -> router -> Python bridge -> guest
+/// update -> host reconciliation.
+#[test]
+fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pane() {
+    let mut h = HostHarness::new();
+    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch todo");
+    let pane_id = *h.state().open_panes.last().expect("todo pane appears");
+
+    let app_text = |h: &HostHarness| {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| {
+                pane.semantic_state()
+                    .nodes
+                    .iter()
+                    .flat_map(|node| {
+                        node.label
+                            .clone()
+                            .into_iter()
+                            .chain(node.value.clone())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    };
+    let wait_for = |h: &mut HostHarness, expected: &str| {
+        let start = std::time::Instant::now();
+        while !app_text(h).contains(expected) {
+            assert!(
+                start.elapsed()
+                    < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+                "todo never rendered {expected:?}:\n{}",
+                app_text(h)
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    };
+
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::A)]);
+    wait_for(&mut h, "What needs doing?");
+    h.run_frames(2); // autofocus commits through a real render/reconcile pass.
+
+    frame_with_events(&mut h, vec![egui::Event::Text("draft".to_string())]);
+    wait_for(&mut h, "draft");
+
+    // Physical bare Escape: egui has already dropped focus by dispatch time.
+    // The dedicated bridge must deliver it to todo, which exits the form;
+    // dispatch must consume it before AppActive can fire CloseApp.
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::Escape)]);
+    let start = std::time::Instant::now();
+    while app_text(&h).contains("What needs doing?") {
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "todo form remained open after Escape:\n{}",
+            app_text(&h)
+        );
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        h.app.windows[h.app.active_window].panes.contains_key(&pane_id),
+        "Escape leaving a focused TextInput must not close the pane"
+    );
+    h.run_frames(3);
+    assert!(
+        !app_text(&h).contains("What needs doing?"),
+        "the canceled form must not reclaim focus or reopen on later reconciliation passes"
+    );
+}
+
 // -- Stint 0729 follow-up: vertical-arrow list nav through a focused TextInput --
 
 /// End-to-end contract for `dispatch_app_key_events`'s arrow-forwarding gate,
