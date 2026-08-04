@@ -13,12 +13,14 @@
 //! ambient state (`active_window`, `router.active()`, a client-supplied id) at
 //! the moment of use, rather than from an identity the host established once,
 //! at the trust boundary. `ScopeOrigin` is that identity. It is constructed
-//! only by the host model (`PlexiApp::origin_for_pane`,
-//! `PlexiApp::origin_for_socket_peer`) from host-observed facts — the pane
-//! table, the window's `context_id`, the router's `Context.root` — never from
-//! a request payload, cwd, or env var. Socket-peer resolution reuses stint
-//! 0636's `resolve_socket_peer_pane`, which already establishes trustworthy
-//! sender identity from kernel-captured ancestry, not the wire.
+//! only by the host model (`PlexiApp::origin_for_pane`) from host-observed
+//! facts — the pane table, the window's `context_id`, the router's
+//! `Context.root` — never from a request payload, cwd, or env var.
+//! Socket-peer callers (e.g. `PlexiApp::resolve_event_bus_caller`) resolve
+//! ancestry to a pane id first via stint 0636's `resolve_socket_peer_pane`
+//! (kernel-captured ancestry, not the wire), then hand that pane id to
+//! `origin_for_pane` — never re-deriving context/window from the caller's
+//! own claims.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

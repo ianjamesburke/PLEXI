@@ -216,7 +216,7 @@ mod tests {
 
     fn ctx(id: u64, root: &Path) -> Context {
         Context {
-            name: format!("ctx{id}"),
+            name: format!("ctx{id}").into(),
             root: root.to_path_buf(),
             description: None,
             context_id: id,

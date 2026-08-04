@@ -142,6 +142,31 @@ impl HostSnapshot {
 
 // ─── HostHarness ─────────────────────────────────────────────────────────────
 
+/// Process-wide pane-id block allocator for `HostHarness` instances.
+///
+/// `cargo test` runs every `#[test]` in one process across a thread pool, and
+/// production singletons that are correctly process-global in a real host
+/// (e.g. `plexi_ai::tool_dispatch::GLOBAL_REGISTRY`, keyed by `pane_id`) stay
+/// exactly that global in test builds too — there is no per-test process to
+/// isolate them. Before this, every `HostHarness::new()` started its own
+/// `next_pane_id` at the same fixed `100`, so two tests that both register
+/// into such a global registry could race on the identical key: one test's
+/// entry silently overwrites the other's, and the loser observes missing or
+/// foreign data with no error (`connector_tool_visible_only_to_assistant_in_the_owning_context`,
+/// stint 0724 Phase F — flaky only under full-suite parallel execution,
+/// always green in isolation). Each harness now reserves its own disjoint
+/// block from one atomic counter, so no two concurrently-running harnesses
+/// can ever assign the same `pane_id`, regardless of test execution order.
+static NEXT_TEST_PANE_ID_BLOCK: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(100);
+
+/// Reserve a fresh block of pane ids for one `HostHarness` instance. `10_000`
+/// is far more than any single test creates, so blocks never collide; `u64`
+/// has no realistic risk of exhausting across even a very large test run.
+fn reserve_pane_id_block() -> u64 {
+    NEXT_TEST_PANE_ID_BLOCK.fetch_add(10_000, std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Headless egui test harness wrapping `PlexiApp`.
 ///
 /// ```rust,no_run
@@ -190,7 +215,7 @@ impl HostHarness {
         Self {
             app,
             ctx,
-            next_pane_id: 100,
+            next_pane_id: reserve_pane_id_block(),
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
             _profile_dir: profile_dir,

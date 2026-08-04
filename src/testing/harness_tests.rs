@@ -29,7 +29,7 @@ fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path
         context_id,
     });
     h.app.router.push(crate::host::context::Context {
-        name: "context-b".to_string(),
+        name: "context-b".to_string().into(),
         root: root.to_path_buf(),
         description: None,
         context_id,

@@ -122,7 +122,9 @@ impl TypedPipeRegistry {
 
     /// Phase F's audit surface: the scope this registry's pipes are owned
     /// at. `None` only before the owning pane's placement setter has run
-    /// (should not observably happen past pane placement).
+    /// (should not observably happen past pane placement). Test-only — its
+    /// sole caller, `WasmApp::pipe_owner`, is itself `#[cfg(test)]`.
+    #[cfg(test)]
     pub fn owner(&self) -> Option<&crate::host::scope::Scope> {
         self.owner.as_ref()
     }

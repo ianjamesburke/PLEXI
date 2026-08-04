@@ -2156,20 +2156,6 @@ impl PlexiApp {
         })
     }
 
-    /// Resolve a `ScopeOrigin` from a notify-socket peer's captured ancestry.
-    /// Wraps `resolve_socket_peer_pane` (stint 0636's trustworthy sender
-    /// identity, host-captured from the kernel credential at accept time,
-    /// never from the wire) and hands the resolved pane straight to
-    /// `origin_for_pane` — never re-deriving context/window from the caller's
-    /// own claims.
-    pub(crate) fn origin_for_socket_peer(
-        &self,
-        peer_ancestry: &[u32],
-    ) -> Option<crate::host::scope::ScopeOrigin> {
-        let (pane_id, _context_id, _window_id) = self.resolve_socket_peer_pane(peer_ancestry)?;
-        self.origin_for_pane(pane_id)
-    }
-
     /// Resolve the host-established origin for a raw event-bus socket request
     /// (`events_subscribe`/`events_declare`/`events_emit`) — stint 0724 Phase
     /// D. Returns `(verified_pane_id, context_id, workspace_root)`, all
