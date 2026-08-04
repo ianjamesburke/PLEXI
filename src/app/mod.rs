@@ -344,15 +344,29 @@ pub struct PlexiApp {
     /// `park_context_id` is the context_id the app was running in when its
     /// pane was closed. Used to route notifications to the correct context.
     pub(crate) background_apps: HashMap<String, (u64, Box<dyn crate::app::app_trait::App>)>,
-    /// Directed inter-agent / inter-app pipes (#286). Keyed by `pipe_id`,
-    /// value is the `(sender_pane_id, target_pane_id)` pair the host scopes
-    /// `PipeMessage` deliveries to. This is the sole JSON-pipe delivery path:
-    /// `DeliverPipeMessage` routes ONLY to the non-sender member of the pair;
-    /// a send on a pipe absent from this map is dropped. The legacy non-directed
-    /// peer-broadcast fan-out was removed in 0327 in favour of event streams.
-    /// `PipeOpenDirected` is a thin alias over this map — an exclusive duplex
-    /// channel primitive; resource-scoped fan-out belongs on the event bus.
-    pub(crate) directed_pipes: HashMap<String, (u64, u64)>,
+    /// Directed inter-agent / inter-app pipes (#286). Keyed by
+    /// `(context_id, pipe_id)` (stint 0724 Phase D 2/2) — `context_id` is the
+    /// opening caller's own context, resolved via `origin_for_pane`, never a
+    /// client-supplied value. Composite-keying (rather than `pipe_id` alone)
+    /// is required, not cosmetic: two different contexts choosing the same
+    /// caller-selected `pipe_id` string (e.g. both pick `"agent-chat"`) must
+    /// never collide or cross-deliver, and before this phase they shared one
+    /// flat namespace. Value is the `(sender_pane_id, target_pane_id)` pair
+    /// the host scopes `PipeMessage` deliveries to. This is the sole
+    /// JSON-pipe delivery path: `DeliverPipeMessage` routes ONLY to the
+    /// non-sender member of the pair; a send on a pipe absent from this map
+    /// is dropped. The legacy non-directed peer-broadcast fan-out was removed
+    /// in 0327 in favour of event streams. `PipeOpenDirected` is a thin alias
+    /// over this map — an exclusive duplex channel primitive; resource-scoped
+    /// fan-out belongs on the event bus.
+    ///
+    /// `OpenDirectedPipe` rejects (never inserts) a request whose target pane
+    /// lives in a different context than the caller — see `evaluate_reach` in
+    /// `dispatch.rs`'s handler — so every entry here is guaranteed to have
+    /// both pane ids live in the SAME context, making `context_id` safe to
+    /// key on regardless of which side (sender or target) later calls
+    /// `pipe_send`.
+    pub(crate) directed_pipes: HashMap<(u64, String), (u64, u64)>,
     /// Hot-reload watcher set (#83). Owns one notify watcher per pane that
     /// opted-in via manifest `[app] watch = true` (workspace-local only).
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
@@ -4525,8 +4539,24 @@ fn drive_native_pane_key(
     Ok(disposition)
 }
 
-/// process-app registry to register against (terminals — should never reach
-/// this path; logged at the call site).
+/// Best-effort: register the directed pipe on the target's OWN local pipe
+/// registry, so a runtime that supports one can report `has_reader`/
+/// `is_connected` true for it (SDK ergonomics on the target's reverse-send
+/// path). Returns `false` unconditionally today — the old `AppRuntime::Process`
+/// arm this backed was removed by the CPython-in-WASM migration (#2386,
+/// 2026-07-12) and neither `AppRuntime::Wasm` nor `AppRuntime::Python` has a
+/// reachable hookup into their pipe registry from outside the runtime yet.
+/// This is a known, pre-existing gap (flagged in stint 0724 Phase D 2/2, not
+/// introduced by it) — restoring it is separate follow-up work.
+///
+/// Its result is deliberately NOT fatal to `OpenDirectedPipe` at the call
+/// site: the actual duplex data plane is host-mediated (the caller inserts
+/// the pair into `directed_pipes` and `DeliverPipeMessage` routes by
+/// consulting that map directly — see `dispatch.rs`), so it never depends on
+/// this registration succeeding. Before this phase, a `false` return here
+/// silently aborted the ENTIRE `OpenDirectedPipe` request (the map insert was
+/// unreachable), so no directed pipe has ever actually routed a message —
+/// this call is now purely advisory.
 fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
     let _ = (pane, pipe_id);
     false

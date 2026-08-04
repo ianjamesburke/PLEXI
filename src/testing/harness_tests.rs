@@ -2813,6 +2813,317 @@ fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
     assert_eq!(workspace_root, None);
 }
 
+// ── Directed pipes: context-scoped keys + reachability (stint 0724 Phase D 2/2) ──
+
+/// Minimal `App` stub for directed-pipe tests: `queue_pipe_command` pushes an
+/// `AppCommand` a real app would have emitted onto `outgoing`, drained by the
+/// next `service_app_commands` pass exactly like a live app's own queue;
+/// `queue_outbound_event` records every `PlexiEvent` the host delivers back
+/// into `received` so a test can assert on what actually arrived. Mirrors
+/// `focus_tests::ThemeEventRecorder`. Commands are constructed directly here
+/// rather than through an SDK bridge because no SDK exposes
+/// `pipe_open_directed`/`pipe_send` to real apps yet (`wasm_python.rs`'s JSON
+/// bridge table is the only current producer, and nothing in `sdk/python`
+/// calls it) — the host-side contract under test is the same regardless of
+/// which SDK eventually reaches it.
+struct PipeTestApp {
+    outgoing: Vec<crate::app::app_trait::AppCommand>,
+    received: std::sync::Arc<std::sync::Mutex<Vec<crate::app_protocol::PlexiEvent>>>,
+}
+
+impl crate::app::app_trait::App for PipeTestApp {
+    fn type_id(&self) -> &'static str {
+        "pipe-test-app"
+    }
+
+    fn display_name(&self) -> String {
+        "Pipe test app".to_string()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn ui(
+        &mut self,
+        _ui: &mut egui::Ui,
+        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+    }
+
+    fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::AppCommand> {
+        std::mem::take(&mut self.outgoing)
+    }
+
+    fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+        self.received
+            .lock()
+            .expect("pipe test app event log")
+            .push(event);
+    }
+}
+
+/// Place a `PipeTestApp` pane in `windows[win_idx]`, returning its pane id and
+/// the shared inbox for asserting on delivered `PipeMessage` events.
+fn add_pipe_test_pane(
+    h: &mut HostHarness,
+    win_idx: usize,
+) -> (
+    u64,
+    std::sync::Arc<std::sync::Mutex<Vec<crate::app_protocol::PlexiEvent>>>,
+) {
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let pane_id = h.app.host.alloc_pane_id();
+    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+        pip_status: None,
+        id: pane_id,
+        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(PipeTestApp {
+            outgoing: Vec::new(),
+            received: received.clone(),
+        })),
+        workspace_root: "/tmp".into(),
+        permissions: crate::app::permissions::AppPermissions::builtin(),
+        manifest_id: "pipe-test-app".to_string(),
+        name: "pipe-test-app".to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
+    }));
+    h.app.windows[win_idx].panes.insert(pane_id, pane);
+    let tile = h.app.windows[win_idx].tree.tiles.insert_pane(pane_id);
+    if h.app.windows[win_idx].tree.root().is_none() {
+        h.app.windows[win_idx].tree.root = Some(tile);
+    }
+    (pane_id, received)
+}
+
+/// Queue `cmd` onto `pane_id`'s own outgoing queue, exactly as if the app
+/// itself had emitted it — the next `service_app_commands` pass (driven by
+/// `run_hidden_frames`) drains and dispatches it through the real production
+/// path, including the `sender_pane_id` rewrite `drain_all_app_commands`
+/// performs.
+fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::app_trait::AppCommand) {
+    let app = h
+        .app
+        .windows
+        .iter_mut()
+        .find_map(|w| w.panes.get_mut(&pane_id))
+        .and_then(crate::host::pane::Pane::as_app_mut)
+        .expect("pipe test pane must exist");
+    let crate::host::pane::AppRuntime::Builtin(runtime) = &mut app.runtime else {
+        panic!("pipe test pane must be a Builtin runtime");
+    };
+    runtime
+        .as_any_mut()
+        .downcast_mut::<PipeTestApp>()
+        .expect("pipe test pane must be a PipeTestApp")
+        .outgoing
+        .push(cmd);
+}
+
+/// Falsifying regression #1: before stint 0724 Phase D 2/2, `OpenDirectedPipe`
+/// resolved its target purely by `active_window`, with no check that the
+/// target lives in the caller's own context — a pane in context A could open
+/// a directed pipe to a pane in context B. Proves the fix: a caller in
+/// context A opening a directed pipe to a target in sibling context B is
+/// rejected (no `directed_pipes` entry, no delivery ever reaches the
+/// target), while the identical call between two panes in the SAME context
+/// succeeds — isolating the rejection to the context boundary specifically,
+/// not e.g. a general regression in `OpenDirectedPipe` itself.
+#[test]
+fn open_directed_pipe_rejects_cross_context_target() {
+    let mut h = HostHarness::new();
+    let context_a = h.app.windows[0].context_id;
+    let context_b = context_a + 1_000;
+    let root_b = tempfile::tempdir().expect("root b");
+    let win_b_idx = push_secondary_context(&mut h, context_b, root_b.path());
+
+    let (sender_a, _sender_a_events) = add_pipe_test_pane(&mut h, 0);
+    let (target_b, target_b_events) = add_pipe_test_pane(&mut h, win_b_idx);
+
+    queue_pipe_command(
+        &mut h,
+        sender_a,
+        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+            sender_pane_id: sender_a,
+            pipe_id: "cross-ctx".to_string(),
+            target_pane_id: target_b,
+        },
+    );
+    h.run_hidden_frames(1);
+
+    assert!(
+        !h.app
+            .directed_pipes
+            .contains_key(&(context_a, "cross-ctx".to_string())),
+        "a directed pipe from context A to a pane in sibling context B must be rejected \
+         — no entry recorded under either context's key"
+    );
+    assert!(!h
+        .app
+        .directed_pipes
+        .contains_key(&(context_b, "cross-ctx".to_string())),);
+    assert!(
+        target_b_events.lock().expect("event log").is_empty(),
+        "a rejected OpenDirectedPipe must never let anything reach the target"
+    );
+
+    // Contrast: the identical shape between two panes in the SAME context
+    // succeeds — proving the rejection above is specifically about the
+    // context boundary, not a general breakage of OpenDirectedPipe.
+    let (sender_a2, _) = add_pipe_test_pane(&mut h, 0);
+    let (target_a2, _) = add_pipe_test_pane(&mut h, 0);
+    queue_pipe_command(
+        &mut h,
+        sender_a2,
+        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+            sender_pane_id: sender_a2,
+            pipe_id: "same-ctx".to_string(),
+            target_pane_id: target_a2,
+        },
+    );
+    h.run_hidden_frames(1);
+    assert_eq!(
+        h.app
+            .directed_pipes
+            .get(&(context_a, "same-ctx".to_string())),
+        Some(&(sender_a2, target_a2)),
+        "a directed pipe between two panes in the SAME context must succeed"
+    );
+}
+
+/// Falsifying regression #2: before stint 0724 Phase D 2/2, `directed_pipes`
+/// was keyed by `pipe_id` alone in one flat, host-global namespace. Two
+/// different contexts independently choosing the same caller-selected
+/// `pipe_id` string (a real scenario — callers pick pipe ids with no
+/// coordination across contexts) would collide in that map, so the SECOND
+/// `OpenDirectedPipe` would silently overwrite the first context's pipe pair,
+/// and a `DeliverPipeMessage` from either context's sender could cross-
+/// deliver into the other context's target. Proves the composite
+/// `(context_id, pipe_id)` key keeps them fully independent: both opens
+/// succeed as distinct entries, and a message sent on context A's "my-pipe"
+/// reaches ONLY context A's target — context B's identically-named pipe and
+/// target are entirely unaffected, and vice versa.
+#[test]
+fn directed_pipe_id_does_not_collide_across_contexts() {
+    let mut h = HostHarness::new();
+    let context_a = h.app.windows[0].context_id;
+    let context_b = context_a + 1_000;
+    let root_b = tempfile::tempdir().expect("root b");
+    let win_b_idx = push_secondary_context(&mut h, context_b, root_b.path());
+
+    let (sender_a, _) = add_pipe_test_pane(&mut h, 0);
+    let (target_a, target_a_events) = add_pipe_test_pane(&mut h, 0);
+    let (sender_b, _) = add_pipe_test_pane(&mut h, win_b_idx);
+    let (target_b, target_b_events) = add_pipe_test_pane(&mut h, win_b_idx);
+
+    queue_pipe_command(
+        &mut h,
+        sender_a,
+        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+            sender_pane_id: sender_a,
+            pipe_id: "my-pipe".to_string(),
+            target_pane_id: target_a,
+        },
+    );
+    queue_pipe_command(
+        &mut h,
+        sender_b,
+        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+            sender_pane_id: sender_b,
+            pipe_id: "my-pipe".to_string(),
+            target_pane_id: target_b,
+        },
+    );
+    h.run_hidden_frames(1);
+
+    assert_eq!(
+        h.app
+            .directed_pipes
+            .get(&(context_a, "my-pipe".to_string())),
+        Some(&(sender_a, target_a)),
+        "context A's \"my-pipe\" must record its own pair"
+    );
+    assert_eq!(
+        h.app
+            .directed_pipes
+            .get(&(context_b, "my-pipe".to_string())),
+        Some(&(sender_b, target_b)),
+        "context B's identically-named \"my-pipe\" must record its OWN pair, independent of A's"
+    );
+
+    // A sends on "my-pipe" — must reach ONLY target A.
+    queue_pipe_command(
+        &mut h,
+        sender_a,
+        crate::app::app_trait::AppCommand::DeliverPipeMessage {
+            sender_pane_id: sender_a,
+            pipe_id: "my-pipe".to_string(),
+            payload: serde_json::json!({"from": "a"}),
+        },
+    );
+    h.run_hidden_frames(1);
+
+    {
+        let events_a = target_a_events.lock().expect("event log");
+        assert_eq!(
+            events_a.len(),
+            1,
+            "target A must receive exactly one message"
+        );
+        match &events_a[0] {
+            crate::app_protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
+                assert_eq!(pipe_id, "my-pipe");
+                assert_eq!(payload["from"], "a");
+            }
+            other => panic!("expected PipeMessage, got {other:?}"),
+        }
+    }
+    assert!(
+        target_b_events.lock().expect("event log").is_empty(),
+        "context B's target must NEVER receive context A's message on the identically-named pipe_id"
+    );
+
+    // B sends on its own "my-pipe" — must reach ONLY target B, and must not
+    // add a second delivery to target A.
+    queue_pipe_command(
+        &mut h,
+        sender_b,
+        crate::app::app_trait::AppCommand::DeliverPipeMessage {
+            sender_pane_id: sender_b,
+            pipe_id: "my-pipe".to_string(),
+            payload: serde_json::json!({"from": "b"}),
+        },
+    );
+    h.run_hidden_frames(1);
+
+    assert_eq!(
+        target_a_events.lock().expect("event log").len(),
+        1,
+        "target A must still have received exactly one message — B's send must not cross over"
+    );
+    {
+        let events_b = target_b_events.lock().expect("event log");
+        assert_eq!(
+            events_b.len(),
+            1,
+            "target B must receive exactly one message"
+        );
+        match &events_b[0] {
+            crate::app_protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
+                assert_eq!(pipe_id, "my-pipe");
+                assert_eq!(payload["from"], "b");
+            }
+            other => panic!("expected PipeMessage, got {other:?}"),
+        }
+    }
+}
+
 /// Stint 0414: node-targeted counterpart of stint 0398's
 /// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
 /// Drives a REAL process-app pane (`apps/dev/node-click-probe`, a single

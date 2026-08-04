@@ -91,6 +91,16 @@ pub struct TypedPipeRegistry {
     pipes: HashMap<String, PipeEntry>,
     /// Private directory where binary pipe sockets are created (mode 0700).
     pipes_dir: PathBuf,
+    /// Host-established owner of this registry (stint 0724 Phase D 2/2) —
+    /// the pane it belongs to. `None` until `set_owner` is called: the
+    /// registry is constructed deep inside runtime instantiation (wasmtime
+    /// `HostCtx::new`, before pane placement assigns a `pane_id`/`context_id`
+    /// at all), so ownership is a two-phase init, mirroring the existing
+    /// `WasmPane::pane_id`/`context_id` fields (`0` until `set_pane_id`/
+    /// `set_context_id` run from the placement closure). One registry is
+    /// created per pane, so every entry it ever holds shares this one owner —
+    /// there is no per-entry variance to track, only per-registry.
+    owner: Option<crate::host::scope::Scope>,
 }
 
 impl TypedPipeRegistry {
@@ -98,7 +108,23 @@ impl TypedPipeRegistry {
         Self {
             pipes: HashMap::new(),
             pipes_dir,
+            owner: None,
         }
+    }
+
+    /// Stamp the host-established scope this registry's pipes are owned at.
+    /// Called once, from the owning pane's own placement setter (e.g.
+    /// `WasmPane::set_context_id`), itself fed only by
+    /// `PlexiApp::origin_for_pane` — never a caller-supplied value.
+    pub fn set_owner(&mut self, owner: crate::host::scope::Scope) {
+        self.owner = Some(owner);
+    }
+
+    /// Phase F's audit surface: the scope this registry's pipes are owned
+    /// at. `None` only before the owning pane's placement setter has run
+    /// (should not observably happen past pane placement).
+    pub fn owner(&self) -> Option<&crate::host::scope::Scope> {
+        self.owner.as_ref()
     }
 
     /// Allocate a binary pipe backed by a unix domain socket.
@@ -434,6 +460,24 @@ mod tests {
             !reg.drain_failed("nonexistent"),
             "drain_failed should be false for unknown pipe"
         );
+    }
+
+    #[test]
+    fn owner_is_none_until_stamped_then_reflects_the_stamped_scope() {
+        // Stint 0724 Phase D 2/2: the registry itself carries no pane/context
+        // identity at construction (it's built deep inside runtime
+        // instantiation, before pane placement assigns one) — `set_owner` is
+        // the caller's one chance to attribute every pipe this registry ever
+        // holds to its owning pane.
+        let (mut reg, _dir) = test_registry();
+        assert!(reg.owner().is_none());
+
+        let owner = crate::host::scope::Scope::Pane {
+            pane_id: 7,
+            context_id: 3,
+        };
+        reg.set_owner(owner.clone());
+        assert_eq!(reg.owner(), Some(&owner));
     }
 
     #[test]

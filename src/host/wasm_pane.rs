@@ -501,8 +501,17 @@ impl WasmPane {
 
     /// Stamp the host-established context this instance lives in — called
     /// alongside `set_pane_id` at pane placement (stint 0724 Phase D).
+    /// Always called AFTER `set_pane_id` (see the placement closure in
+    /// `pane_ops/create.rs`), so `self.pane_id` is already the real id here —
+    /// that ordering is what lets this same call also stamp the owning scope
+    /// onto the instance's typed-pipe registry (Phase D 2/2), since both
+    /// halves of `Scope::Pane` are only known once both setters have run.
     pub fn set_context_id(&mut self, context_id: u64) {
         self.context_id = context_id;
+        self.app.set_pipe_owner(crate::host::scope::Scope::Pane {
+            pane_id: self.pane_id,
+            context_id,
+        });
     }
 
     pub fn with_remembered_capabilities(
@@ -2534,6 +2543,39 @@ mod tests {
         )
         .expect("load counter");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    /// Stint 0724 Phase D 2/2: `WasmPane::set_context_id` — always called
+    /// right after `set_pane_id` from the pane-placement closure in
+    /// `pane_ops/create.rs` — must stamp the owning `Scope::Pane` onto this
+    /// instance's typed-pipe registry (`WasmApp`'s `HostCtx.pipes`), matching
+    /// the SAME pane_id/context_id the placement closure assigned. This is
+    /// the one owner-scope test the sub-phase requires: it proves the field
+    /// is populated and correct at creation, without inventing a cross-pane
+    /// consumption check that doesn't exist today (typed pipes are one
+    /// registry per pane by construction — see `typed_pipes.rs`'s own
+    /// `directed_pipe_routes_to_target_pane_only` test).
+    #[test]
+    fn typed_pipe_owner_stamped_at_placement_matches_pane_context() {
+        let mut pane = counter_pane();
+        assert_eq!(
+            pane.app.pipe_owner(),
+            None,
+            "owner must be unstamped before pane placement runs its setters"
+        );
+
+        pane.set_pane_id(42);
+        pane.set_context_id(7);
+
+        assert_eq!(
+            pane.app.pipe_owner(),
+            Some(&crate::host::scope::Scope::Pane {
+                pane_id: 42,
+                context_id: 7,
+            }),
+            "set_context_id must stamp the owning Scope::Pane using the SAME \
+             pane_id set_pane_id just assigned"
+        );
     }
 
     #[test]
