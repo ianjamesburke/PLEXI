@@ -273,9 +273,7 @@ impl WasmAccessPolicy {
     /// created as a directory. A save-*file* grant is never a directory grant,
     /// so its path can never be turned into a writable directory tree.
     fn is_within_write_dir(&self, path: &Path) -> bool {
-        self.fs_write_dirs
-            .iter()
-            .any(|dir| path.starts_with(dir))
+        self.fs_write_dirs.iter().any(|dir| path.starts_with(dir))
     }
 
     fn allows_host(&self, url: &str) -> Result<(), String> {
@@ -314,8 +312,7 @@ fn canonicalize_scope(path: PathBuf, require_existing: bool) -> Result<PathBuf, 
 /// components, so every tail segment is a plain name.
 fn canonicalize_for_create(path: &Path) -> Result<PathBuf, String> {
     if path.exists() {
-        return std::fs::canonicalize(path)
-            .map_err(|e| format!("resolve {}: {e}", path.display()));
+        return std::fs::canonicalize(path).map_err(|e| format!("resolve {}: {e}", path.display()));
     }
     let mut node = path;
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
@@ -384,6 +381,11 @@ pub struct WasmPane {
     ai_broker: Arc<dyn AiBroker>,
     app_timeline: Arc<Mutex<AppTimeline>>,
     pane_id: u64,
+    /// Host-established context this app instance lives in (stint 0724 Phase
+    /// D) — stamped onto every stream this pane declares/emits on. `0`
+    /// (matches no real context) until `set_context_id` is called from the
+    /// pane-placement closure that also calls `set_pane_id`.
+    context_id: u64,
     http_tx: Sender<InputEvent>,
     http_rx: Receiver<InputEvent>,
     /// File-picker backend (stint 0508); scripted in tests / under
@@ -424,6 +426,7 @@ impl WasmPane {
             ai_broker: Arc::new(default_live_broker()),
             app_timeline: crate::host::app_timeline::global(),
             pane_id: 0,
+            context_id: 0,
             http_tx,
             http_rx,
             picker: default_picker_service(),
@@ -494,6 +497,12 @@ impl WasmPane {
 
     pub fn set_pane_id(&mut self, pane_id: u64) {
         self.pane_id = pane_id;
+    }
+
+    /// Stamp the host-established context this instance lives in — called
+    /// alongside `set_pane_id` at pane placement (stint 0724 Phase D).
+    pub fn set_context_id(&mut self, context_id: u64) {
+        self.context_id = context_id;
     }
 
     pub fn with_remembered_capabilities(
@@ -1129,10 +1138,11 @@ impl WasmPane {
                         self.queue
                             .push_back(InputEvent::FilePickCancelled(request_id));
                     } else {
-                        self.queue.push_back(InputEvent::FilePicked(FilePickedEvent {
-                            request_id,
-                            paths: granted,
-                        }));
+                        self.queue
+                            .push_back(InputEvent::FilePicked(FilePickedEvent {
+                                request_id,
+                                paths: granted,
+                            }));
                     }
                 }
                 FilePickOutcome::Cancelled => {
@@ -1366,10 +1376,11 @@ impl WasmPane {
                 description: stream.description,
             });
         }
-        self.app_timeline
-            .lock()
-            .unwrap()
-            .declare_streams(self.app.app_id(), streams)
+        self.app_timeline.lock().unwrap().declare_streams(
+            self.context_id,
+            self.app.app_id(),
+            streams,
+        )
     }
 
     fn emit_event(&mut self, req: EmitEventEffect) -> Result<u64, String> {
@@ -1403,6 +1414,7 @@ impl WasmPane {
             suggested_trigger,
         };
         let outcome = self.app_timeline.lock().unwrap().record_event(
+            self.context_id,
             self.app.app_id(),
             self.pane_id,
             emitted,
@@ -1893,6 +1905,10 @@ impl LiveWasmPane {
 
     pub fn set_pane_id(&mut self, pane_id: u64) {
         self.inner.set_pane_id(pane_id);
+    }
+
+    pub fn set_context_id(&mut self, context_id: u64) {
+        self.inner.set_context_id(context_id);
     }
 
     pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
@@ -3882,8 +3898,8 @@ mod tests {
     // and a display-scale change frees + reallocates the surface with a
     // fresh surface-ready so the guest re-targets the new texture.
     #[test]
-    fn surface_allocates_physical_resolution_and_reallocates_on_ppp_change(
-    ) -> wasmtime::Result<()> {
+    fn surface_allocates_physical_resolution_and_reallocates_on_ppp_change() -> wasmtime::Result<()>
+    {
         let mut p = pong_pane();
         p.set_pixels_per_point(2.0);
         p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
@@ -3973,8 +3989,8 @@ mod tests {
         let mut p = pong_pane();
         p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
         let (w, h) = p.surface_size().expect("surface allocated after init");
-        let deadline = Instant::now()
-            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        let deadline =
+            Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
 
         p.request_surface_readback()
             .expect("queue async surface readback");
@@ -4229,10 +4245,7 @@ mod tests {
     }
 
     /// The ToolResult host effect for `call_id`, as (output_json, error).
-    fn tool_result(
-        effects: &[WasmHostEffect],
-        call_id: &str,
-    ) -> (Option<String>, Option<String>) {
+    fn tool_result(effects: &[WasmHostEffect], call_id: &str) -> (Option<String>, Option<String>) {
         effects
             .iter()
             .find_map(|e| match e {
@@ -4257,8 +4270,7 @@ mod tests {
     // read-only flags: exactly the four read tools may auto-grant; every
     // mutation (and both POC tools) must prompt.
     #[test]
-    fn daw_app_declares_namespaced_tools_with_correct_read_only_flags(
-    ) -> wasmtime::Result<()> {
+    fn daw_app_declares_namespaced_tools_with_correct_read_only_flags() -> wasmtime::Result<()> {
         let mut p = daw_pane();
         p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
         let effects = p.take_host_effects();
@@ -4325,12 +4337,19 @@ mod tests {
         p.take_host_effects();
 
         // Create a MIDI track — the headline "create a MIDI track" ask.
-        p.push_input(tool_call("c1", "daw.add_track", r#"{"kind":"midi","name":"Bass"}"#));
+        p.push_input(tool_call(
+            "c1",
+            "daw.add_track",
+            r#"{"kind":"midi","name":"Bass"}"#,
+        ));
         p.tick(16)?;
         let out = tool_output(&p.take_host_effects(), "c1");
         assert_eq!(out["outcome"], "applied");
         let track_id = out["track_id"].as_u64().expect("new track id");
-        assert!(tree_text(&p.view()?).contains("Bass"), "tree shows the new track");
+        assert!(
+            tree_text(&p.view()?).contains("Bass"),
+            "tree shows the new track"
+        );
 
         // "Reduce the volume of the bass track" — by name, then read it back
         // by id (list → set → get chaining on ids).
@@ -4343,7 +4362,10 @@ mod tests {
         let out = tool_output(&p.take_host_effects(), "c2");
         assert_eq!(out["outcome"], "applied");
         assert_eq!(out["track_id"], track_id);
-        assert!(tree_text(&p.view()?).contains("vol 0.25"), "tree shows the new volume");
+        assert!(
+            tree_text(&p.view()?).contains("vol 0.25"),
+            "tree shows the new volume"
+        );
 
         p.push_input(tool_call(
             "c3",
@@ -4376,8 +4398,9 @@ mod tests {
     }
 
     fn jukebox_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
-            .expect("load jukebox");
+        let app =
+            WasmApp::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
+                .expect("load jukebox");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
 
@@ -4419,8 +4442,7 @@ mod tests {
     // read-only flags: exactly the two read tools may auto-grant; every
     // transport mutation must prompt (a mislabel would bypass the prompt).
     #[test]
-    fn jukebox_declares_namespaced_tools_with_correct_read_only_flags(
-    ) -> wasmtime::Result<()> {
+    fn jukebox_declares_namespaced_tools_with_correct_read_only_flags() -> wasmtime::Result<()> {
         let mut p = jukebox_pane();
         p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
         let effects = p.take_host_effects();
@@ -4569,7 +4591,10 @@ mod tests {
             .find(|t| t["name"] == "my-song")
             .expect("picked track named by file stem");
         assert_eq!(picked["state"], "loaded");
-        assert!(picked["duration_ms"].as_u64().unwrap() > 0, "decoded a real duration");
+        assert!(
+            picked["duration_ms"].as_u64().unwrap() > 0,
+            "decoded a real duration"
+        );
         Ok(())
     }
 

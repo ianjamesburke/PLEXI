@@ -506,12 +506,24 @@ impl PlexiApp {
                         log::warn!("app events: source pane {pane_id} is closed");
                         continue;
                     };
+                    // Host-established context this app instance lives in
+                    // (stint 0724 Phase D) — the owning scope every stream
+                    // this pane declares/emits on is stamped with. Resolved
+                    // fresh here, never cached: the pane just resolved above
+                    // is live, so its owning window's `context_id` is too.
+                    let Some(context_id) = self
+                        .origin_for_pane(pane_id)
+                        .map(|origin| origin.context_id)
+                    else {
+                        log::warn!("app events: source pane {pane_id} has no resolvable origin");
+                        continue;
+                    };
                     let response = match request {
                         crate::app_protocol::AppRequest::DeclareEventStreams { streams } => {
                             match crate::host::app_timeline::global()
                                 .lock()
                                 .unwrap()
-                                .declare_streams(&app_id, streams)
+                                .declare_streams(context_id, &app_id, streams)
                             {
                                 Ok(streams) => {
                                     crate::app_protocol::PlexiEvent::DeclareEventStreamsResult {
@@ -562,7 +574,7 @@ impl PlexiApp {
                             match crate::host::app_timeline::global()
                                 .lock()
                                 .unwrap()
-                                .record_event(&app_id, pane_id, emitted)
+                                .record_event(context_id, &app_id, pane_id, emitted)
                             {
                                 Ok(outcome) => crate::app_protocol::PlexiEvent::EmitEventResult {
                                     sequence: Some(outcome.event_id),

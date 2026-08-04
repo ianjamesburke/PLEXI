@@ -833,6 +833,7 @@ impl AssistantApp {
             app,
             ActorType::Agent,
             ASSISTANT_ACTOR_ID,
+            self.context_id,
             event_names,
             PayloadMode::Full,
             TriggerMode::Conversation,
@@ -1027,7 +1028,7 @@ impl AssistantApp {
         crate::host::event_subscriptions::evaluate_subscription(
             &self.grant_store,
             Some(&posture),
-            &self.workspace_root,
+            Some(&self.workspace_root),
             app,
             ActorType::Agent,
             ASSISTANT_ACTOR_ID,
@@ -3075,7 +3076,20 @@ impl AssistantApp {
         );
         let mut tools = dispatcher.all_tools();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
-        let streams = self.timeline.lock().unwrap().all_declared_streams();
+        // Filtered to this assistant's own context (stint 0724 Phase D): a
+        // stream declared only in another context can never be subscribed to
+        // from here anyway (no cross-context grant exists), so listing it
+        // would be misleading busywork for the user.
+        let streams: Vec<(String, String)> = self
+            .timeline
+            .lock()
+            .unwrap()
+            .all_declared_streams()
+            .into_iter()
+            .filter_map(|(context_id, app, event)| {
+                (context_id == self.context_id).then_some((app, event))
+            })
+            .collect();
         log::info!(
             "assistant: /tools — {} connector tool(s), {} declared event stream(s) discovered",
             tools.len(),
@@ -4910,12 +4924,19 @@ enabled = ["allowed.tool"]
     use crate::app_protocol::{AppEventActor, EventStreamDecl};
     use crate::host::app_timeline::EmittedEvent;
 
+    /// Matches the `context_id` `test_app_with_timeline` constructs its
+    /// `AssistantApp` with, so the assistant's subscriptions (viewer
+    /// context) line up with these fixtures' declared/emitted streams
+    /// (owner context) by default.
+    const TEST_CTX: u64 = 1;
+
     fn chess_timeline() -> Arc<Mutex<AppTimeline>> {
         let timeline = Arc::new(Mutex::new(AppTimeline::default()));
         timeline
             .lock()
             .unwrap()
             .declare_streams(
+                TEST_CTX,
                 "chess",
                 vec![EventStreamDecl {
                     name: "move.played".to_string(),
@@ -4947,6 +4968,7 @@ enabled = ["allowed.tool"]
             .lock()
             .unwrap()
             .record_event(
+                TEST_CTX,
                 "chess",
                 1,
                 EmittedEvent {
@@ -5094,6 +5116,10 @@ enabled = ["allowed.tool"]
         assert_eq!(record.subscriber_id, ASSISTANT_ACTOR_ID);
         assert_eq!(record.app_id, "chess");
         assert_eq!(record.event_names, vec!["move.played".to_string()]);
+        assert_eq!(
+            record.subscriber_context_id, TEST_CTX,
+            "the assistant's subscription must carry its own host-established context"
+        );
 
         // `*` subscribes to all declared streams → empty event_names.
         drop(guard);

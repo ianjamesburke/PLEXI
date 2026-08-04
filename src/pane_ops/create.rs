@@ -670,6 +670,12 @@ impl PlexiApp {
 
         let manifest_id = app_id.to_string();
         let name = app_id.to_string();
+        // `place_app_pane` always targets `self.active_window`, so its
+        // context_id — captured now, before the closure runs — is exactly
+        // the context this instance is placed into (stint 0724 Phase D;
+        // mirrors the same `self.active_window` reasoning `SpawnPane`'s
+        // cross-context redirect already relies on).
+        let context_id = self.windows[self.active_window].context_id;
         let new_id = self
             .place_app_pane(
                 app_id,
@@ -678,6 +684,7 @@ impl PlexiApp {
                 None,
                 move |new_id, linked_pane_id, overlay_replaced| {
                     live.set_pane_id(new_id);
+                    live.set_context_id(context_id);
                     Pane::App(Box::new(crate::host::pane::AppPane {
                         pip_status: None,
                         id: new_id,
@@ -1478,9 +1485,7 @@ impl PlexiApp {
 
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override
-            .or_else(|| {
-                self.resolve_new_pane_cwd(None)
-            })
+            .or_else(|| self.resolve_new_pane_cwd(None))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         log::info!(
             "launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
@@ -1870,7 +1875,12 @@ impl PlexiApp {
 
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
-        match self.launch_app_by_id_with_layout("text-editor", None, std::slice::from_ref(&path_str), None) {
+        match self.launch_app_by_id_with_layout(
+            "text-editor",
+            None,
+            std::slice::from_ref(&path_str),
+            None,
+        ) {
             Ok(_) => {
                 let pane_id = target_pane_id.or_else(|| {
                     self.windows[active].focused_pane.and_then(|tile_id| {
@@ -1930,14 +1940,8 @@ impl PlexiApp {
             "QuickNote: committing to notes/inbox/ attachments={}",
             self.quick_note_attachments.len()
         );
-        Self::write_inbox_note(
-            text,
-            "quick-note",
-            &dir,
-            &ctx,
-            &self.quick_note_attachments,
-        )
-        .is_some()
+        Self::write_inbox_note(text, "quick-note", &dir, &ctx, &self.quick_note_attachments)
+            .is_some()
     }
 
     /// Validate and stage one local image for the open QuickNote modal. The
@@ -1948,11 +1952,12 @@ impl PlexiApp {
             .map_err(|e| format!("failed to read dropped image {}: {e}", source.display()))?;
         image::load_from_memory(&bytes)
             .map_err(|e| format!("not a decodable image ({}): {e}", source.display()))?;
-        if self.quick_note_attachments.iter().any(|path| path == &source) {
-            log::info!(
-                "QuickNote: drop already staged source={}",
-                source.display()
-            );
+        if self
+            .quick_note_attachments
+            .iter()
+            .any(|path| path == &source)
+        {
+            log::info!("QuickNote: drop already staged source={}", source.display());
             return Ok(());
         }
         log::info!(

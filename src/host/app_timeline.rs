@@ -35,6 +35,11 @@ pub struct AppEventRecord {
     pub event_id: u64,
     /// App that emitted the event (host-stamped, not app-supplied).
     pub app_id: String,
+    /// Host-established context the emitting app instance lives in (stint
+    /// 0724 Phase D) — the owning `Scope::AppInstance` for reachability.
+    /// Never app-supplied; resolved by the caller from
+    /// `PlexiApp::origin_for_pane` at the point the event was recorded.
+    pub owner_context_id: u64,
     /// Pane the emitting app instance lives in (host-stamped).
     pub pane_id: u64,
     /// Declared stream name, e.g. `move.played`.
@@ -201,13 +206,35 @@ pub struct SubscriptionRecord {
     /// `None` = any resource the app emits on; `Some` = only that resource.
     pub resource_id: Option<String>,
     pub duration: GrantDuration,
+    /// Host-established context the subscriber lives/acts in (stint 0724
+    /// Phase D) — the viewer side of `evaluate_reach`. Never client-supplied;
+    /// resolved by the caller from `PlexiApp::origin_for_pane` (or the
+    /// equivalent host-trusted identity for non-pane subscribers) at the
+    /// point the subscription was recorded.
+    pub subscriber_context_id: u64,
     /// RFC 3339.
     pub created_at: String,
 }
 
 impl SubscriptionRecord {
+    /// A subscription matches an event when: the publisher app-id matches,
+    /// the event's owning scope is reachable from this subscriber's context
+    /// (stint 0724 Phase D — same context only, since no cross-context grant
+    /// is ever issued yet), the event name is one of the subscribed names
+    /// (or the subscription covers all of the app's streams), and the
+    /// resource filter (if any) matches.
     fn matches(&self, app_id: &str, record: &AppEventRecord) -> bool {
         if self.app_id != app_id {
+            return false;
+        }
+        let owner = crate::host::scope::Scope::AppInstance {
+            pane_id: record.pane_id,
+            app_id: app_id.to_string(),
+            context_id: record.owner_context_id,
+        };
+        if crate::host::scope::evaluate_reach(&owner, self.subscriber_context_id, None)
+            != crate::host::scope::Reach::Allowed
+        {
             return false;
         }
         if !self.event_names.is_empty() && !self.event_names.contains(&record.event) {
@@ -256,8 +283,11 @@ pub struct EventDelivery {
 /// all point at [`global()`], harness tests construct isolated instances.
 #[derive(Debug, Default)]
 pub struct AppTimeline {
-    /// `app_id -> stream name -> declaration`.
-    streams: HashMap<String, HashMap<String, EventStreamDecl>>,
+    /// `(context_id, app_id) -> stream name -> declaration`. Context-keyed
+    /// (stint 0724 Phase D) so two contexts running the same `app_id` never
+    /// share a stream namespace or clobber each other's schema — the
+    /// cross-context bleed this phase fixes.
+    streams: HashMap<(u64, String), HashMap<String, EventStreamDecl>>,
     events: Vec<AppEventRecord>,
     checkpoints: Vec<UndoCheckpoint>,
     subscriptions: Vec<SubscriptionRecord>,
@@ -270,11 +300,16 @@ pub struct AppTimeline {
 impl AppTimeline {
     // ── Stream declaration ──────────────────────────────────────────────────
 
-    /// Register an app's declared event streams. Replaces any previous
-    /// declaration for the same stream name (hot-reload friendly). Returns
-    /// the names accepted; invalid declarations are rejected with a reason.
+    /// Register an app's declared event streams, namespaced under the
+    /// declaring instance's host-established `context_id` (stint 0724 Phase
+    /// D) so the same `app_id` running in two different contexts never
+    /// shares a stream namespace. Replaces any previous declaration for the
+    /// same `(context_id, app_id, stream name)` (hot-reload friendly).
+    /// Returns the names accepted; invalid declarations are rejected with a
+    /// reason.
     pub fn declare_streams(
         &mut self,
+        context_id: u64,
         app_id: &str,
         decls: Vec<EventStreamDecl>,
     ) -> Result<Vec<String>, String> {
@@ -293,42 +328,53 @@ impl AppTimeline {
                 ));
             }
         }
-        let entry = self.streams.entry(app_id.to_string()).or_default();
+        let entry = self
+            .streams
+            .entry((context_id, app_id.to_string()))
+            .or_default();
         for decl in decls {
             accepted.push(decl.name.clone());
             entry.insert(decl.name.clone(), decl);
         }
-        log::info!("app_timeline: '{app_id}' declared event streams {accepted:?}");
+        log::info!(
+            "app_timeline: '{app_id}' (context={context_id}) declared event streams {accepted:?}"
+        );
         Ok(accepted)
     }
 
-    /// Every declared `(app_id, stream_name)` pair, sorted — the discovery
-    /// surface for actors that subscribe at runtime (Phase D Assistant).
-    pub fn all_declared_streams(&self) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = self
+    /// Every declared `(context_id, app_id, stream_name)` triple, sorted —
+    /// the discovery surface for actors that subscribe at runtime (Phase D
+    /// Assistant). Context-qualified since the same `app_id` may declare
+    /// different streams/schemas in different contexts.
+    pub fn all_declared_streams(&self) -> Vec<(u64, String, String)> {
+        let mut out: Vec<(u64, String, String)> = self
             .streams
             .iter()
-            .flat_map(|(app, m)| m.keys().map(move |name| (app.clone(), name.clone())))
+            .flat_map(|((context_id, app), m)| {
+                m.keys()
+                    .map(move |name| (*context_id, app.clone(), name.clone()))
+            })
             .collect();
         out.sort();
         out
     }
 
-    /// Declared streams for an app (empty when none declared).
+    /// Declared streams for an app in one context (empty when none declared).
     #[cfg(test)]
-    pub fn declared_streams(&self, app_id: &str) -> Vec<&EventStreamDecl> {
+    pub fn declared_streams(&self, context_id: u64, app_id: &str) -> Vec<&EventStreamDecl> {
         self.streams
-            .get(app_id)
+            .get(&(context_id, app_id.to_string()))
             .map(|m| m.values().collect())
             .unwrap_or_default()
     }
 
-    /// Whether `app_id` has declared a stream named `name` — an O(1) lookup
-    /// (mirrors `record_event`'s declared-stream check), for callers that only
-    /// need existence and not the full `EventStreamDecl` list.
-    pub fn has_stream(&self, app_id: &str, name: &str) -> bool {
+    /// Whether `app_id` in `context_id` has declared a stream named `name` —
+    /// an O(1) lookup (mirrors `record_event`'s declared-stream check), for
+    /// callers that only need existence and not the full `EventStreamDecl`
+    /// list.
+    pub fn has_stream(&self, context_id: u64, app_id: &str, name: &str) -> bool {
         self.streams
-            .get(app_id)
+            .get(&(context_id, app_id.to_string()))
             .is_some_and(|m| m.contains_key(name))
     }
 
@@ -340,6 +386,7 @@ impl AppTimeline {
     /// and the reason names the missing/invalid field.
     pub fn record_event(
         &mut self,
+        context_id: u64,
         app_id: &str,
         pane_id: u64,
         emitted: EmittedEvent,
@@ -358,15 +405,16 @@ impl AppTimeline {
         if emitted.revision_after.trim().is_empty() {
             return Err("emit_event: 'revision_after' must be non-empty".to_string());
         }
-        // Streams must be declared with a schema before use.
+        // Streams must be declared (in this context, under this app_id) with
+        // a schema before use.
         let declared = self
             .streams
-            .get(app_id)
+            .get(&(context_id, app_id.to_string()))
             .is_some_and(|m| m.contains_key(&emitted.event));
         if !declared {
             return Err(format!(
                 "emit_event: '{}' is not a declared event stream for app '{app_id}' \
-                 — declare it via declare_event_streams first",
+                 in this context — declare it via declare_event_streams first",
                 emitted.event
             ));
         }
@@ -380,6 +428,7 @@ impl AppTimeline {
         let record = AppEventRecord {
             event_id: self.next_event_id,
             app_id: app_id.to_string(),
+            owner_context_id: context_id,
             pane_id,
             event: emitted.event,
             actor: emitted.actor,
@@ -783,9 +832,16 @@ mod tests {
         }
     }
 
+    /// Default owning context for tests that don't care about cross-context
+    /// behavior — one fixed value keeps every existing same-context
+    /// assertion unchanged.
+    const CTX: u64 = 1;
+    /// A second, distinct context — used only by the cross-context tests.
+    const OTHER_CTX: u64 = 2;
+
     fn timeline_with_stream() -> AppTimeline {
         let mut t = AppTimeline::default();
-        t.declare_streams("chess", vec![decl("move.played")])
+        t.declare_streams(CTX, "chess", vec![decl("move.played")])
             .unwrap();
         t
     }
@@ -801,6 +857,7 @@ mod tests {
             trigger_mode,
             resource_id: None,
             duration: GrantDuration::Session,
+            subscriber_context_id: CTX,
             created_at: "2026-06-11T00:00:00Z".to_string(),
         }
     }
@@ -808,16 +865,16 @@ mod tests {
     #[test]
     fn declare_rejects_empty_name_and_non_object_schema() {
         let mut t = AppTimeline::default();
-        assert!(t.declare_streams("a", vec![]).is_err());
-        assert!(t.declare_streams("a", vec![decl(" ")]).is_err());
+        assert!(t.declare_streams(CTX, "a", vec![]).is_err());
+        assert!(t.declare_streams(CTX, "a", vec![decl(" ")]).is_err());
         let bad = EventStreamDecl {
             name: "x".to_string(),
             schema: serde_json::json!("not an object"),
             description: None,
         };
-        assert!(t.declare_streams("a", vec![bad]).is_err());
+        assert!(t.declare_streams(CTX, "a", vec![bad]).is_err());
         assert!(
-            t.declared_streams("a").is_empty(),
+            t.declared_streams(CTX, "a").is_empty(),
             "nothing partial recorded"
         );
     }
@@ -826,10 +883,24 @@ mod tests {
     fn undeclared_stream_is_rejected() {
         let mut t = AppTimeline::default();
         let err = t
-            .record_event("chess", 1, emitted("move.played"))
+            .record_event(CTX, "chess", 1, emitted("move.played"))
             .unwrap_err();
         assert!(err.contains("not a declared event stream"), "{err}");
         assert!(t.events().is_empty());
+    }
+
+    #[test]
+    fn same_app_id_in_different_context_needs_its_own_declaration() {
+        // Declaring "move.played" for "chess" in CTX must not make it usable
+        // for the same app_id running in OTHER_CTX — stream namespace is
+        // (context_id, app_id), not app_id alone.
+        let mut t = timeline_with_stream();
+        let err = t
+            .record_event(OTHER_CTX, "chess", 99, emitted("move.played"))
+            .unwrap_err();
+        assert!(err.contains("not a declared event stream"), "{err}");
+        assert!(t.declared_streams(OTHER_CTX, "chess").is_empty());
+        assert!(!t.declared_streams(CTX, "chess").is_empty());
     }
 
     #[test]
@@ -856,7 +927,7 @@ mod tests {
         ] {
             let mut e = emitted("move.played");
             mutate(&mut e);
-            let err = t.record_event("chess", 1, e).unwrap_err();
+            let err = t.record_event(CTX, "chess", 1, e).unwrap_err();
             assert!(
                 err.contains(field),
                 "expected '{field}' in error, got: {err}"
@@ -871,7 +942,9 @@ mod tests {
     #[test]
     fn accepted_event_enters_timeline_without_checkpoint() {
         let mut t = timeline_with_stream();
-        let out = t.record_event("chess", 7, emitted("move.played")).unwrap();
+        let out = t
+            .record_event(CTX, "chess", 7, emitted("move.played"))
+            .unwrap();
         assert_eq!(
             out.checkpoint_id, None,
             "no rollback metadata = no checkpoint"
@@ -891,7 +964,7 @@ mod tests {
         let mut e = emitted("move.played");
         e.rollback_token = Some("undo-abc".to_string());
         e.changed_resources = vec!["game-abc".to_string()];
-        let out = t.record_event("chess", 7, e).unwrap();
+        let out = t.record_event(CTX, "chess", 7, e).unwrap();
         let ckpt_id = out
             .checkpoint_id
             .expect("rollback metadata must checkpoint");
@@ -912,7 +985,7 @@ mod tests {
         let mut e = emitted("move.played");
         e.rollback_token = Some("undo-abc".to_string());
         let ckpt_id = t
-            .record_event("chess", 7, e)
+            .record_event(CTX, "chess", 7, e)
             .unwrap()
             .checkpoint_id
             .unwrap();
@@ -941,7 +1014,7 @@ mod tests {
         let mut e = emitted("move.played");
         e.rollback_token = Some("undo-abc".to_string());
         let ckpt_id = t
-            .record_event("chess", 7, e)
+            .record_event(CTX, "chess", 7, e)
             .unwrap()
             .checkpoint_id
             .unwrap();
@@ -966,7 +1039,7 @@ mod tests {
         let mut e = emitted("move.played");
         e.rollback_token = Some("undo-abc".to_string());
         let ckpt_id = t
-            .record_event("chess", 7, e)
+            .record_event(CTX, "chess", 7, e)
             .unwrap()
             .checkpoint_id
             .unwrap();
@@ -983,18 +1056,22 @@ mod tests {
     #[test]
     fn subscription_routing_filters_event_name_and_resource() {
         let mut t = timeline_with_stream();
-        t.declare_streams("chess", vec![decl("game.ended")])
+        t.declare_streams(CTX, "chess", vec![decl("game.ended")])
             .unwrap();
         let mut sub = subscription(PayloadMode::Summary, TriggerMode::Conversation);
         sub.event_names = vec!["game.ended".to_string()];
         t.add_subscription(sub);
 
         // Non-matching event name → no delivery.
-        let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("move.played"))
+            .unwrap();
         assert_eq!(out.deliveries_queued, 0);
 
         // Matching event name → delivery.
-        let out = t.record_event("chess", 1, emitted("game.ended")).unwrap();
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("game.ended"))
+            .unwrap();
         assert_eq!(out.deliveries_queued, 1);
 
         // Resource-scoped subscription only matches its resource.
@@ -1002,7 +1079,9 @@ mod tests {
         sub2.subscription_id = "sub-2".to_string();
         sub2.resource_id = Some("game-other".to_string());
         t.add_subscription(sub2);
-        let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("move.played"))
+            .unwrap();
         assert_eq!(
             out.deliveries_queued, 0,
             "resource mismatch must not deliver"
@@ -1025,7 +1104,9 @@ mod tests {
     fn never_trigger_records_timeline_only() {
         let mut t = timeline_with_stream();
         t.add_subscription(subscription(PayloadMode::Full, TriggerMode::Never));
-        let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("move.played"))
+            .unwrap();
         assert_eq!(
             out.deliveries_queued, 0,
             "never = timeline only, no delivery"
@@ -1050,7 +1131,9 @@ mod tests {
             sub.subscription_id = format!("sub-{i}");
             t.add_subscription(sub);
         }
-        let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("move.played"))
+            .unwrap();
         assert_eq!(out.deliveries_queued, 4);
         let d = t.take_deliveries_for(ActorType::Agent, "chess-opponent");
         // Off: nothing.
@@ -1069,7 +1152,9 @@ mod tests {
         t.add_subscription(subscription(PayloadMode::Summary, TriggerMode::Ambient));
         assert!(t.remove_subscription("sub-1"));
         assert!(!t.remove_subscription("sub-1"));
-        let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("move.played"))
+            .unwrap();
         assert_eq!(out.deliveries_queued, 0);
     }
 
@@ -1096,10 +1181,10 @@ mod tests {
     fn app_subscriptions_deliver_across_python_and_wasm_publishers() {
         let mut timeline = AppTimeline::default();
         timeline
-            .declare_streams("python-notes", vec![decl("note.saved")])
+            .declare_streams(CTX, "python-notes", vec![decl("note.saved")])
             .unwrap();
         timeline
-            .declare_streams("wasm-counter", vec![decl("count.changed")])
+            .declare_streams(CTX, "wasm-counter", vec![decl("count.changed")])
             .unwrap();
 
         let mut wasm_subscriber = subscription(PayloadMode::Full, TriggerMode::Conversation);
@@ -1122,7 +1207,7 @@ mod tests {
         python_event.resource_id = "note-1".to_string();
         assert_eq!(
             timeline
-                .record_event("python-notes", 11, python_event)
+                .record_event(CTX, "python-notes", 11, python_event)
                 .unwrap()
                 .deliveries_queued,
             1
@@ -1135,7 +1220,7 @@ mod tests {
         wasm_event.resource_id = "counter-1".to_string();
         assert_eq!(
             timeline
-                .record_event("wasm-counter", 12, wasm_event)
+                .record_event(CTX, "wasm-counter", 12, wasm_event)
                 .unwrap()
                 .deliveries_queued,
             1
@@ -1149,10 +1234,122 @@ mod tests {
             .unwrap());
         assert_eq!(
             timeline
-                .record_event("python-notes", 11, emitted("note.saved"))
+                .record_event(CTX, "python-notes", 11, emitted("note.saved"))
                 .unwrap()
                 .deliveries_queued,
             0
         );
+    }
+
+    // ── Phase D: context-scoped stream ownership / reachability ─────────────
+
+    /// The falsifying regression this phase fixes: the SAME `app_id`
+    /// ("chess") runs once in `CTX` and once in `OTHER_CTX`. A subscriber
+    /// whose own context is `CTX` must receive ONLY `CTX`'s emitted events —
+    /// never `OTHER_CTX`'s — even though both declare identical stream names
+    /// under the identical app_id. Before this phase, `SubscriptionRecord`
+    /// carried no context dimension at all, so this delivery would have
+    /// bled across contexts.
+    #[test]
+    fn cross_context_same_app_id_does_not_bleed_into_subscriber() {
+        let mut t = AppTimeline::default();
+        t.declare_streams(CTX, "chess", vec![decl("move.played")])
+            .unwrap();
+        t.declare_streams(OTHER_CTX, "chess", vec![decl("move.played")])
+            .unwrap();
+
+        // Subscriber lives in CTX.
+        let mut sub = subscription(PayloadMode::Full, TriggerMode::Conversation);
+        sub.subscriber_context_id = CTX;
+        t.add_subscription(sub);
+
+        // CTX's own "chess" instance emits — must deliver.
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("move.played"))
+            .unwrap();
+        assert_eq!(out.deliveries_queued, 1, "same-context event must deliver");
+
+        // OTHER_CTX's "chess" instance (identical app_id, identical stream
+        // name) emits — must NOT deliver to the CTX subscriber.
+        let out = t
+            .record_event(OTHER_CTX, "chess", 99, emitted("move.played"))
+            .unwrap();
+        assert_eq!(
+            out.deliveries_queued, 0,
+            "a different context's same-app_id event must never reach a subscriber \
+             scoped to another context"
+        );
+
+        // Exactly the one CTX delivery is queued — never the OTHER_CTX one.
+        let deliveries = t.take_deliveries_for(ActorType::Agent, "chess-opponent");
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].event_id, out.event_id - 1);
+    }
+
+    /// A subscriber scoped to `OTHER_CTX` is the symmetric case: it receives
+    /// only `OTHER_CTX`'s events, never `CTX`'s.
+    #[test]
+    fn subscriber_in_other_context_only_sees_its_own_context_events() {
+        let mut t = AppTimeline::default();
+        t.declare_streams(CTX, "chess", vec![decl("move.played")])
+            .unwrap();
+        t.declare_streams(OTHER_CTX, "chess", vec![decl("move.played")])
+            .unwrap();
+
+        let mut sub = subscription(PayloadMode::Full, TriggerMode::Conversation);
+        sub.subscriber_context_id = OTHER_CTX;
+        t.add_subscription(sub);
+
+        let out = t
+            .record_event(CTX, "chess", 1, emitted("move.played"))
+            .unwrap();
+        assert_eq!(
+            out.deliveries_queued, 0,
+            "CTX event must not reach OTHER_CTX subscriber"
+        );
+
+        let out = t
+            .record_event(OTHER_CTX, "chess", 99, emitted("move.played"))
+            .unwrap();
+        assert_eq!(
+            out.deliveries_queued, 1,
+            "OTHER_CTX event must reach its own subscriber"
+        );
+    }
+
+    /// Direct unit coverage of `SubscriptionRecord::matches`'s new
+    /// `evaluate_reach` gate, independent of the higher-level `record_event`
+    /// flow above — mirrors Phase C's `tool_dispatch.rs` test style.
+    #[test]
+    fn matches_rejects_cross_context_even_with_identical_app_and_event_name() {
+        let mut same_context = subscription(PayloadMode::Full, TriggerMode::Conversation);
+        same_context.subscriber_context_id = CTX;
+        let mut cross_context = subscription(PayloadMode::Full, TriggerMode::Conversation);
+        cross_context.subscriber_context_id = OTHER_CTX;
+
+        let record = AppEventRecord {
+            event_id: 1,
+            app_id: "chess".to_string(),
+            owner_context_id: CTX,
+            pane_id: 7,
+            event: "move.played".to_string(),
+            actor: AppEventActor::User,
+            actor_id: "chess".to_string(),
+            caused_by: None,
+            summary: "White played e4".to_string(),
+            resource_id: "game-abc".to_string(),
+            resource_scope: "game".to_string(),
+            revision_after: "rev-13".to_string(),
+            payload: None,
+            state_ref: None,
+            revision_before: None,
+            rollback_token: None,
+            changed_resources: vec![],
+            suggested_trigger: None,
+            created_at: "2026-06-11T00:00:00Z".to_string(),
+        };
+
+        assert!(same_context.matches("chess", &record));
+        assert!(!cross_context.matches("chess", &record));
     }
 }

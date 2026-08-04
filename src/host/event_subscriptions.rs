@@ -49,11 +49,12 @@ pub fn app_subscriber_id(pane_id: u64) -> String {
 pub fn evaluate_and_record_subscription(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
-    workspace_root: &Path,
+    workspace_root: Option<&Path>,
     timeline: &Arc<Mutex<AppTimeline>>,
     publisher_app_id: &str,
     subscriber_type: ActorType,
     subscriber_id: &str,
+    subscriber_context_id: u64,
     event_names: Vec<String>,
     payload_mode: PayloadMode,
     trigger_mode: TriggerMode,
@@ -82,6 +83,7 @@ pub fn evaluate_and_record_subscription(
         publisher_app_id,
         subscriber_type,
         subscriber_id,
+        subscriber_context_id,
         event_names,
         payload_mode,
         trigger_mode,
@@ -126,7 +128,7 @@ fn publish_targets(app_id: &str, event_names: &[String]) -> Vec<String> {
 pub fn evaluate_subscription(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
-    workspace_root: &Path,
+    workspace_root: Option<&Path>,
     publisher_app_id: &str,
     subscriber_type: ActorType,
     subscriber_id: &str,
@@ -147,7 +149,7 @@ pub fn evaluate_subscription(
 fn evaluate_publish(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
-    workspace_root: &Path,
+    workspace_root: Option<&Path>,
     app_id: &str,
     actor_type: ActorType,
     actor_id: &str,
@@ -170,7 +172,7 @@ fn evaluate_publish(
 fn evaluate_targets(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
-    workspace_root: &Path,
+    workspace_root: Option<&Path>,
     actor_type: ActorType,
     actor_id: &str,
     targets: &[String],
@@ -182,7 +184,7 @@ fn evaluate_targets(
             actor_id,
             TargetType::AppEventStream,
             target,
-            Some(workspace_root),
+            workspace_root,
         );
         match grant_store.evaluate(&req, posture) {
             Decision::Allow => {}
@@ -206,6 +208,7 @@ pub fn record_subscription(
     publisher_app_id: &str,
     subscriber_type: ActorType,
     subscriber_id: &str,
+    subscriber_context_id: u64,
     event_names: Vec<String>,
     payload_mode: PayloadMode,
     trigger_mode: TriggerMode,
@@ -223,11 +226,13 @@ pub fn record_subscription(
         trigger_mode,
         resource_id,
         duration,
+        subscriber_context_id,
         created_at: event_log::now_timestamp(),
     };
     log::info!(
         "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
-         '{subscriber_id}' -> '{publisher_app_id}' (payload={payload_mode:?}, trigger={trigger_mode:?})"
+         '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_app_id}' \
+         (payload={payload_mode:?}, trigger={trigger_mode:?})"
     );
     timeline.lock().unwrap().add_subscription(record);
     subscription_id
@@ -264,9 +269,30 @@ pub struct HostSubscribeRequest {
     /// host MCP server sets this to the stable `mcp:host` so one "Always" grant
     /// covers every concurrent connection.
     pub broker_actor_override: Option<String>,
-    /// Workspace used for broker posture evaluation. App runtimes supply their
-    /// own workspace; transports use the service's active workspace.
+    /// Workspace used for broker posture evaluation, resolved by the caller
+    /// from the subscriber's host-established `ScopeOrigin` (stint 0724
+    /// Phase D — there is no ambient service-level fallback). `None` only
+    /// when the caller has no resolvable pane (e.g. an outside-pane CLI
+    /// connection), in which case the broker check runs with no workspace
+    /// context.
     pub workspace_root_override: Option<PathBuf>,
+    /// The subscriber's host-established context id, resolved the same way
+    /// as `workspace_root_override` — the viewer side of `evaluate_reach`
+    /// for every stream this subscription will ever match against. `None`
+    /// only when the caller has no resolvable pane; resolved to `0` (matches
+    /// no real context, mirroring `AgentHost`'s pre-attach sentinel) at the
+    /// point the request is classified.
+    pub context_id_override: Option<u64>,
+    /// Host-captured kernel ancestor-pid chain of the socket peer (stint
+    /// 0636's `capture_peer_ancestry`, threaded the same way as
+    /// `Notify`/`DismissNotification`'s `peer_pid`). `Some` only for the raw
+    /// CLI-socket transport; when present it independently re-derives
+    /// `from_pane_id` instead of trusting the client-forwarded
+    /// `PLEXI_PANE_ID` value, closing the gap where any local process could
+    /// otherwise claim to be calling from an arbitrary pane. `None` for
+    /// transports that already establish identity another way (host MCP's
+    /// bearer credential, a WASM/Python app's own host-known pane id).
+    pub peer_ancestry: Option<Vec<u32>>,
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
@@ -292,6 +318,12 @@ pub struct PendingEventConsent {
     /// Stream names touched (empty = all of the app's declared streams). Drives
     /// both the consent label and the `AllowAlways` grant targets.
     pub event_names: Vec<String>,
+    /// The subscriber/publisher's host-established context id, resolved once
+    /// at classify time and carried in the parked struct — never re-resolved
+    /// when the user later answers the modal (command-handler data must be
+    /// self-contained; by the time `resolve_consent` runs, the pane that
+    /// requested this may have closed).
+    pub subscriber_context_id: u64,
     /// The effect to apply once allowed — owns the transport's reply channel.
     action: ConsentAction,
 }
@@ -349,6 +381,18 @@ pub struct HostPublishRequest {
     /// Trusted host-transport override for the actor id (e.g. the host MCP
     /// server). Never sourced from an untrusted client argument.
     pub subscriber_override: Option<String>,
+    /// Workspace for broker posture evaluation — see
+    /// [`HostSubscribeRequest::workspace_root_override`]; same contract,
+    /// publish twin.
+    pub workspace_root_override: Option<PathBuf>,
+    /// Context id under which the declared/emitted stream is owned — see
+    /// [`HostSubscribeRequest::context_id_override`]; same contract, publish
+    /// twin. Stamped onto every `AppEventRecord`/stream declaration this
+    /// request produces.
+    pub context_id_override: Option<u64>,
+    /// See [`HostSubscribeRequest::peer_ancestry`]; same contract, publish
+    /// twin.
+    pub peer_ancestry: Option<Vec<u32>>,
     pub reply: SyncSender<HostPublishReply>,
 }
 
@@ -407,18 +451,23 @@ pub enum HostSubscribeReply {
 pub struct HostSubscriptionService {
     grant_store: GrantStore,
     posture: Option<PermissionPosture>,
-    workspace_root: PathBuf,
     timeline: Arc<Mutex<AppTimeline>>,
 }
 
 impl HostSubscriptionService {
     /// Load the host grant store + posture from `config_dir` and bind the
     /// service to `timeline` (the global timeline in production).
-    pub fn new(
-        config_dir: &Path,
-        workspace_root: PathBuf,
-        timeline: Arc<Mutex<AppTimeline>>,
-    ) -> Self {
+    ///
+    /// Deliberately takes no workspace/context — stint 0724 Phase D removed
+    /// the service-wide `workspace_root` field that used to be captured once
+    /// at host startup (`active_workspace_root()`/cwd) and silently applied
+    /// to every request regardless of which context the caller actually
+    /// lives in. Every request now carries its own resolved
+    /// `workspace_root_override`/`context_id_override` (or, for the raw CLI
+    /// socket path, is resolved per-request by the caller from
+    /// `PlexiApp::origin_for_pane` before it reaches this service) — there is
+    /// no ambient fallback.
+    pub fn new(config_dir: &Path, timeline: Arc<Mutex<AppTimeline>>) -> Self {
         let grant_store = GrantStore::load_or_default(config_dir);
         let posture = PermissionPosture::load_from_config(config_dir);
         log::info!(
@@ -429,7 +478,6 @@ impl HostSubscriptionService {
         Self {
             grant_store,
             posture,
-            workspace_root,
             timeline,
         }
     }
@@ -441,7 +489,6 @@ impl HostSubscriptionService {
         Self {
             grant_store,
             posture: None,
-            workspace_root: PathBuf::from("/tmp/ws"),
             timeline,
         }
     }
@@ -498,12 +545,20 @@ impl HostSubscriptionService {
             .broker_actor_override
             .clone()
             .unwrap_or_else(|| subscriber_id.clone());
+        // Viewer context for reachability and stream-declaration scoping —
+        // stint 0724 Phase D. `0` matches no real context (mirrors
+        // `AgentHost`'s pre-attach sentinel) and is only reached when the
+        // caller has no resolvable pane at all.
+        let subscriber_context_id = req.context_id_override.unwrap_or(0);
         // Reject undeclared streams before involving the broker so the client
-        // gets a precise error instead of a generic permission denial.
+        // gets a precise error instead of a generic permission denial. Scoped
+        // to the subscriber's own context: a stream declared only in a
+        // different context is, correctly, "not declared" from here — no
+        // cross-context grant exists yet to make it visible.
         let undeclared: Vec<String> = req
             .event_names
             .iter()
-            .filter(|n| !self.stream_is_declared(&req.publisher_app_id, n))
+            .filter(|n| !self.stream_is_declared(subscriber_context_id, &req.publisher_app_id, n))
             .cloned()
             .collect();
         if !undeclared.is_empty() {
@@ -519,9 +574,7 @@ impl HostSubscriptionService {
         let decision = evaluate_subscription(
             &self.grant_store,
             self.posture.as_ref(),
-            req.workspace_root_override
-                .as_deref()
-                .unwrap_or(&self.workspace_root),
+            req.workspace_root_override.as_deref(),
             &req.publisher_app_id,
             subscriber_type,
             &broker_actor_id,
@@ -534,6 +587,7 @@ impl HostSubscriptionService {
                     &req.publisher_app_id,
                     subscriber_type,
                     &subscriber_id,
+                    subscriber_context_id,
                     req.event_names,
                     req.payload_mode,
                     req.trigger_mode,
@@ -565,6 +619,7 @@ impl HostSubscriptionService {
                     broker_actor_id,
                     app_id: req.publisher_app_id,
                     event_names: req.event_names,
+                    subscriber_context_id,
                     action: ConsentAction::Subscribe {
                         payload_mode: req.payload_mode,
                         trigger_mode: req.trigger_mode,
@@ -594,6 +649,7 @@ impl HostSubscriptionService {
             broker_actor_id,
             app_id,
             event_names,
+            subscriber_context_id,
             action,
         } = consent;
 
@@ -643,6 +699,7 @@ impl HostSubscriptionService {
                     &app_id,
                     subscriber_type,
                     &subscriber_id,
+                    subscriber_context_id,
                     event_names,
                     payload_mode,
                     trigger_mode,
@@ -689,7 +746,13 @@ impl HostSubscriptionService {
                     });
                     return;
                 }
-                let outcome = Self::perform_publish(&self.timeline, &app_id, pane_id, publish);
+                let outcome = Self::perform_publish(
+                    &self.timeline,
+                    subscriber_context_id,
+                    &app_id,
+                    pane_id,
+                    publish,
+                );
                 let summary = match &outcome {
                     HostPublishReply::Ok { detail, .. } => detail.clone(),
                     HostPublishReply::Err { message } => format!("failed: {message}"),
@@ -779,6 +842,10 @@ impl HostSubscriptionService {
         if let PublishAction::Emit(ev) = &mut req.action {
             ev.actor_id = Some(actor_id.clone());
         }
+        // Owning context for the declared/emitted stream — stint 0724 Phase
+        // D. `0` matches no real context, reached only when the caller has
+        // no resolvable pane.
+        let context_id = req.context_id_override.unwrap_or(0);
         // Stream names this request touches — the broker targets and the label.
         let event_names: Vec<String> = match &req.action {
             PublishAction::Declare(decls) => decls.iter().map(|d| d.name.clone()).collect(),
@@ -786,12 +853,13 @@ impl HostSubscriptionService {
         };
         // Reject an emit on an undeclared stream before the broker so the client
         // gets a precise error and the user is never prompted for a doomed emit
-        // (mirrors the subscribe undeclared-stream check).
+        // (mirrors the subscribe undeclared-stream check). Scoped to this
+        // request's own context, matching what `record_event` will enforce.
         if let PublishAction::Emit(ev) = &req.action {
-            if !self.stream_is_declared(&req.app_id, &ev.event) {
+            if !self.stream_is_declared(context_id, &req.app_id, &ev.event) {
                 let _ = req.reply.send(HostPublishReply::Err {
                     message: format!(
-                        "app '{}' has not declared stream '{}' — declare it first",
+                        "app '{}' has not declared stream '{}' in this context — declare it first",
                         req.app_id, ev.event
                     ),
                 });
@@ -801,7 +869,7 @@ impl HostSubscriptionService {
         let decision = evaluate_publish(
             &self.grant_store,
             self.posture.as_ref(),
-            &self.workspace_root,
+            req.workspace_root_override.as_deref(),
             &req.app_id,
             actor_type,
             &actor_id,
@@ -810,8 +878,13 @@ impl HostSubscriptionService {
         let pane_id = req.from_pane_id.unwrap_or(0);
         match decision {
             Decision::Allow => {
-                let outcome =
-                    Self::perform_publish(&self.timeline, &req.app_id, pane_id, req.action);
+                let outcome = Self::perform_publish(
+                    &self.timeline,
+                    context_id,
+                    &req.app_id,
+                    pane_id,
+                    req.action,
+                );
                 let _ = req.reply.send(outcome);
                 None
             }
@@ -835,6 +908,7 @@ impl HostSubscriptionService {
                     subscriber_id: actor_id,
                     app_id: req.app_id,
                     event_names,
+                    subscriber_context_id: context_id,
                     action: ConsentAction::Publish {
                         publish: req.action,
                         pane_id,
@@ -850,39 +924,44 @@ impl HostSubscriptionService {
     /// caller has already established consent.
     fn perform_publish(
         timeline: &Arc<Mutex<AppTimeline>>,
+        context_id: u64,
         app_id: &str,
         pane_id: u64,
         action: PublishAction,
     ) -> HostPublishReply {
         let mut timeline = timeline.lock().unwrap();
         match action {
-            PublishAction::Declare(decls) => match timeline.declare_streams(app_id, decls) {
-                Ok(names) => HostPublishReply::Ok {
-                    detail: format!("declared stream(s): {}", names.join(", ")),
-                    event_id: None,
-                },
-                Err(message) => HostPublishReply::Err { message },
-            },
-            PublishAction::Emit(ev) => match timeline.record_event(app_id, pane_id, *ev) {
-                Ok(outcome) => HostPublishReply::Ok {
-                    detail: format!(
-                        "recorded event {} ({} delivery(ies) queued)",
-                        outcome.event_id, outcome.deliveries_queued
-                    ),
-                    event_id: Some(outcome.event_id),
-                },
-                Err(message) => HostPublishReply::Err { message },
-            },
+            PublishAction::Declare(decls) => {
+                match timeline.declare_streams(context_id, app_id, decls) {
+                    Ok(names) => HostPublishReply::Ok {
+                        detail: format!("declared stream(s): {}", names.join(", ")),
+                        event_id: None,
+                    },
+                    Err(message) => HostPublishReply::Err { message },
+                }
+            }
+            PublishAction::Emit(ev) => {
+                match timeline.record_event(context_id, app_id, pane_id, *ev) {
+                    Ok(outcome) => HostPublishReply::Ok {
+                        detail: format!(
+                            "recorded event {} ({} delivery(ies) queued)",
+                            outcome.event_id, outcome.deliveries_queued
+                        ),
+                        event_id: Some(outcome.event_id),
+                    },
+                    Err(message) => HostPublishReply::Err { message },
+                }
+            }
         }
     }
 
     /// Whether `app_id` has declared `stream_name`. Used to reject subscribe
     /// requests for undeclared streams before they reach the broker.
-    pub fn stream_is_declared(&self, app_id: &str, stream_name: &str) -> bool {
+    pub fn stream_is_declared(&self, context_id: u64, app_id: &str, stream_name: &str) -> bool {
         self.timeline
             .lock()
             .unwrap()
-            .has_stream(app_id, stream_name)
+            .has_stream(context_id, app_id, stream_name)
     }
 }
 
@@ -892,6 +971,11 @@ mod tests {
     use crate::app_protocol::{AppEventActor, EventStreamDecl};
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource, ResourceScope};
     use crate::host::app_timeline::EmittedEvent;
+
+    /// Fixed owning/viewer context for tests that don't exercise
+    /// cross-context behavior (that's `app_timeline.rs`'s job) — keeps every
+    /// existing same-context assertion unchanged.
+    const CTX: u64 = 1;
 
     fn allow_grant(actor_id: &str, target_id: &str) -> GrantRecord {
         GrantRecord {
@@ -914,6 +998,7 @@ mod tests {
     fn timeline_with_stream() -> Arc<Mutex<AppTimeline>> {
         let mut t = AppTimeline::default();
         t.declare_streams(
+            CTX,
             "event-probe",
             vec![EventStreamDecl {
                 name: "probe.tick".to_string(),
@@ -934,11 +1019,12 @@ mod tests {
         let res = evaluate_and_record_subscription(
             &store,
             None,
-            Path::new("/tmp/ws"),
+            Some(Path::new("/tmp/ws")),
             &timeline,
             "event-probe",
             ActorType::Agent,
             "pane:7",
+            CTX,
             vec!["probe.tick".to_string()],
             PayloadMode::Full,
             TriggerMode::Conversation,
@@ -958,11 +1044,12 @@ mod tests {
         let res = evaluate_and_record_subscription(
             &store,
             None,
-            Path::new("/tmp/ws"),
+            Some(Path::new("/tmp/ws")),
             &timeline,
             "event-probe",
             ActorType::Agent,
             "pane:7",
+            CTX,
             vec!["probe.tick".to_string()],
             PayloadMode::Full,
             TriggerMode::Conversation,
@@ -1006,6 +1093,8 @@ mod tests {
             subscriber_type_override: Some(ActorType::App),
             broker_actor_override: Some("notes-app".to_string()),
             workspace_root_override: Some(PathBuf::from("/workspace/notes")),
+            context_id_override: Some(CTX),
+            peer_ancestry: None,
             reply,
         };
 
@@ -1045,7 +1134,9 @@ mod tests {
             subscriber_override: override_id.map(String::from),
             subscriber_type_override: None,
             broker_actor_override: None,
-            workspace_root_override: None,
+            workspace_root_override: Some(PathBuf::from("/tmp/ws")),
+            context_id_override: Some(CTX),
+            peer_ancestry: None,
             reply: tx,
         };
         (req, rx)
@@ -1072,7 +1163,9 @@ mod tests {
             subscriber_override: Some(delivery_id.to_string()),
             subscriber_type_override: None,
             broker_actor_override: Some(broker_actor.to_string()),
-            workspace_root_override: None,
+            workspace_root_override: Some(PathBuf::from("/tmp/ws")),
+            context_id_override: Some(CTX),
+            peer_ancestry: None,
             reply: tx,
         };
         (req, rx)
@@ -1115,7 +1208,7 @@ mod tests {
         timeline
             .lock()
             .unwrap()
-            .record_event("event-probe", 7, probe_event(1))
+            .record_event(CTX, "event-probe", 7, probe_event(1))
             .expect("emit should record");
 
         // Tear down A. B's subscription and its queued delivery must survive.
@@ -1243,11 +1336,7 @@ mod tests {
     fn consent_allow_always_persists_grant() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
         let consent = svc
             .classify_subscribe_request(req)
@@ -1257,11 +1346,7 @@ mod tests {
 
         // Fresh service over the same profile dir: the persisted grant makes the
         // next subscribe pass inline (no parked consent).
-        let svc2 = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (req2, rx2) =
             subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
         assert!(
@@ -1292,7 +1377,7 @@ mod tests {
         timeline
             .lock()
             .unwrap()
-            .record_event("event-probe", 7, probe_event(3))
+            .record_event(CTX, "event-probe", 7, probe_event(3))
             .expect("emit should record");
 
         let deliveries = timeline.lock().unwrap().take_deliveries_for(stype, &sid);
@@ -1306,7 +1391,7 @@ mod tests {
         timeline
             .lock()
             .unwrap()
-            .record_event("event-probe", 7, probe_event(4))
+            .record_event(CTX, "event-probe", 7, probe_event(4))
             .expect("emit should record");
         assert_eq!(timeline.lock().unwrap().pending_delivery_count(), 1);
         let (subs, drops) = timeline.lock().unwrap().clear_subscriber(stype, &sid);
@@ -1334,7 +1419,7 @@ mod tests {
         timeline
             .lock()
             .unwrap()
-            .record_event("event-probe", 7, probe_event(1))
+            .record_event(CTX, "event-probe", 7, probe_event(1))
             .expect("emit should record");
         let deliveries = timeline.lock().unwrap().take_deliveries_for(stype, &sid);
         assert_eq!(deliveries.len(), 1);
@@ -1358,6 +1443,9 @@ mod tests {
             action,
             from_pane_id: Some(7),
             subscriber_override: override_id.map(String::from),
+            workspace_root_override: Some(PathBuf::from("/tmp/ws")),
+            context_id_override: Some(CTX),
+            peer_ancestry: None,
             reply: tx,
         };
         (req, rx)
@@ -1437,7 +1525,7 @@ mod tests {
         assert!(timeline
             .lock()
             .unwrap()
-            .declared_streams("declare-probe")
+            .declared_streams(CTX, "declare-probe")
             .is_empty());
 
         svc.resolve_consent(consent, ConsentChoice::AllowOnce, Path::new("/tmp/ws"));
@@ -1449,7 +1537,7 @@ mod tests {
             timeline
                 .lock()
                 .unwrap()
-                .declared_streams("declare-probe")
+                .declared_streams(CTX, "declare-probe")
                 .len(),
             1
         );
@@ -1483,11 +1571,7 @@ mod tests {
     fn publish_allow_always_persists_grant() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (req, rx) = publish_request(
             "event-probe",
             PublishAction::Emit(Box::new(probe_event(1))),
@@ -1499,11 +1583,7 @@ mod tests {
         svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
         assert!(matches!(rx.recv().unwrap(), HostPublishReply::Ok { .. }));
 
-        let svc2 = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (req2, rx2) = publish_request(
             "event-probe",
             PublishAction::Emit(Box::new(probe_event(2))),
@@ -1524,11 +1604,7 @@ mod tests {
     fn subscribe_grant_does_not_authorize_publish() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
 
         // Grant a persistent subscribe (read) Allow-Always.
         let (sub_req, sub_rx) =
@@ -1544,11 +1620,7 @@ mod tests {
 
         // A publish from the same identity must still be gated (Ask → parked),
         // not silently authorized by the read grant.
-        let svc2 = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (pub_req, _pub_rx) = publish_request(
             "event-probe",
             PublishAction::Emit(Box::new(probe_event(1))),
@@ -1566,11 +1638,7 @@ mod tests {
     fn publish_grant_does_not_authorize_subscribe() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
 
         // Grant a persistent publish (write) Allow-Always.
         let (pub_req, pub_rx) = publish_request(
@@ -1588,11 +1656,7 @@ mod tests {
         ));
 
         // A subscribe from the same identity must still be gated (Ask → parked).
-        let svc2 = HostSubscriptionService::new(
-            dir.path(),
-            PathBuf::from("/tmp/ws"),
-            Arc::clone(&timeline),
-        );
+        let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (sub_req, _sub_rx) =
             subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
         assert!(

@@ -676,6 +676,11 @@ impl AgentHost {
                     trigger_mode: sub.trigger,
                     resource_id: None,
                     duration: GrantDuration::Session,
+                    // Viewer context for `evaluate_reach` (stint 0724 Phase
+                    // D) — `AgentHost` itself remains a single
+                    // active-context singleton (flagged in Phase C), so this
+                    // is simply the context that reload last observed.
+                    subscriber_context_id: self.context_id,
                     created_at: crate::host::event_log::now_timestamp(),
                 },
             );

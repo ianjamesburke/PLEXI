@@ -2771,6 +2771,48 @@ fn emitted_app_event_is_recorded_and_awaitable() {
     );
 }
 
+/// Stint 0724 Phase D: `PlexiApp::resolve_event_bus_caller` resolves the
+/// event-bus socket transport's caller identity — used to fill in
+/// `HostSubscribeRequest`/`HostPublishRequest`'s `context_id_override`/
+/// `workspace_root_override` when a CLI request arrives with neither
+/// pre-resolved. With no `peer_ancestry` (the common case for a platform
+/// where kernel ancestry capture is unavailable, or simply not exercised by
+/// this test), the claimed pane id is used as-is and its context/workspace
+/// come from the same `origin_for_pane` every other Phase C/D consumer uses
+/// — never a stale ambient default.
+#[test]
+fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
+    let mut h = HostHarness::new();
+
+    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/event-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch event-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching event-probe");
+
+    let expected_origin = h
+        .app
+        .origin_for_pane(pane_id)
+        .expect("the just-launched pane must resolve an origin");
+
+    let (resolved_pane_id, context_id, workspace_root) =
+        h.app.resolve_event_bus_caller(Some(pane_id), None);
+    assert_eq!(resolved_pane_id, Some(pane_id));
+    assert_eq!(context_id, Some(expected_origin.context_id));
+    assert_eq!(workspace_root, Some(expected_origin.context_root));
+
+    // A claim naming no pane at all (an outside-pane connection) resolves to
+    // nothing — no ambient default fills in silently.
+    let (resolved_pane_id, context_id, workspace_root) = h.app.resolve_event_bus_caller(None, None);
+    assert_eq!(resolved_pane_id, None);
+    assert_eq!(context_id, None);
+    assert_eq!(workspace_root, None);
+}
+
 /// Stint 0414: node-targeted counterpart of stint 0398's
 /// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
 /// Drives a REAL process-app pane (`apps/dev/node-click-probe`, a single

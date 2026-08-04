@@ -739,7 +739,13 @@ fn handle_socket_connection(
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
         match val.get("type").and_then(|t| t.as_str()) {
             Some("events_subscribe") => {
-                handle_events_subscribe(write_half, reader.lines(), val, &subscribe_mailbox);
+                handle_events_subscribe(
+                    write_half,
+                    reader.lines(),
+                    val,
+                    &subscribe_mailbox,
+                    peer_ancestry.as_deref(),
+                );
                 return;
             }
             Some("events_list") => {
@@ -747,7 +753,7 @@ fn handle_socket_connection(
                 return;
             }
             Some("events_declare") | Some("events_emit") => {
-                handle_events_publish(write_half, val, &publish_mailbox);
+                handle_events_publish(write_half, val, &publish_mailbox, peer_ancestry.as_deref());
                 return;
             }
             _ => {}
@@ -849,6 +855,11 @@ fn handle_events_subscribe(
     subscribe_mailbox: &ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
+    // Host-captured kernel ancestry of the socket peer (see
+    // `handle_socket_connection`'s doc comment) — forwarded so the UI thread
+    // can independently verify `from_pane_id` instead of trusting the
+    // client-forwarded `PLEXI_PANE_ID` value alone (stint 0724 Phase D).
+    peer_ancestry: Option<&[u32]>,
 ) {
     use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
     use std::io::Write;
@@ -885,7 +896,11 @@ fn handle_events_subscribe(
         // CLI identity (`pane:N`) is already stable and unique per pane, so the
         // broker actor is the routing id itself — no decoupling needed.
         broker_actor_override: None,
+        // Resolved on the UI thread from `from_pane_id` (verified against
+        // `peer_ancestry` first) — see `drain_event_subscribe_channel`.
         workspace_root_override: None,
+        context_id_override: None,
+        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
         reply: reply_tx,
     };
     if subscribe_mailbox.send(req).is_err() {
@@ -995,8 +1010,10 @@ fn handle_events_subscribe(
     );
 }
 
-/// Answer `events_list`: write the declared `(app_id, stream)` pairs and close.
-/// Pure discovery — no grant check, no identity, no streaming.
+/// Answer `events_list`: write the declared `(context_id, app_id, stream)`
+/// triples and close. Pure discovery — no grant check, no identity, no
+/// streaming. Context-qualified since stint 0724 Phase D: the same `app_id`
+/// may declare different streams/schemas in different contexts.
 fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serde_json::Value) {
     use std::io::Write;
     let json_mode = val["json"].as_bool().unwrap_or(false);
@@ -1011,7 +1028,9 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
     if json_mode {
         let arr: Vec<serde_json::Value> = streams
             .iter()
-            .map(|(a, s)| serde_json::json!({"app_id": a, "stream": s}))
+            .map(|(context_id, a, s)| {
+                serde_json::json!({"context_id": context_id, "app_id": a, "stream": s})
+            })
             .collect();
         let _ = writeln!(
             write_half,
@@ -1021,8 +1040,8 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
     } else if streams.is_empty() {
         let _ = writeln!(write_half, "No event streams declared by running apps.");
     } else {
-        for (app_id, stream) in &streams {
-            let _ = writeln!(write_half, "{app_id}  {stream}");
+        for (context_id, app_id, stream) in &streams {
+            let _ = writeln!(write_half, "{context_id}  {app_id}  {stream}");
         }
     }
     let _ = write_half.flush();
@@ -1037,6 +1056,8 @@ fn handle_events_publish(
     mut write_half: std::os::unix::net::UnixStream,
     val: serde_json::Value,
     publish_mailbox: &ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
+    // See `handle_events_subscribe`'s matching parameter.
+    peer_ancestry: Option<&[u32]>,
 ) {
     use crate::host::event_subscriptions::{HostPublishReply, HostPublishRequest, PublishAction};
     use std::io::Write;
@@ -1115,6 +1136,10 @@ fn handle_events_publish(
         action,
         from_pane_id,
         subscriber_override: None,
+        // Resolved on the UI thread — see `drain_event_subscribe_channel`.
+        workspace_root_override: None,
+        context_id_override: None,
+        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
         reply: reply_tx,
     };
     if publish_mailbox.send(req).is_err() {
@@ -1371,8 +1396,6 @@ impl PlexiApp {
         );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
-            crate::config::active_workspace_root()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
             crate::host::app_timeline::global(),
         );
         if let Err(e) = host_mcp::start_host_mcp_server(
@@ -2133,6 +2156,43 @@ impl PlexiApp {
         self.origin_for_pane(pane_id)
     }
 
+    /// Resolve the host-established origin for a raw event-bus socket request
+    /// (`events_subscribe`/`events_declare`/`events_emit`) — stint 0724 Phase
+    /// D. Returns `(verified_pane_id, context_id, workspace_root)`, all
+    /// `None` together when neither ancestry nor the claimed pane id resolve
+    /// to a live pane (an outside-pane connection).
+    ///
+    /// `peer_ancestry` (host-captured kernel ancestor-pid chain, present only
+    /// for the raw CLI socket transport) is tried FIRST and, when it resolves
+    /// to a live pane, wins outright — this is the same trust upgrade
+    /// `Notify`/`DismissNotification` already get from stint 0636's
+    /// `resolve_socket_peer_pane`. `claimed_pane_id` (the client-forwarded
+    /// `PLEXI_PANE_ID`) is only a fallback for when ancestry resolution fails
+    /// (platform unsupported, or the peer already exited) — never trusted
+    /// over a successful ancestry resolution, since any local process can set
+    /// that environment variable to name an arbitrary pane.
+    pub(crate) fn resolve_event_bus_caller(
+        &self,
+        claimed_pane_id: Option<u64>,
+        peer_ancestry: Option<&[u32]>,
+    ) -> (Option<u64>, Option<u64>, Option<std::path::PathBuf>) {
+        let verified_pane_id = peer_ancestry
+            .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry))
+            .map(|(pane_id, _context_id, _window_id)| pane_id);
+        let effective_pane_id = verified_pane_id.or(claimed_pane_id);
+        let Some(effective_pane_id) = effective_pane_id else {
+            return (None, None, None);
+        };
+        match self.origin_for_pane(effective_pane_id) {
+            Some(origin) => (
+                Some(effective_pane_id),
+                Some(origin.context_id),
+                Some(origin.context_root),
+            ),
+            None => (Some(effective_pane_id), None, None),
+        }
+    }
+
     /// Single choke point for every scope-affecting lifecycle event: a
     /// context's root moving, a context or pane being removed, a package
     /// being installed/replaced, or a watched source reporting a new
@@ -2319,6 +2379,14 @@ impl PlexiApp {
             log::warn!("app events: subscriber pane {pane_id} is closed");
             return;
         };
+        // Host-established context this subscriber pane lives in (stint 0724
+        // Phase D) — the viewer side of `evaluate_reach` for every stream
+        // this subscription will ever match against. Resolved fresh here,
+        // never cached: `origin_for_pane` reads the pane's owning window's
+        // live `context_id`, not whichever context was last active.
+        let context_id = self
+            .origin_for_pane(pane_id)
+            .map(|origin| origin.context_id);
         let (reply, receiver) = std::sync::mpsc::sync_channel(1);
         let request = crate::host::event_subscriptions::HostSubscribeRequest {
             publisher_app_id,
@@ -2331,6 +2399,12 @@ impl PlexiApp {
             subscriber_type_override: Some(crate::broker::ActorType::App),
             broker_actor_override: Some(subscriber_app_id),
             workspace_root_override: Some(workspace_root),
+            context_id_override: context_id,
+            // This request never travels over the raw event-bus socket — the
+            // pane id is already host-known (the WASM/Python app dispatch
+            // path resolved it, not a client claim), so there is no peer
+            // ancestry to verify against.
+            peer_ancestry: None,
             reply,
         };
         self.host_subscriptions.reload(&crate::config::config_dir());
@@ -2477,7 +2551,6 @@ impl PlexiApp {
             );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
-            std::env::current_dir().unwrap_or_default(),
             crate::host::app_timeline::global(),
         );
         (

@@ -392,7 +392,7 @@ fn handle_connection(
                 caller.workspace_root.display()
             );
             let result = match tool_name {
-                "list_event_streams" => tool_list_event_streams(),
+                "list_event_streams" => tool_list_event_streams(&caller),
                 "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx, &caller),
                 other => {
                     let input_json = serde_json::to_string(&arguments)
@@ -432,15 +432,20 @@ fn handle_connection(
     write_http_response(&mut write_stream, 200, &body_bytes)
 }
 
-/// `list_event_streams` — read declared streams from the global timeline.
-fn tool_list_event_streams() -> Result<String, String> {
+/// `list_event_streams` — read declared streams from the global timeline,
+/// filtered to the caller's own context (stint 0724 Phase D): a stream
+/// declared only in another context can never be subscribed to from here
+/// anyway (no cross-context grant exists), so listing it would be
+/// misleading.
+fn tool_list_event_streams(caller: &McpCaller) -> Result<String, String> {
     let streams = crate::host::app_timeline::global()
         .lock()
         .unwrap()
         .all_declared_streams();
     let arr: Vec<serde_json::Value> = streams
         .iter()
-        .map(|(a, s)| serde_json::json!({ "app_id": a, "stream": s }))
+        .filter(|(context_id, _, _)| *context_id == caller.context_id)
+        .map(|(_, a, s)| serde_json::json!({ "app_id": a, "stream": s }))
         .collect();
     serde_json::to_string(&serde_json::json!({ "streams": arr }))
         .map_err(|e| format!("serialize failed: {e}"))
@@ -498,6 +503,12 @@ fn tool_subscribe_and_wait(
         subscriber_type_override: None,
         broker_actor_override: Some(actor_id),
         workspace_root_override: Some(caller.workspace_root.clone()),
+        context_id_override: Some(caller.context_id),
+        // The authenticated bearer credential already establishes this
+        // caller's identity (bound to `caller.pane_id`/`context_id` at
+        // registration — see `register_pane_credential`); there is no raw
+        // socket peer to independently verify here.
+        peer_ancestry: None,
         reply: reply_tx,
     };
     subscribe_tx
@@ -875,10 +886,15 @@ mod tests {
         use crate::host::app_timeline::EmittedEvent;
         let app = "mcp-it-app";
         let stream = "it.tick";
+        // `start_test_server` registers its pane credential with `context_id
+        // = 1` (see `register_pane_credential(pane_id, 1, ...)` below), so
+        // the stream must be declared under that same context for the
+        // subscribe to see it as declared (stint 0724 Phase D).
         crate::host::app_timeline::global()
             .lock()
             .unwrap()
             .declare_streams(
+                1,
                 app,
                 vec![EventStreamDecl {
                     name: stream.to_string(),
@@ -896,6 +912,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .record_event(
+                    1,
                     app,
                     1,
                     EmittedEvent {
