@@ -26,6 +26,7 @@ pub mod permissions;
 pub mod plexi_descriptor;
 pub(crate) mod python_env;
 pub mod registry;
+pub(crate) mod registry_views;
 pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
@@ -103,7 +104,6 @@ pub(crate) struct TextInputOverlay {
     pub buffer: String,
 }
 
-use crate::app::registry::AppRegistry;
 use crate::config;
 use crate::host::context::Window;
 use crate::host::keys::{self, Action};
@@ -229,7 +229,11 @@ pub struct PlexiApp {
     pub(crate) drag_context: Option<usize>,
     /// Whether the "Parked (N)" section in the sidebar is expanded.
     pub(crate) parked_section_expanded: bool,
-    pub(crate) registry: AppRegistry,
+    /// Per-canonical-root `AppRegistry` cache (stint 0724 Phase B). Replaces
+    /// the old single active-context-following `AppRegistry` — every context
+    /// resolves against its OWN root's view, never whichever context was last
+    /// active. See `crate::app::registry_views` for the invalidation rules.
+    pub(crate) registries: crate::app::registry_views::RegistryViews,
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
@@ -367,19 +371,20 @@ pub struct PlexiApp {
     /// a signal so `reload_config()` runs automatically.
     pub(crate) _config_watcher: Option<crate::config::watcher::ConfigWatcher>,
     pub(crate) config_reload_rx: Option<ui_mailbox::MailboxReceiver<()>>,
-    /// App registry filesystem watcher (#1712). Watches the global and workspace-local
-    /// apps dirs; signals `registry_reload_rx` on any directory change so the registry
-    /// is rescanned without a host restart.
-    pub(crate) _registry_watcher: Option<crate::app::registry_watcher::AppRegistryWatcher>,
-    pub(crate) registry_reload_rx: Option<ui_mailbox::MailboxReceiver<()>>,
-    /// Background `AppRegistry::load` result seam (stint 0548). A context
-    /// transition spawns the filesystem walk + manifest parse off the UI
-    /// thread and sends `(context_id, registry)` back here; drained in
-    /// `logic` each frame. The `context_id` guards staleness — if the user
-    /// has navigated away from the requesting context by the time the load
-    /// finishes, the result is discarded instead of applied.
-    pub(crate) registry_load_rx:
-        Option<ui_mailbox::MailboxReceiver<(u64, crate::app::registry::AppRegistry)>>,
+    /// App registry filesystem watchers (#1712, re-keyed per-root in stint
+    /// 0724 Phase B). One watcher per canonical root currently held by
+    /// `registries` — an inactive context's root is watched exactly like the
+    /// active one's, so a change lands in `registries` regardless of focus.
+    /// Reconciled every `logic` pass by `reconcile_registry_watchers` (starts
+    /// watchers for newly-cached roots, drops watchers for roots `registries`
+    /// no longer holds).
+    pub(crate) registry_watchers: HashMap<
+        std::path::PathBuf,
+        (
+            crate::app::registry_watcher::AppRegistryWatcher,
+            ui_mailbox::MailboxReceiver<()>,
+        ),
+    >,
     /// True when workspace state changed since the last disk save. Set by
     /// `mark_workspace_dirty()`, cleared by the debounce flush in
     /// `update_preamble` (or by a forced `save_workspace_now()` on
@@ -1144,6 +1149,34 @@ fn handle_events_publish(
     let _ = write_half.flush();
 }
 
+/// Start a registry watcher for every root `registries` currently holds a
+/// view for. Used at construction (eagerly watch whatever root(s) were
+/// loaded up front) and kept in sync every `logic` pass by
+/// `PlexiApp::reconcile_registry_watchers` — a root gains a watcher the
+/// first time something resolves a view for it, regardless of which context
+/// is active (stint 0724 Phase B).
+fn start_registry_watchers_for(
+    registries: &crate::app::registry_views::RegistryViews,
+    ui_wake: &std::sync::Arc<dyn ui_mailbox::UiWake>,
+) -> HashMap<
+    std::path::PathBuf,
+    (
+        crate::app::registry_watcher::AppRegistryWatcher,
+        ui_mailbox::MailboxReceiver<()>,
+    ),
+> {
+    let mut watchers = HashMap::new();
+    for root in registries.roots() {
+        if let Some((watcher, rx)) = crate::app::registry_watcher::start(
+            crate::app::registry::registry_watch_dirs(&root),
+            std::sync::Arc::clone(ui_wake),
+        ) {
+            watchers.insert(root, (watcher, rx));
+        }
+    }
+    watchers
+}
+
 /// Test-only observability for `PlexiApp::emit_scope_invalidation`. Phase A
 /// (stint 0724) has no real consumer of `ScopeInvalidation` — later phases
 /// add handling inside that method as they migrate onto the scope model — so
@@ -1295,15 +1328,9 @@ impl PlexiApp {
         let (tx, rx) = mpsc::channel();
 
         let cwd = std::env::current_dir().unwrap_or_default();
-        let registry = AppRegistry::load(&cwd);
-
-        let (mut reg_watcher, mut reg_reload_rx) = match crate::app::registry_watcher::start(
-            crate::app::registry::registry_watch_dirs(&cwd),
-            std::sync::Arc::clone(&ui_wake),
-        ) {
-            Some((w, rx)) => (Some(w), Some(rx)),
-            None => (None, None),
-        };
+        let mut registries = crate::app::registry_views::RegistryViews::new();
+        registries.view_for_root(&cwd);
+        let registry_watchers = start_registry_watchers_for(&registries, &ui_wake);
 
         // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl;
         // workspace log goes to .plexi/events.jsonl if we're inside a workspace.
@@ -1623,7 +1650,7 @@ impl PlexiApp {
                     renaming_pane: None,
                     text_overlay: None,
                     text_overlay_browse_rx: None,
-                    registry,
+                    registries,
                     features,
                     pending_notifications: load_pending_notifications_from(
                         &crate::config::config_dir().join("notifications.json"),
@@ -1664,9 +1691,7 @@ impl PlexiApp {
                     state_watch_rx: sw_rx,
                     _config_watcher: cfg_watcher.take(),
                     config_reload_rx: cfg_reload_rx.take(),
-                    _registry_watcher: reg_watcher.take(),
-                    registry_reload_rx: reg_reload_rx.take(),
-                    registry_load_rx: None,
+                    registry_watchers,
                     workspace_dirty: false,
                     last_workspace_save: std::time::Instant::now(),
                     minimap: crate::render::minimap::MinimapState::with_visible(window_count >= 2),
@@ -1798,15 +1823,10 @@ impl PlexiApp {
         };
 
         let default_cwd = std::env::current_dir().unwrap_or_default();
-        let default_registry = AppRegistry::load(&default_cwd);
-        let (mut default_reg_watcher, mut default_reg_reload_rx) =
-            match crate::app::registry_watcher::start(
-                crate::app::registry::registry_watch_dirs(&default_cwd),
-                std::sync::Arc::clone(&ui_wake),
-            ) {
-                Some((w, rx)) => (Some(w), Some(rx)),
-                None => (None, None),
-            };
+        let mut default_registries = crate::app::registry_views::RegistryViews::new();
+        default_registries.view_for_root(&default_cwd);
+        let default_registry_watchers =
+            start_registry_watchers_for(&default_registries, &ui_wake);
 
         let agent_host = crate::agent::AgentHost::production(config.ai.clone());
         // Standing ruling: a context root must gitignore its app_states dir
@@ -1906,7 +1926,7 @@ impl PlexiApp {
             renaming_pane: None,
             text_overlay: None,
             text_overlay_browse_rx: None,
-            registry: default_registry,
+            registries: default_registries,
             features,
             pending_notifications: load_pending_notifications_from(
                 &crate::config::config_dir().join("notifications.json"),
@@ -1947,9 +1967,7 @@ impl PlexiApp {
             state_watch_rx: sw_rx2,
             _config_watcher: cfg_watcher.take(),
             config_reload_rx: cfg_reload_rx.take(),
-            _registry_watcher: default_reg_watcher.take(),
-            registry_reload_rx: default_reg_reload_rx.take(),
-            registry_load_rx: None,
+            registry_watchers: default_registry_watchers,
             workspace_dirty: false,
             last_workspace_save: std::time::Instant::now(),
             minimap: crate::render::minimap::MinimapState::new(),
@@ -2118,17 +2136,73 @@ impl PlexiApp {
     /// Single choke point for every scope-affecting lifecycle event: a
     /// context's root moving, a context or pane being removed, a package
     /// being installed/replaced, or a watched source reporting a new
-    /// generation. Phase A (stint 0724) only logs — no consumers subscribe
-    /// yet. Later phases add real invalidation handling here as state
-    /// routing, connector tools, the event bus, and notifications migrate
-    /// onto the scope model, so every future consumer reacts to one shared
-    /// vocabulary of "what changed" instead of re-deriving it from ad hoc
-    /// call sites. Never logs secrets, notification bodies, or event
-    /// payloads — `ScopeInvalidation` carries only ids and paths.
+    /// generation. Phase A (stint 0724) wired the plumbing; Phase B gives it
+    /// its first two real consumers — `registries` (the per-root `AppRegistry`
+    /// cache) and, for `ContextRootChanged`, every live app pane in the
+    /// affected context, not just the ones in the currently-rendered window.
+    /// Later phases (connector tools, the event bus, notifications) add
+    /// handling here too, so every future consumer reacts to one shared
+    /// vocabulary of "what changed" instead of re-deriving it from ad hoc call
+    /// sites. Never logs secrets, notification bodies, or event payloads —
+    /// `ScopeInvalidation` carries only ids and paths.
     pub(crate) fn emit_scope_invalidation(&mut self, ev: crate::host::scope::ScopeInvalidation) {
         log::info!(target: "plexi::scope", "invalidation: {ev:?}");
         #[cfg(test)]
         SCOPE_INVALIDATION_COUNT_FOR_TEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        self.registries.invalidate(&ev, &self.router);
+
+        // A context's root moved: every live app pane in that context must
+        // see the new root immediately, not just whichever pane happens to
+        // be in the currently-rendered (active) window. `render::app_pane`
+        // already refreshes the active window's app panes every frame
+        // (stint 0652), which covers the common case with zero staleness —
+        // but a pane in a background/inactive context never gets a render
+        // pass at all (see the "not rendering has two independent axes" trap
+        // in the repo root AGENTS.md), so without this it would keep
+        // persisting state against the OLD root until the user happened to
+        // navigate back to it.
+        if let crate::host::scope::ScopeInvalidation::ContextRootChanged {
+            context_id,
+            new_root,
+            ..
+        } = &ev
+        {
+            for window in self
+                .windows
+                .iter_mut()
+                .filter(|w| w.context_id == *context_id)
+            {
+                for pane in window.panes.values_mut() {
+                    if let Some(app_pane) = pane.as_app_mut() {
+                        app_pane.runtime.refresh_context_root(new_root);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keep `registry_watchers` in sync with whatever roots `registries`
+    /// currently holds a view for: start a watcher for any newly-cached root
+    /// (regardless of which context is active) and drop watchers for roots
+    /// `registries` no longer holds (dropped as orphaned by an invalidation).
+    /// Called once per `logic` pass — cheap when nothing changed, since an
+    /// already-watched root is just a `HashMap` membership check.
+    pub(crate) fn reconcile_registry_watchers(&mut self) {
+        let live_roots: std::collections::HashSet<std::path::PathBuf> =
+            self.registries.roots().into_iter().collect();
+        for root in &live_roots {
+            if !self.registry_watchers.contains_key(root) {
+                if let Some((watcher, rx)) = crate::app::registry_watcher::start(
+                    crate::app::registry::registry_watch_dirs(root),
+                    std::sync::Arc::clone(&self.ui_wake),
+                ) {
+                    self.registry_watchers.insert(root.clone(), (watcher, rx));
+                }
+            }
+        }
+        self.registry_watchers
+            .retain(|root, _| live_roots.contains(root));
     }
 
     fn complete_wasm_host_effect(
@@ -2495,7 +2569,13 @@ impl PlexiApp {
                 renaming_pane: None,
                 text_overlay: None,
                 text_overlay_browse_rx: None,
-                registry: AppRegistry::load_with_global(&path, &path.join("nonexistent-apps-dir")),
+                registries: {
+                    let mut views = crate::app::registry_views::RegistryViews::new_with_global(
+                        &path.join("nonexistent-apps-dir"),
+                    );
+                    views.view_for_root(&path);
+                    views
+                },
                 features,
                 pending_notifications: Vec::new(),
                 show_notification_modal: false,
@@ -2532,9 +2612,7 @@ impl PlexiApp {
                 state_watch_rx: sw_rx,
                 _config_watcher: None,
                 config_reload_rx: None,
-                _registry_watcher: None,
-                registry_reload_rx: None,
-                registry_load_rx: None,
+                registry_watchers: HashMap::new(),
                 workspace_dirty: false,
                 last_workspace_save: std::time::Instant::now(),
                 minimap: crate::render::minimap::MinimapState::new(),
@@ -3869,28 +3947,34 @@ impl eframe::App for PlexiApp {
             self.reload_config();
         }
 
-        // App registry hot-reload (#1712): drain filesystem watcher signals.
-        let registry_changed = self.registry_reload_rx.as_ref().is_some_and(|rx| {
-            let hit = rx.try_recv().is_ok();
-            if hit {
-                while rx.try_recv().is_ok() {}
-            }
-            hit
-        });
-        if registry_changed {
-            let root = self.router.active().root.clone();
+        // App registry hot-reload (#1712, re-keyed per-root in stint 0724
+        // Phase B): drain filesystem watcher signals for EVERY live root, not
+        // just the active context's — an inactive context's registry must
+        // react to on-disk changes exactly like the active one's.
+        let changed_roots: Vec<std::path::PathBuf> = self
+            .registry_watchers
+            .iter()
+            .filter_map(|(root, (_watcher, rx))| {
+                let hit = rx.try_recv().is_ok();
+                if hit {
+                    while rx.try_recv().is_ok() {}
+                }
+                hit.then(|| root.clone())
+            })
+            .collect();
+        for root in changed_roots {
             self.emit_scope_invalidation(
                 crate::host::scope::ScopeInvalidation::SourceGenerationChanged {
-                    source_path: root.clone(),
+                    source_path: root,
                 },
             );
-            self.reload_app_registry_for_root(&root);
         }
 
-        // Context-transition registry rescan (stint 0548): drain the
-        // background `AppRegistry::load` result. Lives in `logic`, never
-        // `ui` — the load can finish while the window is hidden or occluded.
-        self.drain_registry_load();
+        // Registries are a synchronous per-root cache (stint 0724 Phase B) —
+        // resolving or rescanning a view happens at the point of use, so
+        // there is no background-load result to drain here anymore. Keep the
+        // watcher set in sync with whatever roots are now cached.
+        self.reconcile_registry_watchers();
 
         // Handle window close request (X button or macOS Cmd+Q OS event).
         //

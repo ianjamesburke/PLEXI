@@ -879,47 +879,20 @@ impl PlexiApp {
         self.reload_config_for_active_context();
     }
 
+    /// Ensures the active context's `AppRegistry` view exists (a cache hit
+    /// after the first call — `RegistryViews` no longer needs a staleness
+    /// comparison the way the old single shared `AppRegistry` did, stint 0724
+    /// Phase B) and reloads config for the active workspace. Registry views
+    /// for OTHER contexts are resolved independently at their own point of
+    /// use (`RegistryViews::view_for_context`); this only guarantees the
+    /// active one is warm before config reload reads workspace-scoped keys.
     pub(crate) fn reload_config_for_active_context(&mut self) {
         let active_workspace = Some(self.router.active().root.clone());
-        self.sync_app_registry_for_active_context(active_workspace.as_deref());
+        let active_context_id = self.router.active().context_id;
+        let _ = self
+            .registries
+            .view_for_context(active_context_id, &self.router);
         self.reload_config_for_workspace(active_workspace.as_deref());
-    }
-
-    pub(crate) fn reload_app_registry_for_root(&mut self, root: &Path) {
-        log::info!(
-            "app_registry: rescanning registry for root={}",
-            root.display()
-        );
-        self.registry = crate::app::registry::AppRegistry::load(root);
-        match crate::app::registry_watcher::start(
-            crate::app::registry::registry_watch_dirs(root),
-            std::sync::Arc::clone(&self.ui_wake),
-        ) {
-            Some((watcher, rx)) => {
-                self._registry_watcher = Some(watcher);
-                self.registry_reload_rx = Some(rx);
-            }
-            None => {
-                self._registry_watcher = None;
-                self.registry_reload_rx = None;
-            }
-        }
-    }
-
-    fn sync_app_registry_for_active_context(&mut self, active_workspace: Option<&Path>) {
-        let fallback;
-        let root = match active_workspace {
-            Some(root) => root,
-            None => {
-                fallback = std::env::current_dir()
-                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-                fallback.as_path()
-            }
-        };
-        let expected_workspace = crate::app::registry::resolve_workspace_root(root);
-        if self.registry.loaded_workspace.as_ref() != expected_workspace.as_ref() {
-            self.reload_app_registry_for_root(root);
-        }
     }
 
     pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {

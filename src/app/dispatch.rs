@@ -1457,7 +1457,10 @@ impl PlexiApp {
         let mut deferred = Vec::new();
 
         for (type_id, park_context_id, cmds) in &parked {
-            let resolved_scope = self.registry.default_notification_scope_for(type_id);
+            let resolved_scope = self
+                .registries
+                .view_for_context(*park_context_id, &self.router)
+                .default_notification_scope_for(type_id);
             for cmd in cmds.iter() {
                 match cmd {
                     AppCommand::ShowNotification {
@@ -1513,7 +1516,10 @@ impl PlexiApp {
             // `DefaultNotifyScope`'s own default (`Window`, the most
             // restrictive), which is a declared per-app policy and so does not
             // go through `NotifyScope::default()`.
-            let resolved_scope = self.registry.default_notification_scope_for(&type_id);
+            let resolved_scope = self
+                .registries
+                .view_for_context(context_id, &self.router)
+                .default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
                     AppCommand::WasmHostEffect { effect, .. } => {

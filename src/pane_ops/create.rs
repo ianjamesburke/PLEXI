@@ -1288,7 +1288,11 @@ impl PlexiApp {
         cwd_override: Option<&Path>,
     ) -> Option<PaneId> {
         use crate::app::registry::OnLaunchPolicy;
-        let (scope, target) = match self.registry.on_launch_for(id) {
+        let on_launch = self
+            .registries
+            .view_for_context(caller_context_id, &self.router)
+            .on_launch_for(id);
+        let (scope, target) = match on_launch {
             OnLaunchPolicy::AlwaysNew => return None,
             OnLaunchPolicy::FocusExisting => ("focus_existing", self.locate_app_instance(id, None)),
             OnLaunchPolicy::FocusExistingInContext => (
@@ -1432,11 +1436,29 @@ impl PlexiApp {
             }
         }
 
+        // The context this launch resolves against. Read from
+        // `self.active_window` rather than an explicit parameter because
+        // every caller that targets a different context (e.g. dispatch.rs's
+        // pane-IPC spawn path) redirects `self.active_window` to the target
+        // window BEFORE calling in — never by mutating `router.active()` —
+        // so by the time this function runs, "active window" already means
+        // "target window" (see the `create_page_at`/explicit-context_id
+        // convention documented in the repo root AGENTS.md). Resolving the
+        // registry view against THIS context_id (rather than a single global
+        // registry that only ever followed the last real context switch) is
+        // the stint 0724 Phase B fix: launching into an inactive context now
+        // sees that context's own apps, not whatever was scanned last.
+        let context_id = self.windows[self.active_window].context_id;
+
         // When the caller does not specify a placement, fall back to the app's
         // manifest-declared `[launch] placement` before the host default
         // (`overlay`). One resolution point so every downstream hint inherits
         // it (#2283). Builtins are not in the registry → None → `overlay`.
-        let layout = layout.or_else(|| self.registry.placement_for(id));
+        let layout = layout.or_else(|| {
+            self.registries
+                .view_for_context(context_id, &self.router)
+                .placement_for(id)
+        });
 
         // #0336: honor the app's `[launch] on_launch` dedup policy before any
         // spawn path (unless the caller forces a fresh instance, e.g. the
@@ -1447,9 +1469,8 @@ impl PlexiApp {
         // app whose pane was closed (its process parked in `background_apps`)
         // finds no pane here, falls through, and re-attaches — the two compose.
         if !bypass_on_launch {
-            let caller_context_id = self.windows[self.active_window].context_id;
             if let Some(existing_id) =
-                self.resolve_on_launch_policy(id, caller_context_id, args, cwd_override.as_deref())
+                self.resolve_on_launch_policy(id, context_id, args, cwd_override.as_deref())
             {
                 return Ok(Some(existing_id));
             }
@@ -1471,7 +1492,8 @@ impl PlexiApp {
         if let Some(app) = builtin_factory(id, &cwd, args) {
             log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
             let group = self
-                .registry
+                .registries
+                .view_for_context(context_id, &self.router)
                 .group_for(id)
                 .or_else(|| builtin_default_group(app.type_id()));
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
@@ -1482,13 +1504,29 @@ impl PlexiApp {
 
         // Ensure the registry is up-to-date: rescan if the app was added mid-session
         // via `plexi app init` and wasn't present at startup.
-        if self.registry.get(id).is_none() {
+        if self
+            .registries
+            .view_for_context(context_id, &self.router)
+            .get(id)
+            .is_none()
+        {
             log::info!("launch_app_by_id: '{id}' not in startup registry — rescanning from disk");
-            self.registry = crate::app::registry::AppRegistry::load(&cwd);
+            // Rescan the CONTEXT's own root, not `cwd` — `view_for_context`
+            // below looks the app up by that same key, so rescanning any
+            // other path (even one that happens to resolve to the same
+            // workspace via `cwd`'s internal walk-up) would leave the cache
+            // entry `view_for_context` actually reads unchanged.
+            let context_root = self
+                .context_root_for(context_id)
+                .unwrap_or_else(|| cwd.clone());
+            self.registries.rescan_root(&context_root);
         }
 
         // Pre-flight: check config-level capability requirements before spawning.
-        let missing = self.registry.check_config_capabilities(id, &self.config);
+        let missing = self
+            .registries
+            .view_for_context(context_id, &self.router)
+            .check_config_capabilities(id, &self.config);
         if !missing.is_empty() {
             log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
             let fail_hint = layout.or_else(|| Some("overlay".to_string()));
@@ -1499,7 +1537,12 @@ impl PlexiApp {
         // Query group/hint after any registry reload so metadata reflects the
         // actual registry that found the app.
         let hint = layout.or_else(|| Some("overlay".to_string()));
-        if let Some(installed) = self.registry.get(id).cloned() {
+        if let Some(installed) = self
+            .registries
+            .view_for_context(context_id, &self.router)
+            .get(id)
+            .cloned()
+        {
             if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
                 let workspace_root = installed
                     .workspace_root
@@ -1610,12 +1653,16 @@ impl PlexiApp {
     ) -> Result<Option<PaneId>, String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
+        // Path-open launches resolve against the active window's context —
+        // there is no explicit target context for this entry point.
+        let context_id = self.windows[self.active_window].context_id;
 
         // A `.wasm` file is a sandboxed component app (the run primitive, G6),
         // not a manifest-backed process app. Route it to the wasmtime path.
         if app_dir.extension().and_then(|e| e.to_str()) == Some("wasm") {
             let app_id = self
-                .registry
+                .registries
+                .view_for_context(context_id, &self.router)
                 .manifest_id_for_wasm_path(&app_dir)
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
@@ -1646,7 +1693,11 @@ impl PlexiApp {
                 .map(Some);
         }
 
-        let installed = match self.registry.load_app(&app_dir) {
+        let installed = match self
+            .registries
+            .view_for_context(context_id, &self.router)
+            .load_app(&app_dir)
+        {
             Ok(a) => a,
             Err(e) => {
                 log::warn!(
@@ -2304,7 +2355,8 @@ mod tests {
         assert!(registry.get("com.plexi.daw-engine-poc").is_some());
 
         let mut h = HostHarness::new();
-        h.app.registry = registry;
+        let ctx1_root = h.app.router.active().root.clone();
+        h.app.registries.set_view_for_test(&ctx1_root, registry);
         let error = h
             .app
             .launch_app_by_path_with_layout_no_review_modal(

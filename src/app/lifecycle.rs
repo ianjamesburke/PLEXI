@@ -1271,9 +1271,18 @@ impl PlexiApp {
                     // CLI/spawn-request app opens default to a sibling split, never
                     // an overlay takeover of the caller's pane. Manifest `[launch]
                     // placement` still overrides the default (stint 0330).
+                    //
+                    // `self.active_window` has already been redirected to the
+                    // target window above (when `from_pane_id` named one), so
+                    // its context_id is the launch's actual target context —
+                    // matching what `launch_app_by_id_with_layout` itself
+                    // resolves against (stint 0724 Phase B).
+                    let target_context_id = self.windows[self.active_window].context_id;
                     let placement = crate::pane_ops::cli_open_placement(
                         spec.layout.clone(),
-                        self.registry.placement_for(type_id),
+                        self.registries
+                            .view_for_context(target_context_id, &self.router)
+                            .placement_for(type_id),
                     );
                     launch_result = self
                         .launch_app_by_id_with_layout(
