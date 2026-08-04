@@ -2,7 +2,7 @@
 name: plexi-cli
 description: Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.
 skill_version: "5.0.1"
-plexi_version: "0.2.5"
+plexi_version: "0.2.6"
 last_verified: "2026-08-01"
 ---
 

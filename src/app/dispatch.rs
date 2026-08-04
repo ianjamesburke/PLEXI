@@ -79,6 +79,44 @@ impl PlexiApp {
                     "app_keys: pane {pane_id} Enter owned by focused TextInput — raw app KeyEvent suppressed"
                 );
             }
+            // Bare vertical-arrow presses still reach the app so a search-results
+            // list can navigate while the query box keeps focus for typing
+            // (stint 0729 follow-up). Every other key — printable characters,
+            // Backspace/Delete, Left/Right/Home/End, Enter, modified chords —
+            // is left in the buffer for the render pass's TextEdit, unchanged.
+            // A single-line TextEdit has no vertical layout to move within, so
+            // egui's cursor_range handling for ArrowUp/ArrowDown is a no-op on
+            // position (it only collapses an existing selection); claiming the
+            // events here avoids even that redundant pass once the app has
+            // consumed them.
+            let arrow_presses: Vec<egui::Event> = input
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::ArrowUp | egui::Key::ArrowDown,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.is_none()
+                    )
+                })
+                .cloned()
+                .collect();
+            if !arrow_presses.is_empty() {
+                let synthetic =
+                    crate::app::input_router::PlexiInput::synthetic(arrow_presses, input.modifiers());
+                let disposition = app_pane.runtime.handle_key(&synthetic);
+                if disposition == crate::app::app_trait::KeyDisposition::Consumed {
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+                    log::info!(
+                        "app_keys: pane {pane_id} vertical arrow routed to app past the focused TextInput"
+                    );
+                }
+            }
             return;
         }
         // The app classifies keys from the frame's ownership-transfer buffer

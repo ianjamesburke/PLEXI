@@ -810,6 +810,18 @@ EmptyState(title: str, description: str = '', icon: str = '')
 Skeleton(rows: int = 3, height: float = 0.0)
 ```
 
+### `Pending`
+
+```python
+Pending(active: bool, child: Component, placeholder: Component)
+```
+
+Declarative loading region: renders `placeholder` while `active`,
+otherwise `child`. One call site per pending region -- never thread a
+loading boolean through multiple view branches.
+
+Tree-mode counterpart of the canvas-mode `loading_pill`.
+
 ### `Modal`
 
 ```python
@@ -1080,7 +1092,12 @@ Args:
 
 ### `loading_pill(ctx, x: float, y: float, label: str = 'Fetching…')`
 
-Render a small spinner+label pill at (x, y). Returns rendered width.
+Canvas-mode only: render a small spinner+label pill at (x, y).
+Returns rendered width.
+
+For a declarative tree (`view()` returning a component tree), use
+`Pending` instead -- it is the tree-mode equivalent of this
+stale-while-revalidate pattern.
 
 The pill uses host-measured `badge()` rendering (so widths are
 correct), with a wall-clock-driven Braille spinner glyph that ticks
@@ -1293,63 +1310,6 @@ Example::
     def on_component_event(self, node_id, event_type, payload):
         if node_id == "action" and event_type == "click":
             handle_click()
-
-### `LeadingBadge`
-
-```python
-LeadingBadge(label: str, color: str = 'accent')
-```
-
-Badge leading slot for :class:`ListRow`.
-
-Renders a pill badge with ``label`` text and the given ``color``.
-
-### `LeadingAvatar`
-
-```python
-LeadingAvatar(handle: str)
-```
-
-Circular avatar leading slot for :class:`ListRow`.
-
-``handle`` must be a UUID returned by ``emit.load_image(url)``.
-
-### `LeadingIcon`
-
-```python
-LeadingIcon(name: str)
-```
-
-Text/emoji icon leading slot for :class:`ListRow`.
-
-### `RowChip`
-
-```python
-RowChip(label: str, color: str = 'accent')
-```
-
-A small colored chip label on a :class:`ListRow`.
-
-### `ListRow`
-
-```python
-ListRow(id: str, primary: str, leading: 'LeadingBadge | LeadingAvatar | LeadingIcon | None' = None, secondary: 'str | None' = None, chips: 'list[RowChip]' = list(), trailing: 'str | None' = None)
-```
-
-Typed row descriptor for list views.
-
-Example::
-
-    rows = [
-        ListRow(
-            id=f"issue-{issue['number']}",
-            leading=LeadingBadge(f"#{issue['number']}", color="accent"),
-            primary=issue["title"],
-            chips=[RowChip(lbl["name"], _label_color(lbl["name"])) for lbl in issue["labels"][:2]],
-        ).to_dict()
-        for issue in self._issues
-    ]
-    ctx.list_view("issues", rows, selected=self._sel, y=float(HEADER_H))
 
 ### `Tabs`
 

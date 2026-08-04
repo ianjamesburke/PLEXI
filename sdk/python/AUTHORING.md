@@ -221,7 +221,7 @@ API; the widgets you reach for most:
 
 <!-- drift-check:components -->
 `AppBar`, `ActionBar`, `Column`, `HStack`, `Label`, `Text`, `Heading`,
-`Spacer`, `Divider`, `FooterKeys`, `SelectList`, `TextEdit`, `Card`,
+`Spacer`, `Divider`, `FooterKeys`, `SelectList`, `Pending`, `TextEdit`, `Card`,
 `Section`, `Tabs`, `Grid`, `Toggle`, `Scrollable`,
 `ButtonRow`, `Button`, `Badge`, `Actions`, `FormField`, `TextInput`,
 `ProgressBar`, `Canvas`, `CanvasRect`, `CanvasText`, `CanvasCircle`,
@@ -232,6 +232,10 @@ Widget selection rules:
 
 - **List + detail navigation:** use `SelectList`. It handles j/k/arrow keys,
   scrolling, and click hit-testing. Never reimplement this by hand.
+- **Loading states:** wrap only the region whose fetch is in flight in
+  `Pending(active=..., child=..., placeholder=Skeleton(rows=N))`. Placeholder
+  is always explicit, sized to the eventual content so nothing jumps. Never
+  thread a loading boolean through multiple view branches.
 - **Text entry:** use `TextEdit` in the component tree. Never read raw keys for
   text.
 - **Forms:** a labeled field is a `FormField`; a Save/Cancel pair is an
