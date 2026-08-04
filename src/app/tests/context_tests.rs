@@ -3351,9 +3351,15 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
     // the app genuinely isn't installed there.
     assert_eq!(app.active_window, 0, "context A must still be active");
     let result_from_a = app.launch_app_by_id_with_layout(app_id, None, &[], None);
+    let err_from_a =
+        result_from_a.expect_err("the app is not installed in context A's root — launch must fail");
     assert!(
-        result_from_a.is_err(),
-        "the app is not installed in context A's root — launch must fail, got {result_from_a:?}"
+        !err_from_a.contains("WASM"),
+        "a not-found app must not be misreported as a runtime problem, got {err_from_a:?}"
+    );
+    assert!(
+        err_from_a.contains("not found") || err_from_a.contains("this context"),
+        "a not-found app's error must say so, got {err_from_a:?}"
     );
 
     // Redirect `active_window` to context B's window — the sanctioned

@@ -1560,19 +1560,19 @@ impl PlexiApp {
         // Query group/hint after any registry reload so metadata reflects the
         // actual registry that found the app.
         let hint = layout.or_else(|| Some("overlay".to_string()));
-        if let Some(installed) = self
+        let installed = self
             .registries
             .view_for_context(context_id, &self.router)
             .get(id)
-            .cloned()
-        {
+            .cloned();
+        if let Some(installed) = &installed {
             if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
                 let workspace_root = installed
                     .workspace_root
                     .clone()
                     .unwrap_or_else(|| cwd.clone());
                 self.open_installed_wasm_app_pane(
-                    installed,
+                    installed.clone(),
                     workspace_root,
                     hint.as_deref(),
                     args.to_vec(),
@@ -1625,8 +1625,24 @@ impl PlexiApp {
             ));
         }
 
-        log::warn!("launch_app_by_id: app '{id}' has no WASM runtime");
-        Err(format!("app '{id}' has no WASM runtime"))
+        match installed {
+            None => {
+                log::warn!(
+                    "launch_app_by_id: app '{id}' not found in context_id={context_id}'s registry"
+                );
+                Err(format!("app '{id}' not found in this context's registry"))
+            }
+            Some(installed) => {
+                log::warn!(
+                    "launch_app_by_id: app '{id}' has manifest type {:?} with no launch runtime for it",
+                    installed.manifest.manifest_type
+                );
+                Err(format!(
+                    "app '{id}' has manifest type {:?} with no launch runtime for it",
+                    installed.manifest.manifest_type
+                ))
+            }
+        }
     }
 
     /// Launch an app directly from a filesystem path without looking it up in the registry.
