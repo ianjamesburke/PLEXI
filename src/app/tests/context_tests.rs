@@ -2588,6 +2588,100 @@ fn set_context_root_ensures_app_state_gitignore() {
     );
 }
 
+/// Stint 0726: `set_context_root` is the shared invariant boundary for every
+/// explicit root-change caller (Cmd+Shift+I, sidebar Set Root, the
+/// context-root text overlay, `SetContextRoot` IPC) — an `Auto`-named
+/// context must reflect the new root's basename immediately, not only after
+/// a manual blank-rename round trip.
+#[test]
+fn set_context_root_updates_auto_name_immediately() {
+    let mut h = crate::testing::HostHarness::new();
+    let idx = h.app.router.active_idx();
+    h.app.router.get_mut(idx).name = crate::host::context::ContextName::auto("stale-name");
+
+    let parent = tempfile::tempdir().expect("tempdir");
+    let new_root = parent.path().join("new-project");
+    std::fs::create_dir(&new_root).expect("new-project dir");
+
+    h.app.set_context_root(new_root, None);
+
+    assert_eq!(
+        h.app.router.get(idx).name.displayed(),
+        "new-project",
+        "auto name must follow the new root's basename immediately"
+    );
+}
+
+/// A `Custom` name is user-owned and must never be overwritten by a root
+/// change — only a blank rename submission returns a context to `Auto`.
+#[test]
+fn set_context_root_preserves_custom_name() {
+    let mut h = crate::testing::HostHarness::new();
+    let idx = h.app.router.active_idx();
+    h.app.router.get_mut(idx).name = crate::host::context::ContextName::custom("My Workspace");
+
+    let new_root = tempfile::tempdir().expect("tempdir");
+    h.app.set_context_root(new_root.path().to_path_buf(), None);
+
+    assert!(
+        matches!(
+            h.app.router.get(idx).name,
+            crate::host::context::ContextName::Custom(ref name) if name == "My Workspace"
+        ),
+        "custom name must survive an explicit root change: {:?}",
+        h.app.router.get(idx).name
+    );
+}
+
+/// An auto name colliding with another context's displayed name after a
+/// root change must be disambiguated through the same deterministic suffix
+/// path as auto-naming a brand-new context, never silently duplicated.
+#[test]
+fn set_context_root_disambiguates_auto_name_collision() {
+    let mut h = crate::testing::HostHarness::new();
+    let active_id = h.app.router.active().context_id;
+    let other_id = active_id + 500;
+    h.app
+        .router
+        .push(test_context(other_id, active_id, "project"));
+    let other_idx = h.app.router.position(|c| c.context_id == other_id).unwrap();
+    h.app.router.get_mut(other_idx).name = crate::host::context::ContextName::auto("project");
+
+    let idx = h.app.router.active_idx();
+    h.app.router.get_mut(idx).name = crate::host::context::ContextName::auto("stale-name");
+
+    let parent = tempfile::tempdir().expect("tempdir");
+    let colliding_root = parent.path().join("project");
+    std::fs::create_dir(&colliding_root).expect("project dir");
+
+    h.app.set_context_root(colliding_root, None);
+
+    assert_eq!(
+        h.app.router.get(idx).name.displayed(),
+        "project (2)",
+        "colliding auto name must be disambiguated deterministically"
+    );
+}
+
+/// Cmd+Shift+I (`SetContextRootFromCwd`) must persist the updated root and
+/// automatic name exactly once, through `set_context_root`'s own dirty mark,
+/// so the sidebar state survives a restart rather than requiring a
+/// caller-specific `mark_workspace_dirty()` call.
+#[test]
+fn set_context_root_marks_workspace_dirty_for_persistence() {
+    let mut h = crate::testing::HostHarness::new();
+    h.app.workspace_dirty = false;
+
+    let new_root = tempfile::tempdir().expect("tempdir");
+    h.app.set_context_root(new_root.path().to_path_buf(), None);
+
+    assert!(
+        h.app.workspace_dirty,
+        "set_context_root must mark the workspace dirty so the new root and \
+         name survive a restart, regardless of caller"
+    );
+}
+
 /// Dissolve is only reachable for a context that hangs off a Portal tile.
 /// `dissolve_portal` early-returns without one, so the close-confirm modal
 /// must not offer the action for a top-level context (stint 0542).
