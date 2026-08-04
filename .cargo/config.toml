@@ -7,3 +7,17 @@ target-dir = "target"
 # headroom for one build, not N parallel ones. On a faster machine, remove
 # this line and cargo will default to all available cores.
 jobs = 6
+
+# THROTTLE (test phase). `build.jobs` above only throttles compilation — it has
+# no effect on `cargo test`, where libtest defaults its thread pool to the full
+# core count. That phase, not compilation, is what pegs the machine: a single
+# `cargo test --bin plexi` was measured at 174 threads / 2.4 GB RSS / 384-695%
+# CPU, because each concurrent harness test brings up its own wgpu/egui thread
+# pool on top of libtest's 10 workers.
+#
+# Cargo applies [env] to the processes it launches, including the test binary
+# itself, so this reaches libtest without every call site passing
+# `-- --test-threads`. Not forced, so an explicit `--test-threads` on the
+# command line still wins when a suite needs full width.
+[env]
+RUST_TEST_THREADS = "4"

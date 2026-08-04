@@ -21,6 +21,25 @@ if [[ -n "${PLEXI_CARGO_LOCK_HELD:-}" ]]; then
   exec "$@"
 fi
 
+# CPU throttle: run the build under background QoS, which on Apple Silicon
+# confines the process tree to the efficiency cores and leaves the performance
+# cores free for whatever the human is doing. Measured on this 10-core M1 Pro,
+# eight busy loops draw 380% unclamped and 111% clamped. The clamp is inherited
+# by children, so applying it to the lock holder covers cargo, every rustc it
+# spawns, and the test binary underneath.
+#
+# `taskpolicy -c utility` was measured and does NOT throttle (748%) — utility
+# QoS still schedules on performance cores. Background is the only clamp that
+# actually keeps the machine responsive, so it is the one used here.
+#
+# Builds are meaningfully slower this way. That is the trade being made: this
+# is a background build queue on an interactive machine. Set
+# PLEXI_BUILD_FULL_SPEED=1 for a one-off build that should use every core.
+CARGO_LEASE_PREFIX=()
+if [[ -z "${PLEXI_BUILD_FULL_SPEED:-}" ]] && [[ -x /usr/sbin/taskpolicy ]]; then
+  CARGO_LEASE_PREFIX=(/usr/sbin/taskpolicy -b)
+fi
+
 # The python helper becomes the lock holder: it opens the lock file, takes an
 # exclusive flock, then runs the wrapped command as a child for exactly as
 # long as the fd (and thus the lock) is held. No bash trap is involved —
@@ -87,4 +106,7 @@ if rc < 0:
 sys.exit(rc)
 PY
 
-exec python3 -c "$PLEXI_CARGO_LEASE_PY" "$@"
+# `${a[@]+"${a[@]}"}` rather than a bare `"${a[@]}"`: under `set -u`, bash 3.2
+# (still /bin/bash on macOS) treats an empty array's [@] expansion as an unbound
+# variable and aborts. This form expands to nothing when the array is empty.
+exec ${CARGO_LEASE_PREFIX[@]+"${CARGO_LEASE_PREFIX[@]}"} python3 -c "$PLEXI_CARGO_LEASE_PY" "$@"

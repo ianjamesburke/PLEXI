@@ -143,6 +143,22 @@ objc2-core-foundation = { version = "0.3", features = [
     "objc2",
 ] }
 
+# Debug info dominates both the size of `target/` and the peak memory of the
+# link step, and this workspace links a large egui/wgpu binary on a 16 GB
+# machine. "line-tables-only" keeps file-and-line resolution in panics and
+# backtraces — everything the test suite and `plexi.log` actually read — while
+# dropping the local-variable DWARF that only an attached debugger consumes.
+# Restore `debug = true` here temporarily if you need to step through locals
+# in lldb.
+[profile.dev]
+debug = "line-tables-only"
+
+# Test binaries inherit profile.dev, but state it explicitly: `cargo test
+# --bin plexi` builds the single largest artifact in the tree, so this is the
+# profile where the debuginfo saving matters most.
+[profile.test]
+debug = "line-tables-only"
+
 [dev-dependencies]
 tempfile = "3"
 # DAW release gate (stint 0519): the host test build drives the pure-model
