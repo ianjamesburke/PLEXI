@@ -13,25 +13,34 @@
 //! Pending-call state lives in `PENDING_CALLS`. `WASM app runtime::routing` feeds
 //! `DrawCommand::ToolResult` back here to unblock the waiting broker thread.
 //!
-//! # Authorization model (#1182)
+//! # Authorization model (#1182, re-scoped stint 0724 Phase C)
 //!
-//! Every registry entry records the `workspace_root` of the pane that exposed
-//! the tools. When building a `ToolDispatcher`, the caller supplies its own
-//! `workspace_root`. Only tools from panes in the **same workspace** are
-//! included in the snapshot. Cross-workspace tools are invisible to the caller
-//! and cannot be invoked — the model never sees them, so confused-deputy calls
-//! fail before they can be attempted.
+//! Every registry entry records the host-established [`ScopeOrigin`](crate::host::scope::ScopeOrigin)
+//! of the pane that exposed the tools, captured once at registration time via
+//! `PlexiApp::origin_for_pane` — never the pane's (mutable) `workspace_root`.
+//! When building a `ToolDispatcher`, the caller supplies its own
+//! `viewer_context_id`, also host-resolved, never read from `router.active()`
+//! or any client-supplied path. Reachability is decided by
+//! `crate::host::scope::evaluate_reach` against `Scope::AppInstance`: only
+//! tools owned in the caller's own context are included in the snapshot — two
+//! contexts sharing the same canonical root are NOT mutually reachable,
+//! because reachability's runtime dimension is `context_id`, not root. Every
+//! `RegistryEntry` is context-owned with no cross-context grant issuance wired
+//! yet (`grant: None` everywhere here), so today the rule is simply "same
+//! context only." Cross-context tools are invisible to the caller and cannot
+//! be invoked — the model never sees them, so confused-deputy calls fail
+//! before they can be attempted.
 //!
 //! Every dispatched call is logged at `info` level with both the caller
 //! (app_id, pane_id) and provider (pane_id, tool name) so every invocation is
 //! attributable in the audit trail.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::app_protocol::{AiTool, PlexiEvent};
+use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
 
 // ── AppEventSender ──────────────────────────────────────────────────────────
 
@@ -98,15 +107,34 @@ impl AppEventSender {
 // ── ToolRegistry ────────────────────────────────────────────────────────────
 
 /// One registered app — its tool definitions, how to reach it, and the
-/// workspace it belongs to (used for authorization checks).
+/// host-established scope origin it was registered from (used for
+/// authorization checks).
 struct RegistryEntry {
     tools: Vec<AiTool>,
     sender: AppEventSender,
     /// App type id (manifest `app.id`) — used to group tools by app for `/apps`.
     app_id: String,
-    /// Workspace root of the pane that exposed these tools. Used to restrict
-    /// cross-workspace tool invocation.
-    workspace_root: std::path::PathBuf,
+    /// Host-established origin of the pane that exposed these tools, captured
+    /// once at registration time via `PlexiApp::origin_for_pane` — stint 0724
+    /// Phase C. Reachability is decided from `origin.context_id`, never from
+    /// the pane's (mutable, `sync_app_cwd`-updated) `workspace_root`.
+    origin: ScopeOrigin,
+}
+
+impl RegistryEntry {
+    /// The owner scope for `evaluate_reach`: context-owned, per the stint's
+    /// rule that context-owned resources are visible only inside their
+    /// owning context. Two entries with colliding `pane_id`/`app_id` in
+    /// different contexts are still distinct scopes — `Scope::AppInstance`
+    /// carries `context_id` precisely so a numeric collision across contexts
+    /// never grants reach.
+    fn owner_scope(&self, pane_id: u64) -> crate::host::scope::Scope {
+        crate::host::scope::Scope::AppInstance {
+            pane_id,
+            app_id: self.app_id.clone(),
+            context_id: self.origin.context_id,
+        }
+    }
 }
 
 /// Global map from `pane_id` → `RegistryEntry`.
@@ -127,7 +155,7 @@ impl ToolRegistry {
         app_id: String,
         tools: Vec<AiTool>,
         sender: AppEventSender,
-        workspace_root: std::path::PathBuf,
+        origin: ScopeOrigin,
     ) {
         self.entries.insert(
             pane_id,
@@ -135,7 +163,7 @@ impl ToolRegistry {
                 tools,
                 sender,
                 app_id,
-                workspace_root,
+                origin,
             },
         );
     }
@@ -144,8 +172,12 @@ impl ToolRegistry {
         self.entries.remove(&pane_id);
     }
 
-    /// Snapshot of tools visible to a caller in `caller_workspace`, keyed by
-    /// tool name. Only panes in the same workspace are included.
+    /// Snapshot of tools visible to a caller in `viewer_context_id`, keyed by
+    /// tool name. Only panes owned in that same context are included —
+    /// decided by `evaluate_reach`, never by comparing paths. Two contexts
+    /// anchored at the same canonical root are NOT mutually visible; only
+    /// `context_id` equality (or, in a later stint, a `CrossContextGrant`)
+    /// grants reach.
     ///
     /// If two panes expose the same tool name, both are **excluded** from the
     /// snapshot and an `error!` is logged listing the conflicting pane IDs.
@@ -154,18 +186,17 @@ impl ToolRegistry {
     /// until the apps are fixed or namespaced.
     fn snapshot_for_caller(
         &self,
-        caller_workspace: &Path,
+        viewer_context_id: u64,
     ) -> HashMap<String, (u64, String, AiTool)> {
         let mut map: HashMap<String, (u64, String, AiTool)> = HashMap::new();
-        // Use component-by-component comparison to avoid false mismatches from
-        // trailing separators or platform path normalization differences.
         let mut pane_ids: Vec<u64> = self
             .entries
             .iter()
-            .filter(|(_, e)| {
-                e.workspace_root
-                    .components()
-                    .eq(caller_workspace.components())
+            .filter(|(&pane_id, entry)| {
+                matches!(
+                    evaluate_reach(&entry.owner_scope(pane_id), viewer_context_id, None),
+                    Reach::Allowed
+                )
             })
             .map(|(&id, _)| id)
             .collect();
@@ -210,16 +241,16 @@ impl ToolRegistry {
     /// Those collisions are withheld instead of selecting an arbitrary pane.
     fn namespaced_snapshot_for_caller(
         &self,
-        caller_workspace: &Path,
+        viewer_context_id: u64,
     ) -> HashMap<String, (u64, String, AiTool)> {
         let mut pane_ids: Vec<u64> = self
             .entries
             .iter()
-            .filter(|(_, entry)| {
-                entry
-                    .workspace_root
-                    .components()
-                    .eq(caller_workspace.components())
+            .filter(|(&pane_id, entry)| {
+                matches!(
+                    evaluate_reach(&entry.owner_scope(pane_id), viewer_context_id, None),
+                    Reach::Allowed
+                )
             })
             .map(|(&pane_id, _)| pane_id)
             .collect();
@@ -261,17 +292,17 @@ impl ToolRegistry {
         snapshot
     }
 
-    /// Map from app_id to tool list for all panes in `caller_workspace`.
-    /// Used by `/apps` to present tools grouped by the app that exposed them.
-    fn apps_for_workspace(&self, caller_workspace: &Path) -> Vec<(String, Vec<AiTool>)> {
+    /// Map from app_id to tool list for all panes reachable from
+    /// `viewer_context_id`. Used by `/apps` to present tools grouped by the
+    /// app that exposed them.
+    fn apps_for_context(&self, viewer_context_id: u64) -> Vec<(String, Vec<AiTool>)> {
         let mut by_app: std::collections::BTreeMap<String, Vec<AiTool>> =
             std::collections::BTreeMap::new();
-        for entry in self.entries.values() {
-            if !entry
-                .workspace_root
-                .components()
-                .eq(caller_workspace.components())
-            {
+        for (&pane_id, entry) in &self.entries {
+            if !matches!(
+                evaluate_reach(&entry.owner_scope(pane_id), viewer_context_id, None),
+                Reach::Allowed
+            ) {
                 continue;
             }
             by_app
@@ -295,19 +326,22 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 }
 
 /// Register (or replace) the tools for `pane_id`. Called by routing when
-/// `DrawCommand::ExposeTools` arrives.
+/// `DrawCommand::ExposeTools` arrives. `origin` is the host-established
+/// `ScopeOrigin` for `pane_id`, resolved by the caller via
+/// `PlexiApp::origin_for_pane` — never derived from the pane's own
+/// `workspace_root` field, which `sync_app_cwd` can mutate live.
 pub(crate) fn register(
     pane_id: u64,
     app_id: String,
     tools: Vec<AiTool>,
     sender: AppEventSender,
-    workspace_root: std::path::PathBuf,
+    origin: ScopeOrigin,
 ) {
     let count = tools.len();
     global_registry()
         .lock()
         .unwrap()
-        .register(pane_id, app_id, tools, sender, workspace_root);
+        .register(pane_id, app_id, tools, sender, origin);
     log::info!("tool_dispatch: registered {count} tool(s) for pane {pane_id}");
 }
 
@@ -375,12 +409,12 @@ pub trait ToolCallHooks: Send + Sync {
 /// routing layer before spawning the broker thread. Passed into the broker
 /// via `AiBrokerRequest::tool_dispatcher`.
 ///
-/// Only contains tools from panes in the same workspace as the caller — cross-
-/// workspace tools are excluded at construction time and never visible to the
-/// dispatching app or the model it drives.
+/// Only contains tools reachable from the caller's context — cross-context
+/// tools are excluded at construction time (via `evaluate_reach`) and never
+/// visible to the dispatching app or the model it drives.
 pub struct ToolDispatcher {
     /// Snapshot: exposed_name → (provider_pane_id, provider_tool_name, AiTool).
-    /// Already filtered to the caller's workspace.
+    /// Already filtered to the caller's context.
     tools: HashMap<String, (u64, String, AiTool)>,
     /// Caller-local host tools (Phase D3: the Assistant's
     /// `host.events.subscribe`/`unsubscribe`). Dispatched through
@@ -413,19 +447,19 @@ impl std::fmt::Debug for ToolDispatcher {
 }
 
 impl ToolDispatcher {
-    /// Build a dispatcher scoped to `caller_workspace`. Only tools from panes
-    /// in that workspace are included in the snapshot.
+    /// Build a dispatcher scoped to `viewer_context_id` — the caller's own
+    /// host-established context, never `router.active()` or a client-supplied
+    /// path. Only tools reachable from that context are included.
     pub fn from_registry(
         caller_pane_id: u64,
         caller_app_id: String,
-        caller_workspace: std::path::PathBuf,
+        viewer_context_id: u64,
     ) -> Self {
         let registry = global_registry().lock().unwrap();
-        let tools = registry.snapshot_for_caller(&caller_workspace);
+        let tools = registry.snapshot_for_caller(viewer_context_id);
         let visible: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
         log::info!(
-            "tool_dispatch: dispatcher for caller={caller_app_id} pane={caller_pane_id} workspace={} — {} tool(s) visible: {visible:?}",
-            caller_workspace.display(),
+            "tool_dispatch: dispatcher for caller={caller_app_id} pane={caller_pane_id} viewer_context={viewer_context_id} — {} tool(s) visible: {visible:?}",
             tools.len(),
         );
         Self {
@@ -438,19 +472,15 @@ impl ToolDispatcher {
         }
     }
 
-    /// Build the workspace-scoped snapshot exposed by the singleton host MCP
+    /// Build the context-scoped snapshot exposed by the singleton host MCP
     /// server. Definitions are namespaced `<app_id>__<tool>` while dispatch
     /// retains the provider's original tool name.
-    pub(crate) fn from_namespaced_registry(
-        caller_pane_id: u64,
-        caller_workspace: std::path::PathBuf,
-    ) -> Self {
+    pub(crate) fn from_namespaced_registry(caller_pane_id: u64, viewer_context_id: u64) -> Self {
         let caller_app_id = format!("mcp:pane:{caller_pane_id}");
         let registry = global_registry().lock().unwrap();
-        let tools = registry.namespaced_snapshot_for_caller(&caller_workspace);
+        let tools = registry.namespaced_snapshot_for_caller(viewer_context_id);
         log::info!(
-            "tool_dispatch: external MCP dispatcher caller={caller_app_id} workspace={} — {} tool(s) visible",
-            caller_workspace.display(),
+            "tool_dispatch: external MCP dispatcher caller={caller_app_id} viewer_context={viewer_context_id} — {} tool(s) visible",
             tools.len(),
         );
         Self {
@@ -493,13 +523,13 @@ impl ToolDispatcher {
             .collect()
     }
 
-    /// Apps and their tools visible to the caller's workspace — for `/apps`.
+    /// Apps and their tools visible to the caller's context — for `/apps`.
     /// Returns `(app_id, tools)` pairs sorted by app_id.
-    pub fn apps_for_workspace(workspace_root: std::path::PathBuf) -> Vec<(String, Vec<AiTool>)> {
+    pub fn apps_for_context(viewer_context_id: u64) -> Vec<(String, Vec<AiTool>)> {
         global_registry()
             .lock()
             .unwrap()
-            .apps_for_workspace(&workspace_root)
+            .apps_for_context(viewer_context_id)
     }
 
     /// Restrict the snapshot to `allowed` tool names (Phase C: the agent
@@ -691,31 +721,43 @@ mod tests {
         }
     }
 
+    /// A minimal `ScopeOrigin` for tests that only care about `context_id` —
+    /// every other field is a deterministic placeholder never inspected by
+    /// `evaluate_reach` or `Scope::AppInstance`.
+    fn origin(context_id: u64, pane_id: u64) -> ScopeOrigin {
+        ScopeOrigin {
+            context_id,
+            context_root: PathBuf::from(format!("/ctx-root-{context_id}")),
+            window_id: context_id,
+            pane_id,
+            app_id: None,
+        }
+    }
+
     // ── ToolRegistry unit tests (private access via same-module #[cfg(test)]) ──
 
     #[test]
-    fn same_workspace_tools_are_visible() {
+    fn same_context_tools_are_visible() {
         let mut reg = ToolRegistry::new();
-        let ws = PathBuf::from("/workspace/a");
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             1,
             "search-app".to_string(),
             vec![make_tool("search")],
             AppEventSender::Channel(tx),
-            ws.clone(),
+            origin(10, 1),
         );
 
-        let snap = reg.snapshot_for_caller(&ws);
+        let snap = reg.snapshot_for_caller(10);
         assert!(
             snap.contains_key("search"),
-            "same-workspace tool must be visible"
+            "same-context tool must be visible"
         );
         assert_eq!(snap["search"].0, 1, "provider pane id must be 1");
     }
 
     #[test]
-    fn cross_workspace_tools_are_hidden() {
+    fn cross_context_tools_are_hidden() {
         let mut reg = ToolRegistry::new();
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
@@ -723,88 +765,129 @@ mod tests {
             "attacker-app".to_string(),
             vec![make_tool("dangerous_tool")],
             AppEventSender::Channel(tx.clone()),
-            PathBuf::from("/workspace/attacker"),
+            origin(100, 10),
         );
         reg.register(
             20,
             "victim-app".to_string(),
             vec![make_tool("safe_tool")],
             AppEventSender::Channel(tx),
-            PathBuf::from("/workspace/victim"),
+            origin(200, 20),
         );
 
-        // Snapshot from attacker workspace must NOT see victim's tools.
-        let snap_attacker = reg.snapshot_for_caller(Path::new("/workspace/attacker"));
+        // Snapshot from the attacker's context must NOT see the victim's tools.
+        let snap_attacker = reg.snapshot_for_caller(100);
         assert!(snap_attacker.contains_key("dangerous_tool"));
         assert!(
             !snap_attacker.contains_key("safe_tool"),
-            "cross-workspace tool must be hidden from attacker"
+            "cross-context tool must be hidden from attacker"
         );
 
-        // Snapshot from victim workspace must NOT see attacker's tools.
-        let snap_victim = reg.snapshot_for_caller(Path::new("/workspace/victim"));
+        // Snapshot from the victim's context must NOT see the attacker's tools.
+        let snap_victim = reg.snapshot_for_caller(200);
         assert!(snap_victim.contains_key("safe_tool"));
         assert!(
             !snap_victim.contains_key("dangerous_tool"),
-            "cross-workspace tool must be hidden from victim"
+            "cross-context tool must be hidden from victim"
         );
     }
 
     #[test]
     fn unregistered_pane_tools_disappear() {
         let mut reg = ToolRegistry::new();
-        let ws = PathBuf::from("/workspace/x");
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             5,
             "app-x".to_string(),
             vec![make_tool("tool_a")],
             AppEventSender::Channel(tx),
-            ws.clone(),
+            origin(1, 5),
         );
 
-        assert!(reg.snapshot_for_caller(&ws).contains_key("tool_a"));
+        assert!(reg.snapshot_for_caller(1).contains_key("tool_a"));
         reg.unregister(5);
         assert!(
-            reg.snapshot_for_caller(&ws).is_empty(),
+            reg.snapshot_for_caller(1).is_empty(),
             "tools must disappear after pane unregisters"
         );
     }
 
     #[test]
-    fn empty_workspace_snapshot_for_unknown_workspace() {
+    fn empty_snapshot_for_unknown_context() {
         let reg = ToolRegistry::new();
-        let snap = reg.snapshot_for_caller(Path::new("/workspace/unknown"));
+        let snap = reg.snapshot_for_caller(999_999);
         assert!(snap.is_empty());
+    }
+
+    /// Deliberate tightening vs. pre-Phase-C behavior (stint 0724 Phase C):
+    /// two sibling contexts anchored at the SAME canonical root are no longer
+    /// mutually visible. Before this phase, reachability was decided by
+    /// path-equality on `AppPane::workspace_root`, so two panes whose contexts
+    /// happened to share a root were mutually reachable regardless of
+    /// `context_id`. Reachability's runtime dimension is now `context_id`
+    /// only — a tool registered from a pane in context A must stay invisible
+    /// to a caller in a sibling context B that merely shares A's root, unless
+    /// a `CrossContextGrant` (not wired until a later stint) says otherwise.
+    #[test]
+    fn connector_from_same_root_sibling_context_is_unreachable_without_grant() {
+        let mut reg = ToolRegistry::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let shared_root = PathBuf::from("/workspace/shared-root");
+        let context_a = 501u64;
+        let context_b = 502u64; // sibling context, SAME canonical root as A
+        let origin_a = ScopeOrigin {
+            context_id: context_a,
+            context_root: shared_root.clone(),
+            window_id: 1,
+            pane_id: 30,
+            app_id: Some("root-app".to_string()),
+        };
+        reg.register(
+            30,
+            "root-app".to_string(),
+            vec![make_tool("shared_root_tool")],
+            AppEventSender::Channel(tx),
+            origin_a,
+        );
+
+        // Sanity: the owning context still sees its own tool.
+        let snap_a = reg.snapshot_for_caller(context_a);
+        assert!(snap_a.contains_key("shared_root_tool"));
+
+        // The sibling context sharing the same root must NOT see it.
+        let snap_b = reg.snapshot_for_caller(context_b);
+        assert!(
+            !snap_b.contains_key("shared_root_tool"),
+            "same-root sibling context must not see another context's tool without a grant"
+        );
     }
 
     // ── ToolDispatcher: unauthorized call returns tool_not_found ──────────────
     //
-    // The authorization boundary is: cross-workspace tools are excluded from the
+    // The authorization boundary is: cross-context tools are excluded from the
     // snapshot, so `dispatch_call` returns `tool_not_found` for them — the model
     // never learns they exist.
 
     #[test]
-    fn dispatcher_excludes_cross_workspace_tools() {
-        // Register a tool in workspace B.
+    fn dispatcher_excludes_cross_context_tools() {
+        // Register a tool in context B.
         let (tx_b, _rx_b) = std::sync::mpsc::channel();
         register(
             999,
             "app-b".to_string(),
             vec![make_tool("secret_tool")],
             AppEventSender::Channel(tx_b),
-            PathBuf::from("/workspace/b"),
+            origin(200, 999),
         );
 
-        // Build a dispatcher for a caller in workspace A.
-        let dispatcher =
-            ToolDispatcher::from_registry(1, "app_a".to_string(), PathBuf::from("/workspace/a"));
+        // Build a dispatcher for a caller in context A.
+        let dispatcher = ToolDispatcher::from_registry(1, "app_a".to_string(), 100);
 
         // The tool must not appear in the visible set.
         let visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
         assert!(
             !visible.contains(&"secret_tool".to_string()),
-            "cross-workspace tool must not appear in dispatcher: {visible:?}"
+            "cross-context tool must not appear in dispatcher: {visible:?}"
         );
 
         // A direct dispatch attempt must return tool_not_found.
@@ -825,12 +908,11 @@ mod tests {
         unregister(999);
     }
 
-    /// Two panes in the same workspace exposing the same tool name must both be
+    /// Two panes in the same context exposing the same tool name must both be
     /// excluded from the snapshot — no silent winner selection.
     #[test]
     fn conflicting_tool_names_excluded_from_snapshot() {
         let mut reg = ToolRegistry::new();
-        let ws = PathBuf::from("/workspace/conflict-test");
         let (tx1, _rx1) = std::sync::mpsc::channel();
         let (tx2, _rx2) = std::sync::mpsc::channel();
         reg.register(
@@ -838,17 +920,17 @@ mod tests {
             "app-conflict-1".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_a")],
             AppEventSender::Channel(tx1),
-            ws.clone(),
+            origin(50, 10),
         );
         reg.register(
             20,
             "app-conflict-2".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_b")],
             AppEventSender::Channel(tx2),
-            ws.clone(),
+            origin(50, 20),
         );
 
-        let snap = reg.snapshot_for_caller(&ws);
+        let snap = reg.snapshot_for_caller(50);
         assert!(
             !snap.contains_key("shared_tool"),
             "conflicting tool must be excluded from snapshot, not silently picked"
@@ -866,7 +948,6 @@ mod tests {
     #[test]
     fn namespaced_snapshot_withholds_duplicate_app_instances() {
         let mut reg = ToolRegistry::new();
-        let workspace = PathBuf::from("/workspace/mcp-duplicates");
         let (tx1, _rx1) = std::sync::mpsc::channel();
         let (tx2, _rx2) = std::sync::mpsc::channel();
         reg.register(
@@ -874,17 +955,17 @@ mod tests {
             "same-app".to_string(),
             vec![make_tool("echo")],
             AppEventSender::Channel(tx1),
-            workspace.clone(),
+            origin(60, 30),
         );
         reg.register(
             20,
             "same-app".to_string(),
             vec![make_tool("echo"), make_tool("unique")],
             AppEventSender::Channel(tx2),
-            workspace.clone(),
+            origin(60, 20),
         );
 
-        let snapshot = reg.namespaced_snapshot_for_caller(&workspace);
+        let snapshot = reg.namespaced_snapshot_for_caller(60);
         assert!(
             !snapshot.contains_key("same-app__echo"),
             "two live instances must not select an arbitrary provider"
@@ -915,13 +996,9 @@ mod tests {
             "hooks-app".to_string(),
             vec![make_tool("gated_tool")],
             AppEventSender::Channel(tx),
-            PathBuf::from("/workspace/hooks-test"),
+            origin(70, 998),
         );
-        let mut dispatcher = ToolDispatcher::from_registry(
-            2,
-            "agent:assistant".to_string(),
-            PathBuf::from("/workspace/hooks-test"),
-        );
+        let mut dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), 70);
         dispatcher.set_hooks(Arc::new(DenyHook));
 
         let blocked = dispatcher.dispatch_call("c1".to_string(), "gated_tool", "{}".to_string());
@@ -951,16 +1028,15 @@ mod tests {
 
     #[test]
     fn wasm_provider_receives_tool_call_and_returns_result() {
-        let workspace = PathBuf::from("/workspace/wasm-tools");
         let (sender, queue) = crate::host::wasm_pane::WasmInputSender::new_for_test();
         register(
             997,
             "wasm-tools".to_string(),
             vec![make_tool("wasm.echo")],
             AppEventSender::Wasm(sender),
-            workspace.clone(),
+            origin(80, 997),
         );
-        let dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), workspace);
+        let dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), 80);
         let worker = std::thread::spawn(move || {
             dispatcher.dispatch_call(
                 "wasm-call-1".to_string(),
@@ -1009,17 +1085,15 @@ mod tests {
             fn after_call(&self, _name: &str, _error: Option<&str>, _output: Option<&str>) {}
         }
 
-        let workspace = PathBuf::from("/workspace/wasm-denied");
         let (sender, queue) = crate::host::wasm_pane::WasmInputSender::new_for_test();
         register(
             996,
             "wasm-denied".to_string(),
             vec![make_tool("wasm.write")],
             AppEventSender::Wasm(sender),
-            workspace.clone(),
+            origin(90, 996),
         );
-        let mut dispatcher =
-            ToolDispatcher::from_registry(2, "agent:assistant".to_string(), workspace);
+        let mut dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), 90);
         dispatcher.set_hooks(Arc::new(DenyHook));
 
         let result = dispatcher.dispatch_call(

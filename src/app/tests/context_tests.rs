@@ -736,10 +736,12 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     let b_pane_id = 65_300_112u64;
     let a_token = crate::app::host_mcp::register_pane_credential_for_test(
         a_pane_id,
+        a_id,
         std::path::PathBuf::from("/tmp/a"),
     );
     let b_token = crate::app::host_mcp::register_pane_credential_for_test(
         b_pane_id,
+        b_id,
         std::path::PathBuf::from("/tmp/b"),
     );
 
@@ -868,6 +870,7 @@ fn delete_window_revokes_removed_pane_credentials() {
     let removed_pane_id = 65_300_101u64;
     let removed_token = crate::app::host_mcp::register_pane_credential_for_test(
         removed_pane_id,
+        context_id,
         std::path::PathBuf::from("/tmp/removed"),
     );
 
@@ -1688,6 +1691,7 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
         .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
     let moved_token = crate::app::host_mcp::register_pane_credential_for_test(
         child_left,
+        child_ctx_id,
         std::path::PathBuf::from("/tmp/dissolve_single_child"),
     );
 
@@ -2531,7 +2535,11 @@ fn set_context_root_ipc_targets_caller_context() {
         context_id: other_id,
     });
     let old_root = std::path::PathBuf::from("/tmp/background");
-    let token = crate::app::host_mcp::register_pane_credential_for_test(pane_id, old_root.clone());
+    let token = crate::app::host_mcp::register_pane_credential_for_test(
+        pane_id,
+        other_id,
+        old_root.clone(),
+    );
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&token),
         Some(old_root)

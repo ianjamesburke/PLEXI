@@ -53,7 +53,6 @@ fn auto_init_workspace(root: &std::path::Path) {
 
     ensure_context_state_ignore(root);
 
-
     let channel_dir = crate::config::workspace_channel_dir();
     let channel_path = root.join(&channel_dir);
     if channel_path.exists() {
@@ -991,9 +990,7 @@ impl PlexiApp {
         let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
-            .or_else(|| {
-                self.resolve_new_pane_cwd(None)
-            })
+            .or_else(|| self.resolve_new_pane_cwd(None))
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         log::info!(
@@ -1088,9 +1085,7 @@ impl PlexiApp {
     ) -> Option<crate::spatial::tiling::PaneId> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
-            .or_else(|| {
-                self.resolve_new_pane_cwd(None)
-            })
+            .or_else(|| self.resolve_new_pane_cwd(None))
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         let active = self.active_window;
@@ -1758,8 +1753,10 @@ impl PlexiApp {
         // Same workspace resolution `AppRegistry::load` performs internally
         // (cwd-walk to the channel dir) — agents live in that workspace's
         // `agents/` dir.
-        self.agent_host
-            .reload_workspace(crate::app::registry::resolve_workspace_root(&root));
+        self.agent_host.reload_workspace(
+            crate::app::registry::resolve_workspace_root(&root),
+            context_id,
+        );
         // Reload config so workspace-scoped config.toml applies immediately —
         // both on initial launch and on context switches.
         self.reload_config_for_active_context();

@@ -476,8 +476,7 @@ fn tool_output_preview(output_json: &str) -> String {
 /// body — string values keep their real newlines, non-strings print as
 /// compact JSON. Falls back to the raw input when it isn't a JSON object.
 fn tool_input_detail(input_json: &str) -> String {
-    let detail =
-        render_json_object_lines(input_json).unwrap_or_else(|| input_json.to_string());
+    let detail = render_json_object_lines(input_json).unwrap_or_else(|| input_json.to_string());
     bounded_head_tail_multiline(&detail, TOOL_OUTPUT_PREVIEW_BUDGET)
 }
 
@@ -566,6 +565,14 @@ pub struct AssistantApp {
     store: AssistantStore,
     broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
+    /// The host context this pane lives in, captured once at construction —
+    /// stint 0724 Phase C. `gated_dispatcher`/`apps_for_context` resolve
+    /// connector-tool reachability from this, never from `workspace_root`
+    /// path-equality or ambient focus state. Set from the host-observed
+    /// window `context_id` the caller passed to `new`/`new_with_timeline`
+    /// (see `restore_assistant_pane`/`open_assistant_pane_with_hint`), not
+    /// re-derived later.
+    context_id: u64,
     profile_dir: PathBuf,
     agent_registry: AgentRegistry,
     skill_registry: SkillRegistry,
@@ -721,6 +728,7 @@ impl AssistantApp {
             store,
             broker,
             workspace_root,
+            context_id,
             profile_dir: profile_dir.to_path_buf(),
             agent_registry,
             skill_registry,
@@ -1027,6 +1035,21 @@ impl AssistantApp {
         )
     }
 
+    /// Test-only seam onto the real connector-tool visibility path
+    /// (`gated_dispatcher`, unfiltered by broker grants) — lets a
+    /// `HostHarness` test assert what this pane's own context can see
+    /// without reaching into private fields. Stint 0724 Phase C regression
+    /// coverage (context-scoped connector reachability) uses this from
+    /// `testing::harness_tests`.
+    #[cfg(test)]
+    pub(crate) fn visible_connector_tool_names_for_test(&self) -> Vec<String> {
+        self.gated_dispatcher()
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect()
+    }
+
     /// Build the broker-gated dispatcher for one turn: denied tools are
     /// stripped (invisible and uninvocable), ask tools stay visible behind
     /// the permission-sheet hook, allowed tools pass through.
@@ -1034,7 +1057,7 @@ impl AssistantApp {
         let mut dispatcher = ToolDispatcher::from_registry(
             0,
             format!("agent:{}", self.connector_actor().0),
-            self.workspace_root.clone(),
+            self.context_id,
         );
         let mut allowed = HashSet::new();
         let mut ask_tools = HashSet::new();
@@ -3048,7 +3071,7 @@ impl AssistantApp {
         let dispatcher = ToolDispatcher::from_registry(
             0,
             format!("agent:{ASSISTANT_ACTOR_ID}"),
-            self.workspace_root.clone(),
+            self.context_id,
         );
         let mut tools = dispatcher.all_tools();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -3249,7 +3272,7 @@ impl AssistantApp {
 
     /// `/apps`: running apps and the connectors they expose, with broker decisions.
     fn cmd_list_apps(&mut self) {
-        let apps = ToolDispatcher::apps_for_workspace(self.workspace_root.clone());
+        let apps = ToolDispatcher::apps_for_context(self.context_id);
         log::info!(
             "assistant: /apps — {} app(s) with connector tools in workspace",
             apps.len()
@@ -3626,6 +3649,22 @@ mod tests {
     use super::*;
     use crate::plexi_ai::broker::AiBrokerResponse;
 
+    /// A `ScopeOrigin` for a tool provider pane in `context_id` — stint 0724
+    /// Phase C. Every field but `context_id`/`pane_id` is a deterministic
+    /// placeholder never inspected by `evaluate_reach`. `test_app` always
+    /// constructs its `AssistantApp` with `context_id = 1` (see `test_app`
+    /// below), so registering a provider with `context_id = 1` is what makes
+    /// it reachable from the assistant under test.
+    fn test_scope_origin(context_id: u64, pane_id: u64) -> crate::host::scope::ScopeOrigin {
+        crate::host::scope::ScopeOrigin {
+            context_id,
+            context_root: PathBuf::from(format!("/test-ctx-root-{context_id}")),
+            window_id: context_id,
+            pane_id,
+            app_id: None,
+        }
+    }
+
     /// Scripted test broker.
     struct MockBroker {
         /// Canned reply text. If None, simulates an error turn.
@@ -3686,6 +3725,22 @@ mod tests {
     /// Assistant whose grants + audit live in the (temp) workspace dir.
     fn test_app(ws: &Path) -> AssistantApp {
         AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, 1)
+    }
+
+    /// Like `test_app` but with an explicit `context_id`. The global tool
+    /// registry (`plexi_ai::tool_dispatch`) is a process-wide singleton, so
+    /// any test that registers a connector-tool provider must give its
+    /// assistant a `context_id` distinct from every other such test —
+    /// `cargo test`'s parallel runner means two tests both anchored at
+    /// `test_app`'s fixed `context_id = 1` would make each other's
+    /// same-named tools ("gated.tool", "csv.read_range", ...) mutually
+    /// visible, tripping the same-name-conflict withholding
+    /// (`snapshot_for_caller`) and hanging the test waiting for a permission
+    /// sheet that never appears because the tool got withheld. Pass a value
+    /// unique to the test (its own pane id is a convenient, already-unique
+    /// choice).
+    fn test_app_with_context(ws: &Path, context_id: u64) -> AssistantApp {
+        AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, context_id)
     }
 
     fn wait_for_turn(app: &mut AssistantApp) {
@@ -3877,12 +3932,8 @@ enabled = ["allowed.tool"]
         )
         .unwrap();
         let broker = Arc::new(CapturingBroker::default());
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
-        register_echo_provider(
-            9199,
-            &["allowed.tool", "denied.tool"],
-            ws.path().to_path_buf(),
-        );
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 9199);
+        register_echo_provider(9199, &["allowed.tool", "denied.tool"], 9199);
 
         app.model.composer = "/agent writer".to_string();
         let effects = app.model.submit();
@@ -4040,7 +4091,7 @@ enabled = ["allowed.tool"]
     #[test]
     fn read_only_connector_auto_allowed_without_broker_grant() {
         let ws = tempfile::tempdir().unwrap();
-        let app = test_app(ws.path());
+        let app = test_app_with_context(ws.path(), 9200);
         let (tx, _rx) = std::sync::mpsc::channel();
         let ro_tool = crate::app_protocol::AiTool {
             name: "csv.read_range".to_string(),
@@ -4063,7 +4114,7 @@ enabled = ["allowed.tool"]
             "csv".to_string(),
             vec![ro_tool, rw_tool],
             AppEventSender::Channel(tx),
-            ws.path().to_path_buf(),
+            test_scope_origin(9200, 9200),
         );
         // No grants seeded — read-only tool must be auto-allowed; mutating
         // tool must remain ask-gated and visible.
@@ -4084,7 +4135,7 @@ enabled = ["allowed.tool"]
     #[test]
     fn deny_grant_withholds_read_only_tool() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
+        let mut app = test_app_with_context(ws.path(), 9205);
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9205,
@@ -4098,7 +4149,7 @@ enabled = ["allowed.tool"]
                 read_only: true,
             }],
             AppEventSender::Channel(tx),
-            ws.path().to_path_buf(),
+            test_scope_origin(9205, 9205),
         );
         // Explicit deny must still win even though the tool is read-only.
         seed_grant(&mut app, "app.csv.read_range", Decision::Deny);
@@ -4122,7 +4173,7 @@ enabled = ["allowed.tool"]
             "[permissions]\ndeny = [\"app.csv.read_range\"]\n",
         )
         .unwrap();
-        let app = test_app(ws.path());
+        let app = test_app_with_context(ws.path(), 9206);
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9206,
@@ -4136,7 +4187,7 @@ enabled = ["allowed.tool"]
                 read_only: true,
             }],
             AppEventSender::Channel(tx),
-            ws.path().to_path_buf(),
+            test_scope_origin(9206, 9206),
         );
 
         let visible: Vec<String> = app
@@ -4156,7 +4207,7 @@ enabled = ["allowed.tool"]
         let settings_path = ws.path().join("agents/settings.toml");
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
         std::fs::write(settings_path, "[permissions]\ndefault_posture = \"plan\"\n").unwrap();
-        let mut app = test_app(ws.path());
+        let mut app = test_app_with_context(ws.path(), 9207);
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9207,
@@ -4180,7 +4231,7 @@ enabled = ["allowed.tool"]
                 },
             ],
             AppEventSender::Channel(tx),
-            ws.path().to_path_buf(),
+            test_scope_origin(9207, 9207),
         );
         seed_grant(&mut app, "app.csv.write_cell", Decision::Allow);
 
@@ -4222,7 +4273,7 @@ enabled = ["allowed.tool"]
     #[test]
     fn apps_command_lists_running_app_connectors() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
+        let mut app = test_app_with_context(ws.path(), 9201);
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9201,
@@ -4246,7 +4297,7 @@ enabled = ["allowed.tool"]
                 },
             ],
             AppEventSender::Channel(tx),
-            ws.path().to_path_buf(),
+            test_scope_origin(9201, 9201),
         );
         app.model.composer = "/apps".to_string();
         let effects = app.model.submit();
@@ -4434,8 +4485,10 @@ enabled = ["allowed.tool"]
     use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
 
     /// Register tools in the global registry with a responder thread that
-    /// answers every `ToolCall` event with `{"ok": true}`.
-    fn register_echo_provider(pane_id: u64, tool_names: &[&str], ws: PathBuf) {
+    /// answers every `ToolCall` event with `{"ok": true}`. `context_id` must
+    /// match the assistant under test's own context (`test_app` always uses
+    /// `1`) for the provider to be reachable.
+    fn register_echo_provider(pane_id: u64, tool_names: &[&str], context_id: u64) {
         let (tx, rx) = std::sync::mpsc::channel();
         let tools = tool_names
             .iter()
@@ -4453,7 +4506,7 @@ enabled = ["allowed.tool"]
             "test-app".to_string(),
             tools,
             AppEventSender::Channel(tx),
-            ws,
+            test_scope_origin(context_id, pane_id),
         );
         std::thread::spawn(move || {
             while let Ok(item) = rx.recv() {
@@ -4538,12 +4591,8 @@ enabled = ["allowed.tool"]
     #[test]
     fn connector_filtering_denied_invisible_ask_and_allow_visible() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
-        register_echo_provider(
-            9100,
-            &["t_allow", "t_ask", "t_deny"],
-            ws.path().to_path_buf(),
-        );
+        let mut app = test_app_with_context(ws.path(), 9100);
+        register_echo_provider(9100, &["t_allow", "t_ask", "t_deny"], 9100);
         seed_grant(&mut app, "app.t_allow", Decision::Allow);
         seed_grant(&mut app, "app.t_deny", Decision::Deny);
         // t_ask has no grant → default Ask.
@@ -4582,8 +4631,8 @@ enabled = ["allowed.tool"]
     #[test]
     fn ask_allow_once_runs_tool_without_persisting_a_grant() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
-        register_echo_provider(9101, &["gated.tool"], ws.path().to_path_buf());
+        let mut app = test_app_with_context(ws.path(), 9101);
+        register_echo_provider(9101, &["gated.tool"], 9101);
 
         let dispatcher = Arc::new(app.gated_dispatcher());
         let result_rx = dispatch_on_worker(dispatcher, "gated.tool");
@@ -4636,8 +4685,8 @@ enabled = ["allowed.tool"]
     #[test]
     fn ask_allow_always_persists_grant_and_next_call_skips_sheet() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
-        register_echo_provider(9102, &["gated.tool"], ws.path().to_path_buf());
+        let mut app = test_app_with_context(ws.path(), 9102);
+        register_echo_provider(9102, &["gated.tool"], 9102);
 
         let dispatcher = Arc::new(app.gated_dispatcher());
         let result_rx = dispatch_on_worker(dispatcher, "gated.tool");
@@ -4683,8 +4732,8 @@ enabled = ["allowed.tool"]
     #[test]
     fn ask_denied_by_user_returns_tool_error_not_a_crash() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
-        register_echo_provider(9103, &["gated.tool"], ws.path().to_path_buf());
+        let mut app = test_app_with_context(ws.path(), 9103);
+        register_echo_provider(9103, &["gated.tool"], 9103);
 
         let dispatcher = Arc::new(app.gated_dispatcher());
         let result_rx = dispatch_on_worker(dispatcher, "gated.tool");
@@ -4723,8 +4772,8 @@ enabled = ["allowed.tool"]
     #[test]
     fn slash_views_answer_with_info_rows() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
-        register_echo_provider(9104, &["view.tool"], ws.path().to_path_buf());
+        let mut app = test_app_with_context(ws.path(), 9104);
+        register_echo_provider(9104, &["view.tool"], 9104);
         seed_grant(&mut app, "app.view.tool", Decision::Allow);
 
         app.model.composer = "/tools".to_string();
@@ -4879,7 +4928,13 @@ enabled = ["allowed.tool"]
     }
 
     fn test_app_with_timeline(ws: &Path, timeline: Arc<Mutex<AppTimeline>>) -> AssistantApp {
-        AssistantApp::new_with_timeline(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, timeline, 1)
+        AssistantApp::new_with_timeline(
+            ws.to_path_buf(),
+            MockBroker::ok("echo: ok"),
+            ws,
+            timeline,
+            1,
+        )
     }
 
     fn emit_move(
@@ -5458,13 +5513,15 @@ enabled = ["allowed.tool"]
     #[test]
     fn rename_persists_session_name() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
+        let mut app =
+            AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
         assert_eq!(app.model.session_name, None);
         app.on_pane_renamed("My Session");
         assert_eq!(app.model.session_name.as_deref(), Some("My Session"));
         // Reopen: name persists.
         drop(app);
-        let reopened = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
+        let reopened =
+            AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
         assert_eq!(reopened.model.session_name.as_deref(), Some("My Session"));
     }
 

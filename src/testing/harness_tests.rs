@@ -10,6 +10,101 @@ fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str
     h.app.add_app_pane_in_window(win_idx, manifest_id);
 }
 
+/// Push a second context + window (no PTY dependency) and return its window
+/// index. Mirrors the pattern in `app::tests::context_tests`, duplicated here
+/// since that helper is module-private.
+fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path::Path) -> usize {
+    let win_id = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: root.to_path_buf(),
+        tree: egui_tiles::Tree::empty("tool_dispatch_context_b"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: win_id,
+        context_id,
+    });
+    h.app.router.push(crate::host::context::Context {
+        name: "context-b".to_string(),
+        root: root.to_path_buf(),
+        description: None,
+        context_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.len() - 1
+}
+
+/// Stint 0724 Phase C regression: an app pane in context A exposes a
+/// connector tool; an Assistant pane in a sibling context B must NOT see it,
+/// and an Assistant pane in context A must. Proves the migration off
+/// path-equality onto `evaluate_reach`/`context_id` end-to-end through the
+/// real `AssistantApp::gated_dispatcher` path (not a synthetic registry
+/// check), covering `App::dispatch`'s `ExposeTools` registration and
+/// `ToolDispatcher::from_registry`'s context-scoped snapshot together.
+#[test]
+fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
+    let mut h = HostHarness::new();
+    let context_a = h.app.windows[0].context_id;
+    let context_b = context_a + 1_000;
+    let root_b = tempfile::tempdir().expect("root b");
+    let win_b_idx = push_secondary_context(&mut h, context_b, root_b.path());
+
+    // An app pane in context A exposes a connector tool. Registering directly
+    // through `tool_dispatch::register` (rather than the `ExposeTools` wire
+    // path) isolates this test to the reachability question; `App::dispatch`
+    // resolving the same `origin_for_pane` at its two `ExposeTools` call
+    // sites is covered by reading those call sites, not re-simulated here.
+    let (_, provider_pane_id) = h.app.add_app_pane_in_window(0, "connector-app");
+    let origin = h
+        .app
+        .origin_for_pane(provider_pane_id)
+        .expect("origin_for_pane must resolve for a live app pane");
+    assert_eq!(origin.context_id, context_a);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    crate::plexi_ai::tool_dispatch::register(
+        provider_pane_id,
+        "connector-app".to_string(),
+        vec![crate::app_protocol::AiTool {
+            name: "connector_tool".to_string(),
+            description: "test connector tool".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({"type": "object"}),
+            timeout_ms: Some(1_000),
+            read_only: true,
+        }],
+        crate::plexi_ai::tool_dispatch::AppEventSender::Channel(tx),
+        origin,
+    );
+
+    // Assistant pane in context A (windows[0]) sees the tool.
+    let assistant_a = h.add_assistant_pane();
+    let visible_a = h
+        .assistant_mut(assistant_a)
+        .visible_connector_tool_names_for_test();
+    assert!(
+        visible_a.contains(&"connector_tool".to_string()),
+        "assistant in the owning context must see the connector tool: {visible_a:?}"
+    );
+
+    // Assistant pane in sibling context B does NOT see it.
+    let assistant_b = h.add_assistant_pane_in_window(win_b_idx);
+    let visible_b = h
+        .assistant_mut(assistant_b)
+        .visible_connector_tool_names_for_test();
+    assert!(
+        !visible_b.contains(&"connector_tool".to_string()),
+        "assistant in a sibling context must NOT see the connector tool: {visible_b:?}"
+    );
+
+    crate::plexi_ai::tool_dispatch::unregister(provider_pane_id);
+}
+
 // -- DrawCommand routing --------------------------------------------------
 
 /// Regression guard for PR #536: `AiQuery` was silently dropped into
@@ -184,8 +279,7 @@ fn pane_heartbeat_fires_when_idle() {
             next_fire: std::time::Instant::now(),
         },
     );
-    h.app
-        .windows[0]
+    h.app.windows[0]
         .panes
         .get_mut(&pane)
         .expect("pane")
@@ -374,11 +468,9 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let response = read_json_response(&response);
     assert!(response.get("ok").is_none());
     // 0478: drops are validated by decodable content — fake PNG bytes reject.
-    assert!(
-        response["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("not a decodable image"))
-    );
+    assert!(response["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("not a decodable image")));
     let app = h.app.windows[0]
         .panes
         .get(&pane_id)
@@ -454,12 +546,10 @@ fn drop_rejects_apps_without_a_production_handler_observably() {
         response_file: response.clone(),
     });
     h.run_frames(1);
-    assert!(
-        read_json_response(&response)["error"]
-            .as_str()
-            .unwrap()
-            .contains("does not accept")
-    );
+    assert!(read_json_response(&response)["error"]
+        .as_str()
+        .unwrap()
+        .contains("does not accept"));
 }
 
 #[derive(Default)]
@@ -1261,12 +1351,10 @@ fn pane_slot_read_errors_use_sidecar_file() {
     let error_file = format!("{read_file}.err");
     let response = read_json_response(&error_file);
     assert_eq!(response["ok"].as_bool(), Some(false));
-    assert!(
-        response["error"]
-            .as_str()
-            .expect("error")
-            .contains("slot 'missing' not found")
-    );
+    assert!(response["error"]
+        .as_str()
+        .expect("error")
+        .contains("slot 'missing' not found"));
 }
 
 #[test]
@@ -1697,8 +1785,8 @@ fn palette_close_surrenders_focus_before_pane_close() {
 
 #[test]
 fn notification_modal_handle_key_returns_consumed() {
-    use crate::app::FocusKind;
     use crate::app::app_trait::KeyDisposition;
+    use crate::app::FocusKind;
     let mut h = HostHarness::new();
     h.app.push_focus_layer(FocusKind::NotificationModal);
     let ctx = h.app.ctx.clone();
@@ -2309,7 +2397,8 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "canvas-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2388,7 +2477,8 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "app did not report the click's canvas-space coordinate in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2443,7 +2533,8 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "canvas-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2516,7 +2607,8 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "app did not report a completed drag in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2572,7 +2664,8 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "canvas-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2644,7 +2737,8 @@ fn emitted_app_event_is_recorded_and_awaitable() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "event-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2719,7 +2813,8 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "node-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2960,7 +3055,8 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "key-event-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -3011,7 +3107,8 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "app did not reflect the key event's mutation in time (last seen: {observed_count:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -3056,7 +3153,8 @@ fn bare_escape_closes_focused_python_wasm_pane() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "key-event-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -3140,7 +3238,8 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "node-click-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -3205,7 +3304,8 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "click queued before a hot-reload relaunch must still land once the \
              relaunched pane is ready again (last seen count: {observed_count:?})"
         );
@@ -3623,7 +3723,8 @@ fn wait_for_text_label(h: &mut HostHarness, pane_id: PaneId, prefix: &str, expec
             return;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "timed out waiting for label '{expected}' (last seen: {seen:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -3668,7 +3769,8 @@ fn focused_text_input_receives_typing_and_enter_submits() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "text-input-probe did not render its first frame in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -4256,11 +4358,9 @@ fn editor_gate_host_surfaces() {
         response_file: response.clone(),
     });
     h.run_frames(2);
-    assert!(
-        read_json_response(&response)["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("not a decodable image"))
-    );
+    assert!(read_json_response(&response)["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("not a decodable image")));
     let state = gate_note_semantics(&h, pane_id);
     assert_eq!(
         state["last_drop_result"]["result"].as_str(),
@@ -4784,9 +4884,8 @@ fn app_commands_execute_while_window_hidden() {
         "no notification should be queued before the app emits one"
     );
 
-    h.assistant_mut(pane)
-        .pending_commands
-        .push(crate::app::app_trait::AppCommand::ShowNotification {
+    h.assistant_mut(pane).pending_commands.push(
+        crate::app::app_trait::AppCommand::ShowNotification {
             notify_id: "hidden-pass-notify".to_string(),
             sender_pane_id: pane,
             source_context_id: 0,
@@ -4801,7 +4900,8 @@ fn app_commands_execute_while_window_hidden() {
             image_pipe_id: None,
             timeout_secs: None,
             on_dismiss: None,
-        });
+        },
+    );
 
     h.run_hidden_frames(1);
 

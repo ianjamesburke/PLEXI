@@ -2788,7 +2788,9 @@ impl PlexiApp {
             .cloned()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
-        if let Some((port, token)) = host_mcp::discovery_for_pane(pane_id, workspace_root) {
+        if let Some((port, token)) =
+            host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
+        {
             env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
             env.insert("PLEXI_HOST_MCP_TOKEN".into(), token);
         }
