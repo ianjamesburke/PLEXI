@@ -783,11 +783,15 @@ impl PlexiApp {
         let displayed = name.displayed().to_owned();
         self.router.get_mut(ctx_idx).name = name;
         log::info!("context_rename: context_id={context_id} name={displayed}");
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextRenamed {
-            context_id,
-            name: displayed.clone(),
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        let context_root = self.router.get(ctx_idx).root.clone();
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::ContextRenamed {
+                context_id,
+                name: displayed.clone(),
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            Some(&context_root),
+        );
         self.mark_workspace_dirty();
         displayed
     }
@@ -855,11 +859,15 @@ impl PlexiApp {
         log::info!(
             "new_context_empty: emitting ContextCreated context_id={ctx_id} name={ctx_name}"
         );
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextCreated {
-            context_id: ctx_id,
-            name: ctx_name,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        let context_root = self.router.active().root.clone();
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::ContextCreated {
+                context_id: ctx_id,
+                name: ctx_name,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            Some(&context_root),
+        );
     }
 
     /// Create a new context at a specific directory path. The terminal pane

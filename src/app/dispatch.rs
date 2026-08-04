@@ -1105,12 +1105,16 @@ impl PlexiApp {
                     log::info!(
                         "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                     );
-                    crate::host::event_log::emit(
+                    let context_root = self
+                        .origin_for_pane(pane_id)
+                        .map(|origin| origin.context_root);
+                    crate::host::event_log::emit_scoped(
                         crate::host::event_log::HostEvent::NotificationActionInvoked {
                             id: notify_id.clone(),
                             action: action_label.clone(),
                             timestamp: crate::host::event_log::now_timestamp(),
                         },
+                        context_root.as_deref(),
                     );
                     // Execute host-side action synchronously before writing the response
                     // file so the navigation is complete before the shell unblocks.

@@ -40,13 +40,18 @@ pub(super) fn restore_overlay_replacement(
         Pane::App(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
                 let type_id = app.runtime.type_id().to_string();
-                crate::host::event_log::emit(crate::host::event_log::HostEvent::AppClosed {
-                    app_id: type_id.clone(),
-                    type_id,
-                    pane_id,
-                    reason: Some("overlay_restored".to_string()),
-                    timestamp: crate::host::event_log::now_timestamp(),
-                });
+                // Free function — no `PlexiApp`/router access, so no origin is
+                // resolvable here without a new ambient lookup. Global-only.
+                crate::host::event_log::emit_scoped(
+                    crate::host::event_log::HostEvent::AppClosed {
+                        app_id: type_id.clone(),
+                        type_id,
+                        pane_id,
+                        reason: Some("overlay_restored".to_string()),
+                        timestamp: crate::host::event_log::now_timestamp(),
+                    },
+                    None,
+                );
                 panes.insert(pane_id, *replaced);
                 true
             } else {
@@ -332,11 +337,17 @@ impl PlexiApp {
 
         let direction = if vertical { "vertical" } else { "horizontal" }.to_string();
         log::info!("split_focused: emitting PaneSplit pane_id={new_id} direction={direction}");
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneSplit {
-            pane_id: new_id,
-            direction,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        // The new pane is split into the currently active context/window, so
+        // its root is exactly `router.active().root` — already resolved just
+        // below for logging; reused here too rather than looked up twice.
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::PaneSplit {
+                pane_id: new_id,
+                direction,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            Some(&self.router.active().root),
+        );
 
         let cwd = self.resolve_new_pane_cwd(cwd_override);
         log::info!(
@@ -762,6 +773,11 @@ impl PlexiApp {
     /// Close a tile in a specific context by its TileId. Handles sibling focus
     /// transfer, container cleanup, and pane removal.
     pub(crate) fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
+        // Resolved up front, before Phase 3 takes a mutable borrow of
+        // `self.windows[ctx_idx]` that would otherwise conflict with a
+        // `&self` router lookup at the `PaneClosed` emit site below.
+        let context_root = self.context_root_for(self.windows[ctx_idx].context_id);
+
         // Snapshot focus/zoom state before any mutation so Phase 2 guards are accurate.
         let is_focused = self.windows[ctx_idx].focused_pane == Some(tile_id);
         let is_zoomed = self.windows[ctx_idx].zoomed_pane == Some(tile_id);
@@ -855,10 +871,13 @@ impl PlexiApp {
 
             let removed = if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
                 log::info!("close_tile: emitting PaneClosed pane_id={pane_id}");
-                crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneClosed {
-                    pane_id,
-                    timestamp: crate::host::event_log::now_timestamp(),
-                });
+                crate::host::event_log::emit_scoped(
+                    crate::host::event_log::HostEvent::PaneClosed {
+                        pane_id,
+                        timestamp: crate::host::event_log::now_timestamp(),
+                    },
+                    context_root.as_deref(),
+                );
                 closed_pane_id = Some(pane_id);
                 ctx.panes.remove(&pane_id)
             } else {

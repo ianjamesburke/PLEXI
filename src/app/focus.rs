@@ -425,19 +425,26 @@ impl PlexiApp {
         // don't emit a spurious crash_recovery on the next startup.
         crate::app::focus_journal::clear_journal(&self.focus_journal_path);
 
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
-            pane_id: meta.pane_id,
-            context_name: meta.context_name,
-            context_description: meta.context_description,
-            context_root: meta.context_root,
-            cwd: meta.cwd,
-            pty_title: meta.pty_title,
-            pane_name: meta.pane_name,
-            app_type_id: meta.app_type_id,
-            reason: Some(reason.as_str().to_string()),
-            duration_secs,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        // `meta.context_root` is already resolved for the event body/Stats
+        // (`collect_pane_metadata`); reuse it for routing instead of resolving
+        // the origin a second time.
+        let context_root = meta.context_root.clone().map(std::path::PathBuf::from);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::FocusChanged {
+                pane_id: meta.pane_id,
+                context_name: meta.context_name,
+                context_description: meta.context_description,
+                context_root: meta.context_root,
+                cwd: meta.cwd,
+                pty_title: meta.pty_title,
+                pane_name: meta.pane_name,
+                app_type_id: meta.app_type_id,
+                reason: Some(reason.as_str().to_string()),
+                duration_secs,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
     }
 
     /// Write (or overwrite) the focus journal checkpoint for the pane currently
@@ -1371,12 +1378,16 @@ impl PlexiApp {
                 log::info!(
                     "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                 );
-                crate::host::event_log::emit(
+                let context_root = self
+                    .origin_for_pane(pane_id)
+                    .map(|origin| origin.context_root);
+                crate::host::event_log::emit_scoped(
                     crate::host::event_log::HostEvent::NotificationActionInvoked {
                         id: notify_id.clone(),
                         action: action_label.clone(),
                         timestamp: crate::host::event_log::now_timestamp(),
                     },
+                    context_root.as_deref(),
                 );
                 // Execute host-side action synchronously before writing the response
                 // file so the navigation is complete before the shell unblocks.

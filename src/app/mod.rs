@@ -1371,12 +1371,12 @@ impl PlexiApp {
         registries.view_for_root(&cwd);
         let registry_watchers = start_registry_watchers_for(&registries, &ui_wake);
 
-        // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl;
-        // workspace log goes to .plexi/events.jsonl if we're inside a workspace.
+        // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl.
+        // Per-context routing (stint 0724 Phase E) is decided per-record at
+        // each emit call site via `emit_scoped`, not once here from cwd.
         {
             let global_path = crate::config::config_dir().join("events.jsonl");
-            let workspace_path = crate::host::event_log::find_workspace_events_path(&cwd);
-            crate::host::event_log::init_global(global_path, workspace_path);
+            crate::host::event_log::init_global(global_path);
         }
 
         // Check for an unclean shutdown from the previous session.
@@ -4258,11 +4258,17 @@ impl PlexiApp {
             scopes.len(),
             scopes.iter().map(|s| &s.dir).collect::<Vec<_>>()
         );
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::NotesPickerOpened {
-            inbox_count,
-            kept_count: entries.len() - inbox_count,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        // Aggregates notes across every context scope in `scopes` — no single
+        // context owns this event, so it stays global-only (no per-root
+        // attribution is correct here, not merely unresolved).
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::NotesPickerOpened {
+                inbox_count,
+                kept_count: entries.len() - inbox_count,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            None,
+        );
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.notes_picker_query.clear();

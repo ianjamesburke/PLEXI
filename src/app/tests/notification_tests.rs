@@ -1813,3 +1813,191 @@ fn focus_mode_suppresses_resurface() {
         "the in-view state is still tracked even when suppressed"
     );
 }
+
+// ── stint 0724 Phase E: dedup parity — notification_visible /
+// notification_counts_toward_context ────────────────────────────────────────
+//
+// Phase E extracted the scope-match logic duplicated across
+// `notification_is_visible`, the `render.rs` per-pane count inline copy, and
+// the two context-badge count functions into two free functions taking plain
+// scalar ids. These tests enumerate scope × (same/other window) ×
+// (same/other context) and assert the extracted functions answer exactly
+// like the pre-extraction inline logic — pure dedup, no behavior change.
+
+/// `notification_visible`'s full compatibility matrix: Global is always
+/// visible; Window depends only on window id match; Context depends only on
+/// context id match — independent of the other id in both cases.
+#[test]
+fn notification_visible_matches_scope_semantics_matrix() {
+    use crate::app::notifications::notification_visible;
+    use crate::app_protocol::NotifyScope;
+
+    let active_window_id = 10;
+    let active_context_id = 20;
+    let other_window_id = 11;
+    let other_context_id = 21;
+
+    // Global: always visible, in every window/context combination.
+    for (window_id, context_id) in [
+        (active_window_id, active_context_id),
+        (active_window_id, other_context_id),
+        (other_window_id, active_context_id),
+        (other_window_id, other_context_id),
+    ] {
+        assert!(
+            notification_visible(
+                NotifyScope::Global,
+                window_id,
+                context_id,
+                active_window_id,
+                active_context_id
+            ),
+            "Global must always be visible (window={window_id}, context={context_id})"
+        );
+    }
+
+    // Window: visible iff source_window_id == active_window_id, regardless of context.
+    assert!(notification_visible(
+        NotifyScope::Window,
+        active_window_id,
+        active_context_id,
+        active_window_id,
+        active_context_id
+    ));
+    assert!(notification_visible(
+        NotifyScope::Window,
+        active_window_id,
+        other_context_id,
+        active_window_id,
+        active_context_id
+    ));
+    assert!(!notification_visible(
+        NotifyScope::Window,
+        other_window_id,
+        active_context_id,
+        active_window_id,
+        active_context_id
+    ));
+    assert!(!notification_visible(
+        NotifyScope::Window,
+        other_window_id,
+        other_context_id,
+        active_window_id,
+        active_context_id
+    ));
+
+    // Context: visible iff source_context_id == active_context_id, regardless of window.
+    assert!(notification_visible(
+        NotifyScope::Context,
+        active_window_id,
+        active_context_id,
+        active_window_id,
+        active_context_id
+    ));
+    assert!(notification_visible(
+        NotifyScope::Context,
+        other_window_id,
+        active_context_id,
+        active_window_id,
+        active_context_id
+    ));
+    assert!(!notification_visible(
+        NotifyScope::Context,
+        active_window_id,
+        other_context_id,
+        active_window_id,
+        active_context_id
+    ));
+    assert!(!notification_visible(
+        NotifyScope::Context,
+        other_window_id,
+        other_context_id,
+        active_window_id,
+        active_context_id
+    ));
+}
+
+/// `PlexiApp::notification_is_visible` (the real call site, including the
+/// snooze/`deliver_after` gate) must agree with the extracted
+/// `notification_visible` for every non-snoozed notification across the same
+/// scope × window × context matrix — proving the extraction changed where
+/// the scope-match logic lives, not what it answers.
+#[test]
+fn notification_is_visible_agrees_with_extracted_scope_match_when_not_snoozed() {
+    let h = HostHarness::new();
+    let active_window_id = h.app.windows[h.app.active_window].window_id;
+    let active_context_id = h.app.router.active().context_id;
+
+    for scope in [
+        crate::app_protocol::NotifyScope::Global,
+        crate::app_protocol::NotifyScope::Window,
+        crate::app_protocol::NotifyScope::Context,
+    ] {
+        for (source_window_id, source_context_id) in [
+            (active_window_id, active_context_id),
+            (active_window_id, active_context_id + 1),
+            (active_window_id + 1, active_context_id),
+            (active_window_id + 1, active_context_id + 1),
+        ] {
+            let mut n = cue_test_notification("parity");
+            n.scope = scope;
+            n.source_window_id = source_window_id;
+            n.source_context_id = source_context_id;
+            let expected = crate::app::notifications::notification_visible(
+                scope,
+                source_window_id,
+                source_context_id,
+                active_window_id,
+                active_context_id,
+            );
+            assert_eq!(
+                h.app.notification_is_visible(&n),
+                expected,
+                "scope={scope:?} source_window={source_window_id} source_context={source_context_id}"
+            );
+        }
+    }
+}
+
+/// `notification_counts_toward_context`: Global never counts toward any
+/// context's badge (it already renders everywhere via `notification_visible`
+/// — counting it again would double-report it); Window/Context count toward
+/// their originating context's badge based purely on context id match.
+#[test]
+fn notification_counts_toward_context_matrix() {
+    use crate::app::notifications::notification_counts_toward_context;
+    use crate::app_protocol::NotifyScope;
+
+    assert!(!notification_counts_toward_context(
+        NotifyScope::Global,
+        5,
+        5
+    ));
+    assert!(!notification_counts_toward_context(
+        NotifyScope::Global,
+        5,
+        6
+    ));
+
+    assert!(notification_counts_toward_context(
+        NotifyScope::Window,
+        5,
+        5
+    ));
+    assert!(!notification_counts_toward_context(
+        NotifyScope::Window,
+        5,
+        6
+    ));
+
+    assert!(notification_counts_toward_context(
+        NotifyScope::Context,
+        5,
+        5
+    ));
+    assert!(!notification_counts_toward_context(
+        NotifyScope::Context,
+        5,
+        6
+    ));
+}

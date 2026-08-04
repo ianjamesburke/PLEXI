@@ -660,12 +660,21 @@ impl WasmPane {
             capability_id,
             granted
         );
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::PermissionDecision {
-            app_id: self.app.app_id().to_string(),
-            capability: capability_id,
-            granted,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        // `permission_workspace_root` is the app's own workspace root — set at
+        // launch via `Self::with_remembered_capabilities` — so it doubles as
+        // this event's context root with no new lookup. Empty (the
+        // pre-launch default) means "not yet known": route global-only.
+        let context_root = (!self.permission_workspace_root.as_os_str().is_empty())
+            .then_some(self.permission_workspace_root.as_path());
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::PermissionDecision {
+                app_id: self.app.app_id().to_string(),
+                capability: capability_id,
+                granted,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root,
+        );
     }
 
     /// Fire any due timers and drain the input queue. `now_ms` is monotonic

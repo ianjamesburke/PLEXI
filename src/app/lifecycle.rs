@@ -204,11 +204,17 @@ impl PlexiApp {
                     }
                 }
                 if found {
-                    crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneRenamed {
-                        pane_id: *pane_id,
-                        name: name.clone(),
-                        timestamp: crate::host::event_log::now_timestamp(),
-                    });
+                    let context_root = self
+                        .origin_for_pane(*pane_id)
+                        .map(|origin| origin.context_root);
+                    crate::host::event_log::emit_scoped(
+                        crate::host::event_log::HostEvent::PaneRenamed {
+                            pane_id: *pane_id,
+                            name: name.clone(),
+                            timestamp: crate::host::event_log::now_timestamp(),
+                        },
+                        context_root.as_deref(),
+                    );
                 }
                 if !found {
                     log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");

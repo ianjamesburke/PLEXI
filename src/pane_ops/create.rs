@@ -566,12 +566,18 @@ impl PlexiApp {
         // State files (stint 0644): watch for external writes so CLI/agent
         // edits reach the running app without a relaunch.
         self.state_watch.watch(new_id, &state_paths);
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-            app_id: app_id.clone(),
-            type_id: "python-wasm".to_string(),
-            pane_id: new_id,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        let context_root = self
+            .origin_for_pane(new_id)
+            .map(|origin| origin.context_root);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_id.clone(),
+                type_id: "python-wasm".to_string(),
+                pane_id: new_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
         log::info!("app::{app_id}: launched CPython WASM pane {new_id}");
         Ok(new_id)
     }
@@ -704,12 +710,18 @@ impl PlexiApp {
                 },
             )
             .ok_or_else(|| format!("overlay launch target unavailable for {app_id}"))?;
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-            app_id: app_id.to_string(),
-            type_id: "wasm".to_string(),
-            pane_id: new_id,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        let context_root = self
+            .origin_for_pane(new_id)
+            .map(|origin| origin.context_root);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_id.to_string(),
+                type_id: "wasm".to_string(),
+                pane_id: new_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
         log::info!("wasm::{app_id}: spawned pane {new_id}");
         Ok(new_id)
     }
@@ -947,12 +959,18 @@ impl PlexiApp {
             },
         );
         if let Some(pane_id) = placed {
-            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-                app_id: app_type_id.clone(),
-                type_id: app_type_id.clone(),
-                pane_id,
-                timestamp: crate::host::event_log::now_timestamp(),
-            });
+            let context_root = self
+                .origin_for_pane(pane_id)
+                .map(|origin| origin.context_root);
+            crate::host::event_log::emit_scoped(
+                crate::host::event_log::HostEvent::AppSpawned {
+                    app_id: app_type_id.clone(),
+                    type_id: app_type_id.clone(),
+                    pane_id,
+                    timestamp: crate::host::event_log::now_timestamp(),
+                },
+                context_root.as_deref(),
+            );
         }
     }
 
@@ -1891,12 +1909,16 @@ impl PlexiApp {
                     })
                 });
                 if let Some(pane_id) = pane_id {
-                    crate::host::event_log::emit(
+                    let context_root = self
+                        .origin_for_pane(pane_id)
+                        .map(|origin| origin.context_root);
+                    crate::host::event_log::emit_scoped(
                         crate::host::event_log::HostEvent::ScratchpadOpened {
                             pane_id,
                             path: path_str,
                             timestamp: crate::host::event_log::now_timestamp(),
                         },
+                        context_root.as_deref(),
                     );
                 } else {
                     log::warn!("scratchpad: opened note but could not resolve pane id");
