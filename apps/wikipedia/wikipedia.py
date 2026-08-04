@@ -22,6 +22,7 @@ EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 DEFAULT_STATE: dict[str, Any] = {
     "query": "", "results": [], "selected": 0, "article": "",
     "article_title": "", "loading": False, "pending": "", "error": "",
+    "searched_query": "",
 }
 
 _SEARCH_TOOL_SCHEMA = {
@@ -92,14 +93,17 @@ def update(event) -> list:
         data["query"] = event.value
         return [SetState(data)]
     if isinstance(event, UiAction) and event.handler_id == "wiki-submit":
-        return _start_search(data)
+        query = data["query"].strip()
+        if query != data["searched_query"] or not data["results"]:
+            return _start_search(data)
+        return _start_article(data, data["selected"])
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
 
     key = event.key
-    if key in ("down", "j", "ArrowDown"):
+    if key in ("down", "ArrowDown"):
         data["selected"] = _clamp(data["selected"] + 1, len(data["results"]))
-    elif key in ("up", "k", "ArrowUp"):
+    elif key in ("up", "ArrowUp"):
         data["selected"] = _clamp(data["selected"] - 1, len(data["results"]))
     elif key in ("return", "enter") and data["results"]:
         return _start_article(data, data["selected"])
@@ -136,7 +140,7 @@ def view():
                     child=article, placeholder=Card([Skeleton(rows=5)])),
             Text(data["error"], size=12.0) if data["error"] else Spacer(),
             Spacer(grow=True),
-            FooterKeys([("enter", "search / open"), ("j/k", "select result")]),
+            FooterKeys([("enter", "search / open"), ("↑↓", "select result")]),
         ],
         grow=True,
     )
@@ -151,6 +155,7 @@ def _state() -> dict:
     data["query"] = str(data.get("query") or "")
     data["article"] = str(data.get("article") or "")
     data["error"] = str(data.get("error") or "")
+    data["searched_query"] = str(data.get("searched_query") or "")
     return data
 
 
@@ -165,6 +170,7 @@ def _start_search(data: dict) -> list:
     data["loading"] = True
     data["pending"] = "search"
     data["error"] = ""
+    data["searched_query"] = query
     return [SetState(data), SetStatus("Searching"), _fetch_search(query)]
 
 

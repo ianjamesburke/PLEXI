@@ -89,6 +89,16 @@ impl PlexiInput {
         self.modifiers
     }
 
+    /// Build a buffer over a hand-picked subset of another frame's events,
+    /// e.g. forwarding only the vertical-arrow presses to `App::handle_key`
+    /// while a focused TextInput still owns the rest of the frame's input
+    /// (stint 0729 follow-up: list navigation while the search box has
+    /// focus). `events` is caller-filtered; this does not re-check
+    /// `is_input_intent`.
+    pub(crate) fn synthetic(events: Vec<egui::Event>, modifiers: egui::Modifiers) -> Self {
+        Self { events, modifiers }
+    }
+
     /// The frame's owned input-intent events, in arrival order. Consumers that
     /// need the raw event stream (e.g. `App::handle_key` for WASM/Python panes
     /// that forward every key/text edge to their guest) read this instead of

@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "search-nav-probe"
+type = "app"
+name = "Search Nav Probe"
+entry = "main.py"
+version = "0.1.0"
+description = "POC: HostHarness ArrowUp/ArrowDown-through-focused-TextInput fixture (stint 0729 follow-up) — an autofocus TextInput plus a result list; a passing run proves bare vertical-arrow presses still reach the app's KeyEvent path while the box holds focus, and every other key stays with the host TextEdit."
+watch = true
+
+[app.capabilities]
+capabilities = []
+
+[launch]

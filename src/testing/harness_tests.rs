@@ -3847,6 +3847,99 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
     wait_for_text_label(&mut h, pane_id, "draft:", "draft:z");
 }
 
+// -- Stint 0729 follow-up: vertical-arrow list nav through a focused TextInput --
+
+/// End-to-end contract for `dispatch_app_key_events`'s arrow-forwarding gate,
+/// against a REAL process app (`apps/dev/search-nav-probe`) whose `TextInput`
+/// is `autofocus=True` — the same shape as `wikipedia.py`'s search box. Before
+/// this fix, `text_surface_focused` unconditionally returned early and the
+/// app's KeyEvent-driven `selected` never advanced; the box holds focus
+/// permanently (nothing else in the app is focusable), so this was
+/// permanently dead code. Confirms ArrowDown/ArrowUp still reach the app and
+/// move `selected`, while a plain letter keystroke — routed to the host
+/// TextEdit exactly as before this fix — updates the `query` draft via
+/// `on_change` and leaves `selected`/`keys` untouched.
+#[test]
+fn arrow_keys_reach_app_through_a_focused_text_input() {
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/search-nav-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch search-nav-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching search-nav-probe");
+
+    // Real subprocess: poll for its first committed render before driving input.
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "search-nav-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // The TextInput is autofocus — focusing the pane and letting it render is
+    // enough to claim the text surface, exactly as wikipedia.py's search box
+    // does. No node click needed. Fresh pane state starts at selected:0.
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+    wait_for_text_label(&mut h, pane_id, "selected:", "selected:0");
+
+    // ArrowDown while the box holds focus must still advance `selected` — the
+    // regression this test guards against.
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::ArrowDown)]);
+    wait_for_text_label(&mut h, pane_id, "selected:", "selected:1");
+    assert_eq!(
+        text_label_with_prefix(&h, pane_id, "keys:").as_deref(),
+        Some("keys:1"),
+        "ArrowDown must reach the app's KeyEvent path exactly once"
+    );
+
+    // ArrowUp moves it back down.
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::ArrowUp)]);
+    wait_for_text_label(&mut h, pane_id, "selected:", "selected:0");
+
+    // A plain letter keystroke must still land in the host TextEdit, not the
+    // app: `query` round-trips via `on_change` (proof the event arrived at
+    // all), while `selected`/`keys` — the app-visible tells — stay frozen.
+    frame_with_events(
+        &mut h,
+        vec![
+            pressed_key(egui::Key::X),
+            egui::Event::Text("x".to_string()),
+        ],
+    );
+    wait_for_text_label(&mut h, pane_id, "query:", "query:x");
+    assert_eq!(
+        text_label_with_prefix(&h, pane_id, "selected:").as_deref(),
+        Some("selected:0"),
+        "typing a letter into the focused TextInput must not move the selection"
+    );
+    assert_eq!(
+        text_label_with_prefix(&h, pane_id, "keys:").as_deref(),
+        Some("keys:2"),
+        "typing a letter into the focused TextInput must not reach the app's KeyEvent path"
+    );
+}
+
 // ─── Editor release gate: host-driven layer (stint 0479) ─────────────────────
 
 /// One host-level input step for the notes pane: either raw text through

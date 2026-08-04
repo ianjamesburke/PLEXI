@@ -13,7 +13,7 @@ import plexi_sdk as sdk  # noqa: E402
 from plexi_sdk import _v3_state  # noqa: E402
 from plexi_sdk._adapter import _encode_uitree  # noqa: E402
 from plexi_sdk.effects import ExposeTools, HttpFetch, ToolResult  # noqa: E402
-from plexi_sdk.events import HttpResponse, ToolCall  # noqa: E402
+from plexi_sdk.events import HttpResponse, KeyEvent, ToolCall, UiAction  # noqa: E402
 
 
 def _load_app_module():
@@ -267,6 +267,107 @@ def test_unknown_tool_name_is_an_error():
 
 
 # --- view() Pending independence -----------------------------------------
+
+
+# --- KeyEvent-driven selection (stint 0729 follow-up) --------------------
+
+
+def test_key_event_moves_selection_up_and_down_with_clamp():
+    app = _load_app_module()
+    _set_state(dict(app.DEFAULT_STATE, results=["Plexi", "Plexiglass", "Plex3"], selected=0))
+
+    effects = app.update(KeyEvent("down"))
+    assert effects[0].data["selected"] == 1
+
+    _set_state(effects[0].data)
+    effects = app.update(KeyEvent("down"))
+    assert effects[0].data["selected"] == 2
+
+    # Already at the last index: "down" clamps rather than going out of range.
+    _set_state(effects[0].data)
+    effects = app.update(KeyEvent("down"))
+    assert effects[0].data["selected"] == 2
+
+    _set_state(effects[0].data)
+    effects = app.update(KeyEvent("up"))
+    assert effects[0].data["selected"] == 1
+
+
+def test_key_event_ignores_the_removed_j_k_bindings():
+    """j/k can never fire in practice -- the search box holds focus
+    permanently, so letters must stay literal search text -- but update()
+    should still no-op on them rather than treating them as navigation."""
+    app = _load_app_module()
+    _set_state(dict(app.DEFAULT_STATE, results=["Plexi", "Plexiglass"], selected=0))
+
+    assert app.update(KeyEvent("j")) == []
+    assert app.update(KeyEvent("k")) == []
+
+
+# --- Enter dirtiness split: search vs. open (stint 0729 follow-up) -------
+
+
+def test_enter_reruns_search_when_query_changed_since_last_search():
+    app = _load_app_module()
+    _set_state(
+        dict(
+            app.DEFAULT_STATE,
+            query="Plexiglass",
+            searched_query="Plexi",
+            results=["Plexi"],
+            selected=0,
+        )
+    )
+
+    effects = app.update(UiAction("wiki-submit"))
+
+    assert effects[0].data["pending"] == "search"
+    assert isinstance(effects[-1], HttpFetch)
+    assert effects[-1].url.startswith(app.API)
+    assert "Plexiglass" in effects[-1].url
+
+
+def test_enter_searches_when_query_unchanged_but_no_results_yet():
+    app = _load_app_module()
+    _set_state(
+        dict(app.DEFAULT_STATE, query="Plexi", searched_query="Plexi", results=[], selected=0)
+    )
+
+    effects = app.update(UiAction("wiki-submit"))
+
+    assert effects[0].data["pending"] == "search"
+    assert isinstance(effects[-1], HttpFetch)
+    assert effects[-1].url.startswith(app.API)
+
+
+def test_enter_opens_selected_result_when_query_unchanged():
+    app = _load_app_module()
+    _set_state(
+        dict(
+            app.DEFAULT_STATE,
+            query="Plexi",
+            searched_query="Plexi",
+            results=["Plexi", "Plexiglass"],
+            selected=1,
+        )
+    )
+
+    effects = app.update(UiAction("wiki-submit"))
+
+    assert effects[0].data["pending"] == "article"
+    assert effects[0].data["article_title"] == "Plexiglass"
+    assert isinstance(effects[-1], HttpFetch)
+    assert effects[-1].url.startswith(app.EXTRACT_API)
+    assert effects[-1].url.endswith("/Plexiglass")
+
+
+def test_start_search_records_the_searched_query():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE, query="Plexi")
+
+    app._start_search(data)
+
+    assert data["searched_query"] == "Plexi"
 
 
 def test_article_pending_does_not_blank_the_results_list():
