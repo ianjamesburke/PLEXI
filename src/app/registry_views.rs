@@ -182,11 +182,9 @@ impl RegistryViews {
             ScopeInvalidation::SourceGenerationChanged { source_path } => {
                 self.rescan_root(source_path);
             }
-            ScopeInvalidation::PaneClosed { .. } | ScopeInvalidation::PackageReplaced { .. } => {
+            ScopeInvalidation::PaneClosed { .. } => {
                 // Not a registry-shaped event: a pane closing doesn't change
-                // which apps are installed, and a package replace names an
-                // app id, not necessarily a root already in view. Left for a
-                // later phase's deletion sweep / install-path wiring.
+                // which apps are installed.
             }
         }
     }

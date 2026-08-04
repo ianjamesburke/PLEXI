@@ -2206,7 +2206,42 @@ impl PlexiApp {
     /// sites. Never logs secrets, notification bodies, or event payloads —
     /// `ScopeInvalidation` carries only ids and paths.
     pub(crate) fn emit_scope_invalidation(&mut self, ev: crate::host::scope::ScopeInvalidation) {
-        log::info!(target: "plexi::scope", "invalidation: {ev:?}");
+        match &ev {
+            crate::host::scope::ScopeInvalidation::ContextRootChanged {
+                context_id,
+                old_root,
+                new_root,
+            } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: context_root_changed context_id={context_id} old_root={} new_root={}",
+                    old_root.display(),
+                    new_root.display()
+                );
+            }
+            crate::host::scope::ScopeInvalidation::ContextRemoved { context_id } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: context_removed context_id={context_id}"
+                );
+            }
+            crate::host::scope::ScopeInvalidation::PaneClosed {
+                pane_id,
+                context_id,
+            } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: pane_closed pane_id={pane_id} context_id={context_id}"
+                );
+            }
+            crate::host::scope::ScopeInvalidation::SourceGenerationChanged { source_path } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: source_generation_changed source_path={}",
+                    source_path.display()
+                );
+            }
+        }
         #[cfg(test)]
         SCOPE_INVALIDATION_COUNT_FOR_TEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
