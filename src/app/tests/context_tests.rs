@@ -3456,8 +3456,18 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
     let ctx_a_id = app.router.active().context_id;
     let root_a = app.router.active().root.clone();
 
-    // A second, inactive context with its own root.
+    // A second, inactive context with its own root. Create its channel dir
+    // up front so `registry_watch_dirs` recognizes root_b as a real
+    // workspace root via `resolve_workspace_root_with_channel` (which walks
+    // up looking for `<root>/<channel>/`) — otherwise this assertion would
+    // pass or fail purely based on whether the *ambient global* apps dir
+    // happens to exist on the machine running the test (it does on a dev
+    // box with real Plexi usage history, it does not on a clean CI runner),
+    // rather than testing what it claims to: that root_b's OWN root gets
+    // watched.
     let root_b = tempfile::tempdir().expect("root b");
+    std::fs::create_dir_all(root_b.path().join(crate::config::workspace_channel_dir()))
+        .expect("create root_b channel dir");
     let ctx_b_id = 2;
     app.router.push(crate::host::context::Context {
         name: "Context B".into(),
