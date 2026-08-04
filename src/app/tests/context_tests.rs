@@ -69,8 +69,12 @@ fn switching_contexts_refreshes_workspace_app_registry() {
     app.router.get_mut(0).root = root_a.path().to_path_buf();
     app.windows[0].path = root_a.path().to_path_buf();
     app.reload_config();
+    let ctx_a_id = app.router.active().context_id;
     assert!(
-        app.registry.get("local-tool").is_none(),
+        app.registries
+            .view_for_context(ctx_a_id, &app.router)
+            .get("local-tool")
+            .is_none(),
         "root B app must not leak into root A registry"
     );
 
@@ -99,14 +103,16 @@ fn switching_contexts_refreshes_workspace_app_registry() {
     });
 
     app.switch_workspace(1);
-    // Registry rescan is async (stint 0548) — spin-wait for the background
-    // load to land instead of asserting synchronously.
-    while !app.drain_registry_load() {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // Registry resolution is a synchronous per-root cache (stint 0724 Phase
+    // B) — `apply_context_transition_effects` (called by `switch_workspace`)
+    // resolves the new root's view inline, so no background-load drain is
+    // needed here anymore.
 
     assert!(
-        app.registry.get("local-tool").is_some(),
+        app.registries
+            .view_for_context(ctx_b_id, &app.router)
+            .get("local-tool")
+            .is_some(),
         "switching into a workspace should refresh palette-visible local apps immediately"
     );
 }
@@ -730,10 +736,12 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     let b_pane_id = 65_300_112u64;
     let a_token = crate::app::host_mcp::register_pane_credential_for_test(
         a_pane_id,
+        a_id,
         std::path::PathBuf::from("/tmp/a"),
     );
     let b_token = crate::app::host_mcp::register_pane_credential_for_test(
         b_pane_id,
+        b_id,
         std::path::PathBuf::from("/tmp/b"),
     );
 
@@ -862,6 +870,7 @@ fn delete_window_revokes_removed_pane_credentials() {
     let removed_pane_id = 65_300_101u64;
     let removed_token = crate::app::host_mcp::register_pane_credential_for_test(
         removed_pane_id,
+        context_id,
         std::path::PathBuf::from("/tmp/removed"),
     );
 
@@ -1074,14 +1083,14 @@ fn context_transition_rescans_registry() {
     let idx0 = app.router.active_idx();
     app.router.get_mut(idx0).root = dir_a.clone();
     app.apply_context_transition_effects();
-    // Registry rescan is async (stint 0548) — spin-wait for the background
-    // load to land instead of asserting synchronously.
-    while !app.drain_registry_load() {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // Registry resolution is a synchronous per-root cache (stint 0724 Phase
+    // B) — `apply_context_transition_effects` resolves it inline, so no
+    // background-load drain is needed here anymore.
+    let ctx_a_id = app.router.active().context_id;
 
     let ids: Vec<String> = app
-        .registry
+        .registries
+        .view_for_context(ctx_a_id, &app.router)
         .list()
         .into_iter()
         .map(|a| a.manifest.id.clone())
@@ -1123,12 +1132,10 @@ fn context_transition_rescans_registry() {
     });
     let ctx_b_idx = app.router.len() - 1;
     app.switch_workspace(ctx_b_idx);
-    while !app.drain_registry_load() {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
 
     let ids: Vec<String> = app
-        .registry
+        .registries
+        .view_for_context(ctx_b_id, &app.router)
         .list()
         .into_iter()
         .map(|a| a.manifest.id.clone())
@@ -1684,6 +1691,7 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
         .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
     let moved_token = crate::app::host_mcp::register_pane_credential_for_test(
         child_left,
+        child_ctx_id,
         std::path::PathBuf::from("/tmp/dissolve_single_child"),
     );
 
@@ -2527,7 +2535,11 @@ fn set_context_root_ipc_targets_caller_context() {
         context_id: other_id,
     });
     let old_root = std::path::PathBuf::from("/tmp/background");
-    let token = crate::app::host_mcp::register_pane_credential_for_test(pane_id, old_root.clone());
+    let token = crate::app::host_mcp::register_pane_credential_for_test(
+        pane_id,
+        other_id,
+        old_root.clone(),
+    );
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&token),
         Some(old_root)
@@ -3239,33 +3251,302 @@ fn perf_gate_delete_context_does_not_block_ui_thread() {
     );
 }
 
+// `perf_gate_context_transition_does_not_block_ui_thread` (the background-
+// thread registry rescan gate from stint 0548) was removed in stint 0724
+// Phase B: `RegistryViews` resolves per-root synchronously by design — a
+// never-before-seen root must resolve correctly at the point of use (e.g.
+// launching into a context nobody has visited yet), which a background
+// load racing the caller cannot guarantee. The perf property this gate
+// checked (context transitions don't stall the UI thread on a large
+// registry scan) no longer holds as an architectural claim; the tradeoff is
+// deliberate — see `crate::app::registry_views` module docs.
+
+// ── Stint 0724 Phase B: per-context registry resolution ─────────────────────
+
+fn counter_wasm_fixture() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/counter.wasm")
+}
+
+/// Install a WASM-manifest app (a copy of the `counter.wasm` POC fixture,
+/// which needs no external process and is already exercised elsewhere in the
+/// suite) under `root`'s workspace-local apps dir.
+fn write_registry_wasm_app(root: &std::path::Path, id: &str) {
+    let app_dir = root
+        .join(crate::config::workspace_channel_dir())
+        .join("apps")
+        .join(id);
+    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::write(
+        app_dir.join("manifest.toml"),
+        format!(
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"wasm\"\nname = \"{id}\"\n\
+             version = \"0.0.1\"\nentry = \"counter.wasm\"\n\n[app.capabilities]\n\
+             capabilities = []\n"
+        ),
+    )
+    .expect("write manifest");
+    std::fs::copy(counter_wasm_fixture(), app_dir.join("counter.wasm")).expect("copy fixture");
+}
+
+/// The falsifying regression test for the stint 0724 bug: before Phase B,
+/// `PlexiApp` held exactly one `AppRegistry`, refreshed only when the
+/// *active* context transitioned (`apply_context_transition_effects`). A
+/// launch redirected at a DIFFERENT context — via the sanctioned
+/// `active_window`-redirect convention `pane_ops::dispatch` already uses for
+/// an explicit target (never by mutating `router.active()`) — never
+/// triggered that refresh, so it resolved against whichever registry the
+/// last real transition happened to load. An app installed only in another
+/// context's root was invisible there no matter how the launch was routed.
+///
+/// `RegistryViews::view_for_context` fixes this structurally: every launch
+/// resolves its OWN target context's root at the point of use, independent
+/// of transition history.
 #[test]
-#[ignore = "perf-gate: run explicitly on a quiet machine"]
-fn perf_gate_context_transition_does_not_block_ui_thread() {
+fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let app_id = "com.plexi.counter-cross-context-test";
+
+    // Context A (the harness default, active) has no such app installed.
+    let ctx_a_id = app.router.active().context_id;
+    assert!(
+        app.registries
+            .view_for_context(ctx_a_id, &app.router)
+            .get(app_id)
+            .is_none(),
+        "setup: context A must not have the app installed"
+    );
+
+    // Context B, NOT active, with the app installed only in its own root.
+    let root_b = tempfile::tempdir().expect("root b");
+    write_registry_wasm_app(root_b.path(), app_id);
+    let ctx_b_id = 2;
+    let win_b_id = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context B".into(),
+        root: root_b.path().to_path_buf(),
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    let win_b_idx = app.windows.len();
+    app.windows.push(Window {
+        name: "Context B".into(),
+        path: root_b.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("cross_context_launch_test"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_b_id,
+    });
+
+    // Context A is still active — no `switch_workspace`/context transition
+    // has happened. Launching by id while active_window targets A must fail:
+    // the app genuinely isn't installed there.
+    assert_eq!(app.active_window, 0, "context A must still be active");
+    let result_from_a = app.launch_app_by_id_with_layout(app_id, None, &[], None);
+    let err_from_a =
+        result_from_a.expect_err("the app is not installed in context A's root — launch must fail");
+    assert!(
+        !err_from_a.contains("WASM"),
+        "a not-found app must not be misreported as a runtime problem, got {err_from_a:?}"
+    );
+    assert!(
+        err_from_a.contains("not found") || err_from_a.contains("this context"),
+        "a not-found app's error must say so, got {err_from_a:?}"
+    );
+
+    // Redirect `active_window` to context B's window — the sanctioned
+    // explicit-target convention (mirrors `pane_ops::dispatch`'s spawn_pane
+    // handling of `from_pane_id`), never a real context switch. Context A
+    // remains the router's active context throughout.
+    app.active_window = win_b_idx;
+    let result_from_b = app.launch_app_by_id_with_layout(app_id, None, &[], None);
+    assert!(
+        result_from_b.is_ok(),
+        "launching into context B's window must resolve context B's OWN \
+         registry view, not whatever context last transitioned — got {result_from_b:?}"
+    );
+    assert_eq!(
+        app.windows[win_b_idx].panes.len(),
+        1,
+        "the app must have spawned a pane in context B's window"
+    );
+    let spawned = app.windows[win_b_idx]
+        .panes
+        .values()
+        .next()
+        .and_then(|p| p.as_app())
+        .expect("spawned pane must be an app pane");
+    assert_eq!(spawned.manifest_id, app_id);
+}
+
+/// `PlexiApp::set_context_root` on a context that is NOT the active one used
+/// to silently do nothing to the registry: the old `apply_context_transition_effects`
+/// (registry rescan + watcher restart) only ran when `idx == router.active_idx()`.
+/// `emit_scope_invalidation`'s `ContextRootChanged` handling now rescans
+/// `RegistryViews` unconditionally, regardless of which context is active.
+#[test]
+fn set_context_root_on_an_inactive_context_rescans_its_registry() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let app_id = "com.plexi.inactive-set-root-test";
+
+    // A second, inactive context.
+    let ctx_b_id = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context B".into(),
+        root: tempfile::tempdir().expect("root b placeholder").keep(),
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(Window {
+        name: "Context B".into(),
+        path: std::env::temp_dir(),
+        tree: egui_tiles::Tree::empty("inactive_set_root_test"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 2,
+        context_id: ctx_b_id,
+    });
+    assert_ne!(
+        app.router.active().context_id,
+        ctx_b_id,
+        "setup: context B must not be active"
+    );
+
+    let new_root = tempfile::tempdir().expect("new root");
+    write_registry_wasm_app(new_root.path(), app_id);
+
+    app.set_context_root(new_root.path().to_path_buf(), Some(ctx_b_id));
+
+    assert_ne!(
+        app.router.active().context_id,
+        ctx_b_id,
+        "set_context_root(Some(ctx_b_id)) must not itself change the active context"
+    );
+    assert!(
+        app.registries
+            .view_for_context(ctx_b_id, &app.router)
+            .get(app_id)
+            .is_some(),
+        "setting an INACTIVE context's root must rescan its registry view immediately, \
+         not leave it stale until the user happens to navigate there"
+    );
+}
+
+/// The registry watcher must cover every root `RegistryViews` holds a view
+/// for, not just the active context's — `reconcile_registry_watchers` starts
+/// a watcher the first time any context's root is resolved, and firing that
+/// specific root's `SourceGenerationChanged` (exactly what the per-root
+/// watcher drain loop in `PlexiApp::logic` does) must rescan only that root.
+#[test]
+fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
-    let root = tempfile::tempdir().expect("root");
-    app.router.get_mut(0).root = root.path().to_path_buf();
+    let ctx_a_id = app.router.active().context_id;
+    let root_a = app.router.active().root.clone();
+    // `PlexiApp::new_for_test`'s isolated workspace has no channel dir of
+    // its own either — same reasoning as root_b below applies symmetrically,
+    // so create it here too rather than let this assertion depend on the
+    // ambient global apps dir.
+    std::fs::create_dir_all(root_a.join(crate::config::workspace_channel_dir()))
+        .expect("create root_a channel dir");
 
-    // The registry rescan itself now runs on a background thread (stint
-    // 0548), so this gate covers only the synchronous remainder: agent-host
-    // reload, watcher restart, and config reload.
-    let start = std::time::Instant::now();
-    app.apply_context_transition_effects();
-    let elapsed = start.elapsed();
-    eprintln!("perf_gate_context_transition_does_not_block_ui_thread: elapsed={elapsed:?}");
+    // A second, inactive context with its own root. Create its channel dir
+    // up front so `registry_watch_dirs` recognizes root_b as a real
+    // workspace root via `resolve_workspace_root_with_channel` (which walks
+    // up looking for `<root>/<channel>/`) — otherwise this assertion would
+    // pass or fail purely based on whether the *ambient global* apps dir
+    // happens to exist on the machine running the test (it does on a dev
+    // box with real Plexi usage history, it does not on a clean CI runner),
+    // rather than testing what it claims to: that root_b's OWN root gets
+    // watched.
+    let root_b = tempfile::tempdir().expect("root b");
+    std::fs::create_dir_all(root_b.path().join(crate::config::workspace_channel_dir()))
+        .expect("create root_b channel dir");
+    let ctx_b_id = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context B".into(),
+        root: root_b.path().to_path_buf(),
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(Window {
+        name: "Context B".into(),
+        path: root_b.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("watcher_inactive_root_test"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 2,
+        context_id: ctx_b_id,
+    });
 
+    // Resolve BOTH contexts' views (context A's happens automatically at
+    // harness construction; context B's here simulates a cross-context
+    // launch, palette open, or any other resolution).
+    let _ = app.registries.view_for_context(ctx_a_id, &app.router);
+    let _ = app.registries.view_for_context(ctx_b_id, &app.router);
+
+    app.reconcile_registry_watchers();
+    let root_a_canon = root_a.canonicalize().unwrap_or(root_a.clone());
+    let root_b_canon = root_b
+        .path()
+        .canonicalize()
+        .unwrap_or(root_b.path().to_path_buf());
     assert!(
-        elapsed < std::time::Duration::from_millis(25),
-        "apply_context_transition_effects' synchronous remainder must not block \
-         the UI thread waiting on the registry rescan; took {elapsed:?}"
+        app.registry_watchers.contains_key(&root_b_canon),
+        "the inactive context's root must be watched too, not just the active one"
+    );
+    assert!(
+        app.registry_watchers.contains_key(&root_a_canon),
+        "the active context's root must still be watched (no regression)"
     );
 
-    // Drain the background load so the test doesn't leak a dangling thread
-    // assertion for the next test in the binary.
-    while !app.drain_registry_load() {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // Simulate the inactive root's watcher firing (exactly what the per-root
+    // drain loop in `PlexiApp::logic` does when THAT root's receiver has a
+    // signal) and confirm only root B gets rescanned.
+    let app_id = "com.plexi.watcher-inactive-test";
+    write_registry_wasm_app(root_b.path(), app_id);
+    app.emit_scope_invalidation(
+        crate::host::scope::ScopeInvalidation::SourceGenerationChanged {
+            source_path: root_b.path().to_path_buf(),
+        },
+    );
+
+    assert!(
+        app.registries
+            .view_for_context(ctx_b_id, &app.router)
+            .get(app_id)
+            .is_some(),
+        "firing the inactive root's own invalidation must rescan it and pick up the new app"
+    );
+    assert!(
+        app.registries
+            .view_for_context(ctx_a_id, &app.router)
+            .get(app_id)
+            .is_none(),
+        "root A must be untouched by root B's invalidation"
+    );
 }

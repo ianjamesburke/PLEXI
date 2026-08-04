@@ -699,6 +699,22 @@ impl WasmApp {
         self.store.data().pipes.binary_socket_path(pipe_id)
     }
 
+    /// Stamp the owning pane's host-established scope onto this instance's
+    /// typed-pipe registry (stint 0724 Phase D 2/2). Called once from
+    /// `WasmPane::set_context_id`, which runs at pane placement — after
+    /// `pane_id` is already known — so every pipe this instance ever opens is
+    /// attributable to its owning pane for Phase F's audit.
+    pub fn set_pipe_owner(&mut self, owner: crate::host::scope::Scope) {
+        self.store.data_mut().pipes.set_owner(owner);
+    }
+
+    /// Phase F's audit surface: the scope this instance's typed-pipe registry
+    /// is owned at. `None` before pane placement stamps it.
+    #[cfg(test)]
+    pub fn pipe_owner(&self) -> Option<&crate::host::scope::Scope> {
+        self.store.data().pipes.owner()
+    }
+
     /// True when the gpu capability was granted (the app declares a surface).
     pub fn has_gpu(&self) -> bool {
         self.store.data().gpu.is_some()

@@ -543,6 +543,20 @@ pub struct AgentHost {
     timeline: Arc<Mutex<AppTimeline>>,
     ai_broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
+    /// The active host context this `AgentHost` last reloaded for — stint
+    /// 0724 Phase C. `gated_dispatcher` resolves connector-tool reachability
+    /// from this, never from `workspace_root` path-equality. `0` before the
+    /// first `reload_workspace` call (matches no real context; `AgentHost`
+    /// has no agents yet at that point, so `gated_dispatcher` is never
+    /// exercised against it).
+    ///
+    /// NOTE: `AgentHost` itself remains a single active-context singleton
+    /// (like `workspace_root`) — reloaded wholesale on every context
+    /// transition rather than keyed per-context the way `RegistryViews`
+    /// (Phase B) is. This mirrors the pre-Phase-B `AppRegistry` bug class for
+    /// agents specifically; fixing it is out of scope for Phase C and is
+    /// flagged for a future stint.
+    context_id: u64,
     /// Where to re-read `grants.toml` from on workspace reload (`Some` in
     /// production). Until the Phase D grant sheet lands, grants are edited on
     /// disk, so a reload must pick them up. `None` (tests) keeps the
@@ -568,6 +582,7 @@ impl AgentHost {
             timeline,
             ai_broker,
             workspace_root,
+            context_id: 0,
             grants_dir: None,
             outcome_tx,
             outcome_rx,
@@ -580,8 +595,13 @@ impl AgentHost {
     /// becomes active after boot are picked up. Detaches every current agent
     /// (removing its timeline subscriptions), re-reads grants from disk when
     /// `grants_dir` is set, and attaches the new root's agents. `None` =
-    /// no active workspace = no agents.
-    pub fn reload_workspace(&mut self, workspace_root: Option<PathBuf>) {
+    /// no active workspace = no agents. `context_id` is the host-observed
+    /// active context (`WorkspaceRouter::active().context_id` at the call
+    /// site) — stored unconditionally so `gated_dispatcher`'s connector-tool
+    /// reachability always reflects the context this reload is for, even
+    /// when `workspace_root` resolves to `None`.
+    pub fn reload_workspace(&mut self, workspace_root: Option<PathBuf>, context_id: u64) {
+        self.context_id = context_id;
         if !self.agents.is_empty() {
             let mut timeline = self.timeline.lock().unwrap();
             for agent in &self.agents {
@@ -656,6 +676,11 @@ impl AgentHost {
                     trigger_mode: sub.trigger,
                     resource_id: None,
                     duration: GrantDuration::Session,
+                    // Viewer context for `evaluate_reach` (stint 0724 Phase
+                    // D) — `AgentHost` itself remains a single
+                    // active-context singleton (flagged in Phase C), so this
+                    // is simply the context that reload last observed.
+                    subscriber_context_id: self.context_id,
                     created_at: crate::host::event_log::now_timestamp(),
                 },
             );
@@ -782,11 +807,8 @@ impl AgentHost {
     /// this workspace whose `app_connector:app.<tool_name>` target evaluates
     /// to `Allow` for the agent (user grants + the agent's posture tiers).
     fn gated_dispatcher(&self, agent: &AgentRuntime) -> ToolDispatcher {
-        let mut dispatcher = ToolDispatcher::from_registry(
-            0,
-            format!("agent:{}", agent.def.id),
-            self.workspace_root.clone(),
-        );
+        let mut dispatcher =
+            ToolDispatcher::from_registry(0, format!("agent:{}", agent.def.id), self.context_id);
         let allowed: HashSet<String> = dispatcher
             .all_tools()
             .into_iter()
@@ -1125,18 +1147,18 @@ default_tier = "low"
         assert!(host.agents.is_empty());
 
         // Workspace becomes active → agent attaches with its subscription.
-        host.reload_workspace(Some(ws.path().to_path_buf()));
+        host.reload_workspace(Some(ws.path().to_path_buf()), 1);
         assert_eq!(host.agents.len(), 1);
         assert_eq!(host.agents[0].subscription_ids.len(), 1);
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
 
         // Reload onto the same workspace must not duplicate.
-        host.reload_workspace(Some(ws.path().to_path_buf()));
+        host.reload_workspace(Some(ws.path().to_path_buf()), 1);
         assert_eq!(host.agents.len(), 1);
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
 
         // Switching to no workspace detaches and removes subscriptions.
-        host.reload_workspace(None);
+        host.reload_workspace(None, 1);
         assert!(host.agents.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
     }

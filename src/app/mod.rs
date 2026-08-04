@@ -26,6 +26,7 @@ pub mod permissions;
 pub mod plexi_descriptor;
 pub(crate) mod python_env;
 pub mod registry;
+pub(crate) mod registry_views;
 pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
@@ -103,7 +104,6 @@ pub(crate) struct TextInputOverlay {
     pub buffer: String,
 }
 
-use crate::app::registry::AppRegistry;
 use crate::config;
 use crate::host::context::Window;
 use crate::host::keys::{self, Action};
@@ -229,7 +229,11 @@ pub struct PlexiApp {
     pub(crate) drag_context: Option<usize>,
     /// Whether the "Parked (N)" section in the sidebar is expanded.
     pub(crate) parked_section_expanded: bool,
-    pub(crate) registry: AppRegistry,
+    /// Per-canonical-root `AppRegistry` cache (stint 0724 Phase B). Replaces
+    /// the old single active-context-following `AppRegistry` — every context
+    /// resolves against its OWN root's view, never whichever context was last
+    /// active. See `crate::app::registry_views` for the invalidation rules.
+    pub(crate) registries: crate::app::registry_views::RegistryViews,
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
@@ -340,15 +344,29 @@ pub struct PlexiApp {
     /// `park_context_id` is the context_id the app was running in when its
     /// pane was closed. Used to route notifications to the correct context.
     pub(crate) background_apps: HashMap<String, (u64, Box<dyn crate::app::app_trait::App>)>,
-    /// Directed inter-agent / inter-app pipes (#286). Keyed by `pipe_id`,
-    /// value is the `(sender_pane_id, target_pane_id)` pair the host scopes
-    /// `PipeMessage` deliveries to. This is the sole JSON-pipe delivery path:
-    /// `DeliverPipeMessage` routes ONLY to the non-sender member of the pair;
-    /// a send on a pipe absent from this map is dropped. The legacy non-directed
-    /// peer-broadcast fan-out was removed in 0327 in favour of event streams.
-    /// `PipeOpenDirected` is a thin alias over this map — an exclusive duplex
-    /// channel primitive; resource-scoped fan-out belongs on the event bus.
-    pub(crate) directed_pipes: HashMap<String, (u64, u64)>,
+    /// Directed inter-agent / inter-app pipes (#286). Keyed by
+    /// `(context_id, pipe_id)` (stint 0724 Phase D 2/2) — `context_id` is the
+    /// opening caller's own context, resolved via `origin_for_pane`, never a
+    /// client-supplied value. Composite-keying (rather than `pipe_id` alone)
+    /// is required, not cosmetic: two different contexts choosing the same
+    /// caller-selected `pipe_id` string (e.g. both pick `"agent-chat"`) must
+    /// never collide or cross-deliver, and before this phase they shared one
+    /// flat namespace. Value is the `(sender_pane_id, target_pane_id)` pair
+    /// the host scopes `PipeMessage` deliveries to. This is the sole
+    /// JSON-pipe delivery path: `DeliverPipeMessage` routes ONLY to the
+    /// non-sender member of the pair; a send on a pipe absent from this map
+    /// is dropped. The legacy non-directed peer-broadcast fan-out was removed
+    /// in 0327 in favour of event streams. `PipeOpenDirected` is a thin alias
+    /// over this map — an exclusive duplex channel primitive; resource-scoped
+    /// fan-out belongs on the event bus.
+    ///
+    /// `OpenDirectedPipe` rejects (never inserts) a request whose target pane
+    /// lives in a different context than the caller — see `evaluate_reach` in
+    /// `dispatch.rs`'s handler — so every entry here is guaranteed to have
+    /// both pane ids live in the SAME context, making `context_id` safe to
+    /// key on regardless of which side (sender or target) later calls
+    /// `pipe_send`.
+    pub(crate) directed_pipes: HashMap<(u64, String), (u64, u64)>,
     /// Hot-reload watcher set (#83). Owns one notify watcher per pane that
     /// opted-in via manifest `[app] watch = true` (workspace-local only).
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
@@ -367,19 +385,20 @@ pub struct PlexiApp {
     /// a signal so `reload_config()` runs automatically.
     pub(crate) _config_watcher: Option<crate::config::watcher::ConfigWatcher>,
     pub(crate) config_reload_rx: Option<ui_mailbox::MailboxReceiver<()>>,
-    /// App registry filesystem watcher (#1712). Watches the global and workspace-local
-    /// apps dirs; signals `registry_reload_rx` on any directory change so the registry
-    /// is rescanned without a host restart.
-    pub(crate) _registry_watcher: Option<crate::app::registry_watcher::AppRegistryWatcher>,
-    pub(crate) registry_reload_rx: Option<ui_mailbox::MailboxReceiver<()>>,
-    /// Background `AppRegistry::load` result seam (stint 0548). A context
-    /// transition spawns the filesystem walk + manifest parse off the UI
-    /// thread and sends `(context_id, registry)` back here; drained in
-    /// `logic` each frame. The `context_id` guards staleness — if the user
-    /// has navigated away from the requesting context by the time the load
-    /// finishes, the result is discarded instead of applied.
-    pub(crate) registry_load_rx:
-        Option<ui_mailbox::MailboxReceiver<(u64, crate::app::registry::AppRegistry)>>,
+    /// App registry filesystem watchers (#1712, re-keyed per-root in stint
+    /// 0724 Phase B). One watcher per canonical root currently held by
+    /// `registries` — an inactive context's root is watched exactly like the
+    /// active one's, so a change lands in `registries` regardless of focus.
+    /// Reconciled every `logic` pass by `reconcile_registry_watchers` (starts
+    /// watchers for newly-cached roots, drops watchers for roots `registries`
+    /// no longer holds).
+    pub(crate) registry_watchers: HashMap<
+        std::path::PathBuf,
+        (
+            crate::app::registry_watcher::AppRegistryWatcher,
+            ui_mailbox::MailboxReceiver<()>,
+        ),
+    >,
     /// True when workspace state changed since the last disk save. Set by
     /// `mark_workspace_dirty()`, cleared by the debounce flush in
     /// `update_preamble` (or by a forced `save_workspace_now()` on
@@ -734,7 +753,13 @@ fn handle_socket_connection(
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
         match val.get("type").and_then(|t| t.as_str()) {
             Some("events_subscribe") => {
-                handle_events_subscribe(write_half, reader.lines(), val, &subscribe_mailbox);
+                handle_events_subscribe(
+                    write_half,
+                    reader.lines(),
+                    val,
+                    &subscribe_mailbox,
+                    peer_ancestry.as_deref(),
+                );
                 return;
             }
             Some("events_list") => {
@@ -742,7 +767,7 @@ fn handle_socket_connection(
                 return;
             }
             Some("events_declare") | Some("events_emit") => {
-                handle_events_publish(write_half, val, &publish_mailbox);
+                handle_events_publish(write_half, val, &publish_mailbox, peer_ancestry.as_deref());
                 return;
             }
             _ => {}
@@ -844,6 +869,11 @@ fn handle_events_subscribe(
     subscribe_mailbox: &ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
+    // Host-captured kernel ancestry of the socket peer (see
+    // `handle_socket_connection`'s doc comment) — forwarded so the UI thread
+    // can independently verify `from_pane_id` instead of trusting the
+    // client-forwarded `PLEXI_PANE_ID` value alone (stint 0724 Phase D).
+    peer_ancestry: Option<&[u32]>,
 ) {
     use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
     use std::io::Write;
@@ -880,7 +910,11 @@ fn handle_events_subscribe(
         // CLI identity (`pane:N`) is already stable and unique per pane, so the
         // broker actor is the routing id itself — no decoupling needed.
         broker_actor_override: None,
+        // Resolved on the UI thread from `from_pane_id` (verified against
+        // `peer_ancestry` first) — see `drain_event_subscribe_channel`.
         workspace_root_override: None,
+        context_id_override: None,
+        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
         reply: reply_tx,
     };
     if subscribe_mailbox.send(req).is_err() {
@@ -990,8 +1024,10 @@ fn handle_events_subscribe(
     );
 }
 
-/// Answer `events_list`: write the declared `(app_id, stream)` pairs and close.
-/// Pure discovery — no grant check, no identity, no streaming.
+/// Answer `events_list`: write the declared `(context_id, app_id, stream)`
+/// triples and close. Pure discovery — no grant check, no identity, no
+/// streaming. Context-qualified since stint 0724 Phase D: the same `app_id`
+/// may declare different streams/schemas in different contexts.
 fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serde_json::Value) {
     use std::io::Write;
     let json_mode = val["json"].as_bool().unwrap_or(false);
@@ -1006,7 +1042,9 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
     if json_mode {
         let arr: Vec<serde_json::Value> = streams
             .iter()
-            .map(|(a, s)| serde_json::json!({"app_id": a, "stream": s}))
+            .map(|(context_id, a, s)| {
+                serde_json::json!({"context_id": context_id, "app_id": a, "stream": s})
+            })
             .collect();
         let _ = writeln!(
             write_half,
@@ -1016,8 +1054,8 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
     } else if streams.is_empty() {
         let _ = writeln!(write_half, "No event streams declared by running apps.");
     } else {
-        for (app_id, stream) in &streams {
-            let _ = writeln!(write_half, "{app_id}  {stream}");
+        for (context_id, app_id, stream) in &streams {
+            let _ = writeln!(write_half, "{context_id}  {app_id}  {stream}");
         }
     }
     let _ = write_half.flush();
@@ -1032,6 +1070,8 @@ fn handle_events_publish(
     mut write_half: std::os::unix::net::UnixStream,
     val: serde_json::Value,
     publish_mailbox: &ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
+    // See `handle_events_subscribe`'s matching parameter.
+    peer_ancestry: Option<&[u32]>,
 ) {
     use crate::host::event_subscriptions::{HostPublishReply, HostPublishRequest, PublishAction};
     use std::io::Write;
@@ -1110,6 +1150,10 @@ fn handle_events_publish(
         action,
         from_pane_id,
         subscriber_override: None,
+        // Resolved on the UI thread — see `drain_event_subscribe_channel`.
+        workspace_root_override: None,
+        context_id_override: None,
+        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
         reply: reply_tx,
     };
     if publish_mailbox.send(req).is_err() {
@@ -1143,6 +1187,44 @@ fn handle_events_publish(
     let _ = writeln!(write_half, "{line}");
     let _ = write_half.flush();
 }
+
+/// Start a registry watcher for every root `registries` currently holds a
+/// view for. Used at construction (eagerly watch whatever root(s) were
+/// loaded up front) and kept in sync every `logic` pass by
+/// `PlexiApp::reconcile_registry_watchers` — a root gains a watcher the
+/// first time something resolves a view for it, regardless of which context
+/// is active (stint 0724 Phase B).
+fn start_registry_watchers_for(
+    registries: &crate::app::registry_views::RegistryViews,
+    ui_wake: &std::sync::Arc<dyn ui_mailbox::UiWake>,
+) -> HashMap<
+    std::path::PathBuf,
+    (
+        crate::app::registry_watcher::AppRegistryWatcher,
+        ui_mailbox::MailboxReceiver<()>,
+    ),
+> {
+    let mut watchers = HashMap::new();
+    for root in registries.roots() {
+        if let Some((watcher, rx)) = crate::app::registry_watcher::start(
+            crate::app::registry::registry_watch_dirs(&root),
+            std::sync::Arc::clone(ui_wake),
+        ) {
+            watchers.insert(root, (watcher, rx));
+        }
+    }
+    watchers
+}
+
+/// Test-only observability for `PlexiApp::emit_scope_invalidation`. Phase A
+/// (stint 0724) has no real consumer of `ScopeInvalidation` — later phases
+/// add handling inside that method as they migrate onto the scope model — so
+/// this counter is the smoke-test seam proving the emit call sites actually
+/// fire, without inventing a log-capture harness for a method that is
+/// otherwise side-effect-free logging.
+#[cfg(test)]
+pub(crate) static SCOPE_INVALIDATION_COUNT_FOR_TEST: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 impl PlexiApp {
     pub fn new(
@@ -1285,22 +1367,16 @@ impl PlexiApp {
         let (tx, rx) = mpsc::channel();
 
         let cwd = std::env::current_dir().unwrap_or_default();
-        let registry = AppRegistry::load(&cwd);
+        let mut registries = crate::app::registry_views::RegistryViews::new();
+        registries.view_for_root(&cwd);
+        let registry_watchers = start_registry_watchers_for(&registries, &ui_wake);
 
-        let (mut reg_watcher, mut reg_reload_rx) = match crate::app::registry_watcher::start(
-            crate::app::registry::registry_watch_dirs(&cwd),
-            std::sync::Arc::clone(&ui_wake),
-        ) {
-            Some((w, rx)) => (Some(w), Some(rx)),
-            None => (None, None),
-        };
-
-        // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl;
-        // workspace log goes to .plexi/events.jsonl if we're inside a workspace.
+        // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl.
+        // Per-context routing (stint 0724 Phase E) is decided per-record at
+        // each emit call site via `emit_scoped`, not once here from cwd.
         {
             let global_path = crate::config::config_dir().join("events.jsonl");
-            let workspace_path = crate::host::event_log::find_workspace_events_path(&cwd);
-            crate::host::event_log::init_global(global_path, workspace_path);
+            crate::host::event_log::init_global(global_path);
         }
 
         // Check for an unclean shutdown from the previous session.
@@ -1334,8 +1410,6 @@ impl PlexiApp {
         );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
-            crate::config::active_workspace_root()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
             crate::host::app_timeline::global(),
         );
         if let Err(e) = host_mcp::start_host_mcp_server(
@@ -1613,7 +1687,7 @@ impl PlexiApp {
                     renaming_pane: None,
                     text_overlay: None,
                     text_overlay_browse_rx: None,
-                    registry,
+                    registries,
                     features,
                     pending_notifications: load_pending_notifications_from(
                         &crate::config::config_dir().join("notifications.json"),
@@ -1654,9 +1728,7 @@ impl PlexiApp {
                     state_watch_rx: sw_rx,
                     _config_watcher: cfg_watcher.take(),
                     config_reload_rx: cfg_reload_rx.take(),
-                    _registry_watcher: reg_watcher.take(),
-                    registry_reload_rx: reg_reload_rx.take(),
-                    registry_load_rx: None,
+                    registry_watchers,
                     workspace_dirty: false,
                     last_workspace_save: std::time::Instant::now(),
                     minimap: crate::render::minimap::MinimapState::with_visible(window_count >= 2),
@@ -1788,15 +1860,10 @@ impl PlexiApp {
         };
 
         let default_cwd = std::env::current_dir().unwrap_or_default();
-        let default_registry = AppRegistry::load(&default_cwd);
-        let (mut default_reg_watcher, mut default_reg_reload_rx) =
-            match crate::app::registry_watcher::start(
-                crate::app::registry::registry_watch_dirs(&default_cwd),
-                std::sync::Arc::clone(&ui_wake),
-            ) {
-                Some((w, rx)) => (Some(w), Some(rx)),
-                None => (None, None),
-            };
+        let mut default_registries = crate::app::registry_views::RegistryViews::new();
+        default_registries.view_for_root(&default_cwd);
+        let default_registry_watchers =
+            start_registry_watchers_for(&default_registries, &ui_wake);
 
         let agent_host = crate::agent::AgentHost::production(config.ai.clone());
         // Standing ruling: a context root must gitignore its app_states dir
@@ -1896,7 +1963,7 @@ impl PlexiApp {
             renaming_pane: None,
             text_overlay: None,
             text_overlay_browse_rx: None,
-            registry: default_registry,
+            registries: default_registries,
             features,
             pending_notifications: load_pending_notifications_from(
                 &crate::config::config_dir().join("notifications.json"),
@@ -1937,9 +2004,7 @@ impl PlexiApp {
             state_watch_rx: sw_rx2,
             _config_watcher: cfg_watcher.take(),
             config_reload_rx: cfg_reload_rx.take(),
-            _registry_watcher: default_reg_watcher.take(),
-            registry_reload_rx: default_reg_reload_rx.take(),
-            registry_load_rx: None,
+            registry_watchers: default_registry_watchers,
             workspace_dirty: false,
             last_workspace_save: std::time::Instant::now(),
             minimap: crate::render::minimap::MinimapState::new(),
@@ -2059,6 +2124,182 @@ impl PlexiApp {
         None
     }
 
+    /// Resolve the host-established `ScopeOrigin` for a live pane: the
+    /// window's `context_id`, the router's canonical `Context.root` for that
+    /// context, the window's `window_id`, `pane_id` itself, and — for an app
+    /// pane — its manifest id. Never reads `router.active()` or
+    /// `active_window`; every field comes from the pane's owning window,
+    /// found via `find_pane_in_any_window`, so a caller in one context can
+    /// never be resolved against another context's active state.
+    pub(crate) fn origin_for_pane(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<crate::host::scope::ScopeOrigin> {
+        let (window_index, _tile_id) = self.find_pane_in_any_window(pane_id)?;
+        let window = &self.windows[window_index];
+        let context_id = window.context_id;
+        let context_root = self
+            .router
+            .position(|c| c.context_id == context_id)
+            .map(|idx| self.router.get(idx).root.clone())?;
+        let app_id = window
+            .panes
+            .get(&pane_id)
+            .and_then(crate::host::pane::Pane::as_app)
+            .map(|app_pane| app_pane.manifest_id.clone());
+        Some(crate::host::scope::ScopeOrigin {
+            context_id,
+            context_root,
+            window_id: window.window_id,
+            pane_id,
+            app_id,
+        })
+    }
+
+    /// Resolve the host-established origin for a raw event-bus socket request
+    /// (`events_subscribe`/`events_declare`/`events_emit`) — stint 0724 Phase
+    /// D. Returns `(verified_pane_id, context_id, workspace_root)`, all
+    /// `None` together when neither ancestry nor the claimed pane id resolve
+    /// to a live pane (an outside-pane connection).
+    ///
+    /// `peer_ancestry` (host-captured kernel ancestor-pid chain, present only
+    /// for the raw CLI socket transport) is tried FIRST and, when it resolves
+    /// to a live pane, wins outright — this is the same trust upgrade
+    /// `Notify`/`DismissNotification` already get from stint 0636's
+    /// `resolve_socket_peer_pane`. `claimed_pane_id` (the client-forwarded
+    /// `PLEXI_PANE_ID`) is only a fallback for when ancestry resolution fails
+    /// (platform unsupported, or the peer already exited) — never trusted
+    /// over a successful ancestry resolution, since any local process can set
+    /// that environment variable to name an arbitrary pane.
+    pub(crate) fn resolve_event_bus_caller(
+        &self,
+        claimed_pane_id: Option<u64>,
+        peer_ancestry: Option<&[u32]>,
+    ) -> (Option<u64>, Option<u64>, Option<std::path::PathBuf>) {
+        let verified_pane_id = peer_ancestry
+            .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry))
+            .map(|(pane_id, _context_id, _window_id)| pane_id);
+        let effective_pane_id = verified_pane_id.or(claimed_pane_id);
+        let Some(effective_pane_id) = effective_pane_id else {
+            return (None, None, None);
+        };
+        match self.origin_for_pane(effective_pane_id) {
+            Some(origin) => (
+                Some(effective_pane_id),
+                Some(origin.context_id),
+                Some(origin.context_root),
+            ),
+            None => (Some(effective_pane_id), None, None),
+        }
+    }
+
+    /// Single choke point for every scope-affecting lifecycle event: a
+    /// context's root moving, a context or pane being removed, a package
+    /// being installed/replaced, or a watched source reporting a new
+    /// generation. Phase A (stint 0724) wired the plumbing; Phase B gives it
+    /// its first two real consumers — `registries` (the per-root `AppRegistry`
+    /// cache) and, for `ContextRootChanged`, every live app pane in the
+    /// affected context, not just the ones in the currently-rendered window.
+    /// Later phases (connector tools, the event bus, notifications) add
+    /// handling here too, so every future consumer reacts to one shared
+    /// vocabulary of "what changed" instead of re-deriving it from ad hoc call
+    /// sites. Never logs secrets, notification bodies, or event payloads —
+    /// `ScopeInvalidation` carries only ids and paths.
+    pub(crate) fn emit_scope_invalidation(&mut self, ev: crate::host::scope::ScopeInvalidation) {
+        match &ev {
+            crate::host::scope::ScopeInvalidation::ContextRootChanged {
+                context_id,
+                old_root,
+                new_root,
+            } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: context_root_changed context_id={context_id} old_root={} new_root={}",
+                    old_root.display(),
+                    new_root.display()
+                );
+            }
+            crate::host::scope::ScopeInvalidation::ContextRemoved { context_id } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: context_removed context_id={context_id}"
+                );
+            }
+            crate::host::scope::ScopeInvalidation::PaneClosed {
+                pane_id,
+                context_id,
+            } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: pane_closed pane_id={pane_id} context_id={context_id}"
+                );
+            }
+            crate::host::scope::ScopeInvalidation::SourceGenerationChanged { source_path } => {
+                log::info!(
+                    target: "plexi::scope",
+                    "invalidation: source_generation_changed source_path={}",
+                    source_path.display()
+                );
+            }
+        }
+        #[cfg(test)]
+        SCOPE_INVALIDATION_COUNT_FOR_TEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        self.registries.invalidate(&ev, &self.router);
+
+        // A context's root moved: every live app pane in that context must
+        // see the new root immediately, not just whichever pane happens to
+        // be in the currently-rendered (active) window. `render::app_pane`
+        // already refreshes the active window's app panes every frame
+        // (stint 0652), which covers the common case with zero staleness —
+        // but a pane in a background/inactive context never gets a render
+        // pass at all (see the "not rendering has two independent axes" trap
+        // in the repo root AGENTS.md), so without this it would keep
+        // persisting state against the OLD root until the user happened to
+        // navigate back to it.
+        if let crate::host::scope::ScopeInvalidation::ContextRootChanged {
+            context_id,
+            new_root,
+            ..
+        } = &ev
+        {
+            for window in self
+                .windows
+                .iter_mut()
+                .filter(|w| w.context_id == *context_id)
+            {
+                for pane in window.panes.values_mut() {
+                    if let Some(app_pane) = pane.as_app_mut() {
+                        app_pane.runtime.refresh_context_root(new_root);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keep `registry_watchers` in sync with whatever roots `registries`
+    /// currently holds a view for: start a watcher for any newly-cached root
+    /// (regardless of which context is active) and drop watchers for roots
+    /// `registries` no longer holds (dropped as orphaned by an invalidation).
+    /// Called once per `logic` pass — cheap when nothing changed, since an
+    /// already-watched root is just a `HashMap` membership check.
+    pub(crate) fn reconcile_registry_watchers(&mut self) {
+        let live_roots: std::collections::HashSet<std::path::PathBuf> =
+            self.registries.roots().into_iter().collect();
+        for root in &live_roots {
+            if !self.registry_watchers.contains_key(root) {
+                if let Some((watcher, rx)) = crate::app::registry_watcher::start(
+                    crate::app::registry::registry_watch_dirs(root),
+                    std::sync::Arc::clone(&self.ui_wake),
+                ) {
+                    self.registry_watchers.insert(root.clone(), (watcher, rx));
+                }
+            }
+        }
+        self.registry_watchers
+            .retain(|root, _| live_roots.contains(root));
+    }
+
     fn complete_wasm_host_effect(
         &mut self,
         pane_id: crate::spatial::tiling::PaneId,
@@ -2173,6 +2414,14 @@ impl PlexiApp {
             log::warn!("app events: subscriber pane {pane_id} is closed");
             return;
         };
+        // Host-established context this subscriber pane lives in (stint 0724
+        // Phase D) — the viewer side of `evaluate_reach` for every stream
+        // this subscription will ever match against. Resolved fresh here,
+        // never cached: `origin_for_pane` reads the pane's owning window's
+        // live `context_id`, not whichever context was last active.
+        let context_id = self
+            .origin_for_pane(pane_id)
+            .map(|origin| origin.context_id);
         let (reply, receiver) = std::sync::mpsc::sync_channel(1);
         let request = crate::host::event_subscriptions::HostSubscribeRequest {
             publisher_app_id,
@@ -2185,6 +2434,12 @@ impl PlexiApp {
             subscriber_type_override: Some(crate::broker::ActorType::App),
             broker_actor_override: Some(subscriber_app_id),
             workspace_root_override: Some(workspace_root),
+            context_id_override: context_id,
+            // This request never travels over the raw event-bus socket — the
+            // pane id is already host-known (the WASM/Python app dispatch
+            // path resolved it, not a client claim), so there is no peer
+            // ancestry to verify against.
+            peer_ancestry: None,
             reply,
         };
         self.host_subscriptions.reload(&crate::config::config_dir());
@@ -2331,7 +2586,6 @@ impl PlexiApp {
             );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
-            std::env::current_dir().unwrap_or_default(),
             crate::host::app_timeline::global(),
         );
         (
@@ -2423,7 +2677,13 @@ impl PlexiApp {
                 renaming_pane: None,
                 text_overlay: None,
                 text_overlay_browse_rx: None,
-                registry: AppRegistry::load_with_global(&path, &path.join("nonexistent-apps-dir")),
+                registries: {
+                    let mut views = crate::app::registry_views::RegistryViews::new_with_global(
+                        &path.join("nonexistent-apps-dir"),
+                    );
+                    views.view_for_root(&path);
+                    views
+                },
                 features,
                 pending_notifications: Vec::new(),
                 show_notification_modal: false,
@@ -2460,9 +2720,7 @@ impl PlexiApp {
                 state_watch_rx: sw_rx,
                 _config_watcher: None,
                 config_reload_rx: None,
-                _registry_watcher: None,
-                registry_reload_rx: None,
-                registry_load_rx: None,
+                registry_watchers: HashMap::new(),
                 workspace_dirty: false,
                 last_workspace_save: std::time::Instant::now(),
                 minimap: crate::render::minimap::MinimapState::new(),
@@ -2638,7 +2896,9 @@ impl PlexiApp {
             .cloned()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
-        if let Some((port, token)) = host_mcp::discovery_for_pane(pane_id, workspace_root) {
+        if let Some((port, token)) =
+            host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
+        {
             env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
             env.insert("PLEXI_HOST_MCP_TOKEN".into(), token);
         }
@@ -3797,23 +4057,34 @@ impl eframe::App for PlexiApp {
             self.reload_config();
         }
 
-        // App registry hot-reload (#1712): drain filesystem watcher signals.
-        let registry_changed = self.registry_reload_rx.as_ref().is_some_and(|rx| {
-            let hit = rx.try_recv().is_ok();
-            if hit {
-                while rx.try_recv().is_ok() {}
-            }
-            hit
-        });
-        if registry_changed {
-            let root = self.router.active().root.clone();
-            self.reload_app_registry_for_root(&root);
+        // App registry hot-reload (#1712, re-keyed per-root in stint 0724
+        // Phase B): drain filesystem watcher signals for EVERY live root, not
+        // just the active context's — an inactive context's registry must
+        // react to on-disk changes exactly like the active one's.
+        let changed_roots: Vec<std::path::PathBuf> = self
+            .registry_watchers
+            .iter()
+            .filter_map(|(root, (_watcher, rx))| {
+                let hit = rx.try_recv().is_ok();
+                if hit {
+                    while rx.try_recv().is_ok() {}
+                }
+                hit.then(|| root.clone())
+            })
+            .collect();
+        for root in changed_roots {
+            self.emit_scope_invalidation(
+                crate::host::scope::ScopeInvalidation::SourceGenerationChanged {
+                    source_path: root,
+                },
+            );
         }
 
-        // Context-transition registry rescan (stint 0548): drain the
-        // background `AppRegistry::load` result. Lives in `logic`, never
-        // `ui` — the load can finish while the window is hidden or occluded.
-        self.drain_registry_load();
+        // Registries are a synchronous per-root cache (stint 0724 Phase B) —
+        // resolving or rescanning a view happens at the point of use, so
+        // there is no background-load result to drain here anymore. Keep the
+        // watcher set in sync with whatever roots are now cached.
+        self.reconcile_registry_watchers();
 
         // Handle window close request (X button or macOS Cmd+Q OS event).
         //
@@ -4008,11 +4279,17 @@ impl PlexiApp {
             scopes.len(),
             scopes.iter().map(|s| &s.dir).collect::<Vec<_>>()
         );
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::NotesPickerOpened {
-            inbox_count,
-            kept_count: entries.len() - inbox_count,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        // Aggregates notes across every context scope in `scopes` — no single
+        // context owns this event, so it stays global-only (no per-root
+        // attribution is correct here, not merely unresolved).
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::NotesPickerOpened {
+                inbox_count,
+                kept_count: entries.len() - inbox_count,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            None,
+        );
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.notes_picker_query.clear();
@@ -4289,8 +4566,24 @@ fn drive_native_pane_key(
     Ok(disposition)
 }
 
-/// process-app registry to register against (terminals — should never reach
-/// this path; logged at the call site).
+/// Best-effort: register the directed pipe on the target's OWN local pipe
+/// registry, so a runtime that supports one can report `has_reader`/
+/// `is_connected` true for it (SDK ergonomics on the target's reverse-send
+/// path). Returns `false` unconditionally today — the old `AppRuntime::Process`
+/// arm this backed was removed by the CPython-in-WASM migration (#2386,
+/// 2026-07-12) and neither `AppRuntime::Wasm` nor `AppRuntime::Python` has a
+/// reachable hookup into their pipe registry from outside the runtime yet.
+/// This is a known, pre-existing gap (flagged in stint 0724 Phase D 2/2, not
+/// introduced by it) — restoring it is separate follow-up work.
+///
+/// Its result is deliberately NOT fatal to `OpenDirectedPipe` at the call
+/// site: the actual duplex data plane is host-mediated (the caller inserts
+/// the pair into `directed_pipes` and `DeliverPipeMessage` routes by
+/// consulting that map directly — see `dispatch.rs`), so it never depends on
+/// this registration succeeding. Before this phase, a `false` return here
+/// silently aborted the ENTIRE `OpenDirectedPipe` request (the map insert was
+/// unreachable), so no directed pipe has ever actually routed a message —
+/// this call is now purely advisory.
 fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
     let _ = (pane, pipe_id);
     false

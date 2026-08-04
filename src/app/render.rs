@@ -345,22 +345,22 @@ impl PlexiApp {
                 }
 
                 // Build per-pane notification counts before `ctx` mutably borrows
-                // `self.windows`. Inline the notification_is_visible logic to
-                // avoid a borrow conflict with the mutable ctx reference below.
+                // `self.windows`. Calls the extracted `notification_visible` free
+                // function (plain scalar ids) rather than
+                // `PlexiApp::notification_is_visible` to avoid a borrow conflict
+                // with the mutable `ctx` reference below.
                 let notify_counts: std::collections::HashMap<u64, usize> = {
                     let active_context_id = self.router.active().context_id;
                     let active_window_id = self.windows[self.active_window].window_id;
                     let mut counts = std::collections::HashMap::new();
                     for n in &self.pending_notifications {
-                        let visible = match n.scope {
-                            crate::app_protocol::NotifyScope::Global => true,
-                            crate::app_protocol::NotifyScope::Window => {
-                                n.source_window_id == active_window_id
-                            }
-                            crate::app_protocol::NotifyScope::Context => {
-                                n.source_context_id == active_context_id
-                            }
-                        };
+                        let visible = crate::app::notifications::notification_visible(
+                            n.scope,
+                            n.source_window_id,
+                            n.source_context_id,
+                            active_window_id,
+                            active_context_id,
+                        );
                         if visible {
                             *counts.entry(n.sender_pane_id).or_insert(0) += 1;
                         }

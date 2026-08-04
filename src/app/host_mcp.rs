@@ -48,6 +48,10 @@ fn discovery() -> Option<u16> {
 #[derive(Clone)]
 struct McpCaller {
     pane_id: u64,
+    /// Host-established context this pane lives in — stint 0724 Phase C.
+    /// `from_namespaced_registry` resolves connector-tool reachability from
+    /// this, never from `workspace_root` path-equality.
+    context_id: u64,
     workspace_root: PathBuf,
 }
 
@@ -64,14 +68,16 @@ fn credentials() -> &'static Mutex<CredentialRegistry> {
 }
 
 /// Register or refresh the credential injected into one pane. The caller's
-/// workspace comes from host-owned pane construction, never the MCP request.
-fn register_pane_credential(pane_id: u64, workspace_root: PathBuf) -> String {
+/// context and workspace come from host-owned pane construction, never the
+/// MCP request.
+fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathBuf) -> String {
     let mut registry = credentials().lock().unwrap();
     if let Some(token) = registry.by_pane.get(&pane_id).cloned() {
         registry.by_token.insert(
             token.clone(),
             McpCaller {
                 pane_id,
+                context_id,
                 workspace_root,
             },
         );
@@ -83,11 +89,12 @@ fn register_pane_credential(pane_id: u64, workspace_root: PathBuf) -> String {
         token.clone(),
         McpCaller {
             pane_id,
+            context_id,
             workspace_root: workspace_root.clone(),
         },
     );
     log::info!(
-        "host_mcp: registered scoped credential pane={pane_id} workspace={}",
+        "host_mcp: registered scoped credential pane={pane_id} context={context_id} workspace={}",
         workspace_root.display()
     );
     token
@@ -95,9 +102,13 @@ fn register_pane_credential(pane_id: u64, workspace_root: PathBuf) -> String {
 
 /// Return the singleton endpoint plus a credential bound to this host-owned
 /// pane identity. This is the only discovery surface pane environments use.
-pub(crate) fn discovery_for_pane(pane_id: u64, workspace_root: PathBuf) -> Option<(u16, String)> {
+pub(crate) fn discovery_for_pane(
+    pane_id: u64,
+    context_id: u64,
+    workspace_root: PathBuf,
+) -> Option<(u16, String)> {
     discovery().map(|port| {
-        let token = register_pane_credential(pane_id, workspace_root);
+        let token = register_pane_credential(pane_id, context_id, workspace_root);
         (port, token)
     })
 }
@@ -138,21 +149,31 @@ impl Drop for PendingPaneCredential {
 }
 
 /// Update the trusted workspace attached to a live pane without rotating its
-/// credential. Context roots can change while their panes remain alive.
+/// credential. Context roots can change while their panes remain alive — the
+/// pane's `context_id` never changes on a root move, so it is carried forward
+/// from the existing credential rather than taken as a parameter here.
 pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
     let mut registry = credentials().lock().unwrap();
     let Some(token) = registry.by_pane.get(&pane_id).cloned() else {
+        return;
+    };
+    let Some(context_id) = registry
+        .by_token
+        .get(&token)
+        .map(|caller| caller.context_id)
+    else {
         return;
     };
     registry.by_token.insert(
         token,
         McpCaller {
             pane_id,
+            context_id,
             workspace_root: workspace_root.clone(),
         },
     );
     log::info!(
-        "host_mcp: rebound scoped credential pane={pane_id} workspace={}",
+        "host_mcp: rebound scoped credential pane={pane_id} context={context_id} workspace={}",
         workspace_root.display()
     );
 }
@@ -162,8 +183,12 @@ fn authenticate(token: &str) -> Option<McpCaller> {
 }
 
 #[cfg(test)]
-pub(crate) fn register_pane_credential_for_test(pane_id: u64, workspace_root: PathBuf) -> String {
-    register_pane_credential(pane_id, workspace_root)
+pub(crate) fn register_pane_credential_for_test(
+    pane_id: u64,
+    context_id: u64,
+    workspace_root: PathBuf,
+) -> String {
+    register_pane_credential(pane_id, context_id, workspace_root)
 }
 
 #[cfg(test)]
@@ -333,7 +358,7 @@ fn handle_connection(
     };
     let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
         caller.pane_id,
-        caller.workspace_root.clone(),
+        caller.context_id,
     );
 
     let id = json.get("id").cloned().unwrap_or(serde_json::Value::Null);
@@ -367,7 +392,7 @@ fn handle_connection(
                 caller.workspace_root.display()
             );
             let result = match tool_name {
-                "list_event_streams" => tool_list_event_streams(),
+                "list_event_streams" => tool_list_event_streams(&caller),
                 "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx, &caller),
                 other => {
                     let input_json = serde_json::to_string(&arguments)
@@ -407,15 +432,20 @@ fn handle_connection(
     write_http_response(&mut write_stream, 200, &body_bytes)
 }
 
-/// `list_event_streams` — read declared streams from the global timeline.
-fn tool_list_event_streams() -> Result<String, String> {
+/// `list_event_streams` — read declared streams from the global timeline,
+/// filtered to the caller's own context (stint 0724 Phase D): a stream
+/// declared only in another context can never be subscribed to from here
+/// anyway (no cross-context grant exists), so listing it would be
+/// misleading.
+fn tool_list_event_streams(caller: &McpCaller) -> Result<String, String> {
     let streams = crate::host::app_timeline::global()
         .lock()
         .unwrap()
         .all_declared_streams();
     let arr: Vec<serde_json::Value> = streams
         .iter()
-        .map(|(a, s)| serde_json::json!({ "app_id": a, "stream": s }))
+        .filter(|(context_id, _, _)| *context_id == caller.context_id)
+        .map(|(_, a, s)| serde_json::json!({ "app_id": a, "stream": s }))
         .collect();
     serde_json::to_string(&serde_json::json!({ "streams": arr }))
         .map_err(|e| format!("serialize failed: {e}"))
@@ -473,6 +503,12 @@ fn tool_subscribe_and_wait(
         subscriber_type_override: None,
         broker_actor_override: Some(actor_id),
         workspace_root_override: Some(caller.workspace_root.clone()),
+        context_id_override: Some(caller.context_id),
+        // The authenticated bearer credential already establishes this
+        // caller's identity (bound to `caller.pane_id`/`context_id` at
+        // registration — see `register_pane_credential`); there is no raw
+        // socket peer to independently verify here.
+        peer_ancestry: None,
         reply: reply_tx,
     };
     subscribe_tx
@@ -621,7 +657,7 @@ mod tests {
         // endpoint never collides with a sibling test's port.
         let dir = tempfile::tempdir().unwrap();
         let port = start_host_mcp_server(tx, dir.path()).unwrap();
-        let token = register_pane_credential(pane_id, workspace_root);
+        let token = register_pane_credential(pane_id, 1, workspace_root);
         (port, token)
     }
 
@@ -641,6 +677,7 @@ mod tests {
             .map(|pane_id| {
                 register_pane_credential(
                     *pane_id,
+                    1,
                     PathBuf::from(format!("/workspace/aborted-{pane_id}")),
                 )
             })
@@ -658,7 +695,7 @@ mod tests {
 
         let live_id = 65_300_303u64;
         let live_root = PathBuf::from("/workspace/live");
-        let live_token = register_pane_credential(live_id, live_root.clone());
+        let live_token = register_pane_credential(live_id, 1, live_root.clone());
         PendingPaneCredential::new(live_id).mark_live();
 
         assert_eq!(
@@ -709,15 +746,30 @@ mod tests {
         assert!(names.contains(&"subscribe_and_wait"));
     }
 
+    /// A `ScopeOrigin` for a tool provider pane — mirrors
+    /// `tool_dispatch::tests::origin` (private to that module), duplicated
+    /// here since this test lives in a different module. Only `context_id`
+    /// and `pane_id` matter to `evaluate_reach`.
+    fn test_provider_origin(context_id: u64, pane_id: u64) -> crate::host::scope::ScopeOrigin {
+        crate::host::scope::ScopeOrigin {
+            context_id,
+            context_root: PathBuf::from(format!("/ctx-root-{context_id}")),
+            window_id: context_id,
+            pane_id,
+            app_id: None,
+        }
+    }
+
     #[test]
-    fn pane_credential_lists_and_calls_only_workspace_app_tools() {
+    fn pane_credential_lists_and_calls_only_context_app_tools() {
         use crate::app_protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
 
         let (port, _test_token) = start_test_server(None);
+        let context_a = 100u64;
+        let context_b = 200u64; // a different context — must stay unreachable
         let workspace_a = PathBuf::from("/workspace/host-mcp-a");
-        let workspace_b = PathBuf::from("/workspace/host-mcp-b");
-        let caller_token = register_pane_credential(7_001, workspace_a.clone());
+        let caller_token = register_pane_credential(7_001, context_a, workspace_a);
         let (provider_tx, provider_rx) = std::sync::mpsc::channel();
         let (other_tx, _other_rx) = std::sync::mpsc::channel();
         let tool = |name: &str| AiTool {
@@ -733,14 +785,14 @@ mod tests {
             "workspace-a-app".to_string(),
             vec![tool("echo")],
             AppEventSender::Channel(provider_tx),
-            workspace_a,
+            test_provider_origin(context_a, 7_002),
         );
         tool_dispatch::register(
             7_003,
             "workspace-b-app".to_string(),
             vec![tool("secret")],
             AppEventSender::Channel(other_tx),
-            workspace_b,
+            test_provider_origin(context_b, 7_003),
         );
 
         let (status, body) = post(
@@ -834,10 +886,15 @@ mod tests {
         use crate::host::app_timeline::EmittedEvent;
         let app = "mcp-it-app";
         let stream = "it.tick";
+        // `start_test_server` registers its pane credential with `context_id
+        // = 1` (see `register_pane_credential(pane_id, 1, ...)` below), so
+        // the stream must be declared under that same context for the
+        // subscribe to see it as declared (stint 0724 Phase D).
         crate::host::app_timeline::global()
             .lock()
             .unwrap()
             .declare_streams(
+                1,
                 app,
                 vec![EventStreamDecl {
                     name: stream.to_string(),
@@ -855,6 +912,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .record_event(
+                    1,
                     app,
                     1,
                     EmittedEvent {

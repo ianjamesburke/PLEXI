@@ -105,19 +105,26 @@ pub(crate) fn recover_from_focus_journal(path: &Path) {
         entry.context_name
     );
 
-    crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
-        pane_id: entry.pane_id,
-        context_name: entry.context_name,
-        context_description: entry.context_description,
-        context_root: entry.context_root,
-        cwd: entry.cwd,
-        pty_title: entry.pty_title,
-        pane_name: entry.pane_name,
-        app_type_id: entry.app_type_id,
-        reason: Some("crash_recovery".to_string()),
-        duration_secs,
-        timestamp: crate::host::event_log::now_timestamp(),
-    });
+    // The journal already carries the pane's context root as a string (for
+    // the event body/Stats); reuse it as this event's routing root too,
+    // rather than resolving it again.
+    let context_root = entry.context_root.clone().map(std::path::PathBuf::from);
+    crate::host::event_log::emit_scoped(
+        crate::host::event_log::HostEvent::FocusChanged {
+            pane_id: entry.pane_id,
+            context_name: entry.context_name,
+            context_description: entry.context_description,
+            context_root: entry.context_root,
+            cwd: entry.cwd,
+            pty_title: entry.pty_title,
+            pane_name: entry.pane_name,
+            app_type_id: entry.app_type_id,
+            reason: Some("crash_recovery".to_string()),
+            duration_secs,
+            timestamp: crate::host::event_log::now_timestamp(),
+        },
+        context_root.as_deref(),
+    );
 
     clear_journal(path);
 }

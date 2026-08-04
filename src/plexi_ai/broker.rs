@@ -965,13 +965,19 @@ fn run_turn_and_respond(
                         cost_usd,
                     );
                     ledger::append(&row);
-                    event_log::emit(HostEvent::AgentTurn {
-                        pane_id: None,
-                        tokens_in,
-                        tokens_out,
-                        cost_cents,
-                        timestamp: finish_ts,
-                    });
+                    // Runs on a spawned background thread with no `PlexiApp`
+                    // access and `pane_id: None` already — no origin is
+                    // resolvable here without a new ambient lookup.
+                    event_log::emit_scoped(
+                        HostEvent::AgentTurn {
+                            pane_id: None,
+                            tokens_in,
+                            tokens_out,
+                            cost_cents,
+                            timestamp: finish_ts,
+                        },
+                        None,
+                    );
                 });
             match spawn_result {
                 Ok(_) => {
@@ -1007,13 +1013,18 @@ fn run_turn_and_respond(
         None,
     );
     ledger::append(&row);
-    event_log::emit(HostEvent::AgentTurn {
-        pane_id: None,
-        tokens_in: total_tokens_in,
-        tokens_out: total_tokens_out,
-        cost_cents: 0,
-        timestamp: event_log::now_timestamp(),
-    });
+    // Free function with no `PlexiApp`/router access and `pane_id: None`
+    // already — no origin is resolvable here without a new ambient lookup.
+    event_log::emit_scoped(
+        HostEvent::AgentTurn {
+            pane_id: None,
+            tokens_in: total_tokens_in,
+            tokens_out: total_tokens_out,
+            cost_cents: 0,
+            timestamp: event_log::now_timestamp(),
+        },
+        None,
+    );
     AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
 }
 

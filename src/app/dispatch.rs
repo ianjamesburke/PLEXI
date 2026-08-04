@@ -417,23 +417,17 @@ impl PlexiApp {
                             let provider = self.windows.iter().find_map(|window| {
                                 window.panes.get(&pane_id).and_then(|pane| {
                                     pane.as_app().and_then(|app| {
-                                        app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
-                                            (
-                                                app.manifest_id.clone(),
-                                                app.workspace_root.clone(),
-                                                sender,
-                                            )
-                                        })
+                                        app.runtime
+                                            .tool_event_sender(ctx.clone())
+                                            .map(|sender| (app.manifest_id.clone(), sender))
                                     })
                                 })
                             });
-                            if let Some((app_id, workspace_root, sender)) = provider {
+                            if let (Some((app_id, sender)), Some(origin)) =
+                                (provider, self.origin_for_pane(pane_id))
+                            {
                                 crate::plexi_ai::tool_dispatch::register(
-                                    pane_id,
-                                    app_id,
-                                    tools,
-                                    sender,
-                                    workspace_root,
+                                    pane_id, app_id, tools, sender, origin,
                                 );
                                 Some(InputEvent::DeclareToolsResult(Ok(names)))
                             } else {
@@ -468,19 +462,17 @@ impl PlexiApp {
                     let provider = self.windows.iter().find_map(|window| {
                         window.panes.get(&pane_id).and_then(|pane| {
                             pane.as_app().and_then(|app| {
-                                app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
-                                    (app.manifest_id.clone(), app.workspace_root.clone(), sender)
-                                })
+                                app.runtime
+                                    .tool_event_sender(ctx.clone())
+                                    .map(|sender| (app.manifest_id.clone(), sender))
                             })
                         })
                     });
-                    if let Some((app_id, workspace_root, sender)) = provider {
+                    if let (Some((app_id, sender)), Some(origin)) =
+                        (provider, self.origin_for_pane(pane_id))
+                    {
                         crate::plexi_ai::tool_dispatch::register(
-                            pane_id,
-                            app_id,
-                            tools,
-                            sender,
-                            workspace_root,
+                            pane_id, app_id, tools, sender, origin,
                         );
                     } else {
                         log::warn!(
@@ -514,12 +506,24 @@ impl PlexiApp {
                         log::warn!("app events: source pane {pane_id} is closed");
                         continue;
                     };
+                    // Host-established context this app instance lives in
+                    // (stint 0724 Phase D) — the owning scope every stream
+                    // this pane declares/emits on is stamped with. Resolved
+                    // fresh here, never cached: the pane just resolved above
+                    // is live, so its owning window's `context_id` is too.
+                    let Some(context_id) = self
+                        .origin_for_pane(pane_id)
+                        .map(|origin| origin.context_id)
+                    else {
+                        log::warn!("app events: source pane {pane_id} has no resolvable origin");
+                        continue;
+                    };
                     let response = match request {
                         crate::app_protocol::AppRequest::DeclareEventStreams { streams } => {
                             match crate::host::app_timeline::global()
                                 .lock()
                                 .unwrap()
-                                .declare_streams(&app_id, streams)
+                                .declare_streams(context_id, &app_id, streams)
                             {
                                 Ok(streams) => {
                                     crate::app_protocol::PlexiEvent::DeclareEventStreamsResult {
@@ -570,7 +574,7 @@ impl PlexiApp {
                             match crate::host::app_timeline::global()
                                 .lock()
                                 .unwrap()
-                                .record_event(&app_id, pane_id, emitted)
+                                .record_event(context_id, &app_id, pane_id, emitted)
                             {
                                 Ok(outcome) => crate::app_protocol::PlexiEvent::EmitEventResult {
                                     sequence: Some(outcome.event_id),
@@ -1101,12 +1105,16 @@ impl PlexiApp {
                     log::info!(
                         "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                     );
-                    crate::host::event_log::emit(
+                    let context_root = self
+                        .origin_for_pane(pane_id)
+                        .map(|origin| origin.context_root);
+                    crate::host::event_log::emit_scoped(
                         crate::host::event_log::HostEvent::NotificationActionInvoked {
                             id: notify_id.clone(),
                             action: action_label.clone(),
                             timestamp: crate::host::event_log::now_timestamp(),
                         },
+                        context_root.as_deref(),
                     );
                     // Execute host-side action synchronously before writing the response
                     // file so the navigation is complete before the shell unblocks.
@@ -1155,7 +1163,6 @@ impl PlexiApp {
                     pipe_id,
                     payload,
                 } => {
-                    let active = self.active_window;
                     // JSON pipe messages route only through directed pipes
                     // (#286): the host scopes delivery to the non-sender member
                     // of the recorded `(sender, target)` pair. The legacy
@@ -1163,9 +1170,23 @@ impl PlexiApp {
                     // event streams (subscription-scoped, cross-window) replace
                     // it. A send on a pipe that was never opened directed is
                     // dropped with a warning.
-                    let Some(&(a, b)) = self.directed_pipes.get(&pipe_id) else {
+                    //
+                    // The lookup key is the CALLER's own host-established
+                    // context (stint 0724 Phase D 2/2) — never the client's
+                    // claim, never `active_window` — so a caller can never
+                    // blindly hit a `pipe_id` string that happens to belong to
+                    // a different context's directed pipe.
+                    let Some(sender_origin) = self.origin_for_pane(sender_pane_id) else {
                         log::warn!(
-                            "DeliverPipeMessage: '{pipe_id}' from pane {sender_pane_id} is not a directed pipe; dropping (non-directed JSON pipes were removed in 0327)"
+                            "DeliverPipeMessage: sender pane {sender_pane_id} not found; '{pipe_id}' dropped"
+                        );
+                        continue;
+                    };
+                    let key = (sender_origin.context_id, pipe_id.clone());
+                    let Some(&(a, b)) = self.directed_pipes.get(&key) else {
+                        log::warn!(
+                            "DeliverPipeMessage: '{pipe_id}' from pane {sender_pane_id} (context {}) is not a directed pipe; dropping (non-directed JSON pipes were removed in 0327)",
+                            sender_origin.context_id
                         );
                         continue;
                     };
@@ -1182,13 +1203,18 @@ impl PlexiApp {
                         None
                     };
                     if let Some(tid) = target_pid {
-                        if let Some(pane) = self.windows[active].panes.get_mut(&tid) {
-                            let event = crate::app_protocol::PlexiEvent::PipeMessage {
-                                pipe_id: pipe_id.clone(),
-                                payload: payload.clone(),
-                            };
-                            if let Some(app) = pane.as_app_mut() {
-                                app.runtime.queue_outbound_event(event);
+                        // Never assume the target lives in the active window —
+                        // a directed pipe's two ends share a context, not
+                        // necessarily a window.
+                        if let Some((window_index, _)) = self.find_pane_in_any_window(tid) {
+                            if let Some(pane) = self.windows[window_index].panes.get_mut(&tid) {
+                                let event = crate::app_protocol::PlexiEvent::PipeMessage {
+                                    pipe_id: pipe_id.clone(),
+                                    payload: payload.clone(),
+                                };
+                                if let Some(app) = pane.as_app_mut() {
+                                    app.runtime.queue_outbound_event(event);
+                                }
                             }
                         }
                     }
@@ -1198,43 +1224,96 @@ impl PlexiApp {
                     pipe_id,
                     target_pane_id,
                 } => {
+                    // Resolve host-established origins for BOTH ends — never
+                    // `router.active()`/`active_window` — so reachability is
+                    // decided from facts the host itself observed, not a
+                    // claim or ambient focus state (stint 0724 Phase D 2/2).
+                    let Some(sender_origin) = self.origin_for_pane(sender_pane_id) else {
+                        log::warn!(
+                            "OpenDirectedPipe: sender pane {sender_pane_id} not found; pipe '{pipe_id}' dropped"
+                        );
+                        continue;
+                    };
+                    let Some(target_origin) = self.origin_for_pane(target_pane_id) else {
+                        log::warn!(
+                            "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped"
+                        );
+                        continue;
+                    };
+                    // A directed pipe is an exclusive channel to ONE named
+                    // pane — the tightest scope available — so a caller in
+                    // another context is rejected outright. No
+                    // `CrossContextGrant` consumer exists for directed pipes
+                    // yet; `evaluate_reach` already logs the rejection.
+                    let owner = crate::host::scope::Scope::Pane {
+                        pane_id: target_pane_id,
+                        context_id: target_origin.context_id,
+                    };
+                    if crate::host::scope::evaluate_reach(&owner, sender_origin.context_id, None)
+                        == crate::host::scope::Reach::Rejected
+                    {
+                        log::warn!(
+                            "OpenDirectedPipe: target {target_pane_id} is in context {} but caller {sender_pane_id} is in context {} — rejected",
+                            target_origin.context_id, sender_origin.context_id
+                        );
+                        continue;
+                    }
+
                     // Subscribe both sides + record the pair so subsequent
                     // `DeliverPipeMessage` for this pipe routes ONLY between
                     // them (#286). The sender already registered the pipe
                     // locally inside its own app runtime; we need to register
                     // it on the target so its `has_reader` returns true and
                     // its SDK has a Pipe handle if it sends in reverse.
-                    let active = self.active_window;
-                    let target_kind =
-                        self.windows[active]
-                            .panes
-                            .get(&target_pane_id)
-                            .map(|p| match p {
-                                crate::host::pane::Pane::App(_) => "app",
-                                crate::host::pane::Pane::Terminal(_) => "terminal",
-                                crate::host::pane::Pane::Portal(_) => "portal",
-                            });
+                    // Never assume the target lives in the active window.
+                    let Some((target_window_index, _)) =
+                        self.find_pane_in_any_window(target_pane_id)
+                    else {
+                        // Origin resolved above but the pane vanished between
+                        // the two lookups (closed this same frame) — drop.
+                        log::warn!(
+                            "OpenDirectedPipe: target pane {target_pane_id} closed before registration; pipe '{pipe_id}' dropped"
+                        );
+                        continue;
+                    };
+                    let target_kind = self.windows[target_window_index]
+                        .panes
+                        .get(&target_pane_id)
+                        .map(|p| match p {
+                            crate::host::pane::Pane::App(_) => "app",
+                            crate::host::pane::Pane::Terminal(_) => "terminal",
+                            crate::host::pane::Pane::Portal(_) => "portal",
+                        });
                     match target_kind {
                         Some("app") => {
                             // Register pipe on target's registry so it can
-                            // PipeSend back through the same id.
-                            let registered = if let Some(pane) =
-                                self.windows[active].panes.get_mut(&target_pane_id)
+                            // PipeSend back through the same id. Best-effort
+                            // only: no runtime has a reachable registry hookup
+                            // today (see `register_directed_pipe_on_target`),
+                            // so failure here is informational, never fatal —
+                            // the actual duplex data plane is host-mediated
+                            // via `directed_pipes` + `queue_outbound_event`,
+                            // not this local bookkeeping.
+                            let registered = if let Some(pane) = self.windows[target_window_index]
+                                .panes
+                                .get_mut(&target_pane_id)
                             {
                                 register_directed_pipe_on_target(pane, &pipe_id)
                             } else {
                                 false
                             };
                             if !registered {
-                                log::warn!(
-                                    "OpenDirectedPipe: failed to register '{pipe_id}' on target {target_pane_id}"
+                                log::info!(
+                                    "OpenDirectedPipe: '{pipe_id}' target {target_pane_id} has no local pipe registry hookup for its runtime yet — host-side routing still proceeds"
                                 );
-                                continue;
                             }
-                            self.directed_pipes
-                                .insert(pipe_id.clone(), (sender_pane_id, target_pane_id));
+                            self.directed_pipes.insert(
+                                (sender_origin.context_id, pipe_id.clone()),
+                                (sender_pane_id, target_pane_id),
+                            );
                             log::info!(
-                                "OpenDirectedPipe: '{pipe_id}' subscribed pane {sender_pane_id} ↔ pane {target_pane_id}"
+                                "OpenDirectedPipe: '{pipe_id}' subscribed pane {sender_pane_id} ↔ pane {target_pane_id} (context {})",
+                                sender_origin.context_id
                             );
                         }
                         Some(other) => log::warn!(
@@ -1457,7 +1536,10 @@ impl PlexiApp {
         let mut deferred = Vec::new();
 
         for (type_id, park_context_id, cmds) in &parked {
-            let resolved_scope = self.registry.default_notification_scope_for(type_id);
+            let resolved_scope = self
+                .registries
+                .view_for_context(*park_context_id, &self.router)
+                .default_notification_scope_for(type_id);
             for cmd in cmds.iter() {
                 match cmd {
                     AppCommand::ShowNotification {
@@ -1513,7 +1595,10 @@ impl PlexiApp {
             // `DefaultNotifyScope`'s own default (`Window`, the most
             // restrictive), which is a declared per-app policy and so does not
             // go through `NotifyScope::default()`.
-            let resolved_scope = self.registry.default_notification_scope_for(&type_id);
+            let resolved_scope = self
+                .registries
+                .view_for_context(context_id, &self.router)
+                .default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
                     AppCommand::WasmHostEffect { effect, .. } => {
@@ -1549,13 +1634,39 @@ impl PlexiApp {
                     AppCommand::SpawnApp { .. }
                     | AppCommand::SpawnPane { .. }
                     | AppCommand::ForwardPaneRequest { .. }
-                    | AppCommand::DeliverPipeMessage { .. }
-                    | AppCommand::OpenDirectedPipe { .. }
                     | AppCommand::DeliverRunUpdate { .. }
                     | AppCommand::InsertPathToken { .. }
                     | AppCommand::RequestCommandPreview { .. }
                     | AppCommand::OpenArtifact { .. }
                     | AppCommand::QueryContextState { .. } => deferred.push(cmd),
+                    // Every SDK bridge that constructs these emits a
+                    // placeholder sender_pane_id=0 (it doesn't know its own
+                    // pane id); rewrite to the real pane_id here, where it's
+                    // known, so `origin_for_pane(sender_pane_id)` downstream
+                    // resolves the ACTUAL caller instead of failing to find
+                    // pane 0 (stint 0724 Phase D 2/2 — required for the
+                    // directed-pipe reachability check to see a real caller
+                    // at all, not just cosmetic).
+                    AppCommand::DeliverPipeMessage {
+                        pipe_id, payload, ..
+                    } => {
+                        deferred.push(AppCommand::DeliverPipeMessage {
+                            sender_pane_id: pane_id,
+                            pipe_id,
+                            payload,
+                        });
+                    }
+                    AppCommand::OpenDirectedPipe {
+                        pipe_id,
+                        target_pane_id,
+                        ..
+                    } => {
+                        deferred.push(AppCommand::OpenDirectedPipe {
+                            sender_pane_id: pane_id,
+                            pipe_id,
+                            target_pane_id,
+                        });
+                    }
                     // Builtin apps emit sender_pane_id=0; rewrite to
                     // the real pane_id so the host can route the response.
                     AppCommand::RequestLinkedTerminal {

@@ -24,6 +24,7 @@ pub mod launch_failed;
 pub mod model;
 pub mod pane;
 pub mod scheduler;
+pub mod scope;
 pub mod services;
 pub mod shell;
 pub mod state_scope;

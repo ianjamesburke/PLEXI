@@ -425,19 +425,26 @@ impl PlexiApp {
         // don't emit a spurious crash_recovery on the next startup.
         crate::app::focus_journal::clear_journal(&self.focus_journal_path);
 
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
-            pane_id: meta.pane_id,
-            context_name: meta.context_name,
-            context_description: meta.context_description,
-            context_root: meta.context_root,
-            cwd: meta.cwd,
-            pty_title: meta.pty_title,
-            pane_name: meta.pane_name,
-            app_type_id: meta.app_type_id,
-            reason: Some(reason.as_str().to_string()),
-            duration_secs,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        // `meta.context_root` is already resolved for the event body/Stats
+        // (`collect_pane_metadata`); reuse it for routing instead of resolving
+        // the origin a second time.
+        let context_root = meta.context_root.clone().map(std::path::PathBuf::from);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::FocusChanged {
+                pane_id: meta.pane_id,
+                context_name: meta.context_name,
+                context_description: meta.context_description,
+                context_root: meta.context_root,
+                cwd: meta.cwd,
+                pty_title: meta.pty_title,
+                pane_name: meta.pane_name,
+                app_type_id: meta.app_type_id,
+                reason: Some(reason.as_str().to_string()),
+                duration_secs,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
     }
 
     /// Write (or overwrite) the focus journal checkpoint for the pane currently
@@ -879,47 +886,20 @@ impl PlexiApp {
         self.reload_config_for_active_context();
     }
 
+    /// Ensures the active context's `AppRegistry` view exists (a cache hit
+    /// after the first call — `RegistryViews` no longer needs a staleness
+    /// comparison the way the old single shared `AppRegistry` did, stint 0724
+    /// Phase B) and reloads config for the active workspace. Registry views
+    /// for OTHER contexts are resolved independently at their own point of
+    /// use (`RegistryViews::view_for_context`); this only guarantees the
+    /// active one is warm before config reload reads workspace-scoped keys.
     pub(crate) fn reload_config_for_active_context(&mut self) {
         let active_workspace = Some(self.router.active().root.clone());
-        self.sync_app_registry_for_active_context(active_workspace.as_deref());
+        let active_context_id = self.router.active().context_id;
+        let _ = self
+            .registries
+            .view_for_context(active_context_id, &self.router);
         self.reload_config_for_workspace(active_workspace.as_deref());
-    }
-
-    pub(crate) fn reload_app_registry_for_root(&mut self, root: &Path) {
-        log::info!(
-            "app_registry: rescanning registry for root={}",
-            root.display()
-        );
-        self.registry = crate::app::registry::AppRegistry::load(root);
-        match crate::app::registry_watcher::start(
-            crate::app::registry::registry_watch_dirs(root),
-            std::sync::Arc::clone(&self.ui_wake),
-        ) {
-            Some((watcher, rx)) => {
-                self._registry_watcher = Some(watcher);
-                self.registry_reload_rx = Some(rx);
-            }
-            None => {
-                self._registry_watcher = None;
-                self.registry_reload_rx = None;
-            }
-        }
-    }
-
-    fn sync_app_registry_for_active_context(&mut self, active_workspace: Option<&Path>) {
-        let fallback;
-        let root = match active_workspace {
-            Some(root) => root,
-            None => {
-                fallback = std::env::current_dir()
-                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-                fallback.as_path()
-            }
-        };
-        let expected_workspace = crate::app::registry::resolve_workspace_root(root);
-        if self.registry.loaded_workspace.as_ref() != expected_workspace.as_ref() {
-            self.reload_app_registry_for_root(root);
-        }
     }
 
     pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {
@@ -1398,12 +1378,16 @@ impl PlexiApp {
                 log::info!(
                     "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                 );
-                crate::host::event_log::emit(
+                let context_root = self
+                    .origin_for_pane(pane_id)
+                    .map(|origin| origin.context_root);
+                crate::host::event_log::emit_scoped(
                     crate::host::event_log::HostEvent::NotificationActionInvoked {
                         id: notify_id.clone(),
                         action: action_label.clone(),
                         timestamp: crate::host::event_log::now_timestamp(),
                     },
+                    context_root.as_deref(),
                 );
                 // Execute host-side action synchronously before writing the response
                 // file so the navigation is complete before the shell unblocks.

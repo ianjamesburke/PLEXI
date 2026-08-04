@@ -132,14 +132,35 @@ impl PlexiApp {
             return;
         }
         self.host_subscriptions.reload(&crate::config::config_dir());
-        for req in subscribe_reqs {
+        // Resolve the caller's host-established origin here, at the point of
+        // dispatch — never cached, never trusted verbatim from the wire
+        // (stint 0724 Phase D). A request whose sender already resolved its
+        // own origin (host MCP, a WASM/Python app's own subscribe path) is
+        // left untouched; only the raw CLI-socket shape (`context_id_override
+        // == None`) is resolved here, preferring kernel-verified
+        // `peer_ancestry` over the client-forwarded `from_pane_id` claim.
+        for mut req in subscribe_reqs {
+            if req.context_id_override.is_none() {
+                let (verified_pane_id, context_id, workspace_root) =
+                    self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
+                req.from_pane_id = verified_pane_id;
+                req.context_id_override = context_id;
+                req.workspace_root_override = workspace_root;
+            }
             // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
             // returns a parked consent we surface as a host modal next frame.
             if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
                 self.pending_event_consents.push_back(consent);
             }
         }
-        for req in publish_reqs {
+        for mut req in publish_reqs {
+            if req.context_id_override.is_none() {
+                let (verified_pane_id, context_id, workspace_root) =
+                    self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
+                req.from_pane_id = verified_pane_id;
+                req.context_id_override = context_id;
+                req.workspace_root_override = workspace_root;
+            }
             if let Some(consent) = self.host_subscriptions.classify_publish_request(req) {
                 self.pending_event_consents.push_back(consent);
             }
@@ -183,11 +204,17 @@ impl PlexiApp {
                     }
                 }
                 if found {
-                    crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneRenamed {
-                        pane_id: *pane_id,
-                        name: name.clone(),
-                        timestamp: crate::host::event_log::now_timestamp(),
-                    });
+                    let context_root = self
+                        .origin_for_pane(*pane_id)
+                        .map(|origin| origin.context_root);
+                    crate::host::event_log::emit_scoped(
+                        crate::host::event_log::HostEvent::PaneRenamed {
+                            pane_id: *pane_id,
+                            name: name.clone(),
+                            timestamp: crate::host::event_log::now_timestamp(),
+                        },
+                        context_root.as_deref(),
+                    );
                 }
                 if !found {
                     log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
@@ -1271,9 +1298,18 @@ impl PlexiApp {
                     // CLI/spawn-request app opens default to a sibling split, never
                     // an overlay takeover of the caller's pane. Manifest `[launch]
                     // placement` still overrides the default (stint 0330).
+                    //
+                    // `self.active_window` has already been redirected to the
+                    // target window above (when `from_pane_id` named one), so
+                    // its context_id is the launch's actual target context —
+                    // matching what `launch_app_by_id_with_layout` itself
+                    // resolves against (stint 0724 Phase B).
+                    let target_context_id = self.windows[self.active_window].context_id;
                     let placement = crate::pane_ops::cli_open_placement(
                         spec.layout.clone(),
-                        self.registry.placement_for(type_id),
+                        self.registries
+                            .view_for_context(target_context_id, &self.router)
+                            .placement_for(type_id),
                     );
                     launch_result = self
                         .launch_app_by_id_with_layout(
@@ -1552,31 +1588,30 @@ impl PlexiApp {
                         } else if let Some(app_pane) = pane.as_app_mut() {
                             let runtime = &mut app_pane.runtime;
                             match super::drive_native_pane_key(runtime, key) {
-                                    Ok(disposition) => {
-                                        let disposition_label = match disposition {
-                                            crate::app::app_trait::KeyDisposition::Consumed => {
-                                                "consumed"
-                                            }
-                                            crate::app::app_trait::KeyDisposition::Passthrough => {
-                                                passthrough_raw =
-                                                    super::key_str_to_egui_raw_input(key);
-                                                "passthrough"
-                                            }
-                                        };
-                                        log::info!(
-                                            "pane_ipc: key_pane: native app pane_id={pane_id} \
+                                Ok(disposition) => {
+                                    let disposition_label = match disposition {
+                                        crate::app::app_trait::KeyDisposition::Consumed => {
+                                            "consumed"
+                                        }
+                                        crate::app::app_trait::KeyDisposition::Passthrough => {
+                                            passthrough_raw = super::key_str_to_egui_raw_input(key);
+                                            "passthrough"
+                                        }
+                                    };
+                                    log::info!(
+                                        "pane_ipc: key_pane: native app pane_id={pane_id} \
                                              key_chars={} disposition={disposition_label}",
-                                            key.chars().count()
-                                        );
-                                        Ok(serde_json::json!({
-                                            "ok": true,
-                                            "disposition": disposition_label,
-                                        }))
-                                    }
-                                    Err(e) => {
-                                        log::warn!("pane_ipc: key_pane: {e}");
-                                        Err(e)
-                                    }
+                                        key.chars().count()
+                                    );
+                                    Ok(serde_json::json!({
+                                        "ok": true,
+                                        "disposition": disposition_label,
+                                    }))
+                                }
+                                Err(e) => {
+                                    log::warn!("pane_ipc: key_pane: {e}");
+                                    Err(e)
+                                }
                             }
                         } else {
                             Err(format!("pane {pane_id}: unknown pane type"))
@@ -2336,19 +2371,17 @@ impl PlexiApp {
                 let resolved = peer_pid
                     .as_deref()
                     .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry));
-                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) =
-                    resolved
+                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) = resolved
                 {
                     log::info!(
                         "pane_ipc: peer identity: notify sender resolved to pane={resolved_pane_id} context={resolved_context_id} window={resolved_window_id} peer_pid={peer_pid:?}"
                     );
                 }
                 if source_pane_id.is_some() || source_context_id.is_some() {
-                    let claimed_matches = resolved
-                        .is_some_and(|(pane_id, context_id, _)| {
-                            source_pane_id.is_none_or(|claimed| claimed == pane_id)
-                                && source_context_id.is_none_or(|claimed| claimed == context_id)
-                        });
+                    let claimed_matches = resolved.is_some_and(|(pane_id, context_id, _)| {
+                        source_pane_id.is_none_or(|claimed| claimed == pane_id)
+                            && source_context_id.is_none_or(|claimed| claimed == context_id)
+                    });
                     if !claimed_matches {
                         log::warn!(
                             "pane_ipc: notify: claimed identity (source_context_id={source_context_id:?} source_pane_id={source_pane_id:?}) \
@@ -2450,8 +2483,7 @@ impl PlexiApp {
                 let resolved = peer_pid
                     .as_deref()
                     .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry));
-                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) =
-                    resolved
+                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) = resolved
                 {
                     log::info!(
                         "pane_ipc: peer identity: dismiss sender resolved to pane={resolved_pane_id} context={resolved_context_id} window={resolved_window_id} peer_pid={peer_pid:?}"
@@ -3200,11 +3232,8 @@ impl PlexiApp {
 
     pub(crate) fn tick_scheduler(&mut self) {
         // Load routines from every context root
-        let roots: Vec<std::path::PathBuf> = self
-            .router
-            .iter()
-            .map(|ctx| ctx.root.clone())
-            .collect();
+        let roots: Vec<std::path::PathBuf> =
+            self.router.iter().map(|ctx| ctx.root.clone()).collect();
         for root in &roots {
             let failures = self.scheduler.load_from_root(root);
             for f in failures {

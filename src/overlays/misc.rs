@@ -595,11 +595,17 @@ impl PlexiApp {
                     log::info!("rename_pane: app pane {pane_id} named {:?}", a.name);
                 }
             }
-            crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneRenamed {
-                pane_id,
-                name: new_name,
-                timestamp: crate::host::event_log::now_timestamp(),
-            });
+            let context_root = self
+                .origin_for_pane(pane_id)
+                .map(|origin| origin.context_root);
+            crate::host::event_log::emit_scoped(
+                crate::host::event_log::HostEvent::PaneRenamed {
+                    pane_id,
+                    name: new_name,
+                    timestamp: crate::host::event_log::now_timestamp(),
+                },
+                context_root.as_deref(),
+            );
             self.renaming_pane = None;
         }
     }

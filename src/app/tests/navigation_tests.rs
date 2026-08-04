@@ -548,7 +548,8 @@ fn on_launch_focus_existing_focuses_cross_context_instead_of_spawning() {
     h.app.router.push(context_b(2));
 
     let (_tmp, registry) = registry_with_on_launch("singleton", "focus_existing");
-    h.app.registry = registry;
+    let ctx1_root = h.app.router.active().root.clone();
+    h.app.registries.set_view_for_test(&ctx1_root, registry);
 
     assert_eq!(h.app.active_window, 0);
     let caller_ctx = h.app.windows[0].context_id;
@@ -593,7 +594,8 @@ fn on_launch_focus_existing_in_context_is_per_context() {
     h.app.router.push(context_b(2));
 
     let (_tmp, registry) = registry_with_on_launch("percontext", "focus_existing_in_context");
-    h.app.registry = registry;
+    let ctx1_root = h.app.router.active().root.clone();
+    h.app.registries.set_view_for_test(&ctx1_root, registry);
 
     let ctx1 = h.app.windows[0].context_id;
     assert!(
@@ -639,7 +641,8 @@ fn on_launch_matches_by_manifest_id_not_runtime_type_id() {
             .add_app_pane_in_window_with_runtime_id(0, "wasm_singleton", "wasm");
 
     let (_tmp, registry) = registry_with_on_launch("wasm_singleton", "focus_existing");
-    h.app.registry = registry;
+    let ctx1_root = h.app.router.active().root.clone();
+    h.app.registries.set_view_for_test(&ctx1_root, registry);
 
     assert_eq!(
         h.app
@@ -670,7 +673,8 @@ fn on_launch_always_new_never_dedups() {
     let _existing = h.app.add_app_pane_in_window(0, "stacker");
 
     let (_tmp, registry) = registry_with_on_launch("stacker", "always_new");
-    h.app.registry = registry;
+    let ctx1_root = h.app.router.active().root.clone();
+    h.app.registries.set_view_for_test(&ctx1_root, registry);
 
     let ctx1 = h.app.windows[0].context_id;
     assert!(
@@ -709,9 +713,14 @@ fn split_mirror_bypasses_on_launch_dedup() {
     // Make the app a singleton. The registry entry names the same id as the
     // builtin, so the dedup policy is now live for "text-editor".
     let (_tmp, registry) = registry_with_on_launch("text-editor", "focus_existing");
-    h.app.registry = registry;
+    let ctx1_root = h.app.router.active().root.clone();
+    h.app.registries.set_view_for_test(&ctx1_root, registry);
+    let ctx1_id = h.app.router.active().context_id;
     assert_eq!(
-        h.app.registry.on_launch_for("text-editor"),
+        h.app
+            .registries
+            .view_for_context(ctx1_id, &h.app.router)
+            .on_launch_for("text-editor"),
         crate::app::registry::OnLaunchPolicy::FocusExisting,
         "policy must be active for the mirror to have something to bypass"
     );

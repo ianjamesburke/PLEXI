@@ -235,6 +235,47 @@ impl NotifySource {
     }
 }
 
+/// Core scope-match: whether a notification owned at `scope` — carrying its
+/// `source_window_id`/`source_context_id` — is visible to a viewer sitting at
+/// `active_window_id`/`active_context_id`. Plain scalar ids, not borrowed
+/// `PendingNotification`/`PlexiApp`, so this can be called from a site that
+/// already holds a conflicting borrow (see the `render.rs` call site).
+///
+/// Pure scope comparison only — does NOT consider snooze (`deliver_after`),
+/// tombstone, or queue state. Callers that need the full visibility answer
+/// combine this with their own checks (see `PlexiApp::notification_is_visible`).
+pub(crate) fn notification_visible(
+    scope: crate::app_protocol::NotifyScope,
+    source_window_id: u64,
+    source_context_id: u64,
+    active_window_id: u64,
+    active_context_id: u64,
+) -> bool {
+    match scope {
+        crate::app_protocol::NotifyScope::Global => true,
+        crate::app_protocol::NotifyScope::Window => source_window_id == active_window_id,
+        crate::app_protocol::NotifyScope::Context => source_context_id == active_context_id,
+    }
+}
+
+/// Whether a notification at `scope`/`source_context_id` counts toward the
+/// badge for context `ctx_id`. `Global` never counts — it already renders
+/// everywhere via [`notification_visible`], so counting it again on every
+/// context's badge would double-report it. `Window`/`Context` count toward
+/// their originating context's badge regardless of that context's snooze
+/// state (badge counts have never consulted `deliver_after` — preserved as
+/// existing behavior, not introduced here).
+pub(crate) fn notification_counts_toward_context(
+    scope: crate::app_protocol::NotifyScope,
+    source_context_id: u64,
+    ctx_id: u64,
+) -> bool {
+    matches!(
+        scope,
+        crate::app_protocol::NotifyScope::Window | crate::app_protocol::NotifyScope::Context
+    ) && source_context_id == ctx_id
+}
+
 impl PlexiApp {
     /// Resolve app-notification provenance without consulting focus. A live
     /// sender pane supplies its window; a parked or gone sender has only the
@@ -342,11 +383,19 @@ impl PlexiApp {
         let notify_id = notification.notify_id.clone();
         let title = notification.title.clone();
 
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::NotificationPosted {
-            id: notify_id.clone(),
-            title: title.clone(),
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        // `source_context_id` is stamped on every notification regardless of
+        // whether the sender pane is still live (CLI notifications may have
+        // sender_pane_id == 0), so resolve routing from it via the router
+        // rather than `origin_for_pane`, which needs a live pane.
+        let context_root = self.context_root_for(notification.source_context_id);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::NotificationPosted {
+                id: notify_id.clone(),
+                title: title.clone(),
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
 
         let is_visible = self.notification_is_visible(&notification);
         let may_interrupt = self.notification_may_interrupt(&notification);
@@ -473,15 +522,13 @@ impl PlexiApp {
         {
             return false;
         }
-        match n.scope {
-            crate::app_protocol::NotifyScope::Global => true,
-            crate::app_protocol::NotifyScope::Window => {
-                n.source_window_id == self.windows[self.active_window].window_id
-            }
-            crate::app_protocol::NotifyScope::Context => {
-                n.source_context_id == self.router.active().context_id
-            }
-        }
+        notification_visible(
+            n.scope,
+            n.source_window_id,
+            n.source_context_id,
+            self.windows[self.active_window].window_id,
+            self.router.active().context_id,
+        )
     }
 
     /// Return ids of all *visible* notifications (for the current context),
@@ -656,13 +703,7 @@ impl PlexiApp {
         let ctx_id = ctx.context_id;
         self.pending_notifications
             .iter()
-            .filter(|n| {
-                matches!(
-                    n.scope,
-                    crate::app_protocol::NotifyScope::Window
-                        | crate::app_protocol::NotifyScope::Context
-                ) && n.source_context_id == ctx_id
-            })
+            .filter(|n| notification_counts_toward_context(n.scope, n.source_context_id, ctx_id))
             .count()
     }
 
@@ -681,13 +722,7 @@ impl PlexiApp {
         let direct = self
             .pending_notifications
             .iter()
-            .filter(|n| {
-                matches!(
-                    n.scope,
-                    crate::app_protocol::NotifyScope::Window
-                        | crate::app_protocol::NotifyScope::Context
-                ) && n.source_context_id == ctx_id
-            })
+            .filter(|n| notification_counts_toward_context(n.scope, n.source_context_id, ctx_id))
             .count();
         direct
             + self

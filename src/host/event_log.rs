@@ -2,11 +2,19 @@
 //!
 //! The `EventLog` struct owns a background writer thread that receives
 //! `HostEvent` values via a bounded mpsc channel and appends them as
-//! newline-delimited JSON to one or two log files:
+//! newline-delimited JSON to:
 //!
-//! - Global:    `~/.plexi/events.jsonl`
-//! - Workspace: `.plexi/events.jsonl` relative to the workspace root,
-//!   when Plexi is running inside a `.plexi/` workspace.
+//! - Global:    `~/.plexi/events.jsonl` — always, for every event.
+//! - Per-root:  `<context_root>/<channel>/events.jsonl` — additionally,
+//!   whenever the emitting call site can resolve a `context_root` for the
+//!   event (stint 0724 Phase E). This replaces the old single
+//!   startup-cwd-resolved workspace file: every event used to attribute to
+//!   whichever workspace was current cwd when the process started, for the
+//!   life of the session, regardless of which context actually raised it.
+//!   Per-record routing means a session with panes open across several
+//!   contexts writes each event to its own context's file, not to one
+//!   startup-chosen file. File handles are cached per root in the writer
+//!   thread so repeated events from the same root never reopen the file.
 //!
 //! The host stamps every event with a `source` field before enqueueing;
 //! apps cannot forge provenance.
@@ -15,6 +23,7 @@
 //! event is silently discarded and `dropped_count` is incremented. No retry,
 //! no blocking, no rotation.
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -194,8 +203,15 @@ struct EventEnvelope {
 
 // ── EventLog ──────────────────────────────────────────────────────────────────
 
+/// One message on the writer-thread channel: the envelope to serialize, plus
+/// the per-record routing destination (`None` = global-only).
+struct EmitMessage {
+    envelope: EventEnvelope,
+    context_root: Option<PathBuf>,
+}
+
 pub struct EventLog {
-    tx: mpsc::SyncSender<EventEnvelope>,
+    tx: mpsc::SyncSender<EmitMessage>,
     /// Monotonic count of events dropped due to a full channel.
     pub dropped_count: Arc<AtomicU64>,
 }
@@ -203,27 +219,42 @@ pub struct EventLog {
 impl EventLog {
     /// Create a new `EventLog` and start the background writer thread.
     ///
-    /// `global_path` — path to the global events.jsonl file (created if absent).
-    /// `workspace_path` — optional workspace-scoped events.jsonl path.
-    pub fn new(global_path: PathBuf, workspace_path: Option<PathBuf>) -> Self {
-        let (tx, rx) = mpsc::sync_channel::<EventEnvelope>(4096);
+    /// `global_path` — path to the global events.jsonl file (created if
+    /// absent). Per-root workspace files are resolved and opened lazily, one
+    /// per distinct `context_root` an emitted event names — see
+    /// [`Self::emit_scoped`].
+    pub fn new(global_path: PathBuf) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<EmitMessage>(4096);
         let dropped_count = Arc::new(AtomicU64::new(0));
 
         std::thread::Builder::new()
             .name("plexi-event-log".into())
             .spawn(move || {
-                // Open (or create) the log files for appending.
+                // Open (or create) the always-on global log file.
                 let mut global_file = open_log_file(&global_path);
-                let mut workspace_file = workspace_path.as_ref().and_then(|p| open_log_file(p));
+                // Per-root files, opened lazily on first use and cached by
+                // root so a long session with many contexts never reopens a
+                // file it already holds a handle for. `None` is cached too
+                // (a root whose file failed to open once is not retried
+                // every subsequent event).
+                let mut root_files: HashMap<PathBuf, Option<std::fs::File>> = HashMap::new();
 
-                while let Ok(envelope) = rx.recv() {
-                    match serde_json::to_string(&envelope) {
+                while let Ok(msg) = rx.recv() {
+                    match serde_json::to_string(&msg.envelope) {
                         Ok(line) => {
                             if let Some(ref mut f) = global_file {
                                 append_line(f, &line);
                             }
-                            if let Some(ref mut f) = workspace_file {
-                                append_line(f, &line);
+                            if let Some(root) = msg.context_root {
+                                let file = root_files.entry(root.clone()).or_insert_with(|| {
+                                    let path = root
+                                        .join(crate::config::workspace_channel_dir())
+                                        .join("events.jsonl");
+                                    open_log_file(&path)
+                                });
+                                if let Some(ref mut f) = file {
+                                    append_line(f, &line);
+                                }
                             }
                         }
                         Err(e) => {
@@ -237,12 +268,20 @@ impl EventLog {
         Self { tx, dropped_count }
     }
 
-    /// Emit a host event. Non-blocking — drops the event (incrementing
-    /// `dropped_count`) if the channel is at capacity.
-    pub fn emit(&self, event: HostEvent) {
+    /// Emit a host event. Always appends to the global log; additionally
+    /// appends to `context_root`'s per-context `<channel>/events.jsonl` when
+    /// `context_root` is `Some` — the caller supplies whatever
+    /// `ScopeOrigin`/context-root it already resolved nearby (this function
+    /// performs no resolution of its own). Non-blocking — drops the event
+    /// (incrementing `dropped_count`) if the channel is at capacity.
+    pub fn emit_scoped(&self, event: HostEvent, context_root: Option<&std::path::Path>) {
         let source = format!("plexi/{}", env!("CARGO_CRATE_NAME"));
         let envelope = EventEnvelope { source, event };
-        match self.tx.try_send(envelope) {
+        let msg = EmitMessage {
+            envelope,
+            context_root: context_root.map(PathBuf::from),
+        };
+        match self.tx.try_send(msg) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 self.dropped_count.fetch_add(1, Ordering::Relaxed);
@@ -286,19 +325,6 @@ fn append_line(file: &mut std::fs::File, line: &str) {
     }
 }
 
-// ── Workspace detection ───────────────────────────────────────────────────────
-
-/// Returns the path to `.plexi/events.jsonl` for the workspace containing
-/// `start`, or `None` if `start` is not inside a workspace. Uses
-/// [`crate::app::registry::resolve_workspace_root`] so workspace detection
-/// is consistent across registry, secrets, and event logging.
-pub fn find_workspace_events_path(start: &std::path::Path) -> Option<PathBuf> {
-    crate::app::registry::resolve_workspace_root(start).map(|root| {
-        root.join(crate::config::workspace_channel_dir())
-            .join("events.jsonl")
-    })
-}
-
 /// Returns the current UTC timestamp as an RFC 3339 string.
 pub fn now_timestamp() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -310,14 +336,23 @@ static GLOBAL_EVENT_LOG: OnceLock<EventLog> = OnceLock::new();
 
 /// Initialize the global event log. Call once at app startup.
 /// Subsequent calls are no-ops (OnceLock guarantees at-most-once init).
-pub fn init_global(global_path: PathBuf, workspace_path: Option<PathBuf>) {
-    let _ = GLOBAL_EVENT_LOG.get_or_init(|| EventLog::new(global_path, workspace_path));
+///
+/// Takes only the global log path — there is no startup-resolved workspace
+/// path any more. Per-root routing (stint 0724 Phase E) is decided at each
+/// emit call site via [`emit_scoped`], not once at process start from
+/// whatever the cwd happened to be.
+pub fn init_global(global_path: PathBuf) {
+    let _ = GLOBAL_EVENT_LOG.get_or_init(|| EventLog::new(global_path));
 }
 
-/// Emit an event to the global log. No-op if the log was not initialized.
-pub fn emit(event: HostEvent) {
+/// Emit an event to the global log, additionally routing it to
+/// `context_root`'s per-context log when `context_root` is `Some`. No-op if
+/// the log was not initialized. This is the one entry point every call site
+/// uses — pass `None` when no `ScopeOrigin`/context-root is resolvable
+/// nearby (global-only, same behavior as before Phase E).
+pub fn emit_scoped(event: HostEvent, context_root: Option<&std::path::Path>) {
     if let Some(log) = GLOBAL_EVENT_LOG.get() {
-        log.emit(event);
+        log.emit_scoped(event, context_root);
     }
 }
 
@@ -347,4 +382,121 @@ pub fn read_recent(path: &std::path::Path, limit: usize) -> Vec<serde_json::Valu
         }
     }
     lines.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Poll `read_recent` until it returns at least one line or the deadline
+    /// passes. The writer thread appends asynchronously off the emit call, so
+    /// tests must wait for delivery rather than assume synchronous flush.
+    fn wait_for_line(path: &std::path::Path) -> Vec<serde_json::Value> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let lines = read_recent(path, 10);
+            if !lines.is_empty() || std::time::Instant::now() >= deadline {
+                return lines;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Stint 0724 Phase E: per-record attribution replaces the old
+    /// startup-chosen single workspace file. Two events emitted with
+    /// DIFFERENT `context_root`s must land in their OWN root's
+    /// `<channel>/events.jsonl` — never both in whichever root happened to be
+    /// active first, and never cross-contaminating the other root's file.
+    #[test]
+    fn emit_scoped_routes_each_root_to_its_own_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let global_path = dir.path().join("global-events.jsonl");
+        let root_a = dir.path().join("root-a");
+        let root_b = dir.path().join("root-b");
+        std::fs::create_dir_all(&root_a).expect("mkdir root_a");
+        std::fs::create_dir_all(&root_b).expect("mkdir root_b");
+
+        let log = EventLog::new(global_path.clone());
+
+        log.emit_scoped(
+            HostEvent::NoteOpened {
+                path: "a-note.md".to_string(),
+                timestamp: now_timestamp(),
+            },
+            Some(&root_a),
+        );
+        log.emit_scoped(
+            HostEvent::NoteOpened {
+                path: "b-note.md".to_string(),
+                timestamp: now_timestamp(),
+            },
+            Some(&root_b),
+        );
+
+        let channel_dir = crate::config::workspace_channel_dir();
+        let path_a = root_a.join(&channel_dir).join("events.jsonl");
+        let path_b = root_b.join(&channel_dir).join("events.jsonl");
+
+        let lines_a = wait_for_line(&path_a);
+        let lines_b = wait_for_line(&path_b);
+
+        assert_eq!(
+            lines_a.len(),
+            1,
+            "root_a's file must contain exactly its own event"
+        );
+        assert_eq!(
+            lines_a[0]["path"], "a-note.md",
+            "root_a's file must contain root_a's event, not root_b's"
+        );
+        assert_eq!(
+            lines_b.len(),
+            1,
+            "root_b's file must contain exactly its own event"
+        );
+        assert_eq!(
+            lines_b[0]["path"], "b-note.md",
+            "root_b's file must contain root_b's event, not root_a's"
+        );
+
+        // The always-on global file gets both, regardless of per-root routing.
+        let global_lines = wait_for_line(&global_path);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut global_lines = global_lines;
+        while global_lines.len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            global_lines = read_recent(&global_path, 10);
+        }
+        assert_eq!(
+            global_lines.len(),
+            2,
+            "the global log must receive every event regardless of context_root"
+        );
+    }
+
+    /// A `context_root: None` emit (no resolvable origin at the call site)
+    /// must still reach the global file and must not create any per-root
+    /// file at all.
+    #[test]
+    fn emit_scoped_with_no_context_root_is_global_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let global_path = dir.path().join("global-events.jsonl");
+        let log = EventLog::new(global_path.clone());
+
+        log.emit_scoped(
+            HostEvent::NoteOpened {
+                path: "global-note.md".to_string(),
+                timestamp: now_timestamp(),
+            },
+            None,
+        );
+
+        let global_lines = wait_for_line(&global_path);
+        assert_eq!(
+            global_lines.len(),
+            1,
+            "global-only emit must reach the global file"
+        );
+        assert_eq!(global_lines[0]["path"], "global-note.md");
+    }
 }

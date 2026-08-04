@@ -95,8 +95,14 @@ mod load_aware_timeout_tests {
     fn correctness_budget_scales_with_load_and_stops_at_the_cap() {
         let base = Duration::from_secs(10);
         assert_eq!(base.saturating_mul(load_multiplier(0.5, 4.0)), base);
-        assert_eq!(base.saturating_mul(load_multiplier(7.0, 4.0)), Duration::from_secs(20));
-        assert_eq!(base.saturating_mul(load_multiplier(100.0, 4.0)), Duration::from_secs(40));
+        assert_eq!(
+            base.saturating_mul(load_multiplier(7.0, 4.0)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            base.saturating_mul(load_multiplier(100.0, 4.0)),
+            Duration::from_secs(40)
+        );
     }
 }
 
@@ -135,6 +141,31 @@ impl HostSnapshot {
 }
 
 // ─── HostHarness ─────────────────────────────────────────────────────────────
+
+/// Process-wide pane-id block allocator for `HostHarness` instances.
+///
+/// `cargo test` runs every `#[test]` in one process across a thread pool, and
+/// production singletons that are correctly process-global in a real host
+/// (e.g. `plexi_ai::tool_dispatch::GLOBAL_REGISTRY`, keyed by `pane_id`) stay
+/// exactly that global in test builds too — there is no per-test process to
+/// isolate them. Before this, every `HostHarness::new()` started its own
+/// `next_pane_id` at the same fixed `100`, so two tests that both register
+/// into such a global registry could race on the identical key: one test's
+/// entry silently overwrites the other's, and the loser observes missing or
+/// foreign data with no error (`connector_tool_visible_only_to_assistant_in_the_owning_context`,
+/// stint 0724 Phase F — flaky only under full-suite parallel execution,
+/// always green in isolation). Each harness now reserves its own disjoint
+/// block from one atomic counter, so no two concurrently-running harnesses
+/// can ever assign the same `pane_id`, regardless of test execution order.
+static NEXT_TEST_PANE_ID_BLOCK: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(100);
+
+/// Reserve a fresh block of pane ids for one `HostHarness` instance. `10_000`
+/// is far more than any single test creates, so blocks never collide; `u64`
+/// has no realistic risk of exhausting across even a very large test run.
+fn reserve_pane_id_block() -> u64 {
+    NEXT_TEST_PANE_ID_BLOCK.fetch_add(10_000, std::sync::atomic::Ordering::SeqCst)
+}
 
 /// Headless egui test harness wrapping `PlexiApp`.
 ///
@@ -184,7 +215,7 @@ impl HostHarness {
         Self {
             app,
             ctx,
-            next_pane_id: 100,
+            next_pane_id: reserve_pane_id_block(),
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
             _profile_dir: profile_dir,
@@ -241,7 +272,18 @@ impl HostHarness {
 
     /// Add a builtin Assistant app pane backed by an inert AI broker. Used by
     /// input-ownership tests that assert on the composer's observable state.
+    /// Always lands in `windows[0]` — for a pane in a specific (e.g.
+    /// secondary-context) window, use
+    /// [`Self::add_assistant_pane_in_window`].
     pub fn add_assistant_pane(&mut self) -> PaneId {
+        self.add_assistant_pane_in_window(0)
+    }
+
+    /// Like [`Self::add_assistant_pane`] but lands the pane in `windows[win_idx]`
+    /// — lets a multi-context test put an Assistant pane in a specific
+    /// (non-active) context's window (stint 0724 Phase C connector-tool
+    /// reachability regression coverage).
+    pub fn add_assistant_pane_in_window(&mut self, win_idx: usize) -> PaneId {
         struct InertBroker;
         impl crate::plexi_ai::broker::AiBroker for InertBroker {
             fn dispatch(
@@ -265,9 +307,10 @@ impl HostHarness {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
         let workspace_root = self._workspace_dir.path().to_path_buf();
-        // The pane is inserted into windows[0] below — scope the store to
-        // that window's context.
-        let context_id = self.app.windows[0].context_id;
+        // Scope the store to the target window's own context — never
+        // `windows[0]`'s, so a pane placed in a secondary context gets that
+        // context's identity.
+        let context_id = self.app.windows[win_idx].context_id;
         let assistant = crate::assistant::AssistantApp::new(
             workspace_root.clone(),
             Arc::new(InertBroker),
@@ -290,7 +333,7 @@ impl HostHarness {
             slots: HashMap::new(),
             semantic_state: Default::default(),
         };
-        let win = &mut self.app.windows[0];
+        let win = &mut self.app.windows[win_idx];
         win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         // Join the layout so this pane actually renders each frame — a tile
@@ -309,10 +352,15 @@ impl HostHarness {
     }
 
     /// Mutable access to an assistant pane's concrete app for state assertions.
+    /// Searches every window, not just `windows[0]` — a pane placed via
+    /// [`Self::add_assistant_pane_in_window`] with a non-zero index must
+    /// still be found.
     pub fn assistant_mut(&mut self, pane_id: PaneId) -> &mut crate::assistant::AssistantApp {
-        let pane = self.app.windows[0]
-            .panes
-            .get_mut(&pane_id)
+        let pane = self
+            .app
+            .windows
+            .iter_mut()
+            .find_map(|window| window.panes.get_mut(&pane_id))
             .expect("assistant pane not found");
         let AppRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
         else {
@@ -359,11 +407,7 @@ impl HostHarness {
             )),
             ..Default::default()
         };
-        input
-            .viewports
-            .entry(viewport_id)
-            .or_default()
-            .occluded = Some(true);
+        input.viewports.entry(viewport_id).or_default().occluded = Some(true);
         app.raw_input_hook(&self.ctx, &mut input);
         let full_output = self.ctx.run_ui(input, |ui| {
             app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());

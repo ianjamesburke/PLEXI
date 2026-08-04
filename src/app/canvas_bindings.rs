@@ -398,6 +398,15 @@ impl PlexiApp {
     /// a split to its right.
     fn open_file_in_app(&mut self, sender_pane_id: PaneId, path: &str) {
         use crate::app::file_handlers::FileHandler;
+        // Resolve the registry view against the REQUESTING pane's own
+        // context, not whichever context is currently active (stint 0724
+        // Phase B) — `find_pane_in_any_window` finds it via the pane table,
+        // never `active_window`/`router.active()`, so a background pane
+        // asking to open a file still resolves its own workspace's handlers.
+        let context_id = self
+            .find_pane_in_any_window(sender_pane_id)
+            .map(|(window_index, _)| self.windows[window_index].context_id)
+            .unwrap_or_else(|| self.windows[self.active_window].context_id);
         let ext = std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
@@ -443,7 +452,12 @@ impl PlexiApp {
         }
 
         // (b) app manifest `file_types` association.
-        if let Some(id) = self.registry.handler_for_ext(&ext).map(|s| s.to_string()) {
+        if let Some(id) = self
+            .registries
+            .view_for_context(context_id, &self.router)
+            .handler_for_ext(&ext)
+            .map(|s| s.to_string())
+        {
             if self.launch_app_with_path(&id, path) {
                 log::info!("open: '{path}' → app '{id}' (manifest file_types)");
                 return;

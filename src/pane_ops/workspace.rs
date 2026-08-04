@@ -53,7 +53,6 @@ fn auto_init_workspace(root: &std::path::Path) {
 
     ensure_context_state_ignore(root);
 
-
     let channel_dir = crate::config::workspace_channel_dir();
     let channel_path = root.join(&channel_dir);
     if channel_path.exists() {
@@ -784,11 +783,15 @@ impl PlexiApp {
         let displayed = name.displayed().to_owned();
         self.router.get_mut(ctx_idx).name = name;
         log::info!("context_rename: context_id={context_id} name={displayed}");
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextRenamed {
-            context_id,
-            name: displayed.clone(),
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        let context_root = self.router.get(ctx_idx).root.clone();
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::ContextRenamed {
+                context_id,
+                name: displayed.clone(),
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            Some(&context_root),
+        );
         self.mark_workspace_dirty();
         displayed
     }
@@ -856,11 +859,15 @@ impl PlexiApp {
         log::info!(
             "new_context_empty: emitting ContextCreated context_id={ctx_id} name={ctx_name}"
         );
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextCreated {
-            context_id: ctx_id,
-            name: ctx_name,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
+        let context_root = self.router.active().root.clone();
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::ContextCreated {
+                context_id: ctx_id,
+                name: ctx_name,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            Some(&context_root),
+        );
     }
 
     /// Create a new context at a specific directory path. The terminal pane
@@ -991,9 +998,7 @@ impl PlexiApp {
         let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
-            .or_else(|| {
-                self.resolve_new_pane_cwd(None)
-            })
+            .or_else(|| self.resolve_new_pane_cwd(None))
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         log::info!(
@@ -1088,9 +1093,7 @@ impl PlexiApp {
     ) -> Option<crate::spatial::tiling::PaneId> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
-            .or_else(|| {
-                self.resolve_new_pane_cwd(None)
-            })
+            .or_else(|| self.resolve_new_pane_cwd(None))
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         let active = self.active_window;
@@ -1271,6 +1274,19 @@ impl PlexiApp {
                 }
                 None => break,
             }
+        }
+
+        // 5b. Emit ContextRemoved AFTER the router mutation above, not
+        // before: `RegistryViews::invalidate` (stint 0724 Phase B) decides
+        // whether a deleted context's root is now orphaned by sweeping the
+        // router for any surviving context that still anchors there. Emitting
+        // earlier — while the doomed contexts are still present — would make
+        // every root in a same-root cascade look "still referenced" by its
+        // own soon-to-be-removed sibling and never get dropped.
+        for &ctx_id in &deleted {
+            self.emit_scope_invalidation(crate::host::scope::ScopeInvalidation::ContextRemoved {
+                context_id: ctx_id,
+            });
         }
 
         // 6. Clean depth_stack: drop entries pointing to any deleted context.
@@ -1675,6 +1691,7 @@ impl PlexiApp {
         let idx = self.resolve_context_idx(context_id, "set_context_root");
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
+        let old_root = self.router.get(idx).root.clone();
         for pane_id in self
             .windows
             .iter()
@@ -1700,6 +1717,12 @@ impl PlexiApp {
             if is_auto { "auto" } else { "custom" }
         );
         self.mark_workspace_dirty();
+        self.emit_scope_invalidation(crate::host::scope::ScopeInvalidation::ContextRootChanged {
+            context_id,
+            old_root,
+            new_root: root,
+        });
+
 
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.
@@ -1712,9 +1735,13 @@ impl PlexiApp {
     ///
     /// Must be called after every operation that changes the active context (either
     /// which context is active or what root it points at). Owns, in order:
-    ///   1. Rescan the AppRegistry for the new context root.
-    ///   2. Restart the app_registry_watcher on the new root's watch dirs.
-    ///   3. Palette scope follows implicitly — the palette reads `self.registry` directly.
+    ///   1. Resolve (loading on first access) the `RegistryViews` entry for
+    ///      the new context root — a synchronous per-root cache (stint 0724
+    ///      Phase B), so a context visited before is a cache hit and any
+    ///      other context's view is unaffected.
+    ///   2. Reconcile registry watchers so the new root is watched too.
+    ///   3. Palette scope follows implicitly — the palette resolves its own
+    ///      view via `RegistryViews::view_for_root` at open-time.
     ///   4. Reload workspace agents into the AgentHost — agents are
     ///      workspace-scoped, so a workspace that becomes active after boot
     ///      must still get its agents attached.
@@ -1722,82 +1749,25 @@ impl PlexiApp {
         let root = self.router.active().root.clone();
         let context_id = self.router.active().context_id;
         log::info!(
-            "transition_context: ctx_id={context_id} root={} — rescanning registry off-thread + reloading config + restarting watcher",
+            "transition_context: ctx_id={context_id} root={} — resolving registry view + reloading config",
             root.display()
         );
-        // The full registry rescan (apps/agents dir walk + every manifest.toml
-        // parse) is a filesystem-bound operation that can stall the UI thread
-        // on a workspace with many apps. Spawn it off-thread and apply the
-        // result later via `registry_load_rx`, guarded by `context_id` so a
-        // stale result (user already navigated elsewhere) is dropped instead
-        // of applied (stint 0548).
-        let (tx, rx) = crate::app::ui_mailbox::UiMailbox::channel(
-            std::sync::Arc::clone(&self.ui_wake),
-            "registry_load",
-        );
-        self.registry_load_rx = Some(rx);
-        let load_root = root.clone();
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            let registry = crate::app::registry::AppRegistry::load(&load_root);
-            log::debug!(
-                "transition_context: registry load thread finished in {:?} (ctx_id={context_id})",
-                start.elapsed()
-            );
-            let _ = tx.send((context_id, registry));
-        });
+        // `RegistryViews` is a per-root cache keyed on the canonical root, not
+        // on "whichever context is active" (stint 0724 Phase B) — resolving
+        // it here is idempotent and does not race a later navigation the way
+        // the old background-thread load (guarded by `context_id`) could.
+        let _ = self.registries.view_for_context(context_id, &self.router);
+        self.reconcile_registry_watchers();
         // Same workspace resolution `AppRegistry::load` performs internally
-        // (cwd-walk to the channel dir) — cheap enough to run synchronously,
-        // and agents live in that workspace's `agents/` dir, so the agent host
-        // reload doesn't need to wait on the background registry scan.
-        self.agent_host
-            .reload_workspace(crate::app::registry::resolve_workspace_root(&root));
-        let watch_dirs = crate::app::registry::registry_watch_dirs(&root);
-        match crate::app::registry_watcher::start(watch_dirs, std::sync::Arc::clone(&self.ui_wake))
-        {
-            Some((watcher, rx)) => {
-                self._registry_watcher = Some(watcher);
-                self.registry_reload_rx = Some(rx);
-            }
-            None => {
-                self._registry_watcher = None;
-                self.registry_reload_rx = None;
-            }
-        }
+        // (cwd-walk to the channel dir) — agents live in that workspace's
+        // `agents/` dir.
+        self.agent_host.reload_workspace(
+            crate::app::registry::resolve_workspace_root(&root),
+            context_id,
+        );
         // Reload config so workspace-scoped config.toml applies immediately —
         // both on initial launch and on context switches.
         self.reload_config_for_active_context();
-    }
-
-    /// Drain the background `AppRegistry::load` result queued by
-    /// [`Self::apply_context_transition_effects`]. Only the newest queued
-    /// result is applied — anything older is superseded. Returns `true` when
-    /// a result was applied or discarded (i.e. a message was drained at
-    /// all), so tests can spin-wait on this instead of guessing a sleep.
-    pub(crate) fn drain_registry_load(&mut self) -> bool {
-        let Some(rx) = &self.registry_load_rx else {
-            return false;
-        };
-        let mut latest = None;
-        while let Ok((loaded_ctx_id, registry)) = rx.try_recv() {
-            latest = Some((loaded_ctx_id, registry));
-        }
-        let Some((loaded_ctx_id, registry)) = latest else {
-            return false;
-        };
-        if self.router.active().context_id == loaded_ctx_id {
-            let app_count = registry.list().len();
-            self.registry = registry;
-            log::info!(
-                "transition_context: registry reload applied for ctx_id={loaded_ctx_id} ({app_count} apps)"
-            );
-        } else {
-            log::debug!(
-                "transition_context: discarding stale registry load for ctx_id={loaded_ctx_id} — active context is now {}",
-                self.router.active().context_id
-            );
-        }
-        true
     }
 
     /// True when the active window holds a Portal tile targeting `child_ctx_id`,

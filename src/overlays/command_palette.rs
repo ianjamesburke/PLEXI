@@ -829,26 +829,24 @@ impl PlexiApp {
         // ── Workspace-aware app entries ────────────────────────────────────
         // Use the workspace root cached at palette-open time (not re-resolved
         // per frame) to avoid filesystem traversal in the egui draw loop.
+        //
+        // The palette is a viewer surface for the focused window, not a
+        // resource owner (stint 0724 Phase B) — it resolves its view by the
+        // focused pane's own resolved workspace root via
+        // `RegistryViews::view_for_root`, a synchronous per-root cache. No
+        // staleness comparison is needed the way the old single shared
+        // `AppRegistry` required: a root already seen is a cache hit, and a
+        // never-seen root loads on this first access.
         let focused_workspace_root = self.palette_workspace_root.clone();
-
-        // If the cached workspace differs from what the registry was last loaded
-        // for, rescan once now so local apps for this workspace appear.
-        if focused_workspace_root.as_ref() != self.registry.loaded_workspace.as_ref() {
-            let home = dirs::home_dir();
-            let rescan_cwd = focused_workspace_root
-                .as_deref()
-                .or(home.as_deref())
-                .unwrap_or(std::path::Path::new("/"));
-            log::info!(
-                "palette: registry workspace ({:?}) differs from palette workspace ({:?}), rescanning",
-                self.registry.loaded_workspace,
-                focused_workspace_root,
-            );
-            self.reload_app_registry_for_root(rescan_cwd);
-        }
+        let home = dirs::home_dir();
+        let rescan_cwd = focused_workspace_root
+            .as_deref()
+            .or(home.as_deref())
+            .unwrap_or(std::path::Path::new("/"));
 
         let app_entries: Vec<(String, String, String, bool, String)> = self
-            .registry
+            .registries
+            .view_for_root(rescan_cwd)
             .list()
             .into_iter()
             .filter_map(|app| {
