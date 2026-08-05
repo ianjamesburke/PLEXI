@@ -22,7 +22,7 @@ EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 DEFAULT_STATE: dict[str, Any] = {
     "query": "", "results": [], "selected": 0, "article": "",
     "article_title": "", "loading": False, "pending": "", "error": "",
-    "searched_query": "",
+    "searched_query": "", "query_autofocus": True,
 }
 
 _SEARCH_TOOL_SCHEMA = {
@@ -101,6 +101,9 @@ def update(event) -> list:
         return []
 
     key = event.key
+    if key == "escape":
+        data["query_autofocus"] = False
+        return [SetState(data), SetStatus(_status(data))]
     if key in ("down", "ArrowDown"):
         data["selected"] = _clamp(data["selected"] + 1, len(data["results"]))
     elif key in ("up", "ArrowUp"):
@@ -131,7 +134,7 @@ def view():
             AppBar("Wikipedia", "The free encyclopedia"),
             TextInput(
                 "wiki-query", value=data["query"], on_change="wiki-query",
-                on_submit="wiki-submit", autofocus=True,
+                on_submit="wiki-submit", autofocus=bool(data["query_autofocus"]),
                 placeholder="Try “Detroit”, “Tetris”, or “Ada Lovelace”",
             ),
             Pending(active=data["loading"] and data["pending"] == "search",

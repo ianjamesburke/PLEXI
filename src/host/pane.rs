@@ -878,6 +878,23 @@ impl AppRuntime {
         }
     }
 
+    /// Deliver the one bare Escape that just surrendered a declarative
+    /// `TextInput`'s egui focus. Ordinary key routing reserves Escape for the
+    /// host CloseApp binding; this narrowly-scoped path lets the field's app
+    /// react to its own focus-loss Escape before that binding is suppressed.
+    pub fn handle_text_input_escape(
+        &mut self,
+        input: &crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        match self {
+            // Preserve the existing builtin TextInput Escape behavior. The
+            // caller consumes this one focus-loss Escape before CloseApp runs.
+            AppRuntime::Builtin(app) => app.handle_key(input),
+            AppRuntime::Python(app) => app.handle_text_input_escape(input),
+            AppRuntime::Wasm(app) => app.handle_text_input_escape(input),
+        }
+    }
+
     pub fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         match self {
             AppRuntime::Builtin(app) => app.take_pending_commands(),

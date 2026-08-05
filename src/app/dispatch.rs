@@ -119,6 +119,38 @@ impl PlexiApp {
             }
             return;
         }
+        // Egui releases a TextInput's focus before this dispatch. On the
+        // physical Escape that did so, hand only that bare key to the app via
+        // its dedicated bridge path, then consume it before CloseApp sees it.
+        // Normal `handle_key` remains Escape-reserving for every other case.
+        let text_input_escape: Vec<egui::Event> = input
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.is_none()
+                )
+            })
+            .cloned()
+            .collect();
+        if previously_focused && !text_input_escape.is_empty() {
+            let synthetic = crate::app::input_router::PlexiInput::synthetic(
+                text_input_escape,
+                input.modifiers(),
+            );
+            let disposition = app_pane.runtime.handle_text_input_escape(&synthetic);
+            input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            log::info!(
+                "app_keys: pane {pane_id} Escape left focused TextInput — dedicated delivery disposition={disposition:?}, CloseApp suppressed"
+            );
+            return;
+        }
         // The app classifies keys from the frame's ownership-transfer buffer
         // (stint 0387) rather than a second read of `ctx`. If it consumed the
         // key, also claim Escape/ArrowUp out of the buffer so `poll_actions`
@@ -130,19 +162,6 @@ impl PlexiApp {
         if disposition == crate::app::app_trait::KeyDisposition::Consumed {
             input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-        }
-        // egui surrenders widget focus on Escape during `begin_pass`, before
-        // this dispatch runs — so on the keypress that leaves a focused
-        // TextInput the gate above is already off. The app has now seen that
-        // Escape through `handle_key` (stint 0460 — e.g. the assistant
-        // interrupts its in-flight turn on the same press that leaves the
-        // composer); claim whatever is left of it out of the buffer so the
-        // AppActive CloseApp binding can't close the pane on the same
-        // keypress.
-        if previously_focused && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-            log::info!(
-                "app_keys: pane {pane_id} Escape left the focused TextInput — delivered to app, CloseApp suppressed"
-            );
         }
     }
 
