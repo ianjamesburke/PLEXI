@@ -21,6 +21,32 @@ fn script_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/cargo-with-lease.sh")
 }
 
+/// The wrapper under test, with `PLEXI_CARGO_LOCK_HELD` scrubbed from the
+/// inherited environment.
+///
+/// `just test` runs the suite through `cargo-with-lease.sh` itself, and the
+/// lock holder exports `PLEXI_CARGO_LOCK_HELD=1` to every descendant — so a
+/// wrapper spawned by a test inherits it and takes the nesting-guard path
+/// (`exec "$@"`) instead of acquiring the lock. That silently converts these
+/// tests into assertions about a wrapper that never ran its python holder:
+/// the signal-translation and serialization tests then fail under `just test`
+/// while passing under a bare `cargo test`, which is exactly backwards from
+/// the command the contract tells agents to run. Scrubbing it here makes the
+/// tests independent of how the suite was launched.
+///
+/// Tests that *want* nested behavior set the variable back after this call;
+/// `Command`'s env operations apply in order, so the later `.env()` wins.
+fn wrapper_at(script: &Path) -> Command {
+    let mut cmd = Command::new("bash");
+    cmd.arg(script).env_remove("PLEXI_CARGO_LOCK_HELD");
+    cmd
+}
+
+/// `wrapper_at` pointed at the real script.
+fn wrapper() -> Command {
+    wrapper_at(&script_path())
+}
+
 /// A fresh temp lock path, not yet created — the wrapper creates it.
 fn temp_lock_path(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -43,16 +69,14 @@ fn temp_lock_path(label: &str) -> PathBuf {
 fn cargo_lease_propagates_exit_code() {
     let lock_path = temp_lock_path("exit-code");
 
-    let ok = Command::new("bash")
-        .arg(script_path())
+    let ok = wrapper()
         .arg("true")
         .env("PLEXI_CARGO_LOCK", &lock_path)
         .status()
         .expect("run wrapper with true");
     assert!(ok.success(), "wrapper must succeed when the command succeeds");
 
-    let fail = Command::new("bash")
-        .arg(script_path())
+    let fail = wrapper()
         .arg("false")
         .env("PLEXI_CARGO_LOCK", &lock_path)
         .status()
@@ -75,8 +99,7 @@ fn run_marked(script: &Path, lock_path: &Path, marker_path: &Path, label: &str) 
         label = label,
         marker = marker_path.display()
     );
-    let status = Command::new("bash")
-        .arg(script)
+    let status = wrapper_at(script)
         .arg("bash")
         .arg("-c")
         .arg(inline)
@@ -154,8 +177,7 @@ fn cargo_lease_sigkilled_holder_does_not_wedge_the_lock() {
     // image in place, so this Child's pid is the actual lock-holding
     // process for its whole lifetime — killing it directly exercises "the
     // holder dies by SIGKILL", not just "the wrapped child dies".
-    let mut holder = Command::new("bash")
-        .arg(script_path())
+    let mut holder = wrapper()
         .arg("sleep")
         .arg("30")
         .env("PLEXI_CARGO_LOCK", &lock_path)
@@ -169,8 +191,7 @@ fn cargo_lease_sigkilled_holder_does_not_wedge_the_lock() {
     let _ = holder.wait();
 
     let started = Instant::now();
-    let status = Command::new("bash")
-        .arg(script_path())
+    let status = wrapper()
         .arg("true")
         .env("PLEXI_CARGO_LOCK", &lock_path)
         .env("PLEXI_CARGO_LEASE_TIMEOUT_SECS", "10")
@@ -206,8 +227,7 @@ fn cargo_lease_nested_invocation_skips_the_lock() {
         "touch {ready}; sleep 5",
         ready = ready_marker.display()
     );
-    let mut outer_holder = Command::new("bash")
-        .arg(script_path())
+    let mut outer_holder = wrapper()
         .arg("bash")
         .arg("-c")
         .arg(inline)
@@ -227,8 +247,7 @@ fn cargo_lease_nested_invocation_skips_the_lock() {
     // A nested call with the marker set must return immediately, proving it
     // never contended for the still-held outer lock.
     let started = Instant::now();
-    let nested = Command::new("bash")
-        .arg(script_path())
+    let nested = wrapper()
         .arg("true")
         .env("PLEXI_CARGO_LOCK", &lock_path)
         .env("PLEXI_CARGO_LOCK_HELD", "1")
@@ -259,8 +278,7 @@ fn cargo_lease_nested_invocation_skips_the_lock() {
 fn cargo_lease_wrapped_command_inherits_real_stdin() {
     let lock_path = temp_lock_path("stdin");
 
-    let mut child = Command::new("bash")
-        .arg(script_path())
+    let mut child = wrapper()
         .arg("cat")
         .env("PLEXI_CARGO_LOCK", &lock_path)
         .stdin(Stdio::piped())
@@ -301,8 +319,7 @@ fn cargo_lease_wrapped_command_inherits_real_stdin() {
 fn cargo_lease_sigkilled_wrapped_command_reports_137() {
     let lock_path = temp_lock_path("signal-exit-code");
 
-    let status = Command::new("bash")
-        .arg(script_path())
+    let status = wrapper()
         .arg("bash")
         .arg("-c")
         .arg("kill -9 $$")
