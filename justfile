@@ -98,14 +98,14 @@ build:
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
 # Run after any change to src/app_protocol.rs.
 gen-schema:
-    bash scripts/cargo-with-lease.sh cargo run -p gen_schema > sdk/protocol/pgap.schema.json
+    bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
     python3 tools/gen_protocol_py.py
     @echo "Schema and Python protocol models regenerated."
 
 # Regenerate the CLI reference docs from the clap Command tree.
 # Run after any change to src/cli_args.rs.
 gen-cli-docs:
-    bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs > website/src/content/docs/cli.md
+    bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs
     @echo "CLI reference regenerated."
     git add website/src/content/docs/cli.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate CLI reference docs"
@@ -127,7 +127,7 @@ check-cli-docs:
 # Regenerate the config reference docs from the serde config structs.
 # Run after any change to src/config/mod.rs or scripts/default-config.toml.
 gen-config-docs:
-    bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs > website/src/content/docs/config.md
+    bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
     @echo "Config reference regenerated."
     git add website/src/content/docs/config.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate config reference docs"
@@ -239,15 +239,15 @@ regen-if-stale:
     set -euo pipefail
     if [[ Cargo.toml -nt website/src/content/docs/cli.md || src/cli/args.rs -nt website/src/content/docs/cli.md ]]; then
         echo "CLI docs source changed — regenerating CLI docs..."
-        bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs > website/src/content/docs/cli.md
+        bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs
     fi
     if [[ src/config/mod.rs -nt website/src/content/docs/config.md || scripts/default-config.toml -nt website/src/content/docs/config.md ]]; then
         echo "Config source changed — regenerating config docs..."
-        bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs > website/src/content/docs/config.md
+        bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
     fi
     if [[ src/app_protocol.rs -nt sdk/protocol/pgap.schema.json ]]; then
         echo "app_protocol.rs changed — regenerating schema..."
-        bash scripts/cargo-with-lease.sh cargo run -p gen_schema > sdk/protocol/pgap.schema.json
+        bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
         python3 tools/gen_protocol_py.py
     fi
 
