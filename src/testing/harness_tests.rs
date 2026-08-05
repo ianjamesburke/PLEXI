@@ -4202,7 +4202,7 @@ fn focused_text_input_receives_typing_and_enter_submits() {
         "Escape in a focused TextInput must not close the app pane"
     );
     frame_with_events(&mut h, vec![pressed_key(egui::Key::Z)]);
-    wait_for_text_label(&mut h, pane_id, "keys:", "keys:2");
+    wait_for_text_label(&mut h, pane_id, "keys:", "keys:3");
 }
 
 /// Stint 0720: typing faster than the guest's render round trip must not lose

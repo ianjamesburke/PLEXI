@@ -887,7 +887,10 @@ impl AppRuntime {
         input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         match self {
-            AppRuntime::Builtin(app) => app.handle_key(input),
+            // This is a Python/WASM bridge exception, not a general native-app
+            // key path. Builtins keep bare Escape reserved for the host; the
+            // caller still consumes it before CloseApp can run.
+            AppRuntime::Builtin(_) => crate::app::app_trait::KeyDisposition::Passthrough,
             AppRuntime::Python(app) => app.handle_text_input_escape(input),
             AppRuntime::Wasm(app) => app.handle_text_input_escape(input),
         }
