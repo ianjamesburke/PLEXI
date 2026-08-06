@@ -1665,17 +1665,17 @@ pub enum RoutineCmd {
 
 #[derive(Subcommand)]
 pub enum NotesCmd {
-    /// Print paths of all scratchpad notes, newest first.
+    /// Print paths of every note in every visible tier, newest first.
+    ///
+    /// Tiers are the current directory's context tier (its nearest ancestor
+    /// holding a `.plexi/` directory), any tier nested below it, and the global
+    /// tier. Resolved from the working directory, never from the environment.
     List,
     /// Open a note picker with fzf in the focused terminal pane.
     ///
-    /// Requires fzf to be installed. Falls back to printing the notes directory when fzf
-    /// is not available or PLEXI_SOCKET is not set.
+    /// Candidates come from `plexi notes list`. Requires fzf and a running host;
+    /// both are reported as errors rather than silently degrading.
     Open,
-    /// List notes in the inbox with frontmatter context.
-    Inbox,
-    /// Print inbox notes in agent-legible format with configured triage actions.
-    Process,
 }
 
 #[derive(Subcommand)]

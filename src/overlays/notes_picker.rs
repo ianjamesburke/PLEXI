@@ -1,7 +1,7 @@
 //! Notes picker overlay (Cmd+O).
 //!
-//! One navigable list: inbox notes (scratch + quick-note captures) on top,
-//! kept workspace notes below. Keys:
+//! One navigable list, grouped by notes tier: the active context's own tier
+//! first, then each tier nested below its root, then the global tier. Keys:
 //!   j/k or arrows — navigate          ↵ — open in focused pane
 //!   s — open in new pane
 //!   / — fuzzy-find (title, file name, body)
@@ -68,7 +68,7 @@ impl PlexiApp {
 
     /// Indices into `notes_picker_entries` matching the current query, ranked:
     /// title substring, then title fuzzy, then full-text fuzzy. Empty query
-    /// returns every entry in stored order (inbox first, then by mtime).
+    /// returns every entry in stored order (by tier, then by mtime).
     pub(crate) fn notes_picker_filtered(&self) -> Vec<usize> {
         let query = self.notes_picker_query.trim().to_lowercase();
         if query.is_empty() {
@@ -265,7 +265,6 @@ impl PlexiApp {
         let filtered = self.notes_picker_filtered();
         let selected = self.notes_picker_selected;
         let total = self.notes_picker_entries.len();
-        let inbox_total = self.notes_picker_entries.iter().filter(|e| e.inbox).count();
 
         let open_cell = std::cell::Cell::new(None::<usize>);
         let prev_selected_cell = std::cell::Cell::new(selected);
@@ -312,8 +311,9 @@ impl PlexiApp {
                     return;
                 }
 
-                let mut shown_inbox_header = false;
-                let mut shown_kept_header = false;
+                // Tier headers: entries arrive grouped by tier, so a header is
+                // emitted whenever the tier label changes from the previous row.
+                let mut current_tier: Option<Option<String>> = None;
                 egui::ScrollArea::vertical()
                     // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
                     .animated(false)
@@ -324,26 +324,21 @@ impl PlexiApp {
                         ui.spacing_mut().item_spacing.y = style::SPACE_SM;
                         for (row, &entry_idx) in filtered.iter().enumerate() {
                             let entry = &self.notes_picker_entries[entry_idx];
-                            if entry.inbox && !shown_inbox_header {
-                                shown_inbox_header = true;
-                                ui.label(
-                                    egui::RichText::new(format!("Inbox ({inbox_total})"))
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
-                                );
-                                ui.add_space(style::SPACE_XS);
-                            }
-                            if !entry.inbox && !shown_kept_header {
-                                shown_kept_header = true;
-                                if shown_inbox_header {
+                            // Header per tier group. The primary tier gets none —
+                            // the modal title already names it, and `None` means
+                            // "needs no disambiguation" by construction. Rolled-up
+                            // tiers and the global tier each get one.
+                            if current_tier.as_ref() != Some(&entry.tier_label) {
+                                current_tier = Some(entry.tier_label.clone());
+                                if let Some(label) = entry.tier_label.as_deref() {
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        egui::RichText::new(label)
+                                            .size(style::TEXT_CAPTION)
+                                            .color(colors.text_dim),
+                                    );
                                     ui.add_space(style::SPACE_XS);
                                 }
-                                ui.label(
-                                    egui::RichText::new("Notes")
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
-                                );
-                                ui.add_space(style::SPACE_XS);
                             }
 
                             let is_selected = row == selected;
@@ -352,13 +347,10 @@ impl PlexiApp {
                             } else {
                                 entry.preview.chars().take(50).collect()
                             };
-                            // Descendant-context notes carry their context name so
-                            // a root "master view" stays legible.
-                            let chip: &str = if entry.inbox {
-                                "inbox"
-                            } else {
-                                entry.context_label.as_deref().unwrap_or("note")
-                            };
+                            // Notes rolled up from a nested tier, or from the
+                            // global tier, carry where they came from so a root
+                            // "master view" stays legible.
+                            let chip: &str = entry.tier_label.as_deref().unwrap_or("note");
                             let row_response = ListRow::new(&entry.title)
                                 .metadata_chips(std::slice::from_ref(&chip))
                                 .secondary(&secondary)
@@ -423,10 +415,9 @@ mod tests {
         NotePickerEntry {
             title: preview.to_string(),
             preview: preview.to_string(),
-            inbox: false,
             search_text: preview.to_lowercase(),
             path,
-            context_label: None,
+            tier_label: None,
         }
     }
 
@@ -550,54 +541,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Issue #2491's Done-When, end to end through `open_notes_picker`: a note
-    /// kept in a child context shows in the child's picker *and* the parent's,
-    /// a parent's note never leaks down into the child, and inbox is global.
+    /// Rollup end to end through `open_notes_picker`, on real tier directories:
+    /// a note in a nested tier shows in the nested project's picker *and* in the
+    /// enclosing one, an enclosing project's note never leaks down, a
+    /// textual-prefix sibling is never aggregated, and the global tier is visible
+    /// from everywhere.
+    ///
+    /// Rollup is now a filesystem property, so this seeds `<root>/.plexi/notes/`
+    /// dirs rather than registering descendant contexts — a nested tier rolls up
+    /// whether or not a live context is anchored at it.
     #[test]
-    fn notes_picker_unions_active_context_with_descendants() {
+    fn notes_picker_rolls_up_nested_tiers_and_the_global_tier() {
         let ctx = egui::Context::default();
         let frame_tick = crate::platform::logging::FrameTick::default();
         let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
-        let profile = std::env::temp_dir()
-            .join(format!("plexi-notes-ctx-scope-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&profile);
-        let notes = profile.join("notes");
-        std::fs::create_dir_all(notes.join("inbox")).expect("inbox");
-        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let base = std::env::temp_dir().join(format!(
+            "plexi-notes-tier-picker-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let profile = base.join("profile");
+        let shared = base.join("shared");
+        std::fs::create_dir_all(&profile).expect("profile");
+        std::fs::create_dir_all(&shared).expect("shared");
+        let _profile_guard = crate::config::set_test_profile_dir(profile);
+        let _shared_guard = crate::config::set_test_shared_dir(shared.clone());
 
-        let parent_root = std::path::PathBuf::from("/tmp/plexi-ctx-scope/proj");
+        let parent_root = base.join("proj");
         let child_root = parent_root.join("sub");
         // Textual-prefix sibling that must never be aggregated.
-        let sibling_root = std::path::PathBuf::from("/tmp/plexi-ctx-scope/projx");
+        let sibling_root = base.join("projx");
 
-        let seed = |root: &std::path::Path, title: &str| {
-            let dir = crate::notes::context_notes_dir(root);
-            std::fs::create_dir_all(&dir).expect("context notes dir");
+        let seed = |dir: std::path::PathBuf, title: &str| {
+            std::fs::create_dir_all(&dir).expect("tier dir");
             std::fs::write(dir.join(format!("{title}.md")), format!("body of {title}"))
-                .expect("seed kept note");
+                .expect("seed note");
         };
-        seed(&parent_root, "parent-note");
-        seed(&child_root, "child-note");
-        seed(&sibling_root, "sibling-note");
-        std::fs::write(notes.join("inbox").join("inbox-note.md"), "captured")
-            .expect("seed inbox note");
+        seed(crate::notes::context_notes_dir(&parent_root), "parent-note");
+        seed(crate::notes::context_notes_dir(&child_root), "child-note");
+        seed(
+            crate::notes::context_notes_dir(&sibling_root),
+            "sibling-note",
+        );
+        seed(crate::notes::global_notes_dir(), "global-note");
 
-        let mk_ctx = |id: u64, name: &str, root: &std::path::Path, depth: u32| {
-            crate::host::context::Context {
-                name: name.to_string().into(),
-                root: root.to_path_buf(),
-                description: None,
-                context_id: id,
-                parent_id: (depth > 0).then_some(1),
-                depth,
-                parked: false,
-            }
+        let mk_ctx = |id: u64, name: &str, root: &std::path::Path| crate::host::context::Context {
+            name: name.to_string().into(),
+            root: root.to_path_buf(),
+            description: None,
+            context_id: id,
+            parent_id: None,
+            depth: 0,
+            parked: false,
         };
-        // Slot 0 is the constructor's own context; append the three under test.
-        app.router.push(mk_ctx(10, "proj", &parent_root, 0));
-        app.router.push(mk_ctx(11, "sub", &child_root, 1));
-        app.router.push(mk_ctx(12, "projx", &sibling_root, 0));
+        // Slot 0 is the constructor's own context; append the two under test.
+        app.router.push(mk_ctx(10, "proj", &parent_root));
+        app.router.push(mk_ctx(11, "sub", &child_root));
         let parent_idx = app.router.position(|c| c.context_id == 10).expect("parent");
         let child_idx = app.router.position(|c| c.context_id == 11).expect("child");
 
@@ -613,24 +614,27 @@ mod tests {
         let from_parent = titles(&app);
         assert!(
             from_parent.contains(&"body of parent-note".to_string()),
-            "parent sees its own note: {from_parent:?}"
+            "the enclosing project sees its own tier: {from_parent:?}"
         );
         assert!(
             from_parent.contains(&"body of child-note".to_string()),
-            "parent aggregates the descendant context: {from_parent:?}"
+            "a nested tier rolls up: {from_parent:?}"
         );
         assert!(
             !from_parent.contains(&"body of sibling-note".to_string()),
-            "/projx is a textual prefix, not a descendant of /proj: {from_parent:?}"
+            "projx is a textual prefix, not nested under proj: {from_parent:?}"
         );
-        assert!(from_parent.contains(&"captured".to_string()), "inbox is global");
+        assert!(
+            from_parent.contains(&"body of global-note".to_string()),
+            "the global tier is visible from every context: {from_parent:?}"
+        );
         assert_eq!(
             app.notes_picker_entries
                 .iter()
                 .find(|e| e.title == "body of child-note")
-                .and_then(|e| e.context_label.clone()),
+                .and_then(|e| e.tier_label.clone()),
             Some("sub".to_string()),
-            "descendant rows carry their context name for the master view"
+            "nested rows carry their relative path for the master view"
         );
 
         app.router.set_active(child_idx);
@@ -639,11 +643,14 @@ mod tests {
         assert!(from_child.contains(&"body of child-note".to_string()));
         assert!(
             !from_child.contains(&"body of parent-note".to_string()),
-            "no ancestor walk in v1: {from_child:?}"
+            "no walk upward into the enclosing tier: {from_child:?}"
         );
-        assert!(from_child.contains(&"captured".to_string()), "inbox is global");
+        assert!(
+            from_child.contains(&"body of global-note".to_string()),
+            "the global tier is still visible: {from_child:?}"
+        );
 
-        let _ = std::fs::remove_dir_all(&profile);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -656,9 +663,12 @@ mod tests {
             "plexi-notes-picker-caret-end-{}",
             std::process::id()
         ));
-        let notes_dir = profile.join("notes");
-        std::fs::create_dir_all(&notes_dir).expect("create notes dir");
         let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let _shared = crate::config::set_test_shared_dir(profile.join("shared"));
+        // Must be a real tier: `is_note` gates caret-at-end, and only a note in a
+        // tier is a note.
+        let notes_dir = crate::notes::global_notes_dir();
+        std::fs::create_dir_all(&notes_dir).expect("create notes dir");
         let note_path = notes_dir.join("note.md");
         let note_body = "first line\nsecond line\nthird line";
         std::fs::write(&note_path, note_body).expect("seed note");
@@ -756,9 +766,8 @@ mod tests {
             path: std::path::PathBuf::from(format!("/tmp/{title}.md")),
             title: title.to_string(),
             preview: body.to_string(),
-            inbox: false,
             search_text: format!("{title} {body}").to_lowercase(),
-            context_label: None,
+            tier_label: None,
         };
         app.notes_picker_entries = vec![
             mk("groceries", "milk and eggs"),

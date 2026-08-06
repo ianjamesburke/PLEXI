@@ -81,12 +81,13 @@ fn is_auto_window_name(name: &str) -> bool {
     false
 }
 
-/// Context captured when the quick note modal opens.
+/// Provenance captured when the quick note modal opens, recorded into the note's
+/// frontmatter as plain text. Where the note is *stored* comes from the active
+/// context's tier, not from here.
 #[derive(Default, Clone)]
 pub(crate) struct QuickNoteCtx {
     pub cwd: std::path::PathBuf,
     pub workspace_root: Option<std::path::PathBuf>,
-    pub context_root: Option<std::path::PathBuf>,
 }
 
 /// What a `TextInputOverlay` commit should do.
@@ -290,18 +291,17 @@ pub struct PlexiApp {
     pub(crate) quick_note_attachments: Vec<PathBuf>,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
-    /// Notes picker: inbox notes first, then workspace notes sorted by mtime.
+    /// Cleared after the one-shot notes migration off the pre-tier store has
+    /// run. Boot-time rather than picker-time so `plexi notes list`, which has
+    /// no router and therefore cannot migrate, still sees migrated notes without
+    /// the GUI ever opening.
+    pub(crate) notes_migration_pending: bool,
+    /// Notes picker: every visible tier's notes, grouped by tier, newest first.
     pub(crate) notes_picker_entries: Vec<crate::notes::NotePickerEntry>,
     /// Notes picker: currently highlighted index into the filtered view.
     pub(crate) notes_picker_selected: usize,
     /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
-    /// Notes triage: inbox notes loaded when the triage overlay opens.
-    pub(crate) notes_triage_notes: Vec<crate::notes::InboxNote>,
-    /// Notes triage: configured actions loaded when the triage overlay opens.
-    pub(crate) notes_triage_actions: Vec<crate::notes::TriageAction>,
-    /// Notes triage: index of the note currently being shown.
-    pub(crate) notes_triage_index: usize,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -1699,12 +1699,10 @@ impl PlexiApp {
                     quick_note_text: String::new(),
                     quick_note_attachments: Vec::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
-                    notes_picker_entries: Vec::new(),
+                    notes_migration_pending: true,
+            notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
                     notes_picker_query: String::new(),
-                    notes_triage_notes: Vec::new(),
-                    notes_triage_actions: Vec::new(),
-                    notes_triage_index: 0,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -1975,12 +1973,10 @@ impl PlexiApp {
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
             quick_note_ctx: QuickNoteCtx::default(),
+            notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
             notes_picker_query: String::new(),
-            notes_triage_notes: Vec::new(),
-            notes_triage_actions: Vec::new(),
-            notes_triage_index: 0,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -2693,12 +2689,10 @@ impl PlexiApp {
                 quick_note_text: String::new(),
                 quick_note_attachments: Vec::new(),
                 quick_note_ctx: QuickNoteCtx::default(),
-                notes_picker_entries: Vec::new(),
+                notes_migration_pending: true,
+            notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
                 notes_picker_query: String::new(),
-                notes_triage_notes: Vec::new(),
-                notes_triage_actions: Vec::new(),
-                notes_triage_index: 0,
                 modal_state_notify_id: String::new(),
                 notification_images: HashMap::new(),
                 notifications_enabled: false,
@@ -3139,6 +3133,18 @@ impl eframe::App for PlexiApp {
         // logic-only passes ran, and queued commands sat until the window was
         // next uncovered (stint 0505 fix round 3).
         self.update_preamble(ctx);
+
+        // One-shot notes migration off the pre-tier store. Here rather than in
+        // `PlexiApp::new` because it needs the restored router to resolve the old
+        // one-way-hashed directory names, and in `logic` rather than `ui` so an
+        // occluded host still runs it (see the drain rules above).
+        if self.notes_migration_pending {
+            self.notes_migration_pending = false;
+            let report = crate::notes::migrate_notes_storage(self.router.as_slice());
+            if report.moved > 0 || report.failed > 0 || !report.left_behind.is_empty() {
+                log::info!("notes_migration: {report:?}");
+            }
+        }
 
         // Screenshot capture is an external-client request path, not UI: the
         // viewport request, the readback poll, and the bounded-deadline reply
@@ -4214,78 +4220,40 @@ impl PlexiApp {
         )
     }
 
+    /// Build the Cmd+O picker corpus from every tier visible to the active
+    /// context, then open the overlay.
+    ///
+    /// Tier resolution and rollup come from `crate::notes::notes_scopes_for_root`
+    /// — the same function `plexi notes list` calls — so the two surfaces list
+    /// the same notes by construction rather than by two implementations that
+    /// can drift apart.
     pub(crate) fn open_notes_picker(&mut self) {
-        let notes_base = crate::config::config_dir().join("notes");
+        let active_root = self.router.active().root.clone();
+        let scopes = crate::notes::notes_scopes_for_root(Some(&active_root));
 
-        // Sorted .md paths (newest mtime first) from one directory.
-        let scan_dir = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
-            let mut with_mtime: Vec<(std::time::SystemTime, std::path::PathBuf)> =
-                std::fs::read_dir(dir)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
-                    .filter_map(|e| {
-                        let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-                        Some((mtime, e.path()))
-                    })
-                    .collect();
-            with_mtime.sort_by_key(|e| std::cmp::Reverse(e.0));
-            with_mtime.into_iter().map(|(_, p)| p).collect()
-        };
-
-        // Inbox notes first (scratch + quick-note captures), then kept workspace notes.
-        let mut entries: Vec<crate::notes::NotePickerEntry> = scan_dir(&notes_base.join("inbox"))
-            .iter()
-            .filter_map(|p| crate::notes::NotePickerEntry::load(p, true))
-            .collect();
-        let inbox_count = entries.len();
-
-        // Kept notes are keyed per context root. Fold any legacy
-        // `notes/<workspace-slug>/` dirs into their context first — non-destructive
-        // and a no-op once there is nothing left to move.
-        crate::notes::migrate_legacy_workspace_notes(self.router.as_slice());
-
-        // Active context first, then every descendant context (path-component
-        // prefix match over the live context list, no filesystem discovery).
-        let scopes =
-            crate::notes::context_notes_scopes(self.router.as_slice(), self.router.active());
+        let mut entries: Vec<crate::notes::NotePickerEntry> = Vec::new();
         for scope in &scopes {
-            entries.extend(scan_dir(&scope.dir).iter().filter_map(|p| {
-                crate::notes::NotePickerEntry::load(p, false)
-                    .map(|e| e.with_context_label(scope.label.clone()))
-            }));
-        }
-
-        // Belt and braces: a legacy dir whose migration could not complete stays
-        // readable for the context it belongs to rather than silently vanishing.
-        let legacy_dir = crate::notes::unambiguous_legacy_notes_dir(
-            self.router.as_slice(),
-            self.router.active(),
-        );
-        if let Some(legacy_dir) = legacy_dir.filter(|d| d.is_dir()) {
-            log::warn!("notes_picker: reading un-migrated legacy dir {legacy_dir:?}");
             entries.extend(
-                scan_dir(&legacy_dir)
+                crate::notes::scan_tier(&scope.dir)
                     .iter()
-                    .filter_map(|p| crate::notes::NotePickerEntry::load(p, false)),
+                    .filter_map(|path| crate::notes::NotePickerEntry::load(path))
+                    .map(|entry| entry.with_tier_label(scope.label.clone())),
             );
         }
 
         log::info!(
-            "notes_picker: {} inbox + {} kept notes across {} context scope(s) ({:?})",
-            inbox_count,
-            entries.len() - inbox_count,
+            "notes_picker: {} note(s) across {} tier(s) ({:?})",
+            entries.len(),
             scopes.len(),
             scopes.iter().map(|s| &s.dir).collect::<Vec<_>>()
         );
-        // Aggregates notes across every context scope in `scopes` — no single
-        // context owns this event, so it stays global-only (no per-root
-        // attribution is correct here, not merely unresolved).
+        // Aggregates notes across every tier in `scopes` — no single context
+        // owns this event, so it stays global-only (no per-root attribution is
+        // correct here, not merely unresolved).
         crate::host::event_log::emit_scoped(
             crate::host::event_log::HostEvent::NotesPickerOpened {
-                inbox_count,
-                kept_count: entries.len() - inbox_count,
+                tier_count: scopes.len(),
+                note_count: entries.len(),
                 timestamp: crate::host::event_log::now_timestamp(),
             },
             None,

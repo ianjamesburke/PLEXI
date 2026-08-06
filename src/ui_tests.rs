@@ -94,12 +94,19 @@ fn harness_builtin_factory(
 pub struct PlexiUiHarness {
     inner: egui_kittest::Harness<'static, PlexiApp>,
     workspace: tempfile::TempDir,
+    /// Isolates the channel-neutral shared dir (`~/.plexi`) for the harness
+    /// lifetime, so a test that renders the notes picker reads a tempdir rather
+    /// than the developer's real global notes tier.
+    _shared_guard: crate::config::TestSharedDirGuard,
+    _shared_dir: tempfile::TempDir,
 }
 
 impl PlexiUiHarness {
     /// Create a harness with a fresh, isolated PlexiApp.
     pub fn new() -> Self {
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
+        let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
+        let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let frame_tick = Arc::new(AtomicU64::new(0));
         let harness = egui_kittest::Harness::new_eframe(move |cc| {
             let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
@@ -108,6 +115,8 @@ impl PlexiUiHarness {
         Self {
             inner: harness,
             workspace,
+            _shared_guard,
+            _shared_dir: shared_dir,
         }
     }
 
@@ -124,6 +133,8 @@ impl PlexiUiHarness {
     /// the default ppp of 1.0.
     pub fn new_sized_ppp(width: f32, height: f32, ppp: f32) -> Self {
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
+        let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
+        let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let frame_tick = Arc::new(AtomicU64::new(0));
         let harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(width, height))
@@ -135,6 +146,8 @@ impl PlexiUiHarness {
         Self {
             inner: harness,
             workspace,
+            _shared_guard,
+            _shared_dir: shared_dir,
         }
     }
 
@@ -1045,13 +1058,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Visual review surface for context-scoped kept notes (stint 0557): the
-    /// picker as a root context's "master view" — global inbox on top, the
-    /// active context's own notes chipped `note`, and aggregated descendant
-    /// notes chipped with their context name. Geometry assertions cannot prove
-    /// the chips read well, so this renders realistic seeded content.
+    /// Visual review surface for tiered notes (stint 0746): the picker as a root
+    /// context's "master view" — the active context's own tier unchipped, notes
+    /// rolled up from nested tiers chipped with their relative path, and the
+    /// global tier last. Geometry assertions cannot prove the chips read well, so
+    /// this renders realistic seeded content.
     #[test]
-    fn screenshot_notes_picker_context_chips() {
+    fn screenshot_notes_picker_tier_chips() {
         let mut h = PlexiUiHarness::new_sized(900.0, 760.0);
         h.step();
         add_focused_pane(&mut h);
@@ -1059,72 +1072,65 @@ mod tests {
 
         h.with_app_mut(|app| {
             app.open_notes_picker();
-            let mk = |title: &str, preview: &str, inbox: bool, label: Option<&str>| {
-                crate::notes::NotePickerEntry {
-                    path: std::env::temp_dir().join(format!("plexi-ctx-chip-{title}.md")),
+            let mk =
+                |title: &str, preview: &str, label: Option<&str>| crate::notes::NotePickerEntry {
+                    path: std::env::temp_dir().join(format!("plexi-tier-chip-{title}.md")),
                     title: title.to_string(),
                     preview: preview.to_string(),
-                    inbox,
                     search_text: title.to_lowercase(),
-                    context_label: label.map(|s| s.to_string()),
-                }
-            };
+                    tier_label: label.map(|s| s.to_string()),
+                };
             app.notes_picker_entries = vec![
-                mk(
-                    "ask Sam about the staging cert",
-                    "expires 2026-08-03, renewal is manual",
-                    true,
-                    None,
-                ),
-                mk(
-                    "release checklist",
-                    "tag, changelog, notarize, publish",
-                    true,
-                    None,
-                ),
                 mk(
                     "north star — what v1 has to prove",
                     "one workspace you never leave",
-                    false,
                     None,
                 ),
-                mk(
-                    "pricing notes",
-                    "seat-based vs usage, land on seats",
-                    false,
-                    None,
-                ),
+                mk("pricing notes", "seat-based vs usage, land on seats", None),
                 mk(
                     "wasm wire format decisions",
                     "postcard over JSON for frame payloads",
-                    false,
-                    Some("plexi-runtime"),
+                    Some("crates/runtime"),
                 ),
                 mk(
                     "font bootstrap ordering trap",
                     "ui-medium binds on the next frame, not this one",
-                    false,
-                    Some("plexi-runtime"),
+                    Some("crates/runtime"),
                 ),
                 mk(
                     "onboarding copy pass",
                     "cut the second paragraph entirely",
-                    false,
                     Some("website"),
+                ),
+                mk(
+                    "ask Sam about the staging cert",
+                    "expires 2026-08-03, renewal is manual",
+                    Some("global"),
+                ),
+                mk(
+                    "release checklist",
+                    "tag, changelog, notarize, publish",
+                    Some("global"),
                 ),
             ];
             app.notes_picker_selected = 0;
         });
         h.run_steps(2);
 
-        let out = "/tmp/plexi_notes_picker_context_chips.png";
+        let out = "/tmp/plexi_notes_picker_tier_chips.png";
         h.save_screenshot(out).expect("render failed");
         h.with_app(|app| {
             assert!(
                 app.notes_picker_entries
                     .iter()
-                    .any(|e| e.context_label.as_deref() == Some("plexi-runtime")),
-                "descendant rows must reach the render with their context label"
+                    .any(|e| e.tier_label.as_deref() == Some("crates/runtime")),
+                "nested-tier rows must reach the render with their relative label"
+            );
+            assert!(
+                app.notes_picker_entries
+                    .iter()
+                    .any(|e| e.tier_label.as_deref() == Some("global")),
+                "global-tier rows must reach the render chipped as global"
             );
         });
         println!("Screenshot saved to {out}");
@@ -1141,15 +1147,15 @@ mod tests {
         h.with_app_mut(|app| {
             app.open_notes_picker();
             // Deterministic entries — don't depend on the machine's notes dir.
-            let mk = |name: &str, inbox: bool| crate::notes::NotePickerEntry {
+            let mk = |name: &str, label: Option<&str>| crate::notes::NotePickerEntry {
                 path: std::env::temp_dir().join(format!("plexi-ui-{name}.md")),
                 title: name.to_string(),
                 preview: format!("{name} preview"),
-                inbox,
                 search_text: name.to_lowercase(),
-                context_label: None,
+                tier_label: label.map(|s| s.to_string()),
             };
-            app.notes_picker_entries = vec![mk("inbox-note", true), mk("kept-note", false)];
+            app.notes_picker_entries =
+                vec![mk("context-note", None), mk("global-note", Some("global"))];
             app.notes_picker_selected = 0;
         });
         // Two steps: egui Areas spend their first frame on an invisible
@@ -1161,12 +1167,13 @@ mod tests {
                 .focus_stack
                 .contains(&crate::app::FocusKind::NotesPicker));
         });
-        // ListRow titles are painted as galleys (not accessible labels);
-        // assert on the section headers, which are real ui.label widgets.
-        h.harness().get_by_label("Inbox (1)");
-        // "Notes" appears as both the modal title and the kept-notes header.
+        // ListRow titles are painted as galleys (not accessible labels); assert on
+        // the tier section headers, which are real ui.label widgets. "Notes"
+        // appears exactly once — the modal title. The primary tier gets no header
+        // of its own, so it never duplicates the title.
         let notes_labels = h.harness().get_all_by_label("Notes").count();
-        assert_eq!(notes_labels, 2, "modal title + kept-notes section header");
+        assert_eq!(notes_labels, 1, "the modal title, with no duplicate header");
+        h.harness().get_by_label("global");
         h.save_screenshot("/tmp/plexi_notes_picker.png")
             .expect("render failed");
     }
@@ -1744,49 +1751,6 @@ mod tests {
                 "master-two",
                 "cycling backward from the first master wraps to the last"
             );
-        });
-    }
-
-    /// Notes triage overlay: renders a note, and emptying the inbox returns
-    /// to the picker instead of closing outright.
-    #[test]
-    fn notes_triage_overlay_smoke_returns_to_picker() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        add_focused_pane(&mut h);
-        h.step();
-
-        h.with_app_mut(|app| {
-            app.notes_triage_notes = vec![crate::notes::InboxNote {
-                path: std::env::temp_dir().join("plexi-ui-triage.md"),
-                frontmatter: crate::notes::NoteFrontmatter::default(),
-                body: "triage me\n".to_string(),
-            }];
-            app.notes_triage_actions = Vec::new();
-            app.notes_triage_index = 0;
-            app.push_focus_layer(crate::app::FocusKind::NotesTriage);
-        });
-        // Two steps for the egui Area sizing pass (see picker smoke test).
-        h.run_steps(2);
-        h.with_app(|app| {
-            assert!(app
-                .focus_stack
-                .contains(&crate::app::FocusKind::NotesTriage));
-        });
-        h.harness().get_by_label("Inbox Triage (1/1)");
-        h.harness().get_by_label("triage me");
-        h.save_screenshot("/tmp/plexi_notes_triage.png")
-            .expect("render failed");
-
-        h.with_app_mut(|app| app.notes_triage_advance());
-        h.step();
-        h.with_app(|app| {
-            assert!(!app
-                .focus_stack
-                .contains(&crate::app::FocusKind::NotesTriage));
-            assert!(app
-                .focus_stack
-                .contains(&crate::app::FocusKind::NotesPicker));
         });
     }
 
@@ -2648,9 +2612,8 @@ mod tests {
                         path: std::env::temp_dir().join(format!("plexi-density-{title}.md")),
                         title: (*title).to_string(),
                         preview: format!("{title} — first body line of the note"),
-                        inbox: false,
                         search_text: title.to_lowercase(),
-                        context_label: None,
+                        tier_label: None,
                     })
                     .collect();
                 app.show_command_palette = true;
@@ -2666,18 +2629,17 @@ mod tests {
             h.with_app_mut(|app| {
                 app.open_notes_picker();
                 app.notes_picker_entries = [
-                    ("meeting notes 2026-07-24", true),
-                    ("deploy checklist", false),
-                    ("sprint 12 retro", false),
+                    "meeting notes 2026-07-24",
+                    "deploy checklist",
+                    "sprint 12 retro",
                 ]
                 .iter()
-                .map(|(title, inbox)| crate::notes::NotePickerEntry {
+                .map(|title| crate::notes::NotePickerEntry {
                     path: std::env::temp_dir().join(format!("plexi-density-{title}.md")),
                     title: (*title).to_string(),
                     preview: format!("{title} — first body line of the note"),
-                    inbox: *inbox,
                     search_text: title.to_lowercase(),
-                    context_label: None,
+                    tier_label: None,
                 })
                 .collect();
                 app.notes_picker_selected = 0;
@@ -3016,9 +2978,8 @@ mod tests {
                     path: std::env::temp_dir().join(format!("palette-note-{idx}.md")),
                     title: format!("Palette note {idx:02}"),
                     preview: "Deterministic row for palette scrolling".to_string(),
-                    inbox: false,
                     search_text: format!("palette note {idx:02} deterministic row"),
-                    context_label: None,
+                    tier_label: None,
                 })
                 .collect();
             app.show_command_palette = true;
@@ -3574,8 +3535,7 @@ mod tests {
             assert_eq!(app.windows[2].context_id, inactive_ctx_id);
         });
         h.run_steps(3);
-        h.save_screenshot(out)
-            .expect("render failed");
+        h.save_screenshot(out).expect("render failed");
         println!("Screenshot saved to {out}");
     }
 
@@ -3601,8 +3561,7 @@ mod tests {
             let active_context_idx = app.router.active_idx();
             let active_context_id = app.router.get(active_context_idx).context_id;
             let active_window_id = app.windows[app.active_window].window_id;
-            app.router.get_mut(active_context_idx).name =
-                "PLEXI Workspace".to_string().into();
+            app.router.get_mut(active_context_idx).name = "PLEXI Workspace".to_string().into();
             app.router.get_mut(active_context_idx).root =
                 std::path::PathBuf::from("/projects/PLEXI");
 

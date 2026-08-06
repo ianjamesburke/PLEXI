@@ -200,6 +200,14 @@ pub struct HostHarness {
     _workspace_dir: tempfile::TempDir,
     /// Keeps the thread-local profile dir override active for the harness lifetime.
     _profile_guard: crate::config::TestProfileDirGuard,
+    /// Same isolation for the channel-neutral shared dir (`~/.plexi`), which is
+    /// where user-data tiers live (`state_scope::UserDataKind`). Without this a
+    /// test touching the global notes tier would read and write the developer's
+    /// real notes — `config_dir()` isolation alone does not cover it, because the
+    /// shared dir is deliberately *not* channel-scoped.
+    _shared_guard: crate::config::TestSharedDirGuard,
+    /// Keeps the shared-dir tempdir alive for the harness lifetime.
+    _shared_dir: tempfile::TempDir,
 }
 
 impl HostHarness {
@@ -208,7 +216,9 @@ impl HostHarness {
         let profile_dir = tempfile::TempDir::new().expect("failed to create test profile tempdir");
         let workspace_dir =
             tempfile::TempDir::new().expect("failed to create test workspace tempdir");
+        let shared_dir = tempfile::TempDir::new().expect("failed to create test shared tempdir");
         let profile_guard = set_test_profile_dir(profile_dir.path().to_path_buf());
+        let shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let ctx = egui::Context::default();
         let frame_tick = Arc::new(AtomicU64::new(0));
         let (app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
@@ -221,6 +231,8 @@ impl HostHarness {
             _profile_dir: profile_dir,
             _workspace_dir: workspace_dir,
             _profile_guard: profile_guard,
+            _shared_guard: shared_guard,
+            _shared_dir: shared_dir,
         }
     }
 

@@ -111,8 +111,6 @@ pub(crate) enum FocusKind {
     RawWasmReview,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
-    /// Notes inbox triage overlay: shows inbox notes one at a time for keep/trash/action.
-    NotesTriage,
 }
 
 impl FocusKind {
@@ -133,7 +131,6 @@ impl FocusKind {
             Self::EventConsent => "EventConsent",
             Self::RawWasmReview => "RawWasmReview",
             Self::NotesPicker => "NotesPicker",
-            Self::NotesTriage => "NotesTriage",
         }
     }
 
@@ -156,7 +153,6 @@ impl FocusKind {
             Self::EventConsent => &EventConsentOwner,
             Self::RawWasmReview => &RawWasmReviewOwner,
             Self::NotesPicker => &NotesPickerOwner,
-            Self::NotesTriage => &NotesTriageOwner,
         }
     }
 }
@@ -176,9 +172,9 @@ impl FocusKind {
 /// duplicated. Extracting it would require inverting that model (owner owns the
 /// state, no per-frame reconcile), a larger redesign out of this stint's scope.
 pub(crate) trait FocusOwner {
-    /// Handle this frame's owned keyboard input, before any render pass. `ctx`
-    /// is only read by `NotesTriage` (to surrender egui widget focus before it
-    /// reads keys); the other owners ignore it.
+    /// Handle this frame's owned keyboard input, before any render pass. Most
+    /// owners ignore `ctx`; it is part of the signature so an owner that must
+    /// reach egui state before reading keys can.
     fn handle_key(
         &self,
         app: &mut PlexiApp,
@@ -197,10 +193,10 @@ pub(crate) trait FocusOwner {
 }
 
 /// Define the stateless owner tokens whose `handle_key` returns a
-/// `KeyDisposition` and whose `draw` produces no commands — the common shape
-/// for 12 of the 15 overlays. The three exceptions (notification modal's
-/// command-returning draw; NotesPicker / NotesTriage's forced `Passthrough`,
-/// and NotesTriage's extra `ctx`) are written out by hand below.
+/// `KeyDisposition` and whose `draw` produces no commands — the common shape for
+/// most overlays. The exceptions (the notification modal's command-returning
+/// draw, and the notes picker's forced `Passthrough`) are written out by hand
+/// below.
 macro_rules! focus_owner_tokens {
     ($( $kind:ident => $token:ident { key: $key_fn:ident, draw: $draw_fn:ident } ),* $(,)?) => {
         $(
@@ -282,29 +278,6 @@ impl FocusOwner for NotesPickerOwner {
         ctx: &egui::Context,
     ) -> Vec<crate::app::app_trait::AppCommand> {
         app.draw_notes_picker(ctx);
-        Vec::new()
-    }
-}
-
-/// Notes triage — like the picker, forces `Passthrough`, and its handler needs
-/// `ctx` to surrender egui widget focus before reading keys.
-pub(crate) struct NotesTriageOwner;
-impl FocusOwner for NotesTriageOwner {
-    fn handle_key(
-        &self,
-        app: &mut PlexiApp,
-        ctx: &egui::Context,
-        input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        app.notes_triage_handle_key(ctx, input);
-        crate::app::app_trait::KeyDisposition::Passthrough
-    }
-    fn draw(
-        &self,
-        app: &mut PlexiApp,
-        ctx: &egui::Context,
-    ) -> Vec<crate::app::app_trait::AppCommand> {
-        app.draw_notes_triage(ctx);
         Vec::new()
     }
 }
@@ -1179,13 +1152,10 @@ impl PlexiApp {
     /// Every note currently open in an editor pane, across all windows, newest
     /// modification first. This is the command palette's note corpus — the
     /// palette is a switcher for what is already open, while the Cmd+O picker
-    /// stays the browse-everything surface that scans inbox and workspace.
+    /// stays the browse-everything surface that scans every visible tier.
     ///
     /// The same note open in two panes yields one entry.
     pub(crate) fn open_note_entries(&self) -> Vec<crate::notes::NotePickerEntry> {
-        let notes_base = crate::config::config_dir().join("notes");
-        let inbox_dir = notes_base.join("inbox");
-
         let mut seen = std::collections::HashSet::new();
         let mut paths: Vec<PathBuf> = Vec::new();
         for win in &self.windows {
@@ -1218,10 +1188,7 @@ impl PlexiApp {
 
         with_mtime
             .into_iter()
-            .filter_map(|(_, path)| {
-                let inbox = path.parent() == Some(inbox_dir.as_path());
-                crate::notes::NotePickerEntry::load(&path, inbox)
-            })
+            .filter_map(|(_, path)| crate::notes::NotePickerEntry::load(&path))
             .collect()
     }
 

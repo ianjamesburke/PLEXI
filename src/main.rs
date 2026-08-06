@@ -1280,10 +1280,6 @@ fn main() -> eframe::Result {
                     Commands::Notes { cmd } => match cmd {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
                         Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
-                        Some(NotesCmd::Inbox) => std::process::exit(cli::notes::notes_inbox_cli()),
-                        Some(NotesCmd::Process) => {
-                            std::process::exit(cli::notes::notes_process_cli())
-                        }
                     },
                     Commands::Note { text } => {
                         std::process::exit(cli::notes::note_capture_cli(&text))

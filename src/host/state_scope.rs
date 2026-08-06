@@ -1,14 +1,19 @@
-//! App state scope resolution — the addressing layer for app state.
+//! User-data scope resolution — the addressing layer for files a user owns.
 //!
-//! An app declares which scopes it uses in its manifest (`[state] scopes`);
-//! the host owns path construction. Two rules, both predictable from outside
-//! the process so an external agent can find and write an app's state without
-//! asking Plexi anything:
+//! One `StateScope` pair, applied per [`UserDataKind`]. An app declares which
+//! scopes it uses in its manifest (`[state] scopes`); the host owns path
+//! construction. Two rules, both predictable from outside the process so an
+//! external agent can find and write the bytes without asking Plexi anything:
 //!
 //! ```text
-//! global   →  ~/.plexi/app_states/<app_id>.<ext>
-//! context  →  <context.root>/.plexi/app_states/<app_id>.<ext>
+//! global   →  ~/.plexi/<kind>/…
+//! context  →  <context.root>/.plexi/<kind>/…
 //! ```
+//!
+//! `app_states` was the first kind; `notes` joined it in stint 0746. This is
+//! one of Plexi's three scope models and the only one that addresses files —
+//! see `src/host/AGENTS.md` for how it differs from `host/scope.rs`'s runtime
+//! reachability and `app/registry.rs`'s shadowing config discovery.
 //!
 //! Both tiers are deliberately channel-neutral (`.plexi`, never
 //! `.plexi-<channel>`): user data must not fork when the user runs a beta or
@@ -29,14 +34,47 @@ use std::path::{Path, PathBuf};
 /// do not rename it — one data-loss bug from moving a state path is enough.
 const APP_STATES_DIR: &str = "app_states";
 
+/// The directory name holding kept notes in either tier. Same no-rename rule as
+/// `APP_STATES_DIR`: it is a user-data address, not an implementation detail.
+const NOTES_DIR: &str = "notes";
+
+/// The `.plexi` directory both tiers nest under. Deliberately channel-NEUTRAL —
+/// never `workspace_channel_dir()`/`config_dir()`, which are channel-scoped.
+/// User data must not fork when the user runs a beta or PR build; config may.
+const PLEXI_DIR: &str = ".plexi";
+
+/// A class of user-owned data addressed by [`StateScope`]. Each kind is one leaf
+/// directory name under `.plexi/`, present identically in both tiers.
+///
+/// Adding a kind is how a subsystem joins this scope model. It is not a place to
+/// put host config or anything channel-scoped — those belong to
+/// `app/registry.rs`'s discovery model instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum UserDataKind {
+    /// Per-app persisted state, addressed by app id (`[state] scopes`).
+    AppStates,
+    /// Kept notes — a flat directory of Markdown files (stint 0746).
+    Notes,
+}
+
+impl UserDataKind {
+    /// The leaf directory name under `.plexi/`.
+    pub fn dir(self) -> &'static str {
+        match self {
+            Self::AppStates => APP_STATES_DIR,
+            Self::Notes => NOTES_DIR,
+        }
+    }
+}
+
 /// A state scope an app may declare. Ordered lists come from the manifest;
 /// the first declared scope is the app's default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StateScope {
-    /// Cross-project user state: `~/.plexi/app_states/`.
+    /// Cross-project user data: `~/.plexi/<kind>/`.
     Global,
-    /// Project state anchored to the pane's context root:
-    /// `<context.root>/.plexi/app_states/`.
+    /// Project data anchored to the pane's context root:
+    /// `<context.root>/.plexi/<kind>/`.
     Context,
 }
 
@@ -165,32 +203,34 @@ pub fn state_file(
 pub fn assert_within_scope(
     path: &Path,
     scope: StateScope,
+    kind: UserDataKind,
     context_root: &Path,
 ) -> Result<(), String> {
-    let (base, plexi_dir) = match scope {
-        StateScope::Global => (
-            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-            ".plexi",
-        ),
-        StateScope::Context => (context_root.to_path_buf(), ".plexi"),
-    };
-    let expected = resolve_existing_prefix(&base)
-        .map_err(|error| format!("resolve scope base {}: {error}", base.display()))?
-        .join(plexi_dir)
-        .join(APP_STATES_DIR);
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("state path {} has no parent directory", path.display()))?;
+    let (base, tail) = scope_layout(scope, kind, context_root);
+    let expected = tail.iter().fold(
+        resolve_existing_prefix(&base)
+            .map_err(|error| format!("resolve scope base {}: {error}", base.display()))?,
+        |dir, part| dir.join(part),
+    );
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "{} path {} has no parent directory",
+            kind.dir(),
+            path.display()
+        )
+    })?;
     let actual = resolve_existing_prefix(parent)
-        .map_err(|error| format!("resolve state dir {}: {error}", parent.display()))?;
+        .map_err(|error| format!("resolve {} dir {}: {error}", kind.dir(), parent.display()))?;
     if actual != expected {
         return Err(format!(
-            "state path {} escapes its scope: parent resolves to {} but the {} scope \
-             directory is {} — refusing to follow a redirected app_states directory",
+            "{} path {} escapes its scope: parent resolves to {} but the {} scope \
+             directory is {} — refusing to follow a redirected {} directory",
+            kind.dir(),
             path.display(),
             actual.display(),
             scope.as_str(),
-            expected.display()
+            expected.display(),
+            kind.dir()
         ));
     }
     Ok(())
@@ -278,19 +318,59 @@ pub fn parse_scopes(raw: &[String]) -> Result<Vec<StateScope>, String> {
     Ok(scopes)
 }
 
-/// The channel-neutral global state directory: `~/.plexi/app_states/`.
-/// Deliberately NOT `config_dir()` — the profile dir is channel-scoped and
-/// user state must not fork per channel.
-pub fn global_state_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/"))
-        .join(".plexi")
-        .join(APP_STATES_DIR)
+/// A scope's directory expressed as a trusted base to canonicalize plus tail
+/// components to append *literally*. Splitting it this way is what makes the
+/// symlink-escape guard work: only the base is resolved, so a symlink anywhere
+/// in the tail (a redirected `.plexi/` or `<kind>/`) fails the comparison in
+/// [`assert_within_scope`] instead of being silently followed.
+///
+/// The global tier is `crate::config::shared_dir()` — deliberately NOT
+/// `config_dir()`, which is channel-scoped. User data must not fork when the
+/// user runs a beta or PR build; config may. Using `shared_dir()` rather than
+/// re-deriving `home_dir().join(".plexi")` also picks up its thread-local test
+/// override, so both tiers are testable without touching a real profile.
+fn scope_layout(
+    scope: StateScope,
+    kind: UserDataKind,
+    context_root: &Path,
+) -> (PathBuf, Vec<std::ffi::OsString>) {
+    match scope {
+        StateScope::Global => {
+            let shared = crate::config::shared_dir();
+            // Canonicalize the *parent* and keep the `.plexi` component literal,
+            // so a symlinked `~/.plexi` is rejected exactly as a symlinked
+            // `<kind>/` is.
+            let name = shared
+                .file_name()
+                .map(std::ffi::OsStr::to_os_string)
+                .unwrap_or_default();
+            let base = shared.parent().map(Path::to_path_buf).unwrap_or(shared);
+            (base, vec![name, kind.dir().into()])
+        }
+        StateScope::Context => (
+            context_root.to_path_buf(),
+            vec![PLEXI_DIR.into(), kind.dir().into()],
+        ),
+    }
 }
 
-/// The context-scoped state directory inside a context root.
-pub fn context_state_dir(context_root: &Path) -> PathBuf {
-    context_root.join(".plexi").join(APP_STATES_DIR)
+/// The directory holding `kind`'s data in `scope`. The one place both tiers'
+/// layout is constructed; every kind-specific helper below routes through it so
+/// there is a single definition of "where does this tier live".
+pub fn user_data_dir(scope: StateScope, kind: UserDataKind, context_root: &Path) -> PathBuf {
+    let (base, tail) = scope_layout(scope, kind, context_root);
+    tail.iter().fold(base, |dir, part| dir.join(part))
+}
+
+/// The channel-neutral global notes directory: `~/.plexi/notes/`.
+pub fn global_notes_dir() -> PathBuf {
+    user_data_dir(StateScope::Global, UserDataKind::Notes, Path::new(""))
+}
+
+/// The context-scoped notes directory inside a context root:
+/// `<context_root>/.plexi/notes/`.
+pub fn context_notes_dir(context_root: &Path) -> PathBuf {
+    user_data_dir(StateScope::Context, UserDataKind::Notes, context_root)
 }
 
 /// Resolve a scope to the concrete state file for `app_id`. `ext` is the
@@ -298,11 +378,7 @@ pub fn context_state_dir(context_root: &Path) -> PathBuf {
 /// persists JSON, so it passes `json`). `context_root` is the root of the
 /// pane's context *at call time*, never a launch-captured copy.
 pub fn state_path(scope: StateScope, app_id: &str, ext: &str, context_root: &Path) -> PathBuf {
-    let dir = match scope {
-        StateScope::Global => global_state_dir(),
-        StateScope::Context => context_state_dir(context_root),
-    };
-    dir.join(format!("{app_id}.{ext}"))
+    user_data_dir(scope, UserDataKind::AppStates, context_root).join(format!("{app_id}.{ext}"))
 }
 
 #[cfg(test)]
@@ -342,6 +418,94 @@ mod tests {
             !global.starts_with(root),
             "global scope must ignore the context root"
         );
+    }
+
+    /// Every kind obeys the same two rules, so a new kind cannot quietly invent
+    /// its own layout — the whole point of routing them through `user_data_dir`.
+    #[test]
+    fn every_user_data_kind_follows_the_same_two_rules() {
+        let root = Path::new("/projects/demo");
+        for kind in [UserDataKind::AppStates, UserDataKind::Notes] {
+            let context = user_data_dir(StateScope::Context, kind, root);
+            assert_eq!(
+                context,
+                PathBuf::from(format!("/projects/demo/.plexi/{}", kind.dir())),
+                "context tier for {kind:?}"
+            );
+            let global = user_data_dir(StateScope::Global, kind, root);
+            assert!(
+                global.ends_with(format!(".plexi/{}", kind.dir())),
+                "global tier for {kind:?} must live under ~/.plexi: {global:?}"
+            );
+            assert!(
+                !global.starts_with(root),
+                "global tier for {kind:?} must ignore the context root"
+            );
+        }
+    }
+
+    /// Notes are channel-neutral like app state: the tier must never pick up a
+    /// `.plexi-<channel>` profile dir, or a user's notes fork the moment they
+    /// run a beta or PR build.
+    #[test]
+    fn notes_tiers_are_channel_neutral() {
+        let root = Path::new("/projects/demo");
+        assert_eq!(
+            context_notes_dir(root),
+            PathBuf::from("/projects/demo/.plexi/notes")
+        );
+        for dir in [context_notes_dir(root), global_notes_dir()] {
+            let has_channel_component = dir.components().any(|c| {
+                let name = c.as_os_str().to_string_lossy();
+                name.starts_with(".plexi-")
+            });
+            assert!(
+                !has_channel_component,
+                "notes tier must be channel-neutral: {dir:?}"
+            );
+        }
+    }
+
+    /// The symlink-escape guard is kind-aware: a redirected `notes` directory is
+    /// rejected the same way a redirected `app_states` one is, and the message
+    /// names the kind rather than always saying `app_states`.
+    #[test]
+    fn assert_within_scope_rejects_a_symlinked_notes_dir() {
+        let root = tempfile::tempdir().expect("context root");
+        let elsewhere = tempfile::tempdir().expect("attacker-controlled dir");
+        let plexi_dir = root.path().join(PLEXI_DIR);
+        std::fs::create_dir_all(&plexi_dir).expect("create .plexi");
+        std::os::unix::fs::symlink(elsewhere.path(), plexi_dir.join(NOTES_DIR))
+            .expect("symlink notes elsewhere");
+
+        let note = context_notes_dir(root.path()).join("captured.md");
+        let err = assert_within_scope(&note, StateScope::Context, UserDataKind::Notes, root.path())
+            .expect_err("a symlinked notes dir must be rejected");
+        assert!(err.contains("escapes its scope"), "unexpected error: {err}");
+        assert!(
+            err.contains("notes") && !err.contains("app_states"),
+            "the error must name the notes kind, not app_states: {err}"
+        );
+
+        // A real directory, and a not-yet-created one, both pass.
+        let honest = tempfile::tempdir().expect("honest root");
+        std::fs::create_dir_all(context_notes_dir(honest.path())).expect("create notes dir");
+        assert_within_scope(
+            &context_notes_dir(honest.path()).join("captured.md"),
+            StateScope::Context,
+            UserDataKind::Notes,
+            honest.path(),
+        )
+        .expect("real notes dir is within scope");
+
+        let fresh = tempfile::tempdir().expect("fresh root");
+        assert_within_scope(
+            &context_notes_dir(fresh.path()).join("captured.md"),
+            StateScope::Context,
+            UserDataKind::Notes,
+            fresh.path(),
+        )
+        .expect("missing notes dir is within scope before first write");
     }
 
     #[test]
@@ -403,13 +567,18 @@ mod tests {
 
         let path = state_file(StateScope::Context, "todo", StateFormat::Json, root.path())
             .expect("resolve state file");
-        let err = assert_within_scope(&path, StateScope::Context, root.path())
-            .expect_err("a symlinked app_states dir must be rejected");
+        let err = assert_within_scope(
+            &path,
+            StateScope::Context,
+            UserDataKind::AppStates,
+            root.path(),
+        )
+        .expect_err("a symlinked app_states dir must be rejected");
         assert!(err.contains("escapes its scope"), "unexpected error: {err}");
 
         // A genuine directory passes.
         let honest = tempfile::tempdir().expect("honest root");
-        let honest_dir = context_state_dir(honest.path());
+        let honest_dir = user_data_dir(StateScope::Context, UserDataKind::AppStates, honest.path());
         std::fs::create_dir_all(&honest_dir).expect("create app_states");
         let honest_path = state_file(
             StateScope::Context,
@@ -418,15 +587,25 @@ mod tests {
             honest.path(),
         )
         .expect("resolve state file");
-        assert_within_scope(&honest_path, StateScope::Context, honest.path())
-            .expect("real app_states dir is within scope");
+        assert_within_scope(
+            &honest_path,
+            StateScope::Context,
+            UserDataKind::AppStates,
+            honest.path(),
+        )
+        .expect("real app_states dir is within scope");
 
         // Not-yet-created app_states dir is fine too (first write).
         let fresh = tempfile::tempdir().expect("fresh root");
         let fresh_path = state_file(StateScope::Context, "todo", StateFormat::Json, fresh.path())
             .expect("resolve state file");
-        assert_within_scope(&fresh_path, StateScope::Context, fresh.path())
-            .expect("missing app_states dir is within scope before first write");
+        assert_within_scope(
+            &fresh_path,
+            StateScope::Context,
+            UserDataKind::AppStates,
+            fresh.path(),
+        )
+        .expect("missing app_states dir is within scope before first write");
     }
 
     #[test]
@@ -444,17 +623,21 @@ mod tests {
         assert!(residue.is_empty(), "temp residue left behind: {residue:?}");
     }
 
+    /// Both kinds' global tier stays `.plexi`, never `.plexi-<channel>` — a
+    /// channel-suffixed tier would fork a user's data per build.
     #[test]
     fn global_dir_is_channel_neutral() {
-        let dir = global_state_dir();
-        let plexi_component = dir
-            .components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .find(|c| c.starts_with(".plexi"))
-            .expect("path contains a .plexi component");
-        assert_eq!(
-            plexi_component, ".plexi",
-            "global state dir must not be channel-suffixed"
-        );
+        for kind in [UserDataKind::AppStates, UserDataKind::Notes] {
+            let dir = user_data_dir(StateScope::Global, kind, Path::new(""));
+            let plexi_component = dir
+                .components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .find(|c| c.starts_with(".plexi"))
+                .expect("path contains a .plexi component");
+            assert_eq!(
+                plexi_component, ".plexi",
+                "global {kind:?} dir must not be channel-suffixed"
+            );
+        }
     }
 }

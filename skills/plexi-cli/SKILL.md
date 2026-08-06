@@ -51,8 +51,10 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `plexi doctor --help`, and `plexi update --help`.
 - **Marketplace and tool registry** — search and publish apps, manage an account,
   and refresh CLI-tool knowledge: `plexi account --help`, `plexi registry --help`.
-- **Notes** — capture, browse, and process scratchpad notes: `plexi note --help`
-  and `plexi notes --help`.
+- **Notes** — capture and browse notes across their two storage tiers
+  (`~/.plexi/notes/` and `<context-root>/.plexi/notes/`): `plexi note --help` and
+  `plexi notes --help`. `note` writes into the tier the working directory belongs
+  to; `notes list` also rolls up any tier nested below it plus the global tier.
 - **Events** — subscribe to an app's event stream, declare/emit events, and print
   the singleton host MCP config for this pane's scoped credential (exposes event
   tools and `<app_id>__<tool>` for live apps in the pane's workspace):

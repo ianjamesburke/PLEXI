@@ -152,12 +152,19 @@ impl TextEditorApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
             Err(e) => (String::new(), Some(e.to_string())),
         };
-        log::info!("notes_editor: editor created for {:?} ({} bytes)", path, raw.len());
-        let notes_dir = crate::config::config_dir().join("notes");
-        let is_note = path.starts_with(&notes_dir);
+        log::info!(
+            "notes_editor: editor created for {:?} ({} bytes)",
+            path,
+            raw.len()
+        );
+        let is_note = crate::notes::tier_root_for_note(&path).is_some();
         let (note_header, content, note_title) = split_note(is_note, raw);
         let mode = detect_mode(&path, is_note);
-        log::info!("notes_editor: mode selected {} for {:?}", mode.describe(), path);
+        log::info!(
+            "notes_editor: mode selected {} for {:?}",
+            mode.describe(),
+            path
+        );
         let highlighter = mode.language().and_then(SyntaxHighlighter::new);
         let md_cache = mode.is_markdown().then(MarkdownLayoutCache::default);
         let mut doc = Document::new(&content);
@@ -303,8 +310,7 @@ impl TextEditorApp {
     }
 
     fn is_effectively_empty(&self) -> bool {
-        let notes_dir = crate::config::config_dir().join("notes");
-        content_is_effectively_empty(&self.path, &notes_dir, &self.composed())
+        content_is_effectively_empty(&self.path, &self.composed())
     }
 
     /// Durable save: full atomic write with fsync. Used when the document
@@ -484,7 +490,10 @@ impl TextEditorApp {
                 LinkKind::Autolink | LinkKind::BareUrl => link.bytes.clone(),
             };
             self.select_byte_range(&dest_range);
-            log::info!("notes_editor: link edit — selected destination of {:?}", link.dest);
+            log::info!(
+                "notes_editor: link edit — selected destination of {:?}",
+                link.dest
+            );
             return;
         }
         let selected = self.doc.selected_text();
@@ -584,62 +593,41 @@ impl TextEditorApp {
         }));
     }
 
-    /// Resolves `[[name]]` against `<config_dir>/notes/**/<name>.md`. A unique
-    /// match opens that note; multiple matches surface deterministically; a
-    /// missing target is created as a blank note under `<config_dir>/notes/`
-    /// and opened (standard wiki behavior — see [`Self::create_wiki_note`]).
+    /// Resolves `[[name]]` against the note's own tier and the global tier. A
+    /// unique match opens that note; a name present in more than one place is
+    /// reported as ambiguous rather than resolved to an arbitrary winner; a
+    /// missing target is created as a blank note in the note's own tier and
+    /// opened (standard wiki behavior — see [`Self::create_wiki_note`]).
     fn resolve_wiki_link(&mut self, name: &str) -> (String, Option<String>) {
-        let notes_dir = crate::config::config_dir().join("notes");
+        // Candidate tiers, in precedence-free order: the note's own tier first
+        // (so a new target is created beside its sibling), then the global tier.
+        // Documents accumulate and nothing shadows, so a name present in both is
+        // genuine ambiguity — reported, never silently resolved to one of them.
+        let own_tier = crate::notes::tier_root_for_note(&self.path);
+        let global_tier = crate::notes::global_notes_dir();
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Some(tier) = own_tier.clone() {
+            candidates.push(tier);
+        }
+        if !candidates.iter().any(|dir| dir == &global_tier) {
+            candidates.push(global_tier.clone());
+        }
+
         let mut matches: Vec<PathBuf> = Vec::new();
-        let mut stack = vec![notes_dir.clone()];
-        while let Some(dir) = stack.pop() {
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(entries) => entries,
-                Err(e) => {
-                    if dir == notes_dir {
-                        // A not-yet-created notes root is an empty collection,
-                        // not an error — the first `[[link]]` should still
-                        // create and open its target (create_wiki_note makes
-                        // the root). Only a genuine read failure surfaces.
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            break;
-                        }
-                        return (
-                            "missing".to_string(),
-                            Some(format!("notes dir unreadable: {e}")),
-                        );
-                    }
-                    log::warn!("notes_editor: wiki resolve skipping {dir:?}: {e}");
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let file_type = match entry.file_type() {
-                    Ok(ft) => ft,
-                    Err(e) => {
-                        log::warn!("notes_editor: wiki resolve skipping {path:?}: {e}");
-                        continue;
-                    }
-                };
-                // Never descend symlinked directories: a cycle (notes/loop →
-                // notes) would spin the UI thread forever.
-                if file_type.is_dir() {
-                    stack.push(path);
-                } else if file_type.is_file()
-                    && path.extension().and_then(|e| e.to_str()) == Some("md")
-                    && path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|stem| stem.eq_ignore_ascii_case(name))
-                {
-                    matches.push(path);
-                }
+        for tier in &candidates {
+            match wiki_matches_in_tier(tier, name) {
+                Ok(found) => matches.extend(found),
+                Err(e) => return ("missing".to_string(), Some(e)),
             }
         }
         matches.sort();
+        matches.dedup();
+
+        // A missing target is created in the note's own tier, or the global tier
+        // for a Markdown file that belongs to no tier.
+        let create_in = own_tier.unwrap_or(global_tier);
         match matches.len() {
-            0 => self.create_wiki_note(&notes_dir, name),
+            0 => self.create_wiki_note(&create_in, name),
             1 => {
                 self.open_note_pane(&matches[0]);
                 ("opened_note".to_string(), None)
@@ -830,11 +818,60 @@ fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
 /// A note is empty when it has no content at all, or — for files under
 /// `notes_dir` — when only capture frontmatter remains (scratch/quick notes the
 /// user never typed into). Empty notes are deleted instead of saved.
-fn content_is_effectively_empty(path: &Path, notes_dir: &Path, content: &str) -> bool {
+/// A note holding only frontmatter is empty for lifecycle purposes (it is
+/// auto-deleted on close). Applies to notes in a tier only — an arbitrary
+/// Markdown file the user opened is never deleted for looking empty.
+fn content_is_effectively_empty(path: &Path, content: &str) -> bool {
     if content.is_empty() {
         return true;
     }
-    path.starts_with(notes_dir) && crate::notes::parse_note(content).1.trim().is_empty()
+    crate::notes::tier_root_for_note(path).is_some()
+        && crate::notes::parse_note(content).1.trim().is_empty()
+}
+
+/// Every `<name>.md` inside one tier, searched recursively but never across a
+/// symlinked directory (a cycle would spin the UI thread forever) and never into
+/// the tier's `assets/`. A tier that does not exist yet is an empty tier, not an
+/// error — the first `[[link]]` must still create its target.
+fn wiki_matches_in_tier(tier: &Path, name: &str) -> Result<Vec<PathBuf>, String> {
+    let mut matches = Vec::new();
+    let mut stack = vec![tier.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                if dir == tier {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        return Ok(matches);
+                    }
+                    return Err(format!("notes dir {tier:?} unreadable: {e}"));
+                }
+                log::warn!("notes_editor: wiki resolve skipping {dir:?}: {e}");
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                log::warn!("notes_editor: wiki resolve skipping {path:?}");
+                continue;
+            };
+            if file_type.is_dir() {
+                if entry.file_name() != "assets" {
+                    stack.push(path);
+                }
+            } else if file_type.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("md")
+                && path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|stem| stem.eq_ignore_ascii_case(name))
+            {
+                matches.push(path);
+            }
+        }
+    }
+    Ok(matches)
 }
 
 pub(crate) fn note_path_identity(path: &Path) -> PathBuf {
@@ -1500,8 +1537,7 @@ impl App for TextEditorApp {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
                     Err(e) => (String::new(), Some(e.to_string())),
                 };
-                let notes_dir = crate::config::config_dir().join("notes");
-                self.is_note = new_path.starts_with(&notes_dir);
+                self.is_note = crate::notes::tier_root_for_note(&new_path).is_some();
                 let (note_header, content, note_title) = split_note(self.is_note, raw);
                 self.mode = detect_mode(&new_path, self.is_note);
                 log::info!(
@@ -1772,16 +1808,12 @@ impl TextEditorApp {
             .path
             .parent()
             .ok_or_else(|| format!("note {} has no parent directory", self.path.display()))?;
-        // Notes in the collection share one collection-level `notes/assets/`
-        // directory (contract: docs/notes-editor.md) so identical content
-        // dedupes across note folders; arbitrary Markdown files outside the
-        // collection keep attachments next to themselves.
-        let notes_dir = crate::config::config_dir().join("notes");
-        let assets_dir = if self.path.starts_with(&notes_dir) {
-            notes_dir.join("assets")
-        } else {
-            parent.join("assets")
-        };
+        // Attachments live in an `assets/` directory beside the note. A tier is
+        // flat, so this is the tier's own `assets/` for a note in one and a
+        // sibling directory for arbitrary Markdown — one rule, no special case,
+        // and a context tier's attachments stay inside the context root where
+        // they move with the project (contract: docs/notes-editor.md).
+        let assets_dir = parent.join("assets");
         std::fs::create_dir_all(&assets_dir)
             .map_err(|e| format!("failed to create {}: {e}", assets_dir.display()))?;
 
@@ -1861,32 +1893,26 @@ mod tests {
     }
 
     #[test]
-    fn frontmatter_only_note_counts_as_empty_inside_notes_dir() {
-        let notes_dir = PathBuf::from("/fake-home/.plexi/notes");
-        let inbox_note = notes_dir.join("inbox").join("note-1.md");
+    fn frontmatter_only_note_counts_as_empty_inside_a_tier() {
+        let tier = PathBuf::from("/fake-project/.plexi/notes");
+        let note = tier.join("note-1.md");
+        let nested = tier.join("project").join("idea.md");
         let outside = PathBuf::from("/projects/readme.md");
         let frontmatter_only = "---\ntitle: \"\"\nsource: \"scratchpad\"\n---\n\n";
         let with_body = "---\nsource: \"scratchpad\"\n---\nactual content\n";
 
-        // Frontmatter-only is empty only for files under the notes dir.
-        assert!(content_is_effectively_empty(
-            &inbox_note,
-            &notes_dir,
-            frontmatter_only
-        ));
-        assert!(!content_is_effectively_empty(
-            &outside,
-            &notes_dir,
-            frontmatter_only
-        ));
+        // Frontmatter-only is empty only for notes inside a tier — an arbitrary
+        // Markdown file the user opened is never auto-deleted for looking empty.
+        assert!(content_is_effectively_empty(&note, frontmatter_only));
+        assert!(
+            content_is_effectively_empty(&nested, frontmatter_only),
+            "a wiki subdirectory is still inside the tier"
+        );
+        assert!(!content_is_effectively_empty(&outside, frontmatter_only));
 
         // A real body is never empty; zero bytes always is.
-        assert!(!content_is_effectively_empty(
-            &inbox_note,
-            &notes_dir,
-            with_body
-        ));
-        assert!(content_is_effectively_empty(&outside, &notes_dir, ""));
+        assert!(!content_is_effectively_empty(&note, with_body));
+        assert!(content_is_effectively_empty(&outside, ""));
     }
 
     #[test]
@@ -2219,18 +2245,29 @@ mod tests {
                 language: "py".into()
             }
         );
-        assert_eq!(detect_mode(&p("/x/notes.txt"), false), EditorMode::PlainText);
-        assert_eq!(detect_mode(&p("/x/no-extension"), false), EditorMode::PlainText);
+        assert_eq!(
+            detect_mode(&p("/x/notes.txt"), false),
+            EditorMode::PlainText
+        );
+        assert_eq!(
+            detect_mode(&p("/x/no-extension"), false),
+            EditorMode::PlainText
+        );
         assert_eq!(detect_mode(&p("/x/data.xyz"), false), EditorMode::PlainText);
     }
 
     #[test]
     fn is_text_editable_ext_claims_prose_and_code_but_not_binary() {
-        for ext in ["md", "MD", "markdown", "txt", "rs", "py", "TOML", "json", "log", "csv"] {
+        for ext in [
+            "md", "MD", "markdown", "txt", "rs", "py", "TOML", "json", "log", "csv",
+        ] {
             assert!(is_text_editable_ext(ext), "{ext} should be text-editable");
         }
         for ext in ["png", "jpg", "mp4", "pdf", "wasm", "zip", ""] {
-            assert!(!is_text_editable_ext(ext), "{ext} should not be text-editable");
+            assert!(
+                !is_text_editable_ext(ext),
+                "{ext} should not be text-editable"
+            );
         }
     }
 
@@ -2263,7 +2300,10 @@ mod tests {
         let path = dir.join("preview.md");
         std::fs::write(&path, "# Title\n\npara **bold** text\n\n- item").unwrap();
         let mut app = TextEditorApp::new_for_test_note(path);
-        assert!(app.mode.is_live_preview(), "markdown defaults to live preview");
+        assert!(
+            app.mode.is_live_preview(),
+            "markdown defaults to live preview"
+        );
         assert!(app.md_cache.is_some());
 
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(2, 1)));
@@ -2272,7 +2312,12 @@ mod tests {
         let before = app.doc.semantic_state(app.view.scroll_y);
 
         app.toggle_preview_mode();
-        assert_eq!(app.mode, EditorMode::Markdown { live_preview: false });
+        assert_eq!(
+            app.mode,
+            EditorMode::Markdown {
+                live_preview: false
+            }
+        );
         assert_eq!(app.doc.semantic_state(app.view.scroll_y), before);
         let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
         assert_eq!(state["preview_mode"], "source");
@@ -2297,8 +2342,14 @@ mod tests {
         let block_at = |app: &TextEditorApp| {
             let s = crate::app::app_trait::App::semantic_state(app).unwrap();
             (
-                s["active_markdown_block"]["kind"].as_str().unwrap().to_string(),
-                s["active_markdown_block"]["source"].as_str().unwrap().to_string(),
+                s["active_markdown_block"]["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                s["active_markdown_block"]["source"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
             )
         };
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 2)));
@@ -2336,11 +2387,9 @@ mod tests {
             extend: false,
         });
 
-        let result = crate::app::app_trait::App::drop_file(
-            &mut app,
-            &fixture_png().to_string_lossy(),
-        )
-        .expect("decodable image drop accepted");
+        let result =
+            crate::app::app_trait::App::drop_file(&mut app, &fixture_png().to_string_lossy())
+                .expect("decodable image drop accepted");
         assert_eq!(result["result"], "accepted");
         let asset = result["asset"].as_str().unwrap().to_string();
         assert!(asset.starts_with("assets/notes-drop-"), "{asset}");
@@ -2362,30 +2411,35 @@ mod tests {
     }
 
     #[test]
-    fn drop_into_collection_note_uses_collection_assets_dir() {
-        let profile = unique_temp_dir("notes-drop-collection");
-        std::fs::create_dir_all(&profile).unwrap();
-        let _guard = crate::config::set_test_profile_dir(profile.clone());
-        let notes_dir = crate::config::config_dir().join("notes");
-        std::fs::create_dir_all(notes_dir.join("inbox")).unwrap();
-        let path = notes_dir.join("inbox").join("current.md");
+    fn drop_into_a_tier_note_keeps_the_asset_inside_the_tier() {
+        let base = unique_temp_dir("notes-drop-tier");
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let tier = crate::host::state_scope::context_notes_dir(&root);
+        std::fs::create_dir_all(&tier).unwrap();
+        let path = tier.join("current.md");
         std::fs::write(&path, "").unwrap();
         let mut app = TextEditorApp::new_for_test_note(path);
 
-        let result = crate::app::app_trait::App::drop_file(
-            &mut app,
-            &fixture_png().to_string_lossy(),
-        )
-        .expect("collection drop accepted");
+        let result =
+            crate::app::app_trait::App::drop_file(&mut app, &fixture_png().to_string_lossy())
+                .expect("tier drop accepted");
         let asset = result["asset"].as_str().unwrap();
-        // Collection notes share one notes/assets/ dir; the reference is
-        // relative to the note's own folder.
-        assert!(asset.starts_with("../assets/notes-drop-"), "{asset}");
-        let stored = notes_dir.join("assets").join(asset.rsplit('/').next().unwrap());
+        // A tier is flat and owns its own `assets/`, so the reference is a plain
+        // child path — and the file stays inside the context root, which is what
+        // lets a project's notes and attachments move together.
+        assert!(
+            asset.starts_with("assets/notes-drop-"),
+            "reference must be tier-relative, not `../assets/`: {asset}"
+        );
+        let stored = tier.join("assets").join(asset.rsplit('/').next().unwrap());
         assert!(stored.is_file(), "asset stored at {stored:?}");
-        assert!(!notes_dir.join("inbox").join("assets").exists());
+        assert!(
+            stored.starts_with(&root),
+            "a context tier's attachments must stay inside the context root"
+        );
         app.last_edit = None;
-        let _ = std::fs::remove_dir_all(profile);
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
@@ -2538,7 +2592,10 @@ mod tests {
         // Existing relative target opens via a queued SpawnPane command.
         let link = preview::link_targets(&app.doc.text())[0].clone();
         app.activate_link(&link);
-        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "opened_note");
+        assert_eq!(
+            app.last_link_activation.as_ref().unwrap()["outcome"],
+            "opened_note"
+        );
         let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1);
         match &commands[0] {
@@ -2556,8 +2613,14 @@ mod tests {
         // Missing target: deterministic missing outcome, no file created.
         let link = preview::link_targets(&app.doc.text())[1].clone();
         app.activate_link(&link);
-        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "missing");
-        assert!(!dir.join("missing.md").exists(), "never silently creates a file");
+        assert_eq!(
+            app.last_link_activation.as_ref().unwrap()["outcome"],
+            "missing"
+        );
+        assert!(
+            !dir.join("missing.md").exists(),
+            "never silently creates a file"
+        );
         assert!(crate::app::app_trait::App::take_pending_commands(&mut app).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2567,9 +2630,10 @@ mod tests {
         let profile = unique_temp_dir("notes-wiki-profile");
         std::fs::create_dir_all(&profile).unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.clone());
-        let notes_dir = crate::config::config_dir().join("notes");
-        std::fs::create_dir_all(notes_dir.join("inbox")).unwrap();
-        std::fs::write(notes_dir.join("inbox").join("trip-ideas.md"), "packing").unwrap();
+        let _shared = crate::config::set_test_shared_dir(profile.join("shared"));
+        let notes_dir = crate::notes::global_notes_dir();
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        std::fs::write(notes_dir.join("trip-ideas.md"), "packing").unwrap();
 
         let note_path = notes_dir.join("current.md");
         std::fs::write(&note_path, "[[trip-ideas]] and [[nowhere]]").unwrap();
@@ -2577,14 +2641,20 @@ mod tests {
 
         let links = preview::link_targets(&app.doc.text());
         app.activate_link(&links[0]);
-        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "opened_note");
+        assert_eq!(
+            app.last_link_activation.as_ref().unwrap()["outcome"],
+            "opened_note"
+        );
         let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1);
 
         // Missing wiki target: created as a blank note under the notes dir and
         // opened (standard wiki behavior, stint 0506).
         app.activate_link(&links[1]);
-        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "created_note");
+        assert_eq!(
+            app.last_link_activation.as_ref().unwrap()["outcome"],
+            "created_note"
+        );
         let created = notes_dir.join("nowhere.md");
         assert!(created.exists(), "missing wiki target must be created");
         assert_eq!(std::fs::read_to_string(&created).unwrap(), "");
@@ -2605,7 +2675,8 @@ mod tests {
         let profile = unique_temp_dir("notes-wiki-nested");
         std::fs::create_dir_all(&profile).unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.clone());
-        let notes_dir = crate::config::config_dir().join("notes");
+        let _shared = crate::config::set_test_shared_dir(profile.join("shared"));
+        let notes_dir = crate::notes::global_notes_dir();
         std::fs::create_dir_all(notes_dir.join("project")).unwrap();
         let nested = notes_dir.join("project").join("idea.md");
         std::fs::write(&nested, "precious contents").unwrap();
@@ -2616,7 +2687,10 @@ mod tests {
 
         let links = preview::link_targets(&app.doc.text());
         app.activate_link(&links[0]);
-        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "opened_note");
+        assert_eq!(
+            app.last_link_activation.as_ref().unwrap()["outcome"],
+            "opened_note"
+        );
         assert_eq!(
             std::fs::read_to_string(&nested).unwrap(),
             "precious contents",
@@ -2630,7 +2704,8 @@ mod tests {
         let profile = unique_temp_dir("notes-wiki-fresh");
         std::fs::create_dir_all(&profile).unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.clone());
-        let notes_dir = crate::config::config_dir().join("notes");
+        let _shared = crate::config::set_test_shared_dir(profile.join("shared"));
+        let notes_dir = crate::notes::global_notes_dir();
         // Deliberately do NOT create notes_dir — a fresh profile.
         assert!(!notes_dir.exists());
         // The source note lives elsewhere; only the wiki resolution matters.
@@ -2651,7 +2726,8 @@ mod tests {
         let profile = unique_temp_dir("notes-wiki-escape");
         std::fs::create_dir_all(&profile).unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.clone());
-        let notes_dir = crate::config::config_dir().join("notes");
+        let _shared = crate::config::set_test_shared_dir(profile.join("shared"));
+        let notes_dir = crate::notes::global_notes_dir();
         std::fs::create_dir_all(&notes_dir).unwrap();
         let note_path = notes_dir.join("current.md");
         std::fs::write(&note_path, "[[../escape]]").unwrap();
