@@ -116,7 +116,12 @@ fn resolve(
         StateScope::Global => PathBuf::new(),
     };
     let path = crate::host::state_scope::state_file(scope, app_id, format, &context_root)?;
-    crate::host::state_scope::assert_within_scope(&path, scope, &context_root)?;
+    crate::host::state_scope::assert_within_scope(
+        &path,
+        scope,
+        crate::host::state_scope::UserDataKind::AppStates,
+        &context_root,
+    )?;
     Ok(ResolvedState {
         path,
         scope,

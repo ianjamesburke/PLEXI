@@ -32,7 +32,7 @@ Markdown links and wiki-style note links are editable as source near the caret a
 
 ## Attachments
 
-Dropping a supported local image onto the hovered Notes editing surface copies it into the notes collection's `assets/` directory using a collision-safe stable name and inserts a relative Markdown image reference at the drop position. Supported local formats are the formats decoded by the host image stack, including PNG, JPEG, GIF, WebP, and BMP. A dropped image URL inserts a remote Markdown image reference without downloading implicitly.
+Dropping a supported local image onto the hovered Notes editing surface copies it into an `assets/` directory beside the note using a collision-safe stable name and inserts a relative Markdown image reference at the drop position. A note in a storage tier therefore keeps its attachments inside that tier, so a project's notes and their images move with the project; tier addressing itself is `src/host/AGENTS.md`'s contract. Supported local formats are the formats decoded by the host image stack, including PNG, JPEG, GIF, WebP, and BMP. A dropped image URL inserts a remote Markdown image reference without downloading implicitly.
 
 Inline images are bounded to the editor width, cached, and represented by a visible placeholder when loading or decoding fails. A production drop is delivered exactly once to the hovered pane. The same handler is driven by real host drop events, a pane CLI command, and TOML test scenes.
 

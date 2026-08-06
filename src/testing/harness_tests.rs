@@ -2033,25 +2033,27 @@ fn quick_note_raw_image_drop_stages_and_persists_collection_asset_on_save() {
     assert_eq!(h.app.quick_note_attachments.len(), 1);
     let text = "image attached from QuickNote".to_string();
     h.app.quick_note_text = text.clone();
-    assert!(h.app.commit_quick_note_to_inbox(&text));
+    assert!(h.app.commit_quick_note(&text));
 
-    let notes_dir = crate::config::config_dir().join("notes");
-    let inbox = notes_dir.join("inbox");
-    let saved = std::fs::read_dir(&inbox)
-        .expect("QuickNote must create inbox")
+    // A capture lands in the active context's tier, and a tier owns its own
+    // flat `assets/` — so the reference is `assets/…`, not `../assets/…`, and the
+    // attachment stays inside the context root.
+    let tier = crate::notes::context_notes_dir(&h.app.router.active().root);
+    let saved = std::fs::read_dir(&tier)
+        .expect("QuickNote must create its tier")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .expect("QuickNote must save an inbox note");
+        .expect("QuickNote must save a note into the tier");
     let content = std::fs::read_to_string(saved).expect("saved QuickNote must be readable");
     assert!(content.contains("image attached from QuickNote"));
-    assert!(content.contains("![](../assets/notes-drop-"), "{content}");
+    assert!(content.contains("![](assets/notes-drop-"), "{content}");
     assert!(
-        std::fs::read_dir(notes_dir.join("assets"))
-            .expect("QuickNote must create collection assets")
+        std::fs::read_dir(tier.join("assets"))
+            .expect("QuickNote must create the tier's assets dir")
             .next()
             .is_some(),
-        "staged image must persist beside inbox, in notes/assets"
+        "staged image must persist in the tier's own assets/"
     );
 }
 
@@ -2066,19 +2068,20 @@ fn quick_note_attachment_rolls_back_new_asset_when_inbox_write_fails() {
         .stage_quick_note_image(source)
         .expect("fixture must be a valid image");
 
-    let notes_dir = crate::config::config_dir().join("notes");
-    let inbox = notes_dir.join("inbox");
-    std::fs::create_dir_all(&notes_dir).expect("create notes directory");
-    std::fs::write(&inbox, "block inbox directory creation")
-        .expect("make the later inbox write fail after asset persistence");
+    // Put a *file* where the tier directory must go, so `create_dir_all` fails
+    // after the attachment has already been persisted.
+    let tier = crate::notes::context_notes_dir(&h.app.router.active().root);
+    std::fs::create_dir_all(tier.parent().expect("tier parent"))
+        .expect("create the .plexi directory");
+    std::fs::write(&tier, "block tier directory creation")
+        .expect("make the later note write fail after asset persistence");
 
     assert!(
-        !h.app
-            .commit_quick_note_to_inbox("this note cannot be written"),
-        "a file where notes/inbox belongs must prevent creating the note"
+        !h.app.commit_quick_note("this note cannot be written"),
+        "a file where the notes tier belongs must prevent creating the note"
     );
 
-    let assets_dir = notes_dir.join("assets");
+    let assets_dir = tier.join("assets");
     assert!(
         !assets_dir.exists()
             || std::fs::read_dir(&assets_dir)
@@ -5179,7 +5182,9 @@ fn ctrl_enter_activates_markdown_link_at_caret() {
 fn ctrl_enter_on_missing_wiki_link_creates_and_opens_note() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    let notes_dir = crate::config::config_dir().join("notes");
+    // The source note lives outside any tier, so an unresolved `[[link]]` is
+    // created in the global tier — the harness isolates it to a tempdir.
+    let notes_dir = crate::notes::global_notes_dir();
     std::fs::create_dir_all(&notes_dir).expect("notes dir");
     let pane_id = open_focused_note(&mut h, tmp.path(), "[[fresh-idea]] rest");
 

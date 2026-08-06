@@ -60,12 +60,13 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
             )))
         }
         "text-editor" => {
-            // No explicit path → a fresh scratch note in the inbox. The file is
-            // only created once content is typed (empty notes are deleted).
+            // No explicit path → a fresh scratch note in the global tier. The
+            // file is only created once content is typed (empty notes are
+            // deleted).
             let path = args
                 .first()
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(new_inbox_note_path);
+                .unwrap_or_else(new_scratch_note_path);
             Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(
                 path,
             )))
@@ -1891,7 +1892,7 @@ impl PlexiApp {
             }
         });
 
-        // Capture context like a quick note so triage shows where it came from.
+        // Capture provenance the same way a quick note does.
         let cwd = self.windows[active]
             .focused_pane
             .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
@@ -1899,10 +1900,9 @@ impl PlexiApp {
         let ctx = crate::app::QuickNoteCtx {
             cwd,
             workspace_root: crate::config::active_workspace_root(),
-            context_root: Some(self.router.active().root.clone()),
         };
-        let dir = crate::config::config_dir().join("notes").join("inbox");
-        let Some(path) = Self::write_inbox_note("", "scratchpad", &dir, &ctx, &[]) else {
+        let dir = crate::notes::context_notes_dir(&self.router.active().root);
+        let Some(path) = Self::write_note("", "scratchpad", &dir, &ctx, &[]) else {
             log::warn!("scratchpad: failed to create scratch note in {:?}", dir);
             return;
         };
@@ -1954,13 +1954,11 @@ impl PlexiApp {
             .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let workspace_root = crate::config::active_workspace_root();
-        let context_root = Some(self.router.active().root.clone());
         self.quick_note_text = String::new();
         self.quick_note_attachments.clear();
         self.quick_note_ctx = crate::app::QuickNoteCtx {
             cwd,
             workspace_root,
-            context_root,
         };
         self.push_focus_layer(crate::app::FocusKind::QuickNote);
         log::info!(
@@ -1970,16 +1968,17 @@ impl PlexiApp {
         );
     }
 
-    /// Commit a quick note directly to notes/inbox/. Returns `false` if the write fails.
-    pub(crate) fn commit_quick_note_to_inbox(&mut self, text: &str) -> bool {
+    /// Commit a quick note into the active context's notes tier. Returns
+    /// `false` if the write fails.
+    pub(crate) fn commit_quick_note(&mut self, text: &str) -> bool {
         let ctx = self.quick_note_ctx.clone();
-        let dir = crate::config::config_dir().join("notes").join("inbox");
+        let dir = crate::notes::context_notes_dir(&self.router.active().root);
         log::info!(
-            "QuickNote: committing to notes/inbox/ attachments={}",
+            "QuickNote: committing to {} attachments={}",
+            dir.display(),
             self.quick_note_attachments.len()
         );
-        Self::write_inbox_note(text, "quick-note", &dir, &ctx, &self.quick_note_attachments)
-            .is_some()
+        Self::write_note(text, "quick-note", &dir, &ctx, &self.quick_note_attachments).is_some()
     }
 
     /// Validate and stage one local image for the open QuickNote modal. The
@@ -2009,7 +2008,12 @@ impl PlexiApp {
 
     /// Write a timestamped note with capture-context frontmatter into `dir`.
     /// Returns the created path, or `None` when the write fails.
-    fn write_inbox_note(
+    /// Write a capture into `dir` (a notes tier), returning its path.
+    ///
+    /// Frontmatter carries an empty `title` the editor fills in, plus capture
+    /// provenance as plain text. Provenance is not what locates a note — the tier
+    /// it was written into is — so nothing parses these lines back.
+    fn write_note(
         text: &str,
         source: &str,
         dir: &PathBuf,
@@ -2021,21 +2025,9 @@ impl PlexiApp {
         let captured_at = now.to_rfc3339();
         let stamp = now.format("%Y%m%d-%H%M%S%.3f").to_string();
 
-        let workspace = ctx
-            .workspace_root
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let cwd_str = ctx.cwd.to_string_lossy();
-        let context_root_str = ctx
-            .context_root
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
         let frontmatter = format!(
-            "---\ntitle: \"\"\ncaptured_at: \"{captured_at}\"\nsource: \"{source}\"\ncwd: \"{cwd_str}\"\nworkspace: \"{workspace}\"\ncontext_root: \"{context_root_str}\"\n---\n\n"
+            "---\ntitle: \"\"\ncaptured_at: \"{captured_at}\"\nsource: \"{source}\"\ncwd: \"{cwd_str}\"\n---\n\n"
         );
         let persisted_attachments = match persist_quick_note_attachments(attachments, dir) {
             Ok(attachments) => attachments,
@@ -2061,7 +2053,7 @@ impl PlexiApp {
         if let Err(e) = std::fs::create_dir_all(dir) {
             rollback_quick_note_assets(&persisted_attachments.newly_written);
             log::error!(
-                "QuickNote: failed to create inbox dir {}: {e}",
+                "QuickNote: failed to create notes dir {}: {e}",
                 dir.display()
             );
             return None;
@@ -2117,9 +2109,14 @@ struct PersistedQuickNoteAttachments {
     newly_written: Vec<PathBuf>,
 }
 
+/// Copy every staged image into `<tier_dir>/assets/`, returning the Markdown
+/// references to embed. A tier is a flat directory that owns its own `assets/`,
+/// so references are `assets/<name>` — relative to the note, and inside the
+/// context root, which is what lets a project's notes and their attachments move
+/// together.
 fn persist_quick_note_attachments(
     attachments: &[PathBuf],
-    inbox_dir: &Path,
+    tier_dir: &Path,
 ) -> Result<PersistedQuickNoteAttachments, String> {
     if attachments.is_empty() {
         return Ok(PersistedQuickNoteAttachments {
@@ -2127,13 +2124,7 @@ fn persist_quick_note_attachments(
             newly_written: Vec::new(),
         });
     }
-    let notes_dir = inbox_dir.parent().ok_or_else(|| {
-        format!(
-            "inbox directory has no notes parent: {}",
-            inbox_dir.display()
-        )
-    })?;
-    let assets_dir = notes_dir.join("assets");
+    let assets_dir = tier_dir.join("assets");
     std::fs::create_dir_all(&assets_dir)
         .map_err(|e| format!("failed to create {}: {e}", assets_dir.display()))?;
 
@@ -2202,7 +2193,7 @@ fn persist_quick_note_attachments(
                 }
             }
         };
-        let reference = format!("../assets/{name}");
+        let reference = format!("assets/{name}");
         log::info!(
             "QuickNote: persisted image asset={reference} bytes={} hash={hash:016x} deduped={deduped}",
             bytes.len()
@@ -2280,13 +2271,16 @@ pub(crate) fn cli_open_placement(
         .unwrap_or_else(|| "split_h".to_string())
 }
 
-/// Build a fresh timestamped note path in `notes/inbox/`. Does not create the file.
-fn new_inbox_note_path() -> PathBuf {
+/// Build a fresh timestamped note path in the global notes tier. Does not create
+/// the file.
+///
+/// The global tier, not a context tier, because the only caller is
+/// `builtin_factory` — which resolves an app id with no host state to consult, so
+/// it has no context to anchor to. `open_scratchpad` does have one and writes to
+/// the active context's tier instead.
+fn new_scratch_note_path() -> PathBuf {
     let filename = format!("note-{}.md", chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f"));
-    crate::config::config_dir()
-        .join("notes")
-        .join("inbox")
-        .join(filename)
+    crate::notes::global_notes_dir().join(filename)
 }
 
 fn wasm_runtime_capabilities_from_permissions(

@@ -98,7 +98,7 @@ impl PlexiApp {
             && (!self.quick_note_text.trim().is_empty() || !self.quick_note_attachments.is_empty())
         {
             let text = self.quick_note_text.clone();
-            if self.commit_quick_note_to_inbox(&text) {
+            if self.commit_quick_note(&text) {
                 self.pop_focus_layer(&crate::app::FocusKind::QuickNote);
                 self.quick_note_text.clear();
                 self.quick_note_attachments.clear();

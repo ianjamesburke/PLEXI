@@ -37,6 +37,19 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **Boot state comes from the agent detector, never a PTY regex.** `pane new --agent` blocks on the pane's `PaneAgentState` reaching idle through `Pane::agent()`, which merges the detector's two signal sources: hook reports (`SetAgentState`, authoritative once any hook fires) and the host-observed synthesis in `tick_terminal_activity` (known agent binary in the PTY foreground + output settle — required because Codex defers `session_start` to the first prompt submission, so a freshly booted Codex never self-reports). New agent support goes into that one detector (`known_agent_process`, the hook installer), never into a parallel prompt-signature scraper.
 - **Reported agent identity is human-facing.** The `agent report --agent` name and `--detail` active tool appear in Cmd+P across all contexts. Same-name agents are distinguished by their one-based position within the context, so repeated squad commands remain navigable.
 
+- **Notes resolve their tier from the working directory, never from
+  `PLEXI_CONTEXT_ROOT`.** `plexi note` writes into the tier of cwd's nearest
+  anchored ancestor (the nearest directory holding a `.plexi/`), falling back to
+  the global tier when nothing above is anchored. `plexi notes list` rolls up that
+  tier, every tier nested below it, and the global tier, through the same
+  `notes::notes_scopes_for_root` the GUI picker calls — so the two surfaces list
+  the same notes by construction. The env var is stamped at pane spawn and a parent
+  cannot mutate a live child's environment, so it goes permanently stale after
+  `plexi context set-root`; see `src/host/AGENTS.md`. `notes open` builds its fzf
+  candidate list by shelling `plexi notes list`, so ordering and tier resolution
+  have exactly one implementation, and it fails loudly — never printing a directory
+  instead — when fzf, a pane, or a host is missing.
+
 ## Documentation Rule for CLI Changes
 
 Any change to a CLI verb, flag, or agent-facing behavior updates this file **and** `skills/plexi-cli/SKILL.md` in the same PR. Edit the skill through the real `skills/` path — `.agents/skills/plexi-cli` is a symlink and some editors do not write through it. Shell completions are generated from the clap tree (`completions_cli`), so a new flag needs no hand-written block; verify with `plexi completions zsh | grep <flag>`.

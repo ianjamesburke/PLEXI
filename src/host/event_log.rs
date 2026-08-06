@@ -182,8 +182,9 @@ pub enum HostEvent {
     },
     /// The notes picker was opened.
     NotesPickerOpened {
-        inbox_count: usize,
-        kept_count: usize,
+        /// How many notes tiers were in scope (own, nested, and global).
+        tier_count: usize,
+        note_count: usize,
         timestamp: String,
     },
     /// A note was opened from the notes picker.

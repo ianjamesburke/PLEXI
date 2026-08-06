@@ -3604,9 +3604,12 @@ impl LivePythonPane {
                 return;
             }
         };
-        if let Err(error) =
-            crate::host::state_scope::assert_within_scope(&path, scope, &self.context_root)
-        {
+        if let Err(error) = crate::host::state_scope::assert_within_scope(
+            &path,
+            scope,
+            crate::host::state_scope::UserDataKind::AppStates,
+            &self.context_root,
+        ) {
             log::error!(
                 "app::{}: save_app_state rejected — {error}; state NOT persisted",
                 self.app_id

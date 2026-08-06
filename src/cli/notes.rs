@@ -2,89 +2,56 @@ use super::pane::pane_send_cli;
 
 use super::binary_in_path;
 
-/// The context root this CLI invocation belongs to.
+/// The notes tiers this invocation lists, primary first.
 ///
-/// `PLEXI_CONTEXT_ROOT` is exported into every pane (a context is always
-/// anchored to a root), so an in-pane `plexi notes` resolves to the same dir
-/// the GUI picker scans. Outside a pane, fall back to the workspace root the
-/// cwd sits in. A pane missing the var predates the non-optional root and is
-/// logged below rather than silently diverging from the picker.
-fn cli_context_root() -> Option<std::path::PathBuf> {
-    if let Some(root) = std::env::var_os("PLEXI_CONTEXT_ROOT").filter(|v| !v.is_empty()) {
-        return Some(std::path::PathBuf::from(root));
-    }
-    let fallback = crate::config::active_workspace_root();
-    if std::env::var_os("PLEXI_PANE_ID").is_some() {
-        log::warn!(
-            "notes: pane exports no PLEXI_CONTEXT_ROOT (pre-root-collapse pane env) — \
-             falling back to workspace root {fallback:?}, which may differ from the picker's dir"
-        );
-    }
-    fallback
+/// Resolved from **cwd**, never from `PLEXI_CONTEXT_ROOT`: a parent process
+/// cannot mutate a running child's environment, so a long-lived pane's copy of
+/// that variable is permanently stale after `plexi context set-root`, while cwd
+/// is always current. `crate::notes::notes_scopes_for_root` is the same function
+/// the GUI picker calls, so the two surfaces list the same tiers by construction
+/// rather than by two implementations that can drift.
+fn cli_notes_scopes() -> Vec<crate::notes::NotesScope> {
+    let anchored = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::notes::anchored_root_for(&cwd));
+    crate::notes::notes_scopes_for_root(anchored.as_deref())
 }
 
-/// Kept-notes dir for this invocation's context. Falls back to `notes/` itself
-/// when no context or workspace root can be resolved, matching the picker.
-fn cli_kept_notes_dir() -> std::path::PathBuf {
-    match cli_context_root() {
-        Some(root) => crate::notes::context_notes_dir(&root),
-        None => crate::config::config_dir().join("notes"),
+/// The tier a new capture belongs to: the anchored context's tier when cwd sits
+/// under one, else the global tier.
+fn cli_capture_tier() -> std::path::PathBuf {
+    match std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::notes::anchored_root_for(&cwd))
+    {
+        Some(root) => crate::host::state_scope::context_notes_dir(&root),
+        None => crate::host::state_scope::global_notes_dir(),
     }
 }
 
-/// Every dir holding this context's kept notes: the context-keyed dir, plus the
-/// legacy `notes/<workspace-slug>/` dir while it still exists.
-///
-/// The CLI has no live context list, so it cannot run the migration itself. It
-/// reads the legacy dir instead, which keeps existing notes visible to a
-/// CLI-only user between upgrade and the GUI's first picker open.
-fn cli_kept_notes_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs = vec![cli_kept_notes_dir()];
-    let legacy = cli_context_root()
-        .as_deref()
-        .and_then(|root| root.file_name())
-        .map(|slug| crate::config::config_dir().join("notes").join(slug))
-        .filter(|d| d.is_dir());
-    if let Some(legacy) = legacy {
-        log::info!("notes: including un-migrated legacy dir {legacy:?}");
-        dirs.push(legacy);
-    }
-    dirs
-}
-
-/// `plexi note "<text>"` — capture a quick note to the inbox.
+/// `plexi note "<text>"` — capture a note into the tier cwd belongs to.
 pub fn note_capture_cli(text: &str) -> i32 {
-    let inbox_dir = crate::config::config_dir().join("notes").join("inbox");
-    if let Err(e) = std::fs::create_dir_all(&inbox_dir) {
-        eprintln!("error: failed to create inbox dir {:?}: {e}", inbox_dir);
+    let dir = cli_capture_tier();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("error: failed to create notes dir {:?}: {e}", dir);
         return 1;
     }
 
-    // Timestamp for filename and frontmatter.
     let now = chrono::Utc::now();
     let ts = now.format("%Y%m%dT%H%M%S%.3fZ").to_string();
-    let ts_human = now.to_rfc3339();
-
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let workspace = crate::config::active_workspace_root()
-        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
 
-    // `context_root` is what triage keys the keep destination on.
-    let context_root = cli_context_root()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // Provenance only — the note's tier, not its frontmatter, is what locates it.
     let frontmatter = format!(
-        "---\ncaptured_at: {ts_human}\nsource: cli\ncwd: {cwd}\nworkspace: {workspace}\ncontext_root: {context_root}\n---\n"
+        "---\ncaptured_at: {}\nsource: cli\ncwd: {cwd}\n---\n",
+        now.to_rfc3339()
     );
     let content = format!("{frontmatter}{}\n", text.trim());
 
-    let filename = format!("{ts}.md");
-    let path = inbox_dir.join(&filename);
+    let path = dir.join(format!("{ts}.md"));
     match std::fs::write(&path, &content) {
         Ok(_) => {
             log::info!("note_capture: wrote {:?}", path);
@@ -98,148 +65,76 @@ pub fn note_capture_cli(text: &str) -> i32 {
     }
 }
 
-/// `plexi notes inbox` — list inbox notes with frontmatter context.
-pub fn notes_inbox_cli() -> i32 {
-    let notes = crate::notes::scan_inbox();
-    if notes.is_empty() {
-        println!("Inbox is empty.");
-        return 0;
-    }
-    for note in &notes {
-        let ts = note.frontmatter.captured_at.as_deref().unwrap_or("unknown");
-        let cwd = note.frontmatter.cwd.as_deref().unwrap_or("");
-        let preview: String = note.body.trim().chars().take(60).collect();
-        println!("{}\t{}\t{}", ts, cwd, preview);
-    }
-    0
-}
-
-/// `plexi notes process` — print inbox notes in agent-legible format.
-pub fn notes_process_cli() -> i32 {
-    let notes = crate::notes::scan_inbox();
-    let actions = crate::notes::load_triage_actions();
-
-    if notes.is_empty() {
-        println!("# Inbox empty");
-        return 0;
-    }
-
-    println!("# Inbox notes ({} total)", notes.len());
-    println!();
-    for (i, note) in notes.iter().enumerate() {
-        println!("## Note {} of {}", i + 1, notes.len());
-        if let Some(ref ts) = note.frontmatter.captured_at {
-            println!("captured_at: {ts}");
-        }
-        if let Some(ref cwd) = note.frontmatter.cwd {
-            println!("cwd: {cwd}");
-        }
-        if let Some(ref ws) = note.frontmatter.workspace {
-            println!("workspace: {ws}");
-        }
-        println!();
-        println!("{}", note.body.trim());
-        println!();
-    }
-
-    if !actions.is_empty() {
-        println!("# Triage actions");
-        for a in &actions {
-            println!("  {} — {}: {}", a.key, a.label, a.command);
-        }
-    }
-
-    0
-}
-
+/// `plexi notes list` — every note across every visible tier, newest first.
 pub fn notes_list_cli() -> i32 {
-    let notes_base = crate::config::config_dir().join("notes");
-
-    // Always include inbox.
-    let inbox_dir = notes_base.join("inbox");
-
-    // Context-scoped dirs (kept notes), including any un-migrated legacy dir.
-    let mut dirs = vec![inbox_dir];
-    dirs.extend(cli_kept_notes_dirs());
-
-    log::info!("notes_list: scanning {dirs:?}");
+    let scopes = cli_notes_scopes();
+    log::info!(
+        "notes_list: scanning {:?}",
+        scopes.iter().map(|s| &s.dir).collect::<Vec<_>>()
+    );
 
     let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
-
-    for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            if entry.path().extension().is_some_and(|x| x == "md") {
-                if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
-                    paths.push((mtime, entry.path()));
-                }
-            }
+    for scope in &scopes {
+        for path in crate::notes::scan_tier(&scope.dir) {
+            let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+                continue;
+            };
+            paths.push((mtime, path));
         }
     }
 
-    paths.sort_by_key(|e| std::cmp::Reverse(e.0));
-    log::info!("notes_list: found {} notes", paths.len());
+    paths.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    log::info!(
+        "notes_list: found {} notes across {} tier(s)",
+        paths.len(),
+        scopes.len()
+    );
     for (_, path) in &paths {
         println!("{}", path.display());
     }
     0
 }
 
-/// `plexi notes open` — inject fzf note picker into the focused terminal pane.
+/// `plexi notes open` — inject an fzf note picker into the focused terminal pane.
 ///
-/// Falls back to printing the notes directory when PLEXI_SOCKET is unset or fzf is absent.
+/// The picker's candidate list is `plexi notes list`, so tier resolution and
+/// ordering have exactly one implementation.
 pub fn notes_open_cli() -> i32 {
-    let notes_dirs = cli_kept_notes_dirs();
-    let notes_dir_str = notes_dirs
-        .iter()
-        .map(|d| d.display().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-
     if !binary_in_path("fzf") {
         eprintln!("error: fzf is not installed — run `brew install fzf` to enable the picker");
         return 1;
     }
 
+    let pane_id = match std::env::var("PLEXI_PANE_ID").map(|v| v.parse::<u64>()) {
+        Ok(Ok(id)) => id,
+        Ok(Err(_)) => {
+            eprintln!("error: PLEXI_PANE_ID is not a valid number");
+            return 1;
+        }
+        Err(_) => {
+            eprintln!(
+                "error: PLEXI_PANE_ID is not set — `notes open` drives a terminal pane, so it \
+                 must run inside one. Use `plexi notes list` outside a pane."
+            );
+            return 1;
+        }
+    };
+
     if !super::command_socket_available() {
-        eprintln!("hint: run inside a Plexi pane for interactive note picking");
-        eprintln!("notes directory: {notes_dir_str}");
-        return 0;
+        eprintln!(
+            "error: no Plexi host reachable — `notes open` types into a live pane. Start a host, \
+             or use `plexi notes list` to print paths instead."
+        );
+        return 1;
     }
 
-    let has_notes = notes_dirs.iter().any(|dir| {
-        dir.is_dir()
-            && std::fs::read_dir(dir)
-                .map(|d| {
-                    d.filter_map(|e| e.ok()).any(|e| {
-                        std::path::Path::new(&e.file_name())
-                            .extension()
-                            .is_some_and(|x| x == "md")
-                    })
-                })
-                .unwrap_or(false)
-    });
+    let has_notes = cli_notes_scopes()
+        .iter()
+        .any(|scope| !crate::notes::scan_tier(&scope.dir).is_empty());
     if !has_notes {
-        eprintln!("No notes yet. Create one with \u{2318}+Shift+Space.");
+        eprintln!("No notes yet. Create one with `plexi note \"...\"` or \u{2318}+Shift+Space.");
         return 0;
     }
-
-    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("error: PLEXI_PANE_ID is not set — run inside a Plexi terminal pane");
-            return 1;
-        }
-    };
-    let pane_id: u64 = match pane_id_str.parse() {
-        Ok(n) => n,
-        Err(_) => {
-            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-            return 1;
-        }
-    };
 
     let editor = if binary_in_path("micro") {
         "micro"
@@ -248,13 +143,14 @@ pub fn notes_open_cli() -> i32 {
     } else {
         "vim"
     };
-    let globs = notes_dirs
-        .iter()
-        .map(|d| format!("{}/*.md", d.display()))
-        .collect::<Vec<_>>()
-        .join(" ");
+    // Invoke this exact binary, not whatever `plexi` PATH resolves to, so a
+    // channel-suffixed build lists through itself rather than the ambient channel.
+    let self_exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "plexi".to_string());
     let cmd = format!(
-        "selected=$(ls -t {globs} 2>/dev/null | fzf --header='Select note'); [ -n \"$selected\" ] && {editor} \"$selected\"\r"
+        "selected=$(\"{self_exe}\" notes list | fzf --header='Select note'); \
+         [ -n \"$selected\" ] && {editor} \"$selected\"\r"
     );
     log::info!("notes_open: injecting fzf picker into pane {pane_id}");
     pane_send_cli(pane_id, &cmd, false)

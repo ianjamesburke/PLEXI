@@ -26,6 +26,7 @@ When work begins: `stint claim <task-id>`. Do not run or document `stint start`;
 
 | Directory | Owns |
 |---|---|
+| `src/host/` | The three scope models, user-data tiers, env-vs-current-scope rule |
 | `src/cli/` | CLI rules, channel-agnostic enforcement, namespace design, pane naming |
 | `src/ui/` | Host UI kit primitives, design tokens, overlay layout widgets |
 | `src/config/` | Config loading/validation; reference is `docs/CONFIG.md` |
