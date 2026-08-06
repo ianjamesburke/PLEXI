@@ -77,6 +77,14 @@ same reason.
   carries a thread-local test override; re-deriving the path by hand produces a
   tier no test can isolate, so unit tests write into the developer's real
   `~/.plexi`.
+- **A test that touches a user-data tier needs a `shared_dir` override, not just a
+  profile override.** `set_test_profile_dir` isolates `config_dir()`, which is
+  channel-scoped — it does nothing for the channel-neutral shared dir the tiers
+  live in. `HostHarness` and `PlexiUiHarness` install
+  `crate::config::set_test_shared_dir` for their lifetime; a plain unit test must
+  install one itself. This is not theoretical: stint 0746's own test runs wrote
+  files into a real `~/.plexi/notes/` before the guards existed. Any new kind added
+  to `state_scope.rs` inherits the same hazard.
 - **The symlink guard depends on canonicalizing only the base.** `scope_layout`
   returns a trusted base plus literal tail components on purpose: resolving the
   whole expected path would accept a symlinked `.plexi/` instead of rejecting it.
