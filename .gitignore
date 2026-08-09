@@ -73,7 +73,7 @@ mempalace.yaml
 entities.json
 
 # Stint task graph (local only)
-.stint/
+.stint/*
 
 
 # Agent skill logs (runtime artifacts)
