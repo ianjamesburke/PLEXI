@@ -293,7 +293,6 @@ pub fn is_light_preset(name: &str) -> bool {
 }
 
 /// Returns the list of available preset names.
-#[allow(dead_code)] // theme-picker palette is future; preset list stays ready
 pub fn preset_names() -> &'static [&'static str] {
     &[
         "catppuccin-mocha",
@@ -1162,32 +1161,15 @@ mod tests {
     /// danger fills. Guards the whole preset table, including future entries.
     #[test]
     fn text_on_is_legible_on_every_preset_accent_and_danger() {
-        fn luminance(c: Color32) -> f32 {
-            let rgba = egui::Rgba::from(c);
-            fn linear(v: f32) -> f32 {
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            }
-            0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
-        }
-        fn contrast(a: Color32, b: Color32) -> f32 {
-            let (hi, lo) = if luminance(a) > luminance(b) {
-                (luminance(a), luminance(b))
-            } else {
-                (luminance(b), luminance(a))
-            };
-            (hi + 0.05) / (lo + 0.05)
-        }
+        // Ratio between two colors, over the module's own WCAG helpers.
+        let ratio = |a: Color32, b: Color32| contrast(luminance(a), luminance(b));
         for name in preset_names() {
             let cfg = preset_colors(name).unwrap();
             let colors = Colors::from_config(&cfg);
             for fill in [colors.accent, colors.danger] {
                 let text = colors.text_on(fill);
                 assert!(
-                    contrast(text, fill) >= 3.0,
+                    ratio(text, fill) >= 3.0,
                     "{name}: text_on({fill:?}) = {text:?} is below 3:1 contrast"
                 );
             }
@@ -1259,25 +1241,8 @@ mod tests {
 
     #[test]
     fn catppuccin_latte_secondary_text_is_legible_on_primary_surfaces() {
-        fn luminance(c: Color32) -> f32 {
-            let rgba = egui::Rgba::from(c);
-            fn linear(v: f32) -> f32 {
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            }
-            0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
-        }
-        fn contrast(a: Color32, b: Color32) -> f32 {
-            let (hi, lo) = if luminance(a) > luminance(b) {
-                (luminance(a), luminance(b))
-            } else {
-                (luminance(b), luminance(a))
-            };
-            (hi + 0.05) / (lo + 0.05)
-        }
+        // Ratio between two colors, over the module's own WCAG helpers.
+        let ratio = |a: Color32, b: Color32| contrast(luminance(a), luminance(b));
 
         for name in &[
             "catppuccin-latte",
@@ -1289,17 +1254,17 @@ mod tests {
             let colors = Colors::from_config(&cfg);
             // bg_sidebar is where inactive row text (text_dim) appears — must be readable.
             assert!(
-                contrast(colors.text_primary, colors.bg_sidebar) >= 4.5,
+                ratio(colors.text_primary, colors.bg_sidebar) >= 4.5,
                 "{name}: text_primary below 4.5:1 on bg_sidebar"
             );
             assert!(
-                contrast(colors.text_dim, colors.bg_sidebar) >= 3.0,
+                ratio(colors.text_dim, colors.bg_sidebar) >= 3.0,
                 "{name}: text_dim below 3:1 on bg_sidebar (inactive row text illegible)"
             );
             // bg_active is the chip background — text_on must achieve 3:1 there.
             let chip_text = colors.text_on(colors.bg_active);
             assert!(
-                contrast(chip_text, colors.bg_active) >= 3.0,
+                ratio(chip_text, colors.bg_active) >= 3.0,
                 "{name}: chip text_on(bg_active) below 3:1 (chip text illegible)"
             );
         }

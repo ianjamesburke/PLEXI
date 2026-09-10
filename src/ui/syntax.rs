@@ -27,12 +27,8 @@ impl SyntaxHighlighter {
 }
 
 fn is_light_theme(colors: &Colors) -> bool {
+    use crate::ui::theme::luminance;
     luminance(colors.bg_darkest) > luminance(colors.text_primary)
-}
-
-fn luminance(color: egui::Color32) -> f32 {
-    let rgba = egui::Rgba::from(color);
-    0.2126 * rgba.r() + 0.7152 * rgba.g() + 0.0722 * rgba.b()
 }
 
 #[cfg(test)]

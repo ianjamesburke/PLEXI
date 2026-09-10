@@ -15,7 +15,7 @@ class HasToNode(Protocol):
     def to_node(self) -> dict: ...
 
 # ── Style tokens ──────────────────────────────────────────────────────────
-# Keep these in sync with Rust's src/style.rs. Adding a token here without
+# Keep these in sync with Rust's src/ui/style.rs. Adding a token here without
 # a matching Rust constant is fine (pure Python), but overlap should match.
 
 # Spacing (pixels). 4-based scale.
@@ -40,7 +40,7 @@ RADIUS_LG = 12.0
 # Badge-specific radius — between tag-chip (4) and full-stadium (8). At
 # TEXT_HINT size the pill height is ~17 px; RADIUS_MD makes it 94% of
 # max-oval (cliché). 6.0 gives visible corners while staying clearly rounded.
-# Keep in sync with src/style.rs RADIUS_BADGE.
+# Keep in sync with src/ui/style.rs RADIUS_BADGE.
 RADIUS_BADGE = 6.0
 
 # Live host theme — populated from the Init payload (light/dark + user overrides).
