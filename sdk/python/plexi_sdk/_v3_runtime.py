@@ -330,11 +330,6 @@ class V3AppRuntime:
                 scoped_state = states.get(scope_name)
                 if isinstance(scoped_state, dict):
                     self._scoped_values[scope_name] = dict(scoped_state)
-        else:
-            # Pre-scope hosts send a single flat "state" for the default scope.
-            init_state = ev.get("state")
-            if init_state and isinstance(init_state, dict):
-                self._scoped_values[self._scopes[0]] = dict(init_state)
 
         _emit({
             "type": "ready",
