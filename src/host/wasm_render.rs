@@ -922,17 +922,7 @@ fn render_node(
                 BadgeColor::Danger => colors.danger,
                 BadgeColor::Neutral => colors.bg_active,
             };
-            egui::Frame::new()
-                .fill(fill)
-                .inner_margin(egui::Margin::symmetric(6, 2))
-                .corner_radius(style::RADIUS_SM)
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(&b.text)
-                            .size(style::TEXT_META)
-                            .color(colors.text_on(fill)),
-                    );
-                });
+            crate::ui::badge::badge(ui, &b.text, fill, colors);
         }
 
         UiNodeData::ListView(l) => {

@@ -330,18 +330,11 @@ impl RowGeometry {
             } else {
                 row.badge_count.to_string()
             };
-            ui.fonts_mut(|f| {
-                f.layout_no_wrap(
-                    label,
-                    egui::FontId::proportional(style::TEXT_META),
-                    Color32::PLACEHOLDER,
-                )
-            })
+            crate::ui::badge::badge_galley(ui, &label, Color32::PLACEHOLDER)
         });
-        let badge_size = badge_galley.as_ref().map(|galley| {
-            let h = galley.size().y + style::BADGE_PAD_V * 2.0;
-            Vec2::new((galley.size().x + style::BADGE_PAD_H * 2.0).max(h), h)
-        });
+        let badge_size = badge_galley
+            .as_ref()
+            .map(|galley| crate::ui::badge::badge_size(galley.size()));
         let badge_reserved = badge_size.map_or(0.0, |size| size.x + PIP_BADGE_GAP);
 
         let pips = row
@@ -694,20 +687,12 @@ impl SidebarRow {
         // different color family, so a notification count can never be
         // mistaken for a collapsed pip strip sitting next to it.
         if let Some((badge_rect, galley)) = &geom.badge {
-            let text_color = with_alpha(colors.text_on(colors.accent), row_alpha);
-            ui.painter().rect_filled(
-                *badge_rect,
-                style::RADIUS_BADGE,
-                with_alpha(colors.accent, row_alpha),
-            );
-            crate::ui::snap::galley_snapped(
+            crate::ui::badge::paint_badge(
                 ui.painter(),
-                Pos2::new(
-                    badge_rect.center().x - galley.size().x / 2.0,
-                    badge_rect.center().y - galley.size().y / 2.0,
-                ),
+                *badge_rect,
                 galley.clone(),
-                text_color,
+                with_alpha(colors.accent, row_alpha),
+                with_alpha(colors.text_on(colors.accent), row_alpha),
             );
         }
 

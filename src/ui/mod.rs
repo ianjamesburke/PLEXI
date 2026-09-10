@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod badge;
 pub mod button;
 pub mod code_viewer;
 pub mod dialog;

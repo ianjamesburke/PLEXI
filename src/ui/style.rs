@@ -110,10 +110,16 @@ pub const TEXT_PANE_ID_GHOST: f32 = 64.0;
 pub const PANE_ID_GHOST_ALPHA: u8 = 55;
 
 // ── App protocol — Badge geometry ─────────────────────────────────────────
-// Padding tokens for the host-rendered Badge DrawCommand. Shared with the
-// Python SDK constants in plexi_sdk/ui.py so both sides agree on pill size.
+// Padding tokens for every host-painted badge pill. The host measures the
+// label and sizes the pill, so the Python SDK never repeats these; it shares
+// only RADIUS_BADGE above. `crate::ui::badge` is the one consumer that turns
+// them into a rect — go through it rather than reading them directly.
 pub const BADGE_PAD_H: f32 = 8.0; // horizontal padding (text-to-edge each side)
 pub const BADGE_PAD_V: f32 = 3.0; // vertical padding (text-to-edge each side)
+/// Floor width for a badge in the PGAP flex-layout path, where the label font
+/// size is the app's choice rather than TEXT_META. Keeps a short status pill
+/// from shrink-wrapping tighter than its neighbours in a row.
+pub const BADGE_MIN_W: f32 = 32.0;
 
 // ── App protocol — KeyChip geometry ──────────────────────────────────────
 // Padding tokens for the host-rendered KeyChip / KeyChipRow DrawCommands.
