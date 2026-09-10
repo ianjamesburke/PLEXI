@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // Ship-time panic-path protection. `todo!()` / `unimplemented!()` compile clean
-// but panic at runtime — e.g. 2026-04-18, CoreAudioDevice::start_capture was
+// but panic at runtime — e.g. 2026-04-18, the audio capture entry point was
 // `todo!()` and froze the GUI when a recorder app sent AudioCapture without
 // PLEXI_AUDIO=mock://. Stubs must return `Err(NotImplemented)` instead.
 #![deny(clippy::todo, clippy::unimplemented)]
