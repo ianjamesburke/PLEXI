@@ -11,7 +11,7 @@ The sudoku app is the migration canary. Each SDK version bump ships alongside an
 
 ## SDK Versioning
 
-A single version source of truth exists: `pyproject.toml`. `__init__.py` and `_constants.py` derive from it at build time; they never declare a version independently.
+A single version source of truth exists: `pyproject.toml`. `_version.py` derives from it at build time; no other module declares a version independently.
 
 Apps declare `min_sdk_version = "X.Y.Z"` in `manifest.toml`. The host reads this field at PGAP launch and rejects the app with a user-visible error if the installed SDK is older. Apps without `min_sdk_version` launch without a version check; no existing app breaks.
 
@@ -61,7 +61,7 @@ Canvas apps that previously hardcoded hex colors migrate by replacing hex litera
 
 ## Definition of Finished
 
-- `pyproject.toml` is the single version source. `sdk.__version__` reads from it. `_constants.py` has no version field.
+- `pyproject.toml` is the single version source. `sdk.__version__` reads from it. No other module carries a version field.
 - A manifest with `min_sdk_version` newer than the installed SDK causes the host to display a version mismatch error instead of launching the app.
 - `CanvasRect` with `border_color` and `border_width` renders a stroked outline. The `Card` and `DetailTable` components use this; the four-rect hack is gone.
 - A `MouseEvent` from a click on a `CanvasRect` with `hit_region = "cell-3-4"` delivers `event.region == "cell-3-4"`. The sudoku app's `_hit()`, `_num_btn_layout()`, and `_menu_mouse()` methods are removed.
