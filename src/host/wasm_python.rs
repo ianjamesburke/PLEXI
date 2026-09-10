@@ -4879,7 +4879,7 @@ fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<()
             function: "view",
             message: source.to_string(),
         })?;
-    if !ui_tree_contains_text(&tree, expected_view_text) {
+    if !tree.visible_text().contains(expected_view_text) {
         return Err(WasmPythonError::ShimLifecycleCallFailure {
             path: path.to_path_buf(),
             function: "view",
@@ -4914,16 +4914,6 @@ fn is_core_wasm_module(path: &Path) -> bool {
 fn grants_with_state(mut grants: Grants) -> Grants {
     grants.state = true;
     grants
-}
-
-#[cfg(test)]
-fn ui_tree_contains_text(tree: &UiTree, needle: &str) -> bool {
-    tree.nodes.iter().any(|node| {
-        matches!(
-            &node.data,
-            UiNodeData::Text(text) if text.text.contains(needle)
-        )
-    })
 }
 
 #[derive(Debug, Clone)]
@@ -8911,17 +8901,6 @@ mod tests {
         );
     }
 
-    fn tree_text(tree: &UiTree) -> String {
-        tree.nodes
-            .iter()
-            .filter_map(|node| match &node.data {
-                UiNodeData::Text(text) => Some(text.text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     #[test]
     fn manifest_python_compat_routes_to_launch_config() {
         let dir = tempdir().expect("tempdir");
@@ -9112,7 +9091,7 @@ execution = "cloud"
             Effect::SetTitle(title) if title == "Python Shim POC"
         ));
         let view = app.view().expect("shim view");
-        assert!(tree_text(&view).contains("Count: 0"));
+        assert!(view.visible_text().contains("Count: 0"));
 
         let update = app
             .update(&InputEvent::UiAction(UiActionEvent {
@@ -9121,7 +9100,7 @@ execution = "cloud"
             .expect("shim update");
         assert!(update.is_empty());
         let view = app.view().expect("updated shim view");
-        assert!(tree_text(&view).contains("Count: 1"));
+        assert!(view.visible_text().contains("Count: 1"));
     }
 
     #[test]

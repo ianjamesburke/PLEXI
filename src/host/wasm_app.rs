@@ -41,6 +41,25 @@ pub use types::{
     UiNodeData, UiTree,
 };
 
+impl UiTree {
+    /// Every human-readable label in the tree — text, button, and badge nodes —
+    /// newline-joined in arena order. The single text surface every content
+    /// assertion and every semantic snapshot reads, so a substring search
+    /// matches the same content wherever it runs.
+    pub fn visible_text(&self) -> String {
+        self.nodes
+            .iter()
+            .filter_map(|n| match &n.data {
+                UiNodeData::Text(t) => Some(t.text.clone()),
+                UiNodeData::Button(b) => Some(b.label.clone()),
+                UiNodeData::Badge(b) => Some(b.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 // ─── Capability grants ─────────────────────────────────────────────────────
 //
 // host-log is always linked (logging is unconditionally safe). Every other
@@ -1261,17 +1280,6 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
         })
     }
 
-    fn tree_text(tree: &UiTree) -> String {
-        tree.nodes
-            .iter()
-            .filter_map(|n| match &n.data {
-                UiNodeData::Text(t) => Some(t.text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     // G3: init -> timer-fired returns get-system-stats -> deliver stats -> view
     // shows the CPU percentage. The whole loop runs through the wasmtime host
     // with no subprocess.
@@ -1297,7 +1305,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
 
         let tree = app.view()?;
         assert!(
-            tree_text(&tree).contains("42.0%"),
+            tree.visible_text().contains("42.0%"),
             "view should render the delivered CPU percentage"
         );
         Ok(())
