@@ -46,7 +46,6 @@ RADIUS_BADGE = 6.0
 # Live host theme — populated from the Init payload (light/dark + user overrides).
 # Components read theme.<role> at render time so they track the active theme.
 from ._theme import theme  # noqa: E402
-from ._constants import BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW  # noqa: E402
 
 # ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -2462,33 +2461,6 @@ class Column(Component):
         return column_node
 
 
-# ── Public render entry point ──────────────────────────────────────────────
-
-
-def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
-    """Clear the pane to `fill`, then render `root` into the full pane rect.
-
-    `fill` defaults to the active host theme background (`theme.bg`).
-    Apps normally call `ctx.render(root)` instead, which calls this.
-
-    The root component and every descendant must support ``to_node()``. The SDK
-    emits a single ``ComponentTree`` command and the host renders it natively.
-    """
-    if not isinstance(root, Component):
-        raise TypeError(
-            f"ctx.render() expected a Component (e.g. Column, Card), got {type(root).__name__}. "
-            "Wrap your UI elements in Column([...]) or another container that subclasses Component."
-        )
-    ctx.clear(fill or theme.bg)
-    node = root.to_node()
-    if node is None:
-        raise TypeError(
-            f"{type(root).__name__}.to_node() returned None. SDK v3 requires "
-            "a host-native component tree."
-        )
-    ctx.render_tree(node)
-
-
 @dataclass
 class InfoTable(Component):
     """Key-value table with surface background, border, and row dividers.
@@ -2623,8 +2595,8 @@ class ButtonRow(Component):
 #
 # These classes produce ``dict`` values matching the ``UiNode`` wire format
 # defined in ``src/app_protocol.rs``.  ``to_node()`` returns a plain dict
-# with a ``"type"`` field; B3 (``ctx.render_tree``) will serialise the tree
-# to the host.  All ``UiNode`` classes serialise to the single ``ui-node-data``
+# with a ``"type"`` field, returned from ``view()`` and serialised to the
+# host.  All ``UiNode`` classes serialise to the single ``ui-node-data``
 # variant set; sugar types decompose to base nodes and are rendered natively by
 # the host.
 
@@ -2642,7 +2614,7 @@ class Tabs:
             ("Overview", overview_node),
             ("Details", details_node),
         ], active=0)
-        ctx.render_tree(tabs.to_node())
+        return tabs.to_node()
     """
 
     def __init__(
@@ -2710,7 +2682,7 @@ class Grid:
     Example::
 
         grid = Grid(2, [item_a, item_b, item_c, item_d], gap=8.0)
-        ctx.render_tree(grid.to_node())
+        return grid.to_node()
     """
 
     def __init__(
@@ -2766,7 +2738,7 @@ class Toggle:
     Example::
 
         toggle = Toggle("dark_mode", value=True, label="Dark mode")
-        ctx.render_tree(toggle.to_node())
+        return toggle.to_node()
     """
 
     def __init__(self, node_id: str, value: bool, label: str = "") -> None:
@@ -2800,7 +2772,7 @@ class ProgressBar:
     Example::
 
         bar = ProgressBar(0.75)
-        ctx.render_tree(bar.to_node())
+        return bar.to_node()
     """
 
     def __init__(
@@ -2826,8 +2798,6 @@ __all__ = [
     "TEXT_HINT", "TEXT_CAPTION", "TEXT_BODY", "TEXT_HEADING",
     "TEXT_TITLE", "TEXT_TITLE_XL",
     "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
-    # color constants (dark-mode defaults)
-    "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
     # badge/status semantic color vocabulary
     "BadgeColor", "BADGE_COLORS",
     # components (declarative-tree surface only -- every exported class here
@@ -2844,8 +2814,6 @@ __all__ = [
     "badge",
     # scroll helpers
     "ensure_visible",
-    # entry
-    "render_tree",
     # UiNode component tree (PGAP v3.5)
     "Tabs", "Grid", "Toggle", "ProgressBar",
 ]
