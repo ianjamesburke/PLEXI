@@ -18,7 +18,7 @@
 //! position is ever reconstructed from a captured height after the fact, and the
 //! row's width is a fixed budget that cannot exceed what the panel offered.
 
-use crate::ui::list::{elide_to_width, paint_selection, paint_text_centered, selection_inset};
+use crate::ui::list::{paint_selection, paint_text_centered, selection_inset};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::emath::GuiRounding;
@@ -97,28 +97,15 @@ pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
 
 static HOME_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-fn shorten_path(path: &str) -> String {
+/// Collapse `$HOME` to `~`. Truncation is not this function's job: the
+/// caller elides the result against the width it actually has.
+fn abbreviate_home(path: &str) -> String {
     let home = HOME_DIR.get_or_init(|| std::env::var("HOME").unwrap_or_default());
-    let shortened = if !home.is_empty() {
-        path.strip_prefix(home.as_str())
-            .map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
-    } else {
-        path.to_string()
-    };
-    let char_count = shortened.chars().count();
-    if char_count > 40 {
-        let tail: String = shortened
-            .chars()
-            .rev()
-            .take(39)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        format!("\u{2026}{tail}")
-    } else {
-        shortened
+    if home.is_empty() {
+        return path.to_string();
     }
+    path.strip_prefix(home.as_str())
+        .map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
 }
 
 pub enum SidebarAction {
@@ -307,11 +294,12 @@ impl RowGeometry {
         // name's budget is one subtraction and does not vary with pane state.
         let close_left = row.action_enabled.then_some(content_right - CLOSE_SLOT_W);
         let title_max = (close_left.unwrap_or(content_right) - content_left).max(0.0);
-        let title_galley = elided_galley(
+        let title_galley = crate::ui::text::elided_galley(
             ui,
             &row.ctx_name,
             egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE),
             title_max,
+            crate::ui::text::Side::Trailing,
         );
         // The close slot is a hit target, not a text line: it is centered on
         // the title and allowed to overhang into the row's padding rather than
@@ -358,11 +346,12 @@ impl RowGeometry {
             .as_ref()
             .filter(|_| path_avail >= PATH_MIN_W)
             .map(|path| {
-                elided_galley(
+                crate::ui::text::elided_galley(
                     ui,
-                    &shorten_path(path),
+                    &abbreviate_home(path),
                     egui::FontId::proportional(style::TEXT_META),
                     path_avail,
+                    crate::ui::text::Side::Leading,
                 )
             });
 
@@ -426,18 +415,6 @@ impl RowGeometry {
                 .map(|(rect, galley)| (rect.translate(offset), galley)),
         }
     }
-}
-
-fn elided_galley(
-    ui: &egui::Ui,
-    text: &str,
-    font_id: egui::FontId,
-    max_width: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let text = elide_to_width(ui, text, font_id.clone(), max_width);
-    // PLACEHOLDER defers the color to paint time, so measurement never has to
-    // know which of the row's alpha-modulated tones this text will end up in.
-    ui.fonts_mut(|f| f.layout_no_wrap(text, font_id, Color32::PLACEHOLDER))
 }
 
 /// Paint the pip strip: one capsule per spatial window, the dots inside them,

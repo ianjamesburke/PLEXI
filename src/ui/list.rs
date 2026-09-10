@@ -487,17 +487,23 @@ fn draw_text_block(
     // Primary reads one step above secondary metadata — both size and weight,
     // otherwise the two lines collapse into one undifferentiated block.
     let primary_font = crate::ui::theme::font_medium(style::TEXT_CAPTION);
-    let primary = elided_galley(ui, row.body, primary_font, primary_color, primary_max);
+    let primary = crate::ui::text::elided_galley(
+        ui,
+        row.body,
+        primary_font,
+        primary_max,
+        crate::ui::text::Side::Trailing,
+    );
     let primary_size = primary.size();
 
     if let Some(secondary) = row.secondary {
         let secondary_font = egui::FontId::proportional(style::TEXT_HINT);
-        let secondary_galley = elided_galley(
+        let secondary_galley = crate::ui::text::elided_galley(
             ui,
             secondary,
             secondary_font,
-            colors.text_dim,
             secondary_max,
+            crate::ui::text::Side::Trailing,
         );
         let secondary_h = secondary_galley.size().y;
         let total_h = primary_size.y + 2.0 + secondary_h;
@@ -533,57 +539,6 @@ struct TextBlockMetrics {
     secondary_center_y: Option<f32>,
 }
 
-fn elided_galley(
-    ui: &egui::Ui,
-    text: &str,
-    font_id: egui::FontId,
-    color: Color32,
-    max_width: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let text = elide_to_width(ui, text, font_id.clone(), max_width);
-    ui.fonts_mut(|f| f.layout_no_wrap(text, font_id, color))
-}
-
-pub(crate) fn elide_to_width(
-    ui: &egui::Ui,
-    text: &str,
-    font_id: egui::FontId,
-    max_width: f32,
-) -> String {
-    if max_width <= 0.0 {
-        return String::new();
-    }
-
-    let width = |s: &str| {
-        ui.fonts_mut(|f| {
-            f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
-                .size()
-                .x
-        })
-    };
-
-    if width(text) <= max_width {
-        return text.to_string();
-    }
-
-    const ELLIPSIS: &str = "...";
-    if width(ELLIPSIS) > max_width {
-        return String::new();
-    }
-
-    let mut out = String::new();
-    for ch in text.chars() {
-        let mut candidate = out.clone();
-        candidate.push(ch);
-        candidate.push_str(ELLIPSIS);
-        if width(&candidate) > max_width {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push_str(ELLIPSIS);
-    out
-}
 
 /// The selection highlight spans the row's full width — flush with the
 /// text fields above it in palettes/pickers — and stops 1px short
@@ -997,18 +952,6 @@ mod tests {
                 pip_top >= chip_bottom,
                 "two-line row: pip top ({pip_top:.1}) must clear chip bottom ({chip_bottom:.1})"
             );
-        });
-    }
-
-    #[test]
-    fn elide_to_width_keeps_text_single_line_within_width() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let font = egui::FontId::proportional(style::TEXT_HINT);
-            let elided = elide_to_width(ui, "a very long note filename.md", font.clone(), 40.0);
-            let galley = ui.fonts_mut(|f| f.layout_no_wrap(elided, font, Color32::WHITE));
-            assert!(galley.size().x <= 40.0);
-            assert_eq!(galley.rows.len(), 1);
         });
     }
 }

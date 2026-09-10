@@ -18,6 +18,7 @@ pub mod snap;
 pub mod style;
 pub mod surface;
 pub mod syntax;
+pub mod text;
 pub mod text_field;
 pub mod theme;
 pub mod toast;

@@ -114,35 +114,6 @@ enum PendingFileOperation {
     MoveToTrash { paths: Vec<PathBuf> },
 }
 
-/// Elide a path label from the left so the leaf directory stays visible —
-/// `…/projects/plexi/src` reads better than `/Users/ian/Documents/proj…`.
-/// Width-measured against the actual font, not a char-count guess.
-fn elide_path_leading(ui: &egui::Ui, path: &str, font_id: egui::FontId, max_width: f32) -> String {
-    if max_width <= 0.0 {
-        return String::new();
-    }
-    let width = |s: &str| {
-        ui.fonts_mut(|f| {
-            f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
-                .size()
-                .x
-        })
-    };
-    if width(path) <= max_width {
-        return path.to_string();
-    }
-    const ELLIPSIS: char = '\u{2026}';
-    let chars: Vec<char> = path.chars().collect();
-    for keep in (1..chars.len()).rev() {
-        let candidate: String = std::iter::once(ELLIPSIS)
-            .chain(chars[chars.len() - keep..].iter().copied())
-            .collect();
-        if width(&candidate) <= max_width {
-            return candidate;
-        }
-    }
-    ELLIPSIS.to_string()
-}
 
 fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui::Key) -> bool {
     input.events().iter().any(
@@ -1667,10 +1638,26 @@ impl FileBrowserApp {
                 );
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Cancel",
+                        crate::ui::button::ButtonKind::Secondary,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         self.cancel_pending_operation();
                     }
-                    if ui.button("Move to Trash").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Move to Trash",
+                        crate::ui::button::ButtonKind::Danger,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         if let Err(err) = self.confirm_pending_operation() {
                             self.error = Some(err);
                         }
@@ -1718,10 +1705,26 @@ impl FileBrowserApp {
                 }
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Cancel",
+                        crate::ui::button::ButtonKind::Secondary,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         self.cancel_rename_modal();
                     }
-                    if ui.button("Rename").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Rename",
+                        crate::ui::button::ButtonKind::Primary,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         self.confirm_rename_modal();
                     }
                 });
@@ -1872,11 +1875,14 @@ impl FileBrowserApp {
         // (path left, chips right) collided at narrow widths: the chips
         // wrapped under the path and the toolbar grew unpredictably.
         ui.horizontal(|ui| {
-            let elided = elide_path_leading(
+            // Elided from the left so the leaf directory always stays visible —
+            // `…/projects/plexi/src` reads better than `/Users/ian/Documen…`.
+            let elided = crate::ui::text::elide(
                 ui,
                 &self.cwd.display().to_string(),
                 egui::FontId::monospace(style::TEXT_HINT),
                 ui.available_width(),
+                crate::ui::text::Side::Leading,
             );
             ui.colored_label(
                 colors.accent,
@@ -2682,25 +2688,6 @@ mod tests {
             .take_pending_commands()
             .iter()
             .any(|c| matches!(c, AppCommand::CdRequest { .. })));
-    }
-
-    #[test]
-    fn elide_path_keeps_leaf_visible() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run_ui(RawInput::default(), |ui| {
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                let font = egui::FontId::monospace(11.0);
-                let full = "/Users/ian/Documents/GitHub/PLEXI/src/file_browser";
-                assert_eq!(elide_path_leading(ui, full, font.clone(), 10_000.0), full);
-
-                let narrow = elide_path_leading(ui, full, font.clone(), 160.0);
-                assert!(narrow.starts_with('\u{2026}'));
-                assert!(narrow.ends_with("file_browser"));
-                assert!(narrow.chars().count() < full.chars().count());
-
-                assert!(elide_path_leading(ui, full, font, 0.0).is_empty());
-            });
-        });
     }
 
     #[test]
