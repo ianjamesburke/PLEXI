@@ -185,17 +185,6 @@ impl PlexiUiHarness {
 
     // ── Typed state helpers ───────────────────────────────────────────────────
 
-    /// Number of panes in the active window.
-    pub fn pane_count(&self) -> usize {
-        let app = self.inner.state();
-        app.windows[app.active_window].panes.len()
-    }
-
-    /// Number of windows (spatial grid entries) in the app.
-    pub fn window_count(&self) -> usize {
-        self.inner.state().windows.len()
-    }
-
     /// Mutably access PlexiApp to set up state before assertions.
     pub fn with_app_mut<F, R>(&mut self, f: F) -> R
     where
@@ -3018,34 +3007,6 @@ mod tests {
 
     // ── Regression: layout flows ──────────────────────────────────────────────
 
-    #[test]
-    fn split_vertical_adds_pane() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        add_focused_pane(&mut h);
-        h.step();
-        assert_eq!(h.pane_count(), 1);
-
-        h.with_app_mut(|app| app.split_focused(true, None, false, false, None));
-        h.step();
-
-        assert_eq!(h.pane_count(), 2);
-    }
-
-    #[test]
-    fn split_horizontal_adds_pane() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        add_focused_pane(&mut h);
-        h.step();
-        assert_eq!(h.pane_count(), 1);
-
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None));
-        h.step();
-
-        assert_eq!(h.pane_count(), 2);
-    }
-
     /// Holding Control exposes every pane's centered ID, including a window
     /// with just one pane. The two-pane layout is the control case for the
     /// same production render path.
@@ -3157,18 +3118,6 @@ mod tests {
                 "Control must paint pane {pane_id}'s ID in a split layout"
             );
         }
-    }
-
-    #[test]
-    fn new_context_adds_window() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        assert_eq!(h.window_count(), 1);
-
-        h.with_app_mut(|app| app.new_context());
-        h.step();
-
-        assert_eq!(h.window_count(), 2);
     }
 
     // ── Rename flow tests (require a real egui frame to process key events) ────

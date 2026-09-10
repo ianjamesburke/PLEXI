@@ -546,6 +546,65 @@ impl HostHarness {
         self
     }
 
+    /// Launch a real process app from `apps/dev/<name>` and return its pane
+    /// id, without waiting for the guest's first render. Use this when the
+    /// test drives startup itself (a title-phase poll, a scheduler-wake
+    /// probe); otherwise prefer `launch_dev_app`, which also waits.
+    pub fn launch_dev_app_without_render(&mut self, name: &str) -> PaneId {
+        let app_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("apps/dev/{name}"));
+        self.app
+            .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+            .unwrap_or_else(|e| panic!("launch {name}: {e}"));
+        *self
+            .state()
+            .open_panes
+            .last()
+            .unwrap_or_else(|| panic!("a pane appears after launching {name}"))
+    }
+
+    /// Launch a real process app from `apps/dev/<name>` and poll frames until
+    /// its guest has committed a first rendered tree. Returns the pane id.
+    /// Anything layout-dependent (pane rect resolution, clicking, reading the
+    /// semantic tree) needs that first commit, so this is the default launch.
+    pub fn launch_dev_app(&mut self, name: &str) -> PaneId {
+        let pane_id = self.launch_dev_app_without_render(name);
+        self.wait_for_first_render(pane_id);
+        pane_id
+    }
+
+    /// Poll frames until the Python guest backing `pane_id` has committed its
+    /// first rendered tree, then run two idle frames so the tile tree's
+    /// layout settles. Panics naming the app's manifest id on timeout.
+    pub fn wait_for_first_render(&mut self, pane_id: PaneId) {
+        let name = self.app.windows[self.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.manifest_id.clone())
+            .unwrap_or_else(|| format!("pane {pane_id}"));
+        let start = std::time::Instant::now();
+        loop {
+            self.run_frames(1);
+            let rendered = self.app.windows[self.app.active_window]
+                .panes
+                .get(&pane_id)
+                .and_then(Pane::as_app)
+                .is_some_and(
+                    |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+                );
+            if rendered {
+                break;
+            }
+            assert!(
+                start.elapsed() < load_aware_timeout(std::time::Duration::from_secs(30)),
+                "{name} did not render its first frame in time"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        self.run_frames(2);
+    }
+
     /// Poll the recorded event bus — the global `AppTimeline`, the same store
     /// production `EmitEvent` requests record into — until an event on
     /// `stream` whose serialized JSON payload contains `payload_contains`
