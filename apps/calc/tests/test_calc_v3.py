@@ -1,22 +1,13 @@
 from __future__ import annotations
 
-import os
-import sys
+import json
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python"),
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import plexi_sdk as sdk
+from plexi_sdk import _v3_state
+from plexi_sdk.effects import ExposeTools, SetState, ToolResult
+from plexi_sdk.events import KeyEvent, ToolCall, UiAction
 
-import json  # noqa: E402
-
-import plexi_sdk as sdk  # noqa: E402
-from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import ExposeTools, SetState, ToolResult  # noqa: E402
-from plexi_sdk.events import KeyEvent, ToolCall, UiAction  # noqa: E402
-
-import calc  # noqa: E402
+import calc
 
 
 def _set_state(values: dict) -> None:
