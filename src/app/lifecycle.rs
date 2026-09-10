@@ -2442,7 +2442,6 @@ impl PlexiApp {
                     crate::app::notifications::NotifySource::Cli,
                     PendingNotification {
                         notify_id: internal_id,
-                        sender_pane_id: 0,
                         dismiss_owner_pane_id,
                         // 0 = no context / no window, the same sentinel
                         // host-internal notifications use. Real ids start at 1.
@@ -2460,10 +2459,7 @@ impl PlexiApp {
                         response_file: response_file.clone(),
                         timeout_secs: *timeout_secs,
                         on_dismiss: on_dismiss.clone(),
-                        enqueued_at: std::time::Instant::now(),
-                        tombstoned: false,
-                        deliver_after: None,
-                        origin_in_view: false,
+                        ..Default::default()
                     },
                 );
             }
@@ -3331,38 +3327,15 @@ impl PlexiApp {
             Some(id) => (crate::app_protocol::NotifyScope::Context, id),
             None => (crate::app_protocol::NotifyScope::Global, 0),
         };
-        // Millis alone can collide when two routine issues surface in the same
-        // tick; notify_id is an identity key, so disambiguate with a counter.
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
         let queued = self.enqueue_notification(
             crate::app::notifications::NotifySource::HostInternal,
             crate::app::notifications::PendingNotification {
-                notify_id: format!("routine-{millis}-{seq}"),
-                sender_pane_id: 0,
-                dismiss_owner_pane_id: 0,
+                notify_id: crate::app::notifications::new_notify_id("routine"),
                 source_context_id,
-                source_window_id: 0,
                 title: title.to_string(),
                 body: body.to_string(),
-                kind: crate::app_protocol::NotifyKind::Message,
-                options: vec![],
-                input_prompt: None,
-                required: false,
                 scope,
-                image_inline: None,
-                image_pipe_id: None,
-                response_file: None,
-                timeout_secs: None,
-                on_dismiss: None,
-                enqueued_at: std::time::Instant::now(),
-                tombstoned: false,
-                deliver_after: None,
-                origin_in_view: false,
+                ..Default::default()
             },
         );
         log::info!("scheduler: routine notification queued={queued} title='{title}' body='{body}'");

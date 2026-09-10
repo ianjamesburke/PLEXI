@@ -61,6 +61,45 @@ pub(crate) struct PendingNotification {
     pub origin_in_view: bool,
 }
 
+impl Default for PendingNotification {
+    /// Every field that is the same constant at essentially every construction
+    /// site. `enqueued_at` is stamped at construction time, so a value built
+    /// from `Default` is queued "now", never at some stale earlier instant.
+    fn default() -> Self {
+        Self {
+            notify_id: String::new(),
+            sender_pane_id: 0,
+            dismiss_owner_pane_id: 0,
+            source_context_id: 0,
+            source_window_id: 0,
+            title: String::new(),
+            body: String::new(),
+            kind: crate::app_protocol::NotifyKind::default(),
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            scope: crate::app_protocol::NotifyScope::default(),
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: None,
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now(),
+            tombstoned: false,
+            deliver_after: None,
+            origin_in_view: false,
+        }
+    }
+}
+
+/// The one way a notification id is minted. `prefix` names the source
+/// (`wasm:<pane_id>`, `config-error`, `routine`, …); the uuid makes the id
+/// collision-free by construction, so no caller needs its own sequence
+/// counter. Nothing parses the id back apart — it is an opaque identity key.
+pub(crate) fn new_notify_id(prefix: &str) -> String {
+    format!("{prefix}-{}", uuid::Uuid::new_v4())
+}
+
 /// Serializable snapshot of a `PendingNotification`. Session-only handles
 /// (`image_pipe_id`, `response_file`, `deliver_after`) are dropped on save and
 /// restored as `None`; `tombstoned` is forced to `true` on load because the

@@ -904,40 +904,18 @@ impl PlexiApp {
                 .collect::<Vec<_>>()
                 .join("\n");
             log::warn!("config: parse error, keeping current config:\n{error_msg}");
-            let notify_id = format!(
-                "config-error-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0)
-            );
+            let notify_id = crate::app::notifications::new_notify_id("config-error");
             self.enqueue_notification(
                 crate::app::notifications::NotifySource::HostInternal,
                 PendingNotification {
                     notify_id,
-                    sender_pane_id: 0,
-                    dismiss_owner_pane_id: 0,
-                    source_context_id: 0,
-                    source_window_id: 0,
                     title: "Config Error".to_string(),
                     body: error_msg,
-                    kind: crate::app_protocol::NotifyKind::Message,
-                    options: vec![],
-                    input_prompt: None,
-                    required: false,
                     // A broken config is not a property of one context — it
                     // affects the whole workspace, so this stays the explicit
                     // global case rather than taking the shared default.
                     scope: crate::app_protocol::NotifyScope::Global,
-                    image_inline: None,
-                    image_pipe_id: None,
-                    response_file: None,
-                    timeout_secs: None,
-                    on_dismiss: None,
-                    enqueued_at: std::time::Instant::now(),
-                    tombstoned: false,
-                    deliver_after: None,
-                    origin_in_view: false,
+                    ..Default::default()
                 },
             );
             return;

@@ -332,7 +332,10 @@ impl PlexiApp {
                             if let Some(window_index) = source_window_index {
                                 let source_context_id = self.windows[window_index].context_id;
                                 let source_window_id = self.windows[window_index].window_id;
-                                let notify_id = format!("wasm:{pane_id}:{}", uuid::Uuid::new_v4());
+                                let notify_id =
+                                    crate::app::notifications::new_notify_id(&format!(
+                                        "wasm:{pane_id}"
+                                    ));
                                 log::info!(
                                     "wasm effect: notify pane_id={pane_id} context_id={source_context_id} icon={icon:?}"
                                 );
@@ -344,25 +347,11 @@ impl PlexiApp {
                                     PendingNotification {
                                         notify_id,
                                         sender_pane_id: pane_id,
-                                        dismiss_owner_pane_id: 0,
                                         source_context_id,
                                         source_window_id,
-                                        scope: crate::app_protocol::NotifyScope::default(),
                                         title,
                                         body,
-                                        kind: crate::app_protocol::NotifyKind::Message,
-                                        options: vec![],
-                                        input_prompt: None,
-                                        required: false,
-                                        image_inline: None,
-                                        image_pipe_id: None,
-                                        response_file: None,
-                                        timeout_secs: None,
-                                        on_dismiss: None,
-                                        enqueued_at: std::time::Instant::now(),
-                                        tombstoned: false,
-                                        deliver_after: None,
-                                        origin_in_view: false,
+                                        ..Default::default()
                                     },
                                 );
                                 Some(InputEvent::NotifyResult(Ok(())))
@@ -1091,7 +1080,6 @@ impl PlexiApp {
                         PendingNotification {
                             notify_id,
                             sender_pane_id,
-                            dismiss_owner_pane_id: 0,
                             source_context_id,
                             source_window_id: notif_source_win_id,
                             title,
@@ -1103,13 +1091,9 @@ impl PlexiApp {
                             scope,
                             image_inline,
                             image_pipe_id,
-                            response_file: None,
                             timeout_secs,
                             on_dismiss,
-                            enqueued_at: std::time::Instant::now(),
-                            tombstoned: false,
-                            deliver_after: None,
-                            origin_in_view: false,
+                            ..Default::default()
                         },
                     );
                 }
