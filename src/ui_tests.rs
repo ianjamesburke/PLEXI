@@ -1431,6 +1431,49 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Stint 0749: the sidebar context list has no vertical scroll, so once
+    /// enough contexts stack up to exceed the panel's height the overflow
+    /// rows were unreachable — no scrollbar, no way to bring them into view.
+    /// Push enough contexts to overflow a short sidebar, then drive the
+    /// accessibility `ScrollIntoView` action (the same path a real scroll
+    /// gesture or keyboard nav ends up using) on the last row and confirm it
+    /// actually moves into the visible sidebar area.
+    #[test]
+    fn sidebar_scrolls_to_reach_contexts_past_the_panel_height() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 320.0);
+        h.with_app_mut(|app| app.sidebar_visible = true);
+        h.step();
+
+        for n in 0..20 {
+            push_sidebar_context(&mut h, &format!("ctx-{n}"), &format!("/tmp/ctx-{n}"));
+        }
+        h.run_steps(3);
+
+        // The harness window is 320pt tall, so anything laid out well past
+        // that is outside the visible sidebar area — proof this test is
+        // actually exercising overflow, not a coincidentally-fitting list.
+        let last_rect_before = h.harness().get_by_label("ctx-19").rect();
+        assert!(
+            last_rect_before.min.y > 320.0,
+            "test setup: the last context should start out past the visible sidebar \
+             area (rect={:?}), otherwise this test isn't exercising overflow",
+            last_rect_before
+        );
+
+        h.harness().get_by_label("ctx-19").scroll_to_me();
+        h.run_steps(3);
+
+        let last_rect_after = h.harness().get_by_label("ctx-19").rect();
+        assert!(
+            last_rect_after.min.y < last_rect_before.min.y,
+            "scrolling the sidebar must move an overflowed context row toward the \
+             visible area (before={:?}, after={:?}) — a bare Panel with no ScrollArea \
+             never moves row rects in response to a scroll action",
+            last_rect_before,
+            last_rect_after
+        );
+    }
+
     /// Stint 0715: visual review surface for the first-run sidebar — exactly
     /// one context, so the close zone is suppressed and the row is at its
     /// widest text budget. This is the state that used to ramp the panel to
