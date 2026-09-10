@@ -2,19 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import sys
+from plexi_sdk import StateSnapshot, _v3_state
+from plexi_sdk.effects import SetState
+from plexi_sdk.events import KeyEvent, TimerFired
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python")
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from plexi_sdk import StateSnapshot, _v3_state  # noqa: E402
-from plexi_sdk.effects import SetState  # noqa: E402
-from plexi_sdk.events import KeyEvent, TimerFired  # noqa: E402
-
-import snake  # noqa: E402
+import snake
 
 
 def _with_state(values: dict) -> None:

@@ -12,17 +12,13 @@ so the app is exercised end-to-end through the sanctioned capability path.
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
+from plexi_sdk.events import HostLogResult
+from plexi_sdk.testing import AppHarness
+
 ROOT = Path(__file__).resolve().parents[3]
-SDK = ROOT / "sdk" / "python"
 APP = ROOT / "apps" / "logs" / "logs.py"
-
-sys.path.insert(0, str(SDK))
-
-from plexi_sdk.events import HostLogResult  # noqa: E402
-from plexi_sdk.testing import AppHarness  # noqa: E402
 
 THREE_LINE_LOG = (
     "[2026-07-02 01:46:18] [INFO] [plexi::config] loaded config\n"
