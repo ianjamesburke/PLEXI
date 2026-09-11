@@ -120,7 +120,7 @@ Reuse these primitives:
 - Headless scene coverage for idle and streaming Assistant states as the pattern for host Assistant UI regression tests.
 - Context-root `host.files.list/read/grep/write/edit` tools, including canonical existing-prefix checks. Extend this file module rather than returning to terminal-based file discovery.
 - `host.build.run` as a proven hidden-process adapter for narrow `plexi app init/check` commands. General project execution needs a new sandboxed worker interface; it must not widen this allowlist in place.
-- The workspace secret resolver in `src/workspace/secrets.rs`. The coding worker consumes its routed environment output after authorization; it does not read Keychain values into model-visible text.
+- The workspace secret resolver in `src/workspace/secrets/`. The coding worker consumes its routed environment output after authorization; it does not read Keychain values into model-visible text.
 - The unified grant and audit stores as persistence adapters. Their current tool-name/workspace matching is not sufficient authority for general commands, paths, panes, connectors, or secrets; the authority model deepens that interface before new powers use it.
 - The agent registry, layered Assistant settings, conversation store, skill registry, and connector dispatcher. These are reusable configuration and persistence modules, not yet a delegated-worker runtime.
 
