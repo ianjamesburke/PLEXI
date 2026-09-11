@@ -7,3 +7,4 @@ pub mod logging;
 #[cfg(target_os = "macos")]
 pub mod macos_menu;
 pub mod ui_profile;
+pub mod text;

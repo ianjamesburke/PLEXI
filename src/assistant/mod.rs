@@ -32,6 +32,7 @@ use crate::broker::{
     PermissionRequest, ResourceScope, TargetType,
 };
 use crate::host::app_timeline::AppTimeline;
+use crate::platform::text;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ReasoningEffort};
 use crate::plexi_ai::turn_loop::TurnDelta;
 use crate::plexi_ai::CancelToken;
@@ -62,56 +63,6 @@ use render::{AssistantRenderer, ComposerEvent, MarkdownTextCache};
 use settings::{AssistantSettings, SessionOverrides, SettingsLoadError, SettingsLoader};
 use skills::{SkillDefinition, SkillRegistry};
 use store::AssistantStore;
-
-pub(crate) const DEFAULT_AGENT_PROMPT: &str = "You are the Plexi Assistant, the workspace \
-operator inside the Plexi terminal environment. Answer concisely. Tools exposed \
-by running apps are available to you when listed; calls may pause for the user's \
-permission. You can subscribe to app event streams with the host tool \
-host.events.subscribe (input: {\"app\": \"<app_id>\", \"event\": \"<event name or *>\"}) \
-and stop with host.events.unsubscribe — subscribing may pause for the user's \
-permission. Once subscribed, delivered events appear in this conversation and you \
-should respond to them. IMPORTANT: when the user starts any interactive or ongoing \
-activity in an app (playing a game, watching a process, editing a document) or asks \
-you to react when something happens, your FIRST action must be to call \
-host.events.subscribe for that app's relevant events — without a subscription you \
-will never see the user's actions, so do not assume you will be notified. After \
-subscribing, tell the user you are now watching those events. \
-When a delivered event hands you the turn, ACT: if the situation calls for a \
-tool call, make it immediately rather than only describing what you would do. \
-Do not narrate intentions you can carry out — take the action, then report the \
-result. \
-Use the host.panes.*, host.apps.open, host.terminals.open, and host.terminals.run \
-tools for native pane, app, and terminal operations; never shell out to the plexi \
-CLI. When a terminal pane has already been opened or focused, reuse its pane id \
-with host.terminals.run; do not open a redundant terminal. host.terminals.run \
-does not return the command's output — after every run call, read the result \
-with host.terminals.read before deciding your next step; never assume a command \
-succeeded or guess at paths it printed. \
-When the user asks you to build an app, game, or tool, build it as a Plexi app, \
-never as a loose script. Use the dedicated authoring tools for the whole flow; \
-never open or drive a terminal for your own build work — terminals are only for \
-things the user asked to see run. Scaffold with host.build.run \
-{\"args\": [\"app\", \"init\", \"<kebab-name>\"]} (its stdout names the created app \
-directory — use that path exactly), inspect code with host.files.list, \
-host.files.grep, and line-ranged host.files.read, write main.py with \
-host.files.write, refine with host.files.edit (each edit returns a diff the \
-user sees), and validate with host.build.run {\"args\": [\"app\", \"check\", \
-\"<app-dir>\"]} until it passes. Open the app with host.apps.open as soon as the \
-first check passes — workspace apps hot-reload on every file save, so the user \
-watches the app improve live while you keep editing; you do not need to close \
-or reopen it. \
-When you need information you cannot know — current docs, a release note, an \
-API response — fetch the exact URL with host.net.fetch rather than guessing or \
-saying you have no internet access. There is no web search tool: if you do not \
-have a concrete URL, say so and ask the user for one. Never shell out to curl. \
-A scope refusal is a final answer, not an obstacle to route around. When a tool \
-fails with path_out_of_scope or command_not_allowed, that path or command is \
-outside what you are permitted to touch — the refusal will not change on a \
-retry. Do NOT re-attempt it through host.terminals.run, host.terminals.open, or \
-any other tool: the same limit applies there, the attempt costs the user a \
-permission prompt they must deny, and it reads as working around your own \
-boundaries. Instead, stop, tell the user in plain words what was refused and \
-why, and offer the nearest thing you can do inside scope. ";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
 const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";
@@ -469,7 +420,7 @@ fn tool_output_preview(output_json: &str) -> String {
     } else {
         sections.join("\n")
     };
-    bounded_head_tail_multiline(&raw, TOOL_OUTPUT_PREVIEW_BUDGET)
+    text::head_tail(&raw, TOOL_OUTPUT_PREVIEW_BUDGET, text::Style::Block)
 }
 
 /// Multi-line `key: value` rendering of a tool call's input for the caret
@@ -477,58 +428,7 @@ fn tool_output_preview(output_json: &str) -> String {
 /// compact JSON. Falls back to the raw input when it isn't a JSON object.
 fn tool_input_detail(input_json: &str) -> String {
     let detail = render_json_object_lines(input_json).unwrap_or_else(|| input_json.to_string());
-    bounded_head_tail_multiline(&detail, TOOL_OUTPUT_PREVIEW_BUDGET)
-}
-
-/// Head/tail bounding that keeps newlines — for block previews. The omission
-/// marker sits on its own line so surviving head/tail lines stay intact.
-fn bounded_head_tail_multiline(text: &str, budget: usize) -> String {
-    let chars = text.chars().collect::<Vec<_>>();
-    if chars.len() <= budget {
-        return text.to_string();
-    }
-    if budget < 12 {
-        return chars.into_iter().take(budget).collect();
-    }
-    let mut keep = budget;
-    for _ in 0..2 {
-        let omitted = chars.len().saturating_sub(keep);
-        let marker_len = format!("\n[{omitted} chars omitted]\n").chars().count();
-        keep = budget.saturating_sub(marker_len);
-    }
-    let head = keep.div_ceil(2);
-    let tail = keep.saturating_sub(head);
-    let omitted = chars.len().saturating_sub(head + tail);
-    let mut out = chars.iter().take(head).collect::<String>();
-    out.push_str(&format!("\n[{omitted} chars omitted]\n"));
-    out.extend(chars.iter().skip(chars.len() - tail));
-    out
-}
-
-fn bounded_head_tail(text: &str, budget: usize) -> String {
-    let flat = text.replace('\n', " ");
-    let chars = flat.chars().collect::<Vec<_>>();
-    if chars.len() <= budget {
-        return flat;
-    }
-    if budget < 12 {
-        return chars.into_iter().take(budget).collect();
-    }
-
-    let mut keep = budget;
-    for _ in 0..2 {
-        let omitted = chars.len().saturating_sub(keep);
-        let marker_len = format!(" [{omitted} chars omitted] ").chars().count();
-        keep = budget.saturating_sub(marker_len);
-    }
-    let head = keep.div_ceil(2);
-    let tail = keep.saturating_sub(head);
-    let omitted = chars.len().saturating_sub(head + tail);
-    let marker = format!(" [{omitted} chars omitted] ");
-    let mut out = chars.iter().take(head).collect::<String>();
-    out.push_str(&marker);
-    out.extend(chars.iter().skip(chars.len() - tail));
-    out.chars().take(budget).collect()
+    text::head_tail(&detail, TOOL_OUTPUT_PREVIEW_BUDGET, text::Style::Block)
 }
 
 fn deterministic_context_summary(turns: &[model::Turn], budget: usize) -> String {
@@ -542,12 +442,16 @@ fn deterministic_context_summary(turns: &[model::Turn], budget: usize) -> String
             let omitted = turns.len() - index;
             let marker = format!("- [{omitted} older turn(s) omitted; see raw checkpoint]");
             let available = budget.saturating_sub(out.chars().count());
-            out.push_str(&bounded_head_tail(&marker, available));
+            out.push_str(&text::head_tail(&marker, available, text::Style::Inline));
             break;
         }
         let content_budget = fair_share - label.chars().count() - 1;
         out.push_str(&label);
-        out.push_str(&bounded_head_tail(&turn.text, content_budget));
+        out.push_str(&text::head_tail(
+            &turn.text,
+            content_budget,
+            text::Style::Inline,
+        ));
         out.push('\n');
     }
     out.truncate(
@@ -981,8 +885,12 @@ impl AssistantApp {
         }
     }
 
-    /// Evaluate one app connector tool for the assistant actor.
-    fn tool_decision(&self, tool: &AiTool) -> Decision {
+    /// Evaluate one tool for the assistant actor against `target`, the name
+    /// the grant store knows it by under `target_type`.
+    ///
+    /// Plan posture denies every write tool before the grant store is
+    /// consulted at all — a plan may read, never act.
+    fn decide(&self, tool: &AiTool, target_type: TargetType, target: &str) -> Decision {
         if self.settings.permissions.posture.value == settings::AssistantPermissionPosture::Plan
             && !tool.read_only
         {
@@ -992,30 +900,26 @@ impl AssistantApp {
         let req = PermissionRequest::new(
             ActorType::Agent,
             &actor_id,
-            TargetType::AppConnector,
-            &Self::connector_target(&tool.name),
+            target_type,
+            target,
             Some(&self.workspace_root),
         );
         let posture = self.active_posture();
         self.grant_store.evaluate(&req, Some(&posture))
     }
 
+    /// Evaluate one app connector tool for the assistant actor.
+    fn tool_decision(&self, tool: &AiTool) -> Decision {
+        self.decide(
+            tool,
+            TargetType::AppConnector,
+            &Self::connector_target(&tool.name),
+        )
+    }
+
+    /// Evaluate one host tool for the assistant actor.
     fn host_tool_decision(&self, tool: &AiTool) -> Decision {
-        if self.settings.permissions.posture.value == settings::AssistantPermissionPosture::Plan
-            && !tool.read_only
-        {
-            return Decision::Deny;
-        }
-        let (actor_id, _) = self.connector_actor();
-        let req = PermissionRequest::new(
-            ActorType::Agent,
-            &actor_id,
-            TargetType::HostTool,
-            &tool.name,
-            Some(&self.workspace_root),
-        );
-        self.grant_store
-            .evaluate(&req, Some(&self.active_posture()))
+        self.decide(tool, TargetType::HostTool, &tool.name)
     }
 
     fn event_stream_decision(&self, app: &str, event: &str) -> Decision {
@@ -1149,15 +1053,11 @@ impl AssistantApp {
                 reply: reply_tx,
             });
             if sent.is_err() {
-                return ToolCallResult {
-                    output_json: None,
-                    error: Some("host_tool_failed: assistant pane closed".to_string()),
-                };
+                return ToolCallResult::err("host_tool_failed: assistant pane closed");
             }
-            reply_rx.recv().unwrap_or(ToolCallResult {
-                output_json: None,
-                error: Some("host_tool_failed: assistant pane closed".to_string()),
-            })
+            reply_rx
+                .recv()
+                .unwrap_or_else(|_| ToolCallResult::err("host_tool_failed: assistant pane closed"))
         });
         visible_host_tools.extend(Self::host_event_tools());
         dispatcher.add_host_tools(visible_host_tools, handler);
@@ -1465,10 +1365,7 @@ impl AssistantApp {
     fn handle_build_run(&mut self, input_json: &str, reply: SyncSender<ToolCallResult>) {
         let fail = |reply: &SyncSender<ToolCallResult>, error: String| {
             log::warn!("assistant: host.build.run rejected: {error}");
-            let _ = reply.send(ToolCallResult {
-                output_json: None,
-                error: Some(error),
-            });
+            let _ = reply.send(ToolCallResult::err(error));
         };
         let parsed: serde_json::Value = match serde_json::from_str(input_json) {
             Ok(value) => value,
@@ -1524,26 +1421,17 @@ impl AssistantApp {
                             output.timed_out,
                             output.duration_ms
                         );
-                        ToolCallResult {
-                            output_json: Some(
-                                serde_json::json!({
-                                    "exit_code": output.exit_code,
-                                    "stdout": output.stdout,
-                                    "stderr": output.stderr,
-                                    "timed_out": output.timed_out,
-                                    "duration_ms": output.duration_ms,
-                                })
-                                .to_string(),
-                            ),
-                            error: None,
-                        }
+                        ToolCallResult::ok_value(serde_json::json!({
+                            "exit_code": output.exit_code,
+                            "stdout": output.stdout,
+                            "stderr": output.stderr,
+                            "timed_out": output.timed_out,
+                            "duration_ms": output.duration_ms,
+                        }))
                     }
                     Err(error) => {
                         log::warn!("assistant: host.build.run failed: {error}");
-                        ToolCallResult {
-                            output_json: None,
-                            error: Some(error),
-                        }
+                        ToolCallResult::err(error)
                     }
                 };
                 if reply.send(outcome).is_err() {
@@ -1603,14 +1491,9 @@ impl AssistantApp {
             });
             return;
         }
-        let err = |msg: String| ToolCallResult {
-            output_json: None,
-            error: Some(msg),
-        };
-        let ok = |msg: String| ToolCallResult {
-            output_json: Some(serde_json::json!({"ok": true, "detail": msg}).to_string()),
-            error: None,
-        };
+        let err = ToolCallResult::err;
+        let ok =
+            |msg: String| ToolCallResult::ok_value(serde_json::json!({"ok": true, "detail": msg}));
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(input_json);
         let (app, event) = match &parsed {
             Ok(v) => (
@@ -1736,8 +1619,8 @@ impl AssistantApp {
                 log::info!(
                     "assistant[{conversation_id}]: skill '{}' raised default tier {} -> {} (skill-tier-floor)",
                     selected_skill.as_ref().map(|s| s.name.as_str()).unwrap_or("?"),
-                    settings::model_tier_name(tier),
-                    settings::model_tier_name(floor),
+                    tier.as_str(),
+                    floor.as_str(),
                 );
                 tier = floor;
             }
@@ -1805,7 +1688,7 @@ impl AssistantApp {
         log::info!(
             "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={}",
             agent.id,
-            settings::model_tier_name(request.model_tier),
+            request.model_tier.as_str(),
             request
                 .concrete_model
                 .as_ref()
@@ -2112,10 +1995,7 @@ impl AssistantApp {
         }
         self.pending_connector_actor = None;
         if let Some(pending) = self.pending_subscribe.take() {
-            let _ = pending.reply.send(ToolCallResult {
-                output_json: None,
-                error: Some(reason.to_string()),
-            });
+            let _ = pending.reply.send(ToolCallResult::err(reason));
         }
     }
 
@@ -2233,23 +2113,16 @@ impl AssistantApp {
             "event stream subscription",
         ));
         let result = if choice == PermissionChoice::Deny {
-            ToolCallResult {
-                output_json: None,
-                error: Some(format!(
-                    "permission_denied: the user denied the subscription to {target}"
-                )),
-            }
+            ToolCallResult::err(format!(
+                "permission_denied: the user denied the subscription to {target}"
+            ))
         } else {
             self.subscribe_stream(&app, &event);
             self.audit
                 .append(&AuditEvent::now("subscribe", &target, "ok", decision_str));
-            ToolCallResult {
-                output_json: Some(
-                    serde_json::json!({"ok": true, "detail": format!("subscribed to {target}")})
-                        .to_string(),
-                ),
-                error: None,
-            }
+            ToolCallResult::ok_value(
+                serde_json::json!({"ok": true, "detail": format!("subscribed to {target}")}),
+            )
         };
         let _ = reply.send(result);
         let effects = self.model.permission_resolved(choice);
@@ -2451,14 +2324,10 @@ impl AssistantApp {
         let routes = [ModelTier::Low, ModelTier::Medium, ModelTier::High]
             .into_iter()
             .filter_map(|tier| {
-                agent.model_routes.for_tier(tier).map(|route| {
-                    format!(
-                        "{}={}/{}",
-                        settings::model_tier_name(tier),
-                        route.provider,
-                        route.model
-                    )
-                })
+                agent
+                    .model_routes
+                    .for_tier(tier)
+                    .map(|route| format!("{}={}/{}", tier.as_str(), route.provider, route.model))
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -2471,7 +2340,7 @@ impl AssistantApp {
                     "- {} [{}], tier={}, description={}, path={}, tools={}, skills={}, hooks={}",
                     entry.display_name,
                     entry.source.label(),
-                    settings::model_tier_name(entry.default_tier),
+                    entry.default_tier.as_str(),
                     if entry.description.is_empty() {
                         "none"
                     } else {
@@ -2495,7 +2364,7 @@ impl AssistantApp {
             agent.display_name,
             agent.source.label(),
             if agent.description.is_empty() { "none" } else { &agent.description },
-            settings::model_tier_name(agent.default_tier),
+            agent.default_tier.as_str(),
             if routes.is_empty() { "tier defaults" } else { &routes },
             agent.effort.map(ReasoningEffort::label).unwrap_or("auto"),
             format_setting_ids(&agent.tools),
@@ -2973,11 +2842,11 @@ impl AssistantApp {
         log::info!(
             "assistant[{}]: session model tier changed to {}",
             self.model.conversation_id,
-            settings::model_tier_name(tier)
+            tier.as_str()
         );
         let effects = self.model.push_local_note(format!(
             "Model tier set to `{}` for this session.",
-            settings::model_tier_name(tier)
+            tier.as_str()
         ));
         self.execute_effects(effects);
     }
@@ -3024,7 +2893,7 @@ impl AssistantApp {
              - Enabled tools: {} ({})\n\
              - Memory: {} ({})\n\
              - Enabled hooks: {} ({})\n",
-            settings::model_tier_name(tier.value),
+            tier.value.as_str(),
             tier.source.description(),
             self.settings.permissions.posture.value.as_str(),
             self.settings.permissions.posture.source.description(),
@@ -4532,13 +4401,7 @@ enabled = ["allowed.tool"]
                     continue;
                 }
                 if let Some(call_id) = value.get("call_id").and_then(|c| c.as_str()) {
-                    tool_dispatch::resolve_pending(
-                        call_id,
-                        ToolCallResult {
-                            output_json: Some("{\"ok\": true}".to_string()),
-                            error: None,
-                        },
-                    );
+                    tool_dispatch::resolve_pending(call_id, ToolCallResult::ok("{\"ok\": true}"));
                 }
             }
         });

@@ -1,6 +1,7 @@
 //! Native execution seam for Assistant-owned host tools.
 
 use crate::app::permissions::Capability;
+use crate::platform::text;
 use crate::plexi_ai::tool_dispatch::ToolCallResult;
 
 use super::PlexiApp;
@@ -38,7 +39,7 @@ impl PlexiApp {
     ) {
         let refuse = |reply: &std::sync::mpsc::SyncSender<ToolCallResult>, error: String| {
             log::warn!("assistant_host_tool: {HOST_TOOL_NET_FETCH} rejected: {error}");
-            let _ = reply.send(failed(error));
+            let _ = reply.send(ToolCallResult::err(error));
         };
         let parsed: serde_json::Value = match serde_json::from_str(input_json) {
             Ok(value) => value,
@@ -116,7 +117,7 @@ impl PlexiApp {
                 );
                 let outcome = if let Some(error) = response.error {
                     log::warn!("assistant_host_tool: {HOST_TOOL_NET_FETCH} {url} failed: {error}");
-                    failed(format!("fetch_failed: {error}"))
+                    ToolCallResult::err(format!("fetch_failed: {error}"))
                 } else {
                     let (text, char_truncated) = truncate_fetch_body(&response.body);
                     let truncated = response.truncated || char_truncated;
@@ -125,7 +126,7 @@ impl PlexiApp {
                         response.status,
                         response.body.len()
                     );
-                    succeeded(serde_json::json!({
+                    ToolCallResult::ok_value(serde_json::json!({
                         "url": url,
                         "status": response.status,
                         "headers": response.response_headers,
@@ -193,13 +194,14 @@ fn fetch_destination_rejected(raw_url: &str) -> Option<String> {
     }
 }
 
-/// Trim a fetched body to `MAX_FETCH_BODY_CHARS`, always on a char boundary.
+/// Trim a fetched body to `MAX_FETCH_BODY_CHARS`. The flag tells the caller
+/// whether anything was dropped.
 fn truncate_fetch_body(body: &str) -> (String, bool) {
-    if body.chars().count() <= MAX_FETCH_BODY_CHARS {
-        return (body.to_string(), false);
-    }
-    let cut: String = body.chars().take(MAX_FETCH_BODY_CHARS).collect();
-    (format!("{cut}… [body truncated]"), true)
+    let truncated = body.chars().count() > MAX_FETCH_BODY_CHARS;
+    (
+        text::head_tail(body, MAX_FETCH_BODY_CHARS, text::Style::Head),
+        truncated,
+    )
 }
 
 impl PlexiApp {
@@ -212,24 +214,24 @@ impl PlexiApp {
     ) -> ToolCallResult {
         let parsed: serde_json::Value = match serde_json::from_str(input_json) {
             Ok(value) => value,
-            Err(error) => return failed(format!("invalid_input: {error}")),
+            Err(error) => return ToolCallResult::err(format!("invalid_input: {error}")),
         };
         log::info!("assistant_host_tool: executing '{name}' in process");
         match name {
-            "host.panes.list" => succeeded(self.assistant_pane_list()),
+            "host.panes.list" => ToolCallResult::ok_value(self.assistant_pane_list()),
             "host.panes.state" => {
                 let Some(id) = parsed.get("pane_id").and_then(serde_json::Value::as_u64) else {
-                    return failed("invalid_input: pane_id is required".to_string());
+                    return ToolCallResult::err("invalid_input: pane_id is required".to_string());
                 };
                 match self.assistant_pane_state(id) {
-                    Some(value) => succeeded(value),
-                    None => failed(format!("pane_not_found: {id}")),
+                    Some(value) => ToolCallResult::ok_value(value),
+                    None => ToolCallResult::err(format!("pane_not_found: {id}")),
                 }
             }
             "host.panes.open" => {
                 let Some(type_id) = parsed.get("type_id").and_then(serde_json::Value::as_str)
                 else {
-                    return failed("invalid_input: type_id is required".to_string());
+                    return ToolCallResult::err("invalid_input: type_id is required".to_string());
                 };
                 let layout = parsed
                     .get("layout")
@@ -259,39 +261,39 @@ impl PlexiApp {
                     cwd,
                     target_pane_id,
                 ) {
-                    Ok(pane_id) => succeeded(
+                    Ok(pane_id) => ToolCallResult::ok_value(
                         serde_json::json!({"ok": true, "pane_id": pane_id, "type_id": type_id}),
                     ),
-                    Err(error) => failed(format!("open_pane_failed: {error}")),
+                    Err(error) => ToolCallResult::err(format!("open_pane_failed: {error}")),
                 }
             }
             "host.panes.focus" => {
                 let Some(id) = parsed.get("pane_id").and_then(serde_json::Value::as_u64) else {
-                    return failed("invalid_input: pane_id is required".to_string());
+                    return ToolCallResult::err("invalid_input: pane_id is required".to_string());
                 };
                 if self.pane_navigate(id) {
-                    succeeded(serde_json::json!({"ok": true, "pane_id": id}))
+                    ToolCallResult::ok_value(serde_json::json!({"ok": true, "pane_id": id}))
                 } else {
-                    failed(format!("pane_not_found: {id}"))
+                    ToolCallResult::err(format!("pane_not_found: {id}"))
                 }
             }
             "host.panes.close" => {
                 let Some(id) = parsed.get("pane_id").and_then(serde_json::Value::as_u64) else {
-                    return failed("invalid_input: pane_id is required".to_string());
+                    return ToolCallResult::err("invalid_input: pane_id is required".to_string());
                 };
                 let existed = self
                     .windows
                     .iter()
                     .any(|window| window.panes.contains_key(&id));
                 if !existed {
-                    return failed(format!("pane_not_found: {id}"));
+                    return ToolCallResult::err(format!("pane_not_found: {id}"));
                 }
                 self.close_pane_by_id(id);
-                succeeded(serde_json::json!({"ok": true, "pane_id": id}))
+                ToolCallResult::ok_value(serde_json::json!({"ok": true, "pane_id": id}))
             }
             "host.apps.open" => {
                 let Some(app) = parsed.get("app").and_then(serde_json::Value::as_str) else {
-                    return failed("invalid_input: app is required".to_string());
+                    return ToolCallResult::err("invalid_input: app is required".to_string());
                 };
                 let layout = parsed
                     .get("layout")
@@ -317,10 +319,10 @@ impl PlexiApp {
                     None,
                     target_pane_id,
                 ) {
-                    Ok(pane_id) => {
-                        succeeded(serde_json::json!({"ok": true, "pane_id": pane_id, "app": app}))
-                    }
-                    Err(error) => failed(format!("open_app_failed: {error}")),
+                    Ok(pane_id) => ToolCallResult::ok_value(
+                        serde_json::json!({"ok": true, "pane_id": pane_id, "app": app}),
+                    ),
+                    Err(error) => ToolCallResult::err(format!("open_app_failed: {error}")),
                 }
             }
             "host.terminals.open" => {
@@ -345,13 +347,13 @@ impl PlexiApp {
                         if let Err(error) =
                             self.assistant_bind_terminal(origin_pane_id, origin_context_id, pane_id)
                         {
-                            return failed(format!("open_terminal_failed: {error}"));
+                            return ToolCallResult::err(format!("open_terminal_failed: {error}"));
                         }
-                        succeeded(
+                        ToolCallResult::ok_value(
                             serde_json::json!({"ok": true, "pane_id": pane_id, "type": "terminal"}),
                         )
                     }
-                    Err(error) => failed(format!("open_terminal_failed: {error}")),
+                    Err(error) => ToolCallResult::err(format!("open_terminal_failed: {error}")),
                 }
             }
             "host.terminals.run" => {
@@ -359,17 +361,21 @@ impl PlexiApp {
                     .get("terminal_pane_id")
                     .and_then(serde_json::Value::as_u64)
                 else {
-                    return failed("invalid_input: terminal_pane_id is required".to_string());
+                    return ToolCallResult::err(
+                        "invalid_input: terminal_pane_id is required".to_string(),
+                    );
                 };
                 let Some(command) = parsed.get("command").and_then(serde_json::Value::as_str)
                 else {
-                    return failed("invalid_input: command is required".to_string());
+                    return ToolCallResult::err("invalid_input: command is required".to_string());
                 };
                 if command.trim().is_empty() {
-                    return failed("invalid_input: command must be non-empty".to_string());
+                    return ToolCallResult::err(
+                        "invalid_input: command must be non-empty".to_string(),
+                    );
                 }
                 if parsed.get("echo").and_then(serde_json::Value::as_bool) != Some(true) {
-                    return failed(
+                    return ToolCallResult::err(
                         "invalid_input: echo must be true so the human-observed terminal receives Enter"
                             .to_string(),
                     );
@@ -380,17 +386,17 @@ impl PlexiApp {
                     terminal_pane_id,
                     command,
                 ) {
-                    Ok(()) => succeeded(serde_json::json!({
+                    Ok(()) => ToolCallResult::ok_value(serde_json::json!({
                         "ok": true,
                         "terminal_pane_id": terminal_pane_id,
                         "echo": true,
                     })),
-                    Err(error) => failed(format!("run_terminal_failed: {error}")),
+                    Err(error) => ToolCallResult::err(format!("run_terminal_failed: {error}")),
                 }
             }
             "host.files.read" => {
                 let Some(path) = parsed.get("path").and_then(serde_json::Value::as_str) else {
-                    return failed("invalid_input: path is required".to_string());
+                    return ToolCallResult::err("invalid_input: path is required".to_string());
                 };
                 let offset = parsed
                     .get("offset")
@@ -404,20 +410,20 @@ impl PlexiApp {
                     .unwrap_or(MAX_READ_LINES);
                 let roots = self.assistant_file_roots(origin_context_id);
                 match read_scoped_file_slice(&roots, path, offset, limit) {
-                    Ok(slice) => succeeded(serde_json::json!({
+                    Ok(slice) => ToolCallResult::ok_value(serde_json::json!({
                         "path": path,
                         "content": slice.content,
                         "total_lines": slice.total_lines,
                         "offset": offset,
                         "lines_returned": slice.lines_returned,
                     })),
-                    Err(error) => failed(error),
+                    Err(error) => ToolCallResult::err(error),
                 }
             }
             "host.files.grep" => {
                 let Some(pattern) = parsed.get("pattern").and_then(serde_json::Value::as_str)
                 else {
-                    return failed("invalid_input: pattern is required".to_string());
+                    return ToolCallResult::err("invalid_input: pattern is required".to_string());
                 };
                 let path = parsed.get("path").and_then(serde_json::Value::as_str);
                 let max_matches = parsed
@@ -427,53 +433,57 @@ impl PlexiApp {
                     .unwrap_or(DEFAULT_GREP_MATCHES);
                 let roots = self.assistant_file_roots(origin_context_id);
                 match grep_scoped(&roots, path, pattern, max_matches) {
-                    Ok(result) => succeeded(result),
-                    Err(error) => failed(error),
+                    Ok(result) => ToolCallResult::ok_value(result),
+                    Err(error) => ToolCallResult::err(error),
                 }
             }
             "host.files.list" => {
                 let path = parsed.get("path").and_then(serde_json::Value::as_str);
                 let roots = self.assistant_file_roots(origin_context_id);
                 match list_scoped(&roots, path) {
-                    Ok(result) => succeeded(result),
-                    Err(error) => failed(error),
+                    Ok(result) => ToolCallResult::ok_value(result),
+                    Err(error) => ToolCallResult::err(error),
                 }
             }
             "host.files.write" => {
                 let Some(path) = parsed.get("path").and_then(serde_json::Value::as_str) else {
-                    return failed("invalid_input: path is required".to_string());
+                    return ToolCallResult::err("invalid_input: path is required".to_string());
                 };
                 let Some(content) = parsed.get("content").and_then(serde_json::Value::as_str)
                 else {
-                    return failed("invalid_input: content is required".to_string());
+                    return ToolCallResult::err("invalid_input: content is required".to_string());
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
                 match write_scoped_file(&roots, path, content) {
-                    Ok(outcome) => succeeded(serde_json::json!({
+                    Ok(outcome) => ToolCallResult::ok_value(serde_json::json!({
                         "ok": true, "path": path, "bytes": content.len(),
                         "created": outcome.created, "diff": outcome.diff,
                     })),
-                    Err(error) => failed(error),
+                    Err(error) => ToolCallResult::err(error),
                 }
             }
             "host.files.edit" => {
                 let Some(path) = parsed.get("path").and_then(serde_json::Value::as_str) else {
-                    return failed("invalid_input: path is required".to_string());
+                    return ToolCallResult::err("invalid_input: path is required".to_string());
                 };
                 let Some(old_string) = parsed.get("old_string").and_then(serde_json::Value::as_str)
                 else {
-                    return failed("invalid_input: old_string is required".to_string());
+                    return ToolCallResult::err(
+                        "invalid_input: old_string is required".to_string(),
+                    );
                 };
                 let Some(new_string) = parsed.get("new_string").and_then(serde_json::Value::as_str)
                 else {
-                    return failed("invalid_input: new_string is required".to_string());
+                    return ToolCallResult::err(
+                        "invalid_input: new_string is required".to_string(),
+                    );
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
                 match edit_scoped_file(&roots, path, old_string, new_string) {
-                    Ok(diff) => succeeded(serde_json::json!({
+                    Ok(diff) => ToolCallResult::ok_value(serde_json::json!({
                         "ok": true, "path": path, "diff": diff,
                     })),
-                    Err(error) => failed(error),
+                    Err(error) => ToolCallResult::err(error),
                 }
             }
             "host.terminals.read" => {
@@ -481,21 +491,23 @@ impl PlexiApp {
                     .get("terminal_pane_id")
                     .and_then(serde_json::Value::as_u64)
                 else {
-                    return failed("invalid_input: terminal_pane_id is required".to_string());
+                    return ToolCallResult::err(
+                        "invalid_input: terminal_pane_id is required".to_string(),
+                    );
                 };
                 let lines = parsed
                     .get("lines")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(40) as usize;
                 match self.assistant_read_terminal(terminal_pane_id, lines) {
-                    Ok(captured) => succeeded(serde_json::json!({
+                    Ok(captured) => ToolCallResult::ok_value(serde_json::json!({
                         "terminal_pane_id": terminal_pane_id,
                         "lines": captured,
                     })),
-                    Err(error) => failed(error),
+                    Err(error) => ToolCallResult::err(error),
                 }
             }
-            _ => failed(format!("host_tool_unknown: {name}")),
+            _ => ToolCallResult::err(format!("host_tool_unknown: {name}")),
         }
     }
 
@@ -963,8 +975,7 @@ fn truncate_line(line: &str) -> std::borrow::Cow<'_, str> {
     if line.chars().count() <= MAX_LINE_CHARS {
         return std::borrow::Cow::Borrowed(line);
     }
-    let cut: String = line.chars().take(MAX_LINE_CHARS).collect();
-    std::borrow::Cow::Owned(format!("{cut}… [line truncated]"))
+    std::borrow::Cow::Owned(text::head_tail(line, MAX_LINE_CHARS, text::Style::Head))
 }
 
 /// Walk `start` depth-first in sorted order, yielding files. Skips the
@@ -1244,20 +1255,6 @@ fn edit_scoped_file(
     }
 }
 
-fn succeeded(value: serde_json::Value) -> ToolCallResult {
-    ToolCallResult {
-        output_json: Some(value.to_string()),
-        error: None,
-    }
-}
-
-fn failed(error: String) -> ToolCallResult {
-    ToolCallResult {
-        output_json: None,
-        error: Some(error),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::testing::HostHarness;
@@ -1363,11 +1360,8 @@ mod tests {
         let long: String = std::iter::repeat_n('★', super::MAX_FETCH_BODY_CHARS + 500).collect();
         let (text, truncated) = super::truncate_fetch_body(&long);
         assert!(truncated);
-        assert!(text.ends_with("… [body truncated]"), "{}", text.len());
-        assert_eq!(
-            text.chars().count(),
-            super::MAX_FETCH_BODY_CHARS + "… [body truncated]".chars().count()
-        );
+        assert!(text.ends_with("chars omitted]"), "{text}");
+        assert_eq!(text.chars().count(), super::MAX_FETCH_BODY_CHARS);
     }
 
     #[test]

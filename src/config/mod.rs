@@ -1,5 +1,6 @@
 pub mod watcher;
 
+use crate::protocol::ModelTier;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -573,17 +574,49 @@ impl AiConfig {
     }
 }
 
+/// Per-tier concrete model identifiers. Every AI backend section carries this
+/// same triple, flattened into the section table so the keys stay
+/// `model_low` / `model_medium` / `model_high` on disk.
+#[derive(Deserialize, Default, Clone)]
+pub struct ModelTiers {
+    /// Low-tier model. Concrete identifiers are backend-specific; see the example config below.
+    pub model_low: Option<String>,
+    /// Medium-tier model. Concrete identifiers are backend-specific; see the example config below.
+    pub model_medium: Option<String>,
+    /// High-tier model. Concrete identifiers are backend-specific; see the example config below.
+    pub model_high: Option<String>,
+}
+
+impl ModelTiers {
+    /// The configured model for `tier`, if any.
+    pub fn resolve(&self, tier: ModelTier) -> Option<String> {
+        match tier {
+            ModelTier::Low => self.model_low.clone(),
+            ModelTier::Medium => self.model_medium.clone(),
+            ModelTier::High => self.model_high.clone(),
+        }
+    }
+
+    fn overlay(&mut self, other: Self) {
+        if other.model_low.is_some() {
+            self.model_low = other.model_low;
+        }
+        if other.model_medium.is_some() {
+            self.model_medium = other.model_medium;
+        }
+        if other.model_high.is_some() {
+            self.model_high = other.model_high;
+        }
+    }
+}
+
 /// OpenRouter backend configuration.
 #[derive(Deserialize, Default, Clone)]
 pub struct OpenRouterBackendConfig {
     /// Environment variable name for the API key. Default: `OPENROUTER_API_KEY`.
     pub api_key_env: Option<String>,
-    /// Low-tier model. e.g. "qwen/qwen3.6-flash"
-    pub model_low: Option<String>,
-    /// Medium-tier model. e.g. "xiaomi/mimo-v2.5"
-    pub model_medium: Option<String>,
-    /// High-tier model. e.g. "anthropic/claude-fable-5"
-    pub model_high: Option<String>,
+    #[serde(flatten)]
+    pub tiers: ModelTiers,
 }
 
 /// Ollama backend configuration.
@@ -591,12 +624,8 @@ pub struct OpenRouterBackendConfig {
 pub struct OllamaBackendConfig {
     /// Ollama host URL. Default: `http://localhost:11434`.
     pub host: Option<String>,
-    /// Low-tier model. e.g. "llama3.2:3b"
-    pub model_low: Option<String>,
-    /// Medium-tier model. e.g. "llama3.3:70b"
-    pub model_medium: Option<String>,
-    /// High-tier model. e.g. "qwq:32b"
-    pub model_high: Option<String>,
+    #[serde(flatten)]
+    pub tiers: ModelTiers,
 }
 
 /// Local OpenAI-compatible backend configuration (any server speaking the
@@ -608,12 +637,8 @@ pub struct LocalBackendConfig {
     /// Environment variable name for the API key. Unset = no auth header
     /// (for local proxies that accept unauthenticated requests).
     pub api_key_env: Option<String>,
-    /// Low-tier model. e.g. "claude-haiku-4-5"
-    pub model_low: Option<String>,
-    /// Medium-tier model. e.g. "claude-opus-5"
-    pub model_medium: Option<String>,
-    /// High-tier model. e.g. "claude-fable-5"
-    pub model_high: Option<String>,
+    #[serde(flatten)]
+    pub tiers: ModelTiers,
 }
 
 impl AiConfig {
@@ -651,15 +676,7 @@ impl OpenRouterBackendConfig {
         if other.api_key_env.is_some() {
             self.api_key_env = other.api_key_env;
         }
-        if other.model_low.is_some() {
-            self.model_low = other.model_low;
-        }
-        if other.model_medium.is_some() {
-            self.model_medium = other.model_medium;
-        }
-        if other.model_high.is_some() {
-            self.model_high = other.model_high;
-        }
+        self.tiers.overlay(other.tiers);
     }
 }
 
@@ -668,15 +685,7 @@ impl OllamaBackendConfig {
         if other.host.is_some() {
             self.host = other.host;
         }
-        if other.model_low.is_some() {
-            self.model_low = other.model_low;
-        }
-        if other.model_medium.is_some() {
-            self.model_medium = other.model_medium;
-        }
-        if other.model_high.is_some() {
-            self.model_high = other.model_high;
-        }
+        self.tiers.overlay(other.tiers);
     }
 }
 
@@ -688,15 +697,7 @@ impl LocalBackendConfig {
         if other.api_key_env.is_some() {
             self.api_key_env = other.api_key_env;
         }
-        if other.model_low.is_some() {
-            self.model_low = other.model_low;
-        }
-        if other.model_medium.is_some() {
-            self.model_medium = other.model_medium;
-        }
-        if other.model_high.is_some() {
-            self.model_high = other.model_high;
-        }
+        self.tiers.overlay(other.tiers);
     }
 }
 
@@ -2011,7 +2012,45 @@ mod tests {
         let local = ai.local.unwrap();
         assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
         assert_eq!(local.api_key_env, None);
-        assert_eq!(local.model_high.as_deref(), Some("claude-fable-5"));
+        assert_eq!(local.tiers.model_high.as_deref(), Some("claude-fable-5"));
+    }
+
+    /// The tier triple is a flattened `ModelTiers`, so the keys must still sit
+    /// directly in each backend table on disk — no `[ai.<backend>.tiers]`.
+    #[test]
+    fn flattened_model_tiers_parse_from_each_backend_section() {
+        let cfg: PlexiConfig = toml::from_str(
+            "[ai.openrouter]\n\
+             api_key_env = \"OPENROUTER_API_KEY\"\n\
+             model_low = \"or-low\"\n\
+             [ai.ollama]\n\
+             host = \"http://localhost:11434\"\n\
+             model_medium = \"ol-medium\"\n\
+             [ai.local]\n\
+             base_url = \"http://127.0.0.1:3456\"\n\
+             model_high = \"lo-high\"\n",
+        )
+        .unwrap();
+        let ai = cfg.ai.unwrap();
+
+        let or = ai.openrouter.unwrap();
+        assert_eq!(or.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+        assert_eq!(or.tiers.resolve(ModelTier::Low).as_deref(), Some("or-low"));
+        assert_eq!(or.tiers.resolve(ModelTier::High), None);
+
+        let ol = ai.ollama.unwrap();
+        assert_eq!(ol.host.as_deref(), Some("http://localhost:11434"));
+        assert_eq!(
+            ol.tiers.resolve(ModelTier::Medium).as_deref(),
+            Some("ol-medium")
+        );
+
+        let lo = ai.local.unwrap();
+        assert_eq!(lo.base_url.as_deref(), Some("http://127.0.0.1:3456"));
+        assert_eq!(
+            lo.tiers.resolve(ModelTier::High).as_deref(),
+            Some("lo-high")
+        );
     }
 
     #[test]
@@ -2035,8 +2074,8 @@ mod tests {
         let local = base.local.unwrap();
         // Project value wins; unset project fields keep the base value.
         assert_eq!(local.base_url.as_deref(), Some("http://127.0.0.1:3456"));
-        assert_eq!(local.model_low.as_deref(), Some("claude-opus-5"));
-        assert_eq!(local.model_high.as_deref(), Some("claude-fable-5"));
+        assert_eq!(local.tiers.model_low.as_deref(), Some("claude-opus-5"));
+        assert_eq!(local.tiers.model_high.as_deref(), Some("claude-fable-5"));
     }
 
     #[test]

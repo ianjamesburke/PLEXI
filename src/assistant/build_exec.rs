@@ -14,6 +14,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::platform::text;
+
 /// Default and maximum wall-clock budget for one build command.
 pub(crate) const DEFAULT_BUILD_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const MAX_BUILD_TIMEOUT_MS: u64 = 300_000;
@@ -147,8 +149,8 @@ pub(crate) fn run_build_command(
     let stderr = drain(stderr_rx, "stderr");
     Ok(BuildCommandOutput {
         exit_code,
-        stdout: truncate_stream(&stdout),
-        stderr: truncate_stream(&stderr),
+        stdout: text::head_tail(&stdout, MAX_STREAM_CHARS, text::Style::Block),
+        stderr: text::head_tail(&stderr, MAX_STREAM_CHARS, text::Style::Block),
         timed_out,
         duration_ms: started.elapsed().as_millis() as u64,
     })
@@ -178,19 +180,6 @@ fn read_stream(mut stream: impl Read) -> String {
         log::warn!("assistant build_exec: stream read failed: {error}");
     }
     String::from_utf8_lossy(&buffer).into_owned()
-}
-
-/// Keep the head and tail of an oversized stream; the middle is what a model
-/// least needs from a long check log.
-fn truncate_stream(stream: &str) -> String {
-    if stream.chars().count() <= MAX_STREAM_CHARS {
-        return stream.to_string();
-    }
-    let half = MAX_STREAM_CHARS / 2;
-    let head: String = stream.chars().take(half).collect();
-    let tail_start = stream.chars().count() - half;
-    let tail: String = stream.chars().skip(tail_start).collect();
-    format!("{head}\n… [output truncated] …\n{tail}")
 }
 
 #[cfg(test)]
@@ -278,14 +267,5 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.starts_with("spawn_failed"), "{error}");
-    }
-
-    #[test]
-    fn truncate_stream_keeps_head_and_tail() {
-        let long = "x".repeat(40_000);
-        let cut = truncate_stream(&long);
-        assert!(cut.contains("[output truncated]"));
-        assert!(cut.len() < 20_000);
-        assert_eq!(truncate_stream("short"), "short");
     }
 }

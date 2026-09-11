@@ -41,6 +41,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+/// System prompt for the built-in `default` agent.
+///
+/// Every other agent reads its prose from an `AGENT.md` in its own directory;
+/// the built-in one has no directory, so its `AGENT.md` ships beside this
+/// module and is embedded at compile time.
+pub const DEFAULT_AGENT_PROMPT: &str = include_str!("AGENT.md");
+
 // ── Agent definition ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -328,7 +335,7 @@ impl AgentRegistry {
             id: "default".to_string(),
             display_name: "Plexi Assistant".to_string(),
             default_tier: ModelTier::Medium,
-            prompt: crate::assistant::DEFAULT_AGENT_PROMPT.to_string(),
+            prompt: DEFAULT_AGENT_PROMPT.to_string(),
             posture: PermissionPosture {
                 default_posture: Decision::Ask,
                 allow: Vec::new(),
