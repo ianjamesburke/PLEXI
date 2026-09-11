@@ -554,6 +554,18 @@ pub(crate) fn elide_to_width(
         return String::new();
     }
 
+    // One line by contract: `layout_no_wrap` still breaks on `\n`, and a
+    // multi-line galley's width is its widest line, so an embedded break
+    // both defeats the ellipsis and grows the row. Collapse breaks to a
+    // space before measuring.
+    let text = text
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = text.as_str();
+
     let width = |s: &str| {
         ui.fonts_mut(|f| {
             f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
@@ -1009,6 +1021,25 @@ mod tests {
             let galley = ui.fonts_mut(|f| f.layout_no_wrap(elided, font, Color32::WHITE));
             assert!(galley.size().x <= 40.0);
             assert_eq!(galley.rows.len(), 1);
+        });
+    }
+
+    /// Agent detail text (hook output, diffs) carries line breaks. A row is
+    /// one line by contract, so breaks must collapse before elision — the
+    /// palette flashed a two-line subtitle while the multi-line detail was
+    /// live (`layout_no_wrap` still honours `\n`, and the width check only
+    /// measures the widest line so the ellipsis never triggered).
+    #[test]
+    fn elide_to_width_collapses_line_breaks_to_one_line() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::FontId::proportional(style::TEXT_HINT);
+            let elided = elide_to_width(ui, "ws · agent 1\nBash(ls)\r\n--- a/x", font.clone(), 60.0);
+            assert!(!elided.contains('\n') && !elided.contains('\r'));
+            let galley = ui.fonts_mut(|f| f.layout_no_wrap(elided.clone(), font, Color32::WHITE));
+            assert_eq!(galley.rows.len(), 1, "{elided:?}");
+            assert!(galley.size().x <= 60.0);
+            assert!(elided.ends_with("..."));
         });
     }
 }
