@@ -168,7 +168,7 @@ pub(crate) fn key_combo_list_width(
     trailing: Option<&str>,
 ) -> f32 {
     let measure = |text: &str, font: egui::FontId| {
-        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE))
+        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER))
             .size()
     };
     let mut w = 0.0;

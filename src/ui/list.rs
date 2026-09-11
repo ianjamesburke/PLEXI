@@ -614,7 +614,7 @@ fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
         f.layout_no_wrap(
             label.to_string(),
             egui::FontId::proportional(style::TEXT_CAPTION),
-            Color32::WHITE,
+            Color32::PLACEHOLDER,
         )
     });
     Vec2::new(galley.size().x.max(24.0), style::LIST_ROW_H)
@@ -640,7 +640,7 @@ fn chip_size(ui: &egui::Ui, label: &str) -> Vec2 {
         f.layout_no_wrap(
             label.to_string(),
             egui::FontId::monospace(style::TEXT_HINT),
-            Color32::WHITE,
+            Color32::PLACEHOLDER,
         )
     });
     let h = galley.size().y + CHIP_PAD_V * 2.0;

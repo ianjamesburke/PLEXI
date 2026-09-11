@@ -35,6 +35,24 @@ pub(crate) fn elide(
     if max_width <= 0.0 {
         return String::new();
     }
+
+    // One line by contract: `layout_no_wrap` still breaks on `\n`, and a
+    // multi-line galley's width is its widest line, so an embedded break both
+    // defeats the ellipsis and grows the row. Collapse breaks to a space
+    // before measuring.
+    let collapsed;
+    let text = if text.contains(['\n', '\r']) {
+        collapsed = text
+            .split(['\n', '\r'])
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        collapsed.as_str()
+    } else {
+        text
+    };
+
     let width = |s: &str| {
         ui.fonts_mut(|f| {
             f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::PLACEHOLDER)
@@ -131,6 +149,31 @@ mod tests {
             let font = FontId::proportional(style::TEXT_HINT);
             assert!(elide(ui, "anything", font.clone(), 0.0, Side::Leading).is_empty());
             assert!(elide(ui, "anything", font, 0.0, Side::Trailing).is_empty());
+        });
+    }
+
+    /// Agent detail text (hook output, diffs) carries line breaks. A row is
+    /// one line by contract, so breaks must collapse before elision — the
+    /// palette flashed a two-line subtitle while the multi-line detail was
+    /// live (`layout_no_wrap` still honours `\n`, and the width check only
+    /// measures the widest line so the ellipsis never triggered).
+    #[test]
+    fn line_breaks_collapse_to_one_line() {
+        with_ui(|ui| {
+            let font = FontId::proportional(style::TEXT_HINT);
+            let out = elide(
+                ui,
+                "ws \u{b7} agent 1\nBash(ls)\r\n--- a/x",
+                font.clone(),
+                60.0,
+                Side::Trailing,
+            );
+            assert!(!out.contains('\n') && !out.contains('\r'));
+            let galley =
+                ui.fonts_mut(|f| f.layout_no_wrap(out.clone(), font, Color32::PLACEHOLDER));
+            assert_eq!(galley.rows.len(), 1, "{out:?}");
+            assert!(galley.size().x <= 60.0);
+            assert!(out.ends_with(ELLIPSIS));
         });
     }
 

@@ -259,7 +259,7 @@ fn footer_entry_width(
     }
     w += 4.0;
     w += ui.fonts_mut(|f| {
-        f.layout_no_wrap(entry.description.clone(), desc_font.clone(), Color32::WHITE)
+        f.layout_no_wrap(entry.description.clone(), desc_font.clone(), Color32::PLACEHOLDER)
             .size()
             .x
     });

@@ -666,6 +666,31 @@ mod tests {
         );
     }
 
+    /// Stint 0750 evidence: the file-browser rename modal's action pair now
+    /// renders through `chrome_button` (`Primary` / `Secondary`) at
+    /// `BUTTON_H_MD`, instead of the bare `ui.button` it used to emit inside
+    /// an otherwise correct `ModalShell`. Review artifact:
+    /// /tmp/plexi-0750-file-browser-rename-modal.png.
+    #[test]
+    fn screenshot_file_browser_rename_modal_uses_kit_buttons() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("original.txt"), b"contents").expect("write fixture");
+
+        let mut h = PlexiUiHarness::new_sized(720.0, 520.0);
+        h.open_file_browser(dir.path().to_path_buf());
+        h.run_steps(2);
+        h.harness()
+            .key_down_modifiers(egui::Modifiers::NONE, egui::Key::F2);
+        h.step();
+        h.harness()
+            .key_up_modifiers(egui::Modifiers::NONE, egui::Key::F2);
+        h.step();
+        h.run_steps(3);
+
+        h.save_screenshot("/tmp/plexi-0750-file-browser-rename-modal.png")
+            .expect("render rename modal");
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]
