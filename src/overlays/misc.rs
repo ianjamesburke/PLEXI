@@ -534,41 +534,60 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn draw_rename_pane_overlay(&mut self, ctx: &egui::Context) {
-        let pane_id: PaneId = match self.renaming_pane {
-            Some(id) => id,
-            None => return,
-        };
-
-        // Consume Enter/Escape at the context level so they cannot bleed into
-        // the focused pane this frame. Pairs with `FocusKind::RenamePane` —
-        // the overlay owns its own commit/cancel keys.
+    /// The one single-line rename modal: a top-hung, scrim-less popover over
+    /// `self.rename_buffer` whose Enter/Escape are consumed caller-side (before
+    /// the Area) so they cannot bleed into the focused pane this frame. The
+    /// overlay owns its own commit/cancel keys — it pairs with `focus_kind`,
+    /// which also names the input surface. `id` prefixes the shell and text
+    /// field ids and doubles as the field's log name. Returns
+    /// `(commit, cancel)`; the caller owns what committing means.
+    fn draw_single_line_rename_overlay(
+        &mut self,
+        ctx: &egui::Context,
+        id: &str,
+        title: &str,
+        placeholder: &str,
+        focus_kind: crate::app::FocusKind,
+    ) -> (bool, bool) {
         let (commit, cancel) = ctx.input_mut(|i| {
             let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             (enter, esc)
         });
 
-        // Top-hung, scrim-less popover: the pane being renamed stays visible.
-        // Enter/Escape stay caller-side (consumed above, before the Area).
         let colors = self.colors;
-        crate::ui::overlay::ModalShell::centered("rename_pane_overlay")
-            .title("Rename Pane")
+        crate::ui::overlay::ModalShell::centered(format!("{id}_overlay"))
+            .title(title)
             .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
             .scrim(false)
             .show(ctx, &colors, |ui| {
-                let te_id = egui::Id::new("rename_pane_input");
-                crate::ui::text_field::TextField::singleline(te_id, "Pane name...")
+                let te_id = egui::Id::new(format!("{id}_input"));
+                crate::ui::text_field::TextField::singleline(te_id, placeholder)
                     .surface(crate::ui::focus::SurfaceKey::Overlay(
-                        crate::app::input_owner::OverlaySurface::Layer(
-                            crate::app::FocusKind::RenamePane,
-                        ),
+                        crate::app::input_owner::OverlaySurface::Layer(focus_kind),
                     ))
                     .select_all_on_focus(true)
-                    .log_name("rename_pane")
+                    .log_name(id)
                     .show(ui, &mut self.rename_buffer, &self.colors);
             });
+
+        (commit, cancel)
+    }
+
+    pub(crate) fn draw_rename_pane_overlay(&mut self, ctx: &egui::Context) {
+        let pane_id: PaneId = match self.renaming_pane {
+            Some(id) => id,
+            None => return,
+        };
+
+        let (commit, cancel) = self.draw_single_line_rename_overlay(
+            ctx,
+            "rename_pane",
+            "Rename Pane",
+            "Pane name...",
+            crate::app::FocusKind::RenamePane,
+        );
 
         if cancel {
             self.renaming_pane = None;
@@ -619,30 +638,13 @@ impl PlexiApp {
             None => return,
         };
 
-        let (commit, cancel) = ctx.input_mut(|i| {
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            (enter, esc)
-        });
-
-        let colors = self.colors;
-        crate::ui::overlay::ModalShell::centered("rename_context_overlay")
-            .title("Name this context")
-            .width(MODAL_WIDTH)
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .scrim(false)
-            .show(ctx, &colors, |ui| {
-                let te_id = egui::Id::new("rename_context_input");
-                crate::ui::text_field::TextField::singleline(te_id, "Context name...")
-                    .surface(crate::ui::focus::SurfaceKey::Overlay(
-                        crate::app::input_owner::OverlaySurface::Layer(
-                            crate::app::FocusKind::ContextRename,
-                        ),
-                    ))
-                    .select_all_on_focus(true)
-                    .log_name("rename_context")
-                    .show(ui, &mut self.rename_buffer, &self.colors);
-            });
+        let (commit, cancel) = self.draw_single_line_rename_overlay(
+            ctx,
+            "rename_context",
+            "Name this context",
+            "Context name...",
+            crate::app::FocusKind::ContextRename,
+        );
 
         if cancel {
             self.renaming_window = None;

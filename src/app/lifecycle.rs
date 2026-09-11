@@ -167,6 +167,41 @@ impl PlexiApp {
         }
     }
 
+    /// Point focus at the window and tile that own `from_pane_id` so a
+    /// spawn lands beside its caller, returning `(target_window,
+    /// focused_pane_before_redirect)`. The caller restores that saved pane
+    /// through `restore_window_focused_pane` once the launch settles.
+    /// `kind` only names the caller in the log line. No `from_pane_id`, or
+    /// one that names no live pane, leaves focus alone and reports
+    /// `fallback_win`.
+    fn redirect_focus_to_spawn_origin(
+        &mut self,
+        from_pane_id: Option<crate::spatial::tiling::PaneId>,
+        kind: &str,
+        fallback_win: usize,
+    ) -> (usize, Option<egui_tiles::TileId>) {
+        let Some(from_id) = from_pane_id else {
+            return (fallback_win, self.windows[fallback_win].focused_pane);
+        };
+        match self.find_pane_in_any_window(from_id) {
+            Some((fw, ft)) => {
+                log::info!(
+                    "pane_ipc: spawn_pane {kind}: targeting from_pane_id={from_id} win_idx={fw}"
+                );
+                let saved = self.windows[fw].focused_pane;
+                self.active_window = fw;
+                self.set_window_focused_pane(fw, ft);
+                (fw, saved)
+            }
+            None => {
+                log::warn!(
+                    "pane_ipc: spawn_pane {kind}: from_pane_id={from_id} not found, using focused pane"
+                );
+                (fallback_win, self.windows[fallback_win].focused_pane)
+            }
+        }
+    }
+
     /// Handle a single pane-IPC `AppRequest`. Shared by the socket drain above
     /// and the PGAP forwarding path (`AppCommand::ForwardPaneRequest`, stint
     /// 0013/0014) so capability-gated app requests take the identical host
@@ -1223,29 +1258,8 @@ impl PlexiApp {
                 } else if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) = if let Some(from_id) =
-                        spec.from_pane_id
-                    {
-                        match self.find_pane_in_any_window(from_id) {
-                            Some((fw, ft)) => {
-                                log::info!(
-                                    "pane_ipc: spawn_pane path: targeting from_pane_id={from_id} win_idx={fw}"
-                                );
-                                let saved = self.windows[fw].focused_pane;
-                                self.active_window = fw;
-                                self.set_window_focused_pane(fw, ft);
-                                (fw, saved)
-                            }
-                            None => {
-                                log::warn!(
-                                    "pane_ipc: spawn_pane path: from_pane_id={from_id} not found, using focused pane"
-                                );
-                                (active, self.windows[active].focused_pane)
-                            }
-                        }
-                    } else {
-                        (active, self.windows[active].focused_pane)
-                    };
+                    let (target_win, orig_focused_in_target) =
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
                     launch_result = self
                         .launch_app_by_path_with_layout_no_review_modal(
                             &app_path.to_string_lossy(),
@@ -1272,29 +1286,8 @@ impl PlexiApp {
                 } else if let crate::app::launch_spec::PaneLaunchTarget::AppId(type_id) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) = if let Some(from_id) =
-                        spec.from_pane_id
-                    {
-                        match self.find_pane_in_any_window(from_id) {
-                            Some((fw, ft)) => {
-                                log::info!(
-                                    "pane_ipc: spawn_pane app: targeting from_pane_id={from_id} win_idx={fw}"
-                                );
-                                let saved = self.windows[fw].focused_pane;
-                                self.active_window = fw;
-                                self.set_window_focused_pane(fw, ft);
-                                (fw, saved)
-                            }
-                            None => {
-                                log::warn!(
-                                    "pane_ipc: spawn_pane app: from_pane_id={from_id} not found, using focused pane"
-                                );
-                                (active, self.windows[active].focused_pane)
-                            }
-                        }
-                    } else {
-                        (active, self.windows[active].focused_pane)
-                    };
+                    let (target_win, orig_focused_in_target) =
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "app", active);
                     // CLI/spawn-request app opens default to a sibling split, never
                     // an overlay takeover of the caller's pane. Manifest `[launch]
                     // placement` still overrides the default (stint 0330).

@@ -3175,6 +3175,27 @@ mod tests {
 
     /// Full rename flow: set up rename state → press Enter → verify commit.
     ///
+    /// Visual review for the shared single-line rename modal. The pane and
+    /// context rename overlays are one helper, so the pixels are what prove
+    /// the extraction kept the top-hung scrim-less shell, its anchor, and the
+    /// select-all-on-focus text field.
+    #[test]
+    fn screenshot_rename_pane_overlay() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+        let pane_id = add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            app.rename_buffer = "notes-scratch".to_string();
+            app.renaming_pane = Some(pane_id);
+            app.focus_stack.push(FocusKind::RenamePane);
+        });
+        h.step();
+        h.save_screenshot("/tmp/plexi-0750-rename-pane-overlay.png")
+            .expect("render failed");
+        println!("Screenshot saved to /tmp/plexi-0750-rename-pane-overlay.png");
+    }
+
     /// The rename commit happens inside `draw_rename_context_overlay`, which reads
     /// Enter from `ctx.input_mut()` during the egui draw pass. This cannot be
     /// tested with HostHarness — it requires PlexiUiHarness + a real frame.

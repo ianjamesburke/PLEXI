@@ -316,6 +316,73 @@ pub(crate) fn notification_counts_toward_context(
 }
 
 impl PlexiApp {
+    /// Execute a `DeliverNotifyAction`: record the event, run the host-side
+    /// action, unblock any waiting CLI through its response file, then hand
+    /// the action to the sender app. Both drain paths — `dispatch.rs`'s
+    /// command loop and `dispatch_notify_action_cmds` — route through here.
+    pub(crate) fn deliver_notify_action(
+        &mut self,
+        pane_id: u64,
+        notify_id: String,
+        action_label: String,
+        value: Option<String>,
+        response_file: Option<String>,
+        host_action: Option<String>,
+    ) {
+        log::info!(
+            "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
+        );
+        let context_root = self
+            .origin_for_pane(pane_id)
+            .map(|origin| origin.context_root);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::NotificationActionInvoked {
+                id: notify_id.clone(),
+                action: action_label.clone(),
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
+        // Execute host-side action synchronously before writing the response
+        // file so the navigation is complete before the shell unblocks.
+        if let Some(ref action) = host_action {
+            if let Some(id_str) = action.strip_prefix("pane_focus:") {
+                if let Ok(pane_id_target) = id_str.parse::<u64>() {
+                    self.pane_navigate(pane_id_target);
+                } else {
+                    log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                }
+            } else {
+                log::warn!("notify:action: unknown host_action {:?}", action);
+            }
+        }
+        if let Some(rf) = &response_file {
+            let content = value.as_deref().unwrap_or("");
+            if crate::rpc::write_response(rf, content.as_bytes()) {
+                log::info!("notify:action: wrote {:?} to {:?}", content, rf);
+            }
+        }
+        // Search all windows for the sender pane — it may not be in the
+        // active context (cross-context notification path).
+        let window_idx = self
+            .windows
+            .iter()
+            .position(|w| w.panes.contains_key(&pane_id));
+        if let Some(win_idx) = window_idx {
+            if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
+                if let Some(app) = pane.as_app_mut() {
+                    app.runtime.queue_outbound_event(
+                        crate::app_protocol::PlexiEvent::NotifyAction {
+                            notify_id,
+                            action_label,
+                            value,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     /// Resolve app-notification provenance without consulting focus. A live
     /// sender pane supplies its window; a parked or gone sender has only the
     /// context stamped on the command, so window visibility narrows to that

@@ -4621,7 +4621,6 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             },
             pane_id: None,
         }),
-        "notify" => Some(AppCommand::Notify(text("message"))),
         "spawn_app" => Some(AppCommand::SpawnApp {
             type_id: text("app_id"),
             layout: message
