@@ -332,10 +332,9 @@ impl PlexiApp {
                             if let Some(window_index) = source_window_index {
                                 let source_context_id = self.windows[window_index].context_id;
                                 let source_window_id = self.windows[window_index].window_id;
-                                let notify_id =
-                                    crate::app::notifications::new_notify_id(&format!(
-                                        "wasm:{pane_id}"
-                                    ));
+                                let notify_id = crate::app::notifications::new_notify_id(&format!(
+                                    "wasm:{pane_id}"
+                                ));
                                 log::info!(
                                     "wasm effect: notify pane_id={pane_id} context_id={source_context_id} icon={icon:?}"
                                 );
