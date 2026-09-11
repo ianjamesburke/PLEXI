@@ -192,6 +192,7 @@ impl PlexiApp {
         let mut parked_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
         let mut drag_released = false;
         let mut unpark_context: Option<usize> = None;
+        let mut parked_header_rect: Option<Rect> = None;
 
         let focused_cwd = self
             .windows
@@ -216,244 +217,106 @@ impl PlexiApp {
             .filter(|&i| self.router.get(i).parked)
             .collect();
 
-        // ── Active contexts ─────────────────────────────────────────────
-        let active_count = active_order.len();
-        for (display_idx, &i) in active_order.iter().enumerate() {
-            let is_active = i == self.router.active_idx();
-            let is_renaming = self.renaming_window == Some(i);
-            let is_dragging = self.drag_context == Some(i);
-            let any_dragging = self.drag_context.is_some();
+        egui::ScrollArea::vertical()
+            .id_salt("sidebar_contexts")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // ── Active contexts ─────────────────────────────────────────────
+                let active_count = active_order.len();
+                for (display_idx, &i) in active_order.iter().enumerate() {
+                    let is_active = i == self.router.active_idx();
+                    let is_renaming = self.renaming_window == Some(i);
+                    let is_dragging = self.drag_context == Some(i);
+                    let any_dragging = self.drag_context.is_some();
 
-            let ctx_id = self.router.get(i).context_id;
-            let pane_dots = self.sidebar_pane_dots(ctx_id, is_active);
+                    let ctx_id = self.router.get(i).context_id;
+                    let pane_dots = self.sidebar_pane_dots(ctx_id, is_active);
 
-            // --- Renaming: special-cased before the SidebarRow path ---
-            if is_renaming {
-                let fill = if is_active {
-                    self.colors.bg_active
-                } else {
-                    self.colors.bg_sidebar_hover
-                };
-                let bg_idx = ui.painter().add(egui::Shape::Noop);
-                let te_id = egui::Id::new(("rename_ctx", i));
-                let sidebar_w = sidebar_width;
-                let scope = ui.scope(|ui| {
-                    ui.set_width(ui.available_width());
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        let te = ui
-                            .scope(|ui| {
-                                ui.set_max_width(sidebar_w - 56.0);
-                                crate::ui::text_field::TextField::singleline(te_id, "")
+                    // --- Renaming: special-cased before the SidebarRow path ---
+                    if is_renaming {
+                        let fill = if is_active {
+                            self.colors.bg_active
+                        } else {
+                            self.colors.bg_sidebar_hover
+                        };
+                        let bg_idx = ui.painter().add(egui::Shape::Noop);
+                        let te_id = egui::Id::new(("rename_ctx", i));
+                        let sidebar_w = sidebar_width;
+                        let scope = ui.scope(|ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                let te = ui
+                                    .scope(|ui| {
+                                        ui.set_max_width(sidebar_w - 56.0);
+                                        crate::ui::text_field::TextField::singleline(te_id, "")
                                     .surface(crate::ui::focus::SurfaceKey::Overlay(
                                         crate::app::input_owner::OverlaySurface::SidebarRename,
                                     ))
                                     .select_all_on_focus(true)
                                     .log_name("sidebar_rename")
                                     .show(ui, &mut self.rename_buffer, &self.colors)
-                            })
-                            .inner;
-                        if te.lost_focus() {
-                            if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
-                                self.renaming_window = None;
-                            } else {
-                                self.rename_context(i, &self.rename_buffer.clone());
-                                self.renaming_window = None;
-                            }
-                            ui.input_mut(|inp| {
-                                inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                                inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                                    })
+                                    .inner;
+                                if te.lost_focus() {
+                                    if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                                        self.renaming_window = None;
+                                    } else {
+                                        self.rename_context(i, &self.rename_buffer.clone());
+                                        self.renaming_window = None;
+                                    }
+                                    ui.input_mut(|inp| {
+                                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                                    });
+                                }
                             });
-                        }
-                    });
-                    ui.add_space(4.0);
-                });
-                let row_rect = scope.response.rect;
-                active_rects.push(row_rect);
-                ui.painter().set(
-                    bg_idx,
-                    egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
-                );
-                if is_active {
-                    ui.painter().rect_filled(
-                        Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
-                        CornerRadius::ZERO,
-                        self.colors.accent,
-                    );
-                }
-                continue;
-            }
-
-            // --- Normal row via SidebarRow ---
-            let ctx_name = self.router.get(i).name.to_string();
-            let badge_count = if is_active {
-                self.visible_notification_count()
-            } else {
-                self.context_notification_count(i)
-            };
-            let subtitle = Some(self.router.get(i).root.display().to_string());
-
-            let (action, response) = SidebarRow {
-                is_active,
-                is_dragging,
-                any_dragging,
-                action_enabled: num_contexts > 1 && !any_dragging,
-                ctx_name,
-                ctx_index: Some(display_idx),
-                badge_count,
-                subtitle,
-                pane_dots,
-                draggable: true,
-            }
-            .show(ui, egui::Id::new(("ctx", i)), &self.colors);
-
-            active_rects.push(response.rect);
-
-            match action {
-                SidebarAction::DragStart => {
-                    self.drag_context = Some(i);
-                }
-                SidebarAction::DragEnd => {
-                    drag_released = true;
-                }
-                _ => {}
-            }
-
-            if delete_context.is_none() {
-                let num_ctxs = num_contexts;
-                let cwd_for_menu = focused_cwd.clone();
-                response.context_menu(|ui| {
-                    if ui.button("Rename").clicked() {
-                        menu_action = Some((i, WindowMenuAction::Rename));
-                        ui.close();
-                    }
-                    if ui.button("Edit Description").clicked() {
-                        menu_action = Some((i, WindowMenuAction::EditDescription));
-                        ui.close();
-                    }
-                    ui.separator();
-                    if display_idx > 0 {
-                        if ui.button("Move to Top").clicked() {
-                            menu_action = Some((i, WindowMenuAction::MoveToTop));
-                            ui.close();
-                        }
-                        if ui.button("Move Up").clicked() {
-                            menu_action = Some((i, WindowMenuAction::MoveUp));
-                            ui.close();
-                        }
-                    }
-                    if display_idx + 1 < active_count {
-                        if ui.button("Move Down").clicked() {
-                            menu_action = Some((i, WindowMenuAction::MoveDown));
-                            ui.close();
-                        }
-                        if ui.button("Move to Bottom").clicked() {
-                            menu_action = Some((i, WindowMenuAction::MoveToBottom));
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    if let Some(cwd) = &cwd_for_menu {
-                        if ui.button("Set root to current path").clicked() {
-                            menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
-                            ui.close();
-                        }
-                    }
-                    if ui.button("Edit root\u{2026}").clicked() {
-                        menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
-                        ui.close();
-                    }
-                    if num_ctxs > 1 {
-                        ui.separator();
-                        if ui.button("Park").clicked() {
-                            menu_action = Some((i, WindowMenuAction::Park));
-                            ui.close();
-                        }
-                        if ui.button("Delete").clicked() {
-                            menu_action = Some((i, WindowMenuAction::Delete));
-                            ui.close();
-                        }
-                    }
-                });
-
-                match action {
-                    SidebarAction::Delete => {
-                        delete_context = Some(i);
-                    }
-                    SidebarAction::Rename => {
-                        menu_action = Some((i, WindowMenuAction::Rename));
-                    }
-                    SidebarAction::Activate => {
-                        log::debug!(
-                            "sidebar: activate ctx={i} active={}",
-                            self.router.active_idx()
+                            ui.add_space(4.0);
+                        });
+                        let row_rect = scope.response.rect;
+                        active_rects.push(row_rect);
+                        ui.painter().set(
+                            bg_idx,
+                            egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
                         );
-                        clicked_workspace = Some(i);
+                        if is_active {
+                            ui.painter().rect_filled(
+                                Rect::from_min_size(
+                                    row_rect.min,
+                                    Vec2::new(3.0, row_rect.height()),
+                                ),
+                                CornerRadius::ZERO,
+                                self.colors.accent,
+                            );
+                        }
+                        continue;
                     }
-                    _ => {}
-                }
-            }
-        }
 
-        // ── Parked section ──────────────────────────────────────────────
-        // The header doubles as a drop target: while a context is being
-        // dragged, render it even when empty so the drag can release onto it.
-        let parked_count = parked_order.len();
-        let mut parked_header_rect: Option<Rect> = None;
-        if parked_count > 0 || self.drag_context.is_some() {
-            ui.add_space(8.0);
-
-            let divider_id = egui::Id::new("parked_divider");
-            let expanded = self.parked_section_expanded;
-            let label = if parked_count > 0 {
-                format!("Parked ({parked_count})")
-            } else {
-                "Parked".to_string()
-            };
-
-            let response = ListDropdownHeader::new(&label, expanded).indent(12.0).show(
-                ui,
-                divider_id,
-                &self.colors,
-            );
-            parked_header_rect = Some(response.rect);
-            if response.clicked() {
-                self.parked_section_expanded = !self.parked_section_expanded;
-            }
-            ui.add_space(4.0);
-
-            if self.parked_section_expanded {
-                for &i in &parked_order {
-                    let ctx = self.router.get(i);
-                    let ctx_name = ctx.name.to_string();
-                    let ctx_id = ctx.context_id;
-                    let subtitle = Some(ctx.root.display().to_string());
-
-                    let pane_dots = self.sidebar_pane_dots(ctx_id, false);
+                    // --- Normal row via SidebarRow ---
+                    let ctx_name = self.router.get(i).name.to_string();
+                    let badge_count = if is_active {
+                        self.visible_notification_count()
+                    } else {
+                        self.context_notification_count(i)
+                    };
+                    let subtitle = Some(self.router.get(i).root.display().to_string());
 
                     let (action, response) = SidebarRow {
-                        is_active: false,
-                        is_dragging: self.drag_context == Some(i),
-                        any_dragging: self.drag_context.is_some(),
-                        action_enabled: false,
+                        is_active,
+                        is_dragging,
+                        any_dragging,
+                        action_enabled: num_contexts > 1 && !any_dragging,
                         ctx_name,
-                        ctx_index: None,
-                        badge_count: 0,
+                        ctx_index: Some(display_idx),
+                        badge_count,
                         subtitle,
                         pane_dots,
                         draggable: true,
                     }
-                    .show(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
+                    .show(ui, egui::Id::new(("ctx", i)), &self.colors);
 
-                    parked_rects.push(response.rect);
-
-                    response.context_menu(|ui| {
-                        if ui.button("Unpark").clicked() {
-                            unpark_context = Some(i);
-                            ui.close();
-                        }
-                    });
+                    active_rects.push(response.rect);
 
                     match action {
                         SidebarAction::DragStart => {
@@ -462,14 +325,163 @@ impl PlexiApp {
                         SidebarAction::DragEnd => {
                             drag_released = true;
                         }
-                        SidebarAction::Activate => {
-                            unpark_context = Some(i);
-                        }
                         _ => {}
                     }
+
+                    if delete_context.is_none() {
+                        let num_ctxs = num_contexts;
+                        let cwd_for_menu = focused_cwd.clone();
+                        response.context_menu(|ui| {
+                            if ui.button("Rename").clicked() {
+                                menu_action = Some((i, WindowMenuAction::Rename));
+                                ui.close();
+                            }
+                            if ui.button("Edit Description").clicked() {
+                                menu_action = Some((i, WindowMenuAction::EditDescription));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if display_idx > 0 {
+                                if ui.button("Move to Top").clicked() {
+                                    menu_action = Some((i, WindowMenuAction::MoveToTop));
+                                    ui.close();
+                                }
+                                if ui.button("Move Up").clicked() {
+                                    menu_action = Some((i, WindowMenuAction::MoveUp));
+                                    ui.close();
+                                }
+                            }
+                            if display_idx + 1 < active_count {
+                                if ui.button("Move Down").clicked() {
+                                    menu_action = Some((i, WindowMenuAction::MoveDown));
+                                    ui.close();
+                                }
+                                if ui.button("Move to Bottom").clicked() {
+                                    menu_action = Some((i, WindowMenuAction::MoveToBottom));
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if let Some(cwd) = &cwd_for_menu {
+                                if ui.button("Set root to current path").clicked() {
+                                    menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
+                                    ui.close();
+                                }
+                            }
+                            if ui.button("Edit root\u{2026}").clicked() {
+                                menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
+                                ui.close();
+                            }
+                            if num_ctxs > 1 {
+                                ui.separator();
+                                if ui.button("Park").clicked() {
+                                    menu_action = Some((i, WindowMenuAction::Park));
+                                    ui.close();
+                                }
+                                if ui.button("Delete").clicked() {
+                                    menu_action = Some((i, WindowMenuAction::Delete));
+                                    ui.close();
+                                }
+                            }
+                        });
+
+                        match action {
+                            SidebarAction::Delete => {
+                                delete_context = Some(i);
+                            }
+                            SidebarAction::Rename => {
+                                menu_action = Some((i, WindowMenuAction::Rename));
+                            }
+                            SidebarAction::Activate => {
+                                log::debug!(
+                                    "sidebar: activate ctx={i} active={}",
+                                    self.router.active_idx()
+                                );
+                                clicked_workspace = Some(i);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
-            }
-        }
+
+                // ── Parked section ──────────────────────────────────────────────
+                // The header doubles as a drop target: while a context is being
+                // dragged, render it even when empty so the drag can release onto it.
+                let parked_count = parked_order.len();
+                if parked_count > 0 || self.drag_context.is_some() {
+                    ui.add_space(8.0);
+
+                    let divider_id = egui::Id::new("parked_divider");
+                    let expanded = self.parked_section_expanded;
+                    let label = if parked_count > 0 {
+                        format!("Parked ({parked_count})")
+                    } else {
+                        "Parked".to_string()
+                    };
+
+                    let response = ListDropdownHeader::new(&label, expanded).indent(12.0).show(
+                        ui,
+                        divider_id,
+                        &self.colors,
+                    );
+                    parked_header_rect = Some(response.rect);
+                    if response.clicked() {
+                        self.parked_section_expanded = !self.parked_section_expanded;
+                    }
+                    ui.add_space(4.0);
+
+                    if self.parked_section_expanded {
+                        for &i in &parked_order {
+                            let ctx = self.router.get(i);
+                            let ctx_name = ctx.name.to_string();
+                            let ctx_id = ctx.context_id;
+                            let subtitle = Some(ctx.root.display().to_string());
+
+                            let pane_dots = self.sidebar_pane_dots(ctx_id, false);
+
+                            let (action, response) = SidebarRow {
+                                is_active: false,
+                                is_dragging: self.drag_context == Some(i),
+                                any_dragging: self.drag_context.is_some(),
+                                action_enabled: false,
+                                ctx_name,
+                                ctx_index: None,
+                                badge_count: 0,
+                                subtitle,
+                                pane_dots,
+                                draggable: true,
+                            }
+                            .show(
+                                ui,
+                                egui::Id::new(("parked_ctx", i)),
+                                &self.colors,
+                            );
+
+                            parked_rects.push(response.rect);
+
+                            response.context_menu(|ui| {
+                                if ui.button("Unpark").clicked() {
+                                    unpark_context = Some(i);
+                                    ui.close();
+                                }
+                            });
+
+                            match action {
+                                SidebarAction::DragStart => {
+                                    self.drag_context = Some(i);
+                                }
+                                SidebarAction::DragEnd => {
+                                    drag_released = true;
+                                }
+                                SidebarAction::Activate => {
+                                    unpark_context = Some(i);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            });
 
         // Resolve the drag target once and use it for both the drop affordance
         // and the release action. The Parked header is the section boundary:
