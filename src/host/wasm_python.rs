@@ -1700,27 +1700,16 @@ struct ScopeState {
     error: Option<String>,
 }
 
-/// Resolve one declared scope to its state file, against the pane's context
-/// root *at call time*. The host owns path construction — see
-/// `crate::host::state_scope` for the two rules. Validates the app id.
-fn python_state_path(
-    app_id: &str,
-    scope: crate::host::state_scope::StateScope,
-    format: crate::host::state_scope::StateFormat,
-    context_root: &Path,
-) -> Result<PathBuf, String> {
-    crate::host::state_scope::state_file(scope, app_id, format, context_root)
-}
-
-#[cfg(test)]
+/// Name a JSON value's kind for a user-facing "expected an object, got X"
+/// message. Article-prefixed so it reads inside a sentence.
 fn json_value_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        Value::Bool(_) => "a bool",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 #[cfg(test)]
@@ -1754,14 +1743,7 @@ fn encode_state_file(
             Some(Value::String(document)) => Ok(document.as_bytes().to_vec()),
             Some(other) => Err(format!(
                 "markdown state requires a string 'document' value, got {}",
-                match other {
-                    Value::Null => "null",
-                    Value::Bool(_) => "a bool",
-                    Value::Number(_) => "a number",
-                    Value::Array(_) => "an array",
-                    Value::Object(_) => "an object",
-                    Value::String(_) => unreachable!(),
-                }
+                json_value_kind(other)
             )),
             None => {
                 Err("markdown state requires a 'document' key carrying the file text".to_string())
@@ -1782,14 +1764,7 @@ pub(crate) fn decode_state_file(
                 Ok(Value::Object(state)) => Ok(state),
                 Ok(other) => Err(format!(
                     "state file is not a JSON object (got {})",
-                    match other {
-                        Value::Null => "null",
-                        Value::Bool(_) => "a bool",
-                        Value::Number(_) => "a number",
-                        Value::String(_) => "a string",
-                        Value::Array(_) => "an array",
-                        Value::Object(_) => unreachable!(),
-                    }
+                    json_value_kind(&other)
                 )),
                 Err(error) => Err(format!("parse state JSON: {error}")),
             }
@@ -1875,8 +1850,13 @@ fn load_python_state(
         .first()
         .copied()
         .unwrap_or(crate::host::state_scope::StateScope::Global);
-    let path = python_state_path(&config.app_id, scope, config.state_format, &config.context_root)
-        .expect("resolve state path");
+    let path = crate::host::state_scope::state_file(
+        scope,
+        &config.app_id,
+        config.state_format,
+        &config.context_root,
+    )
+    .expect("resolve state path");
     match read_python_state_bytes(&path)? {
         Some(bytes) => parse_python_state(&path, &bytes),
         None => Ok(serde_json::Map::new()),
@@ -1939,9 +1919,9 @@ fn load_python_states(
         .state_scopes
         .iter()
         .map(|&scope| {
-            let state = match python_state_path(
-                &config.app_id,
+            let state = match crate::host::state_scope::state_file(
                 scope,
+                &config.app_id,
                 config.state_format,
                 &config.context_root,
             ) {
@@ -3394,9 +3374,9 @@ impl LivePythonPane {
             .state_scopes
             .iter()
             .filter_map(|&scope| {
-                match python_state_path(
-                    &self.app_id,
+                match crate::host::state_scope::state_file(
                     scope,
+                    &self.app_id,
                     self.config.state_format,
                     &self.context_root,
                 ) {
@@ -3450,9 +3430,9 @@ impl LivePythonPane {
             );
             return;
         }
-        let path = match python_state_path(
-            &self.app_id,
+        let path = match crate::host::state_scope::state_file(
             scope,
+            &self.app_id,
             self.config.state_format,
             &self.context_root,
         ) {
@@ -3554,9 +3534,9 @@ impl LivePythonPane {
             );
             return;
         }
-        let path = match python_state_path(
-            &self.app_id,
+        let path = match crate::host::state_scope::state_file(
             scope,
+            &self.app_id,
             self.config.state_format,
             &self.context_root,
         ) {
@@ -5874,7 +5854,7 @@ mod tests {
 
     /// Test-only convenience: resolve the state path this fixture's single
     /// declared scope (`Context`, see `state_test_config`) addresses. Real
-    /// callers use `python_state_path(app_id, scope, context_root)` directly
+    /// callers use `state_scope::state_file` directly
     /// once they have resolved which scope they mean; tests here only ever
     /// care about "the one scope this config declares".
     fn python_state_path_for_config(config: &PythonLaunchConfig) -> PathBuf {
@@ -5883,9 +5863,9 @@ mod tests {
             .first()
             .copied()
             .unwrap_or(crate::host::state_scope::StateScope::Global);
-        super::python_state_path(
-            &config.app_id,
+        crate::host::state_scope::state_file(
             scope,
+            &config.app_id,
             config.state_format,
             &config.context_root,
         )
