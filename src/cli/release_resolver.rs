@@ -1,5 +1,6 @@
 //! Channel-aware release resolution via the GitHub releases API.
 
+use crate::app::host_version::{PatchPolicy, Version};
 use std::cmp::Ordering;
 use std::time::Duration;
 
@@ -52,13 +53,7 @@ impl ReleaseTag {
             None => (body, None),
         };
 
-        let mut parts = version.split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next()?.parse().ok()?;
-        let patch = parts.next()?.parse().ok()?;
-        if parts.next().is_some() {
-            return None;
-        }
+        let Version(major, minor, patch) = Version::parse(version, PatchPolicy::Required)?;
 
         let pre = match pre_str {
             None => None,
