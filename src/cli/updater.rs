@@ -84,11 +84,7 @@ fn installed_tag_or_cargo_version(cache_dir: &Path) -> String {
 }
 
 fn detect_channel() -> UpdateChannel {
-    let name = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string());
-    UpdateChannel::from_binary_name(&name)
+    UpdateChannel::from_binary_name(&crate::config::current_exe_basename())
 }
 
 /// Returns the best candidate tag (e.g. `v0.1.13-beta.1`) for `channel`, or
@@ -243,18 +239,7 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     let src_dir = std::path::PathBuf::from(&home).join(".plexi-src");
     let repo = "https://github.com/ianjamesburke/PLEXI.git";
 
-    let binary_name = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string());
-    let channel = if binary_name == "plexi" {
-        "main".to_string()
-    } else {
-        binary_name
-            .strip_prefix("plexi-")
-            .unwrap_or("main")
-            .to_string()
-    };
+    let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
 
     let log_path = profile_dir.join("update.log");
     std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;
