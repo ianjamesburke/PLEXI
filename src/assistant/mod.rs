@@ -2344,10 +2344,7 @@ impl AssistantApp {
             decision,
             duration,
             source,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
+            created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
         });
     }

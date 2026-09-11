@@ -409,10 +409,7 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     if !keep_data {
         let backlog = profile_dir.join("backlog");
         if backlog.exists() {
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let ts = crate::platform::clock::now_secs();
             let archive = dirs::home_dir()
                 .unwrap()
                 .join(format!("plexi-backlog-archive/plexi{suffix}-backlog-{ts}"));

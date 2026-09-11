@@ -328,7 +328,7 @@ fn append_line(file: &mut std::fs::File, line: &str) {
 
 /// Returns the current UTC timestamp as an RFC 3339 string.
 pub fn now_timestamp() -> String {
-    chrono::Utc::now().to_rfc3339()
+    crate::platform::clock::now_rfc3339()
 }
 
 // ── Global singleton ──────────────────────────────────────────────────────────

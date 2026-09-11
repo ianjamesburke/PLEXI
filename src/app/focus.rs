@@ -7,30 +7,6 @@ use std::time::Duration;
 
 pub(crate) const FOCUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
-/// Format a Unix timestamp (seconds since epoch) as an ISO-8601 UTC string.
-/// Minimal implementation with no external dependencies.
-fn unix_secs_to_iso(secs: u64) -> String {
-    // Days since epoch → Gregorian date via the Zeller / proleptic algorithm.
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-
-    // Algorithm: http://howardhinnant.github.io/date_algorithms.html (civil_from_days)
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let y = if mo <= 2 { y + 1 } else { y };
-
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FocusLogOutcome {
     Unchanged,
@@ -442,15 +418,6 @@ impl PlexiApp {
             .checked_sub(elapsed_since_start)
             .unwrap_or(std::time::SystemTime::now());
 
-        let to_iso = |t: std::time::SystemTime| -> String {
-            let secs = t
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            // Minimal ISO-8601 UTC formatter without external deps.
-            unix_secs_to_iso(secs)
-        };
-
         let entry = crate::app::focus_journal::FocusJournalEntry {
             pane_id: meta.pane_id,
             context_name: meta.context_name,
@@ -460,8 +427,8 @@ impl PlexiApp {
             pty_title: meta.pty_title,
             pane_name: meta.pane_name,
             app_type_id: meta.app_type_id,
-            started_at: to_iso(started_at_wall),
-            last_checkpoint_at: to_iso(std::time::SystemTime::now()),
+            started_at: crate::platform::clock::iso_z(started_at_wall),
+            last_checkpoint_at: crate::platform::clock::iso_z(std::time::SystemTime::now()),
         };
         crate::app::focus_journal::write_checkpoint(&self.focus_journal_path, &entry);
     }
@@ -904,13 +871,7 @@ impl PlexiApp {
                 .collect::<Vec<_>>()
                 .join("\n");
             log::warn!("config: parse error, keeping current config:\n{error_msg}");
-            let notify_id = format!(
-                "config-error-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0)
-            );
+            let notify_id = format!("config-error-{}", crate::platform::clock::now_millis());
             self.enqueue_notification(
                 crate::app::notifications::NotifySource::HostInternal,
                 PendingNotification {

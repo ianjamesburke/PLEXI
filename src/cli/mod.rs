@@ -476,10 +476,7 @@ fn spawn_gate_error(channel: &str, socket: &std::path::Path) -> String {
 
 /// Unix-epoch milliseconds stamp for spawn-queue file attribution.
 pub(super) fn spawn_queued_at_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    crate::platform::clock::now_millis() as u64
 }
 
 fn command_binary_channel() -> Option<String> {
@@ -824,11 +821,7 @@ mod transport_deadline_tests {
         let dir = std::env::temp_dir().join(format!(
             "pxt-{label}-{}-{:x}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-                & 0xffff_ffff
+            crate::platform::clock::now_nanos() & 0xffff_ffff
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir

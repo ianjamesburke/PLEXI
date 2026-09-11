@@ -2343,15 +2343,9 @@ impl PlexiApp {
                 peer_pid,
                 ..
             } => {
-                let internal_id = notify_id.clone().unwrap_or_else(|| {
-                    format!(
-                        "__host__:{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_nanos())
-                            .unwrap_or(0)
-                    )
-                });
+                let internal_id = notify_id
+                    .clone()
+                    .unwrap_or_else(|| format!("__host__:{}", crate::platform::clock::now_nanos()));
                 log::info!(
                     "pane_ipc: kind=notify title={:?} choices={} scope={:?} peer_pid={:?} response_file={:?}",
                     title,
@@ -3335,10 +3329,7 @@ impl PlexiApp {
         // tick; notify_id is an identity key, so disambiguate with a counter.
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+        let millis = crate::platform::clock::now_millis();
         let queued = self.enqueue_notification(
             crate::app::notifications::NotifySource::HostInternal,
             crate::app::notifications::PendingNotification {
@@ -3529,10 +3520,7 @@ impl PlexiApp {
             let origin = val["origin"].as_str().unwrap_or("unknown");
             let age_secs = spawn_file_age_secs(
                 val["queued_at_ms"].as_u64(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
+                crate::platform::clock::now_millis() as u64,
             );
             // A spawn file older than the queue's promised ~1 s pickup was
             // written while this host was not servicing — surface who queued

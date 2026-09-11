@@ -352,10 +352,7 @@ fn seed_pane(queue_dir: &Path, index: usize, spec: &PaneSpec) -> Result<PathBuf,
         "origin": "host start",
         "queued_at_ms": crate::cli::spawn_queued_at_ms(),
     });
-    let id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let id = crate::platform::clock::now_nanos();
     let file = queue_dir.join(format!("{id}-{index}.json"));
     std::fs::write(&file, payload.to_string())
         .map_err(|e| format!("could not write spawn-queue file {file:?}: {e}"))?;
@@ -742,10 +739,7 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
     let output_path = match output {
         Some(path) => path.to_string(),
         None => {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or_default();
+            let stamp = crate::platform::clock::now_secs();
             crate::config::config_dir()
                 .join("screenshots")
                 .join(format!("host-{stamp}.png"))

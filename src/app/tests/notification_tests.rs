@@ -168,10 +168,7 @@ fn persist_ttl_drops_old_notifications() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("notifications.json");
 
-    let now_sys = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_sys = crate::platform::clock::now_secs();
     let eight_days_ago = now_sys.saturating_sub(8 * 24 * 3600);
     let json = format!(
         r#"[{{"notify_id":"old","sender_pane_id":0,"source_context_id":1,"title":"Old","body":"","kind":"message","options":[],"required":false,"scope":"global","enqueued_at_secs":{},"tombstoned":false}}]"#,

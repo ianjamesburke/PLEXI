@@ -49,12 +49,12 @@ impl FileEventSink {
         // is live, even before the first AppRequest fires).
         if let Some(writer) = sink.writer.as_mut() {
             use std::io::Write;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let now = crate::platform::clock::now_secs();
             let line = format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now}}}\n");
-            if let Err(e) = writer.write_all(line.as_bytes()).and_then(|()| writer.flush()) {
+            if let Err(e) = writer
+                .write_all(line.as_bytes())
+                .and_then(|()| writer.flush())
+            {
                 log::debug!(
                     "FileEventSink: startup heartbeat write({}) failed: {e}",
                     sink.path.display()
