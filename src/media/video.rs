@@ -887,7 +887,7 @@ pub fn default_video_device() -> Arc<dyn VideoDecoder> {
             let cfg = MockVideoDecoderConfig {
                 width: parse_env("PLEXI_VIDEO_WIDTH", 320),
                 height: parse_env("PLEXI_VIDEO_HEIGHT", 180),
-                fps: parse_env_f32("PLEXI_VIDEO_FPS", 30.0),
+                fps: parse_env("PLEXI_VIDEO_FPS", 30.0f32),
                 duration_ms: parse_env("PLEXI_VIDEO_DURATION_MS", 30_000),
             };
             log::info!(
@@ -916,14 +916,6 @@ fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<T>().ok())
-        .unwrap_or(default)
-}
-
-#[cfg(not(test))]
-fn parse_env_f32(key: &str, default: f32) -> f32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(default)
 }
 
