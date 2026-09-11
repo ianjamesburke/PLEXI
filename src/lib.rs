@@ -35,29 +35,6 @@ pub mod media {
             pub default: bool,
         }
     }
-
-    pub mod video {
-        /// Video playback state. Stub for the lib target (full impl in binary target).
-        #[derive(
-            Debug,
-            Clone,
-            Copy,
-            PartialEq,
-            Eq,
-            serde::Serialize,
-            serde::Deserialize,
-            schemars::JsonSchema,
-        )]
-        #[serde(tag = "kind", rename_all = "snake_case")]
-        pub enum VideoState {
-            Play,
-            Pause,
-            /// Absolute position in milliseconds from the start of the video.
-            Seek {
-                position_ms: u64,
-            },
-        }
-    }
 }
 
 pub mod host {

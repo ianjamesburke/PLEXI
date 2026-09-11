@@ -1,6 +1,21 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Playback state for a video handle. Encoded on the wire as
+/// `{"play": null}` / `{"pause": null}` / `{"seek": <ms>}` via serde's
+/// default `untagged`-friendly encoding. The PGAP wire serialises this as a
+/// nested struct under `state` in `DrawCommand::SetVideoState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VideoState {
+    Play,
+    Pause,
+    /// Absolute position in milliseconds from the start of the video.
+    Seek {
+        position_ms: u64,
+    },
+}
+
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
 /// on the protocol surface so SDKs in other languages can map it without
 /// depending on the midi module.
