@@ -886,6 +886,24 @@ pub fn apps_dir() -> PathBuf {
     crate::config::config_dir().join("apps")
 }
 
+/// Every app id installed in the global apps directory, sorted. The listing
+/// surface for shell completion and any other caller that needs the installed
+/// set by name rather than by path.
+pub fn installed_app_ids() -> Vec<String> {
+    let dir = apps_dir();
+    let Ok(read) = std::fs::read_dir(&dir) else {
+        log::debug!("registry: no readable apps dir at {dir:?}");
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = read
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    ids.sort();
+    ids
+}
+
 /// Return the apps dir scoped to `workspace_root` for the current channel.
 /// Workspace apps live at `<workspace_root>/<channel_dir>/apps/`.
 pub fn workspace_apps_dir(workspace_root: &Path) -> PathBuf {

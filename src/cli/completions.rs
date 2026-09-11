@@ -27,32 +27,14 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
             }
         }
         "app:" | "app" => {
-            let apps_dir = crate::config::config_dir().join("apps");
-            if let Ok(read) = std::fs::read_dir(&apps_dir) {
-                let mut names: Vec<String> = read
-                    .flatten()
-                    .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect();
-                names.sort();
-                for name in names {
-                    println!("app:{name}");
-                }
+            for name in crate::app::registry::installed_app_ids() {
+                println!("app:{name}");
             }
         }
         _ => {
             // All categories: bare app IDs + prefixed variants
-            let apps_dir = crate::config::config_dir().join("apps");
-            if let Ok(read) = std::fs::read_dir(&apps_dir) {
-                let mut names: Vec<String> = read
-                    .flatten()
-                    .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect();
-                names.sort();
-                for name in &names {
-                    println!("{name}");
-                }
+            for name in crate::app::registry::installed_app_ids() {
+                println!("{name}");
             }
             // CLI names
             let mut cli_names: std::collections::BTreeSet<String> =
