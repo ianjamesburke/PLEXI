@@ -44,8 +44,11 @@ pub use types::{
 impl UiTree {
     /// Every human-readable label in the tree — text, button, and badge nodes —
     /// newline-joined in arena order. The single text surface every content
-    /// assertion and every semantic snapshot reads, so a substring search
-    /// matches the same content wherever it runs.
+    /// assertion reads, so a substring search matches the same content
+    /// wherever it runs. Production reads rendered content through
+    /// `SemanticPaneState`, which keeps node identity; this flattening exists
+    /// for assertions, so it is test-only.
+    #[cfg(test)]
     pub fn visible_text(&self) -> String {
         self.nodes
             .iter()

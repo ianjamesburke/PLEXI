@@ -1154,7 +1154,6 @@ impl AppRuntime {
     }
 }
 
-#[allow(dead_code)]
 pub struct AppPane {
     pub id: PaneId,
     pub runtime: AppRuntime,
