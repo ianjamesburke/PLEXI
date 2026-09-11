@@ -280,13 +280,12 @@ pub fn routine_set_enabled(name: &str, enabled: bool) -> i32 {
 // ordering survive untouched, and land atomically (temp file in the same
 // directory, then rename) so a crash mid-write can never truncate the file.
 
-/// Write `content` to `path` atomically: temp file in the same directory,
-/// then rename over the destination. The temp name is pid-unique so two
-/// concurrent CLI invocations can never clobber each other's staged content.
+/// Write `content` to `path` atomically via `platform::fs::atomic_write`:
+/// uuid-named temp file in the same directory, then rename over the
+/// destination, so two concurrent CLI invocations can never clobber each
+/// other's staged content.
 fn atomic_write(path: &Path, content: &str) -> Result<(), RoutineFileError> {
-    let tmp = path.with_extension(format!("toml.cli-tmp-{}", std::process::id()));
-    std::fs::write(&tmp, content)
-        .and_then(|_| std::fs::rename(&tmp, path))
+    crate::platform::fs::atomic_write(path, content.as_bytes())
         .map_err(|e| RoutineFileError::Io(format!("could not write {}: {e}", path.display())))
 }
 

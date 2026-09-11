@@ -316,8 +316,7 @@ impl Scheduler {
                 return;
             }
         };
-        let tmp = path.with_extension("toml.tmp");
-        if let Err(e) = std::fs::write(&tmp, &toml_str).and_then(|_| std::fs::rename(&tmp, &path)) {
+        if let Err(e) = crate::platform::fs::atomic_write(&path, toml_str.as_bytes()) {
             log::warn!(
                 "scheduler: failed to persist routine state to {}: {e}",
                 path.display()

@@ -226,7 +226,6 @@ fn load_identity(config_dir: &Path) -> Option<HostMcpIdentity> {
 /// next launch rolls the endpoint, so it is logged rather than propagated.
 fn save_identity(config_dir: &Path, port: u16) {
     let path = identity_path(config_dir);
-    let tmp = path.with_extension("json.tmp");
     let body = match serde_json::to_vec_pretty(&HostMcpIdentity { port }) {
         Ok(b) => b,
         Err(e) => {
@@ -234,17 +233,8 @@ fn save_identity(config_dir: &Path, port: u16) {
             return;
         }
     };
-    if let Err(e) = std::fs::write(&tmp, &body) {
-        log::warn!("host_mcp: could not write {}: {e}", tmp.display());
-        return;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        log::warn!("host_mcp: could not finalize {}: {e}", path.display());
+    if let Err(e) = crate::platform::fs::atomic_write_with_mode(&path, &body, 0o600) {
+        log::warn!("host_mcp: could not write {}: {e}", path.display());
     }
 }
 

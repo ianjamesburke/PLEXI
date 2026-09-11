@@ -285,7 +285,7 @@ fn set_from(
             );
         }
     }
-    match crate::host::state_scope::atomic_write(&resolved.path, &bytes) {
+    match crate::platform::fs::atomic_write(&resolved.path, &bytes) {
         Ok(()) => {
             log::info!(
                 "app_state: set app={app_id} scope={} format={} caller={} path={} accepted bytes={}",

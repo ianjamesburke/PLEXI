@@ -101,10 +101,7 @@ pub(crate) fn save_pending_notifications_to(
     notifications: &[PendingNotification],
     path: &std::path::Path,
 ) {
-    let now_sys = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_sys = crate::platform::clock::now_secs();
     let persisted: Vec<PersistedNotification> = notifications
         .iter()
         .map(|n| {
@@ -134,16 +131,13 @@ pub(crate) fn save_pending_notifications_to(
         })
         .collect();
     match serde_json::to_string(&persisted) {
-        Ok(json) => {
-            let tmp = path.with_extension("json.tmp");
-            match std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, path)) {
-                Ok(_) => log::info!(
-                    "notify:persist: saved {} notification(s)",
-                    notifications.len()
-                ),
-                Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
-            }
-        }
+        Ok(json) => match crate::platform::fs::atomic_write(path, json.as_bytes()) {
+            Ok(()) => log::info!(
+                "notify:persist: saved {} notification(s)",
+                notifications.len()
+            ),
+            Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
+        },
         Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
     }
 }
@@ -158,10 +152,7 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
         log::warn!("notify:persist: failed to deserialize {:?}", path);
         return vec![];
     };
-    let now_sys = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_sys = crate::platform::clock::now_secs();
     const TTL_SECS: u64 = 7 * 24 * 3600;
     let restored: Vec<PendingNotification> = persisted
         .into_iter()

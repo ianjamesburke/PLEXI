@@ -260,38 +260,6 @@ fn resolve_existing_prefix(path: &Path) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-/// Write `bytes` to `path` atomically: sibling temp file, fsync, rename.
-/// A reader never observes a partial file; a crash leaves at worst an
-/// orphaned `.{name}.tmp-{uuid}` sibling. Pattern shared with
-/// `crate::assistant::store`.
-pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("write {}: missing parent", path.display()))?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
-    let temp = parent.join(format!(
-        ".{}.tmp-{}",
-        path.file_name().unwrap_or_default().to_string_lossy(),
-        uuid::Uuid::new_v4()
-    ));
-    let result = (|| {
-        let mut file =
-            std::fs::File::create(&temp).map_err(|e| format!("create {}: {e}", temp.display()))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("write {}: {e}", temp.display()))?;
-        file.sync_all()
-            .map_err(|e| format!("sync {}: {e}", temp.display()))?;
-        std::fs::rename(&temp, path)
-            .map_err(|e| format!("rename {} to {}: {e}", temp.display(), path.display()))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
-}
-
 /// Validate a manifest `[state] scopes` list. Rules (fail loud, no silent
 /// fallback — the `join_group` free-form key is the cautionary precedent):
 /// an empty list is an error, an unknown value is an error, a duplicate is an
@@ -606,21 +574,6 @@ mod tests {
             fresh.path(),
         )
         .expect("missing app_states dir is within scope before first write");
-    }
-
-    #[test]
-    fn atomic_write_leaves_no_temp_residue() {
-        let dir = tempfile::tempdir().expect("dir");
-        let path = dir.path().join("app_states").join("todo.json");
-        atomic_write(&path, b"{\"k\":1}").expect("atomic write");
-        assert_eq!(std::fs::read(&path).expect("read back"), b"{\"k\":1}");
-        let residue: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-            .expect("read dir")
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.contains(".tmp-"))
-            .collect();
-        assert!(residue.is_empty(), "temp residue left behind: {residue:?}");
     }
 
     /// Both kinds' global tier stays `.plexi`, never `.plexi-<channel>` — a

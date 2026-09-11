@@ -23,7 +23,6 @@
 //! finish out of submission order (a reply commits at its anchor while
 //! slash-view rows append), so disk order mirrors memory order by rewrite.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::model::Turn;
@@ -138,32 +137,6 @@ impl AssistantStore {
             .join(format!("{checkpoint_id}.jsonl"))
     }
 
-    fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| format!("write {}: missing parent", path.display()))?;
-        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
-        let temp = parent.join(format!(
-            ".{}.tmp-{}",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            uuid::Uuid::new_v4()
-        ));
-        let result = (|| {
-            let mut file = std::fs::File::create(&temp)
-                .map_err(|e| format!("create {}: {e}", temp.display()))?;
-            file.write_all(bytes)
-                .map_err(|e| format!("write {}: {e}", temp.display()))?;
-            file.sync_all()
-                .map_err(|e| format!("sync {}: {e}", temp.display()))?;
-            std::fs::rename(&temp, path)
-                .map_err(|e| format!("rename {} to {}: {e}", temp.display(), path.display()))
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp);
-        }
-        result
-    }
-
     /// Parse the current `state.toml`, if present and valid.
     fn read_state(&self) -> Option<StateToml> {
         let raw = std::fs::read_to_string(self.state_path()).ok()?;
@@ -181,7 +154,7 @@ impl AssistantStore {
 
     fn write_state(&self, state: &StateToml) -> Result<(), String> {
         let raw = toml::to_string(state).map_err(|e| format!("serialize state.toml: {e}"))?;
-        Self::atomic_write(&self.state_path(), raw.as_bytes())
+        crate::platform::fs::atomic_write(&self.state_path(), raw.as_bytes())
     }
 
     /// Read this store's context entry, if any.
@@ -290,7 +263,7 @@ impl AssistantStore {
             raw.push_str(&line);
             raw.push('\n');
         }
-        Self::atomic_write(&path, raw.as_bytes())
+        crate::platform::fs::atomic_write(&path, raw.as_bytes())
     }
 
     /// Load every turn of a conversation. Missing file = empty conversation.
@@ -396,7 +369,7 @@ impl AssistantStore {
     fn write_history(&self, id: &str, history: &ConversationHistory) -> Result<(), String> {
         let raw = serde_json::to_vec_pretty(history)
             .map_err(|e| format!("serialize history for {id}: {e}"))?;
-        Self::atomic_write(&self.history_path(id), &raw)
+        crate::platform::fs::atomic_write(&self.history_path(id), &raw)
     }
 
     pub fn write_checkpoint(
@@ -414,7 +387,10 @@ impl AssistantStore {
             );
             raw.push('\n');
         }
-        Self::atomic_write(&self.checkpoint_path(conversation_id, &id), raw.as_bytes())?;
+        crate::platform::fs::atomic_write(
+            &self.checkpoint_path(conversation_id, &id),
+            raw.as_bytes(),
+        )?;
         let metadata = CheckpointMetadata {
             id,
             label: label.to_string(),
@@ -485,7 +461,7 @@ impl AssistantStore {
         raw.push_str("# Tool and permission audit\n\n```jsonl\n");
         raw.push_str(audit);
         raw.push_str("\n```\n");
-        Self::atomic_write(&path, raw.as_bytes())?;
+        crate::platform::fs::atomic_write(&path, raw.as_bytes())?;
         Ok(path)
     }
 }
