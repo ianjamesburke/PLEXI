@@ -1736,36 +1736,23 @@ pub fn app_update_cli(id: Option<&str>) -> i32 {
 /// The host delivers a `PlexiEvent::Action { action, args }` to the target app pane.
 /// Returns 0 on success, 1 on error.
 pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
-    let response_file = crate::rpc::response_file("app-action-response", "json");
-
-    log::info!(
-        "app_action:cli: pane_id={pane_id} action={action:?} args={args:?} response_file={response_file:?}"
-    );
+    log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
 
     let mut payload = serde_json::json!({
         "type": "send_app_action",
         "pane_id": pane_id,
         "action": action,
-        "response_file": response_file,
     });
     if !args.is_empty() {
         payload["args"] = serde_json::json!(args);
     }
 
-    let code = super::send_to_socket(payload);
-    if code != 0 {
-        return code;
-    }
-
-    let content = match super::poll_rpc(&response_file, "app action") {
+    let content = match super::request(payload, "app-action-response", "app action") {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-            eprintln!("error: {msg}");
-            return 1;
-        }
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
     }
     0
 }

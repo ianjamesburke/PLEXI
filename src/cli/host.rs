@@ -753,23 +753,20 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
                 .into_owned()
         }
     };
-    let response_file = crate::rpc::response_file("screenshot-response", "json");
     log::info!("host_screenshot:cli: pane={pane:?} output_path={output_path}");
-
-    let code = super::send_to_socket(serde_json::json!({
-        "type": "screenshot",
-        "pane_id": pane,
-        "output_path": output_path,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
 
     // The capture round-trips through the GPU (request frame -> readback ->
     // next frame's input), so allow a little longer than plain state reads.
-    let content = match super::poll_rpc_with(&response_file, "screenshot", Duration::from_secs(10))
-    {
+    let content = match super::request_with(
+        serde_json::json!({
+            "type": "screenshot",
+            "pane_id": pane,
+            "output_path": output_path,
+        }),
+        "screenshot-response",
+        "screenshot",
+        Duration::from_secs(10),
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
