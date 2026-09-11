@@ -70,7 +70,7 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
     crate::plexi_ai::tool_dispatch::register(
         provider_pane_id,
         "connector-app".to_string(),
-        vec![crate::app_protocol::AiTool {
+        vec![crate::protocol::AiTool {
             name: "connector_tool".to_string(),
             description: "test connector tool".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
@@ -169,9 +169,9 @@ fn pane_status_request_routes_through_host_and_returns_composite_evidence() {
         .panes
         .get_mut(&pane_id)
         .expect("terminal pane")
-        .set_agent(Some(crate::app_protocol::PaneAgentState {
+        .set_agent(Some(crate::protocol::PaneAgentState {
             pane_id,
-            state: crate::app_protocol::AgentState::Working,
+            state: crate::protocol::AgentState::Working,
             agent: "codex".to_string(),
             detail: Some("Bash(cargo test)".to_string()),
             session_id: None,
@@ -255,9 +255,9 @@ fn pane_heartbeat_skips_when_working() {
         .panes
         .get_mut(&pane)
         .expect("pane")
-        .set_agent(Some(crate::app_protocol::PaneAgentState {
+        .set_agent(Some(crate::protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::app_protocol::AgentState::Working,
+            state: crate::protocol::AgentState::Working,
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -283,9 +283,9 @@ fn pane_heartbeat_fires_when_idle() {
         .panes
         .get_mut(&pane)
         .expect("pane")
-        .set_agent(Some(crate::app_protocol::PaneAgentState {
+        .set_agent(Some(crate::protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::app_protocol::AgentState::Idle,
+            state: crate::protocol::AgentState::Idle,
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -2298,7 +2298,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
 
 #[test]
 fn set_pip_status_drives_activity_dot_and_overrides_agent() {
-    use crate::app_protocol::{AgentState, AppRequest, PaneAgentState, PipStatus};
+    use crate::protocol::{AgentState, AppRequest, PaneAgentState, PipStatus};
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
@@ -2749,7 +2749,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
     h.run_frames(2);
 
     let response_file = temp_response(tmp.path(), "key-pane");
-    h.inject_ipc(crate::app_protocol::AppRequest::KeyPane {
+    h.inject_ipc(crate::protocol::AppRequest::KeyPane {
         pane_id,
         key: "e".to_string(),
         response_file: Some(response_file.clone()),
@@ -2831,7 +2831,7 @@ fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
 /// which SDK eventually reaches it.
 struct PipeTestApp {
     outgoing: Vec<crate::app::app_trait::AppCommand>,
-    received: std::sync::Arc<std::sync::Mutex<Vec<crate::app_protocol::PlexiEvent>>>,
+    received: std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
 }
 
 impl crate::app::app_trait::App for PipeTestApp {
@@ -2859,7 +2859,7 @@ impl crate::app::app_trait::App for PipeTestApp {
         std::mem::take(&mut self.outgoing)
     }
 
-    fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+    fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         self.received
             .lock()
             .expect("pipe test app event log")
@@ -2874,7 +2874,7 @@ fn add_pipe_test_pane(
     win_idx: usize,
 ) -> (
     u64,
-    std::sync::Arc<std::sync::Mutex<Vec<crate::app_protocol::PlexiEvent>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
 ) {
     let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane_id = h.app.host.alloc_pane_id();
@@ -3080,7 +3080,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
             "target A must receive exactly one message"
         );
         match &events_a[0] {
-            crate::app_protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
+            crate::protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
                 assert_eq!(pipe_id, "my-pipe");
                 assert_eq!(payload["from"], "a");
             }
@@ -3118,7 +3118,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
             "target B must receive exactly one message"
         );
         match &events_b[0] {
-            crate::app_protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
+            crate::protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
                 assert_eq!(pipe_id, "my-pipe");
                 assert_eq!(payload["from"], "b");
             }
@@ -5338,7 +5338,7 @@ fn app_commands_execute_while_window_hidden() {
             options: Vec::new(),
             input_prompt: None,
             required: false,
-            scope: crate::app_protocol::NotifyScope::Global,
+            scope: crate::protocol::NotifyScope::Global,
             image_inline: None,
             image_pipe_id: None,
             timeout_secs: None,
@@ -6524,7 +6524,7 @@ mod routine_firing {
 
 mod agent_boot {
     use super::*;
-    use crate::app_protocol::{AgentState, AppRequest};
+    use crate::protocol::{AgentState, AppRequest};
 
     /// Spawn a terminal with `--agent` semantics and return its response file.
     fn spawn_agent_pane(
@@ -7056,7 +7056,7 @@ mod agent_boot {
             .get_mut(&pane_id)
             .and_then(|pane| pane.as_terminal_mut())
             .expect("terminal");
-        terminal.agent = Some(crate::app_protocol::PaneAgentState {
+        terminal.agent = Some(crate::protocol::PaneAgentState {
             pane_id,
             state: AgentState::Idle,
             agent: "codex".to_string(),
@@ -7065,7 +7065,7 @@ mod agent_boot {
         });
         terminal.agent_reported_at =
             Some(std::time::Instant::now() - crate::host::pane::HOOK_AGENT_FRESHNESS);
-        terminal.observed_agent = Some(crate::app_protocol::PaneAgentState {
+        terminal.observed_agent = Some(crate::protocol::PaneAgentState {
             pane_id,
             state: AgentState::Working,
             agent: "codex".to_string(),

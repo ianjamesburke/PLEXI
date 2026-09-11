@@ -347,10 +347,10 @@ impl PlexiApp {
                                         dismiss_owner_pane_id: 0,
                                         source_context_id,
                                         source_window_id,
-                                        scope: crate::app_protocol::NotifyScope::default(),
+                                        scope: crate::protocol::NotifyScope::default(),
                                         title,
                                         body,
-                                        kind: crate::app_protocol::NotifyKind::Message,
+                                        kind: crate::protocol::NotifyKind::Message,
                                         options: vec![],
                                         input_prompt: None,
                                         required: false,
@@ -538,27 +538,27 @@ impl PlexiApp {
                         continue;
                     };
                     let response = match request {
-                        crate::app_protocol::AppRequest::DeclareEventStreams { streams } => {
+                        crate::protocol::AppRequest::DeclareEventStreams { streams } => {
                             match crate::host::app_timeline::global()
                                 .lock()
                                 .unwrap()
                                 .declare_streams(context_id, &app_id, streams)
                             {
                                 Ok(streams) => {
-                                    crate::app_protocol::PlexiEvent::DeclareEventStreamsResult {
+                                    crate::protocol::PlexiEvent::DeclareEventStreamsResult {
                                         streams: Some(streams),
                                         error: None,
                                     }
                                 }
                                 Err(error) => {
-                                    crate::app_protocol::PlexiEvent::DeclareEventStreamsResult {
+                                    crate::protocol::PlexiEvent::DeclareEventStreamsResult {
                                         streams: None,
                                         error: Some(error),
                                     }
                                 }
                             }
                         }
-                        crate::app_protocol::AppRequest::EmitEvent {
+                        crate::protocol::AppRequest::EmitEvent {
                             event,
                             actor,
                             actor_id,
@@ -595,17 +595,17 @@ impl PlexiApp {
                                 .unwrap()
                                 .record_event(context_id, &app_id, pane_id, emitted)
                             {
-                                Ok(outcome) => crate::app_protocol::PlexiEvent::EmitEventResult {
+                                Ok(outcome) => crate::protocol::PlexiEvent::EmitEventResult {
                                     sequence: Some(outcome.event_id),
                                     error: None,
                                 },
-                                Err(error) => crate::app_protocol::PlexiEvent::EmitEventResult {
+                                Err(error) => crate::protocol::PlexiEvent::EmitEventResult {
                                     sequence: None,
                                     error: Some(error),
                                 },
                             }
                         }
-                        crate::app_protocol::AppRequest::SubscribeAppEvents {
+                        crate::protocol::AppRequest::SubscribeAppEvents {
                             request_id,
                             app_id: publisher_app_id,
                             event_names,
@@ -624,7 +624,7 @@ impl PlexiApp {
                             );
                             continue;
                         }
-                        crate::app_protocol::AppRequest::UnsubscribeAppEvents {
+                        crate::protocol::AppRequest::UnsubscribeAppEvents {
                             request_id,
                             subscription_id,
                         } => {
@@ -638,14 +638,14 @@ impl PlexiApp {
                                 );
                             match result {
                                 Ok(removed) => {
-                                    crate::app_protocol::PlexiEvent::AppEventsUnsubscribed {
+                                    crate::protocol::PlexiEvent::AppEventsUnsubscribed {
                                         request_id,
                                         removed,
                                         error: None,
                                     }
                                 }
                                 Err(error) => {
-                                    crate::app_protocol::PlexiEvent::AppEventsUnsubscribed {
+                                    crate::protocol::PlexiEvent::AppEventsUnsubscribed {
                                         request_id,
                                         removed: false,
                                         error: Some(error),
@@ -735,7 +735,7 @@ impl PlexiApp {
                     if let Some(req_pane_id) = requesting_pane_id {
                         let active = self.active_window;
                         if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
-                            let event = crate::app_protocol::PlexiEvent::AppSpawned {
+                            let event = crate::protocol::PlexiEvent::AppSpawned {
                                 pane_id: new_pane_id,
                                 type_id: type_id.clone(),
                             };
@@ -771,7 +771,7 @@ impl PlexiApp {
                             if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
                                 if let Some(a) = pane.as_app_mut() {
                                     a.runtime.queue_outbound_event(
-                                        crate::app_protocol::PlexiEvent::PaneSpawnError {
+                                        crate::protocol::PlexiEvent::PaneSpawnError {
                                             reason: "layout 'background' not yet implemented"
                                                 .to_string(),
                                             request_id: request_id.clone(),
@@ -827,7 +827,7 @@ impl PlexiApp {
                                 {
                                     if let Some(a) = pane.as_app_mut() {
                                         a.runtime.queue_outbound_event(
-                                            crate::app_protocol::PlexiEvent::PaneSpawnError {
+                                            crate::protocol::PlexiEvent::PaneSpawnError {
                                                 reason: format!(
                                                     "target_context {target_ctx_id} is not a descendant of context {requester_context_id}"
                                                 ),
@@ -985,7 +985,7 @@ impl PlexiApp {
                             if let Some(pane) = self.windows[wi].panes.get_mut(&req_pane_id) {
                                 if let Some(a) = pane.as_app_mut() {
                                     a.runtime.queue_outbound_event(
-                                        crate::app_protocol::PlexiEvent::PaneSpawned {
+                                        crate::protocol::PlexiEvent::PaneSpawned {
                                             pane_id: new_pane_id,
                                             request_id,
                                         },
@@ -1074,9 +1074,9 @@ impl PlexiApp {
                     let (scope, notif_source_win_id) =
                         self.resolve_app_notification_provenance(sender_pane_id, scope);
                     // Strip any per-option shortcut that conflicts with navigation keys.
-                    let options: Vec<crate::app_protocol::NotifyOption> = options.into_iter().map(|mut opt| {
+                    let options: Vec<crate::protocol::NotifyOption> = options.into_iter().map(|mut opt| {
                         if let Some(ref sc) = opt.shortcut.clone() {
-                            if crate::app_protocol::is_reserved_shortcut(sc) {
+                            if crate::protocol::is_reserved_shortcut(sc) {
                                 log::warn!(
                                     "notify:shortcut: app pane {} sent reserved shortcut {:?} on option {:?} — stripped",
                                     sender_pane_id, sc, opt.label
@@ -1167,7 +1167,7 @@ impl PlexiApp {
                         if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                             if let Some(app) = pane.as_app_mut() {
                                 app.runtime.queue_outbound_event(
-                                    crate::app_protocol::PlexiEvent::NotifyAction {
+                                    crate::protocol::PlexiEvent::NotifyAction {
                                         notify_id,
                                         action_label,
                                         value,
@@ -1227,7 +1227,7 @@ impl PlexiApp {
                         // necessarily a window.
                         if let Some((window_index, _)) = self.find_pane_in_any_window(tid) {
                             if let Some(pane) = self.windows[window_index].panes.get_mut(&tid) {
-                                let event = crate::app_protocol::PlexiEvent::PipeMessage {
+                                let event = crate::protocol::PlexiEvent::PipeMessage {
                                     pipe_id: pipe_id.clone(),
                                     payload: payload.clone(),
                                 };
@@ -1449,7 +1449,7 @@ impl PlexiApp {
                         if let Some(pane) = self.windows[win_idx].panes.get_mut(&sender_pane_id) {
                             if let Some(app) = pane.as_app_mut() {
                                 app.runtime.queue_outbound_event(
-                                    crate::app_protocol::PlexiEvent::ContextStateResponse { state },
+                                    crate::protocol::PlexiEvent::ContextStateResponse { state },
                                 );
                             }
                         }

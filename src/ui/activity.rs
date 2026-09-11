@@ -1,6 +1,6 @@
 //! Activity dot widget — renders a single agent-state indicator circle.
 
-use crate::app_protocol::AgentState;
+use crate::protocol::AgentState;
 use crate::ui::theme::Colors;
 
 /// Single source of truth for pip coloring across every pip surface

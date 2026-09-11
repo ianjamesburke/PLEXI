@@ -1,4 +1,4 @@
-use crate::app_protocol::AgentState;
+use crate::protocol::AgentState;
 use crate::host::pane::{AppRuntime, Pane, TerminalPane};
 use crate::render;
 use crate::ui::style;
@@ -322,7 +322,7 @@ pub struct MiniPane {
     /// False for terminal panes that have exited; dims the pane in the minimap.
     pub active: bool,
     /// Agent/terminal activity state; renders a dot in the pane's top-left corner.
-    pub activity: Option<crate::app_protocol::AgentState>,
+    pub activity: Option<crate::protocol::AgentState>,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -639,7 +639,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         );
                         let t = ui.input(|i| i.time);
                         if preview.windows.iter().flat_map(|w| &w.panes).any(|p| {
-                            matches!(p.activity, Some(crate::app_protocol::AgentState::Working))
+                            matches!(p.activity, Some(crate::protocol::AgentState::Working))
                         }) {
                             // Pulse only needs ~10fps; an unconditional
                             // request_repaint pins the window at display refresh.

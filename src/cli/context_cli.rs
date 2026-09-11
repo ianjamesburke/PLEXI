@@ -159,7 +159,7 @@ pub fn context_sub_cli(
     path: Option<&str>,
     agents: u32,
     commands: &[String],
-    layout: crate::app_protocol::SubContextLayout,
+    layout: crate::protocol::SubContextLayout,
     focus: bool,
     from: Option<u64>,
 ) -> i32 {

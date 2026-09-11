@@ -1471,8 +1471,8 @@ pub enum ContextCmd {
         #[arg(long, action = clap::ArgAction::Append, value_name = "CMD")]
         command: Vec<String>,
         /// How the panes are arranged inside the sub-context's window.
-        #[arg(long, value_enum, default_value_t = crate::app_protocol::SubContextLayout::Tiled)]
-        layout: crate::app_protocol::SubContextLayout,
+        #[arg(long, value_enum, default_value_t = crate::protocol::SubContextLayout::Tiled)]
+        layout: crate::protocol::SubContextLayout,
         /// Zoom into the new sub-context after creation. Default: stay put.
         #[arg(long)]
         focus: bool,

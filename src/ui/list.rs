@@ -185,7 +185,7 @@ pub(crate) struct ListRowPips {
     pub focused_idx: Option<usize>,
     pub hidden_indices: Vec<usize>,
     /// Per-pip agent state (parallel to pip index). `None` = no agent.
-    pub activities: Vec<Option<crate::app_protocol::AgentState>>,
+    pub activities: Vec<Option<crate::protocol::AgentState>>,
 }
 
 pub struct ListRow<'a> {
@@ -434,7 +434,7 @@ impl<'a> ListRow<'a> {
             let has_working = pips
                 .activities
                 .iter()
-                .any(|s| matches!(s, Some(crate::app_protocol::AgentState::Working)));
+                .any(|s| matches!(s, Some(crate::protocol::AgentState::Working)));
             if has_working {
                 // Pulse animation only needs ~10fps; an unconditional
                 // request_repaint pins the window at display refresh.

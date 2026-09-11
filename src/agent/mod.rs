@@ -28,7 +28,7 @@
 //! land in the agent's transcript, which is the host-visible record of what
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
-use crate::app_protocol::{AiMessage, ModelTier, PayloadMode, TriggerMode};
+use crate::protocol::{AiMessage, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorType, Decision, GrantDuration, GrantStore, PermissionPosture, PermissionRequest,
     TargetType,
@@ -1169,7 +1169,7 @@ default_tier = "low"
     /// trigger it again, and it plays the game against itself.
     #[test]
     fn self_caused_deliveries_do_not_trigger_turns() {
-        use crate::app_protocol::AppEventActor;
+        use crate::protocol::AppEventActor;
         use crate::host::app_timeline::EventDelivery;
 
         let timeline = Arc::new(Mutex::new(AppTimeline::default()));

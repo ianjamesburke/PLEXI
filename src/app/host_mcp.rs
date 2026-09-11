@@ -473,10 +473,10 @@ fn tool_subscribe_and_wait(
         }
     };
     let payload_mode = match args.get("payload").and_then(|v| v.as_str()) {
-        Some("off") => crate::app_protocol::PayloadMode::Off,
-        Some("summary") => crate::app_protocol::PayloadMode::Summary,
-        Some("state_ref") => crate::app_protocol::PayloadMode::StateRef,
-        _ => crate::app_protocol::PayloadMode::Full,
+        Some("off") => crate::protocol::PayloadMode::Off,
+        Some("summary") => crate::protocol::PayloadMode::Summary,
+        Some("state_ref") => crate::protocol::PayloadMode::StateRef,
+        _ => crate::protocol::PayloadMode::Full,
     };
     let timeout_secs = args
         .get("timeout_secs")
@@ -496,7 +496,7 @@ fn tool_subscribe_and_wait(
         publisher_app_id: app_id.clone(),
         event_names,
         payload_mode,
-        trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+        trigger_mode: crate::protocol::TriggerMode::Conversation,
         resource_id: None,
         from_pane_id: Some(caller.pane_id),
         subscriber_override: Some(delivery_id),
@@ -762,7 +762,7 @@ mod tests {
 
     #[test]
     fn pane_credential_lists_and_calls_only_context_app_tools() {
-        use crate::app_protocol::{AiTool, PlexiEvent};
+        use crate::protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
 
         let (port, _test_token) = start_test_server(None);
@@ -882,7 +882,7 @@ mod tests {
     /// tool returns the event.
     #[test]
     fn subscribe_and_wait_delivers_emitted_event() {
-        use crate::app_protocol::{AppEventActor, EventStreamDecl};
+        use crate::protocol::{AppEventActor, EventStreamDecl};
         use crate::host::app_timeline::EmittedEvent;
         let app = "mcp-it-app";
         let stream = "it.tick";

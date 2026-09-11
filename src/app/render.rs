@@ -1,7 +1,7 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
 use super::{ClickFlash, PlexiApp};
-use crate::app_protocol::AgentState;
+use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use crate::ui::style;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};

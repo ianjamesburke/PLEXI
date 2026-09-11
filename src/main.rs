@@ -11,7 +11,6 @@
 
 mod agent;
 mod app;
-mod app_protocol;
 mod assistant;
 mod broker;
 mod cli;

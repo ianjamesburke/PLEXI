@@ -186,13 +186,13 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
 #[test]
 fn socket_line_queues_request_and_requests_repaint() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
     handle_socket_line(r#"{"type":"wake"}"#, &mailbox, None, &mut std::io::sink());
     assert!(
-        matches!(rx.try_recv(), Ok(crate::app_protocol::AppRequest::Wake)),
+        matches!(rx.try_recv(), Ok(crate::protocol::AppRequest::Wake)),
         "request must be queued on the pane-IPC channel"
     );
     assert!(
@@ -205,7 +205,7 @@ fn socket_line_queues_request_and_requests_repaint() {
 #[test]
 fn socket_line_parse_error_queues_nothing() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -218,13 +218,13 @@ fn socket_line_parse_error_queues_nothing() {
 
 fn run_socket_connection(
     payload: &[u8],
-) -> crate::app::ui_mailbox::MailboxReceiver<crate::app_protocol::AppRequest> {
+) -> crate::app::ui_mailbox::MailboxReceiver<crate::protocol::AppRequest> {
     use std::io::Write as _;
 
     let ctx = egui::Context::default();
     let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
     let (mailbox, rx) =
-        crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+        crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
             wake.clone(),
             "pane_ipc",
         );
@@ -257,7 +257,7 @@ fn socket_connection_dispatches_newline_framed_json_once() {
     let rx = run_socket_connection(b"{\"type\":\"wake\"}\n");
     assert!(matches!(
         rx.try_recv(),
-        Ok(crate::app_protocol::AppRequest::Wake)
+        Ok(crate::protocol::AppRequest::Wake)
     ));
     assert!(
         rx.try_recv().is_err(),
@@ -273,7 +273,7 @@ fn wake_request_is_noop_on_host() {
     let windows_before = h.app.windows.len();
     let panes_before: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
 
-    h.inject_ipc(crate::app_protocol::AppRequest::Wake);
+    h.inject_ipc(crate::protocol::AppRequest::Wake);
     h.app.drain_pane_cmd_channel();
 
     assert_eq!(
@@ -307,7 +307,7 @@ fn file_handler_config_routes_extension_to_app() {
         .join("note.md")
         .to_string_lossy()
         .to_string();
-    app.dispatch_open_artifact(0, path, crate::app_protocol::ArtifactOpenMode::OpenInPane);
+    app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
 
     let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
     assert_eq!(
@@ -347,7 +347,7 @@ fn stable_routes_only_images_to_native_viewer_apps() {
             .to_string_lossy()
             .to_string();
 
-        app.dispatch_open_artifact(0, path, crate::app_protocol::ArtifactOpenMode::OpenInPane);
+        app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
 
         let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
         if opens_pane {
@@ -412,7 +412,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     app.dispatch_open_artifact(
         browser_pane_id,
         selected_path.to_string_lossy().to_string(),
-        crate::app_protocol::ArtifactOpenMode::OpenInPane,
+        crate::protocol::ArtifactOpenMode::OpenInPane,
     );
 
     let viewer_tile = app.windows[0].focused_pane.expect("viewer focused");
@@ -527,7 +527,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     let windows_before = app.windows.len();
 
     // Inject a spawn-pane IPC from context 1's pane (pane_id_ctx1) with layout=new_window.
-    let _ = ipc_tx.send(crate::app_protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("new_window".to_string()),
         args: vec![],
@@ -610,7 +610,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
 
     // Inject a spawn-pane IPC from window 0's pane (pane_id_ctx1) with layout=tab,
     // while window 1 is active.
-    let _ = ipc_tx.send(crate::app_protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("tab".to_string()),
         args: vec![],
@@ -701,7 +701,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
 
     // Split spawn (not --window), no from_pane_id: falls into the empty-window
     // fallback branch.
-    let _ = ipc_tx.send(crate::app_protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("split_h".to_string()),
         args: vec![],
@@ -811,7 +811,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
         delays_cb.lock().unwrap().push(info.delay);
     });
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -819,7 +819,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     handle_socket_line(line, &mailbox, None, &mut std::io::sink());
 
     match rx.try_recv() {
-        Ok(crate::app_protocol::AppRequest::LogMarker { source, .. }) => {
+        Ok(crate::protocol::AppRequest::LogMarker { source, .. }) => {
             assert_eq!(source, "test");
         }
         other => panic!("expected queued LogMarker request, got {other:?}"),
@@ -844,7 +844,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     assert!(
         matches!(
             rx.try_recv(),
-            Ok(crate::app_protocol::AppRequest::ListPanes { .. })
+            Ok(crate::protocol::AppRequest::ListPanes { .. })
         ),
         "post-idle pane list must queue on the pane-IPC channel"
     );
@@ -883,7 +883,7 @@ fn socket_line_parse_error_does_not_wake() {
     let woke_cb = woke.clone();
     ctx.set_request_repaint_callback(move |_| *woke_cb.lock().unwrap() += 1);
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );

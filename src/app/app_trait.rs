@@ -28,7 +28,7 @@ pub enum AppCommand {
     },
     /// Register the app's v3.7 connector tools with the host broker.
     ExposeTools {
-        tools: Vec<crate::app_protocol::AiTool>,
+        tools: Vec<crate::protocol::AiTool>,
         pane_id: Option<u64>,
     },
     /// Resolve a pending v3.7 connector tool call.
@@ -39,7 +39,7 @@ pub enum AppCommand {
     },
     /// Route one app-event request through the host-owned timeline and broker.
     AppEventRequest {
-        request: crate::app_protocol::AppRequest,
+        request: crate::protocol::AppRequest,
         pane_id: Option<u64>,
     },
     /// Execute an Assistant host tool against live host state without shelling
@@ -76,7 +76,7 @@ pub enum AppCommand {
     /// Emitted by `routing.rs` after the `panes.read` / `panes.control`
     /// capability check passes.
     ForwardPaneRequest {
-        request: crate::app_protocol::AppRequest,
+        request: crate::protocol::AppRequest,
     },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest { cwd: String, sender_pane_id: u64 },
@@ -102,7 +102,7 @@ pub enum AppCommand {
     /// identified by its type_id.
     DeliverRunUpdate {
         originator_type_id: String,
-        event: crate::app_protocol::PlexiEvent,
+        event: crate::protocol::PlexiEvent,
     },
     /// A notification that carries a notify_id and awaits a user response.
     /// The legacy server-side `NotificationAction` list is handled in
@@ -116,17 +116,17 @@ pub enum AppCommand {
         source_context_id: u64,
         title: String,
         body: String,
-        kind: crate::app_protocol::NotifyKind,
-        options: Vec<crate::app_protocol::NotifyOption>,
+        kind: crate::protocol::NotifyKind,
+        options: Vec<crate::protocol::NotifyOption>,
         input_prompt: Option<String>,
         required: bool,
         /// Visibility scope. `Global` notifications are always visible;
         /// `Context` notifications are only visible in their source context.
-        scope: crate::app_protocol::NotifyScope,
+        scope: crate::protocol::NotifyScope,
         /// Inline base64-encoded image attachment (#74). Decoded + cached
         /// into a texture on first render. Decoded size > 50 KB triggers a
         /// placeholder badge instead — never crash the host on bad input.
-        image_inline: Option<crate::app_protocol::NotificationImage>,
+        image_inline: Option<crate::protocol::NotificationImage>,
         /// Pipe-referenced image (#74). Drained from the binary ring lazily
         /// when the notification is visible. Layout: `width: u32 LE`,
         /// `height: u32 LE`, then RGBA bytes. Mutually exclusive with
@@ -186,7 +186,7 @@ pub enum AppCommand {
         sender_pane_id: u64,
         terminal_pane_id: u64,
         path: String,
-        mode: crate::app_protocol::PathTokenMode,
+        mode: crate::protocol::PathTokenMode,
     },
     /// Canvas Terminal Binding Primitives (#78). Compute a no-execute
     /// preview of `command` for the referenced terminal. Host responds
@@ -206,7 +206,7 @@ pub enum AppCommand {
     OpenArtifact {
         sender_pane_id: u64,
         path: String,
-        mode: crate::app_protocol::ArtifactOpenMode,
+        mode: crate::protocol::ArtifactOpenMode,
     },
     /// Query rolled-up ContextState for a context (#1518).
     /// Forwarded to the host because only it has the full context tree.
@@ -284,7 +284,7 @@ pub trait App: Send {
     /// Queue a PlexiEvent to be sent to the app on the next flush.
     /// Used to deliver host-originated events (e.g. AppSpawned) back to
     /// external process apps. Built-in apps ignore this by default.
-    fn queue_outbound_event(&mut self, _event: crate::app_protocol::PlexiEvent) {}
+    fn queue_outbound_event(&mut self, _event: crate::protocol::PlexiEvent) {}
 
     /// Serialise app state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {

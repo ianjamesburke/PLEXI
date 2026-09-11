@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::app_protocol::{AiMessage, AiTool, ModelTier};
+use crate::protocol::{AiMessage, AiTool, ModelTier};
 use crate::config::{AiConfig, LocalBackendConfig, OllamaBackendConfig, OpenRouterBackendConfig};
 use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::backend::local::LocalOpenAiBackend;
@@ -1943,7 +1943,7 @@ mod tests {
     /// correctly across both turns.
     #[test]
     fn tool_loop_builds_conversation_correctly() {
-        use crate::app_protocol::AiTool;
+        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
@@ -2028,11 +2028,11 @@ mod tests {
         // the next iteration, where the backend returns the final text.
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
-            model_tier: crate::app_protocol::ModelTier::Low,
+            model_tier: crate::protocol::ModelTier::Low,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
-            messages: vec![crate::app_protocol::AiMessage {
+            messages: vec![crate::protocol::AiMessage {
                 role: "user".to_string(),
                 content: "go".to_string(),
             }],
@@ -2086,7 +2086,7 @@ mod tests {
     /// verifies `max_tool_iterations` overrides the default cap.
     #[test]
     fn tool_loop_pauses_gracefully_after_max_iterations() {
-        use crate::app_protocol::AiTool;
+        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };

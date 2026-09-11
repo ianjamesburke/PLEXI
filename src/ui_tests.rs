@@ -589,7 +589,7 @@ mod tests {
         let rf_dir = tempfile::tempdir().expect("tempdir");
         let rf = rf_dir.path().join("key-response.json");
         h.with_app_mut(|app| {
-            app.handle_pane_ipc_request(crate::app_protocol::AppRequest::KeyPane {
+            app.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
                 pane_id,
                 key: "enter".to_string(),
                 response_file: Some(rf.to_string_lossy().into_owned()),
@@ -812,7 +812,7 @@ mod tests {
             // Child window holding the text-editor pane the portal previews.
             let editor_pane_id = app.host.alloc_pane_id();
             let editor = AppPane {
-                pip_status: Some(crate::app_protocol::PipStatus::Green),
+                pip_status: Some(crate::protocol::PipStatus::Green),
                 id: editor_pane_id,
                 runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
                     editor_path.clone(),
@@ -915,7 +915,7 @@ mod tests {
                 mk(
                     PaneKind::TextEditor,
                     false,
-                    Some(crate::app_protocol::AgentState::Working),
+                    Some(crate::protocol::AgentState::Working),
                     0.34,
                     0.67,
                 ),
@@ -1591,11 +1591,11 @@ mod tests {
             source_window_id,
             title: "Preview badge".to_string(),
             body: "Seeded sidebar notification".to_string(),
-            kind: crate::app_protocol::NotifyKind::Message,
+            kind: crate::protocol::NotifyKind::Message,
             options: vec![],
             input_prompt: None,
             required: false,
-            scope: crate::app_protocol::NotifyScope::Context,
+            scope: crate::protocol::NotifyScope::Context,
             image_inline: None,
             image_pipe_id: None,
             response_file: None,
@@ -1657,9 +1657,9 @@ mod tests {
         // Agent activity across the pips, and badges on two rows.
         h.with_app_mut(|app| {
             let statuses = [
-                crate::app_protocol::PipStatus::Yellow,
-                crate::app_protocol::PipStatus::Green,
-                crate::app_protocol::PipStatus::Red,
+                crate::protocol::PipStatus::Yellow,
+                crate::protocol::PipStatus::Green,
+                crate::protocol::PipStatus::Red,
             ];
             for (i, pane) in app.windows[0].panes.values_mut().enumerate() {
                 if let Pane::App(app_pane) = pane {
@@ -2769,7 +2769,7 @@ mod tests {
             let agent_pane = |app: &mut crate::app::PlexiApp,
                               pane_name: &str,
                               agent: &str,
-                              state: crate::app_protocol::AgentState,
+                              state: crate::protocol::AgentState,
                               detail: Option<&str>| {
                 let pane_id = app.host.alloc_pane_id();
                 let pane = Pane::App(Box::new(AppPane {
@@ -2786,7 +2786,7 @@ mod tests {
                     linked_pane_id: None,
                     overlay_replaced: None,
                     hidden: false,
-                    agent: Some(crate::app_protocol::PaneAgentState {
+                    agent: Some(crate::protocol::PaneAgentState {
                         pane_id,
                         state,
                         agent: agent.to_string(),
@@ -2804,7 +2804,7 @@ mod tests {
                 app,
                 "codex",
                 "reviewer",
-                crate::app_protocol::AgentState::Working,
+                crate::protocol::AgentState::Working,
                 Some("Read"),
             );
             let win = &mut app.windows[app.active_window];
@@ -2836,13 +2836,13 @@ mod tests {
             let squad: Vec<(u64, Pane)> = [
                 (
                     "claude-code",
-                    crate::app_protocol::AgentState::Working,
+                    crate::protocol::AgentState::Working,
                     Some("Edit"),
                 ),
-                ("claude-code", crate::app_protocol::AgentState::Idle, None),
+                ("claude-code", crate::protocol::AgentState::Idle, None),
                 (
                     "claude-code",
-                    crate::app_protocol::AgentState::Blocked,
+                    crate::protocol::AgentState::Blocked,
                     Some("Bash(just pr-install)"),
                 ),
             ]
@@ -3604,11 +3604,11 @@ mod tests {
                     source_window_id,
                     title: "Preview badge".to_string(),
                     body: "Seeded sidebar notification".to_string(),
-                    kind: crate::app_protocol::NotifyKind::Message,
+                    kind: crate::protocol::NotifyKind::Message,
                     options: vec![],
                     input_prompt: None,
                     required: false,
-                    scope: crate::app_protocol::NotifyScope::Context,
+                    scope: crate::protocol::NotifyScope::Context,
                     image_inline: None,
                     image_pipe_id: None,
                     response_file: None,

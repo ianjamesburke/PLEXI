@@ -22,7 +22,7 @@ use crate::ui::style;
 use crate::ui::text_field::TextArea;
 use crate::ui::theme::Colors;
 
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 use crate::broker::Decision;
 
 use super::commands;

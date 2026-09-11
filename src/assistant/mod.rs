@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use crate::agent::{AgentDefinition, AgentRegistry, AgentSource};
 use crate::app::app_trait::AppCommand;
 use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
-use crate::app_protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
+use crate::protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionRequest, ResourceScope, TargetType,
@@ -4107,7 +4107,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let app = test_app_with_context(ws.path(), 9200);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let ro_tool = crate::app_protocol::AiTool {
+        let ro_tool = crate::protocol::AiTool {
             name: "csv.read_range".to_string(),
             description: "read cells".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
@@ -4115,7 +4115,7 @@ enabled = ["allowed.tool"]
             timeout_ms: Some(2_000),
             read_only: true,
         };
-        let rw_tool = crate::app_protocol::AiTool {
+        let rw_tool = crate::protocol::AiTool {
             name: "csv.write_cell".to_string(),
             description: "write a cell".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
@@ -4154,7 +4154,7 @@ enabled = ["allowed.tool"]
         tool_dispatch::register(
             9205,
             "csv".to_string(),
-            vec![crate::app_protocol::AiTool {
+            vec![crate::protocol::AiTool {
                 name: "csv.read_range".to_string(),
                 description: "read cells".to_string(),
                 input_schema: serde_json::json!({"type": "object"}),
@@ -4192,7 +4192,7 @@ enabled = ["allowed.tool"]
         tool_dispatch::register(
             9206,
             "csv".to_string(),
-            vec![crate::app_protocol::AiTool {
+            vec![crate::protocol::AiTool {
                 name: "csv.read_range".to_string(),
                 description: "read cells".to_string(),
                 input_schema: serde_json::json!({"type": "object"}),
@@ -4227,7 +4227,7 @@ enabled = ["allowed.tool"]
             9207,
             "csv".to_string(),
             vec![
-                crate::app_protocol::AiTool {
+                crate::protocol::AiTool {
                     name: "csv.read_range".to_string(),
                     description: "read cells".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -4235,7 +4235,7 @@ enabled = ["allowed.tool"]
                     timeout_ms: None,
                     read_only: true,
                 },
-                crate::app_protocol::AiTool {
+                crate::protocol::AiTool {
                     name: "csv.write_cell".to_string(),
                     description: "write a cell".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -4293,7 +4293,7 @@ enabled = ["allowed.tool"]
             9201,
             "csv".to_string(),
             vec![
-                crate::app_protocol::AiTool {
+                crate::protocol::AiTool {
                     name: "csv.read_range".to_string(),
                     description: "read cells".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -4301,7 +4301,7 @@ enabled = ["allowed.tool"]
                     timeout_ms: None,
                     read_only: true,
                 },
-                crate::app_protocol::AiTool {
+                crate::protocol::AiTool {
                     name: "csv.write_cell".to_string(),
                     description: "write a cell".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -4506,7 +4506,7 @@ enabled = ["allowed.tool"]
         let (tx, rx) = std::sync::mpsc::channel();
         let tools = tool_names
             .iter()
-            .map(|n| crate::app_protocol::AiTool {
+            .map(|n| crate::protocol::AiTool {
                 name: n.to_string(),
                 description: format!("test tool {n}"),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
@@ -4921,7 +4921,7 @@ enabled = ["allowed.tool"]
 
     // ── Phase D3: event subscriptions + delivery bridge ───────────────────────
 
-    use crate::app_protocol::{AppEventActor, EventStreamDecl};
+    use crate::protocol::{AppEventActor, EventStreamDecl};
     use crate::host::app_timeline::EmittedEvent;
 
     /// Matches the `context_id` `test_app_with_timeline` constructs its

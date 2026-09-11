@@ -242,7 +242,7 @@ pub(crate) struct ChildContextSpec {
     /// a plain shell. Never empty.
     pub panes: Vec<Option<String>>,
     /// How the seeded panes are arranged inside the child's single window.
-    pub layout: crate::app_protocol::SubContextLayout,
+    pub layout: crate::protocol::SubContextLayout,
 }
 
 impl ChildContextSpec {
@@ -264,7 +264,7 @@ impl ChildContextSpec {
             portal_first,
             anchor_pane,
             panes: vec![None],
-            layout: crate::app_protocol::SubContextLayout::default(),
+            layout: crate::protocol::SubContextLayout::default(),
         }
     }
 }
@@ -1303,7 +1303,7 @@ impl PlexiApp {
 
         // 8. Notifications scoped to any deleted context are dropped.
         self.pending_notifications.retain(|n| {
-            !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
+            !(matches!(n.scope, crate::protocol::NotifyScope::Context)
                 && deleted.contains(&n.source_context_id))
         });
         self.save_notifications();
@@ -2014,7 +2014,7 @@ impl PlexiApp {
         }
 
         self.pending_notifications.retain(|n| {
-            !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
+            !(matches!(n.scope, crate::protocol::NotifyScope::Context)
                 && n.source_context_id == child_ctx_id)
         });
         self.save_notifications();

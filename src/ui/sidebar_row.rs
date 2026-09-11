@@ -136,7 +136,7 @@ pub struct PaneDots {
     /// Set of dot indices that are hidden (rendered as stroke-only outlines).
     pub hidden_set: std::collections::HashSet<usize>,
     /// Per-dot agent state (parallel to dot index). `None` means no agent.
-    pub activities: Vec<Option<crate::app_protocol::AgentState>>,
+    pub activities: Vec<Option<crate::protocol::AgentState>>,
     /// Contiguous pane ranges, one per spatial window in this context.
     pub windows: Vec<PaneDotWindow>,
 }
@@ -462,7 +462,7 @@ fn paint_pips(
     let has_working = dots
         .activities
         .iter()
-        .any(|s| matches!(s, Some(crate::app_protocol::AgentState::Working)));
+        .any(|s| matches!(s, Some(crate::protocol::AgentState::Working)));
     if has_working {
         // Pulse animation only needs ~10fps. An unconditional request_repaint
         // here is self-perpetuating and pins the whole window at display

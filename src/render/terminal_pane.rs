@@ -9,7 +9,7 @@
 //! background — only the exit-message rect, which gets its own fill to cover
 //! any stale terminal glyphs underneath.
 
-use crate::app_protocol::AgentState;
+use crate::protocol::AgentState;
 use crate::host::pane::TerminalPane;
 use crate::spatial::tiling::{paint_tab_bar, PaneId, TabBarAction, TabGroupInfo, TAB_BAR_HEIGHT};
 use crate::ui::theme::{self, Colors};

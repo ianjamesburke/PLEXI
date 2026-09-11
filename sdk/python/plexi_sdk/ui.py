@@ -2622,7 +2622,7 @@ class ButtonRow(Component):
 # ── UiNode component tree (PGAP v3.5) ─────────────────────────────────────
 #
 # These classes produce ``dict`` values matching the ``UiNode`` wire format
-# defined in ``src/app_protocol.rs``.  ``to_node()`` returns a plain dict
+# defined in ``src/protocol/``.  ``to_node()`` returns a plain dict
 # with a ``"type"`` field; B3 (``ctx.render_tree``) will serialise the tree
 # to the host.  All ``UiNode`` classes serialise to the single ``ui-node-data``
 # variant set; sugar types decompose to base nodes and are rendered natively by

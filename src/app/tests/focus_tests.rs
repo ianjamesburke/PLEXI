@@ -3,7 +3,7 @@ use crate::testing::HostHarness;
 use std::sync::{Arc, Mutex};
 
 struct ThemeEventRecorder {
-    events: Arc<Mutex<Vec<crate::app_protocol::PlexiEvent>>>,
+    events: Arc<Mutex<Vec<crate::protocol::PlexiEvent>>>,
 }
 
 impl crate::app::app_trait::App for ThemeEventRecorder {
@@ -27,7 +27,7 @@ impl crate::app::app_trait::App for ThemeEventRecorder {
     ) {
     }
 
-    fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+    fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         self.events.lock().expect("event recorder").push(event);
     }
 }
@@ -36,7 +36,7 @@ fn add_theme_event_recorder(
     app: &mut PlexiApp,
     window_index: usize,
     hidden: bool,
-) -> Arc<Mutex<Vec<crate::app_protocol::PlexiEvent>>> {
+) -> Arc<Mutex<Vec<crate::protocol::PlexiEvent>>> {
     let events = Arc::new(Mutex::new(Vec::new()));
     let pane_id = app.host.alloc_pane_id();
     let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
@@ -100,7 +100,7 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
     for events in [background_events, inactive_events, parked_events] {
         let events = events.lock().expect("event recorder");
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], crate::app_protocol::PlexiEvent::Theme { .. }));
+        assert!(matches!(events[0], crate::protocol::PlexiEvent::Theme { .. }));
     }
 }
 

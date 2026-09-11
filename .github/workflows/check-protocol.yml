@@ -5,13 +5,13 @@ on:
   push:
     branches: [alpha]
     paths:
-      - 'src/app_protocol.rs'
+      - 'src/protocol/**'
       - 'sdk/protocol/**'
       - 'tools/gen_protocol_py.py'
   pull_request:
     branches: [alpha]
     paths:
-      - 'src/app_protocol.rs'
+      - 'src/protocol/**'
       - 'sdk/protocol/**'
       - 'tools/gen_protocol_py.py'
 

@@ -294,7 +294,7 @@ fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize
     let mut stream = UnixStream::connect(socket_path).ok()?;
     let response_file =
         crate::rpc::response_file_in(&host_config_dir(channel), "host-status", "json");
-    let request = crate::app_protocol::AppRequest::ListPanes {
+    let request = crate::protocol::AppRequest::ListPanes {
         response_file: response_file.clone(),
         context_id: None,
     };
@@ -558,7 +558,7 @@ pub fn host_stop_cli() -> i32 {
 
     match UnixStream::connect(&socket_path) {
         Ok(mut stream) => {
-            let payload = serde_json::to_string(&crate::app_protocol::AppRequest::Shutdown)
+            let payload = serde_json::to_string(&crate::protocol::AppRequest::Shutdown)
                 .unwrap_or_else(|_| "{\"type\":\"shutdown\"}".to_string());
             match stream.write_all(format!("{payload}\n").as_bytes()) {
                 Ok(()) => {

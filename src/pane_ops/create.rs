@@ -995,7 +995,7 @@ impl PlexiApp {
         context: &PaneContextEnv,
         cwd: PathBuf,
         commands: &[Option<String>],
-        layout: crate::app_protocol::SubContextLayout,
+        layout: crate::protocol::SubContextLayout,
     ) -> Option<ContextPaneSet> {
         if commands.is_empty() {
             log::error!("create_context_pane_set: refusing to build a window with zero panes");

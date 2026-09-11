@@ -53,7 +53,7 @@ pub struct SkillDefinition {
     /// Optional model-tier floor (frontmatter `tier:`). When the session tier
     /// is still the installed default, dispatch escalates to at least this
     /// tier for turns that load the skill; an explicit user tier always wins.
-    pub tier: Option<crate::app_protocol::ModelTier>,
+    pub tier: Option<crate::protocol::ModelTier>,
 }
 
 #[derive(Debug, Default)]
@@ -234,9 +234,9 @@ fn parse_skill_text(
     }
     let tier = match value("tier").as_deref() {
         None => None,
-        Some("low") => Some(crate::app_protocol::ModelTier::Low),
-        Some("medium") => Some(crate::app_protocol::ModelTier::Medium),
-        Some("high") => Some(crate::app_protocol::ModelTier::High),
+        Some("low") => Some(crate::protocol::ModelTier::Low),
+        Some("medium") => Some(crate::protocol::ModelTier::Medium),
+        Some("high") => Some(crate::protocol::ModelTier::High),
         Some(other) => {
             return Err(format!(
                 "frontmatter tier must be low, medium, or high — got '{other}'"
@@ -301,7 +301,7 @@ mod tests {
             Path::new("x"),
         )
         .expect("valid tier");
-        assert_eq!(skill.tier, Some(crate::app_protocol::ModelTier::High));
+        assert_eq!(skill.tier, Some(crate::protocol::ModelTier::High));
 
         let no_tier = parse_skill_text(
             "---\nname: deploy\ndescription: deploy a release\n---\nbody",
@@ -327,7 +327,7 @@ mod tests {
         let skill = registry.get(APP_BUILD_SKILL_NAME).expect("builtin present");
         assert_eq!(
             skill.tier,
-            Some(crate::app_protocol::ModelTier::High),
+            Some(crate::protocol::ModelTier::High),
             "app builds must escalate off a default-sourced weak tier"
         );
         assert!(

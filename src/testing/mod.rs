@@ -54,7 +54,7 @@ mod keychain_prompt_guard {
 
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
-use crate::app_protocol::AppRequest;
+use crate::protocol::AppRequest;
 use crate::config::set_test_profile_dir;
 use crate::host::pane::{AppPane, AppRuntime, Pane};
 use crate::spatial::tiling::PaneId;
@@ -174,7 +174,7 @@ fn reserve_pane_id_block() -> u64 {
 /// let pane = h.add_test_pane();
 /// h.inject_ipc(AppRequest::SetPipStatus {
 ///     pane_id: pane,
-///     status: crate::app_protocol::PipStatus::Green,
+///     status: crate::protocol::PipStatus::Green,
 /// });
 /// h.run_frames(1);
 /// ```

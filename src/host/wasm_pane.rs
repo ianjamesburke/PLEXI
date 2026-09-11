@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::app::app_trait::KeyDisposition;
 use crate::app::permissions::{PermissionState, PermissionStore};
-use crate::app_protocol::{
+use crate::protocol::{
     AiMessage as ProtocolAiMessage, AppEventActor, EventStreamDecl as ProtocolEventStreamDecl,
     ModelTier, TriggerMode,
 };
@@ -81,8 +81,8 @@ pub enum WasmHostEffect {
         request_id: String,
         app_id: String,
         event_names: Vec<String>,
-        payload_mode: crate::app_protocol::PayloadMode,
-        trigger_mode: crate::app_protocol::TriggerMode,
+        payload_mode: crate::protocol::PayloadMode,
+        trigger_mode: crate::protocol::TriggerMode,
         resource_id: Option<String>,
     },
     UnsubscribeEvents {
@@ -90,7 +90,7 @@ pub enum WasmHostEffect {
         subscription_id: String,
     },
     DeclareTools {
-        tools: Vec<crate::app_protocol::AiTool>,
+        tools: Vec<crate::protocol::AiTool>,
     },
     ToolResult {
         call_id: String,
@@ -1111,9 +1111,9 @@ impl WasmPane {
             filter: req.filter,
             multiple: req.multiple,
             mode: match req.mode {
-                WitFilePickerMode::Open => crate::app_protocol::FilePickerMode::Open,
-                WitFilePickerMode::Folder => crate::app_protocol::FilePickerMode::Folder,
-                WitFilePickerMode::Save => crate::app_protocol::FilePickerMode::Save,
+                WitFilePickerMode::Open => crate::protocol::FilePickerMode::Open,
+                WitFilePickerMode::Folder => crate::protocol::FilePickerMode::Folder,
+                WitFilePickerMode::Save => crate::protocol::FilePickerMode::Save,
             },
         };
         let picker = Arc::clone(&self.picker);
@@ -1499,7 +1499,7 @@ impl WasmPane {
                     serde_json::from_str(&tool.output_schema_json).map_err(|error| {
                         format!("tool '{}': invalid output schema: {error}", tool.name)
                     })?;
-                Ok(crate::app_protocol::AiTool {
+                Ok(crate::protocol::AiTool {
                     name: tool.name,
                     description: tool.description,
                     input_schema,
@@ -1702,12 +1702,12 @@ fn parse_trigger_mode(raw: &str) -> Result<TriggerMode, String> {
     }
 }
 
-fn parse_payload_mode(raw: &str) -> Result<crate::app_protocol::PayloadMode, String> {
+fn parse_payload_mode(raw: &str) -> Result<crate::protocol::PayloadMode, String> {
     match raw {
-        "off" | "Off" => Ok(crate::app_protocol::PayloadMode::Off),
-        "summary" | "Summary" => Ok(crate::app_protocol::PayloadMode::Summary),
-        "full" | "Full" => Ok(crate::app_protocol::PayloadMode::Full),
-        "state_ref" | "StateRef" => Ok(crate::app_protocol::PayloadMode::StateRef),
+        "off" | "Off" => Ok(crate::protocol::PayloadMode::Off),
+        "summary" | "Summary" => Ok(crate::protocol::PayloadMode::Summary),
+        "full" | "Full" => Ok(crate::protocol::PayloadMode::Full),
+        "state_ref" | "StateRef" => Ok(crate::protocol::PayloadMode::StateRef),
         other => Err(format!("invalid payload mode: {other}")),
     }
 }
@@ -1937,9 +1937,9 @@ impl LiveWasmPane {
         self.inner.input_sender(repaint)
     }
 
-    pub(crate) fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+    pub(crate) fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         let event = match event {
-            crate::app_protocol::PlexiEvent::AppEventsSubscribed {
+            crate::protocol::PlexiEvent::AppEventsSubscribed {
                 request_id,
                 subscription_id,
                 error,
@@ -1948,7 +1948,7 @@ impl LiveWasmPane {
                 subscription_id,
                 error,
             }),
-            crate::app_protocol::PlexiEvent::AppEventsUnsubscribed {
+            crate::protocol::PlexiEvent::AppEventsUnsubscribed {
                 request_id,
                 removed,
                 error,
@@ -1957,7 +1957,7 @@ impl LiveWasmPane {
                 removed,
                 error,
             }),
-            crate::app_protocol::PlexiEvent::AppEvent {
+            crate::protocol::PlexiEvent::AppEvent {
                 subscription_id,
                 app_id,
                 event,
@@ -1980,14 +1980,14 @@ impl LiveWasmPane {
                 state_ref,
                 created_at,
             }),
-            crate::app_protocol::PlexiEvent::DeclareEventStreamsResult { streams, error } => {
+            crate::protocol::PlexiEvent::DeclareEventStreamsResult { streams, error } => {
                 InputEvent::DeclareEventStreamsResult(match (streams, error) {
                     (Some(streams), None) => Ok(streams),
                     (_, Some(error)) => Err(error),
                     _ => Err("declare event streams returned no result".to_string()),
                 })
             }
-            crate::app_protocol::PlexiEvent::EmitEventResult { sequence, error } => {
+            crate::protocol::PlexiEvent::EmitEventResult { sequence, error } => {
                 InputEvent::EmitEventResult(match (sequence, error) {
                     (Some(sequence), None) => Ok(sequence),
                     (_, Some(error)) => Err(error),
@@ -3732,8 +3732,8 @@ mod tests {
                 request_id: "subscribe-1".to_string(),
                 app_id: "python-notes".to_string(),
                 event_names: vec!["note.saved".to_string()],
-                payload_mode: crate::app_protocol::PayloadMode::Full,
-                trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+                payload_mode: crate::protocol::PayloadMode::Full,
+                trigger_mode: crate::protocol::TriggerMode::Conversation,
                 resource_id: Some("note-1".to_string()),
             }]
         );
@@ -3762,13 +3762,13 @@ mod tests {
             StateSnapshot { entries: vec![] },
             vec![],
         );
-        live.queue_outbound_event(crate::app_protocol::PlexiEvent::AppEvent {
+        live.queue_outbound_event(crate::protocol::PlexiEvent::AppEvent {
             subscription_id: "sub-1".to_string(),
             app_id: "python-notes".to_string(),
             event: "note.saved".to_string(),
             event_id: 9,
             resource_id: "note-1".to_string(),
-            trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+            trigger_mode: crate::protocol::TriggerMode::Conversation,
             summary: Some("Saved note".to_string()),
             payload: Some(serde_json::json!({"title": "Hello"})),
             state_ref: None,

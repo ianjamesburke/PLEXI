@@ -20,18 +20,18 @@ pub(crate) struct PendingNotification {
     pub source_window_id: u64,
     pub title: String,
     pub body: String,
-    pub kind: crate::app_protocol::NotifyKind,
-    pub options: Vec<crate::app_protocol::NotifyOption>,
+    pub kind: crate::protocol::NotifyKind,
+    pub options: Vec<crate::protocol::NotifyOption>,
     pub input_prompt: Option<String>,
     pub required: bool,
     /// Visibility scope. Affects which contexts the notification appears in.
-    pub scope: crate::app_protocol::NotifyScope,
+    pub scope: crate::protocol::NotifyScope,
     /// Optional inline image attachment (#74). Decoded lazily on first
     /// render; oversized payloads (> 50 KB decoded) surface a placeholder
     /// instead of decoding. The decoded texture is cached separately on
     /// `PlexiApp::notification_images` keyed by `notify_id` — this struct
     /// stays Clone-cheap (no GPU handles inside it).
-    pub image_inline: Option<crate::app_protocol::NotificationImage>,
+    pub image_inline: Option<crate::protocol::NotificationImage>,
     /// Optional pipe-referenced image attachment (#74). The host drains the
     /// matching binary ring on first render and caches the texture under
     /// `PlexiApp::notification_images`.
@@ -76,14 +76,14 @@ struct PersistedNotification {
     source_window_id: u64,
     title: String,
     body: String,
-    kind: crate::app_protocol::NotifyKind,
-    options: Vec<crate::app_protocol::NotifyOption>,
+    kind: crate::protocol::NotifyKind,
+    options: Vec<crate::protocol::NotifyOption>,
     #[serde(default)]
     input_prompt: Option<String>,
     required: bool,
-    scope: crate::app_protocol::NotifyScope,
+    scope: crate::protocol::NotifyScope,
     #[serde(default)]
-    image_inline: Option<crate::app_protocol::NotificationImage>,
+    image_inline: Option<crate::protocol::NotificationImage>,
     #[serde(default)]
     timeout_secs: Option<u64>,
     #[serde(default)]
@@ -245,16 +245,16 @@ impl NotifySource {
 /// tombstone, or queue state. Callers that need the full visibility answer
 /// combine this with their own checks (see `PlexiApp::notification_is_visible`).
 pub(crate) fn notification_visible(
-    scope: crate::app_protocol::NotifyScope,
+    scope: crate::protocol::NotifyScope,
     source_window_id: u64,
     source_context_id: u64,
     active_window_id: u64,
     active_context_id: u64,
 ) -> bool {
     match scope {
-        crate::app_protocol::NotifyScope::Global => true,
-        crate::app_protocol::NotifyScope::Window => source_window_id == active_window_id,
-        crate::app_protocol::NotifyScope::Context => source_context_id == active_context_id,
+        crate::protocol::NotifyScope::Global => true,
+        crate::protocol::NotifyScope::Window => source_window_id == active_window_id,
+        crate::protocol::NotifyScope::Context => source_context_id == active_context_id,
     }
 }
 
@@ -266,13 +266,13 @@ pub(crate) fn notification_visible(
 /// state (badge counts have never consulted `deliver_after` — preserved as
 /// existing behavior, not introduced here).
 pub(crate) fn notification_counts_toward_context(
-    scope: crate::app_protocol::NotifyScope,
+    scope: crate::protocol::NotifyScope,
     source_context_id: u64,
     ctx_id: u64,
 ) -> bool {
     matches!(
         scope,
-        crate::app_protocol::NotifyScope::Window | crate::app_protocol::NotifyScope::Context
+        crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context
     ) && source_context_id == ctx_id
 }
 
@@ -284,20 +284,20 @@ impl PlexiApp {
     pub(crate) fn resolve_app_notification_provenance(
         &self,
         sender_pane_id: u64,
-        scope: crate::app_protocol::NotifyScope,
-    ) -> (crate::app_protocol::NotifyScope, u64) {
+        scope: crate::protocol::NotifyScope,
+    ) -> (crate::protocol::NotifyScope, u64) {
         if let Some((window_index, _)) = (sender_pane_id != 0)
             .then(|| self.find_pane_in_any_window(sender_pane_id))
             .flatten()
         {
             return (scope, self.windows[window_index].window_id);
         }
-        if scope == crate::app_protocol::NotifyScope::Window {
+        if scope == crate::protocol::NotifyScope::Window {
             log::info!(
                 "notify: app sender pane_id={} has no live window — narrowing window scope to context",
                 sender_pane_id
             );
-            return (crate::app_protocol::NotifyScope::Context, 0);
+            return (crate::protocol::NotifyScope::Context, 0);
         }
         (scope, 0)
     }

@@ -1,10 +1,9 @@
-//! Plexi library target — exposes `app_protocol` for the `gen_schema` binary
+//! Plexi library target — exposes `protocol` for the `gen_schema` binary
 //! and `cli_args` for the `gen_cli_docs` binary.
 //! This lib.rs is intentionally minimal: it only declares the modules that
 //! these tools reference, using stub types that satisfy the type system
 //! without pulling in the full GUI/audio dependency tree.
 
-pub mod app_protocol;
 #[path = "cli/args.rs"]
 pub mod cli_args;
 /// Shared Ferrite-derived editor core (stint 0317). Also compiled into the
@@ -13,7 +12,7 @@ pub mod cli_args;
 pub mod editor;
 pub mod protocol;
 
-// Stub modules: only the types used by app_protocol via crate:: references.
+// Stub modules: only the types used by `protocol` via crate:: references.
 // The real implementations live in the binary target (src/main.rs).
 pub mod media {
     pub mod midi {

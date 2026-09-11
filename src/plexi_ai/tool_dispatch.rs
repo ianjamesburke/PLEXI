@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::app_protocol::{AiTool, PlexiEvent};
+use crate::protocol::{AiTool, PlexiEvent};
 use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
 
 // ── AppEventSender ──────────────────────────────────────────────────────────
@@ -707,7 +707,7 @@ impl ToolDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_protocol::AiTool;
+    use crate::protocol::AiTool;
     use std::path::PathBuf;
 
     fn make_tool(name: &str) -> AiTool {

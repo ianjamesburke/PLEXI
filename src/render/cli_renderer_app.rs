@@ -865,9 +865,9 @@ impl App for CliRendererApp {
         std::mem::take(&mut self.pending_commands)
     }
 
-    fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+    fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         // Handle LinkedTerminalReady response
-        if let crate::app_protocol::PlexiEvent::LinkedTerminalReady {
+        if let crate::protocol::PlexiEvent::LinkedTerminalReady {
             request_id,
             terminal_pane_id,
         } = &event
@@ -1179,7 +1179,7 @@ mod tests {
         let (mut app, _dir) = app_from_fixture();
         assert!(!app.terminal_link_failed);
         let request_id = app.terminal_request_id.clone();
-        app.queue_outbound_event(crate::app_protocol::PlexiEvent::LinkedTerminalReady {
+        app.queue_outbound_event(crate::protocol::PlexiEvent::LinkedTerminalReady {
             request_id,
             terminal_pane_id: 0,
         });

@@ -700,7 +700,7 @@ impl PlexiApp {
             if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_app_mut() {
                     app.runtime
-                        .queue_outbound_event(crate::app_protocol::PlexiEvent::NavBack { view_id });
+                        .queue_outbound_event(crate::protocol::PlexiEvent::NavBack { view_id });
                 }
             }
             true
@@ -921,14 +921,14 @@ impl PlexiApp {
                     source_window_id: 0,
                     title: "Config Error".to_string(),
                     body: error_msg,
-                    kind: crate::app_protocol::NotifyKind::Message,
+                    kind: crate::protocol::NotifyKind::Message,
                     options: vec![],
                     input_prompt: None,
                     required: false,
                     // A broken config is not a property of one context — it
                     // affects the whole workspace, so this stays the explicit
                     // global case rather than taking the shared default.
-                    scope: crate::app_protocol::NotifyScope::Global,
+                    scope: crate::protocol::NotifyScope::Global,
                     image_inline: None,
                     image_pipe_id: None,
                     response_file: None,
@@ -1024,7 +1024,7 @@ impl PlexiApp {
     /// Push the current host `Colors` to every running app as a `Theme` event.
     /// Called after `self.colors` is updated on config hot-reload.
     pub(crate) fn broadcast_theme_event(&mut self) {
-        let event = crate::app_protocol::PlexiEvent::Theme {
+        let event = crate::protocol::PlexiEvent::Theme {
             colors: self.colors.to_theme_map(),
         };
         let mut delivered = 0;
@@ -1385,7 +1385,7 @@ impl PlexiApp {
                     if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                         if let Some(app) = pane.as_app_mut() {
                             app.runtime.queue_outbound_event(
-                                crate::app_protocol::PlexiEvent::NotifyAction {
+                                crate::protocol::PlexiEvent::NotifyAction {
                                     notify_id,
                                     action_label,
                                     value,
