@@ -661,20 +661,6 @@ struct InstallGateDecision {
 }
 
 /// Format a byte count for the trust sheet (B / KB / MB / GB, one decimal).
-fn human_size(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    let b = bytes as f64;
-    if b < KB {
-        format!("{bytes} B")
-    } else if b < KB * KB {
-        format!("{:.1} KB", b / KB)
-    } else if b < KB * KB * KB {
-        format!("{:.1} MB", b / (KB * KB))
-    } else {
-        format!("{:.1} GB", b / (KB * KB * KB))
-    }
-}
-
 /// Print the trust sheet for a validated app dir or package: identity,
 /// runtime + trust label, size, and every declared capability with its
 /// description (sensitive ones marked). Plain text — no color, so NO_COLOR
@@ -705,7 +691,7 @@ fn trust_sheet_lines(
         format!(
             "files:        {} ({})",
             report.file_count,
-            human_size(report.total_size)
+            crate::platform::format::human_size(report.total_size)
         ),
     ];
     if report.capabilities.is_empty()
@@ -1883,7 +1869,7 @@ mod app_install_workspace_tests {
 #[cfg(test)]
 mod install_confirm_tests {
     use super::{
-        confirm_install, human_size, parse_wasm_optional_selection, prompt_wasm_optional_grants,
+        confirm_install, parse_wasm_optional_selection, prompt_wasm_optional_grants,
         trust_sheet_lines, InstallConfirm,
     };
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
@@ -1979,13 +1965,6 @@ mod install_confirm_tests {
             .unwrap();
             assert_eq!(got, expected, "input {input:?}");
         }
-    }
-
-    #[test]
-    fn human_size_formats() {
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(2048), "2.0 KB");
-        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
     }
 
     #[test]
