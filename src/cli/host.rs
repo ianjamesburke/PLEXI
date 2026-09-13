@@ -294,7 +294,7 @@ fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize
     let mut stream = UnixStream::connect(socket_path).ok()?;
     let response_file =
         crate::rpc::response_file_in(&host_config_dir(channel), "host-status", "json");
-    let request = crate::app_protocol::AppRequest::ListPanes {
+    let request = crate::protocol::AppRequest::ListPanes {
         response_file: response_file.clone(),
         context_id: None,
     };
@@ -352,10 +352,7 @@ fn seed_pane(queue_dir: &Path, index: usize, spec: &PaneSpec) -> Result<PathBuf,
         "origin": "host start",
         "queued_at_ms": crate::cli::spawn_queued_at_ms(),
     });
-    let id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let id = crate::platform::clock::now_nanos();
     let file = queue_dir.join(format!("{id}-{index}.json"));
     std::fs::write(&file, payload.to_string())
         .map_err(|e| format!("could not write spawn-queue file {file:?}: {e}"))?;
@@ -558,7 +555,7 @@ pub fn host_stop_cli() -> i32 {
 
     match UnixStream::connect(&socket_path) {
         Ok(mut stream) => {
-            let payload = serde_json::to_string(&crate::app_protocol::AppRequest::Shutdown)
+            let payload = serde_json::to_string(&crate::protocol::AppRequest::Shutdown)
                 .unwrap_or_else(|_| "{\"type\":\"shutdown\"}".to_string());
             match stream.write_all(format!("{payload}\n").as_bytes()) {
                 Ok(()) => {
@@ -742,10 +739,7 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
     let output_path = match output {
         Some(path) => path.to_string(),
         None => {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or_default();
+            let stamp = crate::platform::clock::now_secs();
             crate::config::config_dir()
                 .join("screenshots")
                 .join(format!("host-{stamp}.png"))
@@ -753,23 +747,20 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
                 .into_owned()
         }
     };
-    let response_file = crate::rpc::response_file("screenshot-response", "json");
     log::info!("host_screenshot:cli: pane={pane:?} output_path={output_path}");
-
-    let code = super::send_to_socket(serde_json::json!({
-        "type": "screenshot",
-        "pane_id": pane,
-        "output_path": output_path,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
 
     // The capture round-trips through the GPU (request frame -> readback ->
     // next frame's input), so allow a little longer than plain state reads.
-    let content = match super::poll_rpc_with(&response_file, "screenshot", Duration::from_secs(10))
-    {
+    let content = match super::request_with(
+        serde_json::json!({
+            "type": "screenshot",
+            "pane_id": pane,
+            "output_path": output_path,
+        }),
+        "screenshot-response",
+        "screenshot",
+        Duration::from_secs(10),
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };

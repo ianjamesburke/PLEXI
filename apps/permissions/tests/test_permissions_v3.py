@@ -1,20 +1,11 @@
 from __future__ import annotations
 
-import os
-import sys
+import plexi_sdk as sdk
+from plexi_sdk import _v3_state
+from plexi_sdk.effects import SetState
+from plexi_sdk.events import CapabilityGranted, KeyEvent, UiAction
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python"),
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import plexi_sdk as sdk  # noqa: E402
-from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import SetState  # noqa: E402
-from plexi_sdk.events import CapabilityGranted, KeyEvent, UiAction  # noqa: E402
-
-import main as permissions  # noqa: E402
+import main as permissions
 
 
 def _set_state(values: dict) -> None:

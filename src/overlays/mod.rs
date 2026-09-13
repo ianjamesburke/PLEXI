@@ -26,7 +26,7 @@ pub(crate) fn pick_folder() -> Option<std::path::PathBuf> {
     let outcome = default_picker_service().pick(&FilePickRequest {
         filter: Vec::new(),
         multiple: false,
-        mode: crate::app_protocol::FilePickerMode::Folder,
+        mode: crate::protocol::FilePickerMode::Folder,
     });
     match outcome {
         FilePickOutcome::Picked(paths) => paths.into_iter().next(),

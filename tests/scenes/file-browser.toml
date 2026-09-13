@@ -1,5 +1,10 @@
-# File explorer host app, repo root listing.
-size = [1280.0, 800.0]
+# File explorer host app, repo root listing, across the responsive range.
+# 360x280 is the smallest plausible pane — the explorer must stay usable, not
+# overflow. 520x400 is the compact list layout, where the path row and chip row
+# must not collide. 680x600 is the middle width that previously broke: details
+# layout is active but the old toolbar chip strip didn't fit, and its
+# right-to-left overflow shoved the whole table past the pane's left edge.
+sizes = [[360.0, 280.0], [520.0, 400.0], [680.0, 600.0], [1280.0, 800.0]]
 
 [[steps]]
 open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }

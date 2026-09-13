@@ -913,7 +913,7 @@ pub enum AppRequest {
     /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
     SetVideoState {
         handle_id: u64,
-        state: crate::media::video::VideoState,
+        state: crate::protocol::VideoState,
     },
     /// Close a previously-opened video handle (#345). Tears down the
     /// decoder thread and the associated binary pipe drains. No response
@@ -1818,7 +1818,7 @@ mod tests {
         match &cmd {
             AppRequest::SetVideoState { handle_id, state } => {
                 assert_eq!(*handle_id, 7);
-                assert_eq!(*state, crate::media::video::VideoState::Play);
+                assert_eq!(*state, crate::protocol::VideoState::Play);
             }
             other => panic!("expected SetVideoState, got {other:?}"),
         }
@@ -1831,7 +1831,7 @@ mod tests {
         let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
         let cmd: AppRequest = serde_json::from_str(pause_json).expect("deserialise pause");
         if let AppRequest::SetVideoState { state, .. } = &cmd {
-            assert_eq!(*state, crate::media::video::VideoState::Pause);
+            assert_eq!(*state, crate::protocol::VideoState::Pause);
         } else {
             panic!("expected SetVideoState pause, got {cmd:?}");
         }
@@ -1841,7 +1841,7 @@ mod tests {
         if let AppRequest::SetVideoState { state, .. } = &cmd {
             assert_eq!(
                 *state,
-                crate::media::video::VideoState::Seek { position_ms: 1500 }
+                crate::protocol::VideoState::Seek { position_ms: 1500 }
             );
         } else {
             panic!("expected SetVideoState seek, got {cmd:?}");

@@ -76,7 +76,7 @@ def _init(proc, state=None):
         "height": 360.0,
     }
     if state is not None:
-        msg["state"] = state
+        msg["states"] = {"global": state}
     _send(proc, msg)
     return _collect_raw(proc, "ready")
 

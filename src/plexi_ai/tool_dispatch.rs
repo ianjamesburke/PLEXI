@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::app_protocol::{AiTool, PlexiEvent};
+use crate::protocol::{AiTool, PlexiEvent};
 use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
 
 // ── AppEventSender ──────────────────────────────────────────────────────────
@@ -359,6 +359,30 @@ pub struct ToolCallResult {
     pub error: Option<String>,
 }
 
+impl ToolCallResult {
+    /// A successful call whose output is already serialized JSON.
+    pub fn ok(output_json: impl Into<String>) -> Self {
+        Self {
+            output_json: Some(output_json.into()),
+            error: None,
+        }
+    }
+
+    /// A successful call carrying a JSON value to serialize.
+    pub fn ok_value(value: serde_json::Value) -> Self {
+        Self::ok(value.to_string())
+    }
+
+    /// A failed call. `error` is the model-facing reason, tagged with the
+    /// convention every tool site uses (`invalid_input:`, `tool_timeout:`, …).
+    pub fn err(error: impl Into<String>) -> Self {
+        Self {
+            output_json: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
 /// Map from `call_id` → sender that will receive the `ToolCallResult` once
 /// `DrawCommand::ToolResult` arrives.
 type PendingCallMap = Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>>;
@@ -558,10 +582,9 @@ impl ToolDispatcher {
         // host handler resolves them in-process.
         if self.host_tools.contains_key(name) {
             let Some(handler) = &self.host_handler else {
-                return ToolCallResult {
-                    output_json: None,
-                    error: Some(format!("host_tool_unhandled: no handler for {name:?}")),
-                };
+                return ToolCallResult::err(format!(
+                    "host_tool_unhandled: no handler for {name:?}"
+                ));
             };
             if let Some(hooks) = &self.hooks {
                 if let Err(reason) = hooks.before_call(name, &input_json) {
@@ -569,10 +592,7 @@ impl ToolDispatcher {
                         "tool_dispatch: caller={} — host tool '{name}' blocked by hook: {reason}",
                         self.caller_app_id
                     );
-                    return ToolCallResult {
-                        output_json: None,
-                        error: Some(reason),
-                    };
+                    return ToolCallResult::err(reason);
                 }
             }
             log::info!(
@@ -597,10 +617,7 @@ impl ToolDispatcher {
                     self.caller_app_id,
                     self.caller_pane_id
                 );
-                return ToolCallResult {
-                    output_json: None,
-                    error: Some(reason),
-                };
+                return ToolCallResult::err(reason);
             }
         }
         let result = self.dispatch_inner(call_id, name, input_json);
@@ -618,12 +635,9 @@ impl ToolDispatcher {
                     "tool_dispatch: caller={} pane={} requested unknown tool {name:?} call_id={call_id:?}",
                     self.caller_app_id, self.caller_pane_id,
                 );
-                return ToolCallResult {
-                    output_json: None,
-                    error: Some(format!(
-                        "tool_not_found: no tool named {name:?} in registry"
-                    )),
-                };
+                return ToolCallResult::err(format!(
+                    "tool_not_found: no tool named {name:?} in registry"
+                ));
             }
         };
 
@@ -664,12 +678,9 @@ impl ToolDispatcher {
             log::warn!(
                 "tool_dispatch: provider pane {pane_id} gone for tool {name:?} call_id={call_id:?}"
             );
-            return ToolCallResult {
-                output_json: None,
-                error: Some(format!(
-                    "tool_pane_gone: pane {pane_id} for tool {name:?} is no longer registered"
-                )),
-            };
+            return ToolCallResult::err(format!(
+                "tool_pane_gone: pane {pane_id} for tool {name:?} is no longer registered"
+            ));
         }
 
         // Block until the app sends ToolResult or the timeout fires.
@@ -691,12 +702,9 @@ impl ToolDispatcher {
                 log::warn!(
                     "tool_dispatch: tool {name:?} call_id={call_id:?} timed out after {timeout_ms}ms"
                 );
-                ToolCallResult {
-                    output_json: None,
-                    error: Some(format!(
-                        "tool_timeout: tool {name:?} did not respond within {timeout_ms}ms"
-                    )),
-                }
+                ToolCallResult::err(format!(
+                    "tool_timeout: tool {name:?} did not respond within {timeout_ms}ms"
+                ))
             }
         }
     }
@@ -707,7 +715,7 @@ impl ToolDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_protocol::AiTool;
+    use crate::protocol::AiTool;
     use std::path::PathBuf;
 
     fn make_tool(name: &str) -> AiTool {
@@ -1062,13 +1070,7 @@ mod tests {
         assert_eq!(call.input_json, r#"{"value":7}"#);
         assert_eq!(call.caller_id, "agent:assistant");
 
-        resolve_pending(
-            &call.call_id,
-            ToolCallResult {
-                output_json: Some(r#"{"value":7}"#.to_string()),
-                error: None,
-            },
-        );
+        resolve_pending(&call.call_id, ToolCallResult::ok(r#"{"value":7}"#));
         let result = worker.join().unwrap();
         assert_eq!(result.output_json.as_deref(), Some(r#"{"value":7}"#));
         assert!(result.error.is_none());

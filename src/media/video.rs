@@ -42,24 +42,9 @@ use std::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
 
-// ─── Public types ────────────────────────────────────────────────────────────
+use crate::protocol::VideoState;
 
-/// Playback state for a video handle. Encoded on the wire as
-/// `{"play": null}` / `{"pause": null}` / `{"seek": <ms>}` via serde's
-/// default `untagged`-friendly encoding. The PGAP wire serialises this as a
-/// nested struct under `state` in `DrawCommand::SetVideoState`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum VideoState {
-    Play,
-    Pause,
-    /// Absolute position in milliseconds from the start of the video.
-    Seek {
-        position_ms: u64,
-    },
-}
+// ─── Public types ────────────────────────────────────────────────────────────
 
 /// Result of `VideoDecoder::open` on success. Reported back to the app as
 /// `PlexiEvent::VideoOpenAck`.
@@ -887,7 +872,7 @@ pub fn default_video_device() -> Arc<dyn VideoDecoder> {
             let cfg = MockVideoDecoderConfig {
                 width: parse_env("PLEXI_VIDEO_WIDTH", 320),
                 height: parse_env("PLEXI_VIDEO_HEIGHT", 180),
-                fps: parse_env_f32("PLEXI_VIDEO_FPS", 30.0),
+                fps: parse_env("PLEXI_VIDEO_FPS", 30.0f32),
                 duration_ms: parse_env("PLEXI_VIDEO_DURATION_MS", 30_000),
             };
             log::info!(
@@ -916,14 +901,6 @@ fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<T>().ok())
-        .unwrap_or(default)
-}
-
-#[cfg(not(test))]
-fn parse_env_f32(key: &str, default: f32) -> f32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(default)
 }
 

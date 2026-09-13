@@ -406,21 +406,21 @@ pub enum Pane {
 pub(crate) const HOOK_AGENT_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn select_terminal_agent<'a>(
-    hook: Option<&'a crate::app_protocol::PaneAgentState>,
+    hook: Option<&'a crate::protocol::PaneAgentState>,
     hook_reported_at: Option<std::time::Instant>,
-    observed: Option<&'a crate::app_protocol::PaneAgentState>,
+    observed: Option<&'a crate::protocol::PaneAgentState>,
     now: std::time::Instant,
-) -> Option<&'a crate::app_protocol::PaneAgentState> {
+) -> Option<&'a crate::protocol::PaneAgentState> {
     let Some(hook) = hook else {
         return observed;
     };
-    if hook.state != crate::app_protocol::AgentState::Idle {
+    if hook.state != crate::protocol::AgentState::Idle {
         return Some(hook);
     }
     let hook_is_stale = hook_reported_at
         .is_some_and(|reported| now.saturating_duration_since(reported) >= HOOK_AGENT_FRESHNESS);
     let contradicts_idle = observed.is_some_and(|observed| {
-        observed.agent == hook.agent && observed.state == crate::app_protocol::AgentState::Working
+        observed.agent == hook.agent && observed.state == crate::protocol::AgentState::Working
     });
     if hook_is_stale && contradicts_idle {
         observed
@@ -513,7 +513,7 @@ impl Pane {
     /// observed Working until the output settles again.
     /// Every consumer — `pane list`, `pane state`, the `pane new --agent`
     /// boot predicate — reads through here, so they stay correct together.
-    pub fn agent(&self) -> Option<&crate::app_protocol::PaneAgentState> {
+    pub fn agent(&self) -> Option<&crate::protocol::PaneAgentState> {
         match self {
             Pane::Terminal(t) => select_terminal_agent(
                 t.agent.as_ref(),
@@ -531,7 +531,7 @@ impl Pane {
 
     /// App-reported pip status, checking the outer app then any overlay-replaced
     /// pane underneath (mirrors `agent()`).
-    pub fn pip_status(&self) -> Option<crate::app_protocol::PipStatus> {
+    pub fn pip_status(&self) -> Option<crate::protocol::PipStatus> {
         match self {
             Pane::App(a) => a
                 .pip_status
@@ -544,7 +544,7 @@ impl Pane {
     /// then hook-reported agent state; otherwise falls back to host-observed
     /// terminal activity (foreground process running / exited). Portals have no
     /// host-observed fallback yet.
-    pub fn effective_activity(&self) -> Option<&crate::app_protocol::AgentState> {
+    pub fn effective_activity(&self) -> Option<&crate::protocol::AgentState> {
         if let Some(pip) = self.pip_status() {
             return Some(pip.as_agent_state());
         }
@@ -561,7 +561,7 @@ impl Pane {
         }
     }
 
-    pub fn set_agent(&mut self, agent: Option<crate::app_protocol::PaneAgentState>) -> bool {
+    pub fn set_agent(&mut self, agent: Option<crate::protocol::PaneAgentState>) -> bool {
         match self {
             Pane::Terminal(t) => {
                 t.agent_reported_at = agent.as_ref().map(|_| std::time::Instant::now());
@@ -582,7 +582,7 @@ impl Pane {
 
     /// Set the app-reported pip status. App panes only (mirrors `set_agent`'s
     /// overlay delegation). Terminals and portals have no pip surface → false.
-    pub fn set_pip_status(&mut self, status: Option<crate::app_protocol::PipStatus>) -> bool {
+    pub fn set_pip_status(&mut self, status: Option<crate::protocol::PipStatus>) -> bool {
         match self {
             Pane::App(a) => {
                 if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
@@ -647,7 +647,7 @@ pub struct TerminalPane {
     pub(crate) outside_workspace_root: Option<PathBuf>,
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
-    pub agent: Option<crate::app_protocol::PaneAgentState>,
+    pub agent: Option<crate::protocol::PaneAgentState>,
     /// Receipt time of the latest lifecycle hook report. Used only to bound
     /// how long hook Idle suppresses contradictory host-observed Working.
     pub(crate) agent_reported_at: Option<std::time::Instant>,
@@ -656,11 +656,11 @@ pub struct TerminalPane {
     /// foreground process name or interpreter script argv, state from the PTY
     /// output settle (`last_pty_output_at`). Covers both the pre-hook boot
     /// window and stale hook-Idle gaps.
-    pub observed_agent: Option<crate::app_protocol::PaneAgentState>,
+    pub observed_agent: Option<crate::protocol::PaneAgentState>,
     /// Host-observed terminal activity (foreground process running, exited),
     /// polled via `tcgetpgrp` in `tick_terminal_activity`. Separate from
     /// `agent`, which is hook-reported; `agent` wins when both are present.
-    pub activity: Option<crate::app_protocol::AgentState>,
+    pub activity: Option<crate::protocol::AgentState>,
     pub slots: HashMap<String, PathBuf>,
     /// When this pane last produced *any* PTY event, stamped in
     /// `drain_pty_events`. `pane send --submit` settles on the absence of these:
@@ -719,7 +719,7 @@ impl TerminalPane {
 #[cfg(test)]
 mod agent_source_tests {
     use super::*;
-    use crate::app_protocol::{AgentState, PaneAgentState};
+    use crate::protocol::{AgentState, PaneAgentState};
     use std::time::{Duration, Instant};
 
     fn state(state: AgentState) -> PaneAgentState {
@@ -942,7 +942,7 @@ impl AppRuntime {
         }
     }
 
-    pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+    pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         match self {
             AppRuntime::Builtin(app) => app.queue_outbound_event(event),
             AppRuntime::Python(app) => app.queue_outbound_event(event),
@@ -960,11 +960,11 @@ impl AppRuntime {
                 app.dispatch_ui_action(action)
             }
             AppRuntime::Builtin(app) => {
-                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action { action, args });
+                app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
             AppRuntime::Python(app) => {
-                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action { action, args });
+                app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
         }
@@ -1154,7 +1154,6 @@ impl AppRuntime {
     }
 }
 
-#[allow(dead_code)]
 pub struct AppPane {
     pub id: PaneId,
     pub runtime: AppRuntime,
@@ -1173,10 +1172,10 @@ pub struct AppPane {
     pub overlay_replaced: Option<Box<Pane>>,
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
-    pub agent: Option<crate::app_protocol::PaneAgentState>,
+    pub agent: Option<crate::protocol::PaneAgentState>,
     /// App-reported pip status (red/yellow/green). Takes priority over derived
     /// activity for the activity dot. `None` = fall back to agent()/host-observed.
-    pub pip_status: Option<crate::app_protocol::PipStatus>,
+    pub pip_status: Option<crate::protocol::PipStatus>,
     pub slots: HashMap<String, PathBuf>,
     /// Last semantics committed by the production render path for native apps.
     pub(crate) semantic_state: SemanticPaneState,

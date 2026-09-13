@@ -333,7 +333,7 @@ fn create_context_ipc_anchor_pane_places_portal() {
         "anchor_pane": pane_b,
         "portal_direction": "down",
     });
-    let req: crate::app_protocol::AppRequest =
+    let req: crate::protocol::AppRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2330,7 +2330,7 @@ fn push_pane_ipc_targets_caller_pane_not_focused() {
         "name": "pushed",
         "pane_id": pane_b,
     });
-    let req: crate::app_protocol::AppRequest =
+    let req: crate::protocol::AppRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2379,7 +2379,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
         "type": "push_pane_to_subcontext",
         "pane_id": 999_999u64,
     });
-    let req: crate::app_protocol::AppRequest =
+    let req: crate::protocol::AppRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2402,7 +2402,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
 #[test]
 fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: crate::spatial::tiling::PaneId) {
-        let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
             "type": "push_pane_to_subcontext",
             "pane_id": pane_id,
         }))
@@ -2483,7 +2483,7 @@ fn set_context_description_ipc_targets_caller_context() {
         "description": "set from a background pane",
         "context_id": other_id,
     });
-    let req: crate::app_protocol::AppRequest =
+    let req: crate::protocol::AppRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2551,7 +2551,7 @@ fn set_context_root_ipc_targets_caller_context() {
         "root": tmp.path(),
         "context_id": other_id,
     });
-    let req: crate::app_protocol::AppRequest =
+    let req: crate::protocol::AppRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2760,7 +2760,7 @@ fn context_sub_creates_exactly_n_panes() {
         "panes": ["echo pane-a", "echo pane-b", "echo pane-c"],
         "anchor_pane": anchor,
     });
-    let req: crate::app_protocol::AppRequest =
+    let req: crate::protocol::AppRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2807,7 +2807,7 @@ fn context_sub_panes_share_one_tiled_window() {
     let parent_id = h.app.router.active().context_id;
     let root = tempfile::tempdir().expect("squad root");
 
-    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "tiled",
         "root": root.path(),
@@ -2912,7 +2912,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
     let parent_depth = h.app.router.active().depth;
     let root = tempfile::tempdir().expect("squad root");
 
-    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "envcheck",
         "root": root.path(),
@@ -2981,7 +2981,7 @@ fn context_sub_unknown_parent_creates_nothing() {
     let contexts_before = h.app.router.len();
     let windows_before = h.app.windows.len();
 
-    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "orphan",
         "root": "/tmp",
@@ -3038,7 +3038,7 @@ fn child_context_takes_its_name_from_the_spec_not_the_path() {
             portal_first: false,
             anchor_pane: None,
             panes: vec![None, None],
-            layout: crate::app_protocol::SubContextLayout::Tiled,
+            layout: crate::protocol::SubContextLayout::Tiled,
         })
         .expect("child create should succeed");
 
@@ -3109,7 +3109,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
     );
 
     let root = tempfile::tempdir().expect("squad root");
-    let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "bgsquad",
         "root": root.path(),

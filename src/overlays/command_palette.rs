@@ -57,7 +57,7 @@ enum PaletteEntry {
         agent_name: String,
         /// Owning context, live state, and the active tool when reported.
         secondary: String,
-        state: crate::app_protocol::AgentState,
+        state: crate::protocol::AgentState,
         /// True when this pane is the focused pane of its own window — drives
         /// the state dot's focused/dim rendering, same as every other pip.
         focused: bool,
@@ -92,7 +92,7 @@ impl PaletteEntry {
     fn state_rank(&self) -> usize {
         match self {
             PaletteEntry::Agent { state, .. }
-                if *state == crate::app_protocol::AgentState::Blocked =>
+                if *state == crate::protocol::AgentState::Blocked =>
             {
                 0
             }
@@ -469,16 +469,16 @@ struct AgentRow {
     agent_name: String,
     pane_title: String,
     context_name: String,
-    state: crate::app_protocol::AgentState,
+    state: crate::protocol::AgentState,
     detail: Option<String>,
     focused: bool,
 }
 
-fn agent_state_label(state: &crate::app_protocol::AgentState) -> &'static str {
+fn agent_state_label(state: &crate::protocol::AgentState) -> &'static str {
     match state {
-        crate::app_protocol::AgentState::Working => "working",
-        crate::app_protocol::AgentState::Blocked => "blocked",
-        crate::app_protocol::AgentState::Idle => "idle",
+        crate::protocol::AgentState::Working => "working",
+        crate::protocol::AgentState::Blocked => "blocked",
+        crate::protocol::AgentState::Idle => "idle",
     }
 }
 
@@ -487,7 +487,7 @@ fn agent_state_label(state: &crate::app_protocol::AgentState) -> &'static str {
 fn agent_row_secondary(
     context_name: &str,
     context_agent_index: usize,
-    state: &crate::app_protocol::AgentState,
+    state: &crate::protocol::AgentState,
     detail: Option<&str>,
 ) -> String {
     let mut parts = Vec::new();
@@ -978,11 +978,16 @@ impl PlexiApp {
         let mut action: Option<Action> = None;
         let prev_selected = self.palette_selected;
 
+        // The toggle that opened the palette also dismisses it, so it is read
+        // from the (config-overridable) binding table rather than hardcoded —
+        // a user who rebinds it can close with the same key they opened with.
+        let toggle = self.key_bindings.toggle_command_palette;
+
         ctx.input_mut(|input| {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
+            if input.consume_key(toggle.0, toggle.1) {
                 self.show_command_palette = false;
             }
             if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
@@ -1953,7 +1958,7 @@ mod tests {
         id: u64,
         pane_name: &str,
         agent: &str,
-        state: crate::app_protocol::AgentState,
+        state: crate::protocol::AgentState,
         detail: Option<&str>,
     ) -> Pane {
         use crate::app::permissions::AppPermissions;
@@ -1973,7 +1978,7 @@ mod tests {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
-            agent: Some(crate::app_protocol::PaneAgentState {
+            agent: Some(crate::protocol::PaneAgentState {
                 pane_id: id,
                 state,
                 agent: agent.to_string(),
@@ -2021,7 +2026,7 @@ mod tests {
 
     #[test]
     fn agent_rows_collect_from_every_window_and_context() {
-        use crate::app_protocol::AgentState;
+        use crate::protocol::AgentState;
 
         let squad = window_of(
             7,
@@ -2087,7 +2092,7 @@ mod tests {
 
     #[test]
     fn squad_panes_sharing_a_title_and_agent_name_stay_distinguishable() {
-        use crate::app_protocol::AgentState;
+        use crate::protocol::AgentState;
 
         // stint 0568 commonly launches the same agent command N times. Those
         // panes can share both title and reported agent name.
@@ -2146,7 +2151,7 @@ mod tests {
 
     #[test]
     fn blocked_agent_outranks_equally_scoring_agent() {
-        use crate::app_protocol::AgentState;
+        use crate::protocol::AgentState;
 
         let agent = |agent_name: &str, state: AgentState| PaletteEntry::Agent {
             window_id: 1,
@@ -2189,7 +2194,7 @@ mod tests {
 
     #[test]
     fn agent_state_never_reorders_other_result_types() {
-        use crate::app_protocol::AgentState;
+        use crate::protocol::AgentState;
 
         // A blocked agent must not jump ahead of a context row that scores the
         // same — state ordering is scoped to the agent group.
@@ -2222,7 +2227,7 @@ mod tests {
 
     #[test]
     fn agent_secondary_reads_context_state_and_active_tool() {
-        use crate::app_protocol::AgentState;
+        use crate::protocol::AgentState;
 
         assert_eq!(
             agent_row_secondary("squad-alpha", 2, &AgentState::Working, Some("Bash")),
@@ -2246,7 +2251,7 @@ mod tests {
 
     #[test]
     fn agent_row_falls_back_to_pane_title_when_the_hook_reports_no_name() {
-        use crate::app_protocol::AgentState;
+        use crate::protocol::AgentState;
 
         let win = window_of(
             7,
@@ -2263,7 +2268,7 @@ mod tests {
 
     #[test]
     fn agent_jump_switches_window_context_and_focused_pane_together() {
-        use crate::app_protocol::AgentState;
+        use crate::protocol::AgentState;
         use crate::testing::HostHarness;
 
         let mut h = HostHarness::new();

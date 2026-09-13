@@ -1,6 +1,32 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Playback state for a video handle. Encoded on the wire as
+/// `{"play": null}` / `{"pause": null}` / `{"seek": <ms>}` via serde's
+/// default `untagged`-friendly encoding. The PGAP wire serialises this as a
+/// nested struct under `state` in `DrawCommand::SetVideoState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VideoState {
+    Play,
+    Pause,
+    /// Absolute position in milliseconds from the start of the video.
+    Seek {
+        position_ms: u64,
+    },
+}
+
+/// Parse a wire string into a protocol enum, naming the field it came from.
+///
+/// The enum's own `#[serde(rename_all = "snake_case")]` is the single source of
+/// truth for which spellings are accepted, and serde's `unknown variant …,
+/// expected one of …` already lists them — so a hand-written match arm per
+/// variant can only drift from the wire contract it claims to enforce.
+pub fn parse_enum<T: serde::de::DeserializeOwned>(field: &str, raw: &str) -> Result<T, String> {
+    serde_json::from_value(serde_json::Value::String(raw.to_string()))
+        .map_err(|e| format!("invalid {field} '{raw}': {e}"))
+}
+
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
 /// on the protocol surface so SDKs in other languages can map it without
 /// depending on the midi module.
@@ -82,6 +108,17 @@ pub enum ModelTier {
     Low,
     Medium,
     High,
+}
+
+impl ModelTier {
+    /// Canonical lowercase name, matching the serde representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelTier::Low => "low",
+            ModelTier::Medium => "medium",
+            ModelTier::High => "high",
+        }
+    }
 }
 
 /// A simple rectangle (logical coordinates).

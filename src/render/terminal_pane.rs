@@ -9,7 +9,7 @@
 //! background — only the exit-message rect, which gets its own fill to cover
 //! any stale terminal glyphs underneath.
 
-use crate::app_protocol::AgentState;
+use crate::protocol::AgentState;
 use crate::host::pane::TerminalPane;
 use crate::spatial::tiling::{paint_tab_bar, PaneId, TabBarAction, TabGroupInfo, TAB_BAR_HEIGHT};
 use crate::ui::theme::{self, Colors};
@@ -160,7 +160,7 @@ fn render_name_bar_and_tabs(
         }
 
         if outside_workspace {
-            paint_outside_workspace_badge(ui.painter(), bar_rect);
+            paint_outside_workspace_badge(ui.painter(), bar_rect, colors);
         }
     } else if has_name || outside_workspace {
         let bar_rect = egui::Rect::from_min_size(
@@ -196,7 +196,7 @@ fn render_name_bar_and_tabs(
         }
 
         if outside_workspace {
-            paint_outside_workspace_badge(ui.painter(), bar_rect);
+            paint_outside_workspace_badge(ui.painter(), bar_rect, colors);
         }
     }
 
@@ -220,33 +220,26 @@ fn paint_activity_dot(
     }
 }
 
-fn paint_outside_workspace_badge(painter: &egui::Painter, bar_rect: egui::Rect) {
+fn paint_outside_workspace_badge(painter: &egui::Painter, bar_rect: egui::Rect, colors: &Colors) {
     let label = "↗ outside workspace";
-    let amber = egui::Color32::from_rgb(0xff, 0xb8, 0x6b);
-    let font = egui::FontId::proportional(10.0);
-    let galley = painter.layout_no_wrap(label.to_string(), font.clone(), amber);
-    let pad_x = 6.0;
-    let badge_w = galley.size().x + pad_x * 2.0;
-    let badge_h = 14.0;
+    let fg = colors.warning;
+    let galley = painter.layout_no_wrap(label.to_string(), crate::ui::badge::badge_font(), fg);
+    let size = crate::ui::badge::badge_size(galley.size());
     let badge_rect = egui::Rect::from_min_size(
         egui::pos2(
-            bar_rect.right() - badge_w - 4.0,
-            bar_rect.center().y - badge_h / 2.0,
+            bar_rect.right() - size.x - crate::ui::style::SPACE_XS,
+            bar_rect.center().y - size.y / 2.0,
         ),
-        egui::vec2(badge_w, badge_h),
+        size,
     );
-    painter.rect_filled(
-        badge_rect,
-        egui::CornerRadius::same(3),
-        egui::Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x6b, 28),
-    );
-    crate::ui::snap::text_snapped(
+    // A tint, not a fill: the tag annotates the tab bar rather than
+    // competing with the pane title beside it.
+    crate::ui::badge::paint_badge(
         painter,
-        badge_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        font,
-        amber,
+        badge_rect,
+        galley,
+        egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 28),
+        fg,
     );
 }
 

@@ -117,11 +117,31 @@ def test_scoped_state_reads_resolve_per_scope(tmp_path):
         proc.kill()
 
 
-def test_legacy_flat_state_init_lands_in_default_scope(tmp_path):
+def test_flat_state_init_key_is_ignored(tmp_path):
+    """Init carries scope-keyed `states` only.
+
+    Both host init payload builders (`python_init_payload` and the live pane
+    send in `src/host/wasm_python.rs`) emit `states`; a flat `state` key is
+    not part of the init wire shape and must not seed anything.
+    """
     app = _write_app(tmp_path, 'PersistState({"bump": state.get("count", 0) + 1})')
     proc = _spawn_v3_app(app)
     try:
         events = _init_scoped(proc, state={"count": 41})
+        events += _render(proc)
+        saves = _find_events(events, "save_app_state")
+        assert len(saves) == 1
+        assert saves[0]["scope"] == "global"
+        assert saves[0]["payload"]["bump"] == 1
+    finally:
+        proc.kill()
+
+
+def test_scoped_states_init_seeds_the_default_scope(tmp_path):
+    app = _write_app(tmp_path, 'PersistState({"bump": state.get("count", 0) + 1})')
+    proc = _spawn_v3_app(app)
+    try:
+        events = _init_scoped(proc, states={"global": {"count": 41}})
         events += _render(proc)
         saves = _find_events(events, "save_app_state")
         assert len(saves) == 1

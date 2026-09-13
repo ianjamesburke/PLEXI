@@ -109,40 +109,32 @@ struct FileOperationClipboard {
     paths: Vec<PathBuf>,
 }
 
+/// Paint `texture` centered in `slot`, scaled down to fit without cropping or
+/// distortion. Never scales up: a small image sits at its native size in the
+/// middle of the slot rather than turning into a blurry stretch.
+fn paint_fitted_texture(
+    painter: &egui::Painter,
+    slot: egui::Rect,
+    texture: &egui::TextureHandle,
+) {
+    let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
+    let scale = (slot.width() / tex_size.x)
+        .min(slot.height() / tex_size.y)
+        .min(1.0);
+    let image_rect = egui::Rect::from_center_size(slot.center(), tex_size * scale.max(0.01));
+    painter.image(
+        texture.id(),
+        image_rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+}
+
 #[derive(Debug, Clone)]
 enum PendingFileOperation {
     MoveToTrash { paths: Vec<PathBuf> },
 }
 
-/// Elide a path label from the left so the leaf directory stays visible —
-/// `…/projects/plexi/src` reads better than `/Users/ian/Documents/proj…`.
-/// Width-measured against the actual font, not a char-count guess.
-fn elide_path_leading(ui: &egui::Ui, path: &str, font_id: egui::FontId, max_width: f32) -> String {
-    if max_width <= 0.0 {
-        return String::new();
-    }
-    let width = |s: &str| {
-        ui.fonts_mut(|f| {
-            f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
-                .size()
-                .x
-        })
-    };
-    if width(path) <= max_width {
-        return path.to_string();
-    }
-    const ELLIPSIS: char = '\u{2026}';
-    let chars: Vec<char> = path.chars().collect();
-    for keep in (1..chars.len()).rev() {
-        let candidate: String = std::iter::once(ELLIPSIS)
-            .chain(chars[chars.len() - keep..].iter().copied())
-            .collect();
-        if width(&candidate) <= max_width {
-            return candidate;
-        }
-    }
-    ELLIPSIS.to_string()
-}
 
 fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui::Key) -> bool {
     input.events().iter().any(
@@ -456,7 +448,7 @@ impl FileBrowserApp {
         self.pending_cmds.push(AppCommand::OpenArtifact {
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
             path: path.to_string_lossy().to_string(),
-            mode: crate::app_protocol::ArtifactOpenMode::OpenInPane,
+            mode: crate::protocol::ArtifactOpenMode::OpenInPane,
         });
     }
 
@@ -1121,6 +1113,35 @@ impl FileBrowserApp {
         }
     }
 
+    /// Apply one row's click and double-click to the selection. Shared by both
+    /// list views, which differ only in where their response comes from —
+    /// `ListRow::show` in the compact list, `allocate_exact_size` in the
+    /// details table. Returns the navigation target when the row was opened.
+    fn apply_row_click(
+        &mut self,
+        ui: &egui::Ui,
+        idx: usize,
+        entry: &Entry,
+        clicked: bool,
+        double_clicked: bool,
+    ) -> Option<(PathBuf, bool)> {
+        if clicked {
+            let modifiers = ui.input(|input| input.modifiers);
+            if modifiers.shift {
+                self.extend_selection_to(idx);
+            } else if modifiers.command {
+                self.toggle_selection(idx);
+            } else {
+                self.set_single_selection(idx);
+            }
+        }
+        if double_clicked {
+            self.set_single_selection(idx);
+            return Some((entry.path.clone(), entry.is_dir));
+        }
+        None
+    }
+
     fn draw_compact_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
         let mut navigate_to: Option<(PathBuf, bool)> = None;
         let should_scroll = self.pending_scroll;
@@ -1140,19 +1161,14 @@ impl FileBrowserApp {
             if is_selected {
                 response.scroll_into_view(ui, should_scroll);
             }
-            if response.row_clicked() {
-                let modifiers = ui.input(|input| input.modifiers);
-                if modifiers.shift {
-                    self.extend_selection_to(idx);
-                } else if modifiers.command {
-                    self.toggle_selection(idx);
-                } else {
-                    self.set_single_selection(idx);
-                }
-            }
-            if response.row_double_clicked() {
-                self.set_single_selection(idx);
-                navigate_to = Some((entry.path.clone(), entry.is_dir));
+            if let Some(target) = self.apply_row_click(
+                ui,
+                idx,
+                &entry,
+                response.row_clicked(),
+                response.row_double_clicked(),
+            ) {
+                navigate_to = Some(target);
             }
         }
         navigate_to
@@ -1182,19 +1198,14 @@ impl FileBrowserApp {
 
             self.paint_details_cells(ui, colors, rect, &entry, selected);
 
-            if response.clicked() {
-                let modifiers = ui.input(|input| input.modifiers);
-                if modifiers.shift {
-                    self.extend_selection_to(idx);
-                } else if modifiers.command {
-                    self.toggle_selection(idx);
-                } else {
-                    self.set_single_selection(idx);
-                }
-            }
-            if response.double_clicked() {
-                self.set_single_selection(idx);
-                navigate_to = Some((entry.path.clone(), entry.is_dir));
+            if let Some(target) = self.apply_row_click(
+                ui,
+                idx,
+                &entry,
+                response.clicked(),
+                response.double_clicked(),
+            ) {
+                navigate_to = Some(target);
             }
         }
         navigate_to
@@ -1396,47 +1407,36 @@ impl FileBrowserApp {
                             .color(colors.text_dim),
                     );
                 }
-                ui.add_space(6.0);
+                ui.add_space(style::SPACE_SM);
                 let preview_max = egui::vec2(ui.available_width(), 220.0);
                 let (slot_rect, _) = ui.allocate_exact_size(preview_max, egui::Sense::hover());
                 ui.painter().rect_filled(
                     slot_rect,
-                    CornerRadius::same(4),
+                    style::RADIUS_MD,
                     colors.bg_darkest.gamma_multiply(0.95),
                 );
                 ui.painter().rect_stroke(
                     slot_rect,
-                    CornerRadius::same(4),
+                    style::RADIUS_MD,
                     Stroke::new(1.0_f32, colors.border),
                     StrokeKind::Inside,
                 );
                 if let Some(texture) = &self.preview_texture {
-                    let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
-                    let scale = (slot_rect.width() / tex_size.x)
-                        .min(slot_rect.height() / tex_size.y)
-                        .min(1.0);
-                    let draw_size = tex_size * scale.max(0.01);
-                    let image_rect = egui::Rect::from_center_size(slot_rect.center(), draw_size);
-                    ui.painter().image(
-                        texture.id(),
-                        image_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
+                    paint_fitted_texture(ui.painter(), slot_rect, texture);
                 } else if let Some(err) = &self.preview_error {
                     ui.painter().text(
                         slot_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         err,
-                        egui::FontId::proportional(10.0),
-                        Color32::from_rgb(0xff, 0xaf, 0xaf),
+                        egui::FontId::proportional(style::TEXT_META),
+                        colors.danger,
                     );
                 } else {
                     ui.painter().text(
                         slot_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "Loading\u{2026}",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(style::TEXT_META),
                         colors.text_dim,
                     );
                 }
@@ -1667,10 +1667,26 @@ impl FileBrowserApp {
                 );
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Cancel",
+                        crate::ui::button::ButtonKind::Secondary,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         self.cancel_pending_operation();
                     }
-                    if ui.button("Move to Trash").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Move to Trash",
+                        crate::ui::button::ButtonKind::Danger,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         if let Err(err) = self.confirm_pending_operation() {
                             self.error = Some(err);
                         }
@@ -1718,10 +1734,26 @@ impl FileBrowserApp {
                 }
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Cancel",
+                        crate::ui::button::ButtonKind::Secondary,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         self.cancel_rename_modal();
                     }
-                    if ui.button("Rename").clicked() {
+                    if crate::ui::button::chrome_button(
+                        ui,
+                        "Rename",
+                        crate::ui::button::ButtonKind::Primary,
+                        colors,
+                        style::BUTTON_MIN_W_MODAL,
+                    )
+                    .clicked()
+                    {
                         self.confirm_rename_modal();
                     }
                 });
@@ -1758,18 +1790,7 @@ impl FileBrowserApp {
             StrokeKind::Inside,
         );
         if let Some(texture) = &self.preview_texture {
-            let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
-            let scale = (slot_rect.width() / tex_size.x)
-                .min(slot_rect.height() / tex_size.y)
-                .min(1.0);
-            let draw_size = tex_size * scale.max(0.01);
-            let image_rect = egui::Rect::from_center_size(slot_rect.center(), draw_size);
-            ui.painter().image(
-                texture.id(),
-                image_rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            paint_fitted_texture(ui.painter(), slot_rect, texture);
         } else if let Some(err) = &self.preview_error {
             ui.painter().text(
                 slot_rect.center(),
@@ -1872,11 +1893,14 @@ impl FileBrowserApp {
         // (path left, chips right) collided at narrow widths: the chips
         // wrapped under the path and the toolbar grew unpredictably.
         ui.horizontal(|ui| {
-            let elided = elide_path_leading(
+            // Elided from the left so the leaf directory always stays visible —
+            // `…/projects/plexi/src` reads better than `/Users/ian/Documen…`.
+            let elided = crate::ui::text::elide(
                 ui,
                 &self.cwd.display().to_string(),
                 egui::FontId::monospace(style::TEXT_HINT),
                 ui.available_width(),
+                crate::ui::text::Side::Leading,
             );
             ui.colored_label(
                 colors.accent,
@@ -2682,25 +2706,6 @@ mod tests {
             .take_pending_commands()
             .iter()
             .any(|c| matches!(c, AppCommand::CdRequest { .. })));
-    }
-
-    #[test]
-    fn elide_path_keeps_leaf_visible() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run_ui(RawInput::default(), |ui| {
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                let font = egui::FontId::monospace(11.0);
-                let full = "/Users/ian/Documents/GitHub/PLEXI/src/file_browser";
-                assert_eq!(elide_path_leading(ui, full, font.clone(), 10_000.0), full);
-
-                let narrow = elide_path_leading(ui, full, font.clone(), 160.0);
-                assert!(narrow.starts_with('\u{2026}'));
-                assert!(narrow.ends_with("file_browser"));
-                assert!(narrow.chars().count() < full.chars().count());
-
-                assert!(elide_path_leading(ui, full, font, 0.0).is_empty());
-            });
-        });
     }
 
     #[test]

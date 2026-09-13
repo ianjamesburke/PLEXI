@@ -7,30 +7,6 @@ use std::time::Duration;
 
 pub(crate) const FOCUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
-/// Format a Unix timestamp (seconds since epoch) as an ISO-8601 UTC string.
-/// Minimal implementation with no external dependencies.
-fn unix_secs_to_iso(secs: u64) -> String {
-    // Days since epoch → Gregorian date via the Zeller / proleptic algorithm.
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-
-    // Algorithm: http://howardhinnant.github.io/date_algorithms.html (civil_from_days)
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let y = if mo <= 2 { y + 1 } else { y };
-
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FocusLogOutcome {
     Unchanged,
@@ -442,15 +418,6 @@ impl PlexiApp {
             .checked_sub(elapsed_since_start)
             .unwrap_or(std::time::SystemTime::now());
 
-        let to_iso = |t: std::time::SystemTime| -> String {
-            let secs = t
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            // Minimal ISO-8601 UTC formatter without external deps.
-            unix_secs_to_iso(secs)
-        };
-
         let entry = crate::app::focus_journal::FocusJournalEntry {
             pane_id: meta.pane_id,
             context_name: meta.context_name,
@@ -460,8 +427,8 @@ impl PlexiApp {
             pty_title: meta.pty_title,
             pane_name: meta.pane_name,
             app_type_id: meta.app_type_id,
-            started_at: to_iso(started_at_wall),
-            last_checkpoint_at: to_iso(std::time::SystemTime::now()),
+            started_at: crate::platform::clock::iso_z(started_at_wall),
+            last_checkpoint_at: crate::platform::clock::iso_z(std::time::SystemTime::now()),
         };
         crate::app::focus_journal::write_checkpoint(&self.focus_journal_path, &entry);
     }
@@ -700,7 +667,7 @@ impl PlexiApp {
             if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_app_mut() {
                     app.runtime
-                        .queue_outbound_event(crate::app_protocol::PlexiEvent::NavBack { view_id });
+                        .queue_outbound_event(crate::protocol::PlexiEvent::NavBack { view_id });
                 }
             }
             true
@@ -904,40 +871,18 @@ impl PlexiApp {
                 .collect::<Vec<_>>()
                 .join("\n");
             log::warn!("config: parse error, keeping current config:\n{error_msg}");
-            let notify_id = format!(
-                "config-error-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0)
-            );
+            let notify_id = crate::app::notifications::new_notify_id("config-error");
             self.enqueue_notification(
                 crate::app::notifications::NotifySource::HostInternal,
                 PendingNotification {
                     notify_id,
-                    sender_pane_id: 0,
-                    dismiss_owner_pane_id: 0,
-                    source_context_id: 0,
-                    source_window_id: 0,
                     title: "Config Error".to_string(),
                     body: error_msg,
-                    kind: crate::app_protocol::NotifyKind::Message,
-                    options: vec![],
-                    input_prompt: None,
-                    required: false,
                     // A broken config is not a property of one context — it
                     // affects the whole workspace, so this stays the explicit
                     // global case rather than taking the shared default.
-                    scope: crate::app_protocol::NotifyScope::Global,
-                    image_inline: None,
-                    image_pipe_id: None,
-                    response_file: None,
-                    timeout_secs: None,
-                    on_dismiss: None,
-                    enqueued_at: std::time::Instant::now(),
-                    tombstoned: false,
-                    deliver_after: None,
-                    origin_in_view: false,
+                    scope: crate::protocol::NotifyScope::Global,
+                    ..Default::default()
                 },
             );
             return;
@@ -1024,7 +969,7 @@ impl PlexiApp {
     /// Push the current host `Colors` to every running app as a `Theme` event.
     /// Called after `self.colors` is updated on config hot-reload.
     pub(crate) fn broadcast_theme_event(&mut self) {
-        let event = crate::app_protocol::PlexiEvent::Theme {
+        let event = crate::protocol::PlexiEvent::Theme {
             colors: self.colors.to_theme_map(),
         };
         let mut delivered = 0;
@@ -1342,58 +1287,14 @@ impl PlexiApp {
                 host_action,
             } = cmd
             {
-                log::info!(
-                    "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
+                self.deliver_notify_action(
+                    pane_id,
+                    notify_id,
+                    action_label,
+                    value,
+                    response_file,
+                    host_action,
                 );
-                let context_root = self
-                    .origin_for_pane(pane_id)
-                    .map(|origin| origin.context_root);
-                crate::host::event_log::emit_scoped(
-                    crate::host::event_log::HostEvent::NotificationActionInvoked {
-                        id: notify_id.clone(),
-                        action: action_label.clone(),
-                        timestamp: crate::host::event_log::now_timestamp(),
-                    },
-                    context_root.as_deref(),
-                );
-                // Execute host-side action synchronously before writing the response
-                // file so the navigation is complete before the shell unblocks.
-                if let Some(ref action) = host_action {
-                    if let Some(id_str) = action.strip_prefix("pane_focus:") {
-                        if let Ok(pane_id_target) = id_str.parse::<u64>() {
-                            self.pane_navigate(pane_id_target);
-                        } else {
-                            log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
-                        }
-                    } else {
-                        log::warn!("notify:action: unknown host_action {:?}", action);
-                    }
-                }
-                if let Some(rf) = &response_file {
-                    let content = value.as_deref().unwrap_or("");
-                    if crate::rpc::write_response(rf, content.as_bytes()) {
-                        log::info!("notify:action: wrote {:?} to {:?}", content, rf);
-                    }
-                }
-                // Search all windows for the sender pane — it may not be in the
-                // active context (cross-context notification path).
-                let window_idx = self
-                    .windows
-                    .iter()
-                    .position(|w| w.panes.contains_key(&pane_id));
-                if let Some(win_idx) = window_idx {
-                    if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
-                        if let Some(app) = pane.as_app_mut() {
-                            app.runtime.queue_outbound_event(
-                                crate::app_protocol::PlexiEvent::NotifyAction {
-                                    notify_id,
-                                    action_label,
-                                    value,
-                                },
-                            );
-                        }
-                    }
-                }
             }
         }
     }

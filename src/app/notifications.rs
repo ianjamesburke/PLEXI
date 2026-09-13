@@ -20,18 +20,18 @@ pub(crate) struct PendingNotification {
     pub source_window_id: u64,
     pub title: String,
     pub body: String,
-    pub kind: crate::app_protocol::NotifyKind,
-    pub options: Vec<crate::app_protocol::NotifyOption>,
+    pub kind: crate::protocol::NotifyKind,
+    pub options: Vec<crate::protocol::NotifyOption>,
     pub input_prompt: Option<String>,
     pub required: bool,
     /// Visibility scope. Affects which contexts the notification appears in.
-    pub scope: crate::app_protocol::NotifyScope,
+    pub scope: crate::protocol::NotifyScope,
     /// Optional inline image attachment (#74). Decoded lazily on first
     /// render; oversized payloads (> 50 KB decoded) surface a placeholder
     /// instead of decoding. The decoded texture is cached separately on
     /// `PlexiApp::notification_images` keyed by `notify_id` — this struct
     /// stays Clone-cheap (no GPU handles inside it).
-    pub image_inline: Option<crate::app_protocol::NotificationImage>,
+    pub image_inline: Option<crate::protocol::NotificationImage>,
     /// Optional pipe-referenced image attachment (#74). The host drains the
     /// matching binary ring on first render and caches the texture under
     /// `PlexiApp::notification_images`.
@@ -61,6 +61,45 @@ pub(crate) struct PendingNotification {
     pub origin_in_view: bool,
 }
 
+impl Default for PendingNotification {
+    /// Every field that is the same constant at essentially every construction
+    /// site. `enqueued_at` is stamped at construction time, so a value built
+    /// from `Default` is queued "now", never at some stale earlier instant.
+    fn default() -> Self {
+        Self {
+            notify_id: String::new(),
+            sender_pane_id: 0,
+            dismiss_owner_pane_id: 0,
+            source_context_id: 0,
+            source_window_id: 0,
+            title: String::new(),
+            body: String::new(),
+            kind: crate::protocol::NotifyKind::default(),
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            scope: crate::protocol::NotifyScope::default(),
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: None,
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now(),
+            tombstoned: false,
+            deliver_after: None,
+            origin_in_view: false,
+        }
+    }
+}
+
+/// The one way a notification id is minted. `prefix` names the source
+/// (`wasm:<pane_id>`, `config-error`, `routine`, …); the uuid makes the id
+/// collision-free by construction, so no caller needs its own sequence
+/// counter. Nothing parses the id back apart — it is an opaque identity key.
+pub(crate) fn new_notify_id(prefix: &str) -> String {
+    format!("{prefix}-{}", uuid::Uuid::new_v4())
+}
+
 /// Serializable snapshot of a `PendingNotification`. Session-only handles
 /// (`image_pipe_id`, `response_file`, `deliver_after`) are dropped on save and
 /// restored as `None`; `tombstoned` is forced to `true` on load because the
@@ -76,14 +115,14 @@ struct PersistedNotification {
     source_window_id: u64,
     title: String,
     body: String,
-    kind: crate::app_protocol::NotifyKind,
-    options: Vec<crate::app_protocol::NotifyOption>,
+    kind: crate::protocol::NotifyKind,
+    options: Vec<crate::protocol::NotifyOption>,
     #[serde(default)]
     input_prompt: Option<String>,
     required: bool,
-    scope: crate::app_protocol::NotifyScope,
+    scope: crate::protocol::NotifyScope,
     #[serde(default)]
-    image_inline: Option<crate::app_protocol::NotificationImage>,
+    image_inline: Option<crate::protocol::NotificationImage>,
     #[serde(default)]
     timeout_secs: Option<u64>,
     #[serde(default)]
@@ -101,10 +140,7 @@ pub(crate) fn save_pending_notifications_to(
     notifications: &[PendingNotification],
     path: &std::path::Path,
 ) {
-    let now_sys = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_sys = crate::platform::clock::now_secs();
     let persisted: Vec<PersistedNotification> = notifications
         .iter()
         .map(|n| {
@@ -134,16 +170,13 @@ pub(crate) fn save_pending_notifications_to(
         })
         .collect();
     match serde_json::to_string(&persisted) {
-        Ok(json) => {
-            let tmp = path.with_extension("json.tmp");
-            match std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, path)) {
-                Ok(_) => log::info!(
-                    "notify:persist: saved {} notification(s)",
-                    notifications.len()
-                ),
-                Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
-            }
-        }
+        Ok(json) => match crate::platform::fs::atomic_write(path, json.as_bytes()) {
+            Ok(()) => log::info!(
+                "notify:persist: saved {} notification(s)",
+                notifications.len()
+            ),
+            Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
+        },
         Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
     }
 }
@@ -158,10 +191,7 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
         log::warn!("notify:persist: failed to deserialize {:?}", path);
         return vec![];
     };
-    let now_sys = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_sys = crate::platform::clock::now_secs();
     const TTL_SECS: u64 = 7 * 24 * 3600;
     let restored: Vec<PendingNotification> = persisted
         .into_iter()
@@ -245,16 +275,16 @@ impl NotifySource {
 /// tombstone, or queue state. Callers that need the full visibility answer
 /// combine this with their own checks (see `PlexiApp::notification_is_visible`).
 pub(crate) fn notification_visible(
-    scope: crate::app_protocol::NotifyScope,
+    scope: crate::protocol::NotifyScope,
     source_window_id: u64,
     source_context_id: u64,
     active_window_id: u64,
     active_context_id: u64,
 ) -> bool {
     match scope {
-        crate::app_protocol::NotifyScope::Global => true,
-        crate::app_protocol::NotifyScope::Window => source_window_id == active_window_id,
-        crate::app_protocol::NotifyScope::Context => source_context_id == active_context_id,
+        crate::protocol::NotifyScope::Global => true,
+        crate::protocol::NotifyScope::Window => source_window_id == active_window_id,
+        crate::protocol::NotifyScope::Context => source_context_id == active_context_id,
     }
 }
 
@@ -266,17 +296,84 @@ pub(crate) fn notification_visible(
 /// state (badge counts have never consulted `deliver_after` — preserved as
 /// existing behavior, not introduced here).
 pub(crate) fn notification_counts_toward_context(
-    scope: crate::app_protocol::NotifyScope,
+    scope: crate::protocol::NotifyScope,
     source_context_id: u64,
     ctx_id: u64,
 ) -> bool {
     matches!(
         scope,
-        crate::app_protocol::NotifyScope::Window | crate::app_protocol::NotifyScope::Context
+        crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context
     ) && source_context_id == ctx_id
 }
 
 impl PlexiApp {
+    /// Execute a `DeliverNotifyAction`: record the event, run the host-side
+    /// action, unblock any waiting CLI through its response file, then hand
+    /// the action to the sender app. Both drain paths — `dispatch.rs`'s
+    /// command loop and `dispatch_notify_action_cmds` — route through here.
+    pub(crate) fn deliver_notify_action(
+        &mut self,
+        pane_id: u64,
+        notify_id: String,
+        action_label: String,
+        value: Option<String>,
+        response_file: Option<String>,
+        host_action: Option<String>,
+    ) {
+        log::info!(
+            "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
+        );
+        let context_root = self
+            .origin_for_pane(pane_id)
+            .map(|origin| origin.context_root);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::NotificationActionInvoked {
+                id: notify_id.clone(),
+                action: action_label.clone(),
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
+        // Execute host-side action synchronously before writing the response
+        // file so the navigation is complete before the shell unblocks.
+        if let Some(ref action) = host_action {
+            if let Some(id_str) = action.strip_prefix("pane_focus:") {
+                if let Ok(pane_id_target) = id_str.parse::<u64>() {
+                    self.pane_navigate(pane_id_target);
+                } else {
+                    log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                }
+            } else {
+                log::warn!("notify:action: unknown host_action {:?}", action);
+            }
+        }
+        if let Some(rf) = &response_file {
+            let content = value.as_deref().unwrap_or("");
+            if crate::rpc::write_response(rf, content.as_bytes()) {
+                log::info!("notify:action: wrote {:?} to {:?}", content, rf);
+            }
+        }
+        // Search all windows for the sender pane — it may not be in the
+        // active context (cross-context notification path).
+        let window_idx = self
+            .windows
+            .iter()
+            .position(|w| w.panes.contains_key(&pane_id));
+        if let Some(win_idx) = window_idx {
+            if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
+                if let Some(app) = pane.as_app_mut() {
+                    app.runtime.queue_outbound_event(
+                        crate::protocol::PlexiEvent::NotifyAction {
+                            notify_id,
+                            action_label,
+                            value,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     /// Resolve app-notification provenance without consulting focus. A live
     /// sender pane supplies its window; a parked or gone sender has only the
     /// context stamped on the command, so window visibility narrows to that
@@ -284,20 +381,20 @@ impl PlexiApp {
     pub(crate) fn resolve_app_notification_provenance(
         &self,
         sender_pane_id: u64,
-        scope: crate::app_protocol::NotifyScope,
-    ) -> (crate::app_protocol::NotifyScope, u64) {
+        scope: crate::protocol::NotifyScope,
+    ) -> (crate::protocol::NotifyScope, u64) {
         if let Some((window_index, _)) = (sender_pane_id != 0)
             .then(|| self.find_pane_in_any_window(sender_pane_id))
             .flatten()
         {
             return (scope, self.windows[window_index].window_id);
         }
-        if scope == crate::app_protocol::NotifyScope::Window {
+        if scope == crate::protocol::NotifyScope::Window {
             log::info!(
                 "notify: app sender pane_id={} has no live window — narrowing window scope to context",
                 sender_pane_id
             );
-            return (crate::app_protocol::NotifyScope::Context, 0);
+            return (crate::protocol::NotifyScope::Context, 0);
         }
         (scope, 0)
     }

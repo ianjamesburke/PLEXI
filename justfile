@@ -8,6 +8,10 @@ PYTHON_PBS_DATE := "20260414"
 # Keep the global warning gate while upstream APIs transition to typed literals.
 export RUSTFLAGS := "-D warnings -A float-literal-f32-fallback"
 
+# Pane-inherited Plexi vars that must not reach a test process: they would let
+# a test resolve real channel state instead of its own isolated profile.
+TEST_ENV_SCRUB := "env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID"
+
 # Download the python-build-standalone runtime into assets/python/ for bundling.
 # Skips if the correct version is already present. macOS only.
 fetch-python-runtime:
@@ -48,7 +52,7 @@ website-smoke:
 
 # Run the full test suite — HostHarness regression tests + unit tests.
 test:
-    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
@@ -96,7 +100,7 @@ build:
     bash scripts/cargo-with-lease.sh cargo build --release
 
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
-# Run after any change to src/app_protocol.rs.
+# Run after any change to src/protocol/.
 gen-schema:
     bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
     python3 tools/gen_protocol_py.py
@@ -111,18 +115,26 @@ gen-cli-docs:
     git diff --cached --quiet || git commit -m "chore(website): regenerate CLI reference docs"
     git push
 
-# Verify the committed CLI docs are up to date with the current Rust source.
-# Fails if website/src/content/docs/cli.md is stale.
-check-cli-docs:
+# Verify one committed generated artifact still matches its generator's output.
+# `generator` writes the fresh artifact to stdout; `regen` names the recipe that
+# refreshes the committed copy; `ok` is the line printed when it matches.
+[private]
+check-generated artifact generator regen ok:
     #!/usr/bin/env bash
     set -euo pipefail
-    bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs > /tmp/plexi_check_cli.md
-    if ! diff -q website/src/content/docs/cli.md /tmp/plexi_check_cli.md > /dev/null; then
-        echo "ERROR: website/src/content/docs/cli.md is stale. Run 'just gen-cli-docs'."
-        diff website/src/content/docs/cli.md /tmp/plexi_check_cli.md || true
+    fresh="$(mktemp)"
+    trap 'rm -f "$fresh"' EXIT
+    {{generator}} > "$fresh"
+    if ! diff -q {{artifact}} "$fresh" > /dev/null; then
+        echo "ERROR: {{artifact}} is stale. Run 'just {{regen}}'."
+        diff {{artifact}} "$fresh" || true
         exit 1
     fi
-    echo "CLI docs are up to date."
+    echo "{{ok}}"
+
+# Verify the committed CLI docs are up to date with the current Rust source.
+# Fails if website/src/content/docs/cli.md is stale.
+check-cli-docs: (check-generated "website/src/content/docs/cli.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs" "gen-cli-docs" "CLI docs are up to date.")
 
 # Regenerate the config reference docs from the serde config structs.
 # Run after any change to src/config/mod.rs or scripts/default-config.toml.
@@ -135,29 +147,11 @@ gen-config-docs:
 
 # Verify the committed config docs are up to date with the current Rust source.
 # Fails if website/src/content/docs/config.md is stale.
-check-config-docs:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs > /tmp/plexi_check_config.md
-    if ! diff -q website/src/content/docs/config.md /tmp/plexi_check_config.md > /dev/null; then
-        echo "ERROR: website/src/content/docs/config.md is stale. Run 'just gen-config-docs'."
-        diff website/src/content/docs/config.md /tmp/plexi_check_config.md || true
-        exit 1
-    fi
-    echo "Config docs are up to date."
+check-config-docs: (check-generated "website/src/content/docs/config.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs" "gen-config-docs" "Config docs are up to date.")
 
 # Verify the committed schema is up to date with the current Rust source.
 # Fails if sdk/protocol/pgap.schema.json is stale.
-check-schema:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    bash scripts/cargo-with-lease.sh cargo run -p gen_schema > /tmp/pgap_check.schema.json
-    if ! diff -q sdk/protocol/pgap.schema.json /tmp/pgap_check.schema.json > /dev/null; then
-        echo "ERROR: sdk/protocol/pgap.schema.json is stale. Run 'just gen-schema'."
-        diff sdk/protocol/pgap.schema.json /tmp/pgap_check.schema.json || true
-        exit 1
-    fi
-    echo "Schema is up to date."
+check-schema: (check-generated "sdk/protocol/pgap.schema.json" "bash scripts/cargo-with-lease.sh cargo run -p gen_schema" "gen-schema" "Schema is up to date.")
 
 # Generate SDK reference docs from Python docstrings.
 # Run after any change to sdk/python/plexi_sdk/.
@@ -178,7 +172,7 @@ check-sdk-docs:
     echo "SDK docs are up to date."
 
 # Generate PGAP capability reference docs from the protocol JSON schema.
-# Run after any change to src/app_protocol.rs (via just gen-schema first).
+# Run after any change to src/protocol/ (via just gen-schema first).
 gen-capability-docs:
     python3 tools/gen_capability_docs.py
 
@@ -231,7 +225,7 @@ run:
 # src/cli/args.rs                    → website/src/content/docs/cli.md           → cargo run -p gen_cli_docs
 # src/config/mod.rs                  → website/src/content/docs/config.md        → cargo run -p gen_config_docs
 # scripts/default-config.toml        → website/src/content/docs/config.md        → cargo run -p gen_config_docs
-# src/app_protocol.rs                → sdk/protocol/pgap.schema.json             → cargo run -p gen_schema
+# src/protocol/*.rs                  → sdk/protocol/pgap.schema.json             → cargo run -p gen_schema
 #                                    → sdk/python/plexi_sdk/_protocol.py         → python3 tools/gen_protocol_py.py
 # website/src/content/docs/          → (coverage assertion)                      → tools/check_docs_coverage.sh
 regen-if-stale:
@@ -245,8 +239,8 @@ regen-if-stale:
         echo "Config source changed — regenerating config docs..."
         bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
     fi
-    if [[ src/app_protocol.rs -nt sdk/protocol/pgap.schema.json ]]; then
-        echo "app_protocol.rs changed — regenerating schema..."
+    if [[ -n "$(find src/protocol -name '*.rs' -newer sdk/protocol/pgap.schema.json -print -quit)" ]]; then
+        echo "src/protocol/ changed — regenerating schema..."
         bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
         python3 tools/gen_protocol_py.py
     fi
@@ -544,7 +538,7 @@ ship +issues:
 scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
-    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
 
 # Run the same TOML scene against an explicit installed host channel.
 # The runner owns and tears down the host unless PLEXI_SCENE_ATTACH=1 is set.

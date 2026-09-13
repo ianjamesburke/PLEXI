@@ -49,6 +49,13 @@ A scene file is a list of steps: setup, actions, structured assertions, optional
 
 ```toml
 size = [1280.0, 800.0]      # optional, default 1280x800
+sizes = [[520.0, 400.0], [1280.0, 800.0]]
+                            # optional responsive matrix, mutually exclusive
+                            # with `size`: the whole step list runs once per
+                            # size on a fresh harness, and every `shot` stem
+                            # gains a `-WxH` suffix so the passes don't
+                            # overwrite each other. One file, one report, one
+                            # pass/fail — never clone a scene per breakpoint.
 suite = false               # optional, default true. false = excluded from
                             # scene_suite (use for scenes spawning real app
                             # processes); run them via `just scene`.
@@ -170,6 +177,10 @@ Before calling a UI fix complete:
    actual changed surface with realistic seeded content (not an empty state) —
    `screenshot_assistant_conversation_bubbles` in `src/ui_tests.rs` is the
    pattern: build real model state, open through the real pane path, screenshot.
+   Name the output with `evidence_png!()`, never a hand-typed path: it derives
+   `/tmp/plexi_<test fn>.png` from the enclosing function, so a renamed test
+   cannot leave a stale filename and `rm /tmp/plexi_*.png` reaches every
+   artifact. Pass a suffix for several shots from one test, `evidence_png!("_ppp2")`.
 2. Run it and **open the PNG with the Read tool and look at it** — confirm the
    change looks right, not just that the test exited 0.
 3. Delete the screenshot from `/tmp` after review. Screenshots are a review

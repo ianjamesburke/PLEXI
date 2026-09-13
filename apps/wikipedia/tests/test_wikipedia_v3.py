@@ -1,19 +1,15 @@
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
+import plexi_sdk as sdk
+from plexi_sdk import _v3_state
+from plexi_sdk._adapter import _encode_uitree
+from plexi_sdk.effects import ExposeTools, HttpFetch, ToolResult
+from plexi_sdk.events import HttpResponse, KeyEvent, ToolCall, UiAction
+
 ROOT = Path(__file__).resolve().parents[3]
-SDK = ROOT / "sdk" / "python"
 APP = ROOT / "apps" / "wikipedia" / "wikipedia.py"
-
-sys.path.insert(0, str(SDK))
-
-import plexi_sdk as sdk  # noqa: E402
-from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk._adapter import _encode_uitree  # noqa: E402
-from plexi_sdk.effects import ExposeTools, HttpFetch, ToolResult  # noqa: E402
-from plexi_sdk.events import HttpResponse, KeyEvent, ToolCall, UiAction  # noqa: E402
 
 
 def _load_app_module():

@@ -17,8 +17,7 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::app_protocol::{AiMessage, AiTool, ModelTier};
-use crate::config::{AiConfig, LocalBackendConfig, OllamaBackendConfig, OpenRouterBackendConfig};
+use crate::config::{AiConfig, ModelTiers};
 use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::backend::local::LocalOpenAiBackend;
 use crate::plexi_ai::backend::ollama::OllamaBackend;
@@ -29,6 +28,7 @@ use crate::plexi_ai::ledger::{self, LedgerRow};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
 use crate::plexi_ai::CancelToken;
+use crate::protocol::{AiMessage, AiTool, ModelTier};
 
 /// Lightweight context for a single open pane (injected into system prompt).
 #[derive(Debug, Clone)]
@@ -212,6 +212,70 @@ impl AiBroker for LiveAiBroker {
     }
 }
 
+/// The per-backend facts [`dispatch_backend`] needs: which provider a
+/// `concrete_model` route must name to be routable here, which config section
+/// to name when no model is configured, that section's tier table, and how
+/// turns on this backend are billed.
+struct BackendDispatch<'a> {
+    provider: &'a str,
+    section: &'a str,
+    tiers: &'a ModelTiers,
+    billing: BillingModel,
+}
+
+/// Shared dispatch path for every backend.
+///
+/// Rejects a route naming a different provider, resolves the model id from the
+/// route or the section's tier table, then hands off to `build` for the parts
+/// that genuinely differ per backend. `build` returns the backend plus the API
+/// key used only by the OpenRouter cost fetch — empty for backends with no
+/// metered cost lookup.
+fn dispatch_backend(
+    request: AiBrokerRequest,
+    spec: BackendDispatch<'_>,
+    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+    build: impl FnOnce(&AiBrokerRequest, &str) -> Result<(Box<dyn AiBackend>, String), AiBrokerResponse>,
+) -> AiBrokerResponse {
+    if let Some(route) = request
+        .concrete_model
+        .as_ref()
+        .filter(|route| route.provider != spec.provider)
+    {
+        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
+    }
+    let model_id = request
+        .concrete_model
+        .as_ref()
+        .map(|route| route.model.clone())
+        .or_else(|| spec.tiers.resolve(request.model_tier));
+    let model_id = match model_id {
+        Some(m) => m,
+        None => {
+            let msg = format!(
+                "ai_config_missing: model_{} not set in {} config section",
+                request.model_tier.as_str(),
+                spec.section
+            );
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
+        }
+    };
+
+    let (backend, api_key) = match build(&request, &model_id) {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+
+    run_turn_and_respond(
+        request,
+        backend.as_ref(),
+        spec.billing,
+        model_id,
+        api_key,
+        on_delta,
+    )
+}
+
 /// Dispatch through the OpenRouter backend.
 fn dispatch_openrouter(
     request: AiBrokerRequest,
@@ -227,54 +291,34 @@ fn dispatch_openrouter(
         }
     };
 
-    if let Some(route) = request
-        .concrete_model
-        .as_ref()
-        .filter(|route| route.provider != "openrouter")
-    {
-        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
-    }
-    let model_id = request
-        .concrete_model
-        .as_ref()
-        .map(|route| route.model.clone())
-        .or_else(|| resolve_model_tier(&request.model_tier, or_config));
-    let model_id = match model_id {
-        Some(m) => m,
-        None => {
-            let msg = format!(
-                "ai_config_missing: model_{} not set in [ai.openrouter] config section",
-                tier_name(&request.model_tier)
-            );
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    let api_key_env = or_config
-        .api_key_env
-        .as_deref()
-        .unwrap_or("OPENROUTER_API_KEY");
-    let api_key = match resolve_openrouter_api_key(api_key_env, request.workspace_root.as_deref()) {
-        Ok(k) => k,
-        Err(msg) => {
-            log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    let backend = OpenRouterBackend {
-        api_key: api_key.clone(),
-        model: model_id.clone(),
-    };
-
-    run_turn_and_respond(
+    dispatch_backend(
         request,
-        &backend,
-        BillingModel::Metered,
-        model_id,
-        api_key,
+        BackendDispatch {
+            provider: "openrouter",
+            section: "[ai.openrouter]",
+            tiers: &or_config.tiers,
+            billing: BillingModel::Metered,
+        },
         on_delta,
+        |request, model_id| {
+            let api_key_env = or_config
+                .api_key_env
+                .as_deref()
+                .unwrap_or("OPENROUTER_API_KEY");
+            let api_key =
+                match resolve_openrouter_api_key(api_key_env, request.workspace_root.as_deref()) {
+                    Ok(k) => k,
+                    Err(msg) => {
+                        log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
+                        return Err(AiBrokerResponse::err(msg));
+                    }
+                };
+            let backend = OpenRouterBackend {
+                api_key: api_key.clone(),
+                model: model_id.to_string(),
+            };
+            Ok((Box::new(backend), api_key))
+        },
     )
 }
 
@@ -477,48 +521,26 @@ fn dispatch_ollama(
         }
     };
 
-    if let Some(route) = request
-        .concrete_model
-        .as_ref()
-        .filter(|route| route.provider != "ollama")
-    {
-        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
-    }
-    let model_id = request
-        .concrete_model
-        .as_ref()
-        .map(|route| route.model.clone())
-        .or_else(|| resolve_ollama_model_tier(&request.model_tier, ollama_config));
-    let model_id = match model_id {
-        Some(m) => m,
-        None => {
-            let msg = format!(
-                "ai_config_missing: model_{} not set in [ai.ollama] config section",
-                tier_name(&request.model_tier)
-            );
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    let host = ollama_config
-        .host
-        .as_deref()
-        .unwrap_or("http://localhost:11434")
-        .to_string();
-
-    let backend = OllamaBackend {
-        host,
-        model: model_id.clone(),
-    };
-
-    run_turn_and_respond(
+    dispatch_backend(
         request,
-        &backend,
-        BillingModel::Subscription,
-        model_id,
-        String::new(),
+        BackendDispatch {
+            provider: "ollama",
+            section: "[ai.ollama]",
+            tiers: &ollama_config.tiers,
+            billing: BillingModel::Subscription,
+        },
         on_delta,
+        |_request, model_id| {
+            let backend = OllamaBackend {
+                host: ollama_config
+                    .host
+                    .as_deref()
+                    .unwrap_or("http://localhost:11434")
+                    .to_string(),
+                model: model_id.to_string(),
+            };
+            Ok((Box::new(backend), String::new()))
+        },
     )
 }
 
@@ -547,62 +569,42 @@ fn dispatch_local(
         }
     };
 
-    if let Some(route) = request
-        .concrete_model
-        .as_ref()
-        .filter(|route| route.provider != "local")
-    {
-        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
-    }
-    let model_id = request
-        .concrete_model
-        .as_ref()
-        .map(|route| route.model.clone())
-        .or_else(|| resolve_local_model_tier(&request.model_tier, local_config));
-    let model_id = match model_id {
-        Some(m) => m,
-        None => {
-            let msg = format!(
-                "ai_config_missing: model_{} not set in [ai.local] config section",
-                tier_name(&request.model_tier)
-            );
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    // Never touches the Keychain or workspace secrets: local proxies either
-    // need no key or take one from a plain env var named in api_key_env.
-    let api_key = match resolve_local_api_key(local_config.api_key_env.as_deref(), |name| {
-        std::env::var(name).ok()
-    }) {
-        Ok(k) => k,
-        Err(msg) => {
-            log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    log::info!(
-        "ai_broker[{}]: dispatch backend=local base_url={} model={}",
-        request.app_id,
-        base_url,
-        model_id
-    );
-
-    let backend = LocalOpenAiBackend {
-        base_url,
-        api_key,
-        model: model_id.clone(),
-    };
-
-    run_turn_and_respond(
+    dispatch_backend(
         request,
-        &backend,
-        BillingModel::Subscription,
-        model_id,
-        String::new(),
+        BackendDispatch {
+            provider: "local",
+            section: "[ai.local]",
+            tiers: &local_config.tiers,
+            billing: BillingModel::Subscription,
+        },
         on_delta,
+        |request, model_id| {
+            // Never touches the Keychain or workspace secrets: local proxies either
+            // need no key or take one from a plain env var named in api_key_env.
+            let api_key = match resolve_local_api_key(local_config.api_key_env.as_deref(), |name| {
+                std::env::var(name).ok()
+            }) {
+                Ok(k) => k,
+                Err(msg) => {
+                    log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
+                    return Err(AiBrokerResponse::err(msg));
+                }
+            };
+
+            log::info!(
+                "ai_broker[{}]: dispatch backend=local base_url={} model={}",
+                request.app_id,
+                base_url,
+                model_id
+            );
+
+            let backend = LocalOpenAiBackend {
+                base_url,
+                api_key,
+                model: model_id.to_string(),
+            };
+            Ok((Box::new(backend), String::new()))
+        },
     )
 }
 
@@ -1092,38 +1094,6 @@ fn summarize_progress_on_pause(
     }
 }
 
-fn tier_name(tier: &ModelTier) -> &'static str {
-    match tier {
-        ModelTier::Low => "low",
-        ModelTier::Medium => "medium",
-        ModelTier::High => "high",
-    }
-}
-
-fn resolve_model_tier(tier: &ModelTier, config: &OpenRouterBackendConfig) -> Option<String> {
-    match tier {
-        ModelTier::Low => config.model_low.clone(),
-        ModelTier::Medium => config.model_medium.clone(),
-        ModelTier::High => config.model_high.clone(),
-    }
-}
-
-fn resolve_ollama_model_tier(tier: &ModelTier, config: &OllamaBackendConfig) -> Option<String> {
-    match tier {
-        ModelTier::Low => config.model_low.clone(),
-        ModelTier::Medium => config.model_medium.clone(),
-        ModelTier::High => config.model_high.clone(),
-    }
-}
-
-fn resolve_local_model_tier(tier: &ModelTier, config: &LocalBackendConfig) -> Option<String> {
-    match tier {
-        ModelTier::Low => config.model_low.clone(),
-        ModelTier::Medium => config.model_medium.clone(),
-        ModelTier::High => config.model_high.clone(),
-    }
-}
-
 /// Fetch the real USD cost for a completed generation from the OpenRouter
 /// generation endpoint.
 ///
@@ -1281,9 +1251,11 @@ mod tests {
             backend: Some("openrouter".to_string()),
             openrouter: Some(OpenRouterBackendConfig {
                 api_key_env: None,
-                model_low: Some("qwen/qwen3.6-flash".to_string()),
-                model_medium: Some("xiaomi/mimo-v2.5".to_string()),
-                model_high: Some("anthropic/claude-fable-5".to_string()),
+                tiers: ModelTiers {
+                    model_low: Some("qwen/qwen3.6-flash".to_string()),
+                    model_medium: Some("xiaomi/mimo-v2.5".to_string()),
+                    model_high: Some("anthropic/claude-fable-5".to_string()),
+                },
             }),
             ollama: None,
             ..Default::default()
@@ -1294,10 +1266,16 @@ mod tests {
     fn config_resolves_tiers_to_openrouter_model_ids() {
         let config = test_ai_config();
         let or_config = config.openrouter.as_ref().unwrap();
-        assert_eq!(or_config.model_low.as_deref(), Some("qwen/qwen3.6-flash"));
-        assert_eq!(or_config.model_medium.as_deref(), Some("xiaomi/mimo-v2.5"));
         assert_eq!(
-            or_config.model_high.as_deref(),
+            or_config.tiers.resolve(ModelTier::Low).as_deref(),
+            Some("qwen/qwen3.6-flash")
+        );
+        assert_eq!(
+            or_config.tiers.resolve(ModelTier::Medium).as_deref(),
+            Some("xiaomi/mimo-v2.5")
+        );
+        assert_eq!(
+            or_config.tiers.resolve(ModelTier::High).as_deref(),
             Some("anthropic/claude-fable-5")
         );
     }
@@ -1839,9 +1817,10 @@ mod tests {
             local: Some(crate::config::LocalBackendConfig {
                 base_url: None,
                 api_key_env: None,
-                model_low: Some("claude-haiku-4-5".to_string()),
-                model_medium: None,
-                model_high: None,
+                tiers: ModelTiers {
+                    model_low: Some("claude-haiku-4-5".to_string()),
+                    ..Default::default()
+                },
             }),
             ..Default::default()
         }));
@@ -1860,9 +1839,10 @@ mod tests {
             local: Some(crate::config::LocalBackendConfig {
                 base_url: Some("http://127.0.0.1:3456".to_string()),
                 api_key_env: None,
-                model_low: None,
-                model_medium: None,
-                model_high: Some("claude-fable-5".to_string()),
+                tiers: ModelTiers {
+                    model_high: Some("claude-fable-5".to_string()),
+                    ..Default::default()
+                },
             }),
             ..Default::default()
         }));
@@ -1886,9 +1866,10 @@ mod tests {
             local: Some(crate::config::LocalBackendConfig {
                 base_url: Some("http://127.0.0.1:3456".to_string()),
                 api_key_env: None,
-                model_low: Some("claude-haiku-4-5".to_string()),
-                model_medium: None,
-                model_high: None,
+                tiers: ModelTiers {
+                    model_low: Some("claude-haiku-4-5".to_string()),
+                    ..Default::default()
+                },
             }),
             ..Default::default()
         };
@@ -1943,7 +1924,7 @@ mod tests {
     /// correctly across both turns.
     #[test]
     fn tool_loop_builds_conversation_correctly() {
-        use crate::app_protocol::AiTool;
+        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
@@ -2028,11 +2009,11 @@ mod tests {
         // the next iteration, where the backend returns the final text.
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
-            model_tier: crate::app_protocol::ModelTier::Low,
+            model_tier: crate::protocol::ModelTier::Low,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
-            messages: vec![crate::app_protocol::AiMessage {
+            messages: vec![crate::protocol::AiMessage {
                 role: "user".to_string(),
                 content: "go".to_string(),
             }],
@@ -2086,7 +2067,7 @@ mod tests {
     /// verifies `max_tool_iterations` overrides the default cap.
     #[test]
     fn tool_loop_pauses_gracefully_after_max_iterations() {
-        use crate::app_protocol::AiTool;
+        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };

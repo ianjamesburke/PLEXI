@@ -6,12 +6,12 @@
 /// silently reinterprets `--scope global` whenever that default changes.
 pub fn parse_notify_scope(
     scope: Option<&str>,
-) -> Result<Option<crate::app_protocol::NotifyScope>, String> {
+) -> Result<Option<crate::protocol::NotifyScope>, String> {
     match scope {
         None => Ok(None),
-        Some("window") => Ok(Some(crate::app_protocol::NotifyScope::Window)),
-        Some("context") => Ok(Some(crate::app_protocol::NotifyScope::Context)),
-        Some("global") => Ok(Some(crate::app_protocol::NotifyScope::Global)),
+        Some("window") => Ok(Some(crate::protocol::NotifyScope::Window)),
+        Some("context") => Ok(Some(crate::protocol::NotifyScope::Context)),
+        Some("global") => Ok(Some(crate::protocol::NotifyScope::Global)),
         Some(other) => Err(format!(
             "error: --scope must be window, context, or global — got {other:?}"
         )),
@@ -27,7 +27,7 @@ pub fn notify_cli(
     wait_for_response: bool,
     display_timeout_secs: u64,
     wait_timeout_secs: u64,
-    scope: Option<crate::app_protocol::NotifyScope>,
+    scope: Option<crate::protocol::NotifyScope>,
     source_context_id: Option<u64>,
     source_pane_id: Option<u64>,
 ) -> i32 {
@@ -36,10 +36,10 @@ pub fn notify_cli(
     // without `PLEXI_CONTEXT_ID` there is no context to attach to.
     if matches!(
         scope,
-        Some(crate::app_protocol::NotifyScope::Window | crate::app_protocol::NotifyScope::Context)
+        Some(crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context)
     ) && source_context_id.is_none()
     {
-        let scope_name = if scope == Some(crate::app_protocol::NotifyScope::Window) {
+        let scope_name = if scope == Some(crate::protocol::NotifyScope::Window) {
             "window"
         } else {
             "context"
@@ -102,9 +102,9 @@ pub fn notify_cli(
     }
     if let Some(s) = scope {
         let s_str = match s {
-            crate::app_protocol::NotifyScope::Window => "window",
-            crate::app_protocol::NotifyScope::Context => "context",
-            crate::app_protocol::NotifyScope::Global => "global",
+            crate::protocol::NotifyScope::Window => "window",
+            crate::protocol::NotifyScope::Context => "context",
+            crate::protocol::NotifyScope::Global => "global",
         };
         payload["scope"] = serde_json::Value::String(s_str.to_string());
     }
@@ -523,8 +523,8 @@ mod notify_tests {
         let env = socket_env_guard();
         env.unset();
         for scope in [
-            crate::app_protocol::NotifyScope::Context,
-            crate::app_protocol::NotifyScope::Window,
+            crate::protocol::NotifyScope::Context,
+            crate::protocol::NotifyScope::Window,
         ] {
             let code = notify_cli("T", "B", &[], false, 0, 0, Some(scope), None, None);
             assert_eq!(code, 1, "{scope:?} without a caller context must error");

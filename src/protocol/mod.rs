@@ -8,7 +8,6 @@
 pub mod commands;
 pub mod events;
 pub mod primitives;
-pub mod view;
 
 pub use commands::*;
 pub use events::*;

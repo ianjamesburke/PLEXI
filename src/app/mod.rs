@@ -458,7 +458,7 @@ pub struct PlexiApp {
     pub(crate) shutdown_requested: bool,
     /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
-    pane_ipc_rx: ui_mailbox::MailboxReceiver<crate::app_protocol::AppRequest>,
+    pane_ipc_rx: ui_mailbox::MailboxReceiver<crate::protocol::AppRequest>,
     /// Host-owned event subscription core shared by the CLI NDJSON transport and
     /// the host MCP server. Resolves subscriber identity, runs the broker check,
     /// and records subscriptions in the global timeline.
@@ -572,20 +572,20 @@ const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
 /// instead of trusting the wire-supplied `source_context_id`/`source_pane_id`.
 fn handle_socket_line(
     line: &str,
-    mailbox: &ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
+    mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     peer_ancestry: Option<&[u32]>,
     ack_writer: &mut impl std::io::Write,
 ) {
-    match serde_json::from_str::<crate::app_protocol::AppRequest>(line) {
+    match serde_json::from_str::<crate::protocol::AppRequest>(line) {
         Ok(mut cmd) => {
             let needs_identity_ack = matches!(
                 cmd,
-                crate::app_protocol::AppRequest::Notify { .. }
-                    | crate::app_protocol::AppRequest::DismissNotification { .. }
+                crate::protocol::AppRequest::Notify { .. }
+                    | crate::protocol::AppRequest::DismissNotification { .. }
             );
             match &mut cmd {
-                crate::app_protocol::AppRequest::Notify { peer_pid: p, .. }
-                | crate::app_protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
+                crate::protocol::AppRequest::Notify { peer_pid: p, .. }
+                | crate::protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
                     *p = peer_ancestry.map(<[u32]>::to_vec);
                 }
                 _ => {}
@@ -646,7 +646,7 @@ fn read_socket_frame(reader: &mut impl std::io::BufRead) -> std::io::Result<Opti
 }
 
 fn spawn_socket_listener(
-    mailbox: ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
+    mailbox: ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
@@ -707,7 +707,7 @@ fn spawn_socket_listener(
 /// normal request/response-file path does not support.
 fn handle_socket_connection(
     stream: std::os::unix::net::UnixStream,
-    mailbox: ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>,
+    mailbox: ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
@@ -891,9 +891,9 @@ fn handle_events_subscribe(
         })
         .unwrap_or_default();
     let payload_mode = serde_json::from_value(val["payload_mode"].clone())
-        .unwrap_or(crate::app_protocol::PayloadMode::Full);
+        .unwrap_or(crate::protocol::PayloadMode::Full);
     let trigger_mode = serde_json::from_value(val["trigger_mode"].clone())
-        .unwrap_or(crate::app_protocol::TriggerMode::Conversation);
+        .unwrap_or(crate::protocol::TriggerMode::Conversation);
     let resource_id = val["resource_id"].as_str().map(String::from);
     let from_pane_id = val["from_pane_id"].as_u64();
 
@@ -1097,7 +1097,7 @@ fn handle_events_publish(
     // parsed here — the UI thread host-stamps them.
     let action = match val["type"].as_str() {
         Some("events_declare") => {
-            match serde_json::from_value::<Vec<crate::app_protocol::EventStreamDecl>>(
+            match serde_json::from_value::<Vec<crate::protocol::EventStreamDecl>>(
                 val["streams"].clone(),
             ) {
                 Ok(decls) => PublishAction::Declare(decls),
@@ -1111,7 +1111,7 @@ fn handle_events_publish(
             let emitted = crate::host::app_timeline::EmittedEvent {
                 event: val["event"].as_str().unwrap_or_default().to_string(),
                 actor: serde_json::from_value(val["actor"].clone())
-                    .unwrap_or(crate::app_protocol::AppEventActor::Agent),
+                    .unwrap_or(crate::protocol::AppEventActor::Agent),
                 // Host-stamped by the UI thread from the pane identity.
                 actor_id: None,
                 caused_by: None,
@@ -2323,7 +2323,7 @@ impl PlexiApp {
     fn queue_event_to_app_pane_anywhere(
         &mut self,
         pane_id: crate::spatial::tiling::PaneId,
-        event: crate::app_protocol::PlexiEvent,
+        event: crate::protocol::PlexiEvent,
     ) {
         let Some((window_index, _)) = self.find_pane_in_any_window(pane_id) else {
             log::warn!("app event: target pane {pane_id} closed before delivery");
@@ -2373,7 +2373,7 @@ impl PlexiApp {
                 );
                 self.queue_event_to_app_pane_anywhere(
                     pane_id,
-                    crate::app_protocol::PlexiEvent::AppEvent {
+                    crate::protocol::PlexiEvent::AppEvent {
                         subscription_id: delivery.subscription_id,
                         app_id: delivery.app_id,
                         event: delivery.event,
@@ -2397,8 +2397,8 @@ impl PlexiApp {
         request_id: String,
         publisher_app_id: String,
         event_names: Vec<String>,
-        payload_mode: crate::app_protocol::PayloadMode,
-        trigger_mode: crate::app_protocol::TriggerMode,
+        payload_mode: crate::protocol::PayloadMode,
+        trigger_mode: crate::protocol::TriggerMode,
         resource_id: Option<String>,
     ) {
         let Some((subscriber_app_id, workspace_root)) = self.windows.iter().find_map(|window| {
@@ -2459,13 +2459,13 @@ impl PlexiApp {
                 Ok(crate::host::event_subscriptions::HostSubscribeReply::Ok {
                     subscription_id,
                     ..
-                }) => Some(crate::app_protocol::PlexiEvent::AppEventsSubscribed {
+                }) => Some(crate::protocol::PlexiEvent::AppEventsSubscribed {
                     request_id: pending.request_id.clone(),
                     subscription_id: Some(subscription_id),
                     error: None,
                 }),
                 Ok(crate::host::event_subscriptions::HostSubscribeReply::Err { message }) => {
-                    Some(crate::app_protocol::PlexiEvent::AppEventsSubscribed {
+                    Some(crate::protocol::PlexiEvent::AppEventsSubscribed {
                         request_id: pending.request_id.clone(),
                         subscription_id: None,
                         error: Some(message),
@@ -2527,7 +2527,7 @@ impl PlexiApp {
     pub fn new_for_test(
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
-    ) -> (Self, ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>) {
+    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::AppRequest>) {
         Self::new_for_test_with_config(ctx, frame_tick, config::PlexiConfig::default())
     }
 
@@ -2539,7 +2539,7 @@ impl PlexiApp {
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
         config: config::PlexiConfig,
-    ) -> (Self, ui_mailbox::UiMailbox<crate::app_protocol::AppRequest>) {
+    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::AppRequest>) {
         let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -2565,7 +2565,7 @@ impl PlexiApp {
         }
         let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) =
-            ui_mailbox::UiMailbox::<crate::app_protocol::AppRequest>::channel(
+            ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
                 std::sync::Arc::clone(&ui_wake),
                 "pane_ipc",
             );
@@ -4308,10 +4308,10 @@ fn key_str_to_pty_bytes(key: &str) -> Vec<u8> {
 
 /// Parse a key string into a (key_name, Modifiers) pair for PGAP app panes.
 #[cfg(test)]
-fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers) {
+fn parse_key_str_to_event(key: &str) -> (String, crate::protocol::Modifiers) {
     let mut parts: Vec<&str> = key.split('+').collect();
     let key_part = parts.pop().unwrap_or(key);
-    let mut modifiers = crate::app_protocol::Modifiers::default();
+    let mut modifiers = crate::protocol::Modifiers::default();
     for m in &parts {
         match m.to_lowercase().as_str() {
             "ctrl" | "control" => modifiers.ctrl = true,

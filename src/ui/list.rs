@@ -185,7 +185,7 @@ pub(crate) struct ListRowPips {
     pub focused_idx: Option<usize>,
     pub hidden_indices: Vec<usize>,
     /// Per-pip agent state (parallel to pip index). `None` = no agent.
-    pub activities: Vec<Option<crate::app_protocol::AgentState>>,
+    pub activities: Vec<Option<crate::protocol::AgentState>>,
 }
 
 pub struct ListRow<'a> {
@@ -434,7 +434,7 @@ impl<'a> ListRow<'a> {
             let has_working = pips
                 .activities
                 .iter()
-                .any(|s| matches!(s, Some(crate::app_protocol::AgentState::Working)));
+                .any(|s| matches!(s, Some(crate::protocol::AgentState::Working)));
             if has_working {
                 // Pulse animation only needs ~10fps; an unconditional
                 // request_repaint pins the window at display refresh.
@@ -487,17 +487,23 @@ fn draw_text_block(
     // Primary reads one step above secondary metadata — both size and weight,
     // otherwise the two lines collapse into one undifferentiated block.
     let primary_font = crate::ui::theme::font_medium(style::TEXT_CAPTION);
-    let primary = elided_galley(ui, row.body, primary_font, primary_color, primary_max);
+    let primary = crate::ui::text::elided_galley(
+        ui,
+        row.body,
+        primary_font,
+        primary_max,
+        crate::ui::text::Side::Trailing,
+    );
     let primary_size = primary.size();
 
     if let Some(secondary) = row.secondary {
         let secondary_font = egui::FontId::proportional(style::TEXT_HINT);
-        let secondary_galley = elided_galley(
+        let secondary_galley = crate::ui::text::elided_galley(
             ui,
             secondary,
             secondary_font,
-            colors.text_dim,
             secondary_max,
+            crate::ui::text::Side::Trailing,
         );
         let secondary_h = secondary_galley.size().y;
         let total_h = primary_size.y + 2.0 + secondary_h;
@@ -531,70 +537,6 @@ struct TextBlockMetrics {
     primary_end_x: f32,
     primary_center_y: f32,
     secondary_center_y: Option<f32>,
-}
-
-fn elided_galley(
-    ui: &egui::Ui,
-    text: &str,
-    font_id: egui::FontId,
-    color: Color32,
-    max_width: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let text = elide_to_width(ui, text, font_id.clone(), max_width);
-    ui.fonts_mut(|f| f.layout_no_wrap(text, font_id, color))
-}
-
-pub(crate) fn elide_to_width(
-    ui: &egui::Ui,
-    text: &str,
-    font_id: egui::FontId,
-    max_width: f32,
-) -> String {
-    if max_width <= 0.0 {
-        return String::new();
-    }
-
-    // One line by contract: `layout_no_wrap` still breaks on `\n`, and a
-    // multi-line galley's width is its widest line, so an embedded break
-    // both defeats the ellipsis and grows the row. Collapse breaks to a
-    // space before measuring.
-    let text = text
-        .split(['\n', '\r'])
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let text = text.as_str();
-
-    let width = |s: &str| {
-        ui.fonts_mut(|f| {
-            f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
-                .size()
-                .x
-        })
-    };
-
-    if width(text) <= max_width {
-        return text.to_string();
-    }
-
-    const ELLIPSIS: &str = "...";
-    if width(ELLIPSIS) > max_width {
-        return String::new();
-    }
-
-    let mut out = String::new();
-    for ch in text.chars() {
-        let mut candidate = out.clone();
-        candidate.push(ch);
-        candidate.push_str(ELLIPSIS);
-        if width(&candidate) > max_width {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push_str(ELLIPSIS);
-    out
 }
 
 /// The selection highlight spans the row's full width — flush with the
@@ -671,7 +613,7 @@ fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
         f.layout_no_wrap(
             label.to_string(),
             egui::FontId::proportional(style::TEXT_CAPTION),
-            Color32::WHITE,
+            Color32::PLACEHOLDER,
         )
     });
     Vec2::new(galley.size().x.max(24.0), style::LIST_ROW_H)
@@ -697,7 +639,7 @@ fn chip_size(ui: &egui::Ui, label: &str) -> Vec2 {
         f.layout_no_wrap(
             label.to_string(),
             egui::FontId::monospace(style::TEXT_HINT),
-            Color32::WHITE,
+            Color32::PLACEHOLDER,
         )
     });
     let h = galley.size().y + CHIP_PAD_V * 2.0;
@@ -1009,37 +951,6 @@ mod tests {
                 pip_top >= chip_bottom,
                 "two-line row: pip top ({pip_top:.1}) must clear chip bottom ({chip_bottom:.1})"
             );
-        });
-    }
-
-    #[test]
-    fn elide_to_width_keeps_text_single_line_within_width() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let font = egui::FontId::proportional(style::TEXT_HINT);
-            let elided = elide_to_width(ui, "a very long note filename.md", font.clone(), 40.0);
-            let galley = ui.fonts_mut(|f| f.layout_no_wrap(elided, font, Color32::WHITE));
-            assert!(galley.size().x <= 40.0);
-            assert_eq!(galley.rows.len(), 1);
-        });
-    }
-
-    /// Agent detail text (hook output, diffs) carries line breaks. A row is
-    /// one line by contract, so breaks must collapse before elision — the
-    /// palette flashed a two-line subtitle while the multi-line detail was
-    /// live (`layout_no_wrap` still honours `\n`, and the width check only
-    /// measures the widest line so the ellipsis never triggered).
-    #[test]
-    fn elide_to_width_collapses_line_breaks_to_one_line() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let font = egui::FontId::proportional(style::TEXT_HINT);
-            let elided = elide_to_width(ui, "ws · agent 1\nBash(ls)\r\n--- a/x", font.clone(), 60.0);
-            assert!(!elided.contains('\n') && !elided.contains('\r'));
-            let galley = ui.fonts_mut(|f| f.layout_no_wrap(elided.clone(), font, Color32::WHITE));
-            assert_eq!(galley.rows.len(), 1, "{elided:?}");
-            assert!(galley.size().x <= 60.0);
-            assert!(elided.ends_with("..."));
         });
     }
 }

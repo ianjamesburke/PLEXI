@@ -228,9 +228,16 @@ fn resolve_live_pane_target(
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Scene {
-    /// Harness surface size in points.
-    #[serde(default = "default_size")]
-    pub size: [f32; 2],
+    /// Harness surface size in points. Defaults to 1280x800. Mutually
+    /// exclusive with `sizes`.
+    #[serde(default)]
+    pub size: Option<[f32; 2]>,
+    /// Run the whole step list once per surface size, so one scene file
+    /// covers a responsive-layout matrix instead of a file per breakpoint.
+    /// Every `shot` name gains a `-WxH` suffix so the passes do not overwrite
+    /// each other. Mutually exclusive with `size`.
+    #[serde(default)]
+    pub sizes: Option<Vec<[f32; 2]>>,
     /// When false, `scene_suite` skips this scene (run it via `just scene`).
     /// Use for scenes that spawn real app processes or need wall-clock time.
     #[serde(default = "default_true")]
@@ -255,8 +262,27 @@ pub struct PickerScriptEntry {
     pub cancel: Option<bool>,
 }
 
-fn default_size() -> [f32; 2] {
-    [1280.0, 800.0]
+const DEFAULT_SCENE_SIZE: [f32; 2] = [1280.0, 800.0];
+
+impl Scene {
+    /// The surface sizes this scene runs at, in order. `sizes` is the matrix
+    /// form; `size` is the single-size form; neither means the default.
+    /// Setting both is a scene-authoring error.
+    fn size_matrix(&self) -> Result<Vec<[f32; 2]>, SceneError> {
+        match (self.size, self.sizes.as_deref()) {
+            (Some(_), Some(_)) => Err(SceneError::new(
+                "scene_parse",
+                "a scene sets either `size` or `sizes`, never both",
+            )),
+            (_, Some([])) => Err(SceneError::new(
+                "scene_parse",
+                "`sizes` must list at least one [width, height]",
+            )),
+            (_, Some(sizes)) => Ok(sizes.to_vec()),
+            (Some(size), None) => Ok(vec![size]),
+            (None, None) => Ok(vec![DEFAULT_SCENE_SIZE]),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -782,6 +808,9 @@ pub struct HeadlessBackend {
     handles: PaneHandles,
     out_dir: PathBuf,
     no_shots: bool,
+    /// `-WxH` appended to every `shot` stem when the scene declares a `sizes`
+    /// matrix, so the passes write distinct files. `None` for a single size.
+    shot_suffix: Option<String>,
 }
 
 /// Run a scene file. Writes `<out_dir>/<scene-stem>.json` and returns the
@@ -885,6 +914,12 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         }
     };
 
+    let size_matrix = match scene.size_matrix() {
+        Ok(sizes) => sizes,
+        Err(e) => return failed_report(scene_name, e),
+    };
+    let is_matrix = size_matrix.len() > 1;
+
     std::fs::create_dir_all(out_dir).ok();
 
     // Install the scene's scripted picker before any app opens, and clear it
@@ -897,53 +932,73 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         None => None,
     };
 
-    let mut h = PlexiUiHarness::new_sized(scene.size[0], scene.size[1]);
-    h.step();
-    let mut runner = HeadlessBackend {
-        h,
-        last_app_pane: None,
-        handles: PaneHandles::default(),
-        out_dir: out_dir.to_path_buf(),
-        no_shots,
-    };
-
+    // Each size is an independent pass over the same step list, on its own
+    // harness. Step results and shots accumulate into the one report so a
+    // matrix scene stays one file, one JSON, one pass/fail.
     let mut steps = Vec::new();
     let mut shots = Vec::new();
     let mut passed = true;
-    for (index, step) in scene.steps.iter().enumerate() {
-        let label = step_label(step);
-        match runner.exec(step, &mut shots) {
-            Ok(detail) => steps.push(StepResult {
-                index,
-                step: label,
-                ok: true,
-                detail,
-                error: None,
-                failure_bundle: None,
-            }),
-            Err(e) => {
-                let bundle = write_failure_bundle(
-                    out_dir,
-                    &scene_name,
-                    index,
-                    "headless",
-                    &e,
-                    runner.app_state(),
-                    Some(&mut runner),
-                );
-                steps.push(StepResult {
-                    index,
+    let mut index = 0usize;
+    let mut runner = None;
+    for size in &size_matrix {
+        let suffix = is_matrix.then(|| format!("-{}x{}", size[0] as i64, size[1] as i64));
+        let size_label = suffix
+            .as_ref()
+            .map(|_| format!("[{}x{}] ", size[0] as i64, size[1] as i64))
+            .unwrap_or_default();
+        let mut h = PlexiUiHarness::new_sized(size[0], size[1]);
+        h.step();
+        let pass = runner.insert(HeadlessBackend {
+            h,
+            last_app_pane: None,
+            handles: PaneHandles::default(),
+            out_dir: out_dir.to_path_buf(),
+            no_shots,
+            shot_suffix: suffix,
+        });
+
+        for step in &scene.steps {
+            let label = format!("{size_label}{}", step_label(step));
+            let result = pass.exec(step, &mut shots);
+            index += 1;
+            match result {
+                Ok(detail) => steps.push(StepResult {
+                    index: index - 1,
                     step: label,
-                    ok: false,
-                    detail: None,
-                    error: Some(e),
-                    failure_bundle: Some(bundle),
-                });
-                passed = false;
-                break;
+                    ok: true,
+                    detail,
+                    error: None,
+                    failure_bundle: None,
+                }),
+                Err(e) => {
+                    let bundle = write_failure_bundle(
+                        out_dir,
+                        &scene_name,
+                        index - 1,
+                        "headless",
+                        &e,
+                        pass.app_state(),
+                        Some(pass),
+                    );
+                    steps.push(StepResult {
+                        index: index - 1,
+                        step: label,
+                        ok: false,
+                        detail: None,
+                        error: Some(e),
+                        failure_bundle: Some(bundle),
+                    });
+                    passed = false;
+                    break;
+                }
             }
         }
+        if !passed {
+            break;
+        }
     }
+    // The matrix always runs at least one pass, so a runner exists here.
+    let runner = runner.expect("a scene runs at least one size pass");
 
     let failure_bundle = steps.iter().find_map(|step| step.failure_bundle.clone());
     let report = SceneReport {
@@ -2390,7 +2445,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drop-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::app_protocol::AppRequest::DropFile {
+                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DropFile {
                         pane_id,
                         path_or_url: drop_file.value.clone(),
                         response_file: response.to_string_lossy().into_owned(),
@@ -2425,7 +2480,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drag-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::app_protocol::AppRequest::DragPane {
+                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DragPane {
                         pane_id,
                         from: drag.from,
                         from_node: drag.from_node.clone(),
@@ -2507,11 +2562,11 @@ impl HeadlessBackend {
                             source_window_id: 0,
                             title,
                             body,
-                            kind: crate::app_protocol::NotifyKind::Message,
+                            kind: crate::protocol::NotifyKind::Message,
                             options: Vec::new(),
                             input_prompt: None,
                             required: false,
-                            scope: crate::app_protocol::NotifyScope::Global,
+                            scope: crate::protocol::NotifyScope::Global,
                             image_inline: None,
                             image_pipe_id: None,
                             response_file: None,
@@ -2593,7 +2648,18 @@ impl HeadlessBackend {
                         message: "skipped (no-shots)".to_string(),
                     }));
                 }
-                let path = self.out_dir.join(shot);
+                let name = match &self.shot_suffix {
+                    Some(suffix) => {
+                        let path = Path::new(shot);
+                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                        match path.extension() {
+                            Some(ext) => format!("{stem}{suffix}.{}", ext.to_string_lossy()),
+                            None => format!("{stem}{suffix}"),
+                        }
+                    }
+                    None => shot.clone(),
+                };
+                let path = self.out_dir.join(name);
                 self.h
                     .save_screenshot(&path.to_string_lossy())
                     .map_err(|error| {

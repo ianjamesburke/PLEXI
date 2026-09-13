@@ -7,7 +7,7 @@
 //! is conceptually one feature, not a scattering of unrelated cases.
 
 use super::PlexiApp;
-use crate::app_protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
+use crate::protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
 use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;

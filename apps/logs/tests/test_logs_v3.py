@@ -1,13 +1,8 @@
 import importlib.util
-import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
-SDK = ROOT / "sdk" / "python"
 APP = ROOT / "apps" / "logs" / "logs.py"
-
-sys.path.insert(0, str(SDK))
 
 
 def _load_app_module():

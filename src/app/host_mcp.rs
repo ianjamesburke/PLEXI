@@ -226,7 +226,6 @@ fn load_identity(config_dir: &Path) -> Option<HostMcpIdentity> {
 /// next launch rolls the endpoint, so it is logged rather than propagated.
 fn save_identity(config_dir: &Path, port: u16) {
     let path = identity_path(config_dir);
-    let tmp = path.with_extension("json.tmp");
     let body = match serde_json::to_vec_pretty(&HostMcpIdentity { port }) {
         Ok(b) => b,
         Err(e) => {
@@ -234,17 +233,8 @@ fn save_identity(config_dir: &Path, port: u16) {
             return;
         }
     };
-    if let Err(e) = std::fs::write(&tmp, &body) {
-        log::warn!("host_mcp: could not write {}: {e}", tmp.display());
-        return;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        log::warn!("host_mcp: could not finalize {}: {e}", path.display());
+    if let Err(e) = crate::platform::fs::atomic_write_with_mode(&path, &body, 0o600) {
+        log::warn!("host_mcp: could not write {}: {e}", path.display());
     }
 }
 
@@ -473,10 +463,10 @@ fn tool_subscribe_and_wait(
         }
     };
     let payload_mode = match args.get("payload").and_then(|v| v.as_str()) {
-        Some("off") => crate::app_protocol::PayloadMode::Off,
-        Some("summary") => crate::app_protocol::PayloadMode::Summary,
-        Some("state_ref") => crate::app_protocol::PayloadMode::StateRef,
-        _ => crate::app_protocol::PayloadMode::Full,
+        Some("off") => crate::protocol::PayloadMode::Off,
+        Some("summary") => crate::protocol::PayloadMode::Summary,
+        Some("state_ref") => crate::protocol::PayloadMode::StateRef,
+        _ => crate::protocol::PayloadMode::Full,
     };
     let timeout_secs = args
         .get("timeout_secs")
@@ -496,7 +486,7 @@ fn tool_subscribe_and_wait(
         publisher_app_id: app_id.clone(),
         event_names,
         payload_mode,
-        trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+        trigger_mode: crate::protocol::TriggerMode::Conversation,
         resource_id: None,
         from_pane_id: Some(caller.pane_id),
         subscriber_override: Some(delivery_id),
@@ -762,7 +752,7 @@ mod tests {
 
     #[test]
     fn pane_credential_lists_and_calls_only_context_app_tools() {
-        use crate::app_protocol::{AiTool, PlexiEvent};
+        use crate::protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
 
         let (port, _test_token) = start_test_server(None);
@@ -844,13 +834,7 @@ mod tests {
             assert_eq!(name, "echo");
             assert_eq!(input_json, r#"{"value":7}"#);
             assert_eq!(caller_id, "mcp:pane:7001");
-            tool_dispatch::resolve_pending(
-                &call_id,
-                ToolCallResult {
-                    output_json: Some(r#"{"echo":7}"#.to_string()),
-                    error: None,
-                },
-            );
+            tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"echo":7}"#));
         });
         let (status, body) = post(
             port,
@@ -882,7 +866,7 @@ mod tests {
     /// tool returns the event.
     #[test]
     fn subscribe_and_wait_delivers_emitted_event() {
-        use crate::app_protocol::{AppEventActor, EventStreamDecl};
+        use crate::protocol::{AppEventActor, EventStreamDecl};
         use crate::host::app_timeline::EmittedEvent;
         let app = "mcp-it-app";
         let stream = "it.tick";

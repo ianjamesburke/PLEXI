@@ -23,6 +23,19 @@ pub(crate) fn shortcut_hint_label(text: &str, colors: &Colors) -> egui::RichText
         .color(shortcut_label_color(colors))
 }
 
+/// Size of one key chip around an already-laid-out label. The width floors at
+/// the chip height, so a single glyph stays square rather than reading as a
+/// sliver, and again at `KEYCHIP_MIN_W`. Every measure and paint site — the
+/// live kit, the app chrome footer, and the headless renderer — goes through
+/// here so the three can never drift apart again.
+pub(crate) fn chip_size(text_size: Vec2) -> Vec2 {
+    let h = text_size.y + style::KEYCHIP_PAD_V * 2.0;
+    let w = (text_size.x + style::KEYCHIP_PAD_H * 2.0)
+        .max(h)
+        .max(style::KEYCHIP_MIN_W);
+    Vec2::new(w, h)
+}
+
 pub(crate) fn key_chip(
     ui: &mut egui::Ui,
     label: &str,
@@ -32,12 +45,8 @@ pub(crate) fn key_chip(
     let fg = shortcut_key_color(colors);
     let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), font_id, fg));
     let text_w = galley.size().x;
-    let text_h = galley.size().y;
-    let chip_h = text_h + style::KEYCHIP_PAD_V * 2.0;
-    let chip_w = (text_w + style::KEYCHIP_PAD_H * 2.0)
-        .max(chip_h)
-        .max(style::KEYCHIP_MIN_W);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(chip_w, chip_h), egui::Sense::hover());
+    let size = chip_size(galley.size());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
     let text_pos = Pos2::new(
@@ -114,14 +123,8 @@ pub(crate) fn key_chip_painted(
     let fg = shortcut_key_color(colors);
     let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), combo_chip_font(), fg));
     let text_w = galley.size().x;
-    let chip_h = galley.size().y + style::KEYCHIP_PAD_V * 2.0;
-    let chip_w = (text_w + style::KEYCHIP_PAD_H * 2.0)
-        .max(chip_h)
-        .max(style::KEYCHIP_MIN_W);
-    let rect = egui::Rect::from_min_size(
-        Pos2::new(left, center_y - chip_h / 2.0),
-        Vec2::new(chip_w, chip_h),
-    );
+    let size = chip_size(galley.size());
+    let rect = egui::Rect::from_min_size(Pos2::new(left, center_y - size.y / 2.0), size);
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
     let text_pos = Pos2::new(
@@ -129,7 +132,7 @@ pub(crate) fn key_chip_painted(
         rect.min.y + style::KEYCHIP_PAD_V,
     );
     crate::ui::snap::galley_snapped(painter, text_pos, galley, fg);
-    chip_w
+    size.x
 }
 
 /// Paint a whole key combo starting at `left`, centered on `center_y`.
@@ -165,7 +168,7 @@ pub(crate) fn key_combo_list_width(
     trailing: Option<&str>,
 ) -> f32 {
     let measure = |text: &str, font: egui::FontId| {
-        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE))
+        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER))
             .size()
     };
     let mut w = 0.0;
@@ -177,11 +180,7 @@ pub(crate) fn key_combo_list_width(
             if j > 0 {
                 w += style::KEYCHIP_GAP;
             }
-            let size = measure(key, combo_chip_font());
-            let chip_h = size.y + style::KEYCHIP_PAD_V * 2.0;
-            w += (size.x + style::KEYCHIP_PAD_H * 2.0)
-                .max(chip_h)
-                .max(style::KEYCHIP_MIN_W);
+            w += chip_size(measure(key, combo_chip_font())).x;
         }
     }
     if let Some(text) = trailing {

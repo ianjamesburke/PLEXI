@@ -29,7 +29,7 @@
 //! steady-state count of concurrent visible notifications is small.
 
 use crate::app::{PendingNotification, PlexiApp};
-use crate::app_protocol::NotificationImage;
+use crate::protocol::NotificationImage;
 use base64::Engine;
 use egui::{ColorImage, Context, TextureOptions};
 
@@ -208,7 +208,7 @@ mod tests {
     //! The full render-path test (texture load + size assertion) lives in
     //! `notification_panel_tests` once we have an egui harness; for now the
     //! plain-data assertions here plus the wire-format tests in
-    //! `app_protocol::tests` give end-to-end coverage of the new wire shape
+    //! `protocol::commands` tests give end-to-end coverage of the new wire shape
     //! and the cap-enforcement contract.
     use super::*;
 

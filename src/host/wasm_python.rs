@@ -482,7 +482,7 @@ static CPYTHON_MODULE_CACHE: LazyLock<Mutex<HashMap<PathBuf, (WasmtimeEngine, Mo
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String> {
-    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let key = crate::platform::path::canonical_or_self(path);
     let mut cache = CPYTHON_MODULE_CACHE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -674,12 +674,25 @@ fn python_init_payload(
     state: Value,
     size: (f32, f32),
 ) -> Value {
+    // Same wire shape the live pane sends: state is always scope-keyed, never
+    // a flat `state` key. `state` here seeds only the app's default scope.
+    let default_scope = config
+        .state_scopes
+        .first()
+        .copied()
+        .unwrap_or(crate::host::state_scope::StateScope::Global);
+    let scope_names: Vec<&'static str> = config
+        .state_scopes
+        .iter()
+        .map(|scope| scope.as_str())
+        .collect();
     json!({
         "type": "init",
         "app_id": config.app_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
-        "state": state,
+        "states": { default_scope.as_str(): state },
+        "state_scopes": scope_names,
         "theme": config.theme,
         "args": config.launch_args,
         "size": [size.0, size.1],
@@ -688,9 +701,9 @@ fn python_init_payload(
 
 fn cache_python_theme_for_relaunch(
     config: &mut PythonLaunchConfig,
-    event: &crate::app_protocol::PlexiEvent,
+    event: &crate::protocol::PlexiEvent,
 ) {
-    if let crate::app_protocol::PlexiEvent::Theme { colors } = event {
+    if let crate::protocol::PlexiEvent::Theme { colors } = event {
         config.theme.clone_from(colors);
     }
 }
@@ -1700,27 +1713,16 @@ struct ScopeState {
     error: Option<String>,
 }
 
-/// Resolve one declared scope to its state file, against the pane's context
-/// root *at call time*. The host owns path construction — see
-/// `crate::host::state_scope` for the two rules. Validates the app id.
-fn python_state_path(
-    app_id: &str,
-    scope: crate::host::state_scope::StateScope,
-    format: crate::host::state_scope::StateFormat,
-    context_root: &Path,
-) -> Result<PathBuf, String> {
-    crate::host::state_scope::state_file(scope, app_id, format, context_root)
-}
-
-#[cfg(test)]
+/// Name a JSON value's kind for a user-facing "expected an object, got X"
+/// message. Article-prefixed so it reads inside a sentence.
 fn json_value_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        Value::Bool(_) => "a bool",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 #[cfg(test)]
@@ -1754,14 +1756,7 @@ fn encode_state_file(
             Some(Value::String(document)) => Ok(document.as_bytes().to_vec()),
             Some(other) => Err(format!(
                 "markdown state requires a string 'document' value, got {}",
-                match other {
-                    Value::Null => "null",
-                    Value::Bool(_) => "a bool",
-                    Value::Number(_) => "a number",
-                    Value::Array(_) => "an array",
-                    Value::Object(_) => "an object",
-                    Value::String(_) => unreachable!(),
-                }
+                json_value_kind(other)
             )),
             None => {
                 Err("markdown state requires a 'document' key carrying the file text".to_string())
@@ -1782,14 +1777,7 @@ pub(crate) fn decode_state_file(
                 Ok(Value::Object(state)) => Ok(state),
                 Ok(other) => Err(format!(
                     "state file is not a JSON object (got {})",
-                    match other {
-                        Value::Null => "null",
-                        Value::Bool(_) => "a bool",
-                        Value::Number(_) => "a number",
-                        Value::String(_) => "a string",
-                        Value::Array(_) => "an array",
-                        Value::Object(_) => unreachable!(),
-                    }
+                    json_value_kind(&other)
                 )),
                 Err(error) => Err(format!("parse state JSON: {error}")),
             }
@@ -1875,8 +1863,13 @@ fn load_python_state(
         .first()
         .copied()
         .unwrap_or(crate::host::state_scope::StateScope::Global);
-    let path = python_state_path(&config.app_id, scope, config.state_format, &config.context_root)
-        .expect("resolve state path");
+    let path = crate::host::state_scope::state_file(
+        scope,
+        &config.app_id,
+        config.state_format,
+        &config.context_root,
+    )
+    .expect("resolve state path");
     match read_python_state_bytes(&path)? {
         Some(bytes) => parse_python_state(&path, &bytes),
         None => Ok(serde_json::Map::new()),
@@ -1939,9 +1932,9 @@ fn load_python_states(
         .state_scopes
         .iter()
         .map(|&scope| {
-            let state = match python_state_path(
-                &config.app_id,
+            let state = match crate::host::state_scope::state_file(
                 scope,
+                &config.app_id,
                 config.state_format,
                 &config.context_root,
             ) {
@@ -2354,7 +2347,6 @@ impl LivePythonPane {
                 "type": "init", "app_id": self.app_id,
                 "workspace_root": self.config.workspace_root,
                 "capabilities": self.config.capabilities,
-                "state": self.default_scope_state(),
                 "states": self.states_json(),
                 "state_scopes": self.scope_names(),
                 "theme": {},
@@ -2638,14 +2630,14 @@ impl LivePythonPane {
                             self.app_id
                         );
                         self.queue_outbound_event(
-                            crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                            crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                         );
                     } else {
                         let paths = granted
                             .iter()
                             .map(|path| path.display().to_string())
                             .collect();
-                        self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePicked {
+                        self.queue_outbound_event(crate::protocol::PlexiEvent::FilePicked {
                             request_id,
                             paths,
                         });
@@ -2654,7 +2646,7 @@ impl LivePythonPane {
                 crate::host::services::FilePickOutcome::Cancelled => {
                     log::info!("app::{}: file pick {request_id} cancelled", self.app_id);
                     self.queue_outbound_event(
-                        crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                     );
                 }
             }
@@ -2906,7 +2898,7 @@ impl LivePythonPane {
                 "app::{}: open_file_picker missing request_id; cancelling",
                 self.app_id
             );
-            self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePickCancelled {
+            self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
             });
             return;
@@ -2916,7 +2908,7 @@ impl LivePythonPane {
                 "app::{}: open_file_picker {request_id} denied: missing capability fs.pick",
                 self.app_id
             );
-            self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePickCancelled {
+            self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
             });
             return;
@@ -2937,7 +2929,7 @@ impl LivePythonPane {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let mode = match message.get("mode") {
-            None | Some(Value::Null) => crate::app_protocol::FilePickerMode::default(),
+            None | Some(Value::Null) => crate::protocol::FilePickerMode::default(),
             Some(value) => match serde_json::from_value(value.clone()) {
                 Ok(mode) => mode,
                 Err(error) => {
@@ -2946,7 +2938,7 @@ impl LivePythonPane {
                         self.app_id
                     );
                     self.queue_outbound_event(
-                        crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                     );
                     return;
                 }
@@ -3359,13 +3351,6 @@ impl LivePythonPane {
             .collect()
     }
 
-    fn default_scope_state(&self) -> serde_json::Map<String, Value> {
-        self.persisted_states
-            .get(&self.default_scope())
-            .map(|state| state.values.clone())
-            .unwrap_or_default()
-    }
-
     fn states_json(&self) -> Value {
         Value::Object(
             self.config
@@ -3394,9 +3379,9 @@ impl LivePythonPane {
             .state_scopes
             .iter()
             .filter_map(|&scope| {
-                match python_state_path(
-                    &self.app_id,
+                match crate::host::state_scope::state_file(
                     scope,
+                    &self.app_id,
                     self.config.state_format,
                     &self.context_root,
                 ) {
@@ -3450,9 +3435,9 @@ impl LivePythonPane {
             );
             return;
         }
-        let path = match python_state_path(
-            &self.app_id,
+        let path = match crate::host::state_scope::state_file(
             scope,
+            &self.app_id,
             self.config.state_format,
             &self.context_root,
         ) {
@@ -3554,9 +3539,9 @@ impl LivePythonPane {
             );
             return;
         }
-        let path = match python_state_path(
-            &self.app_id,
+        let path = match crate::host::state_scope::state_file(
             scope,
+            &self.app_id,
             self.config.state_format,
             &self.context_root,
         ) {
@@ -3629,7 +3614,7 @@ impl LivePythonPane {
                 );
             }
         }
-        match crate::host::state_scope::atomic_write(&path, &bytes) {
+        match crate::platform::fs::atomic_write(&path, &bytes) {
             Ok(()) => {
                 // Re-stat AFTER the rename so the cached identity is the
                 // file we just produced — statting before the rename would
@@ -3737,7 +3722,7 @@ impl LivePythonPane {
         self.wants_close
     }
 
-    pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+    pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         cache_python_theme_for_relaunch(&mut self.config, &event);
         match encode_python_host_event(event) {
             Ok(value) => {
@@ -3921,7 +3906,7 @@ impl LivePythonPane {
 }
 
 fn encode_python_host_event(
-    event: crate::app_protocol::PlexiEvent,
+    event: crate::protocol::PlexiEvent,
 ) -> Result<Value, serde_json::Error> {
     serde_json::to_value(event)
 }
@@ -4510,7 +4495,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .iter()
                 .map(|stream| {
                     let schema_json = stream.get("schema_json")?.as_str()?;
-                    Some(crate::app_protocol::EventStreamDecl {
+                    Some(crate::protocol::EventStreamDecl {
                         name: stream.get("name")?.as_str()?.to_string(),
                         schema: serde_json::from_str(schema_json).ok()?,
                         description: stream
@@ -4521,7 +4506,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 })
                 .collect::<Option<Vec<_>>>()?;
             Some(AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::DeclareEventStreams { streams },
+                request: crate::protocol::AppRequest::DeclareEventStreams { streams },
                 pane_id: None,
             })
         }
@@ -4543,7 +4528,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .transpose()
                 .ok()?;
             Some(AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::EmitEvent {
+                request: crate::protocol::AppRequest::EmitEvent {
                     event: text("event"),
                     actor,
                     actor_id: message
@@ -4591,7 +4576,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             })
         }
         "subscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::app_protocol::AppRequest::SubscribeAppEvents {
+            request: crate::protocol::AppRequest::SubscribeAppEvents {
                 request_id: text("request_id"),
                 app_id: text("app_id"),
                 event_names: message
@@ -4615,13 +4600,12 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             pane_id: None,
         }),
         "unsubscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::app_protocol::AppRequest::UnsubscribeAppEvents {
+            request: crate::protocol::AppRequest::UnsubscribeAppEvents {
                 request_id: text("request_id"),
                 subscription_id: text("subscription_id"),
             },
             pane_id: None,
         }),
-        "notify" => Some(AppCommand::Notify(text("message"))),
         "spawn_app" => Some(AppCommand::SpawnApp {
             type_id: text("app_id"),
             layout: message
@@ -4639,7 +4623,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             target_context: None,
         }),
         "focus_pane" => Some(AppCommand::ForwardPaneRequest {
-            request: crate::app_protocol::AppRequest::FocusPane {
+            request: crate::protocol::AppRequest::FocusPane {
                 pane_id: message
                     .get("pane_id")
                     .and_then(Value::as_u64)
@@ -4661,7 +4645,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
         }),
         "run_update" => Some(AppCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),
-            event: crate::app_protocol::PlexiEvent::Resume,
+            event: crate::protocol::PlexiEvent::Resume,
         }),
         "show_notification" => Some(AppCommand::ShowNotification {
             notify_id: text("notify_id"),
@@ -4669,13 +4653,13 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             source_context_id: 0,
             title: text("title"),
             body: text("body"),
-            kind: crate::app_protocol::NotifyKind::Message,
+            kind: crate::protocol::NotifyKind::Message,
             options: Vec::new(),
             input_prompt: None,
             required: false,
             // The bridge message carries no scope, so it takes the shared
             // default rather than an invented one.
-            scope: crate::app_protocol::NotifyScope::default(),
+            scope: crate::protocol::NotifyScope::default(),
             image_inline: None,
             image_pipe_id: None,
             timeout_secs: None,
@@ -4688,7 +4672,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
             path: text("path"),
-            mode: crate::app_protocol::PathTokenMode::Append,
+            mode: crate::protocol::PathTokenMode::Append,
         }),
         "command_preview" => Some(AppCommand::RequestCommandPreview {
             sender_pane_id: 0,
@@ -4879,7 +4863,7 @@ fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<()
             function: "view",
             message: source.to_string(),
         })?;
-    if !ui_tree_contains_text(&tree, expected_view_text) {
+    if !tree.visible_text().contains(expected_view_text) {
         return Err(WasmPythonError::ShimLifecycleCallFailure {
             path: path.to_path_buf(),
             function: "view",
@@ -4914,16 +4898,6 @@ fn is_core_wasm_module(path: &Path) -> bool {
 fn grants_with_state(mut grants: Grants) -> Grants {
     grants.state = true;
     grants
-}
-
-#[cfg(test)]
-fn ui_tree_contains_text(tree: &UiTree, needle: &str) -> bool {
-    tree.nodes.iter().any(|node| {
-        matches!(
-            &node.data,
-            UiNodeData::Text(text) if text.text.contains(needle)
-        )
-    })
 }
 
 #[derive(Debug, Clone)]
@@ -5884,7 +5858,7 @@ mod tests {
 
     /// Test-only convenience: resolve the state path this fixture's single
     /// declared scope (`Context`, see `state_test_config`) addresses. Real
-    /// callers use `python_state_path(app_id, scope, context_root)` directly
+    /// callers use `state_scope::state_file` directly
     /// once they have resolved which scope they mean; tests here only ever
     /// care about "the one scope this config declares".
     fn python_state_path_for_config(config: &PythonLaunchConfig) -> PathBuf {
@@ -5893,13 +5867,29 @@ mod tests {
             .first()
             .copied()
             .unwrap_or(crate::host::state_scope::StateScope::Global);
-        super::python_state_path(
-            &config.app_id,
+        crate::host::state_scope::state_file(
             scope,
+            &config.app_id,
             config.state_format,
             &config.context_root,
         )
         .expect("resolve state path")
+    }
+
+    #[test]
+    fn python_init_payload_carries_scoped_states_not_a_flat_state() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "test.scoped-init");
+
+        let payload = python_init_payload(&config, json!({"count": 41}), (480.0, 320.0));
+
+        // `state_test_config` declares exactly one scope: Context.
+        assert_eq!(payload["states"], json!({ "context": { "count": 41 } }));
+        assert_eq!(payload["state_scopes"], json!(["context"]));
+        assert!(
+            payload.get("state").is_none(),
+            "init must not carry a flat `state` key: {payload}"
+        );
     }
 
     #[test]
@@ -5932,7 +5922,7 @@ mod tests {
 
         cache_python_theme_for_relaunch(
             &mut config,
-            &crate::app_protocol::PlexiEvent::Theme {
+            &crate::protocol::PlexiEvent::Theme {
                 colors: colors.clone(),
             },
         );
@@ -5973,7 +5963,7 @@ mod tests {
         first_state.insert("items".to_string(), json!(["buy milk"]));
         let path = python_state_path_for_config(&first);
         std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
-        crate::host::state_scope::atomic_write(
+        crate::platform::fs::atomic_write(
             &path,
             &serde_json::to_vec_pretty(&first_state).expect("serialize"),
         )
@@ -5985,7 +5975,7 @@ mod tests {
 
         // The second instance persists anything at all — a draft keystroke is
         // enough — and writes the empty item list it has held since launch.
-        crate::host::state_scope::atomic_write(
+        crate::platform::fs::atomic_write(
             &path,
             &serde_json::to_vec_pretty(&second_state).expect("serialize"),
         )
@@ -6013,7 +6003,8 @@ mod tests {
 
         let path_a = python_state_path_for_config(&under_a);
         std::fs::create_dir_all(path_a.parent().expect("state parent")).expect("mkdir");
-        crate::host::state_scope::atomic_write(&path_a, br#"{"items":["buy milk"]}"#).expect("persist under A");
+        crate::platform::fs::atomic_write(&path_a, br#"{"items":["buy milk"]}"#)
+            .expect("persist under A");
 
         assert_eq!(
             load_python_state(&under_a).expect("load under A")["items"],
@@ -6123,7 +6114,7 @@ mod tests {
 
         fn seed_items(address: &Path, items: &serde_json::Value) {
             std::fs::create_dir_all(address.parent().expect("state parent")).expect("mkdir");
-            crate::host::state_scope::atomic_write(
+            crate::platform::fs::atomic_write(
                 address,
                 &serde_json::to_vec_pretty(&serde_json::json!({ "items": items }))
                     .expect("serialize"),
@@ -6318,7 +6309,7 @@ mod tests {
         let path = workspace.path().join("todo.json");
         std::fs::write(&path, br#"{"version":"old"}"#).expect("seed");
 
-        crate::host::state_scope::atomic_write(&path, br#"{"version":"new"}"#).expect("atomic replace");
+        crate::platform::fs::atomic_write(&path, br#"{"version":"new"}"#).expect("atomic replace");
 
         assert_eq!(
             std::fs::read(&path).expect("state"),
@@ -7877,13 +7868,13 @@ mod tests {
 
     #[test]
     fn python_host_event_wire_delivers_cross_runtime_app_events() {
-        let wire = encode_python_host_event(crate::app_protocol::PlexiEvent::AppEvent {
+        let wire = encode_python_host_event(crate::protocol::PlexiEvent::AppEvent {
             subscription_id: "sub-1".to_string(),
             app_id: "wasm-counter".to_string(),
             event: "count.changed".to_string(),
             event_id: 7,
             resource_id: "counter-1".to_string(),
-            trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+            trigger_mode: crate::protocol::TriggerMode::Conversation,
             summary: Some("Count changed".to_string()),
             payload: Some(json!({"count": 2})),
             state_ref: None,
@@ -7912,7 +7903,7 @@ mod tests {
         assert!(matches!(
             subscribe,
             crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::SubscribeAppEvents {
+                request: crate::protocol::AppRequest::SubscribeAppEvents {
                     request_id,
                     app_id,
                     event_names,
@@ -7938,7 +7929,7 @@ mod tests {
         assert!(matches!(
             emit,
             crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::EmitEvent {
+                request: crate::protocol::AppRequest::EmitEvent {
                     event,
                     payload: Some(payload),
                     ..
@@ -8911,17 +8902,6 @@ mod tests {
         );
     }
 
-    fn tree_text(tree: &UiTree) -> String {
-        tree.nodes
-            .iter()
-            .filter_map(|node| match &node.data {
-                UiNodeData::Text(text) => Some(text.text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     #[test]
     fn manifest_python_compat_routes_to_launch_config() {
         let dir = tempdir().expect("tempdir");
@@ -9112,7 +9092,7 @@ execution = "cloud"
             Effect::SetTitle(title) if title == "Python Shim POC"
         ));
         let view = app.view().expect("shim view");
-        assert!(tree_text(&view).contains("Count: 0"));
+        assert!(view.visible_text().contains("Count: 0"));
 
         let update = app
             .update(&InputEvent::UiAction(UiActionEvent {
@@ -9121,7 +9101,7 @@ execution = "cloud"
             .expect("shim update");
         assert!(update.is_empty());
         let view = app.view().expect("updated shim view");
-        assert!(tree_text(&view).contains("Count: 1"));
+        assert!(view.visible_text().contains("Count: 1"));
     }
 
     #[test]

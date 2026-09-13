@@ -353,7 +353,7 @@ mod tests {
         arm_delay();
 
         // First replacement (new inode).
-        crate::host::state_scope::atomic_write(&file, b"{\"v\":1}\n").unwrap();
+        crate::platform::fs::atomic_write(&file, b"{\"v\":1}\n").unwrap();
         let first = poll_for_notice(&rx, Duration::from_secs(3));
         assert!(first.is_some(), "first atomic replacement must fire");
         // Drain any stragglers from the first burst before the second write.
@@ -364,7 +364,7 @@ mod tests {
 
         // Second replacement — a single-file watch would be dead by now
         // because the first rename replaced the watched inode.
-        crate::host::state_scope::atomic_write(&file, b"{\"v\":2}\n").unwrap();
+        crate::platform::fs::atomic_write(&file, b"{\"v\":2}\n").unwrap();
         let second = poll_for_notice(&rx, Duration::from_secs(3));
         assert_eq!(
             second,

@@ -49,12 +49,12 @@ impl FileEventSink {
         // is live, even before the first AppRequest fires).
         if let Some(writer) = sink.writer.as_mut() {
             use std::io::Write;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let now = crate::platform::clock::now_secs();
             let line = format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now}}}\n");
-            if let Err(e) = writer.write_all(line.as_bytes()).and_then(|()| writer.flush()) {
+            if let Err(e) = writer
+                .write_all(line.as_bytes())
+                .and_then(|()| writer.flush())
+            {
                 log::debug!(
                     "FileEventSink: startup heartbeat write({}) failed: {e}",
                     sink.path.display()
@@ -276,7 +276,7 @@ pub struct FilePickRequest {
     pub filter: Vec<String>,
     /// Allow selecting more than one file (`Open` mode only).
     pub multiple: bool,
-    pub mode: crate::app_protocol::FilePickerMode,
+    pub mode: crate::protocol::FilePickerMode,
 }
 
 /// What the picker resolved to. `Picked` paths are exactly what the dialog
@@ -305,7 +305,7 @@ pub struct RfdPickerService;
 
 impl PickerService for RfdPickerService {
     fn pick(&self, request: &FilePickRequest) -> FilePickOutcome {
-        use crate::app_protocol::FilePickerMode;
+        use crate::protocol::FilePickerMode;
         let mut dialog = rfd::AsyncFileDialog::new();
         if !request.filter.is_empty() && request.mode != FilePickerMode::Folder {
             let extensions: Vec<&str> = request.filter.iter().map(String::as_str).collect();
@@ -521,7 +521,7 @@ impl Default for HostServices {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_protocol::FilePickerMode;
+    use crate::protocol::FilePickerMode;
 
     fn any_request() -> FilePickRequest {
         FilePickRequest {

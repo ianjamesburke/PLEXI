@@ -22,7 +22,7 @@ use crate::ui::style;
 use crate::ui::text_field::TextArea;
 use crate::ui::theme::Colors;
 
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 use crate::broker::Decision;
 
 use super::commands;
@@ -42,15 +42,6 @@ pub enum ComposerEvent {
     Permission(PermissionChoice),
     /// Enter pressed in an open picker/manager overlay: apply the selection.
     OverlayConfirm,
-}
-
-/// Row label for a model tier.
-fn model_tier_label(tier: ModelTier) -> &'static str {
-    match tier {
-        ModelTier::Low => "low",
-        ModelTier::Medium => "medium",
-        ModelTier::High => "high",
-    }
 }
 
 /// Row label for a permission decision — "block" reads clearer than "deny" in
@@ -1266,7 +1257,7 @@ impl AssistantRenderer {
     ) {
         Self::overlay_section_label(ui, colors, "Model tier");
         for (i, tier) in tiers.iter().enumerate() {
-            let mut row = ListRow::new(model_tier_label(*tier)).selected(i == selected);
+            let mut row = ListRow::new(tier.as_str()).selected(i == selected);
             if *tier == current_tier {
                 row = row.chip("current");
             }

@@ -5,7 +5,7 @@
 //! shell (`AssistantApp`) executes them.
 
 use super::commands::{self, ParsedCommand};
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 use crate::plexi_ai::broker::ReasoningEffort;
 
 /// Who produced a transcript row.
@@ -1612,7 +1612,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![AssistantEffect::SetSessionModel(
-                crate::app_protocol::ModelTier::High
+                crate::protocol::ModelTier::High
             )]
         );
     }

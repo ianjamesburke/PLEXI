@@ -139,17 +139,13 @@ fn take_response(path: &Path) -> Result<Vec<u8>, PollError> {
 /// never reads a partial file. Returns whether the write landed; failure is
 /// logged here — the response-file name identifies the request kind.
 pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
-    let temp_file = format!("{response_file}.tmp");
-    if let Err(e) = std::fs::write(&temp_file, body) {
-        log::error!("rpc: could not write temp response file {temp_file:?}: {e}");
-        return false;
+    match crate::platform::fs::atomic_write(Path::new(response_file), body) {
+        Ok(()) => true,
+        Err(e) => {
+            log::error!("rpc: could not write response file {response_file:?}: {e}");
+            false
+        }
     }
-    if let Err(e) = std::fs::rename(&temp_file, response_file) {
-        log::error!("rpc: could not rename temp response file to {response_file:?}: {e}");
-        let _ = std::fs::remove_file(&temp_file);
-        return false;
-    }
-    true
 }
 
 /// `write_response` for a JSON value.

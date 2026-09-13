@@ -55,7 +55,7 @@ def _init_app(proc, state=None, capabilities=None, protocol="pgap/3"):
     if protocol is not None:
         msg["protocol"] = protocol
     if state is not None:
-        msg["state"] = state
+        msg["states"] = {"global": state}
     proc.stdin.write(json.dumps(msg) + "\n")
     proc.stdin.flush()
     return _collect_until(proc, "ready")

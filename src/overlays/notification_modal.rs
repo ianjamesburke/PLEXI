@@ -66,7 +66,7 @@ fn draw_notification_image(
 impl PlexiApp {
     pub(crate) fn draw_notification_modal(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         use crate::app::notification_image;
-        use crate::app_protocol::NotifyKind;
+        use crate::protocol::NotifyKind;
 
         let mut cmds: Vec<AppCommand> = Vec::new();
 
@@ -743,7 +743,7 @@ impl PlexiApp {
         &mut self,
         input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
-        use crate::app_protocol::NotifyKind;
+        use crate::protocol::NotifyKind;
         let shortcuts_blocked = self
             .current_notify_id
             .as_ref()

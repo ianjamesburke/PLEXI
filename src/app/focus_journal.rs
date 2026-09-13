@@ -34,16 +34,8 @@ pub(crate) fn write_checkpoint(path: &Path, entry: &FocusJournalEntry) {
             return;
         }
     };
-    let tmp = path.with_extension("jsonl.tmp");
-    if let Err(e) = std::fs::write(&tmp, format!("{json}\n")) {
-        log::warn!(
-            "focus_journal: failed to write tmp checkpoint {:?}: {e}",
-            tmp
-        );
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        log::warn!("focus_journal: failed to rename checkpoint {:?}: {e}", path);
+    if let Err(e) = crate::platform::fs::atomic_write(path, format!("{json}\n").as_bytes()) {
+        log::warn!("focus_journal: failed to write checkpoint {:?}: {e}", path);
     }
 }
 
@@ -90,10 +82,7 @@ pub(crate) fn recover_from_focus_journal(path: &Path) {
     // Compute duration from started_at to now.
     let duration_secs = parse_iso_to_unix(&entry.started_at)
         .map(|started_unix| {
-            let now_unix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let now_unix = crate::platform::clock::now_secs();
             now_unix.saturating_sub(started_unix)
         })
         .unwrap_or(0);

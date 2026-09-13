@@ -40,6 +40,28 @@ pub(crate) fn file_icon_kind(entry: &Entry) -> FileIconKind {
     }
 }
 
+/// Glyph color for one file kind, derived from the live theme.
+///
+/// Every kind resolves to a semantic role, or to a blend of two roles where
+/// the icon set needs a hue the palette has no name for. The blends land on
+/// the Catppuccin-mocha values the icons used to hardcode when the theme is
+/// mocha, and track the user's `[theme]` overrides everywhere else.
+fn icon_color(kind: &FileIconKind, colors: &Colors) -> Color32 {
+    match kind {
+        FileIconKind::Image => colors.accent,
+        FileIconKind::Audio => colors.success,
+        FileIconKind::Markdown | FileIconKind::Text => colors.warning,
+        // Teal: between the accent and the success green.
+        FileIconKind::Code => colors.accent.lerp_to_gamma(colors.success, 0.5),
+        // Lavender: the accent pulled toward the body text color.
+        FileIconKind::Config => colors.accent.lerp_to_gamma(colors.text_primary, 0.5),
+        FileIconKind::Pdf => colors.danger,
+        // Peach: between the warning yellow and the danger red.
+        FileIconKind::Archive => colors.warning.lerp_to_gamma(colors.danger, 0.5),
+        FileIconKind::Generic => colors.text_primary.gamma_multiply(0.8),
+    }
+}
+
 pub(crate) fn paint_entry_icon(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -97,10 +119,10 @@ pub(crate) fn paint_entry_icon(
     let x = |t: f32| sheet.left() + sheet.width() * t;
     let y = |t: f32| sheet.top() + sheet.height() * t;
     let kind = file_icon_kind(entry);
+    let c = icon_color(&kind, colors);
 
     match kind {
         FileIconKind::Image => {
-            let sky = Color32::from_rgb(0x89, 0xb4, 0xfa);
             let points = [(0.18, 0.78), (0.36, 0.52), (0.54, 0.72), (0.80, 0.42)];
             for w in points.windows(2) {
                 painter.line_segment(
@@ -108,17 +130,16 @@ pub(crate) fn paint_entry_icon(
                         egui::pos2(x(w[0].0), y(w[0].1)),
                         egui::pos2(x(w[1].0), y(w[1].1)),
                     ],
-                    Stroke::new(stroke_w, sky),
+                    Stroke::new(stroke_w, c),
                 );
             }
             painter.circle_filled(
                 egui::pos2(x(0.76), y(0.26)),
                 (sheet.width().min(sheet.height()) * 0.09).max(1.5),
-                sky.gamma_multiply(0.9),
+                c.gamma_multiply(0.9),
             );
         }
         FileIconKind::Audio => {
-            let c = Color32::from_rgb(0xa6, 0xe3, 0xa1);
             painter.add(egui::Shape::convex_polygon(
                 vec![
                     egui::pos2(x(0.26), y(0.50)),
@@ -149,7 +170,6 @@ pub(crate) fn paint_entry_icon(
             );
         }
         FileIconKind::Markdown | FileIconKind::Text => {
-            let c = Color32::from_rgb(0xf9, 0xe2, 0xaf);
             painter.line_segment(
                 [egui::pos2(x(0.28), y(0.74)), egui::pos2(x(0.72), y(0.30))],
                 Stroke::new(stroke_w * 1.15, c),
@@ -171,7 +191,6 @@ pub(crate) fn paint_entry_icon(
             }
         }
         FileIconKind::Code => {
-            let c = Color32::from_rgb(0x94, 0xe2, 0xd5);
             painter.line_segment(
                 [egui::pos2(x(0.38), y(0.34)), egui::pos2(x(0.24), y(0.52))],
                 Stroke::new(stroke_w, c),
@@ -194,7 +213,6 @@ pub(crate) fn paint_entry_icon(
             );
         }
         FileIconKind::Config => {
-            let c = Color32::from_rgb(0xb4, 0xbe, 0xfe);
             painter.line_segment(
                 [egui::pos2(x(0.22), y(0.38)), egui::pos2(x(0.78), y(0.38))],
                 Stroke::new(stroke_w, c),
@@ -207,7 +225,6 @@ pub(crate) fn paint_entry_icon(
             painter.circle_filled(egui::pos2(x(0.62), y(0.56)), (stroke_w * 1.2).max(1.6), c);
         }
         FileIconKind::Pdf => {
-            let c = Color32::from_rgb(0xf3, 0x8b, 0xa8);
             let band = egui::Rect::from_min_size(
                 egui::pos2(x(0.16), y(0.20)),
                 egui::vec2(sheet.width() * 0.68, sheet.height() * 0.20),
@@ -218,11 +235,10 @@ pub(crate) fn paint_entry_icon(
                 egui::Align2::CENTER_CENTER,
                 "PDF",
                 egui::FontId::proportional((sheet.height() * 0.18).max(6.0)),
-                Color32::from_rgb(0x1e, 0x1e, 0x2e),
+                colors.text_on(c),
             );
         }
         FileIconKind::Archive => {
-            let c = Color32::from_rgb(0xfa, 0xb3, 0x87);
             let box_rect = egui::Rect::from_min_size(
                 egui::pos2(x(0.26), y(0.30)),
                 egui::vec2(sheet.width() * 0.48, sheet.height() * 0.46),
@@ -249,7 +265,6 @@ pub(crate) fn paint_entry_icon(
             );
         }
         FileIconKind::Generic => {
-            let c = colors.text_primary.gamma_multiply(0.8);
             painter.line_segment(
                 [egui::pos2(x(0.24), y(0.38)), egui::pos2(x(0.70), y(0.38))],
                 Stroke::new(stroke_w, c),

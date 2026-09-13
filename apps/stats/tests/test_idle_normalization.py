@@ -1,23 +1,14 @@
 from __future__ import annotations
 
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 
+import plexi_sdk as sdk
+from plexi_sdk import _v3_state
+from plexi_sdk.effects import PersistState
+from plexi_sdk.events import FocusChanged
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python"),
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import plexi_sdk as sdk  # noqa: E402
-from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import PersistState  # noqa: E402
-from plexi_sdk.events import FocusChanged  # noqa: E402
-
-import stats as stats_app  # noqa: E402
-from stats import _normalize_focus_events, _timeline_fractions  # noqa: E402
+import stats as stats_app
+from stats import _normalize_focus_events, _timeline_fractions
 
 
 def _event(duration: int, reason: str, pane_id: int = 1) -> dict:

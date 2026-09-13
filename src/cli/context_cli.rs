@@ -1,5 +1,5 @@
 use super::validate::resolve_path;
-use super::{print_tip, send_to_socket};
+use super::{print_json_output, print_tip, send_to_socket};
 
 pub fn context_new_cli(
     name: Option<&str>,
@@ -50,10 +50,6 @@ pub fn context_new_cli(
             }
         }
     };
-    // Every creation waits for the host's authoritative name. Top-level calls
-    // stay quiet on success; the response only becomes user-visible when an
-    // automatic directory name had to be disambiguated.
-    let response_file = Some(crate::rpc::response_file("context-new-response", "json"));
     // Portal split anchor: explicit --from wins; otherwise the caller's own pane
     // (PLEXI_PANE_ID, set in every Plexi terminal). Only meaningful with --parent.
     let anchor_pane = from.or_else(|| {
@@ -97,34 +93,24 @@ pub fn context_new_cli(
             payload["anchor_pane"] = serde_json::Value::from(ap);
         }
     }
-    if let Some(ref rf) = response_file {
-        payload["response_file"] = serde_json::Value::String(rf.clone());
-    }
-    let rc = send_to_socket(payload);
-    if rc != 0 {
-        return rc;
-    }
-    // Sub-context callers retain their structured response. For top-level
-    // creation, print only the collision note rather than changing the
-    // established quiet success path.
-    if let Some(rf) = response_file {
-        match super::poll_rpc(&rf, "context-new") {
-            Ok(content) => {
-                let response: serde_json::Value =
-                    serde_json::from_str(&content).unwrap_or_default();
-                if explicit_parent.is_some() {
-                    println!("{content}");
-                } else if let (Some(name), Some(existing)) = (
-                    response["name"].as_str(),
-                    response["auto_name_collision_with"].as_str(),
-                ) {
-                    println!(
-                        "note: context name '{name}' disambiguated from existing context '{existing}'"
-                    );
-                }
+    // Every creation waits for the host's authoritative name. Sub-context
+    // callers get the structured response; top-level creation stays quiet on
+    // success and prints only the collision note.
+    match super::request(payload, "context-new-response", "context-new") {
+        Ok(content) => {
+            let response: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+            if explicit_parent.is_some() {
+                println!("{content}");
+            } else if let (Some(name), Some(existing)) = (
+                response["name"].as_str(),
+                response["auto_name_collision_with"].as_str(),
+            ) {
+                println!(
+                    "note: context name '{name}' disambiguated from existing context '{existing}'"
+                );
             }
-            Err(code) => return code,
         }
+        Err(code) => return code,
     }
     0
 }
@@ -159,7 +145,7 @@ pub fn context_sub_cli(
     path: Option<&str>,
     agents: u32,
     commands: &[String],
-    layout: crate::app_protocol::SubContextLayout,
+    layout: crate::protocol::SubContextLayout,
     focus: bool,
     from: Option<u64>,
 ) -> i32 {
@@ -204,7 +190,6 @@ pub fn context_sub_cli(
          anchor_pane={anchor_pane:?} panes={panes:?}",
         root.display()
     );
-    let response_file = crate::rpc::response_file("context-sub-response", "json");
     let mut payload = serde_json::json!({
         "type": "create_sub_context",
         "name": name,
@@ -212,7 +197,6 @@ pub fn context_sub_cli(
         "panes": panes,
         "layout": layout,
         "focus": focus,
-        "response_file": response_file,
     });
     if let Some(id) = parent_context_id {
         payload["parent_context_id"] = serde_json::Value::from(id);
@@ -223,17 +207,13 @@ pub fn context_sub_cli(
     if let Some(ap) = anchor_pane {
         payload["anchor_pane"] = serde_json::Value::from(ap);
     }
-    let rc = send_to_socket(payload);
-    if rc != 0 {
-        return rc;
-    }
-    match super::poll_rpc(&response_file, "context-sub") {
+    match super::request(payload, "context-sub-response", "context-sub") {
         Ok(content) => {
-            // `poll_rpc` only distinguishes transport failures. The host reports
-            // a refused parent or a failed terminal spawn *in* the payload, so
-            // an unattended caller needs that surfaced as a nonzero exit rather
-            // than a successful-looking JSON blob.
-            if let Some(err) = sub_response_error(&content) {
+            // The request helper only distinguishes transport failures. The
+            // host reports a refused parent or a failed terminal spawn *in* the
+            // payload, so an unattended caller needs that surfaced as a nonzero
+            // exit rather than a successful-looking JSON blob.
+            if let Some(err) = super::reply_error(&content) {
                 eprintln!("error: context sub failed: {err}");
                 return 1;
             }
@@ -242,19 +222,6 @@ pub fn context_sub_cli(
         }
         Err(code) => code,
     }
-}
-
-/// The `error` field of a `context sub` response, if the host reported one.
-///
-/// Unparseable output is not treated as an error here — `poll_rpc` already
-/// owns transport failures, and swallowing a valid-but-unexpected shape would
-/// hide the response from the caller.
-fn sub_response_error(content: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(content)
-        .ok()?
-        .get("error")?
-        .as_str()
-        .map(|s| s.to_string())
 }
 
 /// `plexi context zoom <context_id>`
@@ -417,87 +384,15 @@ pub fn context_current_cli() -> i32 {
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
 pub fn context_list_cli() -> i32 {
-    let response_file = crate::rpc::response_file("context-list-response", "json");
+    log::info!("context_list:cli: sending via socket");
 
-    let payload = serde_json::json!({
-        "type": "list_contexts",
-        "response_file": response_file,
-    });
-
-    log::info!(
-        "context_list:cli: sending via socket response_file={:?}",
-        response_file
-    );
-
-    let code = send_to_socket(payload);
-    if code != 0 {
-        return code;
-    }
-
-    match super::poll_rpc(&response_file, "context list") {
+    match super::request(
+        serde_json::json!({ "type": "list_contexts" }),
+        "context-list-response",
+        "context list",
+    ) {
         Ok(content) => print_json_output(&content),
         Err(code) => code,
-    }
-}
-
-fn print_json_output(json_str: &str) -> i32 {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let jq_available = Command::new("jq")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if jq_available {
-        match Command::new("jq").arg(".").stdin(Stdio::piped()).spawn() {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    if let Err(e) = stdin.write_all(json_str.as_bytes()) {
-                        log::warn!(
-                            "context_list:print_json_output: failed writing to jq stdin ({e})"
-                        );
-                    }
-                }
-                match child.wait() {
-                    Ok(status) if status.success() => {
-                        log::info!("context_list:print_json_output: rendered via jq");
-                        return 0;
-                    }
-                    Ok(status) => {
-                        log::warn!("context_list:print_json_output: jq exited non-zero ({status}), falling back to serde");
-                    }
-                    Err(e) => {
-                        log::warn!("context_list:print_json_output: jq wait failed ({e}), falling back to serde");
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!(
-                    "context_list:print_json_output: jq spawn failed ({e}), falling back to serde"
-                );
-            }
-        }
-    }
-
-    match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(v) => match serde_json::to_string_pretty(&v) {
-            Ok(pretty) => {
-                println!("{pretty}");
-                0
-            }
-            Err(e) => {
-                eprintln!("error: could not serialize: {e}");
-                1
-            }
-        },
-        Err(e) => {
-            eprintln!("error: invalid JSON output: {e}");
-            1
-        }
     }
 }
 
@@ -543,33 +438,3 @@ mod context_sub_tests {
     }
 }
 
-#[cfg(test)]
-mod sub_response_tests {
-    use super::sub_response_error;
-
-    /// A host-reported failure must be detectable so the CLI can exit nonzero —
-    /// `poll_rpc` succeeds here, because the transport worked.
-    #[test]
-    fn error_field_is_surfaced() {
-        assert_eq!(
-            sub_response_error(r#"{"error":"no parent context for id=Some(9)"}"#).as_deref(),
-            Some("no parent context for id=Some(9)")
-        );
-    }
-
-    #[test]
-    fn successful_response_has_no_error() {
-        assert_eq!(
-            sub_response_error(r#"{"context_id":76,"windows":[],"panes":[317,318]}"#),
-            None
-        );
-    }
-
-    /// Unparseable output is not an error here: `poll_rpc` owns transport
-    /// failures, and swallowing an unexpected-but-valid shape would hide the
-    /// response from the caller.
-    #[test]
-    fn unparseable_output_is_not_treated_as_an_error() {
-        assert_eq!(sub_response_error("not json at all"), None);
-    }
-}

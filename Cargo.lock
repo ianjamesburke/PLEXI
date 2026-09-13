@@ -1072,27 +1072,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "coremidi"
-version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a57ede822fdaf19280cf1320a5a5d3a522c75c910d01750af1e8122b6ad2595b"
-dependencies = [
- "block2 0.6.2",
- "core-foundation 0.10.1",
- "core-foundation-sys",
- "coremidi-sys",
-]
-
-[[package]]
-name = "coremidi-sys"
-version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a2b8c2cefa9a8f712213c5a1383ffe428efc8f1a1fd1e2f757be94daf7e256a"
-dependencies = [
- "core-foundation-sys",
-]
-
-[[package]]
 name = "cpal"
 version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4030,7 +4009,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "core-foundation 0.10.1",
- "coremidi",
  "cpal",
  "crossbeam-queue",
  "dirs",

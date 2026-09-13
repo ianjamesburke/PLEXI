@@ -231,25 +231,19 @@ fn validate_commands(commands: &[Command]) -> Result<(), DescriptorError> {
     Ok(())
 }
 
+/// The `major.minor` of a descriptor's `plexi_version`. The patch component is
+/// optional and ignored; every component must still fit in a `u32`.
 fn parse_semver_major_minor(s: &str) -> Result<(u32, u32), DescriptorError> {
-    let mut parts = s.split('.');
-    let major = parts
-        .next()
-        .and_then(|p| p.parse::<u32>().ok())
-        .ok_or_else(|| DescriptorError::InvalidPlexiVersion(s.to_string()))?;
-    let minor = parts
-        .next()
-        .and_then(|p| p.parse::<u32>().ok())
-        .ok_or_else(|| DescriptorError::InvalidPlexiVersion(s.to_string()))?;
-    // Optional patch — accept but ignore. Reject extra components.
-    if let Some(patch) = parts.next() {
-        if patch.parse::<u32>().is_err() {
-            return Err(DescriptorError::InvalidPlexiVersion(s.to_string()));
-        }
-    }
-    if parts.next().is_some() {
-        return Err(DescriptorError::InvalidPlexiVersion(s.to_string()));
-    }
+    let invalid = || DescriptorError::InvalidPlexiVersion(s.to_string());
+    let crate::app::host_version::Version(major, minor, patch) =
+        crate::app::host_version::Version::parse(
+            s,
+            crate::app::host_version::PatchPolicy::Optional,
+        )
+        .ok_or_else(invalid)?;
+    let major = u32::try_from(major).map_err(|_| invalid())?;
+    let minor = u32::try_from(minor).map_err(|_| invalid())?;
+    u32::try_from(patch).map_err(|_| invalid())?;
     Ok((major, minor))
 }
 

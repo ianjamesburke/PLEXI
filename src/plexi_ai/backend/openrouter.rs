@@ -23,7 +23,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 
 fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
     let input = usage["prompt_tokens"]
@@ -174,20 +174,7 @@ pub(super) fn stream_openai_compatible(
         return;
     }
 
-    // Build the messages array. OpenRouter uses OpenAI format:
-    // system prompt goes as a leading {"role":"system"} entry, NOT top-level.
-    // Messages are already serde_json::Value — pass them through directly.
-    let mut messages: Vec<serde_json::Value> = Vec::new();
-    if !request.system.is_empty() {
-        messages.push(serde_json::json!({
-            "role": "system",
-            "content": request.system
-        }));
-    }
-    messages.extend(request.messages.iter().cloned());
-    for message in &mut messages {
-        sanitize_message_tool_names(message);
-    }
+    let messages = build_messages(&request.system, &request.messages);
     // wire name -> real dotted name, for decoding the model's tool calls.
     let tool_name_map: HashMap<String, String> = request
         .tools
@@ -316,27 +303,10 @@ pub(super) fn stream_openai_compatible(
             }
         };
 
-        // Skip SSE comment lines (heartbeats like ": OPENROUTER PROCESSING")
-        if line.starts_with(':') || line.is_empty() {
-            continue;
-        }
-
-        let data = if let Some(suffix) = line.strip_prefix("data: ") {
-            suffix
-        } else {
-            continue;
-        };
-
-        if data == "[DONE]" {
-            break;
-        }
-
-        let chunk: serde_json::Value = match serde_json::from_str(data) {
-            Ok(v) => v,
-            Err(e) => {
-                log::debug!("openai_compat[{endpoint}]: failed to parse SSE chunk: {e} — data={data}");
-                continue;
-            }
+        let chunk = match parse_sse_line(&line) {
+            SseLine::Ignore => continue,
+            SseLine::Done => break,
+            SseLine::Chunk(chunk) => chunk,
         };
 
         // Usage-only chunk: choices is empty/absent, usage is present.
@@ -427,29 +397,21 @@ pub(super) fn stream_openai_compatible(
             return;
         }
 
-        // Reasoning ("thinking") delta. OpenRouter normalizes reasoning models
-        // to `delta.reasoning`; some providers surface `delta.reasoning_content`.
-        let reasoning = choice["delta"]["reasoning"]
-            .as_str()
-            .or_else(|| choice["delta"]["reasoning_content"].as_str());
-        if let Some(reasoning) = reasoning {
-            if !reasoning.is_empty()
-                && tx
-                    .send(StreamEvent::Reasoning(reasoning.to_string()))
-                    .is_err()
+        if let Some(reasoning) = reasoning_delta(choice) {
+            if tx
+                .send(StreamEvent::Reasoning(reasoning.to_string()))
+                .is_err()
             {
                 // Receiver dropped — caller cancelled.
                 return;
             }
         }
 
-        // Text delta
-        if let Some(text) = choice["delta"]["content"].as_str() {
-            if !text.is_empty()
-                && tx.send(StreamEvent::Text(text.to_string())).is_err() {
-                    // Receiver dropped — caller cancelled.
-                    return;
-                }
+        if let Some(text) = text_delta(choice) {
+            if tx.send(StreamEvent::Text(text.to_string())).is_err() {
+                // Receiver dropped — caller cancelled.
+                return;
+            }
         }
     }
 
@@ -463,6 +425,73 @@ pub(super) fn stream_openai_compatible(
             "openai_compat[{endpoint}]: stream completed without usage metadata; broker will use generation endpoint fallback"
         );
     }
+}
+
+/// Build the request's messages array in OpenAI format: the system prompt is a
+/// leading `{"role":"system"}` entry, never a top-level `"system"` field (the
+/// Anthropic shape, which OpenRouter silently ignores). An empty system string
+/// contributes no entry.
+fn build_messages(system: &str, history: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    if !system.is_empty() {
+        messages.push(serde_json::json!({
+            "role": "system",
+            "content": system,
+        }));
+    }
+    messages.extend(history.iter().cloned());
+    for message in &mut messages {
+        sanitize_message_tool_names(message);
+    }
+    messages
+}
+
+/// What one raw SSE line means to the stream reader.
+#[derive(Debug)]
+enum SseLine {
+    /// A comment, a blank line, a non-`data:` field, or a payload that did not
+    /// parse — nothing to do. Junk never kills a live stream.
+    Ignore,
+    /// A `data:` payload that parsed as a JSON chunk.
+    Chunk(serde_json::Value),
+    /// The `[DONE]` sentinel: no line after this one belongs to the stream.
+    Done,
+}
+
+/// Classify one raw SSE line. The read loop and its tests share this so a
+/// parsing change cannot pass the tests while breaking the stream.
+fn parse_sse_line(line: &str) -> SseLine {
+    if line.starts_with(':') || line.is_empty() {
+        return SseLine::Ignore;
+    }
+    let Some(data) = line.strip_prefix("data: ") else {
+        return SseLine::Ignore;
+    };
+    if data == "[DONE]" {
+        return SseLine::Done;
+    }
+    match serde_json::from_str(data) {
+        Ok(chunk) => SseLine::Chunk(chunk),
+        Err(_) => SseLine::Ignore,
+    }
+}
+
+/// The non-empty text delta on a chunk's first choice, if any.
+fn text_delta(choice: &serde_json::Value) -> Option<&str> {
+    choice["delta"]["content"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+}
+
+/// The non-empty reasoning delta on a chunk's first choice, if any.
+///
+/// OpenRouter normalizes reasoning models to `delta.reasoning`; some providers
+/// surface `delta.reasoning_content` instead.
+fn reasoning_delta(choice: &serde_json::Value) -> Option<&str> {
+    choice["delta"]["reasoning"]
+        .as_str()
+        .or_else(|| choice["delta"]["reasoning_content"].as_str())
+        .filter(|r| !r.is_empty())
 }
 
 fn apply_reasoning_config(
@@ -539,17 +568,10 @@ mod tests {
     /// entry (OpenAI format), not as a top-level "system" field (Anthropic).
     #[test]
     fn system_prompt_goes_in_messages_array_not_top_level() {
-        let system = "You are a helpful assistant.".to_string();
-        let msgs = [serde_json::json!({"role": "user", "content": "hello"})];
-
-        let mut messages: Vec<serde_json::Value> = Vec::new();
-        if !system.is_empty() {
-            messages.push(serde_json::json!({
-                "role": "system",
-                "content": system
-            }));
-        }
-        messages.extend(msgs.iter().cloned());
+        let messages = build_messages(
+            "You are a helpful assistant.",
+            &[serde_json::json!({"role": "user", "content": "hello"})],
+        );
 
         let body = serde_json::json!({
             "model": "anthropic/claude-sonnet-4.6",
@@ -580,15 +602,7 @@ mod tests {
     /// Verify that an empty system string produces no system entry.
     #[test]
     fn empty_system_omits_system_message() {
-        let system = String::new();
-        let msgs = [serde_json::json!({"role": "user", "content": "hi"})];
-
-        let mut messages: Vec<serde_json::Value> = Vec::new();
-        if !system.is_empty() {
-            messages.push(serde_json::json!({"role": "system", "content": system}));
-        }
-        messages.extend(msgs.iter().cloned());
-
+        let messages = build_messages("", &[serde_json::json!({"role": "user", "content": "hi"})]);
         assert_eq!(messages.len(), 1, "only user message — no system entry");
         assert_eq!(messages[0]["role"].as_str(), Some("user"));
     }
@@ -608,13 +622,34 @@ mod tests {
         }
     }
 
-    /// Verify that the SSE data-line parser extracts deltas from a sample stream.
-    ///
-    /// This exercises the parsing logic used in `stream_openrouter`: each
-    /// `data: <JSON>` line has `choices[0].delta.content` with the text delta.
+    /// Drive the production SSE line parser over a canned stream, returning
+    /// the text and reasoning deltas it yields. Tests assert on this so a
+    /// parser change cannot pass while the live stream breaks.
+    fn drain_sse(lines: &[&str]) -> (Vec<String>, Vec<String>) {
+        let mut text = Vec::new();
+        let mut reasoning = Vec::new();
+        for line in lines {
+            let chunk = match parse_sse_line(line) {
+                SseLine::Ignore => continue,
+                SseLine::Done => break,
+                SseLine::Chunk(chunk) => chunk,
+            };
+            let choice = &chunk["choices"][0];
+            if let Some(r) = reasoning_delta(choice) {
+                reasoning.push(r.to_string());
+            }
+            if let Some(t) = text_delta(choice) {
+                text.push(t.to_string());
+            }
+        }
+        (text, reasoning)
+    }
+
+    /// Text deltas arrive on `choices[0].delta.content`; comments and blank
+    /// heartbeat lines are skipped.
     #[test]
     fn sse_parser_extracts_deltas_from_sample_stream() {
-        let sse_lines = vec![
+        let (text, _) = drain_sse(&[
             ": OPENROUTER PROCESSING",
             "",
             r#"data: {"id":"gen1","choices":[{"delta":{"content":"Hello"}}]}"#,
@@ -622,153 +657,48 @@ mod tests {
             r#"data: {"id":"gen1","choices":[{"delta":{"content":"world"}}]}"#,
             r#"data: {"id":"gen1","choices":[{"delta":{"content":"!"}}],"usage":{"prompt_tokens":5,"completion_tokens":4}}"#,
             "data: [DONE]",
-        ];
-
-        let mut deltas: Vec<String> = Vec::new();
-
-        for line in &sse_lines {
-            // Skip comment and empty lines (mirrors stream_openrouter logic).
-            if line.starts_with(':') || line.is_empty() {
-                continue;
-            }
-            let data = match line.strip_prefix("data: ") {
-                Some(d) => d,
-                None => continue,
-            };
-            if data == "[DONE]" {
-                break;
-            }
-            let chunk: serde_json::Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
-                if !text.is_empty() {
-                    deltas.push(text.to_string());
-                }
-            }
-        }
-
-        assert_eq!(deltas, vec!["Hello", ", ", "world", "!"]);
+        ]);
+        assert_eq!(text, vec!["Hello", ", ", "world", "!"]);
     }
 
     /// Reasoning deltas are extracted from `delta.reasoning` and
     /// `delta.reasoning_content`, separately from text content.
     #[test]
     fn sse_parser_extracts_reasoning_deltas() {
-        let sse_lines = vec![
+        let (text, reasoning) = drain_sse(&[
             r#"data: {"choices":[{"delta":{"reasoning":"hmm, "}}]}"#,
             r#"data: {"choices":[{"delta":{"reasoning_content":"let me think"}}]}"#,
             r#"data: {"choices":[{"delta":{"content":"Answer."}}]}"#,
             "data: [DONE]",
-        ];
-
-        let mut reasoning: Vec<String> = Vec::new();
-        let mut text: Vec<String> = Vec::new();
-        for line in &sse_lines {
-            let data = match line.strip_prefix("data: ") {
-                Some(d) => d,
-                None => continue,
-            };
-            if data == "[DONE]" {
-                break;
-            }
-            let chunk: serde_json::Value = serde_json::from_str(data).unwrap();
-            let choice = &chunk["choices"][0];
-            // Mirrors stream_openrouter reasoning extraction.
-            if let Some(r) = choice["delta"]["reasoning"]
-                .as_str()
-                .or_else(|| choice["delta"]["reasoning_content"].as_str())
-            {
-                if !r.is_empty() {
-                    reasoning.push(r.to_string());
-                }
-            }
-            if let Some(t) = choice["delta"]["content"].as_str() {
-                if !t.is_empty() {
-                    text.push(t.to_string());
-                }
-            }
-        }
-
+        ]);
         assert_eq!(reasoning, vec!["hmm, ", "let me think"]);
         assert_eq!(text, vec!["Answer."]);
     }
 
-    /// Verify that `[DONE]` terminates SSE parsing before any subsequent lines.
+    /// `[DONE]` terminates parsing before any subsequent line.
     #[test]
     fn sse_parser_stops_at_done_sentinel() {
-        let sse_lines = vec![
+        let (text, _) = drain_sse(&[
             r#"data: {"choices":[{"delta":{"content":"before"}}]}"#,
             "data: [DONE]",
-            // These lines must not be reached.
+            // This line must not be reached.
             r#"data: {"choices":[{"delta":{"content":"after"}}]}"#,
-        ];
-
-        let mut deltas: Vec<String> = Vec::new();
-
-        for line in &sse_lines {
-            if line.starts_with(':') || line.is_empty() {
-                continue;
-            }
-            let data = match line.strip_prefix("data: ") {
-                Some(d) => d,
-                None => continue,
-            };
-            if data == "[DONE]" {
-                break;
-            }
-            let chunk: serde_json::Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
-                if !text.is_empty() {
-                    deltas.push(text.to_string());
-                }
-            }
-        }
-
+        ]);
         assert_eq!(
-            deltas,
+            text,
             vec!["before"],
             "[DONE] must stop parsing — 'after' must not appear"
         );
     }
 
-    /// Verify that malformed SSE data lines are skipped without panic.
+    /// Malformed data lines are skipped without killing the stream.
     #[test]
     fn sse_parser_skips_malformed_lines() {
-        let sse_lines = vec![
+        let (text, _) = drain_sse(&[
             "data: not-json{{{",
             r#"data: {"choices":[{"delta":{"content":"ok"}}]}"#,
             "data: [DONE]",
-        ];
-
-        let mut deltas: Vec<String> = Vec::new();
-
-        for line in &sse_lines {
-            if line.starts_with(':') || line.is_empty() {
-                continue;
-            }
-            let data = match line.strip_prefix("data: ") {
-                Some(d) => d,
-                None => continue,
-            };
-            if data == "[DONE]" {
-                break;
-            }
-            let chunk: serde_json::Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => continue, // malformed — skip
-            };
-            if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
-                if !text.is_empty() {
-                    deltas.push(text.to_string());
-                }
-            }
-        }
-
-        assert_eq!(deltas, vec!["ok"], "malformed line must be skipped");
+        ]);
+        assert_eq!(text, vec!["ok"], "malformed line must be skipped");
     }
 }

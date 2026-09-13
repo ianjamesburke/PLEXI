@@ -23,12 +23,6 @@ from . import effects as effects
 from . import events as events
 from . import tools as tools
 
-from ._constants import (
-    TITLE, HEADING, BODY, CAPTION, HINT, MONO_BODY, MONO_SMALL,
-    PAD, PAD_TIGHT, HEADER_H, STATUS_H,
-    BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW,
-    rgba, dim,
-)
 from ._types import (
     CapabilityDeniedError, VideoHandle,
     RectCommand, TextCommand, BadgeCommand, ShortcutPair, NotifyOption,
@@ -41,7 +35,7 @@ from .ui import (
     ProgressBar as ProgressBar,
     TextEdit as TextEdit,
 )
-from ._theme import theme, Theme, AppPalette
+from ._theme import theme, Theme, AppPalette, rgba, dim
 from .state_format import (
     ChecklistItem as ChecklistItem,
     parse_checklist as parse_checklist,

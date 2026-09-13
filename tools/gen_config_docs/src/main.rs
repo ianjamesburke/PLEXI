@@ -4,13 +4,18 @@
 use std::collections::HashMap;
 use syn::{Fields, File, Item, ItemStruct, Type};
 
+#[derive(Clone)]
 struct FieldInfo {
     name: String,
     ty: String,
     default: String,
     doc: String,
+    /// `#[serde(flatten)]` — the field has no key of its own on disk; the
+    /// referenced struct's keys sit directly in this table.
+    flatten: bool,
 }
 
+#[derive(Clone)]
 struct StructInfo {
     name: String,
     fields: Vec<FieldInfo>,
@@ -29,7 +34,7 @@ fn main() {
 
     let file: File = syn::parse_str(&source).expect("parse src/config/mod.rs");
 
-    let structs: HashMap<String, StructInfo> = file
+    let mut structs: HashMap<String, StructInfo> = file
         .items
         .iter()
         .filter_map(|item| {
@@ -45,6 +50,8 @@ fn main() {
             }
         })
         .collect();
+
+    expand_flattened(&mut structs);
 
     emit_doc(&structs, &default_toml);
 }
@@ -78,6 +85,7 @@ fn extract_struct(s: &ItemStruct) -> StructInfo {
                     ty,
                     default,
                     doc,
+                    flatten: has_serde_flatten(&f.attrs),
                 }
             })
             .collect()
@@ -89,6 +97,44 @@ fn extract_struct(s: &ItemStruct) -> StructInfo {
         name: s.ident.to_string(),
         fields,
     }
+}
+
+fn has_serde_flatten(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("serde")
+            && matches!(&attr.meta, syn::Meta::List(list) if list.tokens.to_string().contains("flatten"))
+    })
+}
+
+/// Replace every `#[serde(flatten)]` field with the referenced struct's own
+/// fields, in place. Flattened keys live directly in the parent table on disk,
+/// so the docs must list them there too.
+fn expand_flattened(structs: &mut HashMap<String, StructInfo>) {
+    // Bounded so a flatten cycle cannot hang the generator.
+    for _ in 0..8 {
+        let snapshot = structs.clone();
+        let mut changed = false;
+        for info in structs.values_mut() {
+            if !info.fields.iter().any(|f| f.flatten) {
+                continue;
+            }
+            let mut expanded = Vec::with_capacity(info.fields.len());
+            for field in info.fields.drain(..) {
+                match field.flatten.then(|| snapshot.get(&field.ty)).flatten() {
+                    Some(target) => {
+                        changed = true;
+                        expanded.extend(target.fields.iter().cloned());
+                    }
+                    None => expanded.push(field),
+                }
+            }
+            info.fields = expanded;
+        }
+        if !changed {
+            return;
+        }
+    }
+    panic!("serde(flatten) expansion did not settle — check for a flatten cycle");
 }
 
 fn extract_doc(attrs: &[syn::Attribute]) -> String {

@@ -1255,16 +1255,6 @@ footers stay full-bleed — so apps need no layout code to look right.
 (`measure`/`render`); they are ignored by the declarative tree, whose inset
 the host owns.
 
-### `render_tree(ctx, root: Component, fill: Optional[str] = None)`
-
-Clear the pane to `fill`, then render `root` into the full pane rect.
-
-`fill` defaults to the active host theme background (`theme.bg`).
-Apps normally call `ctx.render(root)` instead, which calls this.
-
-The root component and every descendant must support ``to_node()``. The SDK
-emits a single ``ComponentTree`` command and the host renders it natively.
-
 ### `InfoTable`
 
 ```python
@@ -1329,7 +1319,7 @@ Example::
         ("Overview", overview_node),
         ("Details", details_node),
     ], active=0)
-    ctx.render_tree(tabs.to_node())
+    return tabs.to_node()
 
 ### `Grid`
 
@@ -1345,7 +1335,7 @@ Stack of up to ``columns`` children.
 Example::
 
     grid = Grid(2, [item_a, item_b, item_c, item_d], gap=8.0)
-    ctx.render_tree(grid.to_node())
+    return grid.to_node()
 
 ### `Toggle`
 
@@ -1361,7 +1351,7 @@ fires `node_id` as the on_click handler.
 Example::
 
     toggle = Toggle("dark_mode", value=True, label="Dark mode")
-    ctx.render_tree(toggle.to_node())
+    return toggle.to_node()
 
 ### `ProgressBar`
 
@@ -1374,7 +1364,7 @@ Horizontal progress bar backed by the host's native progress-bar node.
 Example::
 
     bar = ProgressBar(0.75)
-    ctx.render_tree(bar.to_node())
+    return bar.to_node()
 
 ## Testing
 
@@ -1516,7 +1506,7 @@ Typed constructor for one option in ctx.notify_choice().
 
 ## Theme
 
-Live theme singleton.
+Live theme singleton and color helpers.
 
 Populated from the host Init payload so app chrome tracks the host theme
 (light/dark + user overrides in config.toml). Until Init arrives the
@@ -1562,8 +1552,6 @@ matching set based on ``theme.is_dark``.
 
 Return the dark or light token set based on ``theme.is_dark``.
 
-
-## Constants
 
 ### `rgba(r: int, g: int, b: int, a: int = 255)`
 

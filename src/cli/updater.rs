@@ -2,7 +2,7 @@ use std::{
     fs::OpenOptions,
     path::Path,
     process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 #[cfg(unix)]
@@ -62,7 +62,7 @@ pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
     update_cache_fresh_for_channel(
         &cache_dir.join("update_cache.json"),
         detect_channel(),
-        unix_now_secs(),
+        crate::platform::clock::now_secs(),
     )
 }
 
@@ -84,11 +84,7 @@ fn installed_tag_or_cargo_version(cache_dir: &Path) -> String {
 }
 
 fn detect_channel() -> UpdateChannel {
-    let name = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string());
-    UpdateChannel::from_binary_name(&name)
+    UpdateChannel::from_binary_name(&crate::config::current_exe_basename())
 }
 
 /// Returns the best candidate tag (e.g. `v0.1.13-beta.1`) for `channel`, or
@@ -96,7 +92,7 @@ fn detect_channel() -> UpdateChannel {
 fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
     if let Ok(bytes) = std::fs::read(cache_path) {
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if cached_json_fresh_for_channel(&json, channel, unix_now_secs()) {
+            if cached_json_fresh_for_channel(&json, channel, crate::platform::clock::now_secs()) {
                 return json["latest"].as_str().map(|s| s.to_string());
             }
         }
@@ -122,13 +118,6 @@ fn cached_json_fresh_for_channel(
     let cached_channel = json["channel"].as_str().unwrap_or("");
     let fresh = Duration::from_secs(now.saturating_sub(checked_at)) < CHECK_INTERVAL;
     fresh && cached_channel == channel_key(channel)
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn channel_key(channel: UpdateChannel) -> &'static str {
@@ -215,10 +204,7 @@ fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str)
     let current = ReleaseTag::parse(current_raw)?;
     let best = release_resolver::resolve_best(&releases, channel, &current);
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::platform::clock::now_secs();
     let latest_raw = best.as_ref().map(|t| t.raw.clone());
     let cache = serde_json::json!({
         "checked_at": now,
@@ -243,18 +229,7 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     let src_dir = std::path::PathBuf::from(&home).join(".plexi-src");
     let repo = "https://github.com/ianjamesburke/PLEXI.git";
 
-    let binary_name = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string());
-    let channel = if binary_name == "plexi" {
-        "main".to_string()
-    } else {
-        binary_name
-            .strip_prefix("plexi-")
-            .unwrap_or("main")
-            .to_string()
-    };
+    let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
 
     let log_path = profile_dir.join("update.log");
     std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;

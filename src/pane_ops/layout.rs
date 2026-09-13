@@ -77,7 +77,7 @@ pub(super) fn restore_overlay_replacement(
 /// rootless window is not a state the host can render.
 pub(crate) fn build_squad_tree(
     pane_ids: &[PaneId],
-    layout: crate::app_protocol::SubContextLayout,
+    layout: crate::protocol::SubContextLayout,
 ) -> (egui_tiles::Tree<PaneId>, TileId) {
     assert!(
         !pane_ids.is_empty(),
@@ -90,8 +90,8 @@ pub(crate) fn build_squad_tree(
         first_tile
     } else {
         match layout {
-            crate::app_protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
-            crate::app_protocol::SubContextLayout::Columns => {
+            crate::protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
+            crate::protocol::SubContextLayout::Columns => {
                 tiles.insert_horizontal_tile(pane_tiles)
             }
         }
@@ -1936,7 +1936,7 @@ mod send_pane_tests {
 #[cfg(test)]
 mod squad_tree_tests {
     use super::build_squad_tree;
-    use crate::app_protocol::SubContextLayout;
+    use crate::protocol::SubContextLayout;
 
     /// `--layout tiled` (the `context sub` default) builds a Grid container, so
     /// an agent squad renders as a near-square block rather than a strip.

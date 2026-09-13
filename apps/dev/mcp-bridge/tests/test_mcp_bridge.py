@@ -9,17 +9,10 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "sdk", "python"),
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import plexi_sdk as sdk  # noqa: E402
-from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import (  # noqa: E402
+import plexi_sdk as sdk
+from plexi_sdk import _v3_state
+from plexi_sdk.effects import (
     CancelTimer,
     ExposeTools,
     McpConnect,
@@ -29,7 +22,7 @@ from plexi_sdk.effects import (  # noqa: E402
     SetTimer,
     ToolResult,
 )
-from plexi_sdk.events import (  # noqa: E402
+from plexi_sdk.events import (
     KeyEvent,
     McpClosed,
     McpConnected,
@@ -38,7 +31,7 @@ from plexi_sdk.events import (  # noqa: E402
     ToolCall,
 )
 
-import mcp_bridge  # noqa: E402
+import mcp_bridge
 
 FIXTURES = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "src", "host", "testdata", "mcp"

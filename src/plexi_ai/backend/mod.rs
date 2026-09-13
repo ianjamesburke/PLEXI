@@ -15,7 +15,7 @@ pub mod openrouter;
 
 use std::sync::{mpsc, Arc};
 
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 
 /// Provider-neutral concrete model route selected by an Assistant agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +135,7 @@ pub struct AiBackendRequest {
     pub system: Arc<str>,
     /// Tools to inject into the request when non-empty. Shared via `Arc<[_]>`
     /// so tool-loop iterations clone only the pointer.
-    pub tools: Arc<[crate::app_protocol::AiTool]>,
+    pub tools: Arc<[crate::protocol::AiTool]>,
     /// Model tier from the broker request. Used by backends to apply
     /// tier-specific request parameters (e.g. disabling reasoning for Low).
     pub model_tier: Option<ModelTier>,
@@ -149,18 +149,11 @@ pub struct AiBackendRequest {
 
 /// Error returned when a backend call cannot start.
 /// Individual stream failures are delivered as `StreamEvent::Error`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AiBackendError {
     /// I/O failure before streaming began.
+    #[error("I/O error: {0}")]
     Io(String),
-}
-
-impl std::fmt::Display for AiBackendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AiBackendError::Io(s) => write!(f, "I/O error: {s}"),
-        }
-    }
 }
 
 /// The core backend contract.

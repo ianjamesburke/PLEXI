@@ -109,9 +109,6 @@ security-framework = "3"
 # CFData for create-only Keychain adds (SecItemAdd). Must track the version
 # security-framework itself uses, or the CF types will not unify.
 core-foundation = "0.10"
-# CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl
-# stays available under `cfg(test)`).
-coremidi = "0.9"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo"] }

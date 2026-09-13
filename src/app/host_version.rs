@@ -22,22 +22,44 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version(pub u64, pub u64, pub u64);
 
-/// Parse `"1.2.3"` into a [`Version`]. Returns `None` on any malformed input —
-/// callers treat an unparseable requirement as a hard error, never a silent pass.
-pub fn parse_version(s: &str) -> Option<Version> {
-    let mut parts = s.trim().split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None; // more than three components — reject
+/// Whether the patch component may be omitted when parsing a version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchPolicy {
+    /// `major.minor.patch` — a two-component string is rejected.
+    Required,
+    /// `major.minor[.patch]` — a missing patch reads as `0`.
+    Optional,
+}
+
+impl Version {
+    /// Parse a dotted numeric version into a [`Version`]. Returns `None` on any
+    /// malformed input — callers treat an unparseable version as a hard error,
+    /// never a silent pass. Surrounding whitespace is ignored; a non-numeric
+    /// component, a fourth component, and (under [`PatchPolicy::Required`]) a
+    /// missing patch are all rejected.
+    ///
+    /// The single version parser: manifest `[requires]` bounds, release tags
+    /// (`src/cli/release_resolver.rs`), and CLI descriptor `plexi_version`
+    /// (`src/app/plexi_descriptor.rs`) all read their numeric triple here.
+    pub fn parse(s: &str, patch_policy: PatchPolicy) -> Option<Version> {
+        let mut parts = s.trim().split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = match parts.next() {
+            Some(p) => p.parse().ok()?,
+            None if patch_policy == PatchPolicy::Optional => 0,
+            None => return None,
+        };
+        if parts.next().is_some() {
+            return None; // more than three components — reject
+        }
+        Some(Version(major, minor, patch))
     }
-    Some(Version(major, minor, patch))
 }
 
 /// This build's version, from `CARGO_PKG_VERSION`.
 pub fn current() -> Version {
-    parse_version(env!("CARGO_PKG_VERSION"))
+    Version::parse(env!("CARGO_PKG_VERSION"), PatchPolicy::Required)
         .expect("CARGO_PKG_VERSION must be a major.minor.patch triple")
 }
 
@@ -86,7 +108,7 @@ impl VersionVerdict {
 /// version is injected so this is fully unit-testable.
 pub fn check(min: Option<&str>, max: Option<&str>, host: Version) -> VersionVerdict {
     if let Some(min_s) = min {
-        let Some(min_v) = parse_version(min_s) else {
+        let Some(min_v) = Version::parse(min_s, PatchPolicy::Required) else {
             return VersionVerdict::Malformed {
                 field: "plexi_min",
                 value: min_s.to_string(),
@@ -100,7 +122,7 @@ pub fn check(min: Option<&str>, max: Option<&str>, host: Version) -> VersionVerd
         }
     }
     if let Some(max_s) = max {
-        let Some(max_v) = parse_version(max_s) else {
+        let Some(max_v) = Version::parse(max_s, PatchPolicy::Required) else {
             return VersionVerdict::Malformed {
                 field: "plexi_max",
                 value: max_s.to_string(),
@@ -120,15 +142,29 @@ pub fn check(min: Option<&str>, max: Option<&str>, host: Version) -> VersionVerd
 mod tests {
     use super::*;
 
+    fn parse(s: &str) -> Option<Version> {
+        Version::parse(s, PatchPolicy::Required)
+    }
+
     #[test]
     fn parses_triples_and_rejects_junk() {
-        assert_eq!(parse_version("0.0.760"), Some(Version(0, 0, 760)));
-        assert_eq!(parse_version("1.2.3"), Some(Version(1, 2, 3)));
-        assert_eq!(parse_version(" 1.2.3 "), Some(Version(1, 2, 3)));
-        assert_eq!(parse_version("1.2"), None);
-        assert_eq!(parse_version("1.2.3.4"), None);
-        assert_eq!(parse_version("1.2.x"), None);
-        assert_eq!(parse_version("v1.2.3"), None);
+        assert_eq!(parse("0.0.760"), Some(Version(0, 0, 760)));
+        assert_eq!(parse("1.2.3"), Some(Version(1, 2, 3)));
+        assert_eq!(parse(" 1.2.3 "), Some(Version(1, 2, 3)));
+        assert_eq!(parse("1.2"), None);
+        assert_eq!(parse("1.2.3.4"), None);
+        assert_eq!(parse("1.2.x"), None);
+        assert_eq!(parse("v1.2.3"), None);
+    }
+
+    #[test]
+    fn optional_patch_defaults_to_zero_and_still_rejects_junk() {
+        let optional = |s| Version::parse(s, PatchPolicy::Optional);
+        assert_eq!(optional("1.2"), Some(Version(1, 2, 0)));
+        assert_eq!(optional("1.2.3"), Some(Version(1, 2, 3)));
+        assert_eq!(optional("1"), None);
+        assert_eq!(optional("1.2.3.4"), None);
+        assert_eq!(optional("1.2.x"), None);
     }
 
     #[test]

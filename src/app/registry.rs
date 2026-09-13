@@ -251,12 +251,12 @@ pub enum DefaultNotifyScope {
     Global,
 }
 
-impl From<DefaultNotifyScope> for crate::app_protocol::NotifyScope {
+impl From<DefaultNotifyScope> for crate::protocol::NotifyScope {
     fn from(d: DefaultNotifyScope) -> Self {
         match d {
-            DefaultNotifyScope::Window => crate::app_protocol::NotifyScope::Window,
-            DefaultNotifyScope::Context => crate::app_protocol::NotifyScope::Context,
-            DefaultNotifyScope::Global => crate::app_protocol::NotifyScope::Global,
+            DefaultNotifyScope::Window => crate::protocol::NotifyScope::Window,
+            DefaultNotifyScope::Context => crate::protocol::NotifyScope::Context,
+            DefaultNotifyScope::Global => crate::protocol::NotifyScope::Global,
         }
     }
 }
@@ -843,11 +843,11 @@ impl AppRegistry {
 
     /// Return the manifest-declared notification scope for an app.
     /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.
-    pub fn default_notification_scope_for(&self, app_id: &str) -> crate::app_protocol::NotifyScope {
+    pub fn default_notification_scope_for(&self, app_id: &str) -> crate::protocol::NotifyScope {
         self.apps
             .get(app_id)
             .map(|a| a.launch.notification_scope.clone().into())
-            .unwrap_or(crate::app_protocol::NotifyScope::Window)
+            .unwrap_or(crate::protocol::NotifyScope::Window)
     }
 
     /// Return the manifest-declared startup message, if any.
@@ -884,6 +884,24 @@ impl AppRegistry {
 /// Returns the path to the global apps directory: `~/.plexi/apps/`.
 pub fn apps_dir() -> PathBuf {
     crate::config::config_dir().join("apps")
+}
+
+/// Every app id installed in the global apps directory, sorted. The listing
+/// surface for shell completion and any other caller that needs the installed
+/// set by name rather than by path.
+pub fn installed_app_ids() -> Vec<String> {
+    let dir = apps_dir();
+    let Ok(read) = std::fs::read_dir(&dir) else {
+        log::debug!("registry: no readable apps dir at {dir:?}");
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = read
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    ids.sort();
+    ids
 }
 
 /// Return the apps dir scoped to `workspace_root` for the current channel.
@@ -1874,7 +1892,7 @@ watch = true
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("no-scope");
-        assert_eq!(scope, crate::app_protocol::NotifyScope::Window);
+        assert_eq!(scope, crate::protocol::NotifyScope::Window);
     }
 
     #[test]
@@ -1902,7 +1920,7 @@ notification_scope = \"global\"
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("stand-up");
-        assert_eq!(scope, crate::app_protocol::NotifyScope::Global);
+        assert_eq!(scope, crate::protocol::NotifyScope::Global);
     }
 
     #[test]
@@ -1953,7 +1971,7 @@ notification_scope = \"context\"
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("ctx-scoped");
-        assert_eq!(scope, crate::app_protocol::NotifyScope::Context);
+        assert_eq!(scope, crate::protocol::NotifyScope::Context);
     }
 
     #[test]

@@ -6,7 +6,7 @@ silently no-op'd in the only shipped rendering mode -- the v3 declarative
 tree (`Markdown`/`Clickable` emitted node types with no host decode arm;
 `Footer`'s own node likewise; `ButtonRow` omitted a required field;
 `InfoTable`/`Row`/`FormField`/`KeyRow`/`ScrollLog`/`ChatBubble`/`ListItem`/
-`Sized` had no `to_node()` at all, so `render_tree()` raised
+`Sized` had no `to_node()` at all, so encoding raised
 `TypeError: X.to_node() returned None`; `SelectList` silently dropped
 `leading`/`trailing`; `Divider(color=...)` silently dropped `color`). Each
 is now either fixed or removed from `plexi_sdk.ui.__all__` -- see the
@@ -60,7 +60,6 @@ _TOKENS = {
     "TEXT_HINT", "TEXT_CAPTION", "TEXT_BODY", "TEXT_HEADING",
     "TEXT_TITLE", "TEXT_TITLE_XL",
     "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
-    "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
     "BadgeColor", "BADGE_COLORS",
 }
 
@@ -70,7 +69,6 @@ _NOT_A_WIDGET = {
     "Component",  # abstract base; never instantiated directly, to_node() is None by design
     "badge",  # canvas-mode drawing helper function, not a Component
     "ensure_visible",  # scroll-math helper function
-    "render_tree",  # the render entry point itself, not a node
     "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
     # ^ Canvas draw commands -- to_command(), not to_node(); only meaningful
     # nested inside a Canvas(commands=[...]) node, never as a tree node.
@@ -139,7 +137,7 @@ def test_widget_produces_host_decodable_tree(name: str) -> None:
     except Exception as exc:  # noqa: BLE001 -- want the widget name in the failure
         pytest.fail(
             f"{name}.to_node() could not be encoded into a UiNode tree "
-            f"(the exact path render_tree() drives at runtime): {exc}"
+            f"(the exact path a live render drives at runtime): {exc}"
         )
     types = _node_types(tree)
     bad = [t for t in types if t not in ACCEPTED_NODE_TYPES]

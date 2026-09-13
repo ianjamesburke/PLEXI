@@ -1,4 +1,4 @@
-use super::{print_tip, send_to_socket};
+use super::{print_json_output, print_tip, send_to_socket};
 
 pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
     let resolved_pane_id = match pane_id {
@@ -28,54 +28,6 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
         "pane_id": resolved_pane_id,
         "name": name,
     }))
-}
-
-/// Prints JSON to stdout. If `jq` is in PATH, pipes through `jq .` for
-/// colour and pretty-printing; otherwise falls back to serde pretty-print.
-fn print_json_output(json_str: &str) -> i32 {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let jq_available = Command::new("jq")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if jq_available {
-        match Command::new("jq").arg(".").stdin(Stdio::piped()).spawn() {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = stdin.write_all(json_str.as_bytes());
-                }
-                let _ = child.wait();
-                log::info!("print_json_output: rendered via jq");
-                return 0;
-            }
-            Err(e) => {
-                log::warn!("print_json_output: jq spawn failed ({e}), falling back to serde");
-            }
-        }
-    }
-
-    match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(v) => match serde_json::to_string_pretty(&v) {
-            Ok(pretty) => {
-                println!("{pretty}");
-                0
-            }
-            Err(e) => {
-                eprintln!("error: could not serialize: {e}");
-                1
-            }
-        },
-        Err(_) => {
-            print!("{json_str}");
-            0
-        }
-    }
 }
 
 fn resolve_pane_id(pane_id: Option<u64>) -> Result<u64, i32> {
@@ -183,23 +135,25 @@ pub fn pane_slot_write_cli(
             return 1;
         }
     }
-    let response_file = crate::rpc::response_file("pane-slot-write-response", "json");
     log::info!(
-        "pane_slot_write:cli: pane_id={resolved_pane_id} slot={name:?} bytes={} append={append} replace={replace} response_file={response_file:?}",
+        "pane_slot_write:cli: pane_id={resolved_pane_id} slot={name:?} bytes={} append={append} replace={replace}",
         bytes.len()
     );
-    let code = send_to_socket(serde_json::json!({
-        "type": "slot_write",
-        "pane_id": resolved_pane_id,
-        "slot_name": name,
-        "content": bytes,
-        "append": append,
-        "replace": replace,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "slot_write",
+            "pane_id": resolved_pane_id,
+            "slot_name": name,
+            "content": bytes,
+            "append": append,
+            "replace": replace,
+        }),
+        "pane-slot-write-response",
+        "pane slot write",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
     let content = match wait_for_response_bytes(&response_file, "pane slot write") {
         Ok(content) => content,
         Err(code) => return code,
@@ -218,19 +172,19 @@ pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
         Ok(id) => id,
         Err(code) => return code,
     };
-    let response_file = crate::rpc::response_file("pane-slot-read-response", "json");
-    log::info!(
-        "pane_slot_read:cli: pane_id={resolved_pane_id} slot={name:?} response_file={response_file:?}"
-    );
-    let code = send_to_socket(serde_json::json!({
-        "type": "slot_read",
-        "pane_id": resolved_pane_id,
-        "slot_name": name,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
+    log::info!("pane_slot_read:cli: pane_id={resolved_pane_id} slot={name:?}");
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "slot_read",
+            "pane_id": resolved_pane_id,
+            "slot_name": name,
+        }),
+        "pane-slot-read-response",
+        "pane slot read",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
     let content = match wait_for_slot_read_response(&response_file) {
         Ok(content) => content,
         Err(code) => return code,
@@ -320,21 +274,23 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
         Ok(id) => id,
         Err(code) => return code,
     };
-    let response_file = crate::rpc::response_file("pane-slot-wait-response", "json");
     log::info!(
-        "pane_slot_wait:cli: pane_id={resolved_pane_id} slot={name:?} until={until:?} timeout={timeout} response_file={response_file:?}"
+        "pane_slot_wait:cli: pane_id={resolved_pane_id} slot={name:?} until={until:?} timeout={timeout}"
     );
-    let code = send_to_socket(serde_json::json!({
-        "type": "slot_wait",
-        "pane_id": resolved_pane_id,
-        "slot_name": name,
-        "pattern": until,
-        "timeout_secs": timeout,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "slot_wait",
+            "pane_id": resolved_pane_id,
+            "slot_name": name,
+            "pattern": until,
+            "timeout_secs": timeout,
+        }),
+        "pane-slot-wait-response",
+        "pane slot wait",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
     let deadline = std::time::Duration::from_secs_f64(timeout) + SLOT_WAIT_REPLY_MARGIN;
     let outcome = slot_wait_outcome(crate::rpc::poll_slot_reply(&response_file, Some(deadline)));
     match &outcome {
@@ -358,16 +314,18 @@ pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
         Ok(id) => id,
         Err(code) => return code,
     };
-    let response_file = crate::rpc::response_file("pane-slot-list-response", "json");
-    log::info!("pane_slot_list:cli: pane_id={resolved_pane_id} response_file={response_file:?}");
-    let code = send_to_socket(serde_json::json!({
-        "type": "slot_list",
-        "pane_id": resolved_pane_id,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
+    log::info!("pane_slot_list:cli: pane_id={resolved_pane_id}");
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "slot_list",
+            "pane_id": resolved_pane_id,
+        }),
+        "pane-slot-list-response",
+        "pane slot list",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
     let content = match wait_for_response_bytes(&response_file, "pane slot list") {
         Ok(content) => content,
         Err(code) => return code,
@@ -385,19 +343,19 @@ pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
         Ok(id) => id,
         Err(code) => return code,
     };
-    let response_file = crate::rpc::response_file("pane-slot-delete-response", "json");
-    log::info!(
-        "pane_slot_delete:cli: pane_id={resolved_pane_id} slot={name:?} response_file={response_file:?}"
-    );
-    let code = send_to_socket(serde_json::json!({
-        "type": "slot_delete",
-        "pane_id": resolved_pane_id,
-        "slot_name": name,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
+    log::info!("pane_slot_delete:cli: pane_id={resolved_pane_id} slot={name:?}");
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "slot_delete",
+            "pane_id": resolved_pane_id,
+            "slot_name": name,
+        }),
+        "pane-slot-delete-response",
+        "pane slot delete",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
     let content = match wait_for_response_bytes(&response_file, "pane slot delete") {
         Ok(content) => content,
         Err(code) => return code,
@@ -436,28 +394,16 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
         context
     };
 
-    let response_file = crate::rpc::response_file("pane-list-response", "json");
-
     let mut payload = serde_json::json!({
         "type": "list_panes",
-        "response_file": response_file,
     });
     if let Some(cid) = context_id {
         payload["context_id"] = serde_json::json!(cid);
     }
 
-    log::info!(
-        "pane_list:cli: sending via socket context_id={:?} response_file={:?}",
-        context_id,
-        response_file
-    );
+    log::info!("pane_list:cli: sending via socket context_id={context_id:?}");
 
-    let code = send_to_socket(payload);
-    if code != 0 {
-        return code;
-    }
-
-    match super::poll_rpc(&response_file, "pane list") {
+    match super::request(payload, "pane-list-response", "pane list") {
         Ok(content) => print_json_output(&content),
         Err(code) => code,
     }
@@ -503,16 +449,10 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
         }
     };
 
-    let response_file = crate::rpc::response_file("pane-info-response", "json");
-
     let payload = if let Some(steps) = previous {
-        log::info!(
-            "pane_info:cli: previous steps={steps} response_file={:?}",
-            response_file
-        );
+        log::info!("pane_info:cli: previous steps={steps}");
         serde_json::json!({
             "type": "get_previous_pane_info",
-            "response_file": response_file,
             "steps": steps,
         })
     } else {
@@ -532,23 +472,14 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
                 return 1;
             }
         };
-        log::info!(
-            "pane_info:cli: pane_id={pane_id} response_file={:?}",
-            response_file
-        );
+        log::info!("pane_info:cli: pane_id={pane_id}");
         serde_json::json!({
             "type": "get_pane_info",
             "pane_id": pane_id,
-            "response_file": response_file,
         })
     };
 
-    let code = send_to_socket(payload);
-    if code != 0 {
-        return code;
-    }
-
-    let content = match super::poll_rpc(&response_file, "pane info") {
+    let content = match super::request(payload, "pane-info-response", "pane info") {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -603,26 +534,26 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
 pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
-    let response_file = crate::rpc::response_file("send-to-pane-response", "json");
     log::info!(
-        "pane_send:cli: pane_id={pane_id} len={} submit={submit} response_file={response_file:?}",
+        "pane_send:cli: pane_id={pane_id} len={} submit={submit}",
         text.len()
     );
-    let code = send_to_socket(serde_json::json!({
+    let payload = serde_json::json!({
         "type": "send_to_pane",
         "pane_id": pane_id,
         "text": text,
         "submit": submit,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
+    });
     if submit {
         // The host settles, presses Enter and confirms before answering, all
         // within its own ceiling. This window sits above that so the caller
         // sees the host's typed outcome rather than a client-side timeout.
-        let content = match super::poll_rpc_with(&response_file, "pane send", SUBMIT_REPLY_WINDOW) {
+        let content = match super::request_with(
+            payload,
+            "send-to-pane-response",
+            "pane send",
+            SUBMIT_REPLY_WINDOW,
+        ) {
             Ok(content) => content,
             Err(code) => return code,
         };
@@ -630,15 +561,12 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
         outcome.report();
         return outcome.exit_code();
     }
-    let content = match super::poll_rpc(&response_file, "pane send") {
+    let content = match super::request(payload, "send-to-pane-response", "pane send") {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-            eprintln!("error: {msg}");
-            return 1;
-        }
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
     }
     0
 }
@@ -658,25 +586,15 @@ pub fn pane_heartbeat_cli(
         }
         None => None,
     };
-    let response_file = crate::rpc::response_file("pane-heartbeat-response", "json");
-    let code = send_to_socket(
-        serde_json::json!({"type":"pane_heartbeat", "pane_id":pane_id, "every_ms":every_ms, "text":text, "while_idle_only":while_idle_only, "off":off, "response_file":response_file}),
-    );
-    if code != 0 {
-        return code;
-    }
-    match super::poll_rpc(&response_file, "pane heartbeat") {
-        Ok(content) => {
-            if let Some(error) = serde_json::from_str::<serde_json::Value>(&content)
-                .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_string))
-            {
-                eprintln!("error: {error}");
-                1
-            } else {
-                print_json_output(&content)
-            }
-        }
+    match super::request(
+        serde_json::json!({"type":"pane_heartbeat", "pane_id":pane_id, "every_ms":every_ms, "text":text, "while_idle_only":while_idle_only, "off":off}),
+        "pane-heartbeat-response",
+        "pane heartbeat",
+    ) {
+        Ok(content) => match super::check_reply_error(&content) {
+            Ok(()) => print_json_output(&content),
+            Err(code) => code,
+        },
         Err(code) => code,
     }
 }
@@ -795,21 +713,19 @@ fn submit_outcome(reply: &str) -> SubmitOutcome {
 /// Sends `key_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
 pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
-    let response_file = crate::rpc::response_file("pane-key-response", "json");
     log::info!(
-        "pane_key:cli: pane_id={pane_id} key={key:?} key_chars={} response_file={response_file:?}",
+        "pane_key:cli: pane_id={pane_id} key={key:?} key_chars={}",
         key.chars().count()
     );
-    let code = send_to_socket(serde_json::json!({
-        "type": "key_pane",
-        "pane_id": pane_id,
-        "key": key,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-    let content = match super::poll_rpc(&response_file, "pane key") {
+    let content = match super::request(
+        serde_json::json!({
+            "type": "key_pane",
+            "pane_id": pane_id,
+            "key": key,
+        }),
+        "pane-key-response",
+        "pane key",
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -846,47 +762,36 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
 }
 
 pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
-    let response_file = crate::rpc::response_file("pane-drop-response", "json");
-    let code = send_to_socket(serde_json::json!({
-        "type": "drop_file",
-        "pane_id": pane_id,
-        "path_or_url": path_or_url,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-    let content = match super::poll_rpc(&response_file, "pane drop") {
+    let content = match super::request(
+        serde_json::json!({
+            "type": "drop_file",
+            "pane_id": pane_id,
+            "path_or_url": path_or_url,
+        }),
+        "pane-drop-response",
+        "pane drop",
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if serde_json::from_str::<serde_json::Value>(&content)
-        .ok()
-        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
-        .is_some_and(|error| {
-            eprintln!("error: {error}");
-            true
-        })
-    {
-        return 1;
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
     }
     print_json_output(&content)
 }
 
-/// Poll `response_file` for a `click_pane`/`click_pane_node` response,
-/// shared by the pixel and node-targeted `plexi pane click` variants.
+/// Send a `click_pane`/`click_pane_node` request and report the host's answer,
+/// shared by the pixel, node-targeted, and drag `plexi pane click` variants.
 /// Returns 0 on success, 1 on error.
-fn poll_click_response(response_file: &str, log_prefix: &str) -> i32 {
-    let content = match super::poll_rpc(response_file, "pane click") {
+fn click_request(payload: serde_json::Value, prefix: &str, log_prefix: &str) -> i32 {
+    let content = match super::request(payload, prefix, "pane click") {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-            log::warn!("{log_prefix}: host reported error: {msg}");
-            eprintln!("error: {msg}");
-            return 1;
-        }
+    if let Some(msg) = super::reply_error(&content) {
+        log::warn!("{log_prefix}: host reported error: {msg}");
+        eprintln!("error: {msg}");
+        return 1;
     }
     0
 }
@@ -896,22 +801,18 @@ fn poll_click_response(response_file: &str, log_prefix: &str) -> i32 {
 /// Sends `click_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
 pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
-    let response_file = crate::rpc::response_file("pane-click-response", "json");
-    log::info!(
-        "pane_click:cli: pane_id={pane_id} x={x} y={y} button={button} response_file={response_file:?}"
-    );
-    let code = send_to_socket(serde_json::json!({
-        "type": "click_pane",
-        "pane_id": pane_id,
-        "x": x,
-        "y": y,
-        "button": button,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-    poll_click_response(&response_file, "pane_click:cli")
+    log::info!("pane_click:cli: pane_id={pane_id} x={x} y={y} button={button}");
+    click_request(
+        serde_json::json!({
+            "type": "click_pane",
+            "pane_id": pane_id,
+            "x": x,
+            "y": y,
+            "button": button,
+        }),
+        "pane-click-response",
+        "pane_click:cli",
+    )
 }
 
 /// `plexi pane click <pane_id> --node <node_id> [--button left]`
@@ -919,21 +820,17 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
 /// Sends `click_pane_node` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
 pub fn pane_click_node_cli(pane_id: u64, node_id: &str, button: &str) -> i32 {
-    let response_file = crate::rpc::response_file("pane-click-node-response", "json");
-    log::info!(
-        "pane_click_node:cli: pane_id={pane_id} node_id={node_id} button={button} response_file={response_file:?}"
-    );
-    let code = send_to_socket(serde_json::json!({
-        "type": "click_pane_node",
-        "pane_id": pane_id,
-        "node_id": node_id,
-        "button": button,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-    poll_click_response(&response_file, "pane_click_node:cli")
+    log::info!("pane_click_node:cli: pane_id={pane_id} node_id={node_id} button={button}");
+    click_request(
+        serde_json::json!({
+            "type": "click_pane_node",
+            "pane_id": pane_id,
+            "node_id": node_id,
+            "button": button,
+        }),
+        "pane-click-node-response",
+        "pane_click_node:cli",
+    )
 }
 
 /// Parse a `"x,y"` pane-pixel coordinate pair from a CLI flag value.
@@ -981,30 +878,24 @@ pub fn pane_drag_cli(
         eprintln!("error: pane drag requires --to x,y or --to-node <node_id>");
         return 2;
     }
-    let id = uuid::Uuid::new_v4();
-    let response_file = crate::config::config_dir()
-        .join(format!("pane-drag-response-{id}.json"))
-        .to_string_lossy()
-        .into_owned();
     log::info!(
         "pane_drag:cli: pane_id={pane_id} from={from:?} from_node={from_node:?} to={to:?} \
-         to_node={to_node:?} steps={steps} button={button} response_file={response_file:?}"
+         to_node={to_node:?} steps={steps} button={button}"
     );
-    let code = send_to_socket(serde_json::json!({
-        "type": "drag_pane",
-        "pane_id": pane_id,
-        "from": from,
-        "from_node": from_node,
-        "to": to,
-        "to_node": to_node,
-        "steps": steps,
-        "button": button,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-    poll_click_response(&response_file, "pane_drag:cli")
+    click_request(
+        serde_json::json!({
+            "type": "drag_pane",
+            "pane_id": pane_id,
+            "from": from,
+            "from_node": from_node,
+            "to": to,
+            "to_node": to_node,
+            "steps": steps,
+            "button": button,
+        }),
+        "pane-drag-response",
+        "pane_drag:cli",
+    )
 }
 
 /// `plexi pane capture [--lines N] [pane_id]`
@@ -1038,10 +929,8 @@ pub fn pane_capture_cli(
         },
     };
 
-    let response_file = crate::rpc::response_file("pane-capture-response", "json");
-
     log::info!(
-        "pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} plain={plain} response_file={response_file:?}"
+        "pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} plain={plain}"
     );
 
     let mut req = serde_json::json!({
@@ -1049,17 +938,12 @@ pub fn pane_capture_cli(
         "pane_id": resolved_pane_id,
         "lines": lines,
         "full_output": full_output,
-        "response_file": response_file,
     });
     if let Some(cursor) = from_cursor {
         req["from_cursor"] = serde_json::Value::Number(serde_json::Number::from(cursor));
     }
-    let code = send_to_socket(req);
-    if code != 0 {
-        return code;
-    }
 
-    let content = match super::poll_rpc(&response_file, "pane capture") {
+    let content = match super::request(req, "pane-capture-response", "pane capture") {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -1106,17 +990,15 @@ fn plain_capture_body(lines: &[String]) -> String {
 
 /// `plexi pane status <id>`
 pub fn pane_status_cli(pane_id: u64) -> i32 {
-    let response_file = crate::rpc::response_file("pane-status-response", "json");
-    log::info!("pane_status:cli: pane_id={pane_id} response_file={response_file:?}");
-    let code = send_to_socket(serde_json::json!({
-        "type": "pane_status",
-        "pane_id": pane_id,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-    let content = match super::poll_rpc(&response_file, "pane status") {
+    log::info!("pane_status:cli: pane_id={pane_id}");
+    let content = match super::request(
+        serde_json::json!({
+            "type": "pane_status",
+            "pane_id": pane_id,
+        }),
+        "pane-status-response",
+        "pane status",
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -1155,20 +1037,16 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 /// Process apps also retain the compatible `frame` RenderCommand array.
 /// For terminal panes, returns a simple status object. Returns 0 on success, 1 on error.
 pub fn pane_state_cli(pane_id: u64) -> i32 {
-    let response_file = crate::rpc::response_file("pane-state-response", "json");
+    log::info!("pane_state:cli: pane_id={pane_id}");
 
-    log::info!("pane_state:cli: pane_id={pane_id} response_file={response_file:?}");
-
-    let code = send_to_socket(serde_json::json!({
-        "type": "get_pane_state",
-        "pane_id": pane_id,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-
-    let content = match super::poll_rpc(&response_file, "pane state") {
+    let content = match super::request(
+        serde_json::json!({
+            "type": "get_pane_state",
+            "pane_id": pane_id,
+        }),
+        "pane-state-response",
+        "pane state",
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -1276,13 +1154,11 @@ pub(super) fn open_github_ephemeral(
     );
 
     if super::command_socket_available() {
-        let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let mut payload = serde_json::json!({
             "type": "spawn_pane",
             "type_id": "",
             "path": abs_path,
             "layout": layout,
-            "response_file": response_file,
         });
         if let Some(pid) = from_pane_id {
             payload["from_pane_id"] = serde_json::Value::Number(pid.into());
@@ -1293,11 +1169,11 @@ pub(super) fn open_github_ephemeral(
         if let Some(cwd_str) = cwd {
             payload["cwd"] = serde_json::Value::String(cwd_str.to_string());
         }
-        log::info!("open_github_ephemeral: sending via socket response_file={response_file:?}");
-        let code = send_to_socket(payload);
-        if code != 0 {
-            return code;
-        }
+        log::info!("open_github_ephemeral: sending via socket");
+        let response_file = match super::send_request(payload, "spawn-pane-response", "pane") {
+            Ok(response_file) => response_file,
+            Err(code) => return code,
+        };
         return super::open::wait_for_response(&response_file);
     }
 
@@ -1307,22 +1183,10 @@ pub(super) fn open_github_ephemeral(
     if let Err(code) = crate::cli::require_spawn_servicing_host("open github") {
         return code;
     }
-    let queue_dir = crate::config::config_dir().join("spawn-queue");
-    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
-        eprintln!("error: could not create spawn queue: {e}");
-        return 1;
-    }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let queue_id = uuid::Uuid::new_v4();
     let mut queue_payload = serde_json::json!({
         "type_id": "",
         "path": abs_path,
         "layout": layout,
-        "origin": "open github",
-        "queued_at_ms": crate::cli::spawn_queued_at_ms(),
     });
     if let Some(ref ws) = workspace_root {
         queue_payload["workspace_root"] = serde_json::Value::String(ws.clone());
@@ -1330,16 +1194,15 @@ pub(super) fn open_github_ephemeral(
     if let Some(cwd_str) = cwd {
         queue_payload["cwd"] = serde_json::Value::String(cwd_str.to_string());
     }
-    let file = queue_dir.join(format!("{ts}-{queue_id}.json"));
-    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
-        eprintln!("error: could not write spawn request: {e}");
-        return 1;
-    }
-    crate::cli::nudge_running_instance();
     log::info!("open_github_ephemeral: queued path={abs_path}");
-    println!("queued: open github:{owner}/{repo}");
-    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
-    0
+    match crate::cli::queue_spawn(
+        queue_payload,
+        "open github",
+        &format!("open github:{owner}/{repo}"),
+    ) {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
 }
 
 #[cfg(test)]

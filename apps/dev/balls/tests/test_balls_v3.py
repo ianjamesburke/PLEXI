@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-import os
-import sys
+import plexi_sdk as sdk
+from plexi_sdk.events import KeyEvent, RenderFrame, Resize
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python")
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import plexi_sdk as sdk  # noqa: E402
-from plexi_sdk.events import KeyEvent, RenderFrame, Resize  # noqa: E402
-
-import balls  # noqa: E402
+import balls
 
 
 def _reset(count: int = 2) -> dict:

@@ -1,0 +1,431 @@
+//! Keychain backends and the two-trait storage split.
+//!
+//! The trait split is the enforcement: [`NonDestructiveStore`] is the only
+//! surface migration and reconciliation signatures accept, so a destructive
+//! op there is a compile error. [`SecretStore`] adds the upsert and
+//! unconditional delete that belong exclusively to user-initiated flows.
+//!
+//! [`super::system_store`] is the only selector for a real backend.
+
+use zeroize::Zeroizing;
+
+#[cfg(all(target_os = "macos", not(test)))]
+use super::KEYCHAIN_SERVICE;
+#[cfg(test)]
+use std::collections::HashMap;
+
+/// The non-destructive storage surface — the **only** trait migration and
+/// reconciliation code takes. Invariant: no method on this trait can overwrite
+/// or unconditionally destroy a value the caller did not write, so a
+/// destructive op in a migration is a compile error, not a review catch.
+/// `account` is the full namespaced key (e.g. `plexi:abc-123:openai_prod`).
+pub trait NonDestructiveStore: Send + Sync {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>>;
+    /// Create-only write: stores `value` **only** if `account` does not
+    /// already exist, and returns [`SecretError::AlreadyExists`] if it does.
+    /// Never updates — the backend itself refuses the duplicate, so the check
+    /// and the write cannot race.
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError>;
+    /// Value-guarded delete: removes `account` only while it still holds
+    /// exactly `expected`. Any other stored value returns
+    /// [`SecretError::ValueChanged`] and leaves the item untouched; an
+    /// already-missing item is success. See each impl for its atomicity.
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError>;
+    /// Best-effort listing of accounts with a given prefix. Used by the host
+    /// to enumerate `plexi:<workspace-id>:*` entries for the missing-secret
+    /// modal. macOS Keychain has no clean prefix-list — production impl
+    /// reads from `secrets-index.json`.
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String>;
+    /// Enumerate every account in the backend itself, bypassing the index
+    /// cache. Attributes-only on macOS — never reads values, so it never
+    /// crosses the keychain ACL prompt boundary (value reads of items another
+    /// binary wrote are what prompt; attribute enumeration does not).
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError>;
+}
+
+/// The full store surface. Adds the destructive ops — upsert and
+/// unconditional delete — that only user-initiated flows (the Secrets app
+/// editor, `plexi secret set`/`delete`) may express. Migration and
+/// reconciliation signatures take [`NonDestructiveStore`] and cannot name
+/// these methods.
+pub trait SecretStore: NonDestructiveStore {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError>;
+    fn delete(&self, account: &str) -> Result<(), SecretError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SecretError {
+    #[error("keychain backend error: {0}")]
+    Backend(String),
+    /// A create-only write lost the race: the account already exists. Callers
+    /// must treat the existing value as authoritative and never overwrite it.
+    #[error("keychain account already exists: {0}")]
+    AlreadyExists(String),
+    /// A value-guarded delete refused: the account no longer holds the value
+    /// the caller copied. Callers must keep the item and report a conflict.
+    #[error("keychain account value changed since it was read: {0}")]
+    ValueChanged(String),
+}
+
+/// macOS Keychain backend via `security-framework`.
+///
+/// Maintains `~/.plexi-<channel>/secrets-index.json` so list operations work
+/// without invoking `security dump-keychain` (which triggers an invisible
+/// permission prompt). See DEV_LOG 2026-04-11.
+///
+/// Private, non-constructible outside this module, and absent from test
+/// builds entirely — [`system_store`] is the only handle.
+#[cfg(all(target_os = "macos", not(test)))]
+pub(super) struct MacKeychain;
+
+#[cfg(all(target_os = "macos", not(test)))]
+impl NonDestructiveStore for MacKeychain {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        use security_framework::passwords::get_generic_password;
+        match get_generic_password(KEYCHAIN_SERVICE, account) {
+            Ok(data) => Some(Zeroizing::new(
+                String::from_utf8_lossy(&data).trim().to_string(),
+            )),
+            Err(e) if e.code() == -25300 => None,
+            Err(e) => {
+                log::warn!(
+                    "workspace_secrets::MacKeychain::get: keychain error for account={account}: {e}"
+                );
+                None
+            }
+        }
+    }
+
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        use core_foundation::data::CFData;
+        use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass, Location};
+
+        // `SecItemAdd` (via `ItemAddOptions::add`) is create-only and reports
+        // `errSecDuplicateItem` for an existing account. `set_generic_password`
+        // cannot be used here: it upserts, silently rewriting the duplicate.
+        let result = ItemAddOptions::new(ItemAddValue::Data {
+            class: ItemClass::generic_password(),
+            data: CFData::from_buffer(value.as_bytes()),
+        })
+        .set_service(KEYCHAIN_SERVICE)
+        .set_account_name(account)
+        .set_location(Location::DefaultFileKeychain)
+        .add();
+
+        match result {
+            Ok(()) => {
+                super::index::index_add(account);
+                Ok(())
+            }
+            // errSecDuplicateItem
+            Err(e) if e.code() == -25299 => Err(SecretError::AlreadyExists(account.to_string())),
+            Err(e) => Err(SecretError::Backend(format!(
+                "create-only add of '{account}' failed: {e}"
+            ))),
+        }
+    }
+
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        // Read-compare-delete. macOS Security.framework has no atomic
+        // compare-and-delete (and no multi-item transaction), so the guard is
+        // best-effort: a cross-process write landing in the one-syscall gap
+        // between this read and the delete below can still be lost. The
+        // in-memory test impl IS atomic; this one is honestly not, and the
+        // residual window is irreducible — do not document it as closed.
+        match self.get(account) {
+            None => Ok(()), // already gone — nothing to lose
+            Some(current) if current.as_str() == expected => {
+                use security_framework::passwords::delete_generic_password;
+                match delete_generic_password(KEYCHAIN_SERVICE, account) {
+                    Ok(()) => {}
+                    // Already gone — treat as success.
+                    Err(e) if e.code() == -25300 => {}
+                    Err(e) => return Err(SecretError::Backend(format!("{e}"))),
+                }
+                super::index::index_remove(account);
+                Ok(())
+            }
+            Some(_) => Err(SecretError::ValueChanged(account.to_string())),
+        }
+    }
+
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        super::index::index_read()
+            .into_iter()
+            .filter(|a| a.starts_with(prefix))
+            .collect()
+    }
+
+    /// Attributes-only: the query asks for `kSecReturnAttributes` and never
+    /// `kSecReturnData`, so it reads item metadata without unlocking any
+    /// value and never raises a keychain-access prompt.
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+
+        let results = match ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(KEYCHAIN_SERVICE)
+            .load_attributes(true)
+            .limit(Limit::All)
+            .search()
+        {
+            Ok(results) => results,
+            // errSecItemNotFound — no Plexi secrets stored yet.
+            Err(e) if e.code() == -25300 => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(SecretError::Backend(format!(
+                    "keychain scan for service '{KEYCHAIN_SERVICE}' failed: {e}"
+                )))
+            }
+        };
+
+        let mut accounts = Vec::with_capacity(results.len());
+        for result in &results {
+            match result.simplify_dict().and_then(|d| d.get("acct").cloned()) {
+                Some(account) => accounts.push(account),
+                None => log::warn!(
+                    "workspace_secrets::scan: keychain item under service '{KEYCHAIN_SERVICE}' \
+                     has no account attribute; skipping"
+                ),
+            }
+        }
+        log::info!(
+            "workspace_secrets::scan: found {} keychain item(s) under service '{KEYCHAIN_SERVICE}'",
+            accounts.len()
+        );
+        Ok(accounts)
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+impl SecretStore for MacKeychain {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        use security_framework::passwords::set_generic_password;
+        set_generic_password(KEYCHAIN_SERVICE, account, value.as_bytes())
+            .map_err(|e| SecretError::Backend(format!("{e}")))?;
+        super::index::index_add(account);
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        use security_framework::passwords::delete_generic_password;
+        match delete_generic_password(KEYCHAIN_SERVICE, account) {
+            Ok(()) => {}
+            // Already gone — treat as success.
+            Err(e) if e.code() == -25300 => {}
+            Err(e) => return Err(SecretError::Backend(format!("{e}"))),
+        }
+        super::index::index_remove(account);
+        Ok(())
+    }
+}
+
+/// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
+/// interior mutability so tests can share a single instance behind `&dyn`.
+#[cfg(test)]
+pub struct InMemoryKeychain {
+    store: std::sync::Mutex<HashMap<String, String>>,
+    /// Models a Keychain that serves reads and writes but refuses removal.
+    delete_fails: bool,
+    /// Account whose reads always miss, however it was written.
+    unreadable: Option<String>,
+    /// `(account, stale_value)` — the FIRST read of `account` returns
+    /// `stale_value` instead of the stored value. Models a cross-process
+    /// write landing between a caller's read and its later guarded delete.
+    stale_read: std::sync::Mutex<Option<(String, String)>>,
+}
+
+#[cfg(test)]
+impl InMemoryKeychain {
+    pub fn new() -> Self {
+        Self {
+            store: std::sync::Mutex::new(HashMap::new()),
+            delete_fails: false,
+            unreadable: None,
+            stale_read: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Models a concurrent writer: the first read of `account` returns
+    /// `stale_value`; the store's real contents are what later reads (and the
+    /// guarded delete) see.
+    pub fn with_stale_read(account: &str, stale_value: &str) -> Self {
+        Self {
+            stale_read: std::sync::Mutex::new(Some((account.to_string(), stale_value.to_string()))),
+            ..Self::new()
+        }
+    }
+
+    pub fn with_failing_delete() -> Self {
+        Self {
+            delete_fails: true,
+            ..Self::new()
+        }
+    }
+
+    /// Models a Keychain whose write appears to succeed but whose read-back of
+    /// `account` does not return the value that was written.
+    pub fn with_unreadable_account(account: &str) -> Self {
+        Self {
+            unreadable: Some(account.to_string()),
+            ..Self::new()
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for InMemoryKeychain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+impl NonDestructiveStore for InMemoryKeychain {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        if self.unreadable.as_deref() == Some(account) {
+            return None;
+        }
+        if let Ok(mut hook) = self.stale_read.lock() {
+            if hook.as_ref().is_some_and(|(a, _)| a == account) {
+                let (_, stale) = hook.take().expect("checked above");
+                return Some(Zeroizing::new(stale));
+            }
+        }
+        self.store
+            .lock()
+            .ok()?
+            .get(account)
+            .cloned()
+            .map(Zeroizing::new)
+    }
+
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        let mut g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        if g.contains_key(account) {
+            return Err(SecretError::AlreadyExists(account.to_string()));
+        }
+        g.insert(account.to_string(), value.to_string());
+        Ok(())
+    }
+
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        if self.delete_fails {
+            return Err(SecretError::Backend(
+                "delete refused by test store".to_string(),
+            ));
+        }
+        // Genuinely atomic under the store lock — unlike MacKeychain's
+        // read-compare-delete, no window exists here.
+        let mut g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        match g.get(account) {
+            None => Ok(()),
+            Some(current) if current == expected => {
+                g.remove(account);
+                Ok(())
+            }
+            Some(_) => Err(SecretError::ValueChanged(account.to_string())),
+        }
+    }
+
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let g = match self.store.lock() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        g.keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        let g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        Ok(g.keys().cloned().collect())
+    }
+}
+
+#[cfg(test)]
+impl SecretStore for InMemoryKeychain {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        let mut g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        g.insert(account.to_string(), value.to_string());
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        if self.delete_fails {
+            return Err(SecretError::Backend(
+                "delete refused by test store".to_string(),
+            ));
+        }
+        let mut g = self
+            .store
+            .lock()
+            .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
+        g.remove(account);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_new_refuses_an_existing_account_and_leaves_its_value_alone() {
+        let store = InMemoryKeychain::new();
+        store.add_new("plexi:user:AGE", "first").expect("first add");
+
+        let err = store
+            .add_new("plexi:user:AGE", "second")
+            .expect_err("a second add of the same account must fail");
+
+        assert!(
+            matches!(err, SecretError::AlreadyExists(ref a) if a == "plexi:user:AGE"),
+            "expected AlreadyExists, got {err:?}"
+        );
+        assert_eq!(
+            store.get("plexi:user:AGE").map(|v| v.to_string()),
+            Some("first".to_string()),
+            "a refused add must not change the stored value"
+        );
+    }
+
+    #[test]
+    fn delete_if_value_refuses_when_the_stored_value_changed() {
+        let store = InMemoryKeychain::new();
+        store.set("plexi:user:X", "current").unwrap();
+
+        let refused = store.delete_if_value("plexi:user:X", "what-i-read-earlier");
+        assert!(
+            matches!(refused, Err(SecretError::ValueChanged(_))),
+            "{refused:?}"
+        );
+        assert_eq!(
+            store.get("plexi:user:X").map(|v| v.to_string()),
+            Some("current".to_string()),
+            "a refused guarded delete must leave the value untouched"
+        );
+
+        store.delete_if_value("plexi:user:X", "current").unwrap();
+        assert!(
+            store.get("plexi:user:X").is_none(),
+            "matching value deletes"
+        );
+        // Already gone — success, nothing to lose.
+        store.delete_if_value("plexi:user:X", "anything").unwrap();
+    }
+}

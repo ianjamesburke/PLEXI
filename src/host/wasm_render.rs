@@ -922,17 +922,7 @@ fn render_node(
                 BadgeColor::Danger => colors.danger,
                 BadgeColor::Neutral => colors.bg_active,
             };
-            egui::Frame::new()
-                .fill(fill)
-                .inner_margin(egui::Margin::symmetric(6, 2))
-                .corner_radius(style::RADIUS_SM)
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(&b.text)
-                            .size(style::TEXT_META)
-                            .color(colors.text_on(fill)),
-                    );
-                });
+            crate::ui::badge::badge(ui, &b.text, fill, colors);
         }
 
         UiNodeData::ListView(l) => {
@@ -1401,6 +1391,71 @@ mod tests {
                 .unwrap_or_else(|e| panic!("render text-heavy tree at ppp {ppp}: {e}"));
             std::fs::write(path, png).expect("write screenshot for visual review");
         }
+    }
+
+    /// Stint 0750 evidence: every `BadgeColor` rendered through the one
+    /// `ui::badge` primitive, beside a single-glyph badge that exercises the
+    /// width floor. Confirms the WIT `Badge` arm now picks up `BADGE_PAD_H/V`
+    /// and `RADIUS_BADGE` instead of the `Margin::symmetric(6, 2)` /
+    /// `RADIUS_SM` it painted before. Review artifact:
+    /// /tmp/plexi-render-0750-badges.png.
+    #[test]
+    fn screenshot_badge_colors_and_width_floor() {
+        let badge = |id: u32, text: &str, color: BadgeColor| {
+            node(
+                id,
+                UiNodeData::Badge(
+                    crate::host::wasm_app::bindings::plexi::platform::types::BadgeNode {
+                        text: text.to_string(),
+                        color,
+                    },
+                ),
+            )
+        };
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                node(
+                    0,
+                    UiNodeData::Column(ColumnNode {
+                        children: vec![1, 2],
+                        gap: style::SPACE_MD,
+                        align: Alignment::Start,
+                        grow: false,
+                    }),
+                ),
+                node(
+                    1,
+                    UiNodeData::Row(RowNode {
+                        children: vec![3, 4, 5, 6, 7],
+                        gap: style::SPACE_SM,
+                        align: Alignment::Start,
+                        grow: false,
+                    }),
+                ),
+                // A one-character badge: the pill must stay round rather than
+                // shrink-wrapping the glyph.
+                node(
+                    2,
+                    UiNodeData::Row(RowNode {
+                        children: vec![8, 9],
+                        gap: style::SPACE_SM,
+                        align: Alignment::Start,
+                        grow: false,
+                    }),
+                ),
+                badge(3, "accent", BadgeColor::Accent),
+                badge(4, "success", BadgeColor::Success),
+                badge(5, "warning", BadgeColor::Warning),
+                badge(6, "danger", BadgeColor::Danger),
+                badge(7, "neutral", BadgeColor::Neutral),
+                badge(8, "1", BadgeColor::Accent),
+                badge(9, "42", BadgeColor::Danger),
+            ],
+        };
+        let png = render_ui_tree_to_png(&tree, 480.0, 120.0, 2.0).expect("render badge tree");
+        std::fs::write("/tmp/plexi-render-0750-badges.png", png)
+            .expect("write screenshot for visual review");
     }
 
     /// Build an edit state as the render arm would leave it.

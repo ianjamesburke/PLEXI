@@ -10,10 +10,14 @@
 //! `/permissions` UI surface come later; their target types exist as data only.
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
+use crate::platform::toml_store::TomlStore;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// Log prefix for every line this store emits.
+const STORE_LABEL: &str = "grant_store";
 
 // ── Core enums ────────────────────────────────────────────────────────────────
 
@@ -161,7 +165,7 @@ impl GrantRecord {
             actor_type: ActorType::App,
             actor_id: app_id.to_string(),
             actor_scope: ActorScope::User,
-            workspace_root: Some(canonical(workspace_root)),
+            workspace_root: Some(crate::platform::path::canonical_or_self(workspace_root)),
             target_type: TargetType::Capability,
             target_id: cap.as_str().to_string(),
             resource_scope: ResourceScope::Workspace,
@@ -169,7 +173,7 @@ impl GrantRecord {
             decision,
             duration: GrantDuration::Always,
             source: GrantSource::User,
-            created_at: now_unix(),
+            created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
         }
     }
@@ -223,7 +227,7 @@ impl PermissionRequest {
             actor_id: actor_id.to_string(),
             target_type,
             target_id: target_id.to_string(),
-            workspace_root: workspace_root.map(canonical),
+            workspace_root: workspace_root.map(|r| crate::platform::path::canonical_or_self(&r)),
         }
     }
 
@@ -349,10 +353,20 @@ struct GrantStoreData {
 /// `<config_dir>/grants.toml`. Legacy `permissions.toml` entries are migrated
 /// in on load (loss-free, idempotent); the legacy store keeps working in
 /// parallel until every call site is switched.
-#[derive(Debug, Default)]
+///
+/// File handling (load-or-default, corrupt backup, atomic save) lives in
+/// [`TomlStore`]; this type owns only the grant evaluation rules.
+#[derive(Debug)]
 pub struct GrantStore {
-    data: GrantStoreData,
-    path: PathBuf,
+    file: TomlStore<GrantStoreData>,
+}
+
+impl Default for GrantStore {
+    fn default() -> Self {
+        Self {
+            file: TomlStore::detached(STORE_LABEL),
+        }
+    }
 }
 
 impl GrantStore {
@@ -361,52 +375,26 @@ impl GrantStore {
     /// corrupt file is backed up and an empty store returned (fail open to
     /// empty, never crash the host).
     pub fn load_or_default(config_dir: &Path) -> Self {
-        let path = config_dir.join("grants.toml");
-        let mut store = match std::fs::read_to_string(&path) {
-            Err(_) => Self {
-                data: GrantStoreData::default(),
-                path: path.clone(),
+        let file = TomlStore::load_or_default(
+            config_dir,
+            "grants.toml",
+            STORE_LABEL,
+            |data: &GrantStoreData, path| {
+                log::info!(
+                    "grant_store: loaded {} records from {}",
+                    data.records.len(),
+                    path.display()
+                );
             },
-            Ok(raw) => match toml::from_str::<GrantStoreData>(&raw) {
-                Ok(data) => {
-                    log::info!(
-                        "grant_store: loaded {} records from {}",
-                        data.records.len(),
-                        path.display()
-                    );
-                    Self {
-                        data,
-                        path: path.clone(),
-                    }
-                }
-                Err(e) => {
-                    let ts = now_unix();
-                    let backup = path.with_file_name(format!("grants.toml.corrupt-{ts}"));
-                    log::error!(
-                        "grant_store: failed to parse {}: {e} — backing up to {}",
-                        path.display(),
-                        backup.display()
-                    );
-                    if let Err(rename_err) = std::fs::rename(&path, &backup) {
-                        log::error!(
-                            "grant_store: could not rename corrupt file to {}: {rename_err}",
-                            backup.display()
-                        );
-                    }
-                    Self {
-                        data: GrantStoreData::default(),
-                        path: path.clone(),
-                    }
-                }
-            },
-        };
+        );
+        let mut store = Self { file };
 
         let legacy = PermissionStore::load_or_default(config_dir);
         let migrated = store.migrate_legacy(&legacy);
         if migrated > 0 {
             log::info!(
                 "grant_store: migrated {migrated} legacy permissions.toml entries into {}",
-                path.display()
+                store.file.path.display()
             );
             store.save();
         }
@@ -426,7 +414,7 @@ impl GrantStore {
                 cap,
                 Decision::from_permission_state(state),
             );
-            let exists = self.data.records.iter().any(|r| {
+            let exists = self.file.data.records.iter().any(|r| {
                 r.actor_type == record.actor_type
                     && r.actor_id == record.actor_id
                     && r.target_type == record.target_type
@@ -434,7 +422,7 @@ impl GrantStore {
                     && r.workspace_root == record.workspace_root
             });
             if !exists {
-                self.data.records.push(record);
+                self.file.data.records.push(record);
                 added += 1;
             }
         }
@@ -445,7 +433,7 @@ impl GrantStore {
     /// (actor, target, workspace, source) is replaced so user decisions
     /// update in place instead of accumulating contradictions.
     pub fn record(&mut self, record: GrantRecord) {
-        self.data.records.retain(|r| {
+        self.file.data.records.retain(|r| {
             !(r.actor_type == record.actor_type
                 && r.actor_id == record.actor_id
                 && r.target_type == record.target_type
@@ -463,7 +451,7 @@ impl GrantStore {
             record.duration,
             record.source,
         );
-        self.data.records.push(record);
+        self.file.data.records.push(record);
     }
 
     /// Convenience: persist an app capability decision (the prompt-modal and
@@ -487,11 +475,11 @@ impl GrantStore {
     /// of workspace, source, or duration. Returns the number of records
     /// removed. The caller decides whether to `save()`.
     pub fn revoke(&mut self, actor_type: ActorType, actor_id: &str, target_id: &str) -> usize {
-        let before = self.data.records.len();
-        self.data.records.retain(|r| {
+        let before = self.file.data.records.len();
+        self.file.data.records.retain(|r| {
             !(r.actor_type == actor_type && r.actor_id == actor_id && r.target_id == target_id)
         });
-        let removed = before - self.data.records.len();
+        let removed = before - self.file.data.records.len();
         log::info!(
             "grant_store: revoked {removed} record(s) for {actor_type:?} '{actor_id}' -> '{target_id}'"
         );
@@ -500,28 +488,12 @@ impl GrantStore {
 
     /// All persisted records (read-only).
     pub fn records(&self) -> &[GrantRecord] {
-        &self.data.records
+        &self.file.data.records
     }
 
-    /// Atomically write to disk (temp file + rename). No-op for path-less
-    /// test stores.
+    /// Atomically write to disk. No-op for path-less test stores.
     pub fn save(&self) {
-        if self.path.as_os_str().is_empty() {
-            return;
-        }
-        match toml::to_string_pretty(&self.data) {
-            Ok(s) => {
-                let tmp = self.path.with_extension("toml.tmp");
-                if let Err(e) =
-                    std::fs::write(&tmp, &s).and_then(|_| std::fs::rename(&tmp, &self.path))
-                {
-                    log::error!("grant_store: failed to save {}: {e}", self.path.display());
-                } else {
-                    log::info!("grant_store: saved {}", self.path.display());
-                }
-            }
-            Err(e) => log::error!("grant_store: serialize error: {e}"),
-        }
+        self.file.save();
     }
 
     /// Evaluate a request through the spec's ordered tiers:
@@ -545,8 +517,9 @@ impl GrantStore {
         req: &PermissionRequest,
         posture: Option<&PermissionPosture>,
     ) -> Decision {
-        let now = now_unix();
+        let now = crate::platform::clock::now_secs() as i64;
         let matching: Vec<&GrantRecord> = self
+            .file
             .data
             .records
             .iter()
@@ -602,11 +575,11 @@ impl GrantStore {
         app_id: &str,
         workspace_root: &Path,
     ) -> (HashSet<Capability>, HashSet<Capability>) {
-        let ws = canonical(workspace_root);
-        let now = now_unix();
+        let ws = crate::platform::path::canonical_or_self(workspace_root);
+        let now = crate::platform::clock::now_secs() as i64;
         let mut allowed = HashSet::new();
         let mut denied = HashSet::new();
-        for r in &self.data.records {
+        for r in &self.file.data.records {
             if r.actor_type != ActorType::App
                 || r.actor_id != app_id
                 || r.target_type != TargetType::Capability
@@ -646,19 +619,6 @@ impl GrantStore {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn canonical(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,7 +636,7 @@ mod tests {
             decision,
             duration: GrantDuration::Session,
             source,
-            created_at: now_unix(),
+            created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
         }
     }
@@ -821,7 +781,7 @@ mod tests {
     fn expired_record_is_ignored() {
         let mut store = GrantStore::default();
         let mut g = agent_grant(Decision::Allow, GrantSource::User);
-        g.expires_at = Some(now_unix() - 10);
+        g.expires_at = Some(crate::platform::clock::now_secs() as i64 - 10);
         store.record(g);
         assert_eq!(store.evaluate(&agent_request(), None), Decision::Ask);
     }

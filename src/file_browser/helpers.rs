@@ -522,13 +522,12 @@ fn compare_entry_column(a: &Entry, b: &Entry, column: ColumnId) -> Ordering {
     }
 }
 
+/// A file size for a browser column: an em-dash when the size is unknown,
+/// otherwise the shared human-readable rendering.
 pub(crate) fn format_size(bytes: Option<u64>) -> String {
     match bytes {
         None => "\u{2014}".to_string(),
-        Some(b) if b < 1024 => format!("{b} B"),
-        Some(b) if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.0),
-        Some(b) if b < 1024 * 1024 * 1024 => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
-        Some(b) => format!("{:.1} GB", b as f64 / (1024.0 * 1024.0 * 1024.0)),
+        Some(b) => crate::platform::format::human_size(b),
     }
 }
 

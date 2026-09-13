@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
-use crate::app_protocol::{EventStreamDecl, PayloadMode, TriggerMode};
+use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionPosture, PermissionRequest, ResourceScope, TargetType,
@@ -790,10 +790,7 @@ impl HostSubscriptionService {
         targets: &[String],
         config_dir: &Path,
     ) {
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let created_at = crate::platform::clock::now_secs() as i64;
         for target in targets {
             self.grant_store.record(GrantRecord {
                 actor_type,
@@ -968,7 +965,7 @@ impl HostSubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_protocol::{AppEventActor, EventStreamDecl};
+    use crate::protocol::{AppEventActor, EventStreamDecl};
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource, ResourceScope};
     use crate::host::app_timeline::EmittedEvent;
 

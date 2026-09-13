@@ -18,7 +18,7 @@
 //! so the runtime knows whether to inject context, trigger a turn, run an
 //! ambient workflow, or prompt first. Until then deliveries accumulate here.
 
-use crate::app_protocol::{AppEventActor, EventStreamDecl, PayloadMode, TriggerMode};
+use crate::protocol::{AppEventActor, EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{ActorType, GrantDuration};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
