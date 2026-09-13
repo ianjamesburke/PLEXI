@@ -110,6 +110,17 @@ pub enum ModelTier {
     High,
 }
 
+impl ModelTier {
+    /// Canonical lowercase name, matching the serde representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelTier::Low => "low",
+            ModelTier::Medium => "medium",
+            ModelTier::High => "high",
+        }
+    }
+}
+
 /// A simple rectangle (logical coordinates).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct Rect {

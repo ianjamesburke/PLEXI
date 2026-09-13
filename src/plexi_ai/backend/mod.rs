@@ -149,18 +149,11 @@ pub struct AiBackendRequest {
 
 /// Error returned when a backend call cannot start.
 /// Individual stream failures are delivered as `StreamEvent::Error`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AiBackendError {
     /// I/O failure before streaming began.
+    #[error("I/O error: {0}")]
     Io(String),
-}
-
-impl std::fmt::Display for AiBackendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AiBackendError::Io(s) => write!(f, "I/O error: {s}"),
-        }
-    }
 }
 
 /// The core backend contract.

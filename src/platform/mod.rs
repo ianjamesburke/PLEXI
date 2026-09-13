@@ -3,12 +3,13 @@ pub mod app_nap;
 pub mod clock;
 #[cfg(target_os = "macos")]
 pub mod finder_service;
+pub mod format;
 pub mod frame_diag;
 pub mod fs;
 pub mod logging;
 #[cfg(target_os = "macos")]
 pub mod macos_menu;
 pub mod path;
+pub mod text;
 pub mod toml_store;
 pub mod ui_profile;
-pub mod format;

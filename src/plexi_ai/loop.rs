@@ -57,24 +57,17 @@ pub enum TurnDelta<'a> {
 }
 
 /// Error variants for a failed turn.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TurnError {
     /// Backend could not start streaming.
-    BackendError(AiBackendError),
+    #[error("backend error: {0}")]
+    BackendError(#[from] AiBackendError),
     /// Streaming started but the backend reported an error mid-stream.
+    #[error("stream error: {0}")]
     StreamError(String),
     /// The stream channel closed unexpectedly before `Done` was received.
+    #[error("stream channel closed unexpectedly")]
     ChannelClosed,
-}
-
-impl std::fmt::Display for TurnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TurnError::BackendError(e) => write!(f, "backend error: {e}"),
-            TurnError::StreamError(s) => write!(f, "stream error: {s}"),
-            TurnError::ChannelClosed => write!(f, "stream channel closed unexpectedly"),
-        }
-    }
 }
 
 /// Run a single user turn through the backend and return the full response.

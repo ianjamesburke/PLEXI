@@ -5,14 +5,6 @@ use std::path::{Path, PathBuf};
 use crate::protocol::ModelTier;
 use crate::broker::Decision;
 
-pub fn model_tier_name(tier: ModelTier) -> &'static str {
-    match tier {
-        ModelTier::Low => "low",
-        ModelTier::Medium => "medium",
-        ModelTier::High => "high",
-    }
-}
-
 /// One Assistant settings layer, in increasing precedence order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsScope {
@@ -387,7 +379,7 @@ impl SettingsLoader {
             };
             log::info!(
                 "assistant settings: applied session model tier {}",
-                model_tier_name(tier)
+                tier.as_str()
             );
         }
         if !session.permissions.is_empty() {

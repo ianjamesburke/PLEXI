@@ -834,13 +834,7 @@ mod tests {
             assert_eq!(name, "echo");
             assert_eq!(input_json, r#"{"value":7}"#);
             assert_eq!(caller_id, "mcp:pane:7001");
-            tool_dispatch::resolve_pending(
-                &call_id,
-                ToolCallResult {
-                    output_json: Some(r#"{"echo":7}"#.to_string()),
-                    error: None,
-                },
-            );
+            tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"echo":7}"#));
         });
         let (status, body) = post(
             port,

@@ -102,10 +102,7 @@ impl ScriptedCall {
             name: name.into(),
             arguments,
             permission: None,
-            result: ToolCallResult {
-                output_json: Some(output.to_string()),
-                error: None,
-            },
+            result: ToolCallResult::ok_value(output),
         }
     }
 
@@ -118,10 +115,7 @@ impl ScriptedCall {
             name: name.into(),
             arguments,
             permission: None,
-            result: ToolCallResult {
-                output_json: None,
-                error: Some(error.into()),
-            },
+            result: ToolCallResult::err(error),
         }
     }
 
@@ -421,7 +415,7 @@ impl AiBroker for ScriptedBroker {
         let mut trace = self.trace.lock().unwrap();
         trace.push(OrchestrationEvent::Selection {
             agent,
-            tier: super::settings::model_tier_name(request.model_tier).to_string(),
+            tier: request.model_tier.as_str().to_string(),
             provider: route.map(|route| route.provider.clone()),
             model: route.map(|route| route.model.clone()),
         });
@@ -1038,7 +1032,7 @@ mod tests {
     #[test]
     fn scope_refusal_is_final_and_never_routes_through_a_terminal() {
         for guidance in [
-            crate::assistant::DEFAULT_AGENT_PROMPT,
+            crate::agent::DEFAULT_AGENT_PROMPT,
             &crate::assistant::skills::SkillRegistry::load(
                 std::path::Path::new("/nonexistent-profile"),
                 std::path::Path::new("/nonexistent-workspace"),
