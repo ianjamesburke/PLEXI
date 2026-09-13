@@ -293,6 +293,11 @@ pub fn is_light_preset(name: &str) -> bool {
 }
 
 /// Returns the list of available preset names.
+///
+/// Test-only: the WCAG contrast tests sweep every preset. Production code
+/// reaches presets by name through [`preset_colors`], so a non-test build has
+/// no caller and `-D warnings` rejects one.
+#[cfg(test)]
 pub fn preset_names() -> &'static [&'static str] {
     &[
         "catppuccin-mocha",
