@@ -95,10 +95,7 @@ pub fn should_prompt_completions() -> bool {
 
 /// CLI name for the running build variant (e.g. `plexi`, `plexi-alpha`).
 pub fn cli_name() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string())
+    crate::config::current_exe_basename()
 }
 
 fn install_path() -> PathBuf {

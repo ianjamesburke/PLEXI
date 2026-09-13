@@ -12,11 +12,10 @@ pub(super) fn wait_for_response(response_file: &str) -> i32 {
         Ok(content) => content,
         Err(code) => return code,
     };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-            eprintln!("error: {msg}");
-            return 1;
-        }
         if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
             println!("{pid}");
             return 0;
@@ -183,12 +182,10 @@ pub fn pane_new_cli(
 
     // Socket path — inside a Plexi pane
     if super::command_socket_available() {
-        let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let mut payload = serde_json::json!({
             "type": "spawn_pane",
             "type_id": type_id,
             "args": args,
-            "response_file": response_file,
         });
         // Omit `layout` when unset so the host applies its placement default
         // (manifest `[launch] placement`, else a sibling split) rather than the
@@ -221,11 +218,11 @@ pub fn pane_new_cli(
                 payload["boot_timeout_secs"] = serde_json::json!(secs);
             }
         }
-        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?} response_file={response_file:?}", agent.map(|a| &a.command));
-        let code = send_to_socket(payload);
-        if code != 0 {
-            return code;
-        }
+        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?}", agent.map(|a| &a.command));
+        let response_file = match super::send_request(payload, "spawn-pane-response", "pane") {
+            Ok(response_file) => response_file,
+            Err(code) => return code,
+        };
         return match agent {
             Some(agent) => wait_for_agent_boot(&response_file, agent),
             None => wait_for_response(&response_file),
@@ -252,17 +249,9 @@ pub fn pane_new_cli(
         );
         eprintln!("warning: --from is ignored outside a Plexi pane");
     }
-    let queue_dir = crate::config::config_dir().join("spawn-queue");
-    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
-        eprintln!("error: could not create spawn queue: {e}");
-        return 1;
-    }
-    let id = crate::platform::clock::now_nanos();
     let mut queue_payload = serde_json::json!({
         "type_id": type_id,
         "args": args,
-        "origin": "pane new",
-        "queued_at_ms": crate::cli::spawn_queued_at_ms(),
     });
     if let Some(l) = layout {
         queue_payload["layout"] = serde_json::Value::String(l.to_string());
@@ -282,16 +271,11 @@ pub fn pane_new_cli(
     if let Some(ctx) = context_name {
         queue_payload["context_name"] = serde_json::Value::String(ctx.to_string());
     }
-    let file = queue_dir.join(format!("{id}.json"));
-    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
-        eprintln!("error: could not write spawn request: {e}");
-        return 1;
-    }
-    crate::cli::nudge_running_instance();
     log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?}");
-    println!("queued: open {type_id}");
-    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
-    0
+    match crate::cli::queue_spawn(queue_payload, "pane new", &format!("open {type_id}")) {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
 }
 
 /// Derive a short display name for an MCP pane from the server command args.
@@ -739,6 +723,8 @@ fn open_app_by_path(
     };
 
     if super::command_socket_available() {
+        // The typed `LaunchSpec` owns this request's `response_file`, so this
+        // site mints its own rather than going through `send_request`.
         let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let spec = spec.with_response_file(Some(response_file.clone()));
         let payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
@@ -766,34 +752,20 @@ fn open_app_by_path(
     if let Err(code) = crate::cli::require_spawn_servicing_host("open") {
         return code;
     }
-    let queue_dir = crate::config::config_dir().join("spawn-queue");
-    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
-        eprintln!("error: could not create spawn queue: {e}");
-        return 1;
-    }
-    let ts = crate::platform::clock::now_nanos();
-    let mut queue_payload =
-        serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
-            log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
-            serde_json::json!({
-                "type_id": "",
-                "path": abs_path,
-                "args": args,
-                "layout": layout,
-            })
-        });
-    queue_payload["origin"] = serde_json::Value::String("open".to_string());
-    queue_payload["queued_at_ms"] = crate::cli::spawn_queued_at_ms().into();
-    let file = queue_dir.join(format!("{ts}.json"));
-    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
-        eprintln!("error: could not write spawn request: {e}");
-        return 1;
-    }
-    crate::cli::nudge_running_instance();
+    let queue_payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
+        log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
+        serde_json::json!({
+            "type_id": "",
+            "path": abs_path,
+            "args": args,
+            "layout": layout,
+        })
+    });
     log::info!("open_app_by_path: queued path={abs_path}");
-    println!("queued: open {abs_path}");
-    println!("(running outside a Plexi pane; Plexi will pick this up within a second)");
-    0
+    match crate::cli::queue_spawn(queue_payload, "open", &format!("open {abs_path}")) {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
 }
 
 #[cfg(test)]

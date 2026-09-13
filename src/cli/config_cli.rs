@@ -411,25 +411,19 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
         }
     }
 
-    // Walk the dot-separated key path.
-    let mut current = &root;
-    for segment in key.split('.') {
-        match current {
-            toml::Value::Table(table) => match table.get(segment) {
-                Some(v) => current = v,
-                None => {
-                    eprintln!(
-                            "error: config key {key:?} not set (no value at {segment:?} in the current config)"
-                        );
-                    return 1;
-                }
-            },
-            _ => {
-                eprintln!("error: config key {key:?} not found (path traverses a non-table value)");
-                return 1;
-            }
+    let current = match resolve_dotted_key(&root, key) {
+        Ok(value) => value,
+        Err(DottedKeyError::Missing(segment)) => {
+            eprintln!(
+                "error: config key {key:?} not set (no value at {segment:?} in the current config)"
+            );
+            return 1;
         }
-    }
+        Err(DottedKeyError::NotATable) => {
+            eprintln!("error: config key {key:?} not found (path traverses a non-table value)");
+            return 1;
+        }
+    };
 
     println!("{}", toml_value_to_string(current));
     0
@@ -586,6 +580,7 @@ pub fn config_list(scope: ConfigScope, json: bool) -> i32 {
         let mut arr = Vec::new();
         for (key, type_name, description) in CONFIG_KEYS {
             let value = resolve_dotted_key(&root, key)
+                .ok()
                 .map(toml_value_to_string)
                 .unwrap_or_default();
             arr.push(serde_json::json!({
@@ -605,6 +600,7 @@ pub fn config_list(scope: ConfigScope, json: bool) -> i32 {
     } else {
         for (key, type_name, description) in CONFIG_KEYS {
             let value = resolve_dotted_key(&root, key)
+                .ok()
                 .map(toml_value_to_string)
                 .unwrap_or_default();
             println!("{key}\t{type_name}\t{value}\t{description}");
@@ -690,16 +686,30 @@ pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
     0
 }
 
-/// Walk a dotted key path in a TOML value tree, returning a reference to the leaf or None.
-fn resolve_dotted_key<'a>(root: &'a toml::Value, key: &str) -> Option<&'a toml::Value> {
+/// Why a dotted key path did not resolve, carrying the segment that failed.
+enum DottedKeyError<'a> {
+    /// The enclosing table has no entry under this segment.
+    Missing(&'a str),
+    /// The walk hit a value that is not a table before reaching the leaf.
+    NotATable,
+}
+
+/// Walk a dotted key path in a TOML value tree, returning a reference to the
+/// leaf or the segment at which the walk failed.
+fn resolve_dotted_key<'a, 'k>(
+    root: &'a toml::Value,
+    key: &'k str,
+) -> Result<&'a toml::Value, DottedKeyError<'k>> {
     let mut current = root;
     for segment in key.split('.') {
         match current {
-            toml::Value::Table(t) => current = t.get(segment)?,
-            _ => return None,
+            toml::Value::Table(t) => {
+                current = t.get(segment).ok_or(DottedKeyError::Missing(segment))?
+            }
+            _ => return Err(DottedKeyError::NotATable),
         }
     }
-    Some(current)
+    Ok(current)
 }
 
 /// Parse a string value into the correct TOML edit value based on the key's declared type.

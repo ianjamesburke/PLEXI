@@ -281,15 +281,11 @@ pub fn agent_report_cli(
 /// `plexi agent status` — query agent states for all panes.
 pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
     log::info!("agent_status:cli: blocked={blocked} working={working} idle={idle}");
-    let response_file = crate::rpc::response_file("plexi-agent-states", "json");
-    let code = super::send_to_socket(serde_json::json!({
-        "type": "get_agent_states",
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-    let content = match super::poll_rpc(&response_file, "agent states") {
+    let content = match super::request(
+        serde_json::json!({ "type": "get_agent_states" }),
+        "plexi-agent-states",
+        "agent states",
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };

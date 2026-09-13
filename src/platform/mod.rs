@@ -11,3 +11,4 @@ pub mod macos_menu;
 pub mod path;
 pub mod toml_store;
 pub mod ui_profile;
+pub mod format;

@@ -62,18 +62,15 @@ pub fn workspace_init() -> i32 {
 }
 
 pub fn workspace_clean_cli(dry_run: bool) -> i32 {
-    let response_file = crate::rpc::response_file("workspace-clean-response", "json");
-    log::info!("workspace_clean:cli: dry_run={dry_run} response_file={response_file:?}");
-    let code = super::send_to_socket(serde_json::json!({
-        "type": "workspace_clean_slots",
-        "dry_run": dry_run,
-        "response_file": response_file,
-    }));
-    if code != 0 {
-        return code;
-    }
-
-    let content = match super::poll_rpc(&response_file, "workspace clean") {
+    log::info!("workspace_clean:cli: dry_run={dry_run}");
+    let content = match super::request(
+        serde_json::json!({
+            "type": "workspace_clean_slots",
+            "dry_run": dry_run,
+        }),
+        "workspace-clean-response",
+        "workspace clean",
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };

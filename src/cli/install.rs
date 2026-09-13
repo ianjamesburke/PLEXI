@@ -297,10 +297,14 @@ pub fn install_workspace_pack_cli() -> i32 {
 /// `None` → `""`, `Some("alpha")` → `" Alpha"`, `Some("beta")` → `" Beta"`,
 /// `Some("pr-2357")` → `" PR2357"`, `Some("foo")` → `" Foo"` (title-cased).
 ///
-/// Single source of truth for this mapping — previously duplicated inline in
-/// `plexi_uninstall_cli` (this file) and `scripts/channel-clean.sh`. Both the
-/// uninstaller and `plexi host start/stop/status` (`src/cli/host.rs`) call
-/// this so the bundle path resolution never drifts between the two.
+/// The Rust-side source of truth: the uninstaller and
+/// `plexi host start/stop/status` (`src/cli/host.rs`) both call this, so bundle
+/// path resolution never drifts between them.
+///
+/// The install scripts run before any Plexi binary exists, so they carry their
+/// own bash implementations of the same mapping: `scripts/install.sh`,
+/// `scripts/channel-clean.sh`, and `_channel_cap` in `scripts/uninstall.sh`.
+/// A change here has to be mirrored in all three.
 pub(crate) fn channel_bundle_cap(channel: Option<&str>) -> String {
     match channel {
         None => String::new(),
@@ -328,20 +332,13 @@ pub(crate) fn channel_bundle_cap(channel: Option<&str>) -> String {
 
 /// `plexi uninstall [--keep-data] [--yes]` — remove Plexi itself from the Mac.
 pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
-    // Detect channel suffix from binary name (e.g. "plexi-alpha" → "-alpha", "plexi" → "")
-    let exe = std::env::current_exe().unwrap_or_default();
-    let binary_name = exe
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let suffix = if binary_name == "plexi" {
-        String::new()
-    } else {
-        binary_name.strip_prefix("plexi").unwrap_or("").to_string()
-    };
-    let channel = suffix.strip_prefix('-').filter(|s| !s.is_empty());
-    let cap_owned = channel_bundle_cap(channel);
+    // Channel of the running binary (`plexi-alpha` → `-alpha`, `plexi` → ``).
+    let channel = crate::config::build_channel();
+    let suffix = channel
+        .as_deref()
+        .map(|c| format!("-{c}"))
+        .unwrap_or_default();
+    let cap_owned = channel_bundle_cap(channel.as_deref());
     let cap = cap_owned.as_str();
 
     let profile_dir = dirs::home_dir().unwrap().join(format!(".plexi{suffix}"));
@@ -639,21 +636,15 @@ mod update_tests {
 /// CLI-only self-update: check for a newer release, build, and install inline.
 /// The GUI uses `spawn_update_check` (background build) + restart instead.
 fn run_self_update() -> Result<String, String> {
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    let binary_name = binary.as_deref().unwrap_or("plexi");
+    let binary_name = crate::config::current_exe_basename();
+    let binary_name = binary_name.as_str();
 
-    let suffix = if binary_name == "plexi" {
-        String::new()
-    } else {
-        binary_name.strip_prefix("plexi").unwrap_or("").to_string()
-    };
-    let channel = if suffix.is_empty() {
-        "main".to_string()
-    } else {
-        suffix.strip_prefix('-').unwrap_or("unknown").to_string()
-    };
+    let build_channel = crate::config::build_channel();
+    let suffix = build_channel
+        .as_deref()
+        .map(|c| format!("-{c}"))
+        .unwrap_or_default();
+    let channel = build_channel.unwrap_or_else(|| "main".to_string());
 
     log::info!("cli: self-update channel={channel} suffix={suffix}");
 
@@ -670,14 +661,9 @@ fn run_self_update() -> Result<String, String> {
         "cli: self-update input channel={channel} update_channel={update_channel:?} install_target={channel}"
     );
 
-    let profile_dir = dirs::home_dir().unwrap_or_default().join(format!(
-        ".plexi{}",
-        if suffix.is_empty() {
-            String::new()
-        } else {
-            format!("-{channel}")
-        }
-    ));
+    let profile_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(format!(".plexi{suffix}"));
     let current_version_raw = std::fs::read_to_string(profile_dir.join("installed_tag"))
         .ok()
         .and_then(|s| {

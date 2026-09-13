@@ -927,11 +927,7 @@ pub fn build_channel() -> Option<String> {
     if let Some(channel) = test_channel_override() {
         return Some(channel);
     }
-    let basename = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;
-    let name = basename.as_str();
-    name.strip_prefix("plexi-").filter(|s| !s.is_empty()).map(|suffix| suffix.to_string())
+    channel_from_basename(&current_exe_basename()).map(str::to_string)
 }
 
 /// True when this binary was compiled for, and is currently running as, the
@@ -991,7 +987,10 @@ fn resolve_channel_dir(basename: &str, env_channel: Option<&str>) -> String {
 }
 
 /// Basename of the running binary, defaulting to `plexi` when it cannot be read.
-fn current_exe_basename() -> String {
+/// The single source for "what am I called?" — every channel, profile, and
+/// self-update decision derives from this, never from its own `current_exe()`
+/// call.
+pub fn current_exe_basename() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -1113,17 +1112,7 @@ pub fn workspace_channel_dir() -> String {
 /// [`workspace_channel_dir`] — the profile dir and the workspace channel dir
 /// are always the same channel.
 fn config_dir_name() -> String {
-    #[cfg(test)]
-    if let Some(channel) = test_channel_override() {
-        return format!(".plexi-{channel}");
-    }
-    if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
-        return format!(".plexi-{profile}");
-    }
-    let channel_dir = process_channel_dir();
-    #[cfg(test)]
-    assert_test_profile_is_isolated(&channel_dir);
-    channel_dir
+    workspace_channel_dir()
 }
 
 #[cfg(test)]
@@ -1141,17 +1130,7 @@ fn assert_test_profile_is_isolated(dir: &str) {
 }
 
 pub fn config_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        let override_dir = TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().clone());
-        if let Some(dir) = override_dir {
-            return dir.join("config.toml");
-        }
-    }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(config_dir_name())
-        .join("config.toml")
+    config_dir().join("config.toml")
 }
 
 pub fn config_dir() -> PathBuf {

@@ -251,6 +251,98 @@ pub(super) fn print_tip(msg: &str) {
     }
 }
 
+/// Prints JSON to stdout. If `jq` is in PATH, pipes through `jq .` for
+/// colour and pretty-printing; otherwise falls back to serde pretty-print.
+/// Content that is not JSON at all is passed through verbatim — the host's
+/// reply is never withheld from the caller.
+pub(super) fn print_json_output(json_str: &str) -> i32 {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let jq_available = Command::new("jq")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if jq_available {
+        match Command::new("jq").arg(".").stdin(Stdio::piped()).spawn() {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if let Err(e) = stdin.write_all(json_str.as_bytes()) {
+                        log::warn!("print_json_output: failed writing to jq stdin ({e})");
+                    }
+                }
+                match child.wait() {
+                    Ok(status) if status.success() => {
+                        log::info!("print_json_output: rendered via jq");
+                        return 0;
+                    }
+                    Ok(status) => {
+                        log::warn!("print_json_output: jq exited non-zero ({status}), falling back to serde");
+                    }
+                    Err(e) => {
+                        log::warn!("print_json_output: jq wait failed ({e}), falling back to serde");
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("print_json_output: jq spawn failed ({e}), falling back to serde");
+            }
+        }
+    }
+
+    match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(v) => match serde_json::to_string_pretty(&v) {
+            Ok(pretty) => {
+                println!("{pretty}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: could not serialize: {e}");
+                1
+            }
+        },
+        Err(_) => {
+            print!("{json_str}");
+            0
+        }
+    }
+}
+
+#[cfg(test)]
+mod reply_error_tests {
+    use super::reply_error;
+
+    /// A host-reported failure must be detectable so the CLI can exit nonzero —
+    /// the poll succeeds here, because the transport worked.
+    #[test]
+    fn error_field_is_surfaced() {
+        assert_eq!(
+            reply_error(r#"{"error":"no parent context for id=Some(9)"}"#).as_deref(),
+            Some("no parent context for id=Some(9)")
+        );
+    }
+
+    #[test]
+    fn successful_response_has_no_error() {
+        assert_eq!(
+            reply_error(r#"{"context_id":76,"windows":[],"panes":[317,318]}"#),
+            None
+        );
+    }
+
+    /// Unparseable output is not an error here: the poll owns transport
+    /// failures, and swallowing an unexpected-but-valid shape would hide the
+    /// response from the caller.
+    #[test]
+    fn unparseable_output_is_not_treated_as_an_error() {
+        assert_eq!(reply_error("not json at all"), None);
+    }
+}
+
 #[cfg(test)]
 mod socket_resolution_tests {
     use super::{command_socket_available_from, resolve_command_socket_from};
@@ -425,6 +517,84 @@ pub(super) fn poll_rpc_with(
             eprintln!("error: {e}");
             Err(1)
         }
+    }
+}
+
+/// Mint a response file for `prefix`, inject it into `payload`, and send the
+/// request over the command socket.
+///
+/// Returns the response-file path once the whole newline-framed request has
+/// been accepted, or the CLI exit code when the transport failed. The one
+/// place the `response_file` key is put on a request — a command that needs a
+/// non-standard poll (raw bytes, slot replies) sends here and polls itself;
+/// everything else uses [`request`].
+pub(super) fn send_request(
+    mut payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+) -> Result<String, i32> {
+    let response_file = crate::rpc::response_file(prefix, "json");
+    let Some(fields) = payload.as_object_mut() else {
+        log::error!("{label}:cli: request payload is not a JSON object");
+        eprintln!("error: internal: {label} request payload is not a JSON object");
+        return Err(1);
+    };
+    fields.insert(
+        "response_file".to_string(),
+        serde_json::Value::String(response_file.clone()),
+    );
+    log::info!("{label}:cli: request response_file={response_file:?}");
+    let code = send_to_socket(payload);
+    if code != 0 {
+        return Err(code);
+    }
+    Ok(response_file)
+}
+
+/// Send a request and wait for the host's reply: the standard CLI round trip.
+/// `label` names the command in the timeout and poll error messages.
+pub(super) fn request(
+    payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+) -> Result<String, i32> {
+    request_with(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT)
+}
+
+/// [`request`] with an explicit poll window, for verbs the host answers on its
+/// own longer deadline.
+pub(super) fn request_with(
+    payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+    timeout: std::time::Duration,
+) -> Result<String, i32> {
+    let response_file = send_request(payload, prefix, label)?;
+    poll_rpc_with(&response_file, label, timeout)
+}
+
+/// The host's top-level `error` string, if the reply is JSON and carries one.
+///
+/// A reply that does not parse is not an error here: transport failures are
+/// already owned by [`poll_rpc`], and swallowing a valid-but-unexpected shape
+/// would hide the response from the caller.
+pub(super) fn reply_error(content: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()?
+        .get("error")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Surface a host-reported `error` as `error: <msg>` on stderr with exit code 1.
+/// The shared postlude for commands whose success payload carries no `error`.
+pub(super) fn check_reply_error(content: &str) -> Result<(), i32> {
+    match reply_error(content) {
+        Some(msg) => {
+            eprintln!("error: {msg}");
+            Err(1)
+        }
+        None => Ok(()),
     }
 }
 
@@ -929,6 +1099,54 @@ pub(super) fn nudge_running_instance() {
     if stream.write_all(format!("{payload}\n").as_bytes()).is_ok() {
         log::debug!("cli: sent wake nudge to running instance at {path:?}");
     }
+}
+
+/// Park a spawn request in this channel's spawn queue for the running host to
+/// drain, and tell the caller what was queued.
+///
+/// The one writer for the queue: it stamps `origin` and `queued_at_ms` onto the
+/// payload, writes a collision-proof `{nanos}-{uuid}.json`, and nudges the host
+/// awake. Callers gate on [`require_spawn_servicing_host`] first — never queue
+/// into a channel with no host to drain it. `intent` names the command in the
+/// queue record; `summary` is what the caller sees echoed back
+/// ("open <type_id>").
+pub(super) fn queue_spawn(
+    mut payload: serde_json::Value,
+    intent: &str,
+    summary: &str,
+) -> Result<(), i32> {
+    let queue_dir = crate::config::config_dir().join("spawn-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        log::warn!("queue_spawn: could not create {queue_dir:?}: {e}");
+        eprintln!("error: could not create spawn queue: {e}");
+        return Err(1);
+    }
+
+    let Some(fields) = payload.as_object_mut() else {
+        log::error!("queue_spawn: '{intent}' payload is not a JSON object");
+        eprintln!("error: could not write spawn request: payload is not a JSON object");
+        return Err(1);
+    };
+    fields.insert(
+        "origin".to_string(),
+        serde_json::Value::String(intent.to_string()),
+    );
+    fields.insert("queued_at_ms".to_string(), spawn_queued_at_ms().into());
+
+    // Nanosecond stamps alone collide when two spawns are queued in the same
+    // instant, so every record carries a uuid as well.
+    let nanos = crate::platform::clock::now_nanos();
+    let file = queue_dir.join(format!("{nanos}-{}.json", uuid::Uuid::new_v4()));
+    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+        log::warn!("queue_spawn: could not write {file:?}: {e}");
+        eprintln!("error: could not write spawn request: {e}");
+        return Err(1);
+    }
+    nudge_running_instance();
+    log::info!("queue_spawn: queued '{intent}' as {file:?}");
+    println!("queued: {summary}");
+    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
+    Ok(())
 }
 
 pub(super) fn binary_in_path(name: &str) -> bool {
