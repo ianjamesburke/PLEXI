@@ -6,6 +6,15 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 
 **If you'd assert on observable state (pane tree, app UI, pixels) → write a TOML scene. If you'd assert on a return value or internal invariant → write a Rust test.** Two layers, no overlap.
 
+## The Gate
+
+Before any push, in this order:
+
+1. `just build` — release build under the justfile's `-D warnings`. This is the path `just pr-install` and every install take. It is the only step that compiles `cfg(not(test))` code and the only one that fails on an item whose callers are all `#[cfg(test)]`; `cargo test` and bare `cargo build` see neither (root `AGENTS.md` Traps).
+2. `cargo test --bin plexi` — correctness.
+
+Both green, or no push. Lane integrators run both after every merge, not once at the end.
+
 ## Wall-clock budgets
 
 Default `cargo test --bin plexi` proves correctness, not idle-machine speed.
