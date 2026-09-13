@@ -439,6 +439,309 @@ python_compat = true
     );
 }
 
+/// Write a minimal but real Python app fixture: a manifest the launch path
+/// accepts and a `.py` entry, global-scoped state (root-independent) so the
+/// test doesn't have to fuss with context roots.
+fn write_restore_fixture_app(parent: &std::path::Path, app_id: &str) -> std::path::PathBuf {
+    let app_dir = parent.join(app_id);
+    std::fs::create_dir_all(&app_dir).expect("create fixture app directory");
+    std::fs::write(
+        app_dir.join("manifest.toml"),
+        format!(
+            "schema_version = 1\n\n[app]\nid = \"{app_id}\"\ntype = \"app\"\n\
+             name = \"{app_id}\"\nversion = \"0.1.0\"\nentry = \"main.py\"\n\
+             description = \"HostHarness restore fixture\"\n\n\
+             [app.capabilities]\ncapabilities = []\n\n\
+             [runtime]\npython_compat = true\n"
+        ),
+    )
+    .expect("write fixture manifest");
+    std::fs::write(
+        app_dir.join("main.py"),
+        "def init(size, args): return []\ndef update(event): return []\n\
+         def view(): return None\n",
+    )
+    .expect("write fixture entry");
+    app_dir
+}
+
+/// stint 0680 — a saved Python app pane's `app_id` must be the real manifest
+/// id (never the runtime kind), it must carry enough launch context to
+/// relaunch through `restore_app_pane`, and `hidden` must round-trip. This is
+/// the round-trip the fix exists for: without it, restore falls back to a
+/// terminal (see `saved_app_pane_can_re_address_its_own_state` for the
+/// state-file-addressing half of this proof).
+#[test]
+fn saved_python_app_pane_restores_as_that_app() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let app_dir = write_restore_fixture_app(tmp.path(), "todo");
+
+    let mut h = HostHarness::new();
+    let pane_id = h
+        .app
+        .launch_app_by_path_with_layout_no_review_modal(
+            &app_dir.to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .expect("launch fixture app")
+        .expect("a Python launch returns a pane id");
+    let context_id = h.app.windows[h.app.active_window].context_id;
+
+    h.app.windows[h.app.active_window]
+        .panes
+        .get_mut(&pane_id)
+        .expect("pane exists")
+        .set_hidden(true);
+
+    h.app.save_workspace_now();
+    let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
+    let record = saved
+        .windows
+        .iter()
+        .flat_map(|window| &window.panes)
+        .find(|pane| pane.id == pane_id)
+        .expect("app pane saved")
+        .clone();
+
+    assert_eq!(
+        record.app_id.as_deref(),
+        Some("todo"),
+        "app_id must be the manifest id, not the runtime kind"
+    );
+    assert_eq!(record.runtime_kind.as_deref(), Some("python-wasm"));
+    assert!(record.hidden, "hidden must round-trip with the pane");
+    let launch = record.launch.clone().expect("launch context recorded");
+    let crate::workspace::SavedAppLaunch::Python {
+        app_dir: recorded_dir,
+        args,
+    } = &launch
+    else {
+        panic!("expected a Python launch spec, got {launch:?}");
+    };
+    assert_eq!(recorded_dir, &app_dir);
+    assert!(args.is_empty());
+
+    let live_state_paths = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .expect("live app pane")
+        .runtime
+        .state_paths();
+
+    let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+    let (restored_pane, restored_state_paths, _hot_reload_dir) = crate::pane_ops::restore_app_pane(
+        "todo",
+        &launch,
+        pane_id,
+        context_id,
+        app_dir.clone(),
+        &app_dir,
+        record.name.as_deref(),
+        &colors,
+    )
+    .expect("restore relaunches the same app");
+
+    let restored = restored_pane.as_app().expect("restored pane is an app pane");
+    assert_eq!(restored.id, pane_id, "restore must keep the saved pane id");
+    assert_eq!(restored.manifest_id, "todo");
+    assert!(matches!(restored.runtime, AppRuntime::Python(_)));
+    assert_eq!(
+        restored_state_paths, live_state_paths,
+        "restored runtime must re-address the same state files as the live pane"
+    );
+}
+
+/// stint 0680 migration path: a pre-fix workspace file (`version = 2`, an App
+/// pane whose `app_id` is the runtime kind because `runtime_kind`/`launch`
+/// didn't exist yet) must still load — never get treated as corrupt and
+/// backed up/wiped like a version mismatch does.
+#[test]
+fn legacy_app_pane_without_launch_context_still_loads() {
+    let _channel = crate::config::set_test_channel("harness-0680-migration");
+    let workspace_dir = crate::config::config_dir().join("workspaces");
+    // A prior run of this test (or a prior failure) may have left a
+    // `backup-*.json` behind in this channel's directory; the assertion below
+    // must observe only what *this* run's `load()` produced.
+    let _ = std::fs::remove_dir_all(&workspace_dir);
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir");
+    let workspace_path = workspace_dir.join("default.json");
+
+    // A real, validly-shaped `Tree<PaneId>` — its serde form carries internal
+    // fields (`id`, `height`, `width`) with no `#[serde(default)]`, so it must
+    // come from the type itself rather than a hand-typed JSON fragment.
+    let tree: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+        egui_tiles::Tree::empty("legacy-migration");
+    let tree_json = serde_json::to_string(&tree).expect("tree must serialize");
+
+    let workspace_json = format!(
+        r#"{{
+            "version": 2,
+            "active_context": 0,
+            "sidebar_visible": true,
+            "next_pane_id": 2,
+            "contexts": [],
+            "windows": [
+                {{
+                    "name": "Default",
+                    "path": "/tmp",
+                    "tree": {tree_json},
+                    "panes": [
+                        {{
+                            "id": 1,
+                            "kind": "app",
+                            "cwd": "/tmp",
+                            "name": "Todo",
+                            "app_id": "python-wasm",
+                            "app_state": null
+                        }}
+                    ],
+                    "focused_pane": null,
+                    "window_id": 1,
+                    "context_id": 1
+                }}
+            ]
+        }}"#
+    );
+    std::fs::write(&workspace_path, workspace_json).expect("write legacy workspace file");
+
+    let loaded = crate::workspace::WorkspaceFile::load();
+    assert!(
+        loaded.is_some(),
+        "a legacy record missing runtime_kind/launch must still load, not be discarded as corrupt"
+    );
+    let record = &loaded.expect("loaded above").windows[0].panes[0];
+    assert!(
+        record.is_legacy_runtime_kind_id(),
+        "a pre-0680 record with no runtime_kind and a runtime-kind app_id must be flagged legacy"
+    );
+    assert!(record.runtime_kind.is_none());
+    assert!(record.launch.is_none());
+
+    // No backup file was written — the migration path is "still parses",
+    // not "detected and quarantined like a version mismatch".
+    let has_backup = std::fs::read_dir(&workspace_dir)
+        .expect("read workspace dir")
+        .any(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("backup")
+        });
+    assert!(!has_backup, "loading a legacy record must not quarantine the file");
+}
+
+/// The other half of the migration path: a `launch` that names an app
+/// directory which no longer exists must fail visibly through
+/// `restore_app_pane`/`restore_launch_failed_pane`, never silently succeed.
+#[test]
+fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
+    let missing_dir = std::path::PathBuf::from("/nonexistent/stint-0680/missing-app");
+    let launch = crate::workspace::SavedAppLaunch::Python {
+        app_dir: missing_dir.clone(),
+        args: vec![],
+    };
+    let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+    let result = crate::pane_ops::restore_app_pane(
+        "missing-app",
+        &launch,
+        99,
+        1,
+        missing_dir.clone(),
+        &missing_dir,
+        None,
+        &colors,
+    );
+    let error = match result {
+        Ok(_) => panic!("restore of a gone app_dir must fail"),
+        Err(reason) => reason,
+    };
+
+    let pane = crate::pane_ops::restore_launch_failed_pane(
+        "missing-app",
+        99,
+        missing_dir,
+        error,
+    );
+    let restored = pane.as_app().expect("launch-failed pane is an app pane");
+    assert_eq!(restored.runtime.type_id(), "launch_failed");
+    assert!(
+        restored.name.contains("missing-app"),
+        "the launch-failed pane must name the app that failed to restore: {}",
+        restored.name
+    );
+}
+
+/// Review follow-up on stint 0680: a legacy record (`is_legacy_runtime_kind_id()`
+/// true — pre-0680 save whose `app_id` is the runtime kind, not a manifest
+/// id) must restore as a `launch_failed` pane naming the runtime kind and the
+/// recovery command, exactly like `restore_app_pane_fails_visibly_when_app_dir_is_gone`'s
+/// unresolvable-manifest case — never fall back to a terminal. This mirrors
+/// the restore loop's own logic in `PlexiApp::new` (which is not reachable
+/// through `HostHarness::new`/`new_for_test`, since those skip the
+/// production `WorkspaceFile::load()` restore path entirely) so the
+/// assertions below exercise the exact same `is_legacy_runtime_kind_id` +
+/// `restore_launch_failed_pane` sequence the restore loop runs.
+#[test]
+fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
+    let record = crate::workspace::SavedPane {
+        id: 7,
+        kind: crate::workspace::SavedPaneKind::App,
+        cwd: std::path::PathBuf::from("/tmp"),
+        name: Some("Todo".to_string()),
+        app_id: Some("python-wasm".to_string()),
+        app_state: None,
+        hidden: false,
+        heartbeat: None,
+        runtime_kind: None,
+        launch: None,
+    };
+    assert!(
+        record.is_legacy_runtime_kind_id(),
+        "record with no runtime_kind and a runtime-kind app_id must be flagged legacy"
+    );
+
+    let app_type = record.app_id.clone().expect("legacy record carries app_id");
+    // Exact reason format the restore loop in `PlexiApp::new` builds for this
+    // branch (src/app/mod.rs) — asserted here so a drift in either place
+    // shows up as a test failure.
+    let reason = format!(
+        "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); \
+         reopen the app with `plexi app open <id>`"
+    );
+    assert!(reason.contains("python-wasm"), "reason must name the legacy runtime kind");
+    assert!(
+        reason.contains("plexi app open"),
+        "reason must point at the recovery command"
+    );
+
+    let pane = crate::pane_ops::restore_launch_failed_pane(
+        &app_type,
+        record.id,
+        record.cwd.clone(),
+        reason,
+    );
+
+    assert!(
+        pane.as_terminal().is_none(),
+        "legacy restore must not produce a TerminalPane"
+    );
+    let restored = pane.as_app().expect("legacy restore produces an app pane");
+    assert_eq!(
+        restored.runtime.type_id(),
+        "launch_failed",
+        "a legacy record must never silently become a terminal"
+    );
+    assert!(
+        restored.name.contains("python-wasm"),
+        "the launch-failed pane must name the legacy runtime kind: {}",
+        restored.name
+    );
+}
+
 #[test]
 fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let tmp = tempfile::tempdir().expect("tempdir");

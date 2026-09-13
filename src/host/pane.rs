@@ -1045,6 +1045,18 @@ impl AppRuntime {
         }
     }
 
+    /// Enough launch context to relaunch this exact app through the normal
+    /// open path on a workspace restore (stint 0680). `None` for builtins —
+    /// they restore through `restore_builtin_app_pane`'s `builtin_factory`
+    /// lookup instead, which needs no relaunch context.
+    pub fn launch_spec(&self) -> Option<crate::workspace::SavedAppLaunch> {
+        match self {
+            AppRuntime::Builtin(_) => None,
+            AppRuntime::Python(app) => Some(app.launch_spec()),
+            AppRuntime::Wasm(app) => Some(app.launch_spec()),
+        }
+    }
+
     pub fn display_name(&self) -> String {
         match self {
             AppRuntime::Builtin(app) => app.display_name(),

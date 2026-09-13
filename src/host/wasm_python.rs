@@ -3399,6 +3399,17 @@ impl LivePythonPane {
             .collect()
     }
 
+    /// Enough launch context to relaunch this exact app through the normal
+    /// open path on a workspace restore (stint 0680). Deliberately omits
+    /// granted capabilities — those live in `PermissionStore`, re-derived at
+    /// restore time from the manifest, never persisted into the workspace.
+    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedAppLaunch {
+        crate::workspace::SavedAppLaunch::Python {
+            app_dir: self.config.app_dir.clone(),
+            args: self.config.launch_args.clone(),
+        }
+    }
+
     /// Tell the runtime a scope's state changed outside its own persist flow
     /// (an external edit, or a persist that lost to one). The SDK replaces
     /// the scope's values wholesale and dispatches `events.StateChanged`.
@@ -6122,18 +6133,23 @@ mod tests {
             .expect("the app persists an item");
         }
 
-        /// Q5, first shape — the read that never happens. A saved workspace
-        /// records an app pane under `AppRuntime::type_id()` (the runtime
-        /// kind), so nothing in the record names the app whose state file the
-        /// pane's bytes are in. Restoring cannot re-address that file no
-        /// matter how it is implemented: the identity is simply not in the
-        /// record. Asserted at that boundary rather than against the current
-        /// restore helper, because a fix is expected to introduce a new
-        /// restore path and leave the helper alone.
+        /// Q5, positive regression — stint 0680's fix. A saved workspace now
+        /// records an app pane under its real manifest id, with enough launch
+        /// context to relaunch it, and `restore_app_pane` on that record
+        /// produces a runtime that re-addresses the exact state file the live
+        /// pane wrote. This replaces
+        /// `audit_0678_a_saved_app_pane_cannot_re_address_its_own_state`,
+        /// which documented the defect this asserts is fixed — per that
+        /// test's own docstring, the fix was expected to flip both of its
+        /// assertions together.
         #[test]
-        fn audit_0678_a_saved_app_pane_cannot_re_address_its_own_state() {
+        fn saved_app_pane_can_re_address_its_own_state() {
             let mut harness = crate::testing::HostHarness::new();
             let root = tempdir().expect("workspace root");
+            let context_id = harness.app.router.get(0).context_id;
+            harness
+                .app
+                .set_context_root(root.path().to_path_buf(), Some(context_id));
             let app_dir = write_python_app(root.path(), "todo");
 
             let pane_id = harness
@@ -6157,25 +6173,9 @@ mod tests {
                 .iter()
                 .flat_map(|window| &window.panes)
                 .find(|pane| pane.id == pane_id)
-                .expect("the app pane is in the saved workspace");
-            let recorded_id = record
-                .app_id
-                .clone()
-                .expect("an app pane records some app id");
+                .expect("the app pane is in the saved workspace")
+                .clone();
 
-            // The record's cwd is right; its identity is not. Everything a
-            // restorer could address from it lands somewhere else.
-            let reachable = python_state_path_for_config(&state_test_config(&record.cwd, &recorded_id));
-            assert_state_address_lost(
-                &live_address,
-                &reachable,
-                "workspace save of a live CPython-WASM app pane",
-            );
-
-            // The other half of the pair: the identity that *would* re-address
-            // the file is on the pane the whole time, and is not what was
-            // written. A fix that records it flips this and the assertion above
-            // together.
             let manifest_id = harness.app.windows[harness.app.active_window]
                 .panes
                 .get(&pane_id)
@@ -6183,10 +6183,67 @@ mod tests {
                 .expect("app pane")
                 .manifest_id
                 .clone();
-            assert_ne!(
-                recorded_id, manifest_id,
-                "the saved record names the runtime kind, not the app — \
-                 `manifest_id` is on the pane and carries the state file's name"
+
+            assert_eq!(
+                record.app_id.as_deref(),
+                Some(manifest_id.as_str()),
+                "the saved record must name the real app, not the runtime kind"
+            );
+            assert_eq!(
+                record.runtime_kind.as_deref(),
+                Some("python-wasm"),
+                "the runtime kind is tracked as a separate field, not the identity"
+            );
+            let launch = record
+                .launch
+                .clone()
+                .expect("a Python app pane records launch context");
+            let crate::workspace::SavedAppLaunch::Python {
+                app_dir: recorded_dir,
+                args,
+            } = &launch
+            else {
+                panic!("expected a Python launch spec, got {launch:?}");
+            };
+            assert_eq!(recorded_dir, &app_dir, "launch context must name the real app_dir");
+            assert!(args.is_empty());
+
+            let colors =
+                crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+            let (pane, state_paths, _hot_reload_dir) = crate::pane_ops::restore_app_pane(
+                &manifest_id,
+                &launch,
+                pane_id,
+                context_id,
+                root.path().to_path_buf(),
+                root.path(),
+                record.name.as_deref(),
+                &colors,
+            )
+            .expect("the saved record can relaunch the same app");
+
+            let restored = pane.as_app().expect("restored pane is an app pane");
+            assert_eq!(restored.manifest_id, manifest_id);
+            assert!(matches!(
+                restored.runtime,
+                crate::host::pane::AppRuntime::Python(_)
+            ));
+            let restored_address = match &restored.runtime {
+                crate::host::pane::AppRuntime::Python(live) => {
+                    python_state_path_for_config(&live.config)
+                }
+                other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
+            };
+            assert_eq!(
+                restored_address, live_address,
+                "the restored runtime must re-address the exact file the live pane wrote"
+            );
+            assert!(
+                state_paths.contains(&(
+                    crate::host::state_scope::StateScope::Context,
+                    live_address
+                )),
+                "restore_app_pane must report the re-addressed state path for watcher registration"
             );
         }
 

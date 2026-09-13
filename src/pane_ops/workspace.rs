@@ -2115,6 +2115,8 @@ impl PlexiApp {
                                 while_idle_only: heartbeat.while_idle_only,
                             }
                         }),
+                        runtime_kind: None,
+                        launch: None,
                     });
                 } else if let Some(a) = pane.as_app() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -2122,7 +2124,10 @@ impl PlexiApp {
                         kind: crate::workspace::SavedPaneKind::App,
                         cwd: a.workspace_root.clone(),
                         name: Some(a.name.clone()),
-                        app_id: Some(a.runtime.type_id().to_string()),
+                        // The app's real manifest identity (stint 0680) — the
+                        // runtime kind alone (`AppRuntime::type_id()`) cannot
+                        // be looked up in `builtin_factory` or relaunched.
+                        app_id: Some(a.manifest_id.clone()),
                         app_state: a.runtime.serialize_state(),
                         hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
@@ -2136,6 +2141,8 @@ impl PlexiApp {
                                 while_idle_only: heartbeat.while_idle_only,
                             }
                         }),
+                        runtime_kind: Some(a.runtime.type_id().to_string()),
+                        launch: a.runtime.launch_spec(),
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -2159,6 +2166,8 @@ impl PlexiApp {
                                 while_idle_only: heartbeat.while_idle_only,
                             }
                         }),
+                        runtime_kind: None,
+                        launch: None,
                     });
                 }
             }
@@ -2211,6 +2220,8 @@ mod tests {
                     app_state: None,
                     hidden: false,
                     heartbeat: None,
+                    runtime_kind: None,
+                    launch: None,
                 })
                 .collect(),
             focused_pane: None,
