@@ -1030,19 +1030,23 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `plexi pane state <id>`
+/// `plexi pane state <id> [--stale-after <secs>]`
 ///
 /// Sends a `get_pane_state` command to PLEXI_SOCKET. For app panes, the host
 /// writes a JSON object containing a versioned normalized `semantic` tree.
 /// Process apps also retain the compatible `frame` RenderCommand array.
-/// For terminal panes, returns a simple status object. Returns 0 on success, 1 on error.
-pub fn pane_state_cli(pane_id: u64) -> i32 {
-    log::info!("pane_state:cli: pane_id={pane_id}");
+/// For terminal panes, returns a simple status object. Every response also
+/// carries `claimed_state` (the pane's agent-authored `status` slot) and
+/// `observed_state` (host-derived liveness), always together — see
+/// `AppRequest::GetPaneState`. Returns 0 on success, 1 on error.
+pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
+    log::info!("pane_state:cli: pane_id={pane_id} stale_after_secs={stale_after_secs:?}");
 
     let content = match super::request(
         serde_json::json!({
             "type": "get_pane_state",
             "pane_id": pane_id,
+            "stale_after_secs": stale_after_secs,
         }),
         "pane-state-response",
         "pane state",

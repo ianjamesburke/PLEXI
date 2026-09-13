@@ -23,6 +23,7 @@ pub mod mcp_client;
 pub mod launch_failed;
 pub mod model;
 pub mod pane;
+pub mod pane_liveness;
 pub mod scheduler;
 pub mod scope;
 pub mod services;

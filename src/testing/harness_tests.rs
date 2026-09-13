@@ -340,6 +340,7 @@ fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
     h.inject_ipc(AppRequest::GetPaneState {
         pane_id,
         response_file: response_file.clone(),
+        stale_after_secs: None,
     });
     h.run_hidden_frames(1);
 
@@ -416,6 +417,7 @@ python_compat = true
     h.inject_ipc(AppRequest::GetPaneState {
         pane_id,
         response_file: response_file.clone(),
+        stale_after_secs: None,
     });
     h.run_hidden_frames(1);
 
@@ -436,6 +438,164 @@ python_compat = true
     assert!(
         response.get("error").is_none(),
         "success responses must not carry a top-level `error` key: response={response}"
+    );
+}
+
+/// `plexi pane state` always carries `claimed_state`, `observed_state`, and
+/// `stale_claim` together, even for a builtin app pane that never wrote a
+/// `status` slot: `claimed_state` and `stale_claim` are `null`, but the keys
+/// — and a populated `observed_state` — are always present. Proves the JSON
+/// shape (stint 0665).
+#[test]
+fn pane_state_response_always_carries_claimed_and_observed_state_together() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+    h.run_frames(2);
+
+    let response_file = temp_response(tmp.path(), "pane-state-liveness-shape");
+    h.inject_ipc(AppRequest::GetPaneState {
+        pane_id,
+        response_file: response_file.clone(),
+        stale_after_secs: None,
+    });
+    h.run_hidden_frames(1);
+
+    let response = read_json_response(&response_file);
+    assert!(
+        response.get("claimed_state").is_some(),
+        "response must carry claimed_state even when null: response={response}"
+    );
+    assert!(
+        response.get("observed_state").is_some(),
+        "response must carry observed_state: response={response}"
+    );
+    assert!(
+        response.get("stale_claim").is_some(),
+        "response must carry stale_claim even when null: response={response}"
+    );
+    assert!(response["claimed_state"].is_null(), "response={response}");
+    assert!(response["stale_claim"].is_null(), "response={response}");
+    assert!(
+        response["observed_state"]["process_alive"].is_boolean(),
+        "response={response}"
+    );
+}
+
+/// The wedge this stint closes: an agent's own `status` slot still reads
+/// `running` while the host observes the pane's process is dead. Both facts
+/// must be reported truthfully and separately — the claim is not
+/// overwritten and the observation is not suppressed by it.
+#[test]
+#[ignore = "requires-pty"]
+fn pane_state_reports_dead_process_truthfully_even_while_claimed_state_says_running() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_focused_terminal();
+
+    let slot_response = temp_response(tmp.path(), "pane-liveness-slot-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id,
+        slot_name: "status".to_string(),
+        content: b"running:step-3".to_vec(),
+        append: false,
+        replace: false,
+        response_file: slot_response.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&slot_response)["ok"], true);
+
+    // Simulate the wedge: the process dies without the host ever seeing the
+    // exit event (`t.exited` stays false), exactly like the live incident —
+    // the pane's own claim goes stale, kernel liveness does not.
+    let shell_pid = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(|pane| pane.as_terminal())
+        .expect("terminal pane")
+        .backend
+        .child_pid();
+    unsafe {
+        libc::kill(shell_pid as libc::pid_t, libc::SIGKILL);
+    }
+    // Give the kernel a moment to actually reap/mark the process dead before
+    // asserting liveness against it.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let response_file = temp_response(tmp.path(), "pane-liveness-dead-process");
+    h.inject_ipc(AppRequest::GetPaneState {
+        pane_id,
+        response_file: response_file.clone(),
+        stale_after_secs: None,
+    });
+    h.run_hidden_frames(1);
+
+    let response = read_json_response(&response_file);
+    assert_eq!(
+        response["claimed_state"]["value"], "running:step-3",
+        "the agent's claim must be reported verbatim: response={response}"
+    );
+    assert_eq!(
+        response["observed_state"]["process_alive"], false,
+        "the host must observe the killed process as dead regardless of the claim: response={response}"
+    );
+}
+
+/// A fresh claim with no output past the caller-supplied window raises a
+/// typed `stale-claim` condition; the same claim with no window given raises
+/// nothing, because no default may be invented (stint 0665's Ruling).
+#[test]
+#[ignore = "requires-pty"]
+fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_focused_terminal();
+
+    let slot_response = temp_response(tmp.path(), "pane-liveness-stale-slot-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id,
+        slot_name: "status".to_string(),
+        content: b"running".to_vec(),
+        append: false,
+        replace: false,
+        response_file: slot_response.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&slot_response)["ok"], true);
+
+    // Back-date the last observed PTY output well past any reasonable
+    // window, without touching the claim.
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane_id)
+        .and_then(|pane| pane.as_terminal_mut())
+        .expect("terminal pane")
+        .last_pty_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+
+    let no_window_response = temp_response(tmp.path(), "pane-liveness-stale-no-window");
+    h.inject_ipc(AppRequest::GetPaneState {
+        pane_id,
+        response_file: no_window_response.clone(),
+        stale_after_secs: None,
+    });
+    h.run_hidden_frames(1);
+    assert!(
+        read_json_response(&no_window_response)["stale_claim"].is_null(),
+        "no --stale-after given must never invent a default window"
+    );
+
+    let stale_response = temp_response(tmp.path(), "pane-liveness-stale-window-exceeded");
+    h.inject_ipc(AppRequest::GetPaneState {
+        pane_id,
+        response_file: stale_response.clone(),
+        stale_after_secs: Some(60),
+    });
+    h.run_hidden_frames(1);
+    let response = read_json_response(&stale_response);
+    assert_eq!(response["stale_claim"]["stale_after_seconds"], 60);
+    assert!(
+        response["stale_claim"]["idle_seconds"].as_u64().unwrap_or(0) >= 600,
+        "response={response}"
     );
 }
 
