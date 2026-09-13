@@ -44,14 +44,18 @@ mod store;
 mod index;
 
 pub use migrate::migrate_legacy_global_secrets;
-pub use store::{NonDestructiveStore, SecretError, SecretStore};
+pub use store::{NonDestructiveStore, SecretStore};
 
+// Only test code outside this module names the error type or the rename record;
+// in-module callers reach both through their defining submodule.
 #[cfg(test)]
-pub use store::InMemoryKeychain;
+pub use store::{InMemoryKeychain, SecretError};
 
 #[cfg(target_os = "macos")]
 pub use reconcile::reconcile_index_with_keychain;
-pub use reconcile::{AccountRename, ReconcileReport};
+#[cfg(test)]
+pub use reconcile::AccountRename;
+pub use reconcile::ReconcileReport;
 
 pub use resolver::{
     resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,

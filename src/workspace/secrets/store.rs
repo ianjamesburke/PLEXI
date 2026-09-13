@@ -150,7 +150,7 @@ impl NonDestructiveStore for MacKeychain {
     }
 
     fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
-        index_read()
+        super::index::index_read()
             .into_iter()
             .filter(|a| a.starts_with(prefix))
             .collect()
