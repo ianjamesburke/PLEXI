@@ -173,22 +173,6 @@ fn named_key(k: &str) -> InputEvent {
     })
 }
 
-/// Every human-readable label in the tree — text, button, and badge nodes —
-/// so a substring search matches the same content the out-of-process scene's
-/// `tree_contains` finds in the pane's semantic serialization.
-fn tree_text(tree: &UiTree) -> String {
-    tree.nodes
-        .iter()
-        .filter_map(|n| match &n.data {
-            UiNodeData::Text(t) => Some(t.text.clone()),
-            UiNodeData::Button(b) => Some(b.label.clone()),
-            UiNodeData::Badge(b) => Some(b.text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Drives the committed DAW fixture in-process through the real WASM runtime,
 /// asserting the seeded project renders and that each named transport/edit key
 /// moves the semantic tree — the keyboard-complete, node-addressable contract
@@ -202,7 +186,7 @@ fn daw_gate_pane_drive() -> wasmtime::Result<()> {
     app.init(&StateSnapshot { entries: vec![] }, (1280.0, 800.0), &[])?;
 
     // The seeded demo project renders both tracks, transport, and readout.
-    let seeded = tree_text(&app.view()?);
+    let seeded = app.view()?.visible_text();
     for expected in ["DAW", "Pluck", "Arp", "Play", "bar 1 · beat 1"] {
         assert!(
             seeded.contains(expected),
@@ -220,7 +204,7 @@ fn daw_gate_pane_drive() -> wasmtime::Result<()> {
         ("home", "bar 1 · beat 1"),
     ] {
         app.update(&named_key(key))?;
-        let tree = tree_text(&app.view()?);
+        let tree = app.view()?.visible_text();
         assert!(
             tree.contains(expected),
             "after key {key:?} the DAW tree lacks {expected:?}; tree=\n{tree}"

@@ -28,7 +28,6 @@
 //! land in the agent's transcript, which is the host-visible record of what
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
-use crate::protocol::{AiMessage, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorType, Decision, GrantDuration, GrantStore, PermissionPosture, PermissionRequest,
     TargetType,
@@ -36,6 +35,7 @@ use crate::broker::{
 use crate::host::app_timeline::{AppTimeline, EventDelivery};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
+use crate::protocol::{parse_enum, AiMessage, ModelTier, PayloadMode, TriggerMode};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
@@ -159,51 +159,6 @@ struct SubscriptionTable {
     default: String,
 }
 
-fn parse_tier(raw: &str) -> Result<ModelTier, String> {
-    match raw {
-        "low" => Ok(ModelTier::Low),
-        "medium" => Ok(ModelTier::Medium),
-        "high" => Ok(ModelTier::High),
-        other => Err(format!(
-            "invalid default_tier '{other}' (expected low | medium | high)"
-        )),
-    }
-}
-
-fn parse_payload(raw: &str) -> Result<PayloadMode, String> {
-    match raw {
-        "off" => Ok(PayloadMode::Off),
-        "summary" => Ok(PayloadMode::Summary),
-        "full" => Ok(PayloadMode::Full),
-        "state_ref" => Ok(PayloadMode::StateRef),
-        other => Err(format!(
-            "invalid subscription payload '{other}' (expected off | summary | full | state_ref)"
-        )),
-    }
-}
-
-fn parse_trigger(raw: &str) -> Result<TriggerMode, String> {
-    match raw {
-        "never" => Ok(TriggerMode::Never),
-        "conversation" => Ok(TriggerMode::Conversation),
-        "ambient" => Ok(TriggerMode::Ambient),
-        "ask" => Ok(TriggerMode::Ask),
-        other => Err(format!(
-            "invalid subscription trigger '{other}' (expected never | conversation | ambient | ask)"
-        )),
-    }
-}
-
-fn parse_default(raw: &str) -> Result<Decision, String> {
-    match raw {
-        "allow" => Ok(Decision::Allow),
-        "ask" => Ok(Decision::Ask),
-        other => Err(format!(
-            "invalid subscription default '{other}' (expected allow | ask)"
-        )),
-    }
-}
-
 impl AgentDefinition {
     /// Parse an agent from raw `AGENT.md` + `settings.toml` contents.
     /// Required fields fail fast with errors naming the field; nothing is
@@ -230,7 +185,7 @@ impl AgentDefinition {
         if settings.agent.display_name.trim().is_empty() {
             return Err("settings.toml: [agent] display_name must be non-empty".to_string());
         }
-        let default_tier = parse_tier(&settings.agent.default_tier)
+        let default_tier = parse_enum::<ModelTier>("default_tier", &settings.agent.default_tier)
             .map_err(|e| format!("settings.toml: [agent] {e}"))?;
         let posture = PermissionPosture::from_toml_str(settings_toml)
             .map_err(|e| format!("settings.toml: {e}"))?;
@@ -252,7 +207,9 @@ impl AgentDefinition {
                     "settings.toml: [models] provider and model must be non-empty".to_string(),
                 );
             }
-            match parse_tier(&tier).map_err(|e| format!("settings.toml: [models] {e}"))? {
+            let tier = parse_enum::<ModelTier>("tier", &tier)
+                .map_err(|e| format!("settings.toml: [models] {e}"))?;
+            match tier {
                 ModelTier::Low => model_routes.low = Some(parsed),
                 ModelTier::Medium => model_routes.medium = Some(parsed),
                 ModelTier::High => model_routes.high = Some(parsed),
@@ -270,9 +227,9 @@ impl AgentDefinition {
             subscriptions.push(AgentSubscriptionRequest {
                 app: sub.app.clone(),
                 events: sub.events.clone(),
-                payload: parse_payload(&sub.payload).map_err(&ctx)?,
-                trigger: parse_trigger(&sub.trigger).map_err(&ctx)?,
-                default: parse_default(&sub.default).map_err(&ctx)?,
+                payload: parse_enum::<PayloadMode>("payload", &sub.payload).map_err(&ctx)?,
+                trigger: parse_enum::<TriggerMode>("trigger", &sub.trigger).map_err(&ctx)?,
+                default: parse_enum::<Decision>("default", &sub.default).map_err(&ctx)?,
             });
         }
         Ok(Self {
@@ -293,26 +250,17 @@ impl AgentDefinition {
         })
     }
 
-    /// Load one agent directory (`AGENT.md` + `settings.toml`).
-    pub fn load_dir(dir: &Path) -> Result<Self, String> {
+    /// Load one agent directory (`AGENT.md` + `settings.toml`) as belonging to
+    /// `source` — the tier it was discovered in, which the caller knows and the
+    /// files themselves do not record.
+    pub fn load_dir(dir: &Path, source: AgentSource) -> Result<Self, String> {
         let prompt_path = dir.join("AGENT.md");
         let settings_path = dir.join("settings.toml");
         let prompt = std::fs::read_to_string(&prompt_path)
             .map_err(|e| format!("failed to read {}: {e}", prompt_path.display()))?;
         let settings = std::fs::read_to_string(&settings_path)
             .map_err(|e| format!("failed to read {}: {e}", settings_path.display()))?;
-        Self::parse_from(
-            &prompt,
-            &settings,
-            AgentSource::Workspace,
-            Some(dir.to_path_buf()),
-        )
-    }
-
-    fn load_dir_from(dir: &Path, source: AgentSource) -> Result<Self, String> {
-        let mut definition = Self::load_dir(dir)?;
-        definition.source = source;
-        Ok(definition)
+        Self::parse_from(&prompt, &settings, source, Some(dir.to_path_buf()))
     }
 }
 
@@ -346,9 +294,7 @@ impl AgentRegistry {
             hooks: Vec::new(),
         };
         let user_dir = profile_dir.join("agents");
-        let workspace_dir = workspace_root
-            .join(crate::config::workspace_channel_dir())
-            .join("agents");
+        let workspace_dir = workspace_agents_dir(workspace_root);
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
         let workspace_agents = load_agents_dir(&workspace_dir, AgentSource::Workspace);
         log::info!(
@@ -389,7 +335,17 @@ impl AgentRegistry {
     }
 }
 
-fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> {
+/// `<workspace>/<workspace_channel_dir>/agents` — the workspace agent tier.
+pub fn workspace_agents_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(crate::config::workspace_channel_dir())
+        .join("agents")
+}
+
+/// Every agent directory under `dir`, in sorted path order. A missing dir means
+/// no agents (not an error); a broken agent dir is logged loudly and skipped so
+/// one bad agent cannot take down the rest.
+pub fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -407,9 +363,21 @@ fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> {
         match entry {
             Ok(entry) => {
                 let path = entry.path();
-                if path.is_dir() && path.join("settings.toml").is_file() {
-                    paths.push(path);
+                if !path.is_dir() {
+                    continue;
                 }
+                // Agent dirs without settings.toml are pane agents (`plexi
+                // agent add` installs AGENT.md + memory/ + logs/), not runtime
+                // agents — say so rather than treating a legitimate layout as
+                // an error.
+                if !path.join("settings.toml").is_file() {
+                    log::info!(
+                        "assistant: {} has no settings.toml — not a runtime agent, skipping",
+                        path.display()
+                    );
+                    continue;
+                }
+                paths.push(path);
             }
             Err(error) => log::error!(
                 "assistant: failed to read entry in {} agent directory {}: {error}",
@@ -421,8 +389,17 @@ fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> {
     paths.sort();
     paths
         .into_iter()
-        .filter_map(|path| match AgentDefinition::load_dir_from(&path, source) {
-            Ok(definition) => Some(definition),
+        .filter_map(|path| match AgentDefinition::load_dir(&path, source) {
+            Ok(definition) => {
+                log::info!(
+                    "assistant: loaded {} agent '{}' ({}) from {}",
+                    source.label(),
+                    definition.id,
+                    definition.display_name,
+                    path.display()
+                );
+                Some(definition)
+            }
             Err(error) => {
                 log::error!(
                     "assistant: agent registry skipped {} definition {}: {error}",
@@ -433,59 +410,6 @@ fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> {
             }
         })
         .collect()
-}
-
-/// Load every agent under `<workspace>/<workspace_channel_dir>/agents/`.
-/// Missing dir = no agents (not an error). A broken agent dir is logged
-/// loudly and skipped so one bad agent cannot take down the rest.
-pub fn load_workspace_agents(workspace_root: &Path) -> Vec<AgentDefinition> {
-    let agents_dir = workspace_root
-        .join(crate::config::workspace_channel_dir())
-        .join("agents");
-    let Ok(entries) = std::fs::read_dir(&agents_dir) else {
-        return Vec::new();
-    };
-    let mut agents = Vec::new();
-    for entry in entries {
-        let path = match entry {
-            Ok(entry) => entry.path(),
-            Err(error) => {
-                log::error!(
-                    "agent: failed to read workspace agent directory entry in {}: {error}",
-                    agents_dir.display()
-                );
-                continue;
-            }
-        };
-        if !path.is_dir() {
-            continue;
-        }
-        // Agent dirs without settings.toml are pane agents (`plexi agent
-        // add` installs AGENT.md + memory/ + logs/), not runtime agents —
-        // skip silently rather than erroring on a legitimate layout.
-        if !path.join("settings.toml").is_file() {
-            log::info!(
-                "agent: {} has no settings.toml — not a runtime agent, skipping",
-                path.display()
-            );
-            continue;
-        }
-        match AgentDefinition::load_dir_from(&path, AgentSource::Workspace) {
-            Ok(def) => {
-                log::info!(
-                    "agent: loaded '{}' ({}) from {}",
-                    def.id,
-                    def.display_name,
-                    path.display()
-                );
-                agents.push(def);
-            }
-            Err(e) => {
-                log::error!("agent: skipping {}: {e}", path.display());
-            }
-        }
-    }
-    agents
 }
 
 // ── Transcript ───────────────────────────────────────────────────────────────
@@ -619,7 +543,7 @@ impl AgentHost {
             return;
         };
         self.workspace_root = root.clone();
-        for def in load_workspace_agents(&root) {
+        for def in load_agents_dir(&workspace_agents_dir(&root), AgentSource::Workspace) {
             self.attach(def);
         }
         log::info!(
@@ -1069,10 +993,7 @@ default_tier = "low"
     #[test]
     fn load_dir_reads_agent_files_and_load_workspace_skips_broken() {
         let ws = tempfile::tempdir().unwrap();
-        let agents_dir = ws
-            .path()
-            .join(crate::config::workspace_channel_dir())
-            .join("agents");
+        let agents_dir = workspace_agents_dir(ws.path());
         let good = agents_dir.join("chess-opponent");
         std::fs::create_dir_all(&good).unwrap();
         std::fs::write(good.join("AGENT.md"), "You are a chess opponent.").unwrap();
@@ -1082,17 +1003,22 @@ default_tier = "low"
         std::fs::write(broken.join("AGENT.md"), "prose").unwrap();
         std::fs::write(broken.join("settings.toml"), "not toml ][[").unwrap();
 
-        let def = AgentDefinition::load_dir(&good).expect("good agent dir must load");
+        let def = AgentDefinition::load_dir(&good, AgentSource::Workspace)
+            .expect("good agent dir must load");
         assert_eq!(def.id, "chess-opponent");
-        assert!(AgentDefinition::load_dir(&broken).is_err());
+        assert!(AgentDefinition::load_dir(&broken, AgentSource::Workspace).is_err());
 
-        let agents = load_workspace_agents(ws.path());
+        let agents = load_agents_dir(&agents_dir, AgentSource::Workspace);
         assert_eq!(agents.len(), 1, "broken agent must be skipped, not fatal");
         assert_eq!(agents[0].id, "chess-opponent");
 
         // No agents dir at all → empty, not an error.
         let empty_ws = tempfile::tempdir().unwrap();
-        assert!(load_workspace_agents(empty_ws.path()).is_empty());
+        assert!(load_agents_dir(
+            &workspace_agents_dir(empty_ws.path()),
+            AgentSource::Workspace
+        )
+        .is_empty());
     }
 
     /// Context transitions must reload agents: a host built before the
@@ -1169,8 +1095,8 @@ default_tier = "low"
     /// trigger it again, and it plays the game against itself.
     #[test]
     fn self_caused_deliveries_do_not_trigger_turns() {
-        use crate::protocol::AppEventActor;
         use crate::host::app_timeline::EventDelivery;
+        use crate::protocol::AppEventActor;
 
         let timeline = Arc::new(Mutex::new(AppTimeline::default()));
         let mut host =

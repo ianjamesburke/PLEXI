@@ -19,10 +19,6 @@ use url::Url;
 
 use crate::app::app_trait::KeyDisposition;
 use crate::app::permissions::{PermissionState, PermissionStore};
-use crate::protocol::{
-    AiMessage as ProtocolAiMessage, AppEventActor, EventStreamDecl as ProtocolEventStreamDecl,
-    ModelTier, TriggerMode,
-};
 use crate::host::app_timeline::{AppTimeline, EmittedEvent};
 use crate::host::services::{
     default_picker_service, FilePickOutcome, FilePickRequest, HttpResponse as HostHttpResponse,
@@ -30,6 +26,10 @@ use crate::host::services::{
 };
 use crate::media::audio::{start_output_stream, OutputSession};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
+use crate::protocol::{
+    parse_enum, AiMessage as ProtocolAiMessage, AppEventActor,
+    EventStreamDecl as ProtocolEventStreamDecl, ModelTier, TriggerMode,
+};
 use crate::ui::theme::Colors;
 
 use super::wasm_app::bindings::plexi::platform::types::{
@@ -1295,7 +1295,7 @@ impl WasmPane {
     }
 
     fn dispatch_ai_query(&mut self, req: AiQueryEffect) {
-        let model_tier = match parse_model_tier(&req.model_tier) {
+        let model_tier = match parse_enum::<ModelTier>("model tier", &req.model_tier) {
             Ok(tier) => tier,
             Err(e) => {
                 self.queue_ai_denied(req.request_id, &e);
@@ -1409,11 +1409,11 @@ impl WasmPane {
             ),
             None => None,
         };
-        let actor = parse_app_event_actor(&req.actor)?;
+        let actor = parse_enum::<AppEventActor>("app event actor", &req.actor)?;
         let suggested_trigger = req
             .suggested_trigger
             .as_deref()
-            .map(parse_trigger_mode)
+            .map(|raw| parse_enum::<TriggerMode>("trigger mode", raw))
             .transpose()?;
         let emitted = EmittedEvent {
             event: req.event,
@@ -1441,8 +1441,9 @@ impl WasmPane {
     }
 
     fn subscribe_event_streams(&mut self, req: SubscribeEventStreamsEffect) {
-        let payload_mode = parse_payload_mode(&req.payload_mode);
-        let trigger_mode = parse_trigger_mode(&req.trigger_mode);
+        let payload_mode =
+            parse_enum::<crate::protocol::PayloadMode>("payload mode", &req.payload_mode);
+        let trigger_mode = parse_enum::<TriggerMode>("trigger mode", &req.trigger_mode);
         match (payload_mode, trigger_mode) {
             (Ok(payload_mode), Ok(trigger_mode)) => {
                 log::info!(
@@ -1673,45 +1674,6 @@ fn default_live_broker() -> LiveAiBroker {
     LiveAiBroker::new(crate::config::PlexiConfig::load().ai)
 }
 
-fn parse_model_tier(raw: &str) -> Result<ModelTier, String> {
-    match raw {
-        "low" | "Low" => Ok(ModelTier::Low),
-        "medium" | "Medium" => Ok(ModelTier::Medium),
-        "high" | "High" => Ok(ModelTier::High),
-        other => Err(format!("invalid model tier: {other}")),
-    }
-}
-
-fn parse_app_event_actor(raw: &str) -> Result<AppEventActor, String> {
-    match raw {
-        "user" | "User" => Ok(AppEventActor::User),
-        "agent" | "Agent" => Ok(AppEventActor::Agent),
-        "app" | "App" => Ok(AppEventActor::App),
-        "system" | "System" => Ok(AppEventActor::System),
-        other => Err(format!("invalid app event actor: {other}")),
-    }
-}
-
-fn parse_trigger_mode(raw: &str) -> Result<TriggerMode, String> {
-    match raw {
-        "never" | "Never" => Ok(TriggerMode::Never),
-        "conversation" | "Conversation" => Ok(TriggerMode::Conversation),
-        "ambient" | "Ambient" => Ok(TriggerMode::Ambient),
-        "ask" | "Ask" => Ok(TriggerMode::Ask),
-        other => Err(format!("invalid trigger mode: {other}")),
-    }
-}
-
-fn parse_payload_mode(raw: &str) -> Result<crate::protocol::PayloadMode, String> {
-    match raw {
-        "off" | "Off" => Ok(crate::protocol::PayloadMode::Off),
-        "summary" | "Summary" => Ok(crate::protocol::PayloadMode::Summary),
-        "full" | "Full" => Ok(crate::protocol::PayloadMode::Full),
-        "state_ref" | "StateRef" => Ok(crate::protocol::PayloadMode::StateRef),
-        other => Err(format!("invalid payload mode: {other}")),
-    }
-}
-
 // ─── Live adapter ───────────────────────────────────────────────────────────
 //
 // `LiveWasmPane` bridges the time-injected, headless [`WasmPane`] to the host's
@@ -1731,6 +1693,7 @@ pub struct LiveWasmPane {
     error: Option<String>,
     /// Concatenated text of the last rendered view tree. Lets the headless
     /// scene runner assert on rendered content without re-entering the guest.
+    #[cfg(test)]
     last_text: String,
     /// Monotonic generation of the tree handed to the renderer. This runtime
     /// re-evaluates `view()` every frame, so every painted tree is genuinely
@@ -1783,6 +1746,7 @@ impl LiveWasmPane {
             title: None,
             pending_init: Some(snapshot),
             error: None,
+            #[cfg(test)]
             last_text: String::new(),
             tree_seq: 0,
             semantic_state: crate::host::pane::SemanticPaneState::empty("wasm"),
@@ -1882,17 +1846,15 @@ impl LiveWasmPane {
     }
 
     /// True while the app is alive (no fatal error, has not asked to close).
-    // Consumed only by the cfg(test) scene runner today; retained as the
-    // pane-liveness accessor for the host status surface.
-    #[allow(dead_code)]
+    /// `AppRuntime::lifecycle` reads it to report running vs exited.
     pub fn is_running(&self) -> bool {
         self.error.is_none() && !self.inner.wants_close()
     }
 
-    /// Text content of the most recently rendered view, for scene assertions.
-    // Reads `last_text` (written every frame in `ui`); keep non-cfg(test) so
-    // that field stays live in the production build.
-    #[allow(dead_code)]
+    /// Text content of the most recently rendered view. Only the scene runner
+    /// reads it, and the scene runner is itself `cfg(test)` — production reads
+    /// the same content through `semantic_state`.
+    #[cfg(test)]
     pub fn last_render_text(&self) -> &str {
         &self.last_text
     }
@@ -2012,7 +1974,10 @@ impl LiveWasmPane {
         }
         match self.inner.view() {
             Ok(tree) => {
-                self.last_text = collect_tree_text(&tree);
+                #[cfg(test)]
+                {
+                    self.last_text = tree.visible_text();
+                }
                 self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
             }
             Err(error) => self.fail("background view", error),
@@ -2036,7 +2001,10 @@ impl LiveWasmPane {
             .inner
             .view()
             .map_err(|e| format!("WASM view after action failed: {e}"))?;
-        self.last_text = collect_tree_text(&tree);
+        #[cfg(test)]
+        {
+            self.last_text = tree.visible_text();
+        }
         self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
         Ok(())
     }
@@ -2190,7 +2158,10 @@ impl LiveWasmPane {
                 return;
             }
         };
-        self.last_text = collect_tree_text(&tree);
+        #[cfg(test)]
+        {
+            self.last_text = tree.visible_text();
+        }
         self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
         // Composite the guest's GPU render zero-copy: register its surface
         // texture into the host's shared egui renderer once and sample it live.
@@ -2282,7 +2253,10 @@ impl LiveWasmPane {
             Ok(true) => {
                 match self.inner.view() {
                     Ok(t) => {
-                        self.last_text = collect_tree_text(&t);
+                        #[cfg(test)]
+                        {
+                            self.last_text = t.visible_text();
+                        }
                         self.semantic_state =
                             crate::host::pane::SemanticPaneState::from_wasm_tree(&t);
                     }
@@ -2423,19 +2397,6 @@ impl LiveWasmPane {
             KeyDisposition::Passthrough
         }
     }
-}
-
-/// Join every text node in a view tree into a single string (newline-joined),
-/// preserving arena order. Used for headless content assertions.
-fn collect_tree_text(tree: &UiTree) -> String {
-    tree.nodes
-        .iter()
-        .filter_map(|n| match &n.data {
-            UiNodeData::Text(t) => Some(t.text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Dimensions of the first `surface-node` in the tree, if any. The host uses
@@ -2643,21 +2604,6 @@ mod tests {
             },
             pressed: true,
         })
-    }
-
-    fn cpu_text(tree: &UiTree) -> String {
-        tree.nodes
-            .iter()
-            .filter_map(|n| match &n.data {
-                UiNodeData::Text(t) => Some(t.text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn tree_text(tree: &UiTree) -> String {
-        cpu_text(tree)
     }
 
     fn file_read(path: &str) -> Effect {
@@ -3132,7 +3078,7 @@ mod tests {
     fn init_resolves_first_stats() -> wasmtime::Result<()> {
         let mut p = pane(42.0);
         p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
-        assert!(cpu_text(&p.view()?).contains("42.0%"));
+        assert!(p.view()?.visible_text().contains("42.0%"));
         Ok(())
     }
 
@@ -3142,11 +3088,11 @@ mod tests {
     fn poll_timer_refreshes_stats() -> wasmtime::Result<()> {
         let mut p = pane(10.0);
         p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
-        assert!(cpu_text(&p.view()?).contains("10.0%"));
+        assert!(p.view()?.visible_text().contains("10.0%"));
 
         p.stats = Box::new(FakeStats { cpu: 88.0 });
         p.tick(2_500)?; // past the 2000ms poll deadline
-        assert!(cpu_text(&p.view()?).contains("88.0%"));
+        assert!(p.view()?.visible_text().contains("88.0%"));
         Ok(())
     }
 
@@ -3841,7 +3787,7 @@ mod tests {
 
         let mut p = counter_pane();
         p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
-        assert!(tree_text(&p.view()?).contains("Count: 0"));
+        assert!(p.view()?.visible_text().contains("Count: 0"));
 
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let mut tree_seq: u64 = 0;
@@ -3865,7 +3811,7 @@ mod tests {
         harness.get_by_label("Increment").click();
         harness.run();
 
-        let text = tree_text(&harness.state_mut().view()?);
+        let text = harness.state_mut().view()?.visible_text();
         assert!(text.contains("Count: 1"), "guest view after click:\n{text}");
         Ok(())
     }
@@ -3874,11 +3820,11 @@ mod tests {
     fn host_semantic_action_updates_guest_view() -> wasmtime::Result<()> {
         let mut pane = counter_pane();
         pane.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
-        assert!(tree_text(&pane.view()?).contains("Count: 0"));
+        assert!(pane.view()?.visible_text().contains("Count: 0"));
 
         pane.dispatch_ui_action("increment", 1)?;
 
-        let text = tree_text(&pane.view()?);
+        let text = pane.view()?.visible_text();
         assert!(
             text.contains("Count: 1"),
             "guest view after host action:\n{text}"
@@ -4439,7 +4385,7 @@ mod tests {
         assert_eq!(out["outcome"], "applied");
         let track_id = out["track_id"].as_u64().expect("new track id");
         assert!(
-            tree_text(&p.view()?).contains("Bass"),
+            p.view()?.visible_text().contains("Bass"),
             "tree shows the new track"
         );
 
@@ -4455,7 +4401,7 @@ mod tests {
         assert_eq!(out["outcome"], "applied");
         assert_eq!(out["track_id"], track_id);
         assert!(
-            tree_text(&p.view()?).contains("vol 0.25"),
+            p.view()?.visible_text().contains("vol 0.25"),
             "tree shows the new volume"
         );
 
@@ -4494,15 +4440,6 @@ mod tests {
             WasmApp::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
                 .expect("load jukebox");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
-    }
-
-    /// The now-playing transport state is a Badge node (not Text), so
-    /// `tree_text` does not see it; scan badge text directly.
-    fn tree_has_badge(tree: &UiTree, needle: &str) -> bool {
-        tree.nodes.iter().any(|n| match &n.data {
-            UiNodeData::Badge(b) => b.text.contains(needle),
-            _ => false,
-        })
     }
 
     /// Minimal float32 (format 3) WAV bytes — the exact shape the jukebox's
@@ -4596,7 +4533,10 @@ mod tests {
         p.tick(32)?;
         let out = tool_output(&p.take_host_effects(), "t2");
         assert_eq!(out["playing"], true);
-        assert!(tree_has_badge(&p.view()?, "PLAYING"), "tree shows playing");
+        assert!(
+            p.view()?.visible_text().contains("PLAYING"),
+            "tree shows playing"
+        );
 
         // "Skip to the next track" — advances the index and rewinds.
         p.push_input(tool_call("t3", "jukebox.next", "{}"));
@@ -4621,7 +4561,10 @@ mod tests {
         p.tick(96)?;
         let out = tool_output(&p.take_host_effects(), "t6");
         assert_eq!(out["playing"], false);
-        assert!(tree_has_badge(&p.view()?, "STOPPED"), "tree shows stopped");
+        assert!(
+            p.view()?.visible_text().contains("STOPPED"),
+            "tree shows stopped"
+        );
 
         // A malformed mutating call is a clean error, never a silent no-op.
         p.push_input(tool_call("t7", "jukebox.set_volume", "{}"));
@@ -4662,7 +4605,7 @@ mod tests {
         let mut loaded = false;
         for i in 0..100 {
             p.tick(100 + i * 16)?;
-            let tree = tree_text(&p.view()?);
+            let tree = p.view()?.visible_text();
             if tree.contains("my-song") && !tree.contains("loading") {
                 loaded = true;
                 break;
@@ -4705,7 +4648,7 @@ mod tests {
         p.push_input(key("o"));
         for i in 0..40 {
             p.tick(100 + i * 16)?;
-            if tree_text(&p.view()?).contains("cancelled") {
+            if p.view()?.visible_text().contains("cancelled") {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
