@@ -539,7 +539,6 @@ struct TextBlockMetrics {
     secondary_center_y: Option<f32>,
 }
 
-
 /// The selection highlight spans the row's full width — flush with the
 /// text fields above it in palettes/pickers — and stops 1px short
 /// vertically so adjacent selected rows don't fuse into one slab.
