@@ -21,7 +21,7 @@
 /// deliberately — its `Drop` would re-enable interaction.
 ///
 /// Honest scope: this suppresses UI, not access. Mechanism A (the
-/// `system_store()` seam in `src/workspace/secrets.rs`) removes every
+/// `system_store()` seam in `src/workspace/secrets/`) removes every
 /// keychain ROUTE in our own code from test builds, and this guard removes
 /// PROMPTS — but the `security_framework` dependency itself is callable
 /// from any test in this crate (a same-crate test sees all dependencies;
