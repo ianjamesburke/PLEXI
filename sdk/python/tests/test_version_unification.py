@@ -93,7 +93,12 @@ def test_version_resolves_from_installed_distribution_metadata(tmp_path: Path):
 
 
 def test_no_stale_sdk_version_constant():
-    # _constants._SDK_VERSION was the old divergent source — it must stay gone.
-    from plexi_sdk import _constants
-
-    assert not hasattr(_constants, "_SDK_VERSION")
+    # _constants._SDK_VERSION was the old divergent source. _constants.py is
+    # gone entirely now; assert no module resurrects a second version source.
+    pkg = Path(__file__).resolve().parent.parent / "plexi_sdk"
+    offenders = [
+        p.relative_to(pkg).as_posix()
+        for p in pkg.rglob("*.py")
+        if p.name != "_version.py" and "_SDK_VERSION" in p.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"_SDK_VERSION reintroduced in {offenders}"

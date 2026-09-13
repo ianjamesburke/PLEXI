@@ -674,12 +674,25 @@ fn python_init_payload(
     state: Value,
     size: (f32, f32),
 ) -> Value {
+    // Same wire shape the live pane sends: state is always scope-keyed, never
+    // a flat `state` key. `state` here seeds only the app's default scope.
+    let default_scope = config
+        .state_scopes
+        .first()
+        .copied()
+        .unwrap_or(crate::host::state_scope::StateScope::Global);
+    let scope_names: Vec<&'static str> = config
+        .state_scopes
+        .iter()
+        .map(|scope| scope.as_str())
+        .collect();
     json!({
         "type": "init",
         "app_id": config.app_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
-        "state": state,
+        "states": { default_scope.as_str(): state },
+        "state_scopes": scope_names,
         "theme": config.theme,
         "args": config.launch_args,
         "size": [size.0, size.1],
@@ -2334,7 +2347,6 @@ impl LivePythonPane {
                 "type": "init", "app_id": self.app_id,
                 "workspace_root": self.config.workspace_root,
                 "capabilities": self.config.capabilities,
-                "state": self.default_scope_state(),
                 "states": self.states_json(),
                 "state_scopes": self.scope_names(),
                 "theme": {},
@@ -3337,13 +3349,6 @@ impl LivePythonPane {
             .iter()
             .map(|scope| scope.as_str())
             .collect()
-    }
-
-    fn default_scope_state(&self) -> serde_json::Map<String, Value> {
-        self.persisted_states
-            .get(&self.default_scope())
-            .map(|state| state.values.clone())
-            .unwrap_or_default()
     }
 
     fn states_json(&self) -> Value {
@@ -5869,6 +5874,22 @@ mod tests {
             &config.context_root,
         )
         .expect("resolve state path")
+    }
+
+    #[test]
+    fn python_init_payload_carries_scoped_states_not_a_flat_state() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "test.scoped-init");
+
+        let payload = python_init_payload(&config, json!({"count": 41}), (480.0, 320.0));
+
+        // `state_test_config` declares exactly one scope: Context.
+        assert_eq!(payload["states"], json!({ "context": { "count": 41 } }));
+        assert_eq!(payload["state_scopes"], json!(["context"]));
+        assert!(
+            payload.get("state").is_none(),
+            "init must not carry a flat `state` key: {payload}"
+        );
     }
 
     #[test]

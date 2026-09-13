@@ -29,7 +29,6 @@ SECTIONS: list[tuple[str, str]] = [
     ("testing.py",         "Testing"),
     ("_types.py",          "Types"),
     ("_theme.py",          "Theme"),
-    ("_constants.py",      "Constants"),
     ("_protocol.py",       "Protocol Types"),
 ]
 

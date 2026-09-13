@@ -1,22 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python"),
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import plexi_sdk as sdk
+from plexi_sdk import _v3_state
+from plexi_sdk.effects import ExposeTools, PersistState, SetState, ToolResult
+from plexi_sdk.events import KeyEvent, StateChanged, ToolCall, UiAction, UiValueChange
+from plexi_sdk.state_format import render_checklist, ChecklistItem
 
-import plexi_sdk as sdk  # noqa: E402
-from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import ExposeTools, PersistState, SetState, ToolResult  # noqa: E402
-from plexi_sdk.events import KeyEvent, StateChanged, ToolCall, UiAction, UiValueChange  # noqa: E402
-from plexi_sdk.state_format import render_checklist, ChecklistItem  # noqa: E402
-
-import todo  # noqa: E402
+import todo
 
 
 def _set_state(values: dict) -> None:

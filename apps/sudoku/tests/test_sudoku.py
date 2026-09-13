@@ -6,15 +6,7 @@ Covers the pure coordinate -> target mapping used by the MouseEvent handler
 
 from __future__ import annotations
 
-import os
-import sys
-
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python")
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import main as sudoku  # noqa: E402
+import main as sudoku
 
 
 def test_diff_button_hit_at_each_center():

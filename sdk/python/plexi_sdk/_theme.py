@@ -1,4 +1,4 @@
-"""Live theme singleton.
+"""Live theme singleton and color helpers.
 
 Populated from the host Init payload so app chrome tracks the host theme
 (light/dark + user overrides in config.toml). Until Init arrives the
@@ -122,3 +122,17 @@ class AppPalette:
 
 # Process-wide singleton. Mutated in place on Init — do not rebind.
 theme = Theme()
+
+
+# ── Color helpers ──────────────────────────────────────────────────────────
+
+
+def rgba(r: int, g: int, b: int, a: int = 255) -> str:
+    """Return an 8-digit hex color string #rrggbbaa."""
+    return f"#{r:02x}{g:02x}{b:02x}{a:02x}"
+
+
+def dim(hex_color: str, alpha: int) -> str:
+    """Return hex_color with the given alpha (0-255). Strips existing alpha."""
+    h = hex_color.lstrip("#")[:6]
+    return f"#{h}{alpha:02x}"

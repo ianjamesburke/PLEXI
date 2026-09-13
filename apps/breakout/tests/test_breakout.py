@@ -2,17 +2,9 @@
 
 from __future__ import annotations
 
-import os
-import sys
+from plexi_sdk.events import KeyEvent, RenderFrame, Resize
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python")
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from plexi_sdk.events import KeyEvent, RenderFrame, Resize  # noqa: E402
-
-import breakout  # noqa: E402
+import breakout
 
 
 def _reset() -> dict:

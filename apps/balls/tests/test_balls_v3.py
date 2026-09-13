@@ -2,17 +2,9 @@
 
 from __future__ import annotations
 
-import os
-import sys
+from plexi_sdk.events import MouseEvent, RenderFrame, Resize
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python")
-)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from plexi_sdk.events import MouseEvent, RenderFrame, Resize  # noqa: E402
-
-import balls  # noqa: E402
+import balls
 
 
 def _one_ball(x: float, y: float, r: float) -> dict:
