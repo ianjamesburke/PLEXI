@@ -675,6 +675,73 @@ fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
     );
 }
 
+/// Review follow-up on stint 0680: a legacy record (`is_legacy_runtime_kind_id()`
+/// true — pre-0680 save whose `app_id` is the runtime kind, not a manifest
+/// id) must restore as a `launch_failed` pane naming the runtime kind and the
+/// recovery command, exactly like `restore_app_pane_fails_visibly_when_app_dir_is_gone`'s
+/// unresolvable-manifest case — never fall back to a terminal. This mirrors
+/// the restore loop's own logic in `PlexiApp::new` (which is not reachable
+/// through `HostHarness::new`/`new_for_test`, since those skip the
+/// production `WorkspaceFile::load()` restore path entirely) so the
+/// assertions below exercise the exact same `is_legacy_runtime_kind_id` +
+/// `restore_launch_failed_pane` sequence the restore loop runs.
+#[test]
+fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
+    let record = crate::workspace::SavedPane {
+        id: 7,
+        kind: crate::workspace::SavedPaneKind::App,
+        cwd: std::path::PathBuf::from("/tmp"),
+        name: Some("Todo".to_string()),
+        app_id: Some("python-wasm".to_string()),
+        app_state: None,
+        hidden: false,
+        heartbeat: None,
+        runtime_kind: None,
+        launch: None,
+    };
+    assert!(
+        record.is_legacy_runtime_kind_id(),
+        "record with no runtime_kind and a runtime-kind app_id must be flagged legacy"
+    );
+
+    let app_type = record.app_id.clone().expect("legacy record carries app_id");
+    // Exact reason format the restore loop in `PlexiApp::new` builds for this
+    // branch (src/app/mod.rs) — asserted here so a drift in either place
+    // shows up as a test failure.
+    let reason = format!(
+        "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); \
+         reopen the app with `plexi app open <id>`"
+    );
+    assert!(reason.contains("python-wasm"), "reason must name the legacy runtime kind");
+    assert!(
+        reason.contains("plexi app open"),
+        "reason must point at the recovery command"
+    );
+
+    let pane = crate::pane_ops::restore_launch_failed_pane(
+        &app_type,
+        record.id,
+        record.cwd.clone(),
+        reason,
+    );
+
+    assert!(
+        pane.as_terminal().is_none(),
+        "legacy restore must not produce a TerminalPane"
+    );
+    let restored = pane.as_app().expect("legacy restore produces an app pane");
+    assert_eq!(
+        restored.runtime.type_id(),
+        "launch_failed",
+        "a legacy record must never silently become a terminal"
+    );
+    assert!(
+        restored.name.contains("python-wasm"),
+        "the launch-failed pane must name the legacy runtime kind: {}",
+        restored.name
+    );
+}
+
 #[test]
 fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let tmp = tempfile::tempdir().expect("tempdir");

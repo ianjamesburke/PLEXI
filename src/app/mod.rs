@@ -1558,16 +1558,23 @@ impl PlexiApp {
                             // Pre-0680 save of a Python/WASM app pane: `app_id`
                             // holds the runtime kind, not a manifest id, and
                             // there is no launch context to relaunch from.
-                            // There is no recoverable identity here — fall
-                            // through to the terminal substitution below,
-                            // which is the one case where that is still
-                            // correct (never build a launch-failed pane
-                            // against a wrong app id).
+                            // There is no recoverable manifest identity here,
+                            // but that is not a reason to go silent — render
+                            // a launch-failed pane naming the runtime kind
+                            // and pointing at the recovery path, never a bare
+                            // terminal.
                             log::info!(
-                                "workspace_restore: pane {} predates stint 0680 (app_id={app_type} \
-                                 is a runtime kind, not a manifest id) — degrading to a terminal",
+                                "workspace_restore: legacy app pane pane_id={} runtime_kind={app_type} restored as launch-failed",
                                 saved_pane.id
                             );
+                            pane_entry = Some(crate::pane_ops::restore_launch_failed_pane(
+                                app_type,
+                                saved_pane.id,
+                                app_cwd.clone(),
+                                format!(
+                                    "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); reopen the app with `plexi app open <id>`"
+                                ),
+                            ));
                         }
                     }
 

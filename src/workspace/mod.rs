@@ -78,9 +78,10 @@ impl SavedPane {
     /// True for a pre-0680 save of a Python/WASM app pane: `app_id` holds the
     /// *runtime kind* (`AppRuntime::type_id()`), not the app's manifest id,
     /// and `runtime_kind`/`launch` are absent because the field didn't exist
-    /// yet. There is no recoverable identity in this record — restore must
-    /// fall back to a terminal rather than construct a launch-failed pane
-    /// against a wrong app id.
+    /// yet. There is no recoverable manifest identity in this record, so
+    /// restore renders a launch-failed pane naming the runtime kind rather
+    /// than the (unknown) app id — it must never silently substitute a
+    /// terminal.
     pub fn is_legacy_runtime_kind_id(&self) -> bool {
         self.runtime_kind.is_none()
             && matches!(self.app_id.as_deref(), Some("python-wasm" | "wasm"))
