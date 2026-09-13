@@ -9,17 +9,20 @@ Host overlays should use these instead of raw egui layout wherever a primitive e
 - `overlay::ModalShell` for modal frame, scrim, title, body, scroll body, and dismissal.
 - `typography` for modal titles, section labels, body text, captions, and muted text.
 - `list::ListRow`, `row`, `text_field::TextField`, `button`, `hints::HintBar`, and `surface` for repeated chrome.
+- `badge::badge` / `badge::badge_size` / `badge::paint_badge` for every pill badge — the WIT `Badge` node, the sidebar notification count, the terminal outside-workspace tag. Owns padding, radius, label font, and the width floor.
+- `text::elide` / `text::elided_galley` for any label that has to fit a width. Measured against the real font, `Side::Leading` for paths and `Side::Trailing` for titles, always U+2026. Never truncate by character count.
 - `sidebar_row::SidebarRow` for context-list rows. Two tiers, the same convention `ListRow` uses for a secondary line: identity on top (index gutter, name, close action), pane state below (per-window pip capsules, overflow count, notification badge, root path). It resolves every slot rect in one `measure` pass; never hand-place a piece of a sidebar row.
 
-## Design Tokens (`src/style.rs`)
+## Design Tokens (`src/ui/style.rs`)
 
 Spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITLE_XL`), corner radii (`RADIUS_MD/LG`), modal widths, button heights, overlay chrome. Use these everywhere. Never hard-code magic numbers.
 
-## Reusable Widgets (`src/widgets.rs`)
+## Reusable Widgets (`src/ui/shortcuts.rs`)
 
 - `key_chip(ui, label, colors)` — single keyboard key as a styled rounded-rect chip.
 - `key_combo(ui, keys, colors)` — sequence of `key_chip`s with `INTRA_COMBO_GAP`.
 - `key_combo_list(ui, combos, trailing, colors)` — multiple combos inline with trailing description. **Use this for any shortcut hint row.** Do not render shortcuts as plain `Label` text.
+- `chip_size(text_size)` — the one chip geometry. Every measure and paint site, headless included, sizes a chip through it; do not re-derive it from the padding tokens.
 
 ## Overlay Layout Primitives
 

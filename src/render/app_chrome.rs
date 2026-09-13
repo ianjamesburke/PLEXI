@@ -199,16 +199,15 @@ fn app_bar_band_height(has_subtitle: bool) -> f32 {
 }
 
 pub(crate) fn chip_row_height(ui: &egui::Ui) -> f32 {
-    let text_h = ui.fonts_mut(|f| {
+    let text_size = ui.fonts_mut(|f| {
         f.layout_no_wrap(
             "X".to_string(),
             FontId::monospace(style::TEXT_HINT),
-            Color32::WHITE,
+            Color32::PLACEHOLDER,
         )
         .size()
-        .y
     });
-    text_h + style::KEYCHIP_PAD_V * 2.0
+    crate::ui::shortcuts::chip_size(text_size).y
 }
 
 /// Height of the footer-keys band, accounting for wrapping: in a pane too
@@ -247,24 +246,20 @@ fn footer_entry_width(
     chip_font: &FontId,
     desc_font: &FontId,
 ) -> f32 {
-    let chip_row_h = chip_row_height(ui);
     let mut w: f32 = 0.0;
     for (ki, key) in entry.keys.iter().enumerate() {
         if ki > 0 {
             w += style::KEYCHIP_GAP;
         }
-        let tw = ui.fonts_mut(|f| {
-            f.layout_no_wrap(key.clone(), chip_font.clone(), Color32::WHITE)
+        let text_size = ui.fonts_mut(|f| {
+            f.layout_no_wrap(key.clone(), chip_font.clone(), Color32::PLACEHOLDER)
                 .size()
-                .x
         });
-        w += (tw + style::KEYCHIP_PAD_H * 2.0)
-            .max(chip_row_h)
-            .max(style::KEYCHIP_MIN_W);
+        w += crate::ui::shortcuts::chip_size(text_size).x;
     }
     w += 4.0;
     w += ui.fonts_mut(|f| {
-        f.layout_no_wrap(entry.description.clone(), desc_font.clone(), Color32::WHITE)
+        f.layout_no_wrap(entry.description.clone(), desc_font.clone(), Color32::PLACEHOLDER)
             .size()
             .x
     });
@@ -344,13 +339,10 @@ fn paint_footer_keys_row(
             let galley =
                 ui.fonts_mut(|f| f.layout_no_wrap(key.clone(), chip_font.clone(), key_color));
             let text_size = galley.size();
-            let chip_h = text_size.y + style::KEYCHIP_PAD_V * 2.0;
-            let chip_w = (text_size.x + style::KEYCHIP_PAD_H * 2.0)
-                .max(chip_h)
-                .max(style::KEYCHIP_MIN_W);
+            let chip = crate::ui::shortcuts::chip_size(text_size);
             let chip_rect = egui::Rect::from_min_size(
-                egui::pos2(x, content_rect.center().y - chip_h / 2.0),
-                egui::vec2(chip_w, chip_h),
+                egui::pos2(x, content_rect.center().y - chip.y / 2.0),
+                chip,
             );
             painter.rect_filled(chip_rect, egui::CornerRadius::same(4), colors.bg_active);
             crate::ui::snap::galley_snapped(
@@ -362,7 +354,7 @@ fn paint_footer_keys_row(
                 galley,
                 key_color,
             );
-            x += chip_w;
+            x += chip.x;
         }
 
         x += 4.0;

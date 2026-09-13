@@ -2,6 +2,8 @@ use fontdue::{Font, FontSettings};
 use serde_json::Value;
 use tiny_skia::{Paint, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform};
 
+use crate::ui::style;
+
 const FONT_DATA: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");
 
 /// RGBA color used by the headless paint helpers.
@@ -186,10 +188,6 @@ impl HeadlessRenderer {
     // paints each leaf at its resolved absolute position. Font measurement uses
     // fontdue (DejaVuSans) — metrics approximate egui's harfbuzz output.
 
-    const BADGE_PAD_H: f32 = 8.0;
-    const BADGE_PAD_V: f32 = 3.0;
-    const BADGE_MIN_W: f32 = 32.0;
-
     fn measure_text_advance(&self, text: &str, size: f32) -> f32 {
         text.chars()
             .map(|ch| self.font.rasterize(ch, size).0.advance_width)
@@ -211,8 +209,8 @@ impl HeadlessRenderer {
                 let font_size = cmd["font_size"].as_f64().unwrap_or(11.0) as f32;
                 let tw = self.measure_text_advance(label, font_size);
                 let th = self.measure_text_height(font_size);
-                let w = (tw + Self::BADGE_PAD_H * 2.0).max(Self::BADGE_MIN_W);
-                let h = th + Self::BADGE_PAD_V * 2.0;
+                let w = (tw + style::BADGE_PAD_H * 2.0).max(style::BADGE_MIN_W);
+                let h = th + style::BADGE_PAD_V * 2.0;
                 (w, h)
             }
             "text" => {
@@ -227,7 +225,8 @@ impl HeadlessRenderer {
                 let font_size = cmd["font_size"].as_f64().unwrap_or(11.0) as f32;
                 let tw = self.measure_text_advance(label, font_size);
                 let th = self.measure_text_height(font_size);
-                (tw + 10.0, th + 2.0) // KEYCHIP_PAD_H=5*2, PAD_V=1*2
+                let size = crate::ui::shortcuts::chip_size(egui::Vec2::new(tw, th));
+                (size.x, size.y)
             }
             _ => (0.0, 0.0),
         }
