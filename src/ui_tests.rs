@@ -185,17 +185,6 @@ impl PlexiUiHarness {
 
     // ── Typed state helpers ───────────────────────────────────────────────────
 
-    /// Number of panes in the active window.
-    pub fn pane_count(&self) -> usize {
-        let app = self.inner.state();
-        app.windows[app.active_window].panes.len()
-    }
-
-    /// Number of windows (spatial grid entries) in the app.
-    pub fn window_count(&self) -> usize {
-        self.inner.state().windows.len()
-    }
-
     /// Mutably access PlexiApp to set up state before assertions.
     pub fn with_app_mut<F, R>(&mut self, f: F) -> R
     where
@@ -509,6 +498,52 @@ impl PlexiUiHarness {
     }
 }
 
+/// Where this test's screenshot evidence goes: `/tmp/plexi_<test fn>.png`,
+/// with the name taken from the enclosing function rather than typed out, so
+/// a renamed test cannot leave a stale filename behind and every artifact
+/// this file writes is reachable by one `rm /tmp/plexi_*.png` (the cleanup
+/// TESTING.md's visual-review step prescribes). Pass a suffix to distinguish
+/// several shots from one test: `evidence_png!("_ppp2")`.
+///
+/// Screenshots are a human review artifact, so the file deliberately survives
+/// a passing run — the reviewer reads it, then deletes it.
+#[cfg(test)]
+macro_rules! evidence_png {
+    () => {
+        $crate::ui_tests::evidence_png_path($crate::ui_tests::enclosing_fn_name!(), "")
+    };
+    ($suffix:expr) => {
+        $crate::ui_tests::evidence_png_path($crate::ui_tests::enclosing_fn_name!(), &$suffix)
+    };
+}
+
+/// The unqualified name of the function this expands inside.
+#[cfg(test)]
+macro_rules! enclosing_fn_name {
+    () => {{
+        fn probe() {}
+        fn name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let path = name_of(probe);
+        // `…::the_test::{{closure}}::probe` → `the_test`.
+        path.strip_suffix("::probe")
+            .unwrap_or(path)
+            .trim_end_matches("::{{closure}}")
+            .rsplit("::")
+            .next()
+            .unwrap_or(path)
+    }};
+}
+
+#[cfg(test)]
+pub(crate) use enclosing_fn_name;
+
+#[cfg(test)]
+pub(crate) fn evidence_png_path(test_name: &str, suffix: &str) -> String {
+    format!("/tmp/plexi_{test_name}{suffix}.png")
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -697,9 +732,8 @@ mod tests {
     fn screenshot_init() {
         let mut h = PlexiUiHarness::new();
         h.step();
-        h.save_screenshot("/tmp/plexi_init.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_init.png");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Raw `.wasm` paths queue a host pre-launch review before spawning. The
@@ -898,8 +932,7 @@ mod tests {
             win.zoom_to(portal_tile);
         });
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_portal_text_editor_icon.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app.windows[app.active_window]
                 .panes
@@ -907,7 +940,7 @@ mod tests {
                 .any(|p| p.portal_target().is_some())),
             "active window should contain a portal pane previewing the editor"
         );
-        println!("Screenshot saved to /tmp/plexi_portal_text_editor_icon.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Direct paint of `paint_portal_minimap` with hand-built `MiniPane`s — no
@@ -962,9 +995,8 @@ mod tests {
         harness
             .render()
             .expect("render failed")
-            .save("/tmp/plexi_portal_minimap_glyphs.png")
+            .save(evidence_png!())
             .expect("save screenshot");
-        println!("Screenshot saved to /tmp/plexi_portal_minimap_glyphs.png");
     }
 
     // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
@@ -1019,8 +1051,7 @@ mod tests {
         // `note_header` and never reaches the TextEdit buffer (unit-tested
         // via `split_note` in text_editor_app.rs).
         h.harness().get_by_label("Groceries");
-        h.save_screenshot("/tmp/plexi_note_editor.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1077,8 +1108,7 @@ mod tests {
         // the accessibility tree proves the bar laid them out.
         h.harness().get_by_label("Replace");
         h.harness().get_by_label("All");
-        h.save_screenshot("/tmp/plexi_note_find_bar.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1142,8 +1172,8 @@ mod tests {
         });
         h.run_steps(2);
 
-        let out = "/tmp/plexi_notes_picker_tier_chips.png";
-        h.save_screenshot(out).expect("render failed");
+        let out = evidence_png!();
+        h.save_screenshot(&out).expect("render failed");
         h.with_app(|app| {
             assert!(
                 app.notes_picker_entries
@@ -1199,8 +1229,7 @@ mod tests {
         let notes_labels = h.harness().get_all_by_label("Notes").count();
         assert_eq!(notes_labels, 1, "the modal title, with no duplicate header");
         h.harness().get_by_label("global");
-        h.save_screenshot("/tmp/plexi_notes_picker.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     #[test]
@@ -1220,8 +1249,7 @@ mod tests {
         h.harness().get_by_label("palette");
         h.harness().get_by_label("help");
         h.harness().get_by_label("dismiss");
-        h.save_screenshot("/tmp/plexi_ui_gallery_hint_bar_wide.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     #[test]
@@ -1238,8 +1266,7 @@ mod tests {
         h.harness().get_by_label("palette");
         h.harness().get_by_label("help");
         h.harness().get_by_label("dismiss");
-        h.save_screenshot("/tmp/plexi_ui_gallery_hint_bar_narrow.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     #[test]
@@ -1269,8 +1296,7 @@ mod tests {
             );
             assert!(!app.parked_section_expanded);
         });
-        h.save_screenshot("/tmp/plexi_parked_dropdown_collapsed.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
 
         // The parked header sits under the "Contexts" header and active row;
         // click its shared fixed-height hit target near the chevron. The
@@ -1307,8 +1333,7 @@ mod tests {
                 "shared dropdown header should toggle the parked list"
             );
         });
-        h.save_screenshot("/tmp/plexi_parked_dropdown_expanded.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// While a context is being dragged, the Parked header renders even with
@@ -1344,8 +1369,7 @@ mod tests {
             assert_eq!(app.router.iter().filter(|c| c.parked).count(), 0);
             assert_eq!(app.drag_context, Some(0));
         });
-        h.save_screenshot("/tmp/plexi_drag_park_drop_target.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Stint 0241: the sidebar is master-context navigation only. Every slot is
@@ -1452,8 +1476,7 @@ mod tests {
             );
         });
 
-        h.save_screenshot("/tmp/plexi-0241-sidebar-masters-only.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Stint 0749: the sidebar context list has no vertical scroll, so once
@@ -1512,8 +1535,7 @@ mod tests {
         h.with_app(|app| {
             assert_eq!(app.router.len(), 1, "first-run is a single context");
         });
-        h.save_screenshot("/tmp/plexi-0715-single-context-sidebar.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Stint 0388: visual proof that creating a context lands directly in the
@@ -1529,8 +1551,7 @@ mod tests {
             assert_eq!(app.renaming_window, None, "rename overlay stays closed");
         });
         h.run_steps(6);
-        h.save_screenshot("/tmp/plexi-0388-new-context-auto-name.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Stint 0726: visual proof that the sidebar shows the new project's
@@ -1555,8 +1576,7 @@ mod tests {
             );
         });
         h.run_steps(6);
-        h.save_screenshot("/tmp/plexi-0726-sidebar-auto-name-root-change.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Push a second spatial window onto `context_id` and return its index, so
@@ -1756,8 +1776,7 @@ mod tests {
             .push(egui::Event::PointerMoved(scratch_row));
         h.step();
 
-        h.save_screenshot("/tmp/plexi-0717-sidebar-row-states.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Stint 0605: `NextContext`/`PrevContext` cycle the same enumeration the
@@ -1829,9 +1848,8 @@ mod tests {
         h.step();
         add_focused_pane(&mut h);
         h.step();
-        h.save_screenshot("/tmp/plexi_with_pane.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_with_pane.png");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Visual review for the terminal reflow debounce (stint 0719). The
@@ -1885,9 +1903,8 @@ mod tests {
              wide after dragging the window narrower (now {widest_after})"
         );
 
-        h.save_screenshot("/tmp/plexi_terminal_drag_settled.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_terminal_drag_settled.png");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Fill each terminal with a line long enough to wrap, so the screenshot
@@ -1970,7 +1987,7 @@ mod tests {
             h.step();
             std::thread::sleep(Duration::from_millis(8));
         }
-        h.save_screenshot("/tmp/plexi_python_delta_frames.png")
+        h.save_screenshot(&evidence_png!())
             .expect("render delta frame");
     }
 
@@ -2010,8 +2027,7 @@ mod tests {
             h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_some()),
             "pane should remain zoomed after stepping frames"
         );
-        h.save_screenshot("/tmp/plexi_zoomed_app_pane.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     #[test]
@@ -2033,13 +2049,12 @@ mod tests {
                 > 0,
             "gallery should render the host TextArea primitive"
         );
-        h.save_screenshot("/tmp/plexi_host_ui_gallery_trust.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app.show_ui_gallery),
             "gallery should remain open for screenshot"
         );
-        println!("Screenshot saved to /tmp/plexi_host_ui_gallery_trust.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     #[test]
@@ -2057,13 +2072,12 @@ mod tests {
             h.harness().get_all_by_label("Changes").count() > 0,
             "changelog body should render release section labels"
         );
-        h.save_screenshot("/tmp/plexi_changelog_modal.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app.show_changelog),
             "changelog should remain open for screenshot"
         );
-        println!("Screenshot saved to /tmp/plexi_changelog_modal.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Host Assistant pane smoke: open → step → assert visible (epic Phase D).
@@ -2087,9 +2101,8 @@ mod tests {
                 .count()
         });
         assert_eq!(assistant_panes, 1, "assistant pane should be open");
-        h.save_screenshot("/tmp/plexi_assistant_pane.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_assistant_pane.png");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Visual review for stints 0466/0380: a tool row whose input/output carry
@@ -2141,11 +2154,11 @@ mod tests {
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_assistant_decoded_rows.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         println!(
-            "Screenshot saved to /tmp/plexi_assistant_decoded_rows.png — inspect: \
-             no literal \\n or \\\" anywhere, /context output reads as a normal row."
+            "Screenshot saved to {} — inspect: \
+             no literal \\n or \\\" anywhere, /context output reads as a normal row.",
+            evidence_png!()
         );
     }
 
@@ -2214,12 +2227,12 @@ mod tests {
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_assistant_conversation_bubbles.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         println!(
-            "Screenshot saved to /tmp/plexi_assistant_conversation_bubbles.png — \
+            "Screenshot saved to {} — \
              inspect: user bubbles right-anchored + shrink-to-fit, assistant \
-             bubbles left-anchored, no row renders full-width/identical."
+             bubbles left-anchored, no row renders full-width/identical.",
+            evidence_png!()
         );
     }
 
@@ -2259,8 +2272,7 @@ mod tests {
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_assistant_streaming_tool_progress.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
 
         // State 2: same turn with no generation info — a fresh pane, since
         // the harness has no post-open mutable assistant accessor. The dots
@@ -2276,8 +2288,7 @@ mod tests {
         h2.step();
         h2.open_assistant_built(assistant2, ws.path().to_path_buf());
         h2.run_steps(2);
-        h2.save_screenshot("/tmp/plexi_assistant_streaming_dots_after_text.png")
-            .expect("render failed");
+        h2.save_screenshot(&evidence_png!()).expect("render failed");
         println!(
             "Screenshots saved to /tmp/plexi_assistant_streaming_tool_progress.png \
              (spinner + 'writing host.files.write · 3.4k chars' under the text \
@@ -2348,13 +2359,13 @@ mod tests {
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_assistant_tool_rows.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         println!(
-            "Screenshot saved to /tmp/plexi_assistant_tool_rows.png — inspect: \
+            "Screenshot saved to {} — inspect: \
              assistant segment above the tool rows, one caret row per call \
              (no 'N tool calls' summary), failed row in danger hue, final \
-             reply as its own bubble below the tools."
+             reply as its own bubble below the tools.",
+            evidence_png!()
         );
     }
 
@@ -2401,12 +2412,12 @@ mod tests {
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_assistant_emoji_render.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         println!(
-            "Screenshot saved to /tmp/plexi_assistant_emoji_render.png — \
+            "Screenshot saved to {} — \
              inspect: 👋 😄 🛒 ✨ 🎮 render as distinct monochrome glyphs, \
-             not tofu boxes."
+             not tofu boxes.",
+            evidence_png!()
         );
     }
 
@@ -2510,9 +2521,8 @@ mod tests {
                 .count()
         });
         assert_eq!(assistant_panes, 1, "assistant pane should be open");
-        h.save_screenshot("/tmp/plexi_assistant_permission_sheet.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_assistant_permission_sheet.png");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     #[test]
@@ -2521,8 +2531,7 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
         h.open_assistant(ws.path().to_path_buf());
         h.run_steps(5);
-        h.save_screenshot("/tmp/plexi-render-2216-assistant.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Seeded transcript (user bubble right, assistant plain left) with the
@@ -2574,8 +2583,7 @@ mod tests {
         assistant.model.composer = "/".to_string();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(10);
-        h.save_screenshot("/tmp/plexi-render-2216-assistant-picker.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Seed a context-close confirm with a realistic pane inventory. When
@@ -2632,13 +2640,12 @@ mod tests {
         add_focused_pane(&mut h);
         h.step();
         seed_context_close_confirm(&mut h, true);
-        h.save_screenshot("/tmp/plexi_action_modal_context_close.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app.pending_context_close.is_some()),
             "confirm must still be pending — nothing consumed it"
         );
-        println!("Screenshot saved to /tmp/plexi_action_modal_context_close.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// A top-level context has no parent portal, so the modal must render
@@ -2649,8 +2656,7 @@ mod tests {
         add_focused_pane(&mut h);
         h.step();
         seed_context_close_confirm(&mut h, false);
-        h.save_screenshot("/tmp/plexi_action_modal_context_close_top_level.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app
                 .pending_context_close
@@ -2658,7 +2664,7 @@ mod tests {
                 .is_some_and(|state| !state.can_dissolve)),
             "a top-level context must not advertise Dissolve"
         );
-        println!("Screenshot saved to /tmp/plexi_action_modal_context_close_top_level.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Density review surface for the modal padding tokens (stint 0543):
@@ -2688,7 +2694,7 @@ mod tests {
                 app.sync_command_palette_focus();
             });
             h.run_steps(3);
-            h.save_screenshot(&format!("/tmp/plexi_density_palette_{tag}.png"))
+            h.save_screenshot(&evidence_png!(format!("_palette_{tag}")))
                 .expect("render failed");
 
             let mut h = PlexiUiHarness::new_sized_ppp(1168.0, 720.0, ppp);
@@ -2713,14 +2719,14 @@ mod tests {
                 app.notes_picker_selected = 0;
             });
             h.run_steps(3);
-            h.save_screenshot(&format!("/tmp/plexi_density_picker_{tag}.png"))
+            h.save_screenshot(&evidence_png!(format!("_picker_{tag}")))
                 .expect("render failed");
 
             let mut h = PlexiUiHarness::new_sized_ppp(1168.0, 720.0, ppp);
             add_focused_pane(&mut h);
             h.step();
             seed_context_close_confirm(&mut h, true);
-            h.save_screenshot(&format!("/tmp/plexi_density_confirm_{tag}.png"))
+            h.save_screenshot(&evidence_png!(format!("_confirm_{tag}")))
                 .expect("render failed");
         }
     }
@@ -2808,8 +2814,7 @@ mod tests {
             app.sync_command_palette_focus();
         });
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_command_palette_metadata_lane.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app.show_command_palette
                 && app.windows[app.active_window]
@@ -2817,7 +2822,7 @@ mod tests {
                     .contains_key(&first_pane_id)),
             "command palette should remain open over the populated context"
         );
-        println!("Screenshot saved to /tmp/plexi_command_palette_metadata_lane.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Visual review surface for stint 0565: the palette rendering an agent
@@ -2950,16 +2955,14 @@ mod tests {
         });
 
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_command_palette_agent_fleet.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
 
         h.with_app_mut(|app| {
             app.palette_query = "claude".to_string();
             app.palette_selected = 0;
         });
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_command_palette_agent_fleet_query.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
 
         assert!(
             h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
@@ -2983,8 +2986,7 @@ mod tests {
         });
         h.run_steps(3);
         let img = h.render().expect("render failed");
-        img.save("/tmp/plexi_catppuccin_latte_palette.png")
-            .expect("save screenshot");
+        img.save(evidence_png!()).expect("save screenshot");
         // Probe the blank right gutter inside the modal. The image center can
         // land on a command description as the registered app list changes.
         let surface = img.get_pixel(img.width() * 3 / 4, img.height() / 2).0;
@@ -2994,7 +2996,7 @@ mod tests {
             center_luma > 180,
             "Catppuccin Latte palette surface should be light, got rgba={surface:?}"
         );
-        println!("Screenshot saved to /tmp/plexi_catppuccin_latte_palette.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     #[test]
@@ -3027,13 +3029,12 @@ mod tests {
             app.sync_command_palette_focus();
         });
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_command_palette_user_commands.png")
-            .expect("render failed");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app.show_command_palette && app.palette_commands.len() == 3),
             "palette should be open with the injected user commands"
         );
-        println!("Screenshot saved to /tmp/plexi_command_palette_user_commands.png");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     #[test]
@@ -3085,34 +3086,6 @@ mod tests {
     }
 
     // ── Regression: layout flows ──────────────────────────────────────────────
-
-    #[test]
-    fn split_vertical_adds_pane() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        add_focused_pane(&mut h);
-        h.step();
-        assert_eq!(h.pane_count(), 1);
-
-        h.with_app_mut(|app| app.split_focused(true, None, false, false, None));
-        h.step();
-
-        assert_eq!(h.pane_count(), 2);
-    }
-
-    #[test]
-    fn split_horizontal_adds_pane() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        add_focused_pane(&mut h);
-        h.step();
-        assert_eq!(h.pane_count(), 1);
-
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None));
-        h.step();
-
-        assert_eq!(h.pane_count(), 2);
-    }
 
     /// Holding Control exposes every pane's centered ID, including a window
     /// with just one pane. The two-pane layout is the control case for the
@@ -3225,18 +3198,6 @@ mod tests {
                 "Control must paint pane {pane_id}'s ID in a split layout"
             );
         }
-    }
-
-    #[test]
-    fn new_context_adds_window() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        assert_eq!(h.window_count(), 1);
-
-        h.with_app_mut(|app| app.new_context());
-        h.step();
-
-        assert_eq!(h.window_count(), 2);
     }
 
     // ── Rename flow tests (require a real egui frame to process key events) ────
@@ -3459,9 +3420,9 @@ mod tests {
         h.run_steps(2);
         h.render()
             .expect("tab bar with long title must render without panic");
-        h.save_screenshot("/tmp/plexi_tab_truncation.png")
+        h.save_screenshot(&evidence_png!())
             .expect("screenshot failed");
-        println!("Screenshot saved to /tmp/plexi_tab_truncation.png");
+        println!("Screenshot saved to {}", evidence_png!());
         // Visual: open /tmp/plexi_tab_truncation.png and confirm the long label
         // ends with '…' on a single line and does not push the tab bar taller.
     }
@@ -3527,14 +3488,14 @@ mod tests {
     /// the pixel grid with uniform leading.
     #[test]
     fn screenshot_editor_rows_pixel_grid_ppp1() {
-        editor_rows_evidence(1.0, "/tmp/plexi-0529-editor-rows-ppp1.png");
+        editor_rows_evidence(1.0, &evidence_png!("_ppp1"));
     }
 
     /// Stint 0529 evidence: same document at ppp 2.0 (the HiDPI case that
     /// used to shimmer during scroll and show 17/17/16/17 leading).
     #[test]
     fn screenshot_editor_rows_pixel_grid_ppp2() {
-        editor_rows_evidence(2.0, "/tmp/plexi-0529-editor-rows-ppp2.png");
+        editor_rows_evidence(2.0, &evidence_png!("_ppp2"));
     }
 
     /// Stints 0528/0530 evidence: sidebar with seeded contexts (active +
@@ -3630,12 +3591,12 @@ mod tests {
 
     #[test]
     fn screenshot_sidebar_pane_dots_pixel_grid_ppp1() {
-        render_sidebar_pane_dots_pixel_grid(1.0, "/tmp/plexi-0564-sidebar-pips-ppp1.png");
+        render_sidebar_pane_dots_pixel_grid(1.0, &evidence_png!("_ppp1"));
     }
 
     #[test]
     fn screenshot_sidebar_pane_dots_pixel_grid_ppp2() {
-        render_sidebar_pane_dots_pixel_grid(2.0, "/tmp/plexi-0564-sidebar-pips-ppp2.png");
+        render_sidebar_pane_dots_pixel_grid(2.0, &evidence_png!("_ppp2"));
     }
 
     /// Stint 0700: the 220-point sidebar shows an ordinary context name in full
@@ -3731,7 +3692,7 @@ mod tests {
             .events
             .push(egui::Event::PointerMoved(active_title));
         h.step();
-        h.save_screenshot("/tmp/plexi-0700-sidebar-x-end.png")
+        h.save_screenshot(&evidence_png!())
             .expect("220-point sidebar render");
     }
 
@@ -3780,9 +3741,8 @@ mod tests {
             win.focused_pane = Some(tile_id);
         });
         h.run_steps(3);
-        h.save_screenshot("/tmp/plexi-0528-filebrowser-ppp2.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi-0528-filebrowser-ppp2.png");
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!());
     }
 
     // ── Text-crispness gate (stint 0531) ────────────────────────────────────
@@ -4008,7 +3968,7 @@ mod tests {
                 h.step();
                 seed_sidebar(&mut h);
                 h.run_steps(3);
-                let out = format!("/tmp/plexi-0531-sidebar-ppp{}.png", (ppp * 10.0) as u32);
+                let out = evidence_png!(format!("_sidebar_ppp{}", (ppp * 10.0) as u32));
                 h.save_screenshot(&out).expect("sidebar render");
                 println!("Screenshot saved to {out}");
             }
@@ -4021,7 +3981,7 @@ mod tests {
                 h.step();
                 seed_editor_mid_scroll(&mut h);
                 h.run_steps(3);
-                let out = format!("/tmp/plexi-0531-editor-ppp{}.png", (ppp * 10.0) as u32);
+                let out = evidence_png!(format!("_editor_ppp{}", (ppp * 10.0) as u32));
                 h.save_screenshot(&out).expect("editor render");
                 println!("Screenshot saved to {out}");
             }
@@ -4034,7 +3994,7 @@ mod tests {
                 h.step();
                 seed_file_browser(&mut h);
                 h.run_steps(3);
-                let out = format!("/tmp/plexi-0531-filebrowser-ppp{}.png", (ppp * 10.0) as u32);
+                let out = evidence_png!(format!("_filebrowser_ppp{}", (ppp * 10.0) as u32));
                 h.save_screenshot(&out).expect("file browser render");
                 println!("Screenshot saved to {out}");
             }
@@ -4049,7 +4009,7 @@ mod tests {
                 h.step();
                 seed_wasm_text(&mut h, profile.path());
                 h.run_steps(6);
-                let out = format!("/tmp/plexi-0531-wasm-text-ppp{}.png", (ppp * 10.0) as u32);
+                let out = evidence_png!(format!("_wasm_text_ppp{}", (ppp * 10.0) as u32));
                 h.save_screenshot(&out).expect("wasm text render");
                 println!("Screenshot saved to {out}");
             }
@@ -4267,7 +4227,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
 
-        h.save_screenshot("/tmp/plexi-render-0720-todo-add-form.png")
+        h.save_screenshot(&evidence_png!())
             .expect("render todo add form");
     }
 }

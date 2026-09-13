@@ -474,7 +474,7 @@ evidence = [
   "auto_dismiss_spares_required_notifications",
   "auto_dismiss_does_not_touch_other_pane_notifications",
   "enqueue_notification_honours_master_switch",
-  "notification-modal-wrapped-narrow",
+  "notification-modal-wrapped",
 ]
 stints = []
 
@@ -707,7 +707,7 @@ evidence = [
   "column_model_round_trips_preferences",
   "details_columns_keep_enabled_columns_reachable_at_breakpoint_width",
   "escape_dismisses_quick_look_before_closing_browser",
-  "file-browser-narrow",
+  "file-browser",
   "file-browser-rename",
 ]
 stints = ["0007", "0150"]

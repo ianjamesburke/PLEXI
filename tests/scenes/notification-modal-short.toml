@@ -1,4 +1,5 @@
-size = [1280.0, 800.0]
+# Short notification title and body, narrow and wide.
+sizes = [[520.0, 640.0], [1280.0, 800.0]]
 
 [[steps]]
 seed_notification = { title = "Build complete", body = "The release candidate is ready." }
@@ -7,4 +8,4 @@ seed_notification = { title = "Build complete", body = "The release candidate is
 assert_label = { target = "host", label = "Build complete" }
 
 [[steps]]
-shot = "notification-modal-short-wide.png"
+shot = "notification-modal-short.png"

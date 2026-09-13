@@ -2373,41 +2373,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/canvas-click-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch canvas-click-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching canvas-click-probe");
-
-    // Real subprocess: poll for its first committed render before doing
-    // anything layout-dependent (pane rect resolution, clicking).
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "canvas-click-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    // A couple more idle frames so the tile tree's layout settles.
-    h.run_frames(2);
+    let pane_id = h.launch_dev_app("canvas-click-probe");
 
     let (win_idx, tile_id) = h
         .app
@@ -2511,38 +2477,7 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/canvas-click-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch canvas-click-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching canvas-click-probe");
-
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "canvas-click-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    h.run_frames(2);
+    let pane_id = h.launch_dev_app("canvas-click-probe");
 
     let (win_idx, tile_id) = h
         .app
@@ -2642,38 +2577,7 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/canvas-click-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch canvas-click-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching canvas-click-probe");
-
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "canvas-click-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    h.run_frames(2);
+    let pane_id = h.launch_dev_app("canvas-click-probe");
 
     // Node exists (the canvas root, arena id "0") but has no recorded bounds.
     let response_file = temp_response(tmp.path(), "drag-node-no-bounds");
@@ -2716,37 +2620,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/event-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch event-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching event-probe");
-
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "event-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    h.run_frames(2);
+    let pane_id = h.launch_dev_app("event-probe");
 
     let response_file = temp_response(tmp.path(), "key-pane");
     h.inject_ipc(crate::protocol::AppRequest::KeyPane {
@@ -2787,15 +2661,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
 fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
     let mut h = HostHarness::new();
 
-    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/event-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch event-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching event-probe");
+    let pane_id = h.launch_dev_app_without_render("event-probe");
 
     let expected_origin = h
         .app
@@ -3142,40 +3008,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/node-click-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch node-click-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching node-click-probe");
-
-    // Real subprocess: poll for its first committed render before reading
-    // the semantic tree.
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "node-click-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    h.run_frames(2);
+    let pane_id = h.launch_dev_app("node-click-probe");
 
     let semantic_state = h.app.windows[h.app.active_window]
         .panes
@@ -3385,39 +3218,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/key-event-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch key-event-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching key-event-probe");
-
-    // Real subprocess: poll for its first committed render before driving input.
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "key-event-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    h.run_frames(2);
+    let pane_id = h.launch_dev_app("key-event-probe");
 
     let initial_count = h.app.windows[h.app.active_window]
         .panes
@@ -3483,38 +3284,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
 fn bare_escape_closes_focused_python_wasm_pane() {
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/key-event-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch key-event-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching key-event-probe");
-
-    // Real subprocess: poll for its first committed render before driving input.
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "key-event-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+    let pane_id = h.launch_dev_app("key-event-probe");
     h.focus_pane(pane_id);
     h.run_frames(1);
     assert!(
@@ -3569,38 +3339,7 @@ fn bare_escape_closes_focused_python_wasm_pane() {
 fn queued_node_click_survives_a_hot_reload_relaunch_race() {
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/node-click-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch node-click-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching node-click-probe");
-
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "node-click-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    h.run_frames(2);
+    let pane_id = h.launch_dev_app("node-click-probe");
 
     let semantic_state = h.app.windows[h.app.active_window]
         .panes
@@ -4099,38 +3838,7 @@ fn wait_for_text_label(h: &mut HostHarness, pane_id: PaneId, prefix: &str, expec
 fn focused_text_input_receives_typing_and_enter_submits() {
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/text-input-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch text-input-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching text-input-probe");
-
-    // Real subprocess: poll for its first committed render before driving input.
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "text-input-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+    let pane_id = h.launch_dev_app("text-input-probe");
     h.focus_pane(pane_id);
     h.run_frames(2);
 
@@ -4222,37 +3930,7 @@ fn focused_text_input_receives_typing_and_enter_submits() {
 fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/text-input-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch text-input-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching text-input-probe");
-
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "text-input-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+    let pane_id = h.launch_dev_app("text-input-probe");
     h.focus_pane(pane_id);
     h.run_frames(2);
 
@@ -4406,38 +4084,7 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
 fn arrow_keys_reach_app_through_a_focused_text_input() {
     let mut h = HostHarness::new();
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/search-nav-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch search-nav-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching search-nav-probe");
-
-    // Real subprocess: poll for its first committed render before driving input.
-    let start = std::time::Instant::now();
-    loop {
-        h.run_frames(1);
-        let rendered = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .is_some_and(
-                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
-            );
-        if rendered {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "search-nav-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+    let pane_id = h.launch_dev_app("search-nav-probe");
 
     // The TextInput is autofocus — focusing the pane and letting it render is
     // enough to claim the text surface, exactly as wikipedia.py's search box
@@ -5396,16 +5043,7 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
     )
     .expect("write mcp_servers.toml");
 
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/mcp-hidden-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch mcp-hidden-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching mcp-hidden-probe");
+    let pane_id = h.launch_dev_app_without_render("mcp-hidden-probe");
 
     // `display_name` surfaces the guest's `set_title` (falling back to the
     // app id before the first one lands) — host-side state updated on
@@ -7530,15 +7168,7 @@ mod pane_send_submit_tests {
 #[test]
 fn continuous_app_frames_ride_the_scheduled_repaint() {
     let mut h = HostHarness::new();
-    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/balls");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch balls");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching balls");
+    let pane_id = h.launch_dev_app_without_render("balls");
 
     let suppressed = |h: &HostHarness| {
         h.app.windows[h.app.active_window]
@@ -7574,38 +7204,19 @@ fn continuous_app_frames_ride_the_scheduled_repaint() {
 fn scheduled_mode_app_never_suppresses_its_frame_wake() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    let app_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/key-event-probe");
-    h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
-        .expect("launch key-event-probe");
-    let pane_id = *h
-        .state()
-        .open_panes
-        .last()
-        .expect("a pane appears after launching key-event-probe");
+    let pane_id = h.launch_dev_app("key-event-probe");
 
-    let probe = |h: &HostHarness| {
+    let suppressed = |h: &HostHarness| {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
             .and_then(Pane::as_app)
             .and_then(|pane| match &pane.runtime {
-                AppRuntime::Python(p) => Some((p.has_rendered_tree(), p.suppressed_wakes())),
+                AppRuntime::Python(p) => Some(p.suppressed_wakes()),
                 _ => None,
             })
             .expect("key-event-probe runs on the Python runtime")
     };
-
-    let start = std::time::Instant::now();
-    while !probe(&h).0 {
-        h.run_frames(1);
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
-            "key-event-probe did not render its first frame in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
 
     // Drive real input and let the response frame land.
     let key_response = temp_response(tmp.path(), "wake-probe-plus");
@@ -7640,7 +7251,7 @@ fn scheduled_mode_app_never_suppresses_its_frame_wake() {
     }
 
     assert_eq!(
-        probe(&h).1,
+        suppressed(&h),
         0,
         "an input-driven app must never trade presentation latency for saved paints"
     );
