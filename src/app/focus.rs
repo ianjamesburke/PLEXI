@@ -871,34 +871,18 @@ impl PlexiApp {
                 .collect::<Vec<_>>()
                 .join("\n");
             log::warn!("config: parse error, keeping current config:\n{error_msg}");
-            let notify_id = format!("config-error-{}", crate::platform::clock::now_millis());
+            let notify_id = crate::app::notifications::new_notify_id("config-error");
             self.enqueue_notification(
                 crate::app::notifications::NotifySource::HostInternal,
                 PendingNotification {
                     notify_id,
-                    sender_pane_id: 0,
-                    dismiss_owner_pane_id: 0,
-                    source_context_id: 0,
-                    source_window_id: 0,
                     title: "Config Error".to_string(),
                     body: error_msg,
-                    kind: crate::protocol::NotifyKind::Message,
-                    options: vec![],
-                    input_prompt: None,
-                    required: false,
                     // A broken config is not a property of one context — it
                     // affects the whole workspace, so this stays the explicit
                     // global case rather than taking the shared default.
                     scope: crate::protocol::NotifyScope::Global,
-                    image_inline: None,
-                    image_pipe_id: None,
-                    response_file: None,
-                    timeout_secs: None,
-                    on_dismiss: None,
-                    enqueued_at: std::time::Instant::now(),
-                    tombstoned: false,
-                    deliver_after: None,
-                    origin_in_view: false,
+                    ..Default::default()
                 },
             );
             return;
@@ -1303,58 +1287,14 @@ impl PlexiApp {
                 host_action,
             } = cmd
             {
-                log::info!(
-                    "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
+                self.deliver_notify_action(
+                    pane_id,
+                    notify_id,
+                    action_label,
+                    value,
+                    response_file,
+                    host_action,
                 );
-                let context_root = self
-                    .origin_for_pane(pane_id)
-                    .map(|origin| origin.context_root);
-                crate::host::event_log::emit_scoped(
-                    crate::host::event_log::HostEvent::NotificationActionInvoked {
-                        id: notify_id.clone(),
-                        action: action_label.clone(),
-                        timestamp: crate::host::event_log::now_timestamp(),
-                    },
-                    context_root.as_deref(),
-                );
-                // Execute host-side action synchronously before writing the response
-                // file so the navigation is complete before the shell unblocks.
-                if let Some(ref action) = host_action {
-                    if let Some(id_str) = action.strip_prefix("pane_focus:") {
-                        if let Ok(pane_id_target) = id_str.parse::<u64>() {
-                            self.pane_navigate(pane_id_target);
-                        } else {
-                            log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
-                        }
-                    } else {
-                        log::warn!("notify:action: unknown host_action {:?}", action);
-                    }
-                }
-                if let Some(rf) = &response_file {
-                    let content = value.as_deref().unwrap_or("");
-                    if crate::rpc::write_response(rf, content.as_bytes()) {
-                        log::info!("notify:action: wrote {:?} to {:?}", content, rf);
-                    }
-                }
-                // Search all windows for the sender pane — it may not be in the
-                // active context (cross-context notification path).
-                let window_idx = self
-                    .windows
-                    .iter()
-                    .position(|w| w.panes.contains_key(&pane_id));
-                if let Some(win_idx) = window_idx {
-                    if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
-                        if let Some(app) = pane.as_app_mut() {
-                            app.runtime.queue_outbound_event(
-                                crate::protocol::PlexiEvent::NotifyAction {
-                                    notify_id,
-                                    action_label,
-                                    value,
-                                },
-                            );
-                        }
-                    }
-                }
             }
         }
     }

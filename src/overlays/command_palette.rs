@@ -978,11 +978,16 @@ impl PlexiApp {
         let mut action: Option<Action> = None;
         let prev_selected = self.palette_selected;
 
+        // The toggle that opened the palette also dismisses it, so it is read
+        // from the (config-overridable) binding table rather than hardcoded —
+        // a user who rebinds it can close with the same key they opened with.
+        let toggle = self.key_bindings.toggle_command_palette;
+
         ctx.input_mut(|input| {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
+            if input.consume_key(toggle.0, toggle.1) {
                 self.show_command_palette = false;
             }
             if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)

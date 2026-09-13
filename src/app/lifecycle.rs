@@ -167,6 +167,41 @@ impl PlexiApp {
         }
     }
 
+    /// Point focus at the window and tile that own `from_pane_id` so a
+    /// spawn lands beside its caller, returning `(target_window,
+    /// focused_pane_before_redirect)`. The caller restores that saved pane
+    /// through `restore_window_focused_pane` once the launch settles.
+    /// `kind` only names the caller in the log line. No `from_pane_id`, or
+    /// one that names no live pane, leaves focus alone and reports
+    /// `fallback_win`.
+    fn redirect_focus_to_spawn_origin(
+        &mut self,
+        from_pane_id: Option<crate::spatial::tiling::PaneId>,
+        kind: &str,
+        fallback_win: usize,
+    ) -> (usize, Option<egui_tiles::TileId>) {
+        let Some(from_id) = from_pane_id else {
+            return (fallback_win, self.windows[fallback_win].focused_pane);
+        };
+        match self.find_pane_in_any_window(from_id) {
+            Some((fw, ft)) => {
+                log::info!(
+                    "pane_ipc: spawn_pane {kind}: targeting from_pane_id={from_id} win_idx={fw}"
+                );
+                let saved = self.windows[fw].focused_pane;
+                self.active_window = fw;
+                self.set_window_focused_pane(fw, ft);
+                (fw, saved)
+            }
+            None => {
+                log::warn!(
+                    "pane_ipc: spawn_pane {kind}: from_pane_id={from_id} not found, using focused pane"
+                );
+                (fallback_win, self.windows[fallback_win].focused_pane)
+            }
+        }
+    }
+
     /// Handle a single pane-IPC `AppRequest`. Shared by the socket drain above
     /// and the PGAP forwarding path (`AppCommand::ForwardPaneRequest`, stint
     /// 0013/0014) so capability-gated app requests take the identical host
@@ -1223,29 +1258,8 @@ impl PlexiApp {
                 } else if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) = if let Some(from_id) =
-                        spec.from_pane_id
-                    {
-                        match self.find_pane_in_any_window(from_id) {
-                            Some((fw, ft)) => {
-                                log::info!(
-                                    "pane_ipc: spawn_pane path: targeting from_pane_id={from_id} win_idx={fw}"
-                                );
-                                let saved = self.windows[fw].focused_pane;
-                                self.active_window = fw;
-                                self.set_window_focused_pane(fw, ft);
-                                (fw, saved)
-                            }
-                            None => {
-                                log::warn!(
-                                    "pane_ipc: spawn_pane path: from_pane_id={from_id} not found, using focused pane"
-                                );
-                                (active, self.windows[active].focused_pane)
-                            }
-                        }
-                    } else {
-                        (active, self.windows[active].focused_pane)
-                    };
+                    let (target_win, orig_focused_in_target) =
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
                     launch_result = self
                         .launch_app_by_path_with_layout_no_review_modal(
                             &app_path.to_string_lossy(),
@@ -1272,29 +1286,8 @@ impl PlexiApp {
                 } else if let crate::app::launch_spec::PaneLaunchTarget::AppId(type_id) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) = if let Some(from_id) =
-                        spec.from_pane_id
-                    {
-                        match self.find_pane_in_any_window(from_id) {
-                            Some((fw, ft)) => {
-                                log::info!(
-                                    "pane_ipc: spawn_pane app: targeting from_pane_id={from_id} win_idx={fw}"
-                                );
-                                let saved = self.windows[fw].focused_pane;
-                                self.active_window = fw;
-                                self.set_window_focused_pane(fw, ft);
-                                (fw, saved)
-                            }
-                            None => {
-                                log::warn!(
-                                    "pane_ipc: spawn_pane app: from_pane_id={from_id} not found, using focused pane"
-                                );
-                                (active, self.windows[active].focused_pane)
-                            }
-                        }
-                    } else {
-                        (active, self.windows[active].focused_pane)
-                    };
+                    let (target_win, orig_focused_in_target) =
+                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "app", active);
                     // CLI/spawn-request app opens default to a sibling split, never
                     // an overlay takeover of the caller's pane. Manifest `[launch]
                     // placement` still overrides the default (stint 0330).
@@ -2436,7 +2429,6 @@ impl PlexiApp {
                     crate::app::notifications::NotifySource::Cli,
                     PendingNotification {
                         notify_id: internal_id,
-                        sender_pane_id: 0,
                         dismiss_owner_pane_id,
                         // 0 = no context / no window, the same sentinel
                         // host-internal notifications use. Real ids start at 1.
@@ -2454,10 +2446,7 @@ impl PlexiApp {
                         response_file: response_file.clone(),
                         timeout_secs: *timeout_secs,
                         on_dismiss: on_dismiss.clone(),
-                        enqueued_at: std::time::Instant::now(),
-                        tombstoned: false,
-                        deliver_after: None,
-                        origin_in_view: false,
+                        ..Default::default()
                     },
                 );
             }
@@ -3325,35 +3314,15 @@ impl PlexiApp {
             Some(id) => (crate::protocol::NotifyScope::Context, id),
             None => (crate::protocol::NotifyScope::Global, 0),
         };
-        // Millis alone can collide when two routine issues surface in the same
-        // tick; notify_id is an identity key, so disambiguate with a counter.
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let millis = crate::platform::clock::now_millis();
         let queued = self.enqueue_notification(
             crate::app::notifications::NotifySource::HostInternal,
             crate::app::notifications::PendingNotification {
-                notify_id: format!("routine-{millis}-{seq}"),
-                sender_pane_id: 0,
-                dismiss_owner_pane_id: 0,
+                notify_id: crate::app::notifications::new_notify_id("routine"),
                 source_context_id,
-                source_window_id: 0,
                 title: title.to_string(),
                 body: body.to_string(),
-                kind: crate::protocol::NotifyKind::Message,
-                options: vec![],
-                input_prompt: None,
-                required: false,
                 scope,
-                image_inline: None,
-                image_pipe_id: None,
-                response_file: None,
-                timeout_secs: None,
-                on_dismiss: None,
-                enqueued_at: std::time::Instant::now(),
-                tombstoned: false,
-                deliver_after: None,
-                origin_in_view: false,
+                ..Default::default()
             },
         );
         log::info!("scheduler: routine notification queued={queued} title='{title}' body='{body}'");

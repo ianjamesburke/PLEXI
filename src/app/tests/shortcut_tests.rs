@@ -131,3 +131,36 @@ fn binding_table_is_populated() {
         };
     }
 }
+
+/// A rebound `toggle_command_palette` must also *dismiss* the palette. The
+/// overlay used to hardcode Cmd+P for its own dismissal, so a user who
+/// rebound the chord could open the palette but not close it with the same
+/// key. Drives the real `RawInput` path so the fix is proven end to end.
+#[test]
+fn rebound_command_palette_toggle_also_dismisses_the_palette() {
+    let overrides: crate::config::KeybindingsConfig =
+        toml::from_str("toggle_command_palette = \"cmd+y\"").expect("parse keybinding override");
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    h.app.key_bindings = build_key_bindings(Some(&overrides));
+    h.app.binding_table = build_binding_table(&h.app.key_bindings);
+    assert_eq!(
+        h.app.key_bindings.toggle_command_palette,
+        (egui::Modifiers::COMMAND, egui::Key::Y),
+        "config override must reach the live bindings"
+    );
+
+    h.press_key(egui::Key::Y, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(
+        h.app.show_command_palette,
+        "rebound chord must open the palette"
+    );
+
+    h.press_key(egui::Key::Y, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(
+        !h.app.show_command_palette,
+        "rebound chord must dismiss the palette it opened"
+    );
+}

@@ -815,7 +815,7 @@ mod transport_deadline_tests {
     use super::{connect_unix_deadline, send_line_to_socket, SocketTransportError};
     use std::io::{BufRead as _, BufReader};
     use std::os::unix::net::UnixListener;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant};
 
     fn unique_socket_dir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(

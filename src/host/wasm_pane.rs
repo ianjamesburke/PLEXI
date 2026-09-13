@@ -2498,7 +2498,7 @@ mod tests {
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
     use crate::host::wasm_app::{
-        KeyEvent, Modifiers, StateSnapshot, StateStore, UiNodeData, WasmApp,
+        KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};

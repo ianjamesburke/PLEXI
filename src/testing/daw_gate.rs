@@ -33,7 +33,7 @@ use plexi_daw_model::{
 };
 
 use crate::host::wasm_app::{
-    InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, UiNodeData, UiTree, WasmApp,
+    InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp,
 };
 
 // ─── Tier 1: pure-model fuzz, wired under `cargo test --bin plexi` ────────────

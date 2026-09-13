@@ -187,9 +187,12 @@ impl PlexiApp {
         &mut self,
         input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
-        // Consume Cmd+0 so poll_actions doesn't fire OpenQuickNote while the modal
-        // is already open — that would reset mid-session note state.
-        input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0);
+        // Consume the open-quick-note chord so poll_actions doesn't fire
+        // OpenQuickNote while the modal is already open — that would reset
+        // mid-session note state. Read from the (config-overridable) bindings,
+        // never hardcoded, so a rebound chord is still swallowed here.
+        let binding = self.key_bindings.open_quick_note;
+        input.consume_key(binding.0, binding.1);
         crate::app::app_trait::KeyDisposition::Consumed
     }
 }

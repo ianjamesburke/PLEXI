@@ -332,7 +332,9 @@ impl PlexiApp {
                             if let Some(window_index) = source_window_index {
                                 let source_context_id = self.windows[window_index].context_id;
                                 let source_window_id = self.windows[window_index].window_id;
-                                let notify_id = format!("wasm:{pane_id}:{}", uuid::Uuid::new_v4());
+                                let notify_id = crate::app::notifications::new_notify_id(&format!(
+                                    "wasm:{pane_id}"
+                                ));
                                 log::info!(
                                     "wasm effect: notify pane_id={pane_id} context_id={source_context_id} icon={icon:?}"
                                 );
@@ -344,25 +346,11 @@ impl PlexiApp {
                                     PendingNotification {
                                         notify_id,
                                         sender_pane_id: pane_id,
-                                        dismiss_owner_pane_id: 0,
                                         source_context_id,
                                         source_window_id,
-                                        scope: crate::protocol::NotifyScope::default(),
                                         title,
                                         body,
-                                        kind: crate::protocol::NotifyKind::Message,
-                                        options: vec![],
-                                        input_prompt: None,
-                                        required: false,
-                                        image_inline: None,
-                                        image_pipe_id: None,
-                                        response_file: None,
-                                        timeout_secs: None,
-                                        on_dismiss: None,
-                                        enqueued_at: std::time::Instant::now(),
-                                        tombstoned: false,
-                                        deliver_after: None,
-                                        origin_in_view: false,
+                                        ..Default::default()
                                     },
                                 );
                                 Some(InputEvent::NotifyResult(Ok(())))
@@ -1054,7 +1042,6 @@ impl PlexiApp {
                         }
                     }
                 }
-                AppCommand::Notify(_) => {}
                 AppCommand::ShowNotification {
                     notify_id,
                     sender_pane_id,
@@ -1091,7 +1078,6 @@ impl PlexiApp {
                         PendingNotification {
                             notify_id,
                             sender_pane_id,
-                            dismiss_owner_pane_id: 0,
                             source_context_id,
                             source_window_id: notif_source_win_id,
                             title,
@@ -1103,13 +1089,9 @@ impl PlexiApp {
                             scope,
                             image_inline,
                             image_pipe_id,
-                            response_file: None,
                             timeout_secs,
                             on_dismiss,
-                            enqueued_at: std::time::Instant::now(),
-                            tombstoned: false,
-                            deliver_after: None,
-                            origin_in_view: false,
+                            ..Default::default()
                         },
                     );
                 }
@@ -1121,61 +1103,14 @@ impl PlexiApp {
                     response_file,
                     host_action,
                 } => {
-                    log::info!(
-                        "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
+                    self.deliver_notify_action(
+                        pane_id,
+                        notify_id,
+                        action_label,
+                        value,
+                        response_file,
+                        host_action,
                     );
-                    let context_root = self
-                        .origin_for_pane(pane_id)
-                        .map(|origin| origin.context_root);
-                    crate::host::event_log::emit_scoped(
-                        crate::host::event_log::HostEvent::NotificationActionInvoked {
-                            id: notify_id.clone(),
-                            action: action_label.clone(),
-                            timestamp: crate::host::event_log::now_timestamp(),
-                        },
-                        context_root.as_deref(),
-                    );
-                    // Execute host-side action synchronously before writing the response
-                    // file so the navigation is complete before the shell unblocks.
-                    if let Some(ref action) = host_action {
-                        if let Some(id_str) = action.strip_prefix("pane_focus:") {
-                            if let Ok(pane_id_target) = id_str.parse::<u64>() {
-                                self.pane_navigate(pane_id_target);
-                            } else {
-                                log::warn!(
-                                    "notify:action: pane_focus: invalid pane_id {:?}",
-                                    id_str
-                                );
-                            }
-                        } else {
-                            log::warn!("notify:action: unknown host_action {:?}", action);
-                        }
-                    }
-                    if let Some(rf) = &response_file {
-                        let content = value.as_deref().unwrap_or("");
-                        if crate::rpc::write_response(rf, content.as_bytes()) {
-                            log::info!("notify:action: wrote {:?} to {:?}", content, rf);
-                        }
-                    }
-                    // Search all windows for the sender pane — it may not be in the
-                    // active context (cross-context notification path).
-                    let window_idx = self
-                        .windows
-                        .iter()
-                        .position(|w| w.panes.contains_key(&pane_id));
-                    if let Some(win_idx) = window_idx {
-                        if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
-                            if let Some(app) = pane.as_app_mut() {
-                                app.runtime.queue_outbound_event(
-                                    crate::protocol::PlexiEvent::NotifyAction {
-                                        notify_id,
-                                        action_label,
-                                        value,
-                                    },
-                                );
-                            }
-                        }
-                    }
                 }
                 AppCommand::DeliverPipeMessage {
                     sender_pane_id,
@@ -1554,56 +1489,31 @@ impl PlexiApp {
 
         let mut deferred = Vec::new();
 
-        for (type_id, park_context_id, cmds) in &parked {
+        for (type_id, park_context_id, cmds) in parked {
             let resolved_scope = self
                 .registries
-                .view_for_context(*park_context_id, &self.router)
-                .default_notification_scope_for(type_id);
-            for cmd in cmds.iter() {
-                match cmd {
-                    AppCommand::ShowNotification {
-                        notify_id,
-                        title,
-                        body,
-                        kind,
-                        options,
-                        input_prompt,
-                        required,
-                        image_inline,
-                        image_pipe_id,
-                        timeout_secs,
-                        on_dismiss,
-                        ..
-                    } => {
-                        log::info!(
-                            "parked background app '{}' notification: {} (routing to context_id {})",
-                            type_id, title, park_context_id
-                        );
-                        deferred.push(AppCommand::ShowNotification {
-                            notify_id: notify_id.clone(),
-                            sender_pane_id: 0, // no live pane — tombstone won't fire
-                            source_context_id: *park_context_id,
-                            title: title.clone(),
-                            body: body.clone(),
-                            kind: kind.clone(),
-                            options: options.clone(),
-                            input_prompt: input_prompt.clone(),
-                            required: *required,
-                            scope: resolved_scope,
-                            image_inline: image_inline.clone(),
-                            image_pipe_id: image_pipe_id.clone(),
-                            timeout_secs: *timeout_secs,
-                            on_dismiss: on_dismiss.clone(),
-                        });
-                    }
-                    AppCommand::Notify(msg) => {
-                        log::info!("parked bg app '{}': {}", type_id, msg);
-                    }
-                    // Commands that require a live pane context are silently
-                    // dropped when the app is parked — the app has no tile to
-                    // target and no context to route through.
-                    _ => {}
-                }
+                .view_for_context(park_context_id, &self.router)
+                .default_notification_scope_for(&type_id);
+            for cmd in cmds {
+                // Commands that require a live pane context are silently
+                // dropped when the app is parked — the app has no tile to
+                // target and no context to route through.
+                let AppCommand::ShowNotification { title, .. } = &cmd else {
+                    continue;
+                };
+                log::info!(
+                    "parked background app '{}' notification: {} (routing to context_id {})",
+                    type_id,
+                    title,
+                    park_context_id
+                );
+                // 0 = no live pane — tombstone won't fire.
+                deferred.push(stamp_notification_origin(
+                    cmd,
+                    0,
+                    park_context_id,
+                    resolved_scope,
+                ));
             }
         }
 
@@ -1722,39 +1632,13 @@ impl PlexiApp {
                             sender_pane_id: pane_id,
                         });
                     }
-                    AppCommand::Notify(msg) => {
-                        log::info!("app notify: {msg}");
-                    }
-                    AppCommand::ShowNotification {
-                        notify_id,
-                        title,
-                        body,
-                        kind,
-                        options,
-                        input_prompt,
-                        required,
-                        image_inline,
-                        image_pipe_id,
-                        timeout_secs,
-                        on_dismiss,
-                        ..
-                    } => {
-                        deferred.push(AppCommand::ShowNotification {
-                            notify_id,
-                            sender_pane_id: pane_id,
-                            source_context_id: context_id,
-                            title,
-                            body,
-                            kind,
-                            options,
-                            input_prompt,
-                            required,
-                            scope: resolved_scope,
-                            image_inline,
-                            image_pipe_id,
-                            timeout_secs,
-                            on_dismiss,
-                        });
+                    AppCommand::ShowNotification { .. } => {
+                        deferred.push(stamp_notification_origin(
+                            cmd,
+                            pane_id,
+                            context_id,
+                            resolved_scope,
+                        ));
                     }
                     AppCommand::DeliverNotifyAction { .. } => deferred.push(cmd),
                 }
@@ -1762,5 +1646,51 @@ impl PlexiApp {
         }
 
         deferred
+    }
+}
+
+/// Stamp a drained `ShowNotification` with the origin the host resolved for
+/// it. The two drain paths in `drain_all_app_commands` differ only in which
+/// sender pane and context they stamp — a parked background app has no live
+/// pane and routes to its park context, a live pane stamps itself — so the
+/// field-by-field rebuild lives here once. Any other command passes through
+/// untouched.
+fn stamp_notification_origin(
+    cmd: AppCommand,
+    sender_pane_id: u64,
+    source_context_id: u64,
+    scope: crate::protocol::NotifyScope,
+) -> AppCommand {
+    match cmd {
+        AppCommand::ShowNotification {
+            notify_id,
+            title,
+            body,
+            kind,
+            options,
+            input_prompt,
+            required,
+            image_inline,
+            image_pipe_id,
+            timeout_secs,
+            on_dismiss,
+            ..
+        } => AppCommand::ShowNotification {
+            notify_id,
+            sender_pane_id,
+            source_context_id,
+            title,
+            body,
+            kind,
+            options,
+            input_prompt,
+            required,
+            scope,
+            image_inline,
+            image_pipe_id,
+            timeout_secs,
+            on_dismiss,
+        },
+        other => other,
     }
 }

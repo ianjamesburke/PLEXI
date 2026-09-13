@@ -51,8 +51,6 @@ pub enum AppCommand {
         origin_context_id: u64,
         reply: std::sync::mpsc::SyncSender<crate::plexi_ai::tool_dispatch::ToolCallResult>,
     },
-    /// Post an ephemeral notification.
-    Notify(String),
     /// Request the host to spawn a new app pane.
     /// `layout`: "split_h" (right), "split_v" (below, default), or "overlay".
     /// `args`: passed as argv to the child process.
