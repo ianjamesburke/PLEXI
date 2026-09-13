@@ -58,15 +58,6 @@ impl RegistryViews {
         }
     }
 
-    /// Canonicalize for use as a cache key. Falls back to the given path
-    /// unchanged when canonicalization fails (root not yet created, or a
-    /// synthetic test path like `/tmp/perf-gate-...` that is never scanned) —
-    /// a missing root simply produces an empty `AppRegistry`, same as
-    /// `AppRegistry::load` on a nonexistent cwd today.
-    fn canonical_root(root: &Path) -> PathBuf {
-        root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
-    }
-
     fn load_for(&self, root: &Path) -> AppRegistry {
         AppRegistry::load_with_global(root, &self.global_dir)
     }
@@ -76,7 +67,7 @@ impl RegistryViews {
     /// no rescan) until an explicit [`Self::rescan_root`] or an invalidation
     /// event forces a fresh scan.
     pub(crate) fn view_for_root(&mut self, root: &Path) -> &AppRegistry {
-        let key = Self::canonical_root(root);
+        let key = crate::platform::path::canonical_or_self(root);
         if !self.views.contains_key(&key) {
             log::info!("registry_views: loading view for root={}", key.display());
             let registry = self.load_for(&key);
@@ -114,7 +105,7 @@ impl RegistryViews {
     /// (re)assigned to a context, or a caller couldn't find an app id and
     /// wants to check disk for a just-installed one).
     pub(crate) fn rescan_root(&mut self, root: &Path) -> &AppRegistry {
-        let key = Self::canonical_root(root);
+        let key = crate::platform::path::canonical_or_self(root);
         log::info!("registry_views: rescanning root={}", key.display());
         let generation = self.views.get(&key).map_or(0, |(_, gen)| gen + 1);
         let registry = self.load_for(&key);
@@ -125,11 +116,11 @@ impl RegistryViews {
     /// Drop the cached view for `root` if no live context in `router` still
     /// anchors there. No-op if the root isn't cached or is still referenced.
     fn drop_if_orphaned(&mut self, root: &Path, router: &WorkspaceRouter) {
-        let key = Self::canonical_root(root);
+        let key = crate::platform::path::canonical_or_self(root);
         if !self.views.contains_key(&key) {
             return;
         }
-        let still_referenced = router.iter().any(|c| Self::canonical_root(&c.root) == key);
+        let still_referenced = router.iter().any(|c| crate::platform::path::canonical_or_self(&c.root) == key);
         if !still_referenced {
             log::info!(
                 "registry_views: dropping orphaned root={} (no live context references it)",
@@ -167,7 +158,7 @@ impl RegistryViews {
                     .filter(|root| {
                         !router
                             .iter()
-                            .any(|c| &Self::canonical_root(&c.root) == *root)
+                            .any(|c| &crate::platform::path::canonical_or_self(&c.root) == *root)
                     })
                     .cloned()
                     .collect();
@@ -202,7 +193,7 @@ impl RegistryViews {
     /// fixtures to disk for every case.
     #[cfg(test)]
     pub(crate) fn set_view_for_test(&mut self, root: &Path, registry: AppRegistry) {
-        let key = Self::canonical_root(root);
+        let key = crate::platform::path::canonical_or_self(root);
         self.views.insert(key, (registry, 0));
     }
 }

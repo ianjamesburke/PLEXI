@@ -6,11 +6,15 @@
 //! The v2 boolean-field model (`terminal_write`, `filesystem`, etc.) is replaced
 //! by a `HashSet<Capability>`.
 
+use crate::platform::toml_store::TomlStore;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+/// Log prefix for every line this store emits.
+const STORE_LABEL: &str = "permission_store";
 
 // ── Capability enum ───────────────────────────────────────────────────────────
 
@@ -443,10 +447,11 @@ pub struct PermissionStoreData {
 }
 
 /// Loads, mutates, and persists `permissions.toml` in the Plexi config dir.
+/// File handling (load-or-default, corrupt backup, atomic save) lives in
+/// [`TomlStore`]; this type owns only the entry-key rules.
 #[derive(Debug)]
 pub struct PermissionStore {
-    data: PermissionStoreData,
-    path: PathBuf,
+    file: TomlStore<PermissionStoreData>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -459,26 +464,19 @@ pub struct WasmInstallGrantSummary {
 impl Default for PermissionStore {
     fn default() -> Self {
         Self {
-            data: PermissionStoreData::default(),
-            path: PathBuf::new(),
+            file: TomlStore::detached(STORE_LABEL),
         }
     }
 }
 
 impl PermissionStore {
-    /// Resolve symlinks and platform path aliases (e.g. macOS /var → /private/var).
-    /// Falls back to the original path if canonicalization fails (path doesn't exist yet).
-    fn canonical_workspace(path: &Path) -> PathBuf {
-        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-    }
-
     fn entry_key(app_id: &str, workspace_root: &Path, cap: Capability) -> String {
-        let canonical = Self::canonical_workspace(workspace_root);
+        let canonical = crate::platform::path::canonical_or_self(workspace_root);
         format!("{}::{}::{}", app_id, canonical.display(), cap.as_str())
     }
 
     fn wasm_entry_key(app_id: &str, workspace_root: &Path, capability_id: &str) -> String {
-        let canonical = Self::canonical_workspace(workspace_root);
+        let canonical = crate::platform::path::canonical_or_self(workspace_root);
         format!("{}::{}::{}", app_id, canonical.display(), capability_id)
     }
 
@@ -498,7 +496,7 @@ impl PermissionStore {
     pub fn iter_entries(
         &self,
     ) -> impl Iterator<Item = (&str, &str, Capability, PermissionState)> + '_ {
-        self.data.entries.iter().filter_map(|(key, &state)| {
+        self.file.data.entries.iter().filter_map(|(key, &state)| {
             let Some((app_id, workspace, cap_str)) = Self::parse_entry_key(key) else {
                 log::warn!("permission_store: skipping malformed entry key '{key}'");
                 return None;
@@ -546,57 +544,27 @@ impl PermissionStore {
     /// On parse failure: logs the error, renames the corrupt file to
     /// `permissions.toml.corrupt-<timestamp>` for recovery, and returns an empty store.
     pub fn load_or_default(config_dir: &Path) -> Self {
-        let path = config_dir.join("permissions.toml");
-        let raw = match std::fs::read_to_string(&path) {
-            Err(_) => {
-                // File absent — first run or already cleaned up.
-                return Self {
-                    data: PermissionStoreData::default(),
-                    path,
-                };
-            }
-            Ok(s) => s,
-        };
-        match toml::from_str::<PermissionStoreData>(&raw) {
-            Ok(mut data) => {
+        let file = TomlStore::load_or_default(
+            config_dir,
+            "permissions.toml",
+            STORE_LABEL,
+            |data: &PermissionStoreData, path| {
                 log::info!(
                     "permission_store: loaded {} entries from {}",
                     data.entries.len(),
                     path.display()
                 );
-                let migrated = Self::migrate_raw_path_keys(&mut data);
-                let store = Self { data, path };
-                if migrated > 0 {
-                    log::info!(
-                        "permission_store: migrated {migrated} entries to canonical workspace paths"
-                    );
-                    store.save();
-                }
-                store
-            }
-            Err(e) => {
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let backup = path.with_file_name(format!("permissions.toml.corrupt-{ts}"));
-                log::error!(
-                    "permission_store: failed to parse {}: {e} — backing up to {}",
-                    path.display(),
-                    backup.display()
-                );
-                if let Err(rename_err) = std::fs::rename(&path, &backup) {
-                    log::error!(
-                        "permission_store: could not rename corrupt file to {}: {rename_err}",
-                        backup.display()
-                    );
-                }
-                Self {
-                    data: PermissionStoreData::default(),
-                    path,
-                }
-            }
+            },
+        );
+        let mut store = Self { file };
+        let migrated = Self::migrate_raw_path_keys(&mut store.file.data);
+        if migrated > 0 {
+            log::info!(
+                "permission_store: migrated {migrated} entries to canonical workspace paths"
+            );
+            store.save();
         }
+        store
     }
 
     /// Get the stored state for a (app, workspace, capability) triple.
@@ -606,7 +574,8 @@ impl PermissionStore {
         workspace_root: &Path,
         cap: Capability,
     ) -> Option<PermissionState> {
-        self.data
+        self.file
+            .data
             .entries
             .get(&Self::entry_key(app_id, workspace_root, cap))
             .copied()
@@ -620,7 +589,8 @@ impl PermissionStore {
         cap: Capability,
         state: PermissionState,
     ) {
-        self.data
+        self.file
+            .data
             .entries
             .insert(Self::entry_key(app_id, workspace_root, cap), state);
     }
@@ -632,7 +602,8 @@ impl PermissionStore {
         workspace_root: &Path,
         capability_id: &str,
     ) -> Option<PermissionState> {
-        self.data
+        self.file
+            .data
             .wasm_entries
             .get(&Self::wasm_entry_key(app_id, workspace_root, capability_id))
             .copied()
@@ -646,33 +617,15 @@ impl PermissionStore {
         capability_id: &str,
         state: PermissionState,
     ) {
-        self.data.wasm_entries.insert(
+        self.file.data.wasm_entries.insert(
             Self::wasm_entry_key(app_id, workspace_root, capability_id),
             state,
         );
     }
 
-    /// Atomically write to disk (temp file + rename).
+    /// Atomically write to disk. No-op for a test store with no path.
     pub fn save(&self) {
-        if self.path.as_os_str().is_empty() {
-            return; // test store with no path — skip
-        }
-        match toml::to_string_pretty(&self.data) {
-            Ok(s) => {
-                let tmp = self.path.with_extension("toml.tmp");
-                if let Err(e) =
-                    std::fs::write(&tmp, &s).and_then(|_| std::fs::rename(&tmp, &self.path))
-                {
-                    log::error!(
-                        "permission_store: failed to save {}: {e}",
-                        self.path.display()
-                    );
-                } else {
-                    log::info!("permission_store: saved {}", self.path.display());
-                }
-            }
-            Err(e) => log::error!("permission_store: serialize error: {e}"),
-        }
+        self.file.save();
     }
 
     /// Apply stored state for a set of declared capabilities.
@@ -719,9 +672,9 @@ impl PermissionStore {
 
         // Also restore any runtime-granted capabilities from previous sessions.
         // Entries stored before this fix are migrated to canonical keys by load_or_default.
-        let canonical_root = Self::canonical_workspace(workspace_root);
+        let canonical_root = crate::platform::path::canonical_or_self(workspace_root);
         let prefix = format!("{}::{}::", app_id, canonical_root.display());
-        for (key, &state) in &self.data.entries {
+        for (key, &state) in &self.file.data.entries {
             if !key.starts_with(&prefix) {
                 continue;
             }
@@ -782,9 +735,9 @@ impl PermissionStore {
             }
         }
 
-        let canonical_root = Self::canonical_workspace(workspace_root);
+        let canonical_root = crate::platform::path::canonical_or_self(workspace_root);
         let prefix = format!("{}::{}::", app_id, canonical_root.display());
-        for (key, &state) in &self.data.wasm_entries {
+        for (key, &state) in &self.file.data.wasm_entries {
             if !key.starts_with(&prefix) {
                 continue;
             }
@@ -1402,7 +1355,7 @@ mod tests {
 
         // Returned store must be empty.
         assert!(
-            store.data.entries.is_empty(),
+            store.file.data.entries.is_empty(),
             "store must be empty after corrupt-file recovery"
         );
     }
@@ -1480,11 +1433,11 @@ mod tests {
         // Entry must now be under the canonical key.
         let canonical_key = format!("my-app::{}::fs.read", canonical.display());
         assert!(
-            store.data.entries.contains_key(&canonical_key),
+            store.file.data.entries.contains_key(&canonical_key),
             "migrated entry must be stored under canonical key"
         );
         assert!(
-            !store.data.entries.contains_key(&raw_key),
+            !store.file.data.entries.contains_key(&raw_key),
             "raw-path key must be removed after migration"
         );
     }

@@ -959,10 +959,7 @@ fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> s
     let temp_path = parent.join(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
+        crate::platform::clock::now_nanos()
     ));
 
     let write_result = (|| {
@@ -1886,10 +1883,7 @@ mod tests {
     }
 
     fn unique_suffix() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
+        crate::platform::clock::now_nanos()
     }
 
     #[test]

@@ -954,10 +954,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "plexi-interpreter-agent-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            crate::platform::clock::now_nanos()
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let script = dir.join("cli.py");

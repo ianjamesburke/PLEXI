@@ -210,10 +210,7 @@ impl WorkspaceFile {
                 log::warn!("Failed to parse workspace file: {e}");
                 let backup = path.with_extension(format!(
                     "backup-{}.json",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0)
+                    crate::platform::clock::now_secs()
                 ));
                 let _ = std::fs::rename(&path, &backup);
                 return None;
@@ -227,10 +224,7 @@ impl WorkspaceFile {
             let backup = path.with_extension(format!(
                 "backup-v{}-{}.json",
                 ws.version,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
+                crate::platform::clock::now_secs()
             ));
             let _ = std::fs::rename(&path, &backup);
             return None;

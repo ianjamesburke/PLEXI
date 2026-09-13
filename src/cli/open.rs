@@ -257,10 +257,7 @@ pub fn pane_new_cli(
         eprintln!("error: could not create spawn queue: {e}");
         return 1;
     }
-    let id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let id = crate::platform::clock::now_nanos();
     let mut queue_payload = serde_json::json!({
         "type_id": type_id,
         "args": args,
@@ -774,10 +771,7 @@ fn open_app_by_path(
         eprintln!("error: could not create spawn queue: {e}");
         return 1;
     }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let ts = crate::platform::clock::now_nanos();
     let mut queue_payload =
         serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
             log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");

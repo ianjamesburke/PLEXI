@@ -2,7 +2,7 @@ use std::{
     fs::OpenOptions,
     path::Path,
     process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 #[cfg(unix)]
@@ -62,7 +62,7 @@ pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
     update_cache_fresh_for_channel(
         &cache_dir.join("update_cache.json"),
         detect_channel(),
-        unix_now_secs(),
+        crate::platform::clock::now_secs(),
     )
 }
 
@@ -96,7 +96,7 @@ fn detect_channel() -> UpdateChannel {
 fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
     if let Ok(bytes) = std::fs::read(cache_path) {
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if cached_json_fresh_for_channel(&json, channel, unix_now_secs()) {
+            if cached_json_fresh_for_channel(&json, channel, crate::platform::clock::now_secs()) {
                 return json["latest"].as_str().map(|s| s.to_string());
             }
         }
@@ -122,13 +122,6 @@ fn cached_json_fresh_for_channel(
     let cached_channel = json["channel"].as_str().unwrap_or("");
     let fresh = Duration::from_secs(now.saturating_sub(checked_at)) < CHECK_INTERVAL;
     fresh && cached_channel == channel_key(channel)
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn channel_key(channel: UpdateChannel) -> &'static str {
@@ -215,10 +208,7 @@ fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str)
     let current = ReleaseTag::parse(current_raw)?;
     let best = release_resolver::resolve_best(&releases, channel, &current);
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::platform::clock::now_secs();
     let latest_raw = best.as_ref().map(|t| t.raw.clone());
     let cache = serde_json::json!({
         "checked_at": now,

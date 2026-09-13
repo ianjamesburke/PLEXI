@@ -1312,10 +1312,7 @@ pub(super) fn open_github_ephemeral(
         eprintln!("error: could not create spawn queue: {e}");
         return 1;
     }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let ts = crate::platform::clock::now_nanos();
     let queue_id = uuid::Uuid::new_v4();
     let mut queue_payload = serde_json::json!({
         "type_id": "",

@@ -482,7 +482,7 @@ static CPYTHON_MODULE_CACHE: LazyLock<Mutex<HashMap<PathBuf, (WasmtimeEngine, Mo
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String> {
-    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let key = crate::platform::path::canonical_or_self(path);
     let mut cache = CPYTHON_MODULE_CACHE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -3629,7 +3629,7 @@ impl LivePythonPane {
                 );
             }
         }
-        match crate::host::state_scope::atomic_write(&path, &bytes) {
+        match crate::platform::fs::atomic_write(&path, &bytes) {
             Ok(()) => {
                 // Re-stat AFTER the rename so the cached identity is the
                 // file we just produced — statting before the rename would
@@ -5973,7 +5973,7 @@ mod tests {
         first_state.insert("items".to_string(), json!(["buy milk"]));
         let path = python_state_path_for_config(&first);
         std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
-        crate::host::state_scope::atomic_write(
+        crate::platform::fs::atomic_write(
             &path,
             &serde_json::to_vec_pretty(&first_state).expect("serialize"),
         )
@@ -5985,7 +5985,7 @@ mod tests {
 
         // The second instance persists anything at all — a draft keystroke is
         // enough — and writes the empty item list it has held since launch.
-        crate::host::state_scope::atomic_write(
+        crate::platform::fs::atomic_write(
             &path,
             &serde_json::to_vec_pretty(&second_state).expect("serialize"),
         )
@@ -6013,7 +6013,8 @@ mod tests {
 
         let path_a = python_state_path_for_config(&under_a);
         std::fs::create_dir_all(path_a.parent().expect("state parent")).expect("mkdir");
-        crate::host::state_scope::atomic_write(&path_a, br#"{"items":["buy milk"]}"#).expect("persist under A");
+        crate::platform::fs::atomic_write(&path_a, br#"{"items":["buy milk"]}"#)
+            .expect("persist under A");
 
         assert_eq!(
             load_python_state(&under_a).expect("load under A")["items"],
@@ -6123,7 +6124,7 @@ mod tests {
 
         fn seed_items(address: &Path, items: &serde_json::Value) {
             std::fs::create_dir_all(address.parent().expect("state parent")).expect("mkdir");
-            crate::host::state_scope::atomic_write(
+            crate::platform::fs::atomic_write(
                 address,
                 &serde_json::to_vec_pretty(&serde_json::json!({ "items": items }))
                     .expect("serialize"),
@@ -6318,7 +6319,7 @@ mod tests {
         let path = workspace.path().join("todo.json");
         std::fs::write(&path, br#"{"version":"old"}"#).expect("seed");
 
-        crate::host::state_scope::atomic_write(&path, br#"{"version":"new"}"#).expect("atomic replace");
+        crate::platform::fs::atomic_write(&path, br#"{"version":"new"}"#).expect("atomic replace");
 
         assert_eq!(
             std::fs::read(&path).expect("state"),

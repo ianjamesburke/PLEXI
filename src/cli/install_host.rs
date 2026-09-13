@@ -210,10 +210,7 @@ fn install_one_git(
     // ensures the eventual `rename` is atomic. We hand-roll the temp dir name
     // (no `tempfile` dependency in non-test code) — uniqueness comes from
     // nanos + pid.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let nanos = crate::platform::clock::now_nanos();
     let pid = std::process::id();
     let stage_root = target_root.join(format!(".tmp-install-{pid}-{nanos}"));
     let stage_path = stage_root.join("clone");
