@@ -134,18 +134,18 @@ plexi secret set openrouter-api-key --global
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `api_key_env` | string | `OPENROUTER_API_KEY` | Environment variable name for the API key. Default: `OPENROUTER_API_KEY`. |
-| `model_low` | string | — | Low-tier model. e.g. "qwen/qwen3.6-flash" |
-| `model_medium` | string | — | Medium-tier model. e.g. "xiaomi/mimo-v2.5" |
-| `model_high` | string | — | High-tier model. e.g. "anthropic/claude-fable-5" |
+| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
 
 #### Ollama (`[ai.ollama]`)
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `host` | string | `http://localhost:11434` | Ollama host URL. Default: `http://localhost:11434`. |
-| `model_low` | string | — | Low-tier model. e.g. "llama3.2:3b" |
-| `model_medium` | string | — | Medium-tier model. e.g. "llama3.3:70b" |
-| `model_high` | string | — | High-tier model. e.g. "qwq:32b" |
+| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
 
 #### Local OpenAI-compatible (`[ai.local]`)
 
@@ -153,9 +153,9 @@ plexi secret set openrouter-api-key --global
 |---|---|---|---|
 | `base_url` | string | — | Server base URL. Required — no default. e.g. "http://127.0.0.1:3456" |
 | `api_key_env` | string | — | Environment variable name for the API key. Unset = no auth header (for local proxies that accept unauthenticated requests). |
-| `model_low` | string | — | Low-tier model. e.g. "claude-haiku-4-5" |
-| `model_medium` | string | — | Medium-tier model. e.g. "claude-opus-5" |
-| `model_high` | string | — | High-tier model. e.g. "claude-fable-5" |
+| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
 
 ### Agents (`[agents]`)
 
