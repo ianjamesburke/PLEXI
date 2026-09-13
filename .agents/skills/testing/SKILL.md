@@ -9,6 +9,14 @@ Run this after implementation compiles, before pushing. Output is a `**Test evid
 
 All commands run from the feature worktree.
 
+## Step 0 — Installable build
+
+```bash
+just build
+```
+
+Release build under `-D warnings`, the same path `just pr-install` takes. Run it first; if it fails there is no evidence to collect. `cargo test` and bare `cargo build` do not catch dead code left behind by removed callers or broken `cfg(not(test))` paths (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
+
 ## Flaky Test Policy
 
 **A failing test is never dismissed as "flaky" without proof.** The word "flaky" is a hypothesis, not a finding; treating it as a finding stops investigation prematurely.
@@ -133,6 +141,7 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 
 ```markdown
 **Test evidence (attempt <N>):**
+- just build: ok
 - cargo test: <passed> passed, <failed> failed — filters: <module list or "full bin suite">
 - PlexiUiHarness render: /tmp/plexi-render-<issue>-<name>.png — <one line: what it shows>
 - Conclusion: install skippable — full coverage | binary install required — <why>
