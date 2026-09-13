@@ -45,7 +45,7 @@ pub struct SavedWindow {
     pub context_id: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SavedPane {
     pub id: u64,
     #[serde(default)]
@@ -61,6 +61,30 @@ pub struct SavedPane {
     pub hidden: bool,
     #[serde(default)]
     pub heartbeat: Option<SavedPaneHeartbeat>,
+    /// `AppRuntime::type_id()` at save time (`"python-wasm"` / `"wasm"` /
+    /// a builtin's own type id). Distinct from `app_id`, which is the app's
+    /// *manifest* identity — the runtime kind alone cannot relaunch anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_kind: Option<String>,
+    /// Enough launch context to relaunch a Python/WASM app pane through the
+    /// normal open path on restore. `None` for builtins (restored via
+    /// `restore_builtin_app_pane`) and for saves written before this field
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<SavedAppLaunch>,
+}
+
+impl SavedPane {
+    /// True for a pre-0680 save of a Python/WASM app pane: `app_id` holds the
+    /// *runtime kind* (`AppRuntime::type_id()`), not the app's manifest id,
+    /// and `runtime_kind`/`launch` are absent because the field didn't exist
+    /// yet. There is no recoverable identity in this record — restore must
+    /// fall back to a terminal rather than construct a launch-failed pane
+    /// against a wrong app id.
+    pub fn is_legacy_runtime_kind_id(&self) -> bool {
+        self.runtime_kind.is_none()
+            && matches!(self.app_id.as_deref(), Some("python-wasm" | "wasm"))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -79,6 +103,25 @@ pub enum SavedPaneKind {
     #[serde(alias = "sub_context")]
     Portal {
         context_id: u64,
+    },
+}
+
+/// Launch context saved alongside a Python/WASM `SavedPane`, sufficient to
+/// relaunch the same app through the normal open path on restore. Never
+/// carries granted capabilities — those live in `PermissionStore` and are
+/// re-derived at restore time, not persisted into the workspace file.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "runtime", rename_all = "snake_case")]
+pub enum SavedAppLaunch {
+    Python {
+        app_dir: PathBuf,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    Wasm {
+        wasm_path: PathBuf,
+        #[serde(default)]
+        args: Vec<String>,
     },
 }
 
@@ -476,6 +519,8 @@ mod tests {
                 app_state: None,
                 hidden: false,
                 heartbeat: None,
+                runtime_kind: None,
+                launch: None,
             };
             let json = serde_json::to_string(&pane).expect("serialize");
             let restored: SavedPane = serde_json::from_str(&json).expect("deserialize");
@@ -493,6 +538,8 @@ mod tests {
             app_state: None,
             hidden: false,
             heartbeat: None,
+            runtime_kind: None,
+            launch: None,
         };
         let json = serde_json::to_string(&portal_pane).expect("serialize portal");
         let restored: SavedPane = serde_json::from_str(&json).expect("deserialize portal");

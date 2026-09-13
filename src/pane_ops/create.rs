@@ -200,6 +200,231 @@ pub(crate) fn restore_assistant_pane(
     }))
 }
 
+/// Shared construction site for a live CPython-WASM runtime: mutates a
+/// manifest-parsed [`PythonLaunchConfig`] with the launch-time fields only the
+/// caller knows (workspace root, live context root, launch args, granted
+/// permissions, theme) and launches it. Both a fresh open
+/// (`open_python_wasm_app_pane`) and a workspace restore (`restore_app_pane`)
+/// call this so there is exactly one place that builds the runtime — the
+/// caller-specific parts (where `PythonLaunchConfig` and `permissions` come
+/// from) stay in each caller.
+fn build_python_runtime(
+    mut config: crate::host::wasm_python::PythonLaunchConfig,
+    workspace_root: PathBuf,
+    context_root: PathBuf,
+    launch_args: Vec<String>,
+    permissions: &crate::app::permissions::AppPermissions,
+    theme: &crate::ui::theme::Colors,
+) -> Result<(crate::host::wasm_python::LivePythonPane, String), String> {
+    config.workspace_root = workspace_root;
+    config.context_root = context_root;
+    config.launch_args = launch_args;
+    config.capabilities = permissions
+        .capabilities
+        .iter()
+        .copied()
+        .map(|capability| capability.as_str().to_string())
+        .collect();
+    config.allowed_hosts = permissions.allowed_hosts.clone();
+    config.theme = theme.to_theme_map();
+    let app_id = config.app_id.clone();
+    let runtime = crate::host::wasm_python::LivePythonPane::launch(config)
+        .map_err(|error| error.to_string())?;
+    Ok((runtime, app_id))
+}
+
+/// Restore a saved Python or WASM app pane by relaunching it through the same
+/// runtime-construction path a fresh open uses — never through
+/// `place_app_pane`, which allocates a new pane id and mutates the tile tree.
+/// The caller (the restore loop in `PlexiApp::new`) keeps the saved pane id,
+/// tree, and placement; this only builds the runtime and its `AppPane`
+/// envelope.
+///
+/// `Err` means the app no longer resolves (manifest gone, permission review
+/// required, component failed to load) — the caller must render a
+/// launch-failed pane, never silently substitute a terminal.
+pub(crate) fn restore_app_pane(
+    manifest_id: &str,
+    launch: &crate::workspace::SavedAppLaunch,
+    pane_id: PaneId,
+    context_id: u64,
+    workspace_root: PathBuf,
+    context_root: &Path,
+    saved_name: Option<&str>,
+    theme: &crate::ui::theme::Colors,
+) -> Result<
+    (
+        Pane,
+        Vec<(crate::host::state_scope::StateScope, PathBuf)>,
+        PathBuf, // hot-reload watch target (Python app_dir); empty for WASM
+    ),
+    String,
+> {
+    match launch {
+        crate::workspace::SavedAppLaunch::Python { app_dir, args } => {
+            if !app_dir.is_dir() {
+                return Err(format!(
+                    "app directory not found at {}",
+                    app_dir.display()
+                ));
+            }
+            let config =
+                crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
+            let mut permissions = crate::app::permissions::AppPermissions::from_capability_strings(
+                &config.capabilities,
+            );
+            permissions.allowed_hosts = config.allowed_hosts.clone();
+            let (runtime, app_id) = build_python_runtime(
+                config,
+                workspace_root.clone(),
+                context_root.to_path_buf(),
+                args.clone(),
+                &permissions,
+                theme,
+            )?;
+            let state_paths = runtime.state_paths();
+            let name = saved_name
+                .map(String::from)
+                .unwrap_or_else(|| runtime.display_name());
+            log::info!(
+                "workspace_restore: restored python app_id={app_id} pane_id={pane_id}"
+            );
+            let pane = Pane::App(Box::new(crate::host::pane::AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: crate::host::pane::AppRuntime::Python(Box::new(runtime)),
+                workspace_root,
+                permissions,
+                manifest_id: app_id,
+                name,
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            }));
+            Ok((pane, state_paths, app_dir.clone()))
+        }
+        crate::workspace::SavedAppLaunch::Wasm { wasm_path, args } => {
+            use crate::host::wasm_app::{StateStore, WasmApp};
+            use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+
+            if let Some(feature) = release_feature_for_app_id(manifest_id) {
+                if !crate::release::feature_enabled(feature) {
+                    return Err(crate::release::feature_unavailable_message(feature));
+                }
+            }
+            if !wasm_path.is_file() {
+                return Err(format!(
+                    "WASM component not found at {}",
+                    wasm_path.display()
+                ));
+            }
+            let permission_store = crate::app::permissions::PermissionStore::load_or_default(
+                &crate::config::config_dir(),
+            );
+            let required_grants = WasmApp::inspect_required_grants(wasm_path)
+                .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
+            let required_caps = required_grants.capability_ids();
+            let declared: std::collections::HashSet<String> =
+                required_caps.iter().cloned().collect();
+            let (remembered_grants, remembered_blocks) = permission_store
+                .build_wasm_permission_sets(manifest_id, &workspace_root, &declared);
+            let missing: Vec<String> = required_caps
+                .iter()
+                .filter(|cap| !remembered_grants.contains(*cap))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "restore requires permission review for: {}",
+                    missing.join(", ")
+                ));
+            }
+            // Persistent, not ephemeral — restore must re-address the same
+            // state file a fresh installed-app launch would (stint 0678).
+            let store = StateStore::persistent(wasm_state_path(manifest_id, &workspace_root))
+                .map_err(|e| format!("open wasm state for {manifest_id}: {e}"))?;
+            let snapshot = store.snapshot();
+            let app = WasmApp::load_with_grants(manifest_id, wasm_path, store, required_grants)
+                .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
+            let pane = WasmPane::new(app, Box::new(SysinfoStats::new()))
+                .with_remembered_capabilities(
+                    workspace_root.clone(),
+                    permission_store,
+                    remembered_grants,
+                    remembered_blocks,
+                );
+            let mut live =
+                LiveWasmPane::new(pane, manifest_id, snapshot, args.clone(), wasm_path.clone());
+            live.set_pane_id(pane_id);
+            live.set_context_id(context_id);
+            let name = saved_name
+                .map(String::from)
+                .unwrap_or_else(|| live.display_name());
+            log::info!(
+                "workspace_restore: restored wasm app_id={manifest_id} pane_id={pane_id}"
+            );
+            let pane = Pane::App(Box::new(crate::host::pane::AppPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
+                workspace_root,
+                permissions: crate::app::permissions::AppPermissions::default(),
+                manifest_id: manifest_id.to_string(),
+                name,
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            }));
+            Ok((pane, Vec::new(), PathBuf::new()))
+        }
+    }
+}
+
+/// Build a `launch_failed` builtin pane for a saved app that no longer
+/// resolves (uninstalled, manifest gone, permission review required). Mirrors
+/// `PlexiApp::open_launch_failed_pane`'s `AppPane` literal, minus the
+/// placement/tile-tree mutation — the restore loop keeps the saved pane id
+/// and tree, so this only builds the `Pane` to slot in.
+pub(crate) fn restore_launch_failed_pane(
+    app_id: &str,
+    pane_id: PaneId,
+    workspace_root: PathBuf,
+    reason: String,
+) -> Pane {
+    log::info!("workspace_restore: launch failed for app_id={app_id} pane_id={pane_id}: {reason}");
+    Pane::App(Box::new(crate::host::pane::AppPane {
+        pip_status: None,
+        id: pane_id,
+        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+            crate::host::launch_failed::LaunchFailedApp {
+                app_id: app_id.to_string(),
+                missing: vec![reason],
+            },
+        )),
+        workspace_root,
+        permissions: crate::app::permissions::AppPermissions::default(),
+        manifest_id: app_id.to_string(),
+        name: format!("Cannot launch {app_id}"),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
+    }))
+}
+
 impl PlexiApp {
     /// Resolve the environment identity for a pane owned by `win_idx`.
     ///
@@ -502,6 +727,7 @@ impl PlexiApp {
             Some((permission_store, remembered_grants, remembered_blocks)),
             None,
             launch_args,
+            wasm_path.to_path_buf(),
         )
     }
 
@@ -513,25 +739,20 @@ impl PlexiApp {
         layout: Option<&str>,
         launch_args: Vec<String>,
     ) -> Result<PaneId, String> {
-        let mut config = crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
+        let config = crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
-        config.workspace_root = workspace_root.clone();
         // Seed the pane's live context root from the launching context; the
         // render loop refreshes it every frame thereafter (stint 0652).
-        config.context_root = self.router.active().root.clone();
-        config.launch_args = launch_args;
-        config.capabilities = permissions
-            .capabilities
-            .iter()
-            .copied()
-            .map(|capability| capability.as_str().to_string())
-            .collect();
-        config.allowed_hosts = permissions.allowed_hosts.clone();
-        config.theme = self.colors.to_theme_map();
-        let app_id = config.app_id.clone();
-        let runtime = crate::host::wasm_python::LivePythonPane::launch(config)
-            .map_err(|error| error.to_string())?;
+        let context_root = self.router.active().root.clone();
+        let (runtime, app_id) = build_python_runtime(
+            config,
+            workspace_root.clone(),
+            context_root,
+            launch_args,
+            &permissions,
+            &self.colors,
+        )?;
         // Captured before the runtime moves into the pane closure; the drain
         // pass re-syncs these if the pane's context root changes later.
         let state_paths = runtime.state_paths();
@@ -664,6 +885,7 @@ impl PlexiApp {
         )>,
         layout: Option<&str>,
         launch_args: Vec<String>,
+        wasm_path: PathBuf,
     ) -> Result<PaneId, String> {
         use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
 
@@ -673,7 +895,7 @@ impl PlexiApp {
         } else {
             pane
         };
-        let mut live = LiveWasmPane::new(pane, app_id, snapshot, launch_args);
+        let mut live = LiveWasmPane::new(pane, app_id, snapshot, launch_args, wasm_path);
 
         let manifest_id = app_id.to_string();
         let name = app_id.to_string();
@@ -810,6 +1032,7 @@ impl PlexiApp {
             Some((permission_store, remembered_grants, remembered_blocks)),
             layout,
             launch_args,
+            installed.bin_path.clone(),
         )
     }
 
@@ -2434,6 +2657,7 @@ mod tests {
                 None,
                 Some("overlay"),
                 Vec::new(),
+                counter_fixture(),
             )
             .expect("overlay launch returns the reused pane id");
 
@@ -2478,6 +2702,7 @@ mod tests {
                 None,
                 Some("overlay"),
                 Vec::new(),
+                counter_fixture(),
             )
             .expect("overlay with empty context launches as root pane");
 

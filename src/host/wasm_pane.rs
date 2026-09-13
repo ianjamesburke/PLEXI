@@ -1728,6 +1728,10 @@ pub struct LiveWasmPane {
     /// Launch arguments (`plexi app open <path> -- <args>`), forwarded to the
     /// guest's `init` as its argv. Empty for palette/registry launches.
     launch_args: Vec<String>,
+    /// Path to the `.wasm` component this pane was loaded from — kept for
+    /// `launch_spec()` so a workspace restore (stint 0680) can relaunch the
+    /// exact same binary without going back through app-id registry lookup.
+    wasm_path: PathBuf,
 }
 
 impl LiveWasmPane {
@@ -1738,6 +1742,7 @@ impl LiveWasmPane {
         spawn_name: impl Into<String>,
         snapshot: StateSnapshot,
         launch_args: Vec<String>,
+        wasm_path: PathBuf,
     ) -> Self {
         LiveWasmPane {
             inner,
@@ -1758,6 +1763,16 @@ impl LiveWasmPane {
             last_present: None,
             sim_ns: None,
             launch_args,
+            wasm_path,
+        }
+    }
+
+    /// Enough launch context to relaunch this exact WASM component through
+    /// the normal open path on a workspace restore (stint 0680).
+    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedAppLaunch {
+        crate::workspace::SavedAppLaunch::Wasm {
+            wasm_path: self.wasm_path.clone(),
+            args: self.launch_args.clone(),
         }
     }
 
@@ -3322,6 +3337,7 @@ mod tests {
             "sysmon",
             StateSnapshot { entries: vec![] },
             Vec::new(),
+            PathBuf::from("/tmp/test.wasm"),
         );
         live.inner
             .init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])
@@ -3464,6 +3480,7 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
+            PathBuf::from("/tmp/test.wasm"),
         );
         assert!(!live.has_pending_capability_prompt());
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
@@ -3707,6 +3724,7 @@ mod tests {
             "sysmon",
             StateSnapshot { entries: vec![] },
             vec![],
+            PathBuf::from("/tmp/test.wasm"),
         );
         live.queue_outbound_event(crate::protocol::PlexiEvent::AppEvent {
             subscription_id: "sub-1".to_string(),
@@ -4197,6 +4215,7 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
+            PathBuf::from("/tmp/test.wasm"),
         );
 
         assert_eq!(

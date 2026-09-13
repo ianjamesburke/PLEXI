@@ -1301,14 +1301,14 @@ impl PlexiApp {
         // each frame and reloads the matching pane. Both branches of `new()`
         // (workspace-restore and default) use the same instance via shadow
         // names — kept on stack until consumed by `Self {..}`.
-        let (hr_watcher, hr_rx) =
+        let (mut hr_watcher, hr_rx) =
             crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
         let (hr_watcher2, hr_rx2) =
             crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
 
         // App state file watcher (stint 0644). Same two-branch shadow-name
         // pattern as hot_reload above.
-        let (sw_watcher, sw_rx) =
+        let (mut sw_watcher, sw_rx) =
             crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
         let (sw_watcher2, sw_rx2) =
             crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
@@ -1476,37 +1476,97 @@ impl PlexiApp {
                             continue;
                         };
                         let app_cwd = saved_pane.cwd.clone();
-                        pane_entry = crate::pane_ops::restore_builtin_app_pane(
-                            app_type,
-                            saved_pane.id,
-                            app_cwd.clone(),
-                            saved_pane.app_state.as_ref(),
-                        );
-                        // The Assistant is a builtin needing a broker + profile
-                        // dir, so the broker-free factory can't build it. Build
-                        // it here where the loaded `config.ai` is available; the
-                        // conversation auto-resumes from disk.
-                        if pane_entry.is_none()
-                            && app_type == "assistant"
-                            && crate::release::feature_enabled(
-                                crate::release::ReleaseFeature::Assistant,
-                            )
-                        {
-                            let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
-                                std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(
-                                    config.ai.clone(),
-                                ));
-                            pane_entry = Some(crate::pane_ops::restore_assistant_pane(
+                        if let Some(launch) = &saved_pane.launch {
+                            // Real manifest identity + launch context (stint
+                            // 0680): relaunch through the shared runtime
+                            // construction path, keeping the saved pane id.
+                            let ctx_root = ctx_root_map
+                                .get(&saved_win.context_id)
+                                .cloned()
+                                .unwrap_or_else(|| app_cwd.clone());
+                            match crate::pane_ops::restore_app_pane(
+                                app_type,
+                                launch,
+                                saved_pane.id,
+                                saved_win.context_id,
+                                app_cwd.clone(),
+                                &ctx_root,
+                                saved_pane.name.as_deref(),
+                                &colors,
+                            ) {
+                                Ok((pane, state_paths, hot_reload_dir)) => {
+                                    if !hot_reload_dir.as_os_str().is_empty() {
+                                        hr_watcher.watch(saved_pane.id, &hot_reload_dir);
+                                    }
+                                    if !state_paths.is_empty() {
+                                        sw_watcher.watch(saved_pane.id, &state_paths);
+                                    }
+                                    log::info!(
+                                        "workspace_restore: pane {} (app_id={app_type}) relaunched as its own app",
+                                        saved_pane.id
+                                    );
+                                    pane_entry = Some(pane);
+                                }
+                                Err(reason) => {
+                                    log::info!(
+                                        "workspace_restore: pane {} (app_id={app_type}) failed to relaunch: {reason} — rendering launch-failed pane",
+                                        saved_pane.id
+                                    );
+                                    pane_entry = Some(crate::pane_ops::restore_launch_failed_pane(
+                                        app_type,
+                                        saved_pane.id,
+                                        app_cwd.clone(),
+                                        reason,
+                                    ));
+                                }
+                            }
+                        } else if !saved_pane.is_legacy_runtime_kind_id() {
+                            pane_entry = crate::pane_ops::restore_builtin_app_pane(
+                                app_type,
                                 saved_pane.id,
                                 app_cwd.clone(),
-                                broker,
-                                &crate::config::config_dir(),
-                                saved_win.context_id,
-                            ));
-                        }
-                        if pane_entry.is_none() && app_type == "assistant" {
-                            crate::release::log_feature_blocked(
-                                crate::release::ReleaseFeature::Assistant,
+                                saved_pane.app_state.as_ref(),
+                            );
+                            // The Assistant is a builtin needing a broker + profile
+                            // dir, so the broker-free factory can't build it. Build
+                            // it here where the loaded `config.ai` is available; the
+                            // conversation auto-resumes from disk.
+                            if pane_entry.is_none()
+                                && app_type == "assistant"
+                                && crate::release::feature_enabled(
+                                    crate::release::ReleaseFeature::Assistant,
+                                )
+                            {
+                                let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+                                    std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(
+                                        config.ai.clone(),
+                                    ));
+                                pane_entry = Some(crate::pane_ops::restore_assistant_pane(
+                                    saved_pane.id,
+                                    app_cwd.clone(),
+                                    broker,
+                                    &crate::config::config_dir(),
+                                    saved_win.context_id,
+                                ));
+                            }
+                            if pane_entry.is_none() && app_type == "assistant" {
+                                crate::release::log_feature_blocked(
+                                    crate::release::ReleaseFeature::Assistant,
+                                );
+                            }
+                        } else {
+                            // Pre-0680 save of a Python/WASM app pane: `app_id`
+                            // holds the runtime kind, not a manifest id, and
+                            // there is no launch context to relaunch from.
+                            // There is no recoverable identity here — fall
+                            // through to the terminal substitution below,
+                            // which is the one case where that is still
+                            // correct (never build a launch-failed pane
+                            // against a wrong app id).
+                            log::info!(
+                                "workspace_restore: pane {} predates stint 0680 (app_id={app_type} \
+                                 is a runtime kind, not a manifest id) — degrading to a terminal",
+                                saved_pane.id
                             );
                         }
                     }
