@@ -2390,7 +2390,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drop-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::app_protocol::AppRequest::DropFile {
+                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DropFile {
                         pane_id,
                         path_or_url: drop_file.value.clone(),
                         response_file: response.to_string_lossy().into_owned(),
@@ -2425,7 +2425,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drag-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::app_protocol::AppRequest::DragPane {
+                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DragPane {
                         pane_id,
                         from: drag.from,
                         from_node: drag.from_node.clone(),
@@ -2507,11 +2507,11 @@ impl HeadlessBackend {
                             source_window_id: 0,
                             title,
                             body,
-                            kind: crate::app_protocol::NotifyKind::Message,
+                            kind: crate::protocol::NotifyKind::Message,
                             options: Vec::new(),
                             input_prompt: None,
                             required: false,
-                            scope: crate::app_protocol::NotifyScope::Global,
+                            scope: crate::protocol::NotifyScope::Global,
                             image_inline: None,
                             image_pipe_id: None,
                             response_file: None,

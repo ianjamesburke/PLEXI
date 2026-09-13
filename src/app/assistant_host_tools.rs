@@ -659,7 +659,7 @@ impl PlexiApp {
                 egui_tiles::Tile::Pane(id) => Some(*id),
                 _ => None,
             });
-        self.handle_pane_ipc_request(crate::app_protocol::AppRequest::SpawnPane {
+        self.handle_pane_ipc_request(crate::protocol::AppRequest::SpawnPane {
             type_id: type_id.to_string(),
             layout,
             args,

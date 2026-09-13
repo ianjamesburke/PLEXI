@@ -688,9 +688,9 @@ fn python_init_payload(
 
 fn cache_python_theme_for_relaunch(
     config: &mut PythonLaunchConfig,
-    event: &crate::app_protocol::PlexiEvent,
+    event: &crate::protocol::PlexiEvent,
 ) {
-    if let crate::app_protocol::PlexiEvent::Theme { colors } = event {
+    if let crate::protocol::PlexiEvent::Theme { colors } = event {
         config.theme.clone_from(colors);
     }
 }
@@ -2638,14 +2638,14 @@ impl LivePythonPane {
                             self.app_id
                         );
                         self.queue_outbound_event(
-                            crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                            crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                         );
                     } else {
                         let paths = granted
                             .iter()
                             .map(|path| path.display().to_string())
                             .collect();
-                        self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePicked {
+                        self.queue_outbound_event(crate::protocol::PlexiEvent::FilePicked {
                             request_id,
                             paths,
                         });
@@ -2654,7 +2654,7 @@ impl LivePythonPane {
                 crate::host::services::FilePickOutcome::Cancelled => {
                     log::info!("app::{}: file pick {request_id} cancelled", self.app_id);
                     self.queue_outbound_event(
-                        crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                     );
                 }
             }
@@ -2906,7 +2906,7 @@ impl LivePythonPane {
                 "app::{}: open_file_picker missing request_id; cancelling",
                 self.app_id
             );
-            self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePickCancelled {
+            self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
             });
             return;
@@ -2916,7 +2916,7 @@ impl LivePythonPane {
                 "app::{}: open_file_picker {request_id} denied: missing capability fs.pick",
                 self.app_id
             );
-            self.queue_outbound_event(crate::app_protocol::PlexiEvent::FilePickCancelled {
+            self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
             });
             return;
@@ -2937,7 +2937,7 @@ impl LivePythonPane {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let mode = match message.get("mode") {
-            None | Some(Value::Null) => crate::app_protocol::FilePickerMode::default(),
+            None | Some(Value::Null) => crate::protocol::FilePickerMode::default(),
             Some(value) => match serde_json::from_value(value.clone()) {
                 Ok(mode) => mode,
                 Err(error) => {
@@ -2946,7 +2946,7 @@ impl LivePythonPane {
                         self.app_id
                     );
                     self.queue_outbound_event(
-                        crate::app_protocol::PlexiEvent::FilePickCancelled { request_id },
+                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                     );
                     return;
                 }
@@ -3737,7 +3737,7 @@ impl LivePythonPane {
         self.wants_close
     }
 
-    pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+    pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         cache_python_theme_for_relaunch(&mut self.config, &event);
         match encode_python_host_event(event) {
             Ok(value) => {
@@ -3921,7 +3921,7 @@ impl LivePythonPane {
 }
 
 fn encode_python_host_event(
-    event: crate::app_protocol::PlexiEvent,
+    event: crate::protocol::PlexiEvent,
 ) -> Result<Value, serde_json::Error> {
     serde_json::to_value(event)
 }
@@ -4510,7 +4510,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .iter()
                 .map(|stream| {
                     let schema_json = stream.get("schema_json")?.as_str()?;
-                    Some(crate::app_protocol::EventStreamDecl {
+                    Some(crate::protocol::EventStreamDecl {
                         name: stream.get("name")?.as_str()?.to_string(),
                         schema: serde_json::from_str(schema_json).ok()?,
                         description: stream
@@ -4521,7 +4521,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 })
                 .collect::<Option<Vec<_>>>()?;
             Some(AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::DeclareEventStreams { streams },
+                request: crate::protocol::AppRequest::DeclareEventStreams { streams },
                 pane_id: None,
             })
         }
@@ -4543,7 +4543,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .transpose()
                 .ok()?;
             Some(AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::EmitEvent {
+                request: crate::protocol::AppRequest::EmitEvent {
                     event: text("event"),
                     actor,
                     actor_id: message
@@ -4591,7 +4591,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             })
         }
         "subscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::app_protocol::AppRequest::SubscribeAppEvents {
+            request: crate::protocol::AppRequest::SubscribeAppEvents {
                 request_id: text("request_id"),
                 app_id: text("app_id"),
                 event_names: message
@@ -4615,7 +4615,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             pane_id: None,
         }),
         "unsubscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::app_protocol::AppRequest::UnsubscribeAppEvents {
+            request: crate::protocol::AppRequest::UnsubscribeAppEvents {
                 request_id: text("request_id"),
                 subscription_id: text("subscription_id"),
             },
@@ -4639,7 +4639,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             target_context: None,
         }),
         "focus_pane" => Some(AppCommand::ForwardPaneRequest {
-            request: crate::app_protocol::AppRequest::FocusPane {
+            request: crate::protocol::AppRequest::FocusPane {
                 pane_id: message
                     .get("pane_id")
                     .and_then(Value::as_u64)
@@ -4661,7 +4661,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
         }),
         "run_update" => Some(AppCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),
-            event: crate::app_protocol::PlexiEvent::Resume,
+            event: crate::protocol::PlexiEvent::Resume,
         }),
         "show_notification" => Some(AppCommand::ShowNotification {
             notify_id: text("notify_id"),
@@ -4669,13 +4669,13 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             source_context_id: 0,
             title: text("title"),
             body: text("body"),
-            kind: crate::app_protocol::NotifyKind::Message,
+            kind: crate::protocol::NotifyKind::Message,
             options: Vec::new(),
             input_prompt: None,
             required: false,
             // The bridge message carries no scope, so it takes the shared
             // default rather than an invented one.
-            scope: crate::app_protocol::NotifyScope::default(),
+            scope: crate::protocol::NotifyScope::default(),
             image_inline: None,
             image_pipe_id: None,
             timeout_secs: None,
@@ -4688,7 +4688,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
             path: text("path"),
-            mode: crate::app_protocol::PathTokenMode::Append,
+            mode: crate::protocol::PathTokenMode::Append,
         }),
         "command_preview" => Some(AppCommand::RequestCommandPreview {
             sender_pane_id: 0,
@@ -5932,7 +5932,7 @@ mod tests {
 
         cache_python_theme_for_relaunch(
             &mut config,
-            &crate::app_protocol::PlexiEvent::Theme {
+            &crate::protocol::PlexiEvent::Theme {
                 colors: colors.clone(),
             },
         );
@@ -7877,13 +7877,13 @@ mod tests {
 
     #[test]
     fn python_host_event_wire_delivers_cross_runtime_app_events() {
-        let wire = encode_python_host_event(crate::app_protocol::PlexiEvent::AppEvent {
+        let wire = encode_python_host_event(crate::protocol::PlexiEvent::AppEvent {
             subscription_id: "sub-1".to_string(),
             app_id: "wasm-counter".to_string(),
             event: "count.changed".to_string(),
             event_id: 7,
             resource_id: "counter-1".to_string(),
-            trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+            trigger_mode: crate::protocol::TriggerMode::Conversation,
             summary: Some("Count changed".to_string()),
             payload: Some(json!({"count": 2})),
             state_ref: None,
@@ -7912,7 +7912,7 @@ mod tests {
         assert!(matches!(
             subscribe,
             crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::SubscribeAppEvents {
+                request: crate::protocol::AppRequest::SubscribeAppEvents {
                     request_id,
                     app_id,
                     event_names,
@@ -7938,7 +7938,7 @@ mod tests {
         assert!(matches!(
             emit,
             crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::app_protocol::AppRequest::EmitEvent {
+                request: crate::protocol::AppRequest::EmitEvent {
                     event,
                     payload: Some(payload),
                     ..

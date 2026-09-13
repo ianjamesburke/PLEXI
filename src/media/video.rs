@@ -42,24 +42,9 @@ use std::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
 
-// ─── Public types ────────────────────────────────────────────────────────────
+use crate::protocol::VideoState;
 
-/// Playback state for a video handle. Encoded on the wire as
-/// `{"play": null}` / `{"pause": null}` / `{"seek": <ms>}` via serde's
-/// default `untagged`-friendly encoding. The PGAP wire serialises this as a
-/// nested struct under `state` in `DrawCommand::SetVideoState`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum VideoState {
-    Play,
-    Pause,
-    /// Absolute position in milliseconds from the start of the video.
-    Seek {
-        position_ms: u64,
-    },
-}
+// ─── Public types ────────────────────────────────────────────────────────────
 
 /// Result of `VideoDecoder::open` on success. Reported back to the app as
 /// `PlexiEvent::VideoOpenAck`.

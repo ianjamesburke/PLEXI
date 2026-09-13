@@ -2,9 +2,30 @@ use fontdue::{Font, FontSettings};
 use serde_json::Value;
 use tiny_skia::{Paint, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform};
 
-use crate::protocol::view::{CanvasPrimitive, Color, Point, TextStyle, View};
-
 const FONT_DATA: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");
+
+/// RGBA color used by the headless paint helpers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+/// A point in headless pixel space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Text appearance for a headless text blit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextStyle {
+    pub size: f32,
+    pub color: Color,
+}
 
 pub struct HeadlessRenderer {
     font: Font,
@@ -15,72 +36,6 @@ impl HeadlessRenderer {
         let font = Font::from_bytes(FONT_DATA, FontSettings::default())
             .expect("bundled DejaVuSans.ttf is valid");
         Self { font }
-    }
-
-    /// Render a `View::Canvas` to a `Pixmap`. Document and Media views produce
-    /// a blank black frame — add cases here as the renderer grows.
-    #[allow(dead_code)] // STEP-11: reference-PNG snapshot test path
-    pub fn render_to_pixmap(&self, view: &View, width: u32, height: u32) -> Pixmap {
-        let mut pixmap = Pixmap::new(width.max(1), height.max(1)).expect("positive dimensions");
-        if let View::Canvas { primitives } = view {
-            for prim in primitives {
-                self.draw(&mut pixmap, prim);
-            }
-        }
-        pixmap
-    }
-
-    /// Convenience wrapper: render → PNG bytes.
-    #[allow(dead_code)] // STEP-11: reference-PNG snapshot test path
-    pub fn render_to_png(&self, view: &View, width: u32, height: u32) -> Vec<u8> {
-        self.render_to_pixmap(view, width, height)
-            .encode_png()
-            .expect("PNG encoding never fails on a valid Pixmap")
-    }
-
-    #[allow(dead_code)] // STEP-11: reference-PNG snapshot test path
-    fn draw(&self, pixmap: &mut Pixmap, prim: &CanvasPrimitive) {
-        match prim {
-            CanvasPrimitive::Rect { rect, fill, radius } => {
-                let Some(path) = rounded_rect_path(rect.x, rect.y, rect.w, rect.h, *radius) else {
-                    return;
-                };
-                let paint = solid_paint(fill);
-                pixmap.fill_path(
-                    &path,
-                    &paint,
-                    tiny_skia::FillRule::Winding,
-                    Transform::identity(),
-                    None,
-                );
-            }
-
-            CanvasPrimitive::Text { pos, text, style } => {
-                self.blit_text(pixmap, pos, text, style);
-            }
-
-            CanvasPrimitive::Line { from, to, stroke } => {
-                let mut pb = PathBuilder::new();
-                pb.move_to(from.x, from.y);
-                pb.line_to(to.x, to.y);
-                let Some(path) = pb.finish() else { return };
-                let stroke_style = Stroke {
-                    width: stroke.width,
-                    ..Stroke::default()
-                };
-                pixmap.stroke_path(
-                    &path,
-                    &solid_paint(&stroke.color),
-                    &stroke_style,
-                    Transform::identity(),
-                    None,
-                );
-            }
-
-            CanvasPrimitive::Image { .. } => {
-                // Image loading not implemented in headless renderer.
-            }
-        }
     }
 
     fn blit_text(&self, pixmap: &mut Pixmap, origin: &Point, text: &str, style: &TextStyle) {
@@ -497,13 +452,7 @@ impl HeadlessRenderer {
         let size = cmd["size"].as_f64().unwrap_or(14.0) as f32;
         let color_str = cmd["color"].as_str().unwrap_or("#ffffff");
         let color = parse_hex_color(color_str);
-        let bold = cmd["bold"].as_bool().unwrap_or(false);
-        let style = TextStyle {
-            size,
-            color,
-            bold,
-            italic: false,
-        };
+        let style = TextStyle { size, color };
         let pos = Point { x, y };
         self.blit_text(pixmap, &pos, text, &style);
     }
@@ -569,12 +518,7 @@ impl HeadlessRenderer {
                 }
             }
             let color = if is_sel { fg } else { muted };
-            let style = TextStyle {
-                size: 15.0,
-                color,
-                bold: false,
-                italic: false,
-            };
+            let style = TextStyle { size: 15.0, color };
             self.blit_text(
                 pixmap,
                 &Point {

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 use crate::broker::Decision;
 
 pub fn model_tier_name(tier: ModelTier) -> &'static str {
@@ -500,7 +500,7 @@ mod tests {
 
         assert_eq!(
             settings.model.tier.value,
-            crate::app_protocol::ModelTier::Medium
+            crate::protocol::ModelTier::Medium
         );
         assert_eq!(settings.model.tier.source.scope, SettingsScope::Default);
         assert_eq!(settings.tools.enabled.value, Vec::<String>::new());

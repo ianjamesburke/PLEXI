@@ -46,7 +46,7 @@ use serde_json::Value;
 pub(crate) const MAX_WAIT_TIMEOUT_SECS: f64 = 86_400.0;
 
 use super::PlexiApp;
-use crate::app_protocol::AgentState;
+use crate::protocol::AgentState;
 
 /// No PTY event for this long means the pane has finished redrawing and is
 /// ready to receive Enter.

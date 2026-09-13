@@ -930,7 +930,7 @@ pub(super) fn nudge_running_instance() {
     let Ok(mut stream) = UnixStream::connect(&path) else {
         return;
     };
-    let Ok(payload) = serde_json::to_string(&crate::app_protocol::AppRequest::Wake) else {
+    let Ok(payload) = serde_json::to_string(&crate::protocol::AppRequest::Wake) else {
         return;
     };
     if stream.write_all(format!("{payload}\n").as_bytes()).is_ok() {

@@ -136,9 +136,9 @@ fn pane_info_and_list_include_agent_state() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::app_protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
         pane_id,
-        state: crate::app_protocol::AgentState::Working,
+        state: crate::protocol::AgentState::Working,
         agent: "claude-code".to_string(),
         detail: Some("Bash: cargo test".to_string()),
         session_id: Some("session-33".to_string()),
@@ -146,7 +146,7 @@ fn pane_info_and_list_include_agent_state() {
     h.app.drain_pane_cmd_channel();
 
     let info_file = std::env::temp_dir().join("plexi_test_pane_info_agent_2119.json");
-    h.inject_ipc(crate::app_protocol::AppRequest::GetPaneInfo {
+    h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
         pane_id,
         response_file: info_file.to_string_lossy().to_string(),
     });
@@ -162,7 +162,7 @@ fn pane_info_and_list_include_agent_state() {
     assert_eq!(info["agent"]["session_id"], "session-33");
 
     let list_file = std::env::temp_dir().join("plexi_test_pane_list_agent_2119.json");
-    h.inject_ipc(crate::app_protocol::AppRequest::ListPanes {
+    h.inject_ipc(crate::protocol::AppRequest::ListPanes {
         response_file: list_file.to_string_lossy().to_string(),
         context_id: None,
     });
@@ -190,9 +190,9 @@ fn get_agent_states_collects_state_from_panes() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::app_protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
         pane_id,
-        state: crate::app_protocol::AgentState::Blocked,
+        state: crate::protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),
         detail: None,
         session_id: None,
@@ -200,7 +200,7 @@ fn get_agent_states_collects_state_from_panes() {
     h.app.drain_pane_cmd_channel();
 
     let states_file = std::env::temp_dir().join("plexi_test_agent_states_2119.json");
-    h.inject_ipc(crate::app_protocol::AppRequest::GetAgentStates {
+    h.inject_ipc(crate::protocol::AppRequest::GetAgentStates {
         response_file: states_file.to_string_lossy().to_string(),
     });
     h.app.drain_pane_cmd_channel();
@@ -310,7 +310,7 @@ fn get_previous_pane_info_returns_previous_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_info.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -349,7 +349,7 @@ fn get_previous_pane_info_skips_stale_tile() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_stale.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -382,7 +382,7 @@ fn get_previous_pane_info_empty_history_returns_error() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_empty.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -426,7 +426,7 @@ fn get_previous_pane_info_steps_two_returns_second_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_steps2.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 2,
     });
@@ -461,7 +461,7 @@ fn get_previous_pane_info_steps_exceeds_history_returns_error() {
     let _ = std::fs::remove_file(&resp_file);
 
     // Only 1 valid entry in history; requesting step 5 should error.
-    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 5,
     });

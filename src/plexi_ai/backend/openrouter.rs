@@ -23,7 +23,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 
 fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
     let input = usage["prompt_tokens"]

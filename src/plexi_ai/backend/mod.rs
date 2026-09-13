@@ -15,7 +15,7 @@ pub mod openrouter;
 
 use std::sync::{mpsc, Arc};
 
-use crate::app_protocol::ModelTier;
+use crate::protocol::ModelTier;
 
 /// Provider-neutral concrete model route selected by an Assistant agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +135,7 @@ pub struct AiBackendRequest {
     pub system: Arc<str>,
     /// Tools to inject into the request when non-empty. Shared via `Arc<[_]>`
     /// so tool-loop iterations clone only the pointer.
-    pub tools: Arc<[crate::app_protocol::AiTool]>,
+    pub tools: Arc<[crate::protocol::AiTool]>,
     /// Model tier from the broker request. Used by backends to apply
     /// tier-specific request parameters (e.g. disabling reasoning for Low).
     pub model_tier: Option<ModelTier>,

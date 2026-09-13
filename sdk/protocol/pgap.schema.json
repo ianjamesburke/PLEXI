@@ -337,7 +337,7 @@
           ]
         },
         "VideoState": {
-          "description": "Video playback state. Stub for the lib target (full impl in binary target).",
+          "description": "Playback state for a video handle. Encoded on the wire as\n`{\"play\": null}` / `{\"pause\": null}` / `{\"seek\": <ms>}` via serde's\ndefault `untagged`-friendly encoding. The PGAP wire serialises this as a\nnested struct under `state` in `DrawCommand::SetVideoState`.",
           "oneOf": [
             {
               "properties": {

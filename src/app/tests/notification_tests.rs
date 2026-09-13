@@ -37,11 +37,11 @@ fn snoozed_notification_invisible_then_visible() {
         source_window_id: h.app.windows[h.app.active_window].window_id,
         title: "Snoozed".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -85,11 +85,11 @@ fn snoozed_notification_exempt_from_timeout() {
         source_window_id: h.app.windows[h.app.active_window].window_id,
         title: "ShouldNotTimeout".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -124,11 +124,11 @@ fn persist_roundtrip() {
         source_window_id: 1,
         title: "Test".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: Some("/tmp/resp".into()),
@@ -264,11 +264,11 @@ fn window_scoped_notification_visible_only_on_source_window() {
         source_window_id: win0_id,
         title: "Window Notification".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Window,
+        scope: crate::protocol::NotifyScope::Window,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -328,11 +328,11 @@ fn auto_dismiss_removes_non_required_notification_when_sender_focused() {
         source_window_id: win_id,
         title: "Should go away".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -383,11 +383,11 @@ fn auto_dismiss_spares_required_notifications() {
         source_window_id: win_id,
         title: "Must stay".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: true, // <-- required
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -429,11 +429,11 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         source_window_id: win_id,
         title: "From other pane".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -564,11 +564,11 @@ fn cue_test_notification(id: &str) -> PendingNotification {
         source_window_id: 0,
         title: "Title".into(),
         body: "Body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -732,7 +732,7 @@ fn cue_suppressed_for_invisible_notification() {
     h.app.notifications_sound = Some("/tmp/cue.wav".to_string());
 
     let mut n = cue_test_notification("invisible");
-    n.scope = crate::app_protocol::NotifyScope::Context;
+    n.scope = crate::protocol::NotifyScope::Context;
     n.source_context_id = 999_999; // not the active context
     assert!(
         !h.app.notification_is_visible(&n),
@@ -826,15 +826,15 @@ fn disabled_notifications_never_play_a_cue() {
 /// callers pass the pid they want matched directly (typically a live pane's
 /// own `child_pid`), same as the pre-0636-fix single-pid API.
 fn cli_notify_request(
-    scope: Option<crate::app_protocol::NotifyScope>,
+    scope: Option<crate::protocol::NotifyScope>,
     source_context_id: Option<u64>,
     source_pane_id: Option<u64>,
     peer_pid: Option<u32>,
-) -> crate::app_protocol::AppRequest {
-    crate::app_protocol::AppRequest::Notify {
+) -> crate::protocol::AppRequest {
+    crate::protocol::AppRequest::Notify {
         title: "CLI notify".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -891,7 +891,7 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
     let context_id = h.app.router.active().context_id;
     let (scope, source_window_id) = h
         .app
-        .resolve_app_notification_provenance(0, crate::app_protocol::NotifyScope::Window);
+        .resolve_app_notification_provenance(0, crate::protocol::NotifyScope::Window);
     h.app.enqueue_notification(
         crate::app::notifications::NotifySource::App,
         PendingNotification {
@@ -902,7 +902,7 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
             source_window_id,
             title: "Parked".into(),
             body: "body".into(),
-            kind: crate::app_protocol::NotifyKind::Message,
+            kind: crate::protocol::NotifyKind::Message,
             options: vec![],
             input_prompt: None,
             required: false,
@@ -922,7 +922,7 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
     let notification = &h.app.pending_notifications[0];
     assert_eq!(
         notification.scope,
-        crate::app_protocol::NotifyScope::Context
+        crate::protocol::NotifyScope::Context
     );
     assert_eq!(notification.source_window_id, 0);
     assert_eq!(notification.source_context_id, context_id);
@@ -950,10 +950,10 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
 
-    h.inject_ipc(crate::app_protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::AppRequest::Notify {
         title: "sticky".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -986,7 +986,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     // A different real pane (its own genuine socket peer) claims to be the
     // owner via the wire fields — those claims must be ignored; only the
     // resolved `peer_pid` decides ownership, and it names a stranger.
-    h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         source_context_id: Some(owner_ctx),
         source_pane_id: Some(owner_pane_id), // forged claim
@@ -1000,7 +1000,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         "foreign pane must not dismiss, even while claiming to be the owner"
     );
 
-    h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         source_context_id: Some(owner_ctx),
         source_pane_id: Some(foreign_pane_id), // forged claim, must be ignored
@@ -1029,10 +1029,10 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     // nothing.
     let unresolvable_peer = std::process::id();
 
-    h.inject_ipc(crate::app_protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::AppRequest::Notify {
         title: "t".into(),
         body: "b".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -1043,7 +1043,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
         timeout_secs: None,
         on_dismiss: None,
         response_file: None,
-        scope: Some(crate::app_protocol::NotifyScope::Context),
+        scope: Some(crate::protocol::NotifyScope::Context),
         source_context_id: Some(real_context_id),
         source_pane_id: None,
         peer_pid: Some(vec![unresolvable_peer]),
@@ -1053,7 +1053,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     let posted = &h.app.pending_notifications[0];
     assert_eq!(
         posted.scope,
-        crate::app_protocol::NotifyScope::Global,
+        crate::protocol::NotifyScope::Global,
         "an unresolvable peer must escalate to Global rather than trust the claimed context"
     );
     assert_eq!(
@@ -1063,7 +1063,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
 
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
-    h.inject_ipc(crate::app_protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
         notify_id: "unresolvable-peer".into(),
         source_context_id: Some(real_context_id),
         source_pane_id: Some(424_242), // forged, irrelevant
@@ -1096,10 +1096,10 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
     };
     assert_ne!(real_ctx, forged_ctx);
 
-    h.inject_ipc(crate::app_protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::AppRequest::Notify {
         title: "t".into(),
         body: "b".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -1110,7 +1110,7 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
         timeout_secs: None,
         on_dismiss: None,
         response_file: None,
-        scope: Some(crate::app_protocol::NotifyScope::Context),
+        scope: Some(crate::protocol::NotifyScope::Context),
         source_context_id: Some(forged_ctx),
         source_pane_id: Some(forged_pane_id),
         peer_pid: Some(vec![real_peer_pid]), // the true sender is the OTHER pane
@@ -1143,7 +1143,7 @@ fn cli_notify_without_scope_defaults_to_context() {
     assert_eq!(h.app.pending_notifications.len(), 1, "notification queued");
     assert_eq!(
         h.app.pending_notifications[0].scope,
-        crate::app_protocol::NotifyScope::Context,
+        crate::protocol::NotifyScope::Context,
         "unscoped CLI notify must stay in its own context, not leak globally"
     );
     assert_eq!(
@@ -1159,7 +1159,7 @@ fn cli_notify_explicit_global_scope_survives_the_new_default() {
     h.app.notifications_enabled = true;
 
     h.inject_ipc(cli_notify_request(
-        Some(crate::app_protocol::NotifyScope::Global),
+        Some(crate::protocol::NotifyScope::Global),
         None,
         None,
         None,
@@ -1169,7 +1169,7 @@ fn cli_notify_explicit_global_scope_survives_the_new_default() {
     assert_eq!(h.app.pending_notifications.len(), 1);
     assert_eq!(
         h.app.pending_notifications[0].scope,
-        crate::app_protocol::NotifyScope::Global,
+        crate::protocol::NotifyScope::Global,
         "--scope global must still be global"
     );
 }
@@ -1199,7 +1199,7 @@ fn cli_notify_attaches_to_callers_context_not_active() {
 
     assert_eq!(h.app.pending_notifications.len(), 1);
     let n = &h.app.pending_notifications[0];
-    assert_eq!(n.scope, crate::app_protocol::NotifyScope::Context);
+    assert_eq!(n.scope, crate::protocol::NotifyScope::Context);
     assert_eq!(
         n.source_context_id, real_ctx,
         "provenance must be the socket peer's own context, not dispatch-time active state"
@@ -1229,7 +1229,7 @@ fn cli_notify_stale_identity_escalates_to_global() {
     let n = &h.app.pending_notifications[0];
     assert_eq!(
         n.scope,
-        crate::app_protocol::NotifyScope::Global,
+        crate::protocol::NotifyScope::Global,
         "a stale identity must escalate to global, not attach elsewhere"
     );
     assert_eq!(n.source_context_id, 0, "0 = no context, the host sentinel");
@@ -1249,7 +1249,7 @@ fn cli_notify_outside_pane_unscoped_escalates_to_global() {
     assert_eq!(h.app.pending_notifications.len(), 1);
     assert_eq!(
         h.app.pending_notifications[0].scope,
-        crate::app_protocol::NotifyScope::Global,
+        crate::protocol::NotifyScope::Global,
         "no identity → no context to attach to → global"
     );
 }
@@ -1258,13 +1258,13 @@ fn cli_notify_outside_pane_unscoped_escalates_to_global() {
 #[test]
 fn notify_scope_default_is_context() {
     assert_eq!(
-        crate::app_protocol::NotifyScope::default(),
-        crate::app_protocol::NotifyScope::Context
+        crate::protocol::NotifyScope::default(),
+        crate::protocol::NotifyScope::Context
     );
-    let unset: Option<crate::app_protocol::NotifyScope> = None;
+    let unset: Option<crate::protocol::NotifyScope> = None;
     assert_eq!(
         unset.unwrap_or_default(),
-        crate::app_protocol::NotifyScope::Context
+        crate::protocol::NotifyScope::Context
     );
 }
 
@@ -1273,7 +1273,7 @@ fn notify_scope_default_is_context() {
 /// flag the moment the default changed — that was the actual regression.
 #[test]
 fn parse_notify_scope_maps_every_named_scope_explicitly() {
-    use crate::app_protocol::NotifyScope;
+    use crate::protocol::NotifyScope;
     assert_eq!(crate::cli::parse_notify_scope(None), Ok(None));
     assert_eq!(
         crate::cli::parse_notify_scope(Some("global")),
@@ -1438,11 +1438,11 @@ fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotifica
         source_window_id: 0,
         title: "Resurface me".into(),
         body: "body".into(),
-        kind: crate::app_protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::app_protocol::NotifyScope::Global,
+        scope: crate::protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -1830,7 +1830,7 @@ fn focus_mode_suppresses_resurface() {
 #[test]
 fn notification_visible_matches_scope_semantics_matrix() {
     use crate::app::notifications::notification_visible;
-    use crate::app_protocol::NotifyScope;
+    use crate::protocol::NotifyScope;
 
     let active_window_id = 10;
     let active_context_id = 20;
@@ -1929,9 +1929,9 @@ fn notification_is_visible_agrees_with_extracted_scope_match_when_not_snoozed() 
     let active_context_id = h.app.router.active().context_id;
 
     for scope in [
-        crate::app_protocol::NotifyScope::Global,
-        crate::app_protocol::NotifyScope::Window,
-        crate::app_protocol::NotifyScope::Context,
+        crate::protocol::NotifyScope::Global,
+        crate::protocol::NotifyScope::Window,
+        crate::protocol::NotifyScope::Context,
     ] {
         for (source_window_id, source_context_id) in [
             (active_window_id, active_context_id),
@@ -1966,7 +1966,7 @@ fn notification_is_visible_agrees_with_extracted_scope_match_when_not_snoozed() 
 #[test]
 fn notification_counts_toward_context_matrix() {
     use crate::app::notifications::notification_counts_toward_context;
-    use crate::app_protocol::NotifyScope;
+    use crate::protocol::NotifyScope;
 
     assert!(!notification_counts_toward_context(
         NotifyScope::Global,

@@ -456,7 +456,7 @@ impl FileBrowserApp {
         self.pending_cmds.push(AppCommand::OpenArtifact {
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
             path: path.to_string_lossy().to_string(),
-            mode: crate::app_protocol::ArtifactOpenMode::OpenInPane,
+            mode: crate::protocol::ArtifactOpenMode::OpenInPane,
         });
     }
 

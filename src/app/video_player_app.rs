@@ -5,7 +5,8 @@ use std::time::Instant;
 use crossbeam_queue::ArrayQueue;
 
 use crate::app::app_trait::{App, AppRenderContext};
-use crate::media::video::{VideoDecoder, VideoHandle, VideoState};
+use crate::media::video::{VideoDecoder, VideoHandle};
+use crate::protocol::VideoState;
 
 pub struct VideoPlayerApp {
     path: PathBuf,

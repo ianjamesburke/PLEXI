@@ -96,7 +96,7 @@ build:
     bash scripts/cargo-with-lease.sh cargo build --release
 
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
-# Run after any change to src/app_protocol.rs.
+# Run after any change to src/protocol/.
 gen-schema:
     bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
     python3 tools/gen_protocol_py.py
@@ -178,7 +178,7 @@ check-sdk-docs:
     echo "SDK docs are up to date."
 
 # Generate PGAP capability reference docs from the protocol JSON schema.
-# Run after any change to src/app_protocol.rs (via just gen-schema first).
+# Run after any change to src/protocol/ (via just gen-schema first).
 gen-capability-docs:
     python3 tools/gen_capability_docs.py
 
@@ -231,7 +231,7 @@ run:
 # src/cli/args.rs                    → website/src/content/docs/cli.md           → cargo run -p gen_cli_docs
 # src/config/mod.rs                  → website/src/content/docs/config.md        → cargo run -p gen_config_docs
 # scripts/default-config.toml        → website/src/content/docs/config.md        → cargo run -p gen_config_docs
-# src/app_protocol.rs                → sdk/protocol/pgap.schema.json             → cargo run -p gen_schema
+# src/protocol/*.rs                  → sdk/protocol/pgap.schema.json             → cargo run -p gen_schema
 #                                    → sdk/python/plexi_sdk/_protocol.py         → python3 tools/gen_protocol_py.py
 # website/src/content/docs/          → (coverage assertion)                      → tools/check_docs_coverage.sh
 regen-if-stale:
@@ -245,8 +245,8 @@ regen-if-stale:
         echo "Config source changed — regenerating config docs..."
         bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
     fi
-    if [[ src/app_protocol.rs -nt sdk/protocol/pgap.schema.json ]]; then
-        echo "app_protocol.rs changed — regenerating schema..."
+    if [[ -n "$(find src/protocol -name '*.rs' -newer sdk/protocol/pgap.schema.json -print -quit)" ]]; then
+        echo "src/protocol/ changed — regenerating schema..."
         bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
         python3 tools/gen_protocol_py.py
     fi

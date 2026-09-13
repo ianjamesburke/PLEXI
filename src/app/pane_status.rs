@@ -1,4 +1,4 @@
-use crate::app_protocol::{AgentState, PaneAgentState};
+use crate::protocol::{AgentState, PaneAgentState};
 
 const STATUS_TAIL_LINES: usize = 32;
 
