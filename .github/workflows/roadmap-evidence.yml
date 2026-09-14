@@ -30,7 +30,6 @@ env:
   # Without the verified bundle every such scene reports wait_app_frame_failed —
   # there is no interpreter to produce a first frame, and no timeout is long
   # enough to fix that. Keep in step with `rust-host.yml`.
-  WASI_BUNDLE_MODE: prefetch
   PLEXI_CPYTHON_BUNDLE_DIR: /Users/runner/.plexi-ci/wasm-bundles
 
 jobs:
