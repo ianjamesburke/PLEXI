@@ -14,7 +14,10 @@ struct DoctorReport {
 /// whether the last install skipped the CLI shim/completions.
 #[derive(Serialize)]
 struct VersionSkewReport {
-    bundle_version: String,
+    /// `None` when `installed_tag` is missing/empty/unreadable — there is no
+    /// `CARGO_PKG_VERSION` fallback (that's the CLI shim's own compiled
+    /// version, not the bundle's; see `read_bundle_version`).
+    bundle_version: Option<String>,
     host_version: Option<String>,
     /// `true` when the running host is strictly older than the bundle
     /// (restart would apply a newer version); `None` when no host is
@@ -24,6 +27,10 @@ struct VersionSkewReport {
     /// Human-readable status string for non-JSON output.
     #[serde(skip)]
     status: String,
+    /// Human-readable shim remedy line for non-JSON output, when the last
+    /// install skipped or could not confirm the shim install.
+    #[serde(skip)]
+    shim_note: Option<String>,
 }
 
 /// Build the version-skew report by reusing `src/cli/host.rs`'s
@@ -33,20 +40,22 @@ fn check_version_skew() -> VersionSkewReport {
     let bundle_version = crate::cli::host::read_bundle_version(channel.as_deref());
     let host_version = crate::cli::host::query_running_host_version(channel.as_deref());
     let shim_status = crate::cli::host::read_shim_status(channel.as_deref());
-    let shim_updated = shim_status
-        .as_ref()
-        .and_then(|v| v["shim_updated"].as_bool());
 
-    let skew = host_version
-        .as_deref()
-        .map(|running| crate::cli::release_resolver::detect_version_skew(&bundle_version, running));
+    let skew: Option<crate::cli::release_resolver::SkewStatus> = match &bundle_version {
+        Err(reason) => Some(crate::cli::release_resolver::SkewStatus::Unknown {
+            reason: reason.clone(),
+        }),
+        Ok(bundle) => host_version
+            .as_deref()
+            .map(|running| crate::cli::release_resolver::detect_version_skew(bundle, running)),
+    };
 
     let (skewed, status) = match &skew {
         Some(crate::cli::release_resolver::SkewStatus::InSync) => (
             Some(false),
             format!(
                 "{} (bundle and running host match)",
-                bundle_version.trim_start_matches('v')
+                bundle_version.as_ref().unwrap().trim_start_matches('v')
             ),
         ),
         Some(crate::cli::release_resolver::SkewStatus::Skewed { bundle, running }) => {
@@ -56,7 +65,7 @@ fn check_version_skew() -> VersionSkewReport {
             (
                 Some(true),
                 format!(
-                    "SKEW: bundle {} vs running host {} — restart to apply",
+                    "SKEW: bundle {} vs running host {} — restart Plexi to apply",
                     bundle.trim_start_matches('v'),
                     running.trim_start_matches('v')
                 ),
@@ -69,17 +78,39 @@ fn check_version_skew() -> VersionSkewReport {
             None,
             format!(
                 "{} (host not running)",
-                bundle_version.trim_start_matches('v')
+                bundle_version.as_ref().unwrap().trim_start_matches('v')
             ),
         ),
     };
 
+    let (shim_updated, shim_note) = match &shim_status {
+        crate::cli::host::ShimStatusInfo::Ok(s) if !s.shim_updated => {
+            let reason = s.reason.as_deref().unwrap_or("unknown reason");
+            (
+                Some(false),
+                Some(format!(
+                    "the last install did not update the CLI shim/completions ({reason}) — run 'plexi update' in a terminal to install the CLI shim"
+                )),
+            )
+        }
+        crate::cli::host::ShimStatusInfo::Ok(s) => (Some(s.shim_updated), None),
+        crate::cli::host::ShimStatusInfo::Malformed => (
+            None,
+            Some(
+                "shim install status is unknown (malformed shim_status.json) — run 'plexi update' in a terminal to install the CLI shim"
+                    .to_string(),
+            ),
+        ),
+        crate::cli::host::ShimStatusInfo::Absent => (None, None),
+    };
+
     VersionSkewReport {
-        bundle_version,
+        bundle_version: bundle_version.ok(),
         host_version,
         skewed,
         shim_updated,
         status,
+        shim_note,
     }
 }
 
@@ -417,10 +448,8 @@ fn print_version_section(report: &VersionSkewReport) {
         Some(true) => println!("  {red}\u{2717}{reset} {}", report.status),
         _ => println!("  {green}\u{2713}{reset} {}", report.status),
     }
-    if let Some(false) = report.shim_updated {
-        println!(
-            "  {dim}--> the last install did not update the CLI shim/completions{reset}"
-        );
+    if let Some(note) = &report.shim_note {
+        println!("  {dim}--> {note}{reset}");
     }
 }
 
