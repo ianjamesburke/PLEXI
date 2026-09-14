@@ -1121,6 +1121,42 @@
         },
         {
           "additionalProperties": false,
+          "description": "Query the running host process's own display version. Host writes\n`{\"version\": \"<display_version>\"}` to `response_file` — the exact\nversion string this process was launched as (`PlexiApp.display_version`,\nset once at construction from `installed_tag` or `CARGO_PKG_VERSION`),\nwhich may differ from what is currently on disk if a newer version\ninstalled after this host started. Sent by `plexi host status` /\n`plexi doctor` to detect install/running-host version skew (stint 0596).",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "get_host_version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Tell the running host that a newer version has been installed by an\nexternally-run `plexi update` (a separate CLI process — not this\nhost's own background self-updater). Reuses the existing self-update\nrestart-prompt UI (`PlexiApp.update_available` / the confirm/relaunch\nflow already driven by the background updater's mailbox) so a\nforeground `plexi update` can surface the same consent-gated restart\nbanner instead of the update landing silently until the next manual\nrestart (stint 0596). Fire-and-forget: no response.",
+          "properties": {
+            "type": {
+              "const": "notify_update_available",
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Query info for a specific pane by ID. Host writes JSON object to `response_file`.\nSent by `plexi pane info`.",
           "properties": {
             "pane_id": {

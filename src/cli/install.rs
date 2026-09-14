@@ -748,9 +748,65 @@ fn run_self_update() -> Result<String, String> {
         return Err("error: install script failed — check output above".to_string());
     }
 
-    Ok(format!(
-        "Installed v{latest_version}. Restart Plexi to apply."
-    ))
+    // Best-effort: tell an already-running host of this channel that a newer
+    // version landed, so it can surface the same restart-prompt UI the
+    // background self-updater already drives (stint 0596). No running host
+    // is not an error — just nothing to notify.
+    let notify_channel = if channel == "main" {
+        None
+    } else {
+        Some(channel.as_str())
+    };
+    let notified = notify_running_host(notify_channel, &latest_version);
+
+    Ok(if notified {
+        format!(
+            "Installed v{latest_version}. A running host will show a restart prompt; otherwise restart Plexi to apply."
+        )
+    } else {
+        format!("Installed v{latest_version}. Restart Plexi to apply.")
+    })
+}
+
+/// Connect to this channel's `notify.sock` and send
+/// `AppRequest::NotifyUpdateAvailable`. Returns `true` if a running host
+/// accepted the connection and the message was sent; `false` (never an
+/// error) when no host is running to notify.
+fn notify_running_host(channel: Option<&str>, version: &str) -> bool {
+    use std::io::Write;
+    let socket_path = crate::cli::host::notify_socket_path(channel);
+    let mut stream = match std::os::unix::net::UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) => {
+            log::info!(
+                "cli: self-update: no running host at {socket_path:?} to notify ({e}); \
+                 restart-prompt UI not surfaced"
+            );
+            return false;
+        }
+    };
+    let request = crate::protocol::AppRequest::NotifyUpdateAvailable {
+        version: version.to_string(),
+    };
+    let line = match serde_json::to_string(&request) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("cli: self-update: failed to serialize NotifyUpdateAvailable: {e}");
+            return false;
+        }
+    };
+    match stream.write_all(format!("{line}\n").as_bytes()) {
+        Ok(()) => {
+            log::info!(
+                "cli: self-update: notified running host at {socket_path:?} of v{version} (restart prompt should surface)"
+            );
+            true
+        }
+        Err(e) => {
+            log::warn!("cli: self-update: failed to notify running host: {e}");
+            false
+        }
+    }
 }
 
 /// `plexi update` — thin CLI wrapper around `run_self_update`.

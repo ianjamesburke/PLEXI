@@ -209,6 +209,12 @@ fn host_config_dir(channel: Option<&str>) -> PathBuf {
         .join(format!(".plexi{suffix}"))
 }
 
+/// The channel's `notify.sock` path — the single derivation every `host`
+/// subcommand and `plexi update` (stint 0596) use to reach a running host.
+pub(crate) fn notify_socket_path(channel: Option<&str>) -> PathBuf {
+    host_config_dir(channel).join("notify.sock")
+}
+
 /// Resolve the app bundle + binary-inside-bundle paths for the *running CLI
 /// binary's own channel* (never `PLEXI_CHANNEL` — that env var is exactly
 /// what must be stripped from the launched child).
@@ -304,6 +310,111 @@ fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize
     serde_json::from_str::<Vec<serde_json::Value>>(&content)
         .ok()
         .map(|v| v.len())
+}
+
+/// One-shot query for the running host process's own display version
+/// (`AppRequest::GetHostVersion` — see the protocol doc for why this can
+/// differ from what is on disk right now). `None` means the socket is not
+/// reachable or the round trip did not complete in time.
+fn query_host_version(socket_path: &Path, channel: Option<&str>) -> Option<String> {
+    let mut stream = UnixStream::connect(socket_path).ok()?;
+    let response_file =
+        crate::rpc::response_file_in(&host_config_dir(channel), "host-version", "json");
+    let request = crate::protocol::AppRequest::GetHostVersion {
+        response_file: response_file.clone(),
+    };
+    let line = serde_json::to_string(&request).ok()?;
+    stream.write_all(format!("{line}\n").as_bytes()).ok()?;
+    let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
+    serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+}
+
+/// Read the release tag currently on disk for `channel`, i.e. what the last
+/// `install.sh` run wrote to `<profile>/installed_tag` — always read fresh
+/// from disk (never a frozen struct field), since this represents "what's
+/// installed right now," which can change after a host process launched.
+///
+/// `Err` names the file that could not be read/parsed. There is deliberately
+/// no fallback to `CARGO_PKG_VERSION`: that constant is the *CLI shim's own*
+/// compiled version, not the bundle's, and falling back to it would make a
+/// stale shim silently report "in sync" with a newer bundle — exactly the
+/// failure mode this stint exists to catch (stint 0596 review).
+pub(crate) fn read_bundle_version(channel: Option<&str>) -> Result<String, String> {
+    read_bundle_version_at(&host_config_dir(channel).join("installed_tag"))
+}
+
+fn read_bundle_version_at(tag_path: &Path) -> Result<String, String> {
+    let content = std::fs::read_to_string(tag_path)
+        .map_err(|e| format!("could not read {}: {e}", tag_path.display()))?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(format!("could not read {}: file is empty", tag_path.display()));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The shim-install marker `install.sh` writes to `<profile>/shim_status.json`
+/// (stint 0596): whether the CLI shim/completions were actually rewritten on
+/// the last install run. `reason` is present only when `shim_updated` is
+/// `false` (e.g. `PLEXI_SKIP_BIN_INSTALL` from the silent background
+/// updater, which has no TTY for sudo).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct ShimStatus {
+    pub(crate) shim_updated: bool,
+    #[serde(default)]
+    pub(crate) reason: Option<String>,
+    pub(crate) bundle_tag: String,
+    pub(crate) channel: String,
+}
+
+/// Result of reading the shim-install marker. A missing file is not an
+/// error — older installs never wrote one, so there is simply no info
+/// available yet. A *present but malformed* file is surfaced distinctly so
+/// callers show `unknown (malformed shim_status.json)` instead of silently
+/// treating it the same as "no info" (stint 0596 review).
+pub(crate) enum ShimStatusInfo {
+    Absent,
+    Ok(ShimStatus),
+    Malformed,
+}
+
+pub(crate) fn read_shim_status(channel: Option<&str>) -> ShimStatusInfo {
+    read_shim_status_at(&host_config_dir(channel).join("shim_status.json"))
+}
+
+fn read_shim_status_at(path: &Path) -> ShimStatusInfo {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return ShimStatusInfo::Absent,
+    };
+    match serde_json::from_slice::<ShimStatus>(&bytes) {
+        Ok(status) => {
+            log::info!(
+                "shim_status: read {} — shim_updated={} bundle_tag={} channel={}",
+                path.display(),
+                status.shim_updated,
+                status.bundle_tag,
+                status.channel
+            );
+            ShimStatusInfo::Ok(status)
+        }
+        Err(e) => {
+            log::warn!(
+                "shim_status: malformed {}: {e} — treating shim/skew info as unknown",
+                path.display()
+            );
+            ShimStatusInfo::Malformed
+        }
+    }
+}
+
+/// Channel-scoped wrapper around `query_host_version` that derives the
+/// socket path itself, for callers outside this module (e.g. `plexi doctor`)
+/// that only need the running host's version, not the full status flow.
+pub(crate) fn query_running_host_version(channel: Option<&str>) -> Option<String> {
+    query_host_version(&notify_socket_path(channel), channel)
 }
 
 /// Retry `query_ready_status` until it answers or `timeout` elapses. Used
@@ -653,27 +764,109 @@ pub fn host_status_cli(json: bool) -> i32 {
         "host_status: channel={channel:?} pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}"
     );
 
+    // Version/skew visibility (stint 0596): the on-disk bundle version is
+    // read fresh; the running host's version comes over IPC and is only
+    // available while the host answers. A skew means a restart would pick
+    // up a newer version than the process currently running. A bundle-read
+    // failure (missing/empty installed_tag) is always `Unknown` — there is
+    // no CARGO_PKG_VERSION fallback here (that's the *shim's* compiled
+    // version, not the bundle's; see `read_bundle_version`).
+    let bundle_version = read_bundle_version(channel.as_deref());
+    let running_version = if ready {
+        query_host_version(&socket_path, channel.as_deref())
+    } else {
+        None
+    };
+    let skew: Option<crate::cli::release_resolver::SkewStatus> = match &bundle_version {
+        Err(reason) => Some(crate::cli::release_resolver::SkewStatus::Unknown {
+            reason: reason.clone(),
+        }),
+        Ok(bundle) => running_version
+            .as_deref()
+            .map(|running| crate::cli::release_resolver::detect_version_skew(bundle, running)),
+    };
+    let version_skew: Option<bool> = match &skew {
+        Some(crate::cli::release_resolver::SkewStatus::InSync) => Some(false),
+        Some(crate::cli::release_resolver::SkewStatus::Skewed { .. }) => Some(true),
+        Some(crate::cli::release_resolver::SkewStatus::Unknown { .. }) | None => None,
+    };
+    if let Some(crate::cli::release_resolver::SkewStatus::Skewed { bundle, running }) = &skew {
+        log::info!(
+            "host_status: version skew detected — bundle={bundle} running_host={running} (restart to apply)"
+        );
+    }
+    let shim_status = read_shim_status(channel.as_deref());
+    let shim_updated: Option<bool> = match &shim_status {
+        ShimStatusInfo::Ok(s) => Some(s.shim_updated),
+        ShimStatusInfo::Absent | ShimStatusInfo::Malformed => None,
+    };
+
     if json {
         let payload = serde_json::json!({
             "ready": ready,
             "pane_count": pane_count,
             "pid": pid,
             "socket": socket_path.to_string_lossy(),
+            "bundle_version": bundle_version.as_ref().ok(),
+            "host_version": running_version,
+            "version_skew": version_skew,
+            "shim_updated": shim_updated,
         });
         println!("{payload}");
-    } else if ready {
-        println!(
-            "Plexi host is running (pid {}), {} pane(s), socket {}",
-            pid.map(|p| p.to_string())
-                .unwrap_or_else(|| "unknown".to_string()),
-            pane_count.unwrap_or(0),
-            socket_path.display()
-        );
     } else {
-        println!(
-            "Plexi host is not running (socket {})",
-            socket_path.display()
-        );
+        if ready {
+            println!(
+                "Plexi host is running (pid {}), {} pane(s), socket {}",
+                pid.map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                pane_count.unwrap_or(0),
+                socket_path.display()
+            );
+        } else {
+            println!(
+                "Plexi host is not running (socket {})",
+                socket_path.display()
+            );
+        }
+
+        match &skew {
+            Some(crate::cli::release_resolver::SkewStatus::InSync) => {
+                println!(
+                    "Version: {} (bundle and running host match)",
+                    bundle_version.as_ref().unwrap().trim_start_matches('v')
+                );
+            }
+            Some(crate::cli::release_resolver::SkewStatus::Skewed { bundle, running }) => {
+                println!(
+                    "Version: bundle {}, running host {} — SKEW: restart Plexi to apply the new version (run 'plexi update' or use the in-app restart prompt)",
+                    bundle.trim_start_matches('v'),
+                    running.trim_start_matches('v')
+                );
+            }
+            Some(crate::cli::release_resolver::SkewStatus::Unknown { reason }) => {
+                println!("Version: unknown ({reason})");
+            }
+            None => {
+                println!(
+                    "Version: {} (host not running)",
+                    bundle_version.as_ref().unwrap().trim_start_matches('v')
+                );
+            }
+        }
+        match &shim_status {
+            ShimStatusInfo::Ok(s) if !s.shim_updated => {
+                let reason = s.reason.as_deref().unwrap_or("unknown reason");
+                println!(
+                    "  note: the last install did not update the CLI shim/completions ({reason}) — run 'plexi update' in a terminal to install the CLI shim"
+                );
+            }
+            ShimStatusInfo::Malformed => {
+                println!(
+                    "  note: shim install status is unknown (malformed shim_status.json) — run 'plexi update' in a terminal to install the CLI shim"
+                );
+            }
+            _ => {}
+        }
     }
     0
 }
@@ -927,6 +1120,101 @@ mod tests {
             ..Default::default()
         };
         assert!(placement_to_layout(&spec).is_err());
+    }
+
+    // ── read_bundle_version_at / read_shim_status_at (stint 0596) ────────
+
+    #[test]
+    fn read_bundle_version_at_reads_trimmed_tag_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tag_path = dir.path().join("installed_tag");
+        std::fs::write(&tag_path, "v0.2.0\n").expect("write tag");
+        assert_eq!(read_bundle_version_at(&tag_path).unwrap(), "v0.2.0");
+    }
+
+    /// No `CARGO_PKG_VERSION` fallback (stint 0596 review): that constant is
+    /// the CLI shim's own compiled version, not the bundle's, so a missing
+    /// tag file must surface as `Unknown` — never a silent "in sync" against
+    /// a shim that never actually installed the newer bundle.
+    #[test]
+    fn read_bundle_version_at_is_err_naming_the_path_when_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("installed_tag");
+        let err = read_bundle_version_at(&missing).unwrap_err();
+        assert!(
+            err.contains(&missing.display().to_string()),
+            "error must name the missing path: {err}"
+        );
+    }
+
+    #[test]
+    fn read_bundle_version_at_is_err_naming_the_path_when_file_is_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tag_path = dir.path().join("installed_tag");
+        std::fs::write(&tag_path, "   \n").expect("write empty tag");
+        let err = read_bundle_version_at(&tag_path).unwrap_err();
+        assert!(
+            err.contains(&tag_path.display().to_string()),
+            "error must name the empty file's path: {err}"
+        );
+    }
+
+    #[test]
+    fn read_shim_status_at_missing_file_is_absent_not_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("shim_status.json");
+        assert!(matches!(
+            read_shim_status_at(&missing),
+            ShimStatusInfo::Absent
+        ));
+    }
+
+    #[test]
+    fn read_shim_status_at_true_case_parses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shim_status.json");
+        std::fs::write(
+            &path,
+            r#"{"shim_updated": true, "bundle_tag": "v0.2.0", "channel": "main"}"#,
+        )
+        .expect("write marker");
+        match read_shim_status_at(&path) {
+            ShimStatusInfo::Ok(status) => {
+                assert!(status.shim_updated);
+                assert_eq!(status.bundle_tag, "v0.2.0");
+                assert_eq!(status.reason, None);
+            }
+            _ => panic!("expected ShimStatusInfo::Ok"),
+        }
+    }
+
+    #[test]
+    fn read_shim_status_at_false_case_names_the_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shim_status.json");
+        std::fs::write(
+            &path,
+            r#"{"shim_updated": false, "reason": "PLEXI_SKIP_BIN_INSTALL", "bundle_tag": "v0.2.0", "channel": "main"}"#,
+        )
+        .expect("write marker");
+        match read_shim_status_at(&path) {
+            ShimStatusInfo::Ok(status) => {
+                assert!(!status.shim_updated);
+                assert_eq!(status.reason, Some("PLEXI_SKIP_BIN_INSTALL".to_string()));
+            }
+            _ => panic!("expected ShimStatusInfo::Ok"),
+        }
+    }
+
+    #[test]
+    fn read_shim_status_at_malformed_json_is_malformed_not_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shim_status.json");
+        std::fs::write(&path, "not json").expect("write garbage");
+        assert!(matches!(
+            read_shim_status_at(&path),
+            ShimStatusInfo::Malformed
+        ));
     }
 
     // ── filter_child_env ─────────────────────────────────────────────────

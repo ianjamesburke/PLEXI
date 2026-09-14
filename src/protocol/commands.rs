@@ -375,6 +375,25 @@ pub enum AppRequest {
     /// Sent by `plexi context list`.
     ListContexts { response_file: String },
 
+    /// Query the running host process's own display version. Host writes
+    /// `{"version": "<display_version>"}` to `response_file` — the exact
+    /// version string this process was launched as (`PlexiApp.display_version`,
+    /// set once at construction from `installed_tag` or `CARGO_PKG_VERSION`),
+    /// which may differ from what is currently on disk if a newer version
+    /// installed after this host started. Sent by `plexi host status` /
+    /// `plexi doctor` to detect install/running-host version skew (stint 0596).
+    GetHostVersion { response_file: String },
+
+    /// Tell the running host that a newer version has been installed by an
+    /// externally-run `plexi update` (a separate CLI process — not this
+    /// host's own background self-updater). Reuses the existing self-update
+    /// restart-prompt UI (`PlexiApp.update_available` / the confirm/relaunch
+    /// flow already driven by the background updater's mailbox) so a
+    /// foreground `plexi update` can surface the same consent-gated restart
+    /// banner instead of the update landing silently until the next manual
+    /// restart (stint 0596). Fire-and-forget: no response.
+    NotifyUpdateAvailable { version: String },
+
     /// Query info for a specific pane by ID. Host writes JSON object to `response_file`.
     /// Sent by `plexi pane info`.
     GetPaneInfo { pane_id: u64, response_file: String },
