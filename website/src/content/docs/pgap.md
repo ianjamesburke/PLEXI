@@ -294,6 +294,22 @@ List all open contexts. Host writes a JSON array to `response_file`. Sent by `pl
 |-------|------|----------|
 | `response_file` | `string` | yes |
 
+### `get_host_version`
+
+Query the running host process's own display version. Host writes `{"version": "<display_version>"}` to `response_fil...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `notify_update_available`
+
+Tell the running host that a newer version has been installed by an externally-run `plexi update` (a separate CLI pro...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `version` | `string` | yes |
+
 ### `get_pane_info`
 
 Query info for a specific pane by ID. Host writes JSON object to `response_file`. Sent by `plexi pane info`.
