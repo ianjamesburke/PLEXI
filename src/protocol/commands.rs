@@ -645,8 +645,20 @@ pub enum AppRequest {
     /// For app panes: host writes a versioned `semantic` tree for every runtime.
     /// Process panes also retain the compatible `frame` RenderCommand array.
     /// For terminal panes: host writes a simple status object.
+    /// Every response additionally carries `claimed_state` (the pane's own
+    /// `status` slot, agent-authored) and `observed_state` (host-derived
+    /// liveness) together — never one without the other (stint 0665). When
+    /// `stale_after_secs` is set and the claim looks fresh but the host has
+    /// observed no output within that many seconds, the response also
+    /// carries a typed `stale_claim` object; omitted, no stale evaluation
+    /// runs and `stale_claim` is `null`.
     /// Host writes `{"error":"..."}` if the pane is not found.
-    GetPaneState { pane_id: u64, response_file: String },
+    GetPaneState {
+        pane_id: u64,
+        response_file: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stale_after_secs: Option<u64>,
+    },
 
     /// Capture the live host window as a PNG through the real render
     /// pipeline (`egui::ViewportCommand::Screenshot` — actual rendered

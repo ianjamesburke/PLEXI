@@ -961,8 +961,8 @@ fn main() -> eframe::Result {
                         PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
                             std::process::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
                         }
-                        PaneCmd::State { pane_id } => {
-                            std::process::exit(cli::pane_state_cli(pane_id))
+                        PaneCmd::State { pane_id, stale_after } => {
+                            std::process::exit(cli::pane_state_cli(pane_id, stale_after))
                         }
                         PaneCmd::Slot { cmd } => match cmd {
                             PaneSlotCmd::Write {

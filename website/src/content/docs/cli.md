@@ -1007,11 +1007,14 @@ For app panes: returns a versioned, runtime-neutral `semantic` tree. Process app
 
 For terminal panes: returns a simple status object (type, title, pane_id).
 
-Example: plexi pane state 42
+Every response also carries `claimed_state` (the pane's own `status` slot — an agent-authored claim, with its step token embedded in the value by convention, or `null` if never written) and `observed_state` (host-derived: process alive, seconds since last output, child pids, current foreground command) — always together, never one without the other. Pass `--stale-after <secs>` to additionally raise a typed `stale_claim` when a claim exists but the host has observed no output within that many seconds; omit it and `stale_claim` stays `null` with no evaluation performed.
+
+Example: plexi pane state 42 --stale-after 300
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to query (from `plexi pane list`) |
+| `--stale-after` | string | no | Raise `stale_claim` when the claimed state looks fresh but no output has been observed within this many seconds. Omitted by default — no stale evaluation runs unless this is set |
 
 ### `plexi pane slot`
 

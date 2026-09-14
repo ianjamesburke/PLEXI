@@ -23,6 +23,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   ordinary shell command (exits 0 only once the host confirms it ran);
   `pane send --submit` is the same contract for driving an interactive TUI,
   and `pane new --agent` is the dedicated verb for booting another agent.
+  `pane state <id>` always returns the agent's own `claimed_state` (its
+  `status` slot) together with the host's `observed_state` (process alive,
+  output recency, child pids) — never trust the claim alone for liveness;
+  add `--stale-after <secs>` to raise a typed `stale_claim` when the claim
+  looks fresh but output has gone quiet.
 - **Slots** — store a small, named pane result that another pane can inspect or
   wait for: `plexi pane slot --help`.
 - **Contexts** — create or enter scoped project spaces, including pre-populated

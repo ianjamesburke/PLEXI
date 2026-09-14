@@ -1816,7 +1816,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a versioned `semantic` tree for every runtime.\nProcess panes also retain the compatible `frame` RenderCommand array.\nFor terminal panes: host writes a simple status object.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
+          "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a versioned `semantic` tree for every runtime.\nProcess panes also retain the compatible `frame` RenderCommand array.\nFor terminal panes: host writes a simple status object.\nEvery response additionally carries `claimed_state` (the pane's own\n`status` slot, agent-authored) and `observed_state` (host-derived\nliveness) together — never one without the other (stint 0665). When\n`stale_after_secs` is set and the claim looks fresh but the host has\nobserved no output within that many seconds, the response also\ncarries a typed `stale_claim` object; omitted, no stale evaluation\nruns and `stale_claim` is `null`.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
           "properties": {
             "pane_id": {
               "format": "uint64",
@@ -1825,6 +1825,14 @@
             },
             "response_file": {
               "type": "string"
+            },
+            "stale_after_secs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "type": {
               "const": "get_pane_state",

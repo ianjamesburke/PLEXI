@@ -526,6 +526,7 @@ Query the last-rendered UI state of a pane. Sent by `plexi pane state`. For app 
 |-------|------|----------|
 | `pane_id` | `integer` | yes |
 | `response_file` | `string` | yes |
+| `stale_after_secs` | `integer?` | no |
 
 ### `screenshot`
 

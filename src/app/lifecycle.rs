@@ -2152,9 +2152,10 @@ impl PlexiApp {
             crate::protocol::AppRequest::GetPaneState {
                 pane_id,
                 response_file,
+                stale_after_secs,
             } => {
                 log::info!(
-                    "pane_ipc: kind=get_pane_state pane_id={pane_id} response_file={response_file:?}"
+                    "pane_ipc: kind=get_pane_state pane_id={pane_id} response_file={response_file:?} stale_after_secs={stale_after_secs:?}"
                 );
                 let json_str = match self.windows.iter().find_map(|win| win.panes.get(pane_id)) {
                     None => {
@@ -2163,7 +2164,8 @@ impl PlexiApp {
                             .to_string()
                     }
                     Some(pane) => {
-                        if let Some(app_pane) = pane.as_app() {
+                        let liveness = crate::host::pane_liveness::compute(pane, *stale_after_secs);
+                        let mut response = if let Some(app_pane) = pane.as_app() {
                             let frame = app_pane
                                 .runtime
                                 .frame_json()
@@ -2193,7 +2195,6 @@ impl PlexiApp {
                                 "semantic": semantic,
                                 "app_state": app_state,
                             })
-                            .to_string()
                         } else if let Some(term) = pane.as_terminal() {
                             let title = term.name.clone().unwrap_or_else(|| "terminal".to_string());
                             serde_json::json!({
@@ -2201,14 +2202,21 @@ impl PlexiApp {
                                 "type": "terminal",
                                 "title": title,
                             })
-                            .to_string()
                         } else {
                             serde_json::json!({
                                 "pane_id": pane_id,
                                 "type": "unknown",
                             })
-                            .to_string()
-                        }
+                        };
+                        // Every branch above carries the same two liveness
+                        // fields, merged in exactly once here — the only way
+                        // to reach either field is through this one call, so
+                        // reading the claim without the observation (or vice
+                        // versa) is not expressible.
+                        response["claimed_state"] = liveness["claimed_state"].clone();
+                        response["observed_state"] = liveness["observed_state"].clone();
+                        response["stale_claim"] = liveness["stale_claim"].clone();
+                        response.to_string()
                     }
                 };
                 write_response(response_file, json_str.as_bytes());
