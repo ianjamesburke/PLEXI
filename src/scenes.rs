@@ -1150,10 +1150,12 @@ struct LiveBackend {
     last_app_pane: Option<PaneId>,
     teardown: TeardownResult,
     owner_file: Option<PathBuf>,
+    out_dir: PathBuf,
+    no_shots: bool,
 }
 
 impl LiveBackend {
-    fn from_env() -> Result<Self, SceneError> {
+    fn from_env(out_dir: &Path, no_shots: bool) -> Result<Self, SceneError> {
         let channel = std::env::var("PLEXI_SCENE_CHANNEL").map_err(|_| {
             SceneError::new(
                 "live_channel_required",
@@ -1191,6 +1193,8 @@ impl LiveBackend {
                 detail: "pending".to_string(),
             },
             owner_file: std::env::var_os("PLEXI_SCENE_OWNER_FILE").map(PathBuf::from),
+            out_dir: out_dir.to_path_buf(),
+            no_shots,
         })
     }
 
@@ -1391,10 +1395,70 @@ impl LiveBackend {
         })
     }
 
+    /// Capture a framebuffer PNG from the runner-owned/attached host through
+    /// `plexi host screenshot` — the same sanctioned capture path the
+    /// `drive-host` skill uses, never OS-level screen capture. Always
+    /// captures the whole window, matching the headless backend's `shot`
+    /// (`PlexiUiHarness::save_screenshot`), which never crops to a pane
+    /// either (`TESTING.md`'s host-surface-coverage table: "shot captures
+    /// the entire ... framebuffer, so pane type does not require a separate
+    /// capture path"). Cropping to `last_app_pane` was tried and reverted: it
+    /// tracks the last *opened* pane, not the last *live* one, so a scene
+    /// that opens, closes, and refocuses before its `shot` step (as
+    /// `pane-lifecycle.toml` does) handed the CLI a pane id that no longer
+    /// exists. A CLI failure (including the host's own typed readback
+    /// timeout, stint 0633) is surfaced with a stable `screenshot_failed`
+    /// code rather than the generic `live_command_failed` other CLI calls
+    /// use, so a failure bundle or test can tell "pixels genuinely
+    /// unavailable" apart from any other live command error.
+    fn capture_shot(
+        &self,
+        shot: &str,
+        shots: &mut Vec<String>,
+    ) -> Result<Option<StepDetail>, SceneError> {
+        if self.no_shots {
+            return Ok(Some(StepDetail::Message {
+                message: "skipped (no-shots)".to_string(),
+            }));
+        }
+        let path = self.out_dir.join(shot);
+        let args = vec![
+            "host".to_string(),
+            "screenshot".to_string(),
+            "--output".to_string(),
+            path.to_string_lossy().into_owned(),
+        ];
+        self.command(&args, true).map_err(|error| {
+            SceneError::new(
+                "screenshot_failed",
+                format!("shot {shot}: {}", error.message),
+            )
+        })?;
+        let metadata = std::fs::metadata(&path).map_err(|io_error| {
+            SceneError::new(
+                "screenshot_failed",
+                format!(
+                    "shot {shot}: capture reported success but {} is unreadable: {io_error}",
+                    path.display()
+                ),
+            )
+        })?;
+        if metadata.len() == 0 {
+            return Err(SceneError::new(
+                "screenshot_failed",
+                format!("shot {shot}: {} is empty", path.display()),
+            ));
+        }
+        shots.push(path.display().to_string());
+        Ok(Some(StepDetail::Message {
+            message: path.display().to_string(),
+        }))
+    }
+
     fn exec(
         &mut self,
         step: &Step,
-        _shots: &mut Vec<String>,
+        shots: &mut Vec<String>,
     ) -> Result<Option<StepDetail>, SceneError> {
         match step {
             Step::Open { open } => {
@@ -1658,9 +1722,7 @@ impl LiveBackend {
             }
             Step::Assert { assert } => self.check_eventually(assert).map(|()| None),
             Step::Expect { expect } => self.expect(expect),
-            Step::Shot { shot } => Ok(Some(StepDetail::Message {
-                message: format!("live backend skips optional screenshot {shot}"),
-            })),
+            Step::Shot { shot } => self.capture_shot(shot, shots),
             Step::SwitchContext { switch_context } => {
                 let contexts = self.json(&["context", "list"])?;
                 let entries = contexts.as_array().ok_or_else(|| {
@@ -2083,7 +2145,17 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             ),
         );
     }
-    let mut backend = match LiveBackend::from_env() {
+    if let Err(error) = std::fs::create_dir_all(out_dir) {
+        return live_failed_report(
+            scene_name,
+            std::env::var("PLEXI_SCENE_CHANNEL").ok(),
+            SceneError::new(
+                "scene_out_dir",
+                format!("create {}: {error}", out_dir.display()),
+            ),
+        );
+    }
+    let mut backend = match LiveBackend::from_env(out_dir, no_shots) {
         Ok(backend) => backend,
         Err(error) => {
             return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), error)
@@ -2180,7 +2252,6 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
     }) {
         log::warn!("scene_live: failed to write report: {error}");
     }
-    let _ = no_shots;
     report
 }
 
@@ -3204,7 +3275,7 @@ mod tests {
         let _guard = LIVE_ENV_LOCK.lock().unwrap();
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
 
-        let error = LiveBackend::from_env()
+        let error = LiveBackend::from_env(&std::env::temp_dir(), true)
             .err()
             .expect("channel must be required");
 
@@ -3217,7 +3288,7 @@ mod tests {
         std::env::set_var("PLEXI_SCENE_CHANNEL", "pr-4242");
         std::env::remove_var("PLEXI_SCENE_BIN");
 
-        let backend = LiveBackend::from_env().expect("live config");
+        let backend = LiveBackend::from_env(&std::env::temp_dir(), true).expect("live config");
 
         assert_eq!(backend.binary, "plexi-pr-4242");
         assert!(backend.socket.ends_with(".plexi-pr-4242/notify.sock"));
@@ -3255,7 +3326,7 @@ mod tests {
     fn attached_live_backend_teardown_leaves_host_untouched() {
         let _guard = LIVE_ENV_LOCK.lock().unwrap();
         std::env::set_var("PLEXI_SCENE_CHANNEL", "test-attach");
-        let mut backend = LiveBackend::from_env().expect("live config");
+        let mut backend = LiveBackend::from_env(&std::env::temp_dir(), true).expect("live config");
         backend.attached_host = true;
 
         backend.teardown();
@@ -3269,6 +3340,314 @@ mod tests {
             }
         );
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
+    }
+
+    /// Writes an executable stand-in for the channel binary so `LiveBackend`
+    /// tests can exercise `host status`/`start`/`stop`/`screenshot` without a
+    /// real installed host. State (whether the fake host is "running", and
+    /// whether the next screenshot should fail or write an empty file) is
+    /// tracked as marker files under `state_dir` so a script this simple can
+    /// stay stateful across the several invocations one scene run makes.
+    fn write_fake_plexi_binary(dir: &Path, state_dir: &Path) -> PathBuf {
+        let script = format!(
+            r#"#!/bin/sh
+set -e
+state_dir="{state_dir}"
+if [ "$1" = "host" ] && [ "$2" = "status" ]; then
+    if [ -f "$state_dir/running" ]; then
+        echo '{{"pane_count":1,"pid":4242,"ready":true,"socket":"fake"}}'
+    else
+        echo '{{"pane_count":null,"pid":null,"ready":false,"socket":"fake"}}'
+    fi
+    exit 0
+fi
+if [ "$1" = "host" ] && [ "$2" = "start" ]; then
+    mkdir -p "$state_dir"
+    touch "$state_dir/running"
+    echo "started"
+    exit 0
+fi
+if [ "$1" = "host" ] && [ "$2" = "stop" ]; then
+    rm -f "$state_dir/running"
+    exit 0
+fi
+if [ "$1" = "host" ] && [ "$2" = "screenshot" ]; then
+    shift 2
+    output=""
+    saw_pane=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --output) output="$2"; shift 2 ;;
+            --pane) saw_pane=1; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    if [ -n "$saw_pane" ] && [ -f "$state_dir/screenshot_reject_pane" ]; then
+        echo "error: unexpected --pane: capture_shot must always capture the whole window" >&2
+        exit 1
+    fi
+    if [ -f "$state_dir/screenshot_fail" ]; then
+        echo "error: screenshot readback did not complete within 6s: display asleep" >&2
+        exit 1
+    fi
+    if [ -f "$state_dir/screenshot_empty" ]; then
+        : > "$output"
+        exit 0
+    fi
+    printf 'PNGDATA' > "$output"
+    echo "$output (1x1)"
+    exit 0
+fi
+exit 1
+"#,
+            state_dir = state_dir.display()
+        );
+        let path = dir.join("fake-plexi");
+        std::fs::write(&path, script).expect("write fake binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("mark fake binary executable");
+        }
+        path
+    }
+
+    /// Point a `LiveBackend` at [`write_fake_plexi_binary`] under a fresh
+    /// per-test channel/state dir. Caller holds `LIVE_ENV_LOCK`.
+    fn fake_live_backend(
+        channel: &str,
+        script_dir: &Path,
+        state_dir: &Path,
+        out_dir: &Path,
+        no_shots: bool,
+    ) -> LiveBackend {
+        let binary = write_fake_plexi_binary(script_dir, state_dir);
+        std::env::set_var("PLEXI_SCENE_CHANNEL", channel);
+        std::env::set_var("PLEXI_SCENE_BIN", &binary);
+        let backend = LiveBackend::from_env(out_dir, no_shots).expect("live config");
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+        std::env::remove_var("PLEXI_SCENE_BIN");
+        backend
+    }
+
+    #[test]
+    fn live_shot_step_writes_nonempty_png_and_records_it_in_the_report() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().expect("script dir");
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let out_dir = tempfile::tempdir().expect("out dir");
+        let mut backend = fake_live_backend(
+            "test-shot",
+            script_dir.path(),
+            state_dir.path(),
+            out_dir.path(),
+            false,
+        );
+        let mut shots = Vec::new();
+
+        let detail = backend
+            .exec(
+                &Step::Shot {
+                    shot: "balls.png".to_string(),
+                },
+                &mut shots,
+            )
+            .expect("shot step succeeds");
+
+        let png_path = out_dir.path().join("balls.png");
+        assert!(png_path.exists(), "shot writes a file to the scene out dir");
+        let bytes = std::fs::metadata(&png_path).expect("stat shot").len();
+        assert!(bytes > 0, "shot step must produce a non-empty PNG");
+        assert_eq!(shots, vec![png_path.display().to_string()]);
+        assert!(matches!(detail, Some(StepDetail::Message { .. })));
+    }
+
+    #[test]
+    fn live_shot_step_never_crops_to_a_pane_even_when_one_was_last_opened() {
+        // Regression for a live-testing find: `last_app_pane` tracks the last
+        // *opened* pane, not the last *live* one. A scene that opens, closes,
+        // and refocuses before its `shot` step (`pane-lifecycle.toml`) left a
+        // stale pane id here; passing it to `--pane` failed the capture with
+        // "pane 3 not found". `capture_shot` must always request the whole
+        // window, matching the headless backend's unconditional full-frame
+        // `shot` — never pass `--pane` at all, live pane or not.
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().expect("script dir");
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let out_dir = tempfile::tempdir().expect("out dir");
+        // Any --pane flag fails the fake capture, so a passing shot here
+        // proves capture_shot never sent one.
+        std::fs::write(state_dir.path().join("screenshot_reject_pane"), "")
+            .expect("seed reject-pane marker");
+        let mut backend = fake_live_backend(
+            "test-shot-pane",
+            script_dir.path(),
+            state_dir.path(),
+            out_dir.path(),
+            false,
+        );
+        backend.last_app_pane = Some(999); // stale: not a pane on this host
+        let mut shots = Vec::new();
+
+        backend
+            .exec(
+                &Step::Shot {
+                    shot: "pane.png".to_string(),
+                },
+                &mut shots,
+            )
+            .expect("shot step must succeed without ever requesting a pane crop");
+
+        assert!(out_dir.path().join("pane.png").exists());
+    }
+
+    #[test]
+    fn live_shot_step_skipped_with_no_shots_never_invokes_the_capture_binary() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().expect("script dir");
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let out_dir = tempfile::tempdir().expect("out dir");
+        // Force any capture attempt to fail loudly, so a passing skip proves
+        // the binary was never invoked rather than invoked-and-ignored.
+        std::fs::write(state_dir.path().join("screenshot_fail"), "").expect("seed fail marker");
+        let mut backend = fake_live_backend(
+            "test-shot-skip",
+            script_dir.path(),
+            state_dir.path(),
+            out_dir.path(),
+            true,
+        );
+        let mut shots = Vec::new();
+
+        let detail = backend
+            .exec(
+                &Step::Shot {
+                    shot: "skipped.png".to_string(),
+                },
+                &mut shots,
+            )
+            .expect("no-shots is a passing skip, never an error");
+
+        assert!(shots.is_empty(), "no-shots must not record a capture");
+        assert!(!out_dir.path().join("skipped.png").exists());
+        assert!(matches!(
+            detail,
+            Some(StepDetail::Message { message }) if message.contains("no-shots")
+        ));
+    }
+
+    #[test]
+    fn live_shot_step_preserves_the_typed_capture_error_when_pixels_are_unavailable() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().expect("script dir");
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let out_dir = tempfile::tempdir().expect("out dir");
+        std::fs::write(state_dir.path().join("screenshot_fail"), "").expect("seed fail marker");
+        let mut backend = fake_live_backend(
+            "test-shot-fail",
+            script_dir.path(),
+            state_dir.path(),
+            out_dir.path(),
+            false,
+        );
+        let mut shots = Vec::new();
+
+        let error = backend
+            .exec(
+                &Step::Shot {
+                    shot: "unreachable.png".to_string(),
+                },
+                &mut shots,
+            )
+            .expect_err("host's typed readback timeout must surface, not be swallowed");
+
+        assert_eq!(error.code, "screenshot_failed");
+        assert!(
+            error.message.contains("did not complete within 6s"),
+            "the host's own typed timeout text must survive: {}",
+            error.message
+        );
+        assert!(shots.is_empty());
+    }
+
+    #[test]
+    fn live_shot_step_fails_loudly_when_capture_reports_success_but_writes_nothing() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().expect("script dir");
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let out_dir = tempfile::tempdir().expect("out dir");
+        std::fs::write(state_dir.path().join("screenshot_empty"), "").expect("seed empty marker");
+        let mut backend = fake_live_backend(
+            "test-shot-empty",
+            script_dir.path(),
+            state_dir.path(),
+            out_dir.path(),
+            false,
+        );
+        let mut shots = Vec::new();
+
+        let error = backend
+            .exec(
+                &Step::Shot {
+                    shot: "empty.png".to_string(),
+                },
+                &mut shots,
+            )
+            .expect_err("an exit-0 capture with no real pixels must still fail loudly");
+
+        assert_eq!(error.code, "screenshot_failed");
+        assert!(error.message.contains("is empty"));
+        assert!(shots.is_empty());
+    }
+
+    #[test]
+    fn live_scene_shot_step_produces_a_report_shot_and_still_tears_down_an_owned_host() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().expect("script dir");
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let out_dir = tempfile::tempdir().expect("out dir");
+        let scene_dir = tempfile::tempdir().expect("scene dir");
+        let scene_path = scene_dir.path().join("shot-only.toml");
+        std::fs::write(
+            &scene_path,
+            "suite = false\n\n[[steps]]\nshot = \"host.png\"\n",
+        )
+        .expect("write scene");
+        let binary = write_fake_plexi_binary(script_dir.path(), state_dir.path());
+
+        std::env::set_var("PLEXI_SCENE_CHANNEL", "test-shot-e2e");
+        std::env::set_var("PLEXI_SCENE_BIN", &binary);
+        std::env::remove_var("PLEXI_SCENE_ATTACH");
+        std::env::remove_var("PLEXI_SCENE_OWNER_FILE");
+
+        let report = run_live_scene(&scene_path, out_dir.path(), false);
+
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+        std::env::remove_var("PLEXI_SCENE_BIN");
+
+        assert!(report.passed, "scene must pass: {report:?}");
+        assert_eq!(report.shots.len(), 1, "the shot step must record its PNG");
+        let shot_path = PathBuf::from(&report.shots[0]);
+        assert!(shot_path.exists());
+        assert!(
+            std::fs::metadata(&shot_path)
+                .expect("stat report shot")
+                .len()
+                > 0
+        );
+        assert!(
+            report.teardown.attempted,
+            "a runner-started host must attempt teardown even though the scene only shot"
+        );
+        assert!(
+            report.teardown.ok,
+            "owned-host teardown must succeed: {report:?}"
+        );
+        assert!(
+            !state_dir.path().join("running").exists(),
+            "teardown must actually stop the owned fake host"
+        );
     }
 
     #[test]
