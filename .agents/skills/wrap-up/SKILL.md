@@ -39,4 +39,4 @@ Pointers over prose: `stint 0596 (install integrity) ## Live Finding`, not a res
 
 ## Step 3: Report
 
-Open it for Ian: `plexi pane new "glow -p $ROOT/RESUME.md" -n resume`. Reply with one line confirming the stopping point and anything left running.
+Open it for Ian: `"$ROOT/wrap-up.sh"`. Reply with one line confirming the stopping point and anything left running.
