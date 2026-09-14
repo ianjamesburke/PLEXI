@@ -14,6 +14,10 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 
 Do not track in-progress work or completion status in this file.
 
+## Session Resume
+
+At session start, if `RESUME.md` exists at the main checkout root (`dirname "$(git rev-parse --path-format=absolute --git-common-dir)"`), read it, verify its claims against git/stint/PRs before acting (it is a snapshot), then delete it. It is git-ignored and one-shot. Written only by the `wrap-up` skill.
+
 ## Website
 
 The product website is **`plexiapp.com`**. Never write `plexiapp.dev` or `plexi.app`.
