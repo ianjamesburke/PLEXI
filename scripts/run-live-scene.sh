@@ -26,7 +26,6 @@ trap cleanup_owned_host EXIT INT TERM HUP
 
 PLEXI_SCENE="$scene_file" \
 PLEXI_SCENE_OUT="$out_dir" \
-PLEXI_SCENE_NO_SHOTS=1 \
 PLEXI_SCENE_BACKEND=live \
 PLEXI_SCENE_CHANNEL="$channel" \
 PLEXI_SCENE_OWNER_FILE="$owner_file" \
