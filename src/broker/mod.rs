@@ -227,7 +227,7 @@ impl PermissionRequest {
             actor_id: actor_id.to_string(),
             target_type,
             target_id: target_id.to_string(),
-            workspace_root: workspace_root.map(|r| crate::platform::path::canonical_or_self(&r)),
+            workspace_root: workspace_root.map(crate::platform::path::canonical_or_self),
         }
     }
 

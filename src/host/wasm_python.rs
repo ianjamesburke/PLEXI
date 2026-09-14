@@ -6318,14 +6318,18 @@ mod tests {
 
             let colors =
                 crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-            let (pane, state_paths, _hot_reload_dir) = crate::pane_ops::restore_app_pane(
+            let crate::pane_ops::RestoredAppPane {
+                pane, state_paths, ..
+            } = crate::pane_ops::restore_app_pane(
                 &manifest_id,
                 &launch,
-                pane_id,
-                context_id,
-                root.path().to_path_buf(),
-                root.path(),
-                record.name.as_deref(),
+                crate::pane_ops::RestoreTarget {
+                    pane_id,
+                    context_id,
+                    workspace_root: root.path().to_path_buf(),
+                    context_root: root.path(),
+                    saved_name: record.name.as_deref(),
+                },
                 &colors,
             )
             .expect("the saved record can relaunch the same app");
