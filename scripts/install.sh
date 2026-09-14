@@ -182,6 +182,25 @@ else
   echo "Skipping bin install (PLEXI_SKIP_BIN_INSTALL=1 — shim unchanged at $bin_dest)"
 fi
 
+# Record whether the shim/completions were actually rewritten this run so a
+# silent skip (e.g. the background updater's PLEXI_SKIP_BIN_INSTALL=1, which
+# has no TTY for sudo) is observable instead of invisible (stint 0596).
+_shim_status_tag="${PLEXI_INSTALL_TAG:-}"
+if [[ -z "$_shim_status_tag" ]]; then
+  _shim_status_tag="$(git -C "$REPO_ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)"
+fi
+[[ -n "$_shim_status_tag" ]] || _shim_status_tag="unknown"
+mkdir -p "$profile_dir"
+if [[ "$skip_bin_install" != "1" ]]; then
+  cat > "$profile_dir/shim_status.json" <<EOF
+{"shim_updated": true, "bundle_tag": "$_shim_status_tag", "channel": "$channel"}
+EOF
+else
+  cat > "$profile_dir/shim_status.json" <<EOF
+{"shim_updated": false, "reason": "PLEXI_SKIP_BIN_INSTALL", "bundle_tag": "$_shim_status_tag", "channel": "$channel"}
+EOF
+fi
+
 # Install shell completions for production and release-candidate channels.
 install_completions() {
   local binary="$1"

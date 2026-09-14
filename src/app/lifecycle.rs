@@ -372,6 +372,23 @@ impl PlexiApp {
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
             }
+            crate::protocol::AppRequest::GetHostVersion { response_file } => {
+                log::info!(
+                    "pane_ipc: kind=get_host_version display_version={} response_file={:?}",
+                    self.display_version,
+                    response_file
+                );
+                write_json_response(
+                    response_file,
+                    serde_json::json!({ "version": self.display_version }),
+                );
+            }
+            crate::protocol::AppRequest::NotifyUpdateAvailable { version } => {
+                log::info!(
+                    "update: restart prompt surfaced for externally-installed version {version}"
+                );
+                self.update_available = Some(version.clone());
+            }
             crate::protocol::AppRequest::GetPaneInfo {
                 pane_id,
                 response_file,

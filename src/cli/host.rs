@@ -209,6 +209,12 @@ fn host_config_dir(channel: Option<&str>) -> PathBuf {
         .join(format!(".plexi{suffix}"))
 }
 
+/// The channel's `notify.sock` path — the single derivation every `host`
+/// subcommand and `plexi update` (stint 0596) use to reach a running host.
+pub(crate) fn notify_socket_path(channel: Option<&str>) -> PathBuf {
+    host_config_dir(channel).join("notify.sock")
+}
+
 /// Resolve the app bundle + binary-inside-bundle paths for the *running CLI
 /// binary's own channel* (never `PLEXI_CHANNEL` — that env var is exactly
 /// what must be stripped from the launched child).
@@ -304,6 +310,64 @@ fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize
     serde_json::from_str::<Vec<serde_json::Value>>(&content)
         .ok()
         .map(|v| v.len())
+}
+
+/// One-shot query for the running host process's own display version
+/// (`AppRequest::GetHostVersion` — see the protocol doc for why this can
+/// differ from what is on disk right now). `None` means the socket is not
+/// reachable or the round trip did not complete in time.
+fn query_host_version(socket_path: &Path, channel: Option<&str>) -> Option<String> {
+    let mut stream = UnixStream::connect(socket_path).ok()?;
+    let response_file =
+        crate::rpc::response_file_in(&host_config_dir(channel), "host-version", "json");
+    let request = crate::protocol::AppRequest::GetHostVersion {
+        response_file: response_file.clone(),
+    };
+    let line = serde_json::to_string(&request).ok()?;
+    stream.write_all(format!("{line}\n").as_bytes()).ok()?;
+    let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
+    serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+}
+
+/// Read the release tag currently on disk for `channel`, i.e. what the last
+/// `install.sh` run wrote to `<profile>/installed_tag` — always read fresh
+/// from disk (never a frozen struct field), since this represents "what's
+/// installed right now," which can change after a host process launched.
+pub(crate) fn read_bundle_version(channel: Option<&str>) -> String {
+    read_bundle_version_at(&host_config_dir(channel).join("installed_tag"))
+}
+
+fn read_bundle_version_at(tag_path: &Path) -> String {
+    std::fs::read_to_string(tag_path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")))
+}
+
+/// Best-effort read of the shim-install marker written by `install.sh`
+/// (stint 0596): `{"shim_updated": bool, "reason": "...", ...}`. A missing or
+/// malformed file is not an error — it means no shim-skew info is available
+/// yet (e.g. never installed through a build that writes the marker). When
+/// present but `shim_updated == false`, callers should surface `reason` so a
+/// skipped shim install (e.g. `PLEXI_SKIP_BIN_INSTALL` from the silent
+/// background updater) is never invisible.
+pub(crate) fn read_shim_status(channel: Option<&str>) -> Option<serde_json::Value> {
+    read_shim_status_at(&host_config_dir(channel).join("shim_status.json"))
+}
+
+fn read_shim_status_at(path: &Path) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+}
+
+/// Channel-scoped wrapper around `query_host_version` that derives the
+/// socket path itself, for callers outside this module (e.g. `plexi doctor`)
+/// that only need the running host's version, not the full status flow.
+pub(crate) fn query_running_host_version(channel: Option<&str>) -> Option<String> {
+    query_host_version(&notify_socket_path(channel), channel)
 }
 
 /// Retry `query_ready_status` until it answers or `timeout` elapses. Used
@@ -653,27 +717,98 @@ pub fn host_status_cli(json: bool) -> i32 {
         "host_status: channel={channel:?} pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}"
     );
 
+    // Version/skew visibility (stint 0596): the on-disk bundle version is
+    // read fresh; the running host's version comes over IPC and is only
+    // available while the host answers. A skew means a restart would pick
+    // up a newer version than the process currently running.
+    let bundle_version = read_bundle_version(channel.as_deref());
+    let running_version = if ready {
+        query_host_version(&socket_path, channel.as_deref())
+    } else {
+        None
+    };
+    let skew = running_version
+        .as_deref()
+        .map(|running| crate::cli::release_resolver::detect_version_skew(&bundle_version, running));
+    let version_skew: Option<bool> = match &skew {
+        Some(crate::cli::release_resolver::SkewStatus::InSync) => Some(false),
+        Some(crate::cli::release_resolver::SkewStatus::Skewed { .. }) => Some(true),
+        Some(crate::cli::release_resolver::SkewStatus::Unknown { .. }) | None => None,
+    };
+    if let Some(crate::cli::release_resolver::SkewStatus::Skewed { bundle, running }) = &skew {
+        log::info!(
+            "host_status: version skew detected — bundle={bundle} running_host={running} (restart to apply)"
+        );
+    }
+    let shim_status = read_shim_status(channel.as_deref());
+    let shim_updated = shim_status
+        .as_ref()
+        .and_then(|v| v["shim_updated"].as_bool());
+
     if json {
         let payload = serde_json::json!({
             "ready": ready,
             "pane_count": pane_count,
             "pid": pid,
             "socket": socket_path.to_string_lossy(),
+            "bundle_version": bundle_version,
+            "host_version": running_version,
+            "version_skew": version_skew,
+            "shim_updated": shim_updated,
         });
         println!("{payload}");
-    } else if ready {
-        println!(
-            "Plexi host is running (pid {}), {} pane(s), socket {}",
-            pid.map(|p| p.to_string())
-                .unwrap_or_else(|| "unknown".to_string()),
-            pane_count.unwrap_or(0),
-            socket_path.display()
-        );
     } else {
-        println!(
-            "Plexi host is not running (socket {})",
-            socket_path.display()
-        );
+        if ready {
+            println!(
+                "Plexi host is running (pid {}), {} pane(s), socket {}",
+                pid.map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                pane_count.unwrap_or(0),
+                socket_path.display()
+            );
+        } else {
+            println!(
+                "Plexi host is not running (socket {})",
+                socket_path.display()
+            );
+        }
+
+        match &skew {
+            Some(crate::cli::release_resolver::SkewStatus::InSync) => {
+                println!(
+                    "Version: {} (bundle and running host match)",
+                    bundle_version.trim_start_matches('v')
+                );
+            }
+            Some(crate::cli::release_resolver::SkewStatus::Skewed { bundle, running }) => {
+                println!(
+                    "Version: bundle {}, running host {} — SKEW: restart to apply the new version (run 'plexi update' or use the in-app restart prompt)",
+                    bundle.trim_start_matches('v'),
+                    running.trim_start_matches('v')
+                );
+            }
+            Some(crate::cli::release_resolver::SkewStatus::Unknown { reason }) => {
+                println!(
+                    "Version: bundle {} (running host version unknown: {reason})",
+                    bundle_version.trim_start_matches('v')
+                );
+            }
+            None => {
+                println!(
+                    "Version: {} (host not running)",
+                    bundle_version.trim_start_matches('v')
+                );
+            }
+        }
+        if let Some(false) = shim_updated {
+            let reason = shim_status
+                .as_ref()
+                .and_then(|v| v["reason"].as_str())
+                .unwrap_or("unknown reason");
+            println!(
+                "  note: the last install did not update the CLI shim/completions ({reason}) — the /usr/local/bin binary may be stale"
+            );
+        }
     }
     0
 }
@@ -927,6 +1062,80 @@ mod tests {
             ..Default::default()
         };
         assert!(placement_to_layout(&spec).is_err());
+    }
+
+    // ── read_bundle_version_at / read_shim_status_at (stint 0596) ────────
+
+    #[test]
+    fn read_bundle_version_at_reads_trimmed_tag_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tag_path = dir.path().join("installed_tag");
+        std::fs::write(&tag_path, "v0.2.0\n").expect("write tag");
+        assert_eq!(read_bundle_version_at(&tag_path), "v0.2.0");
+    }
+
+    #[test]
+    fn read_bundle_version_at_falls_back_to_cargo_version_when_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("installed_tag");
+        assert_eq!(
+            read_bundle_version_at(&missing),
+            format!("v{}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn read_bundle_version_at_falls_back_when_file_is_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tag_path = dir.path().join("installed_tag");
+        std::fs::write(&tag_path, "   \n").expect("write empty tag");
+        assert_eq!(
+            read_bundle_version_at(&tag_path),
+            format!("v{}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn read_shim_status_at_missing_file_is_none_not_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("shim_status.json");
+        assert_eq!(read_shim_status_at(&missing), None);
+    }
+
+    #[test]
+    fn read_shim_status_at_true_case_parses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shim_status.json");
+        std::fs::write(
+            &path,
+            r#"{"shim_updated": true, "bundle_tag": "v0.2.0", "channel": "main"}"#,
+        )
+        .expect("write marker");
+        let value = read_shim_status_at(&path).expect("marker parses");
+        assert_eq!(value["shim_updated"], true);
+        assert_eq!(value["bundle_tag"], "v0.2.0");
+    }
+
+    #[test]
+    fn read_shim_status_at_false_case_names_the_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shim_status.json");
+        std::fs::write(
+            &path,
+            r#"{"shim_updated": false, "reason": "PLEXI_SKIP_BIN_INSTALL", "bundle_tag": "v0.2.0", "channel": "main"}"#,
+        )
+        .expect("write marker");
+        let value = read_shim_status_at(&path).expect("marker parses");
+        assert_eq!(value["shim_updated"], false);
+        assert_eq!(value["reason"], "PLEXI_SKIP_BIN_INSTALL");
+    }
+
+    #[test]
+    fn read_shim_status_at_malformed_json_is_none_not_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shim_status.json");
+        std::fs::write(&path, "not json").expect("write garbage");
+        assert_eq!(read_shim_status_at(&path), None);
     }
 
     // ── filter_child_env ─────────────────────────────────────────────────

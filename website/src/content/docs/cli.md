@@ -1399,7 +1399,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | `start` | Launch this channel's app bundle detached and wait for readiness |
 | `stop` | Stop the running host for this channel |
 | `log` | Write one info-level marker line into the running host's channel log |
-| `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
+| `status` | Report whether this channel's host is running, its pid, socket path, pane count, and version skew between the on-disk bundle and the running host process (restart to apply a version installed after the host started; also flags when the last install skipped the CLI shim/completions) |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
 
 ### `plexi host start`
@@ -1439,7 +1439,7 @@ Example: plexi host log --source editor_gate "gate finished passed=9 failed=0"
 
 ### `plexi host status`
 
-Report whether this channel's host is running, its pid, socket path, and pane count
+Report whether this channel's host is running, its pid, socket path, pane count, and version skew between the on-disk bundle and the running host process (restart to apply a version installed after the host started; also flags when the last install skipped the CLI shim/completions)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
