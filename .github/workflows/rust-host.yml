@@ -25,18 +25,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # CPython-WASI bundle strategy for the network-fetched integration test
-  # (host::wasm_python::tests::cpython_wasi_executes_inside_wasmtime_without_native_python).
-  # Two live paths — flip this value to switch:
-  #   prefetch — restore the sha256-verified bundle from the Actions cache;
-  #              on cache miss, fetch it once in a dedicated step so a network
-  #              failure is attributed to the fetch, not the test. The test runs.
-  #   skip     — skip ONLY that one named test (everything else still runs);
-  #              use if the upstream release asset becomes unreachable.
-  # Default is prefetch: the test actually executes, so CI validates real
-  # CPython-in-Wasmtime behavior instead of hiding it.
-  # Loser cleanup tracked in stint 0660 — delete the losing path there.
-  WASI_BUNDLE_MODE: prefetch
   PLEXI_CPYTHON_BUNDLE_DIR: /Users/runner/.plexi-ci/wasm-bundles
 
 jobs:
@@ -50,27 +38,17 @@ jobs:
         uses: ./.github/actions/plexi-ci-env
         with:
           cache-key: test
-          cpython-bundle: ${{ env.WASI_BUNDLE_MODE == 'prefetch' }}
+          cpython-bundle: 'true'
 
       - name: Test host
-        # One documented skip. headless_frame_fails_fast_when_the_guest_dies_at_import
-        # is a real pre-existing alpha defect (guest death at import is reported via
-        # the 15s timeout backstop instead of the process-exit path); it fails
-        # identically on clean alpha in CI and locally. Tracked in stint 0663,
-        # which deletes this line when the defect is fixed. Baseline: zero-skip
-        # CI run on clean alpha showed 2122 passed and exactly this 1 failure.
+        # Zero skips: the whole suite runs, including the network-fetched
+        # CPython-WASI integration test, whose sha256-verified bundle the setup
+        # action restores from the Actions cache (fetching it in its own step on
+        # a miss, so a network failure is attributed to the fetch, not the test).
         run: |
-          skip_args=()
-          if [ "$WASI_BUNDLE_MODE" = "skip" ]; then
-            # Upstream bundle asset unreachable: skip ONLY the network-fetched
-            # CPython-WASI integration test; every other test still runs.
-            skip_args+=(--skip cpython_wasi_executes_inside_wasmtime_without_native_python)
-          fi
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
-            cargo test --bin plexi -- \
-            --skip headless_frame_fails_fast_when_the_guest_dies_at_import \
-            ${skip_args[@]+"${skip_args[@]}"}
+            cargo test --bin plexi
 
   clippy:
     name: clippy

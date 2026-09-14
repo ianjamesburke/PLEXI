@@ -91,3 +91,17 @@ same reason.
 - **A context rooted at the home directory has the global tier as its context
   tier.** `new_context_empty` produces exactly that, so any code listing both
   tiers must dedupe canonically or it shows the same directory twice.
+- **`WasmPythonRuntime::launch` returns before the guest can run any Python.**
+  The Wasmtime compile of the CPython WASI module happens on the guest thread
+  *after* `launch` returns, behind a process-global cache mutex, and costs
+  seconds cold (measured ~5.9s on an M-series laptop, uncontended) — plus however
+  long a parallel caller waits behind someone else's compile. Any deadline a
+  caller sets for "the app answered" must therefore start at
+  `WasmPythonRuntime::has_started`, never at `launch`: charge the compile to the
+  app and a guest that crashes at import gets misreported as an unresponsive one,
+  because the budget expires while the guest is still queued and there is no
+  process exit to observe yet. `HeadlessDeadline` runs the two clocks separately
+  for that reason. This hides locally and fires in CI, where the runners are
+  roughly 4x slower (`PLEXI_SCENE_TIMEOUT_SCALE: '4'` in
+  `.github/workflows/roadmap-evidence.yml` is the standing measurement) and 2000+
+  tests compete for cores.

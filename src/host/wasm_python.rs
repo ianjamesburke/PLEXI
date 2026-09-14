@@ -716,6 +716,14 @@ pub struct WasmPythonRuntime {
     stderr: DrainableOutput,
     thread: Option<JoinHandle<Result<(), String>>>,
     partial_stdout: Vec<u8>,
+    /// Set by the guest thread the instant it enters `_start` — i.e. once the
+    /// CPython module is compiled and instantiated and Python is executing.
+    /// Everything before that point is host-side cold-start cost (a cold
+    /// Wasmtime compile of the ~20 MB CPython WASI module takes seconds, and
+    /// the compile cache is process-global and mutex-guarded, so a parallel
+    /// caller can queue behind another one's compile). A caller polling for
+    /// the app's first message must not charge that to the app.
+    started: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl WasmPythonRuntime {
@@ -742,11 +750,16 @@ impl WasmPythonRuntime {
             .ok_or_else(|| WasmPythonError::RuntimeStart("Python entry is not UTF-8".to_string()))?
             .to_string();
         let app_id = config.app_id.clone();
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_started = Arc::clone(&started);
+        let thread_app_id = app_id.clone();
 
         let thread = std::thread::Builder::new()
             .name(format!("plexi-python-wasm-{app_id}"))
             .spawn(move || {
+                let compile_begin = std::time::Instant::now();
                 let (engine, module) = cached_cpython_module(&bundle)?;
+                let compiled_in = compile_begin.elapsed();
                 let mut linker = Linker::<WasiP1Ctx>::new(&engine);
                 p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(|e| e.to_string())?;
                 let mut builder = WasiCtxBuilder::new();
@@ -781,6 +794,12 @@ impl WasmPythonRuntime {
                 let start = instance
                     .get_typed_func::<(), ()>(&mut store, "_start")
                     .map_err(|e| e.to_string())?;
+                log::info!(
+                    "app::{thread_app_id}: CPython WASM guest entering _start \
+                     (module compiled in {compiled_in:?}, instantiated in {:?})",
+                    compile_begin.elapsed() - compiled_in
+                );
+                thread_started.store(true, std::sync::atomic::Ordering::Release);
                 start.call(&mut store, ()).map_err(|e| e.to_string())
             })
             .map_err(|e| WasmPythonError::RuntimeStart(e.to_string()))?;
@@ -791,6 +810,7 @@ impl WasmPythonRuntime {
             stderr,
             thread: Some(thread),
             partial_stdout: Vec::new(),
+            started,
         })
     }
 
@@ -821,6 +841,15 @@ impl WasmPythonRuntime {
         String::from_utf8_lossy(&self.stderr.drain()).into_owned()
     }
 
+    /// Whether the guest is executing Python yet. False while the CPython
+    /// module is still being compiled or instantiated on the guest thread —
+    /// work that happens after `launch` returns and is not the app's doing.
+    /// Callers that police how long the app takes to answer start their clock
+    /// from here, so a cold compile is never reported as an unresponsive app.
+    pub fn has_started(&self) -> bool {
+        self.started.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Whether the guest thread has exited (crash, clean exit, or failed
     /// boot). Buffered stdout may still hold undrained messages after this
     /// turns true — drain once more before treating the guest as gone.
@@ -843,7 +872,64 @@ impl Drop for WasmPythonRuntime {
     }
 }
 
+/// How long the app itself gets to answer, measured from the moment the guest
+/// starts executing Python — never from `launch`, which returns before the
+/// CPython module has been compiled (see `WasmPythonRuntime::has_started`).
 const HEADLESS_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long the *host* gets to make the guest runnable: a cold Wasmtime
+/// compile of the CPython WASI module, plus any wait behind another caller's
+/// compile on the process-global module cache. Generous on purpose — this
+/// bound exists only so a wedged compile reports a diagnosable error instead
+/// of hanging `plexi app check` forever; it is not a performance assertion.
+const HEADLESS_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// What a headless poll should do next once the guest has been found alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollVerdict {
+    KeepWaiting,
+    /// The guest never reached `_start`: the host could not compile or
+    /// instantiate the CPython module within `HEADLESS_BOOT_TIMEOUT`.
+    BootTimedOut,
+    /// The guest is executing Python but did not answer within
+    /// `HEADLESS_DEFAULT_TIMEOUT`.
+    ResponseTimedOut,
+}
+
+/// The two clocks a headless probe runs, kept separate because they police two
+/// different parties. `launch` returns as soon as the guest *thread* is
+/// spawned; the Wasmtime compile of the CPython module happens on that thread
+/// afterwards, behind a process-global cache mutex. Charging that host-side
+/// cold start to the app's response budget is how a guest that crashes at
+/// import gets misreported as an unresponsive app: the single budget expires
+/// while the guest is still queued behind a compile, before it has run a line
+/// of Python, so there is no process exit to observe yet.
+struct HeadlessDeadline {
+    boot_deadline: std::time::Instant,
+    /// Set the first time the guest is observed executing Python.
+    response_deadline: Option<std::time::Instant>,
+}
+
+impl HeadlessDeadline {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            boot_deadline: now + HEADLESS_BOOT_TIMEOUT,
+            response_deadline: None,
+        }
+    }
+
+    fn poll(&mut self, now: std::time::Instant, guest_started: bool) -> PollVerdict {
+        if self.response_deadline.is_none() && guest_started {
+            self.response_deadline = Some(now + HEADLESS_DEFAULT_TIMEOUT);
+        }
+        match self.response_deadline {
+            Some(deadline) if now > deadline => PollVerdict::ResponseTimedOut,
+            Some(_) => PollVerdict::KeepWaiting,
+            None if now > self.boot_deadline => PollVerdict::BootTimedOut,
+            None => PollVerdict::KeepWaiting,
+        }
+    }
+}
 
 /// One-shot headless run of a CPython-in-WASM app through the exact same
 /// runtime the live host uses (`WasmPythonRuntime` running
@@ -964,7 +1050,7 @@ impl HeadlessPythonSession {
     }
 
     fn wait_for(&mut self, mut matches: impl FnMut(&Value) -> bool) -> Result<(), WasmPythonError> {
-        let deadline = std::time::Instant::now() + HEADLESS_DEFAULT_TIMEOUT;
+        let mut deadline = HeadlessDeadline::new(std::time::Instant::now());
         loop {
             for message in self.runtime.drain_messages()? {
                 if matches(&message) {
@@ -981,33 +1067,55 @@ impl HeadlessPythonSession {
                 }
                 return Err(self.guest_death_error());
             }
-            if std::time::Instant::now() > deadline {
+            match deadline.poll(std::time::Instant::now(), self.runtime.has_started()) {
+                PollVerdict::KeepWaiting => {}
                 // A guest that crashed right at the deadline must still be
                 // reported as a death, not a timeout: re-check the process-exit
-                // signal before falling back to the timeout message. Under
+                // signal before falling back to a timeout message. Under
                 // parallel-test CPU contention the poll can reach the deadline
                 // in the same window the guest thread is unwinding, and the
                 // cause the caller sees must not flip based on that race.
-                if self.runtime.is_finished() {
-                    for message in self.runtime.drain_messages()? {
-                        if matches(&message) {
-                            return Ok(());
+                verdict => {
+                    if self.runtime.is_finished() {
+                        for message in self.runtime.drain_messages()? {
+                            if matches(&message) {
+                                return Ok(());
+                            }
                         }
+                        return Err(self.guest_death_error());
                     }
-                    return Err(self.guest_death_error());
+                    return Err(self.timeout_error(verdict));
                 }
-                let stderr = self.runtime.drain_stderr();
-                return Err(WasmPythonError::BridgeJson(format!(
-                    "timed out waiting for app response after {HEADLESS_DEFAULT_TIMEOUT:?}{}",
-                    if stderr.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!("\n  stderr:\n{stderr}")
-                    }
-                )));
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    /// The error returned when a deadline expires with the guest still alive.
+    /// Names which clock ran out, so an unresponsive app is never confused with
+    /// a host that could not get CPython compiled and running.
+    fn timeout_error(&mut self, verdict: PollVerdict) -> WasmPythonError {
+        let stderr = self.runtime.drain_stderr();
+        let what = match verdict {
+            PollVerdict::ResponseTimedOut => {
+                format!("timed out waiting for app response after {HEADLESS_DEFAULT_TIMEOUT:?}")
+            }
+            PollVerdict::BootTimedOut => format!(
+                "CPython WASM guest did not start executing within {HEADLESS_BOOT_TIMEOUT:?} \
+                 (module compile or instantiation is wedged)"
+            ),
+            PollVerdict::KeepWaiting => {
+                "internal error: timeout reported while the poll said keep waiting".to_string()
+            }
+        };
+        WasmPythonError::BridgeJson(format!(
+            "{what}{}",
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!("\n  stderr:\n{stderr}")
+            }
+        ))
     }
 
     /// The error returned when the guest thread has exited before producing the
@@ -6671,6 +6779,7 @@ mod tests {
                 stderr: DrainableOutput::default(),
                 thread: None,
                 partial_stdout: Vec::new(),
+                started: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
         );
         drop(old_runtime);
@@ -8902,6 +9011,54 @@ mod tests {
         assert!(
             message.contains("app exited before responding"),
             "broken guest must take the process-exit death path, not the timeout backstop: {message}"
+        );
+    }
+
+    #[test]
+    fn headless_response_clock_does_not_start_until_the_guest_runs_python() {
+        // The whole point of the split: a cold Wasmtime compile of the CPython
+        // module happens on the guest thread after `launch` returns, so time
+        // spent there must not be charged to the app. Well past the response
+        // budget, an unstarted guest is still waiting, not timed out.
+        let base = std::time::Instant::now();
+        let mut deadline = HeadlessDeadline::new(base);
+        assert_eq!(
+            deadline.poll(base + HEADLESS_DEFAULT_TIMEOUT * 4, false),
+            PollVerdict::KeepWaiting,
+            "a guest that has not begun executing Python cannot be an unresponsive app"
+        );
+        // And the clock starts when it starts, not retroactively.
+        let started_at = base + HEADLESS_DEFAULT_TIMEOUT * 4;
+        assert_eq!(
+            deadline.poll(started_at, true),
+            PollVerdict::KeepWaiting,
+            "the response budget begins at guest start"
+        );
+        assert_eq!(
+            deadline.poll(started_at + HEADLESS_DEFAULT_TIMEOUT / 2, true),
+            PollVerdict::KeepWaiting
+        );
+        assert_eq!(
+            deadline.poll(
+                started_at + HEADLESS_DEFAULT_TIMEOUT + std::time::Duration::from_millis(1),
+                true
+            ),
+            PollVerdict::ResponseTimedOut,
+            "once running, the app owns the response budget"
+        );
+    }
+
+    #[test]
+    fn headless_boot_timeout_is_reported_separately_from_an_unresponsive_app() {
+        let base = std::time::Instant::now();
+        let mut deadline = HeadlessDeadline::new(base);
+        assert_eq!(
+            deadline.poll(
+                base + HEADLESS_BOOT_TIMEOUT + std::time::Duration::from_millis(1),
+                false
+            ),
+            PollVerdict::BootTimedOut,
+            "a guest that never reaches _start is a host-side boot failure, not a slow app"
         );
     }
 
