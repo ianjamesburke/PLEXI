@@ -692,14 +692,20 @@ fn saved_python_app_pane_restores_as_that_app() {
         .state_paths();
 
     let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-    let (restored_pane, restored_state_paths, _hot_reload_dir) = crate::pane_ops::restore_app_pane(
+    let crate::pane_ops::RestoredAppPane {
+        pane: restored_pane,
+        state_paths: restored_state_paths,
+        ..
+    } = crate::pane_ops::restore_app_pane(
         "todo",
         &launch,
-        pane_id,
-        context_id,
-        app_dir.clone(),
-        &app_dir,
-        record.name.as_deref(),
+        crate::pane_ops::RestoreTarget {
+            pane_id,
+            context_id,
+            workspace_root: app_dir.clone(),
+            context_root: &app_dir,
+            saved_name: record.name.as_deref(),
+        },
         &colors,
     )
     .expect("restore relaunches the same app");
@@ -808,11 +814,13 @@ fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
     let result = crate::pane_ops::restore_app_pane(
         "missing-app",
         &launch,
-        99,
-        1,
-        missing_dir.clone(),
-        &missing_dir,
-        None,
+        crate::pane_ops::RestoreTarget {
+            pane_id: 99,
+            context_id: 1,
+            workspace_root: missing_dir.clone(),
+            context_root: &missing_dir,
+            saved_name: None,
+        },
         &colors,
     );
     let error = match result {

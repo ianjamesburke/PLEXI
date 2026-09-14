@@ -233,6 +233,24 @@ fn build_python_runtime(
     Ok((runtime, app_id))
 }
 
+/// The saved identity a restored app pane keeps: the caller owns the pane id,
+/// context, and placement; restore only rebuilds the runtime behind them.
+pub(crate) struct RestoreTarget<'a> {
+    pub pane_id: PaneId,
+    pub context_id: u64,
+    pub workspace_root: PathBuf,
+    pub context_root: &'a Path,
+    pub saved_name: Option<&'a str>,
+}
+
+/// What a saved app pane relaunches as.
+pub(crate) struct RestoredAppPane {
+    pub pane: Pane,
+    pub state_paths: Vec<(crate::host::state_scope::StateScope, PathBuf)>,
+    /// Hot-reload watch target (the Python `app_dir`); empty for WASM.
+    pub hot_reload_dir: PathBuf,
+}
+
 /// Restore a saved Python or WASM app pane by relaunching it through the same
 /// runtime-construction path a fresh open uses — never through
 /// `place_app_pane`, which allocates a new pane id and mutates the tile tree.
@@ -246,20 +264,16 @@ fn build_python_runtime(
 pub(crate) fn restore_app_pane(
     manifest_id: &str,
     launch: &crate::workspace::SavedAppLaunch,
-    pane_id: PaneId,
-    context_id: u64,
-    workspace_root: PathBuf,
-    context_root: &Path,
-    saved_name: Option<&str>,
+    target: RestoreTarget<'_>,
     theme: &crate::ui::theme::Colors,
-) -> Result<
-    (
-        Pane,
-        Vec<(crate::host::state_scope::StateScope, PathBuf)>,
-        PathBuf, // hot-reload watch target (Python app_dir); empty for WASM
-    ),
-    String,
-> {
+) -> Result<RestoredAppPane, String> {
+    let RestoreTarget {
+        pane_id,
+        context_id,
+        workspace_root,
+        context_root,
+        saved_name,
+    } = target;
     match launch {
         crate::workspace::SavedAppLaunch::Python { app_dir, args } => {
             if !app_dir.is_dir() {
@@ -307,7 +321,11 @@ pub(crate) fn restore_app_pane(
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
             }));
-            Ok((pane, state_paths, app_dir.clone()))
+            Ok(RestoredAppPane {
+                pane,
+                state_paths,
+                hot_reload_dir: app_dir.clone(),
+            })
         }
         crate::workspace::SavedAppLaunch::Wasm { wasm_path, args } => {
             use crate::host::wasm_app::{StateStore, WasmApp};
@@ -385,7 +403,11 @@ pub(crate) fn restore_app_pane(
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
             }));
-            Ok((pane, Vec::new(), PathBuf::new()))
+            Ok(RestoredAppPane {
+                pane,
+                state_paths: Vec::new(),
+                hot_reload_dir: PathBuf::new(),
+            })
         }
     }
 }
