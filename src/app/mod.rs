@@ -1487,14 +1487,20 @@ impl PlexiApp {
                             match crate::pane_ops::restore_app_pane(
                                 app_type,
                                 launch,
-                                saved_pane.id,
-                                saved_win.context_id,
-                                app_cwd.clone(),
-                                &ctx_root,
-                                saved_pane.name.as_deref(),
+                                crate::pane_ops::RestoreTarget {
+                                    pane_id: saved_pane.id,
+                                    context_id: saved_win.context_id,
+                                    workspace_root: app_cwd.clone(),
+                                    context_root: &ctx_root,
+                                    saved_name: saved_pane.name.as_deref(),
+                                },
                                 &colors,
                             ) {
-                                Ok((pane, state_paths, hot_reload_dir)) => {
+                                Ok(crate::pane_ops::RestoredAppPane {
+                                    pane,
+                                    state_paths,
+                                    hot_reload_dir,
+                                }) => {
                                     if !hot_reload_dir.as_os_str().is_empty() {
                                         hr_watcher.watch(saved_pane.id, &hot_reload_dir);
                                     }

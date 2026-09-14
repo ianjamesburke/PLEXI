@@ -65,7 +65,7 @@ Every new feature must be instrumented. No new capability, command, or user-visi
 
 ## Testing
 
-**Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Every coding agent follows it before push. Observable state → TOML scene. Return value or invariant → Rust `#[test]`. Before any push, both must pass: `just build` (release, `-D warnings`, the exact path `pr-install` and every install take) and `cargo test --bin plexi`. Neither `cargo test` nor bare `cargo build` runs with `-D warnings` or compiles `cfg(not(test))` paths, so a green test suite proves nothing about the installable binary.
+**Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Every coding agent follows it before push. Observable state → TOML scene. Return value or invariant → Rust `#[test]`. Before any push, all three must pass: `just build` (release, `-D warnings`, the exact path `pr-install` and every install take), `cargo test --bin plexi`, and `cargo clippy --bin plexi -- -D warnings` (what CI's clippy job runs). Neither `cargo test` nor bare `cargo build` runs with `-D warnings` or compiles `cfg(not(test))` paths, and `just build` does not run clippy, so a green test suite proves nothing about the installable binary or the CI lint job.
 
 **`just pr-install <N>` is cwd-independent.** The recipe resolves the PR's head via `gh`, selects a worktree that provably contains it (the PR's clean feature worktree when present, else a detached canonical build tree), and runs pre-install tests and the build from that tree — never the caller's cwd. Provenance (PR, head sha, worktree) is echoed and appended to the PR profile's `install.log`.
 

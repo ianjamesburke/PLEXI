@@ -12,8 +12,9 @@ Before any push, in this order:
 
 1. `just build` — release build under the justfile's `-D warnings`. This is the path `just pr-install` and every install take. It is the only step that compiles `cfg(not(test))` code and the only one that fails on an item whose callers are all `#[cfg(test)]`; `cargo test` and bare `cargo build` see neither (root `AGENTS.md` Traps).
 2. `cargo test --bin plexi` — correctness.
+3. `cargo clippy --bin plexi -- -D warnings` — exactly what CI's `clippy` job runs (`.github/workflows/rust-host.yml`). `just build` does not run clippy, so `too_many_arguments`, `type_complexity`, and `needless_borrow` sail through the first two steps and turn alpha red after merge.
 
-Both green, or no push. Lane integrators run both after every merge, not once at the end.
+All three green, or no push. Lane integrators run both after every merge, not once at the end.
 
 ## Wall-clock budgets
 
