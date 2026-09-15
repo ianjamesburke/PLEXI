@@ -36,6 +36,53 @@ use crate::spatial::tiling::PaneId;
 /// coalesce into a single reload request.
 pub const DEBOUNCE_MS: u64 = 250;
 
+/// Directory names that never contain app source and must never trigger a
+/// reload — tooling output from running the app's own checks (`plexi app
+/// check` / `app test`) while the pane is open. Checked against every path
+/// component, not just the leaf, so `<app>/.venv/lib/...` is excluded too.
+const EXCLUDED_DIR_NAMES: &[&str] = &[".venv", "__pycache__", ".pytest_cache", ".mypy_cache"];
+
+/// Returns true if `path` (an absolute event path somewhere under
+/// `app_dir`) should trigger a reload — i.e. no component of its path
+/// *relative to `app_dir`* names an excluded tooling directory or a
+/// dotfile/dot-directory.
+///
+/// Only components below `app_dir` are examined: the app's own absolute
+/// path (e.g. a dotfile in the user's home directory ancestry — every
+/// installed app lives under `~/.plexi-<channel>/apps/<name>`) must never
+/// affect the classification. Single source of truth for the exclusion
+/// set — both the event filter and any future caller (docs, tests) go
+/// through this function rather than re-deriving the list.
+///
+/// Fails open: if `path` cannot be stripped of the `app_dir` prefix (a
+/// non-canonical event path, a differing symlink resolution), there is
+/// nothing safe to classify, so the event is treated as relevant rather
+/// than scanning the full path — which would misclassify every event for
+/// any installed app, since `~/.plexi-<channel>/...` is itself a dot-dir
+/// ancestor. Watching a bit too much beats hot reload dying silently.
+fn is_reload_relevant(path: &Path, app_dir: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(app_dir) else {
+        return true;
+    };
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        let Some(name) = name.to_str() else {
+            // Non-UTF-8 component — cannot classify it, so exclude
+            // defensively rather than trigger on it unexamined.
+            return false;
+        };
+        if EXCLUDED_DIR_NAMES.contains(&name) {
+            return false;
+        }
+        if name.starts_with('.') {
+            return false;
+        }
+    }
+    true
+}
+
 /// Sent on each debounced filesystem change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReloadRequest {
@@ -112,6 +159,18 @@ impl HotReloadWatcher {
         // Internal channel: notify watcher → debouncer thread.
         let (raw_tx, raw_rx) = mpsc::channel::<Event>();
 
+        // Canonicalize for classification only (never for the actual
+        // `watcher.watch` call below): on macOS `/var` is a symlink to
+        // `/private/var`, so a tempdir-style path and the paths FSEvents
+        // reports for it differ textually even though they name the same
+        // directory. Without this, `strip_prefix` below silently falls
+        // back to the full path and every component of the app's own
+        // (often dot-prefixed, e.g. under a `.tmp*` tempdir) ancestry gets
+        // misclassified as excluded.
+        let watch_dir = app_dir
+            .canonicalize()
+            .unwrap_or_else(|_| app_dir.to_path_buf());
+        let logged_ignored = Arc::new(Mutex::new(false));
         let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
             match res {
                 Ok(ev) => {
@@ -119,15 +178,33 @@ impl HotReloadWatcher {
                     // changes (Modify, Create, Remove). On macOS, the
                     // FSEvents backend reports `Any` for many save flows;
                     // accept those too.
-                    if matches!(
+                    if !matches!(
                         ev.kind,
                         EventKind::Modify(_)
                             | EventKind::Create(_)
                             | EventKind::Remove(_)
                             | EventKind::Any
                     ) {
-                        let _ = raw_tx.send(ev);
+                        return;
                     }
+                    // Filter out tooling output (`.venv`, `__pycache__`,
+                    // etc.) so running the app's own checks does not
+                    // restart the pane — see `is_reload_relevant`. An
+                    // event with no paths carries nothing to classify, so
+                    // it is never filtered.
+                    let relevant = ev.paths.is_empty()
+                        || ev.paths.iter().any(|p| is_reload_relevant(p, &watch_dir));
+                    if !relevant {
+                        let mut logged = logged_ignored.lock().unwrap_or_else(|e| e.into_inner());
+                        if !*logged {
+                            *logged = true;
+                            log::info!(
+                                "hot_reload: ignoring tooling-output events under {watch_dir:?} for pane {pane_id} (.venv/__pycache__/dotfiles)"
+                            );
+                        }
+                        return;
+                    }
+                    let _ = raw_tx.send(ev);
                 }
                 Err(e) => log::warn!("hot_reload: watcher error: {e}"),
             }
@@ -250,6 +327,115 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         None
+    }
+
+    #[test]
+    fn is_reload_relevant_excludes_venv_and_caches() {
+        let app_dir = Path::new("/apps/foo");
+        assert!(!is_reload_relevant(
+            &app_dir.join(".venv/lib/site-packages/x.py"),
+            app_dir
+        ));
+        assert!(!is_reload_relevant(
+            &app_dir.join("__pycache__/main.cpython-312.pyc"),
+            app_dir
+        ));
+        assert!(!is_reload_relevant(
+            &app_dir.join(".pytest_cache/v/cache/lastfailed"),
+            app_dir
+        ));
+        assert!(!is_reload_relevant(
+            &app_dir.join(".mypy_cache/3.12"),
+            app_dir
+        ));
+        assert!(!is_reload_relevant(&app_dir.join(".DS_Store"), app_dir));
+    }
+
+    #[test]
+    fn is_reload_relevant_allows_source_files() {
+        let app_dir = Path::new("/apps/foo");
+        assert!(is_reload_relevant(&app_dir.join("main.py"), app_dir));
+        assert!(is_reload_relevant(&app_dir.join("lib/helpers.py"), app_dir));
+    }
+
+    #[test]
+    fn is_reload_relevant_ignores_dotfiles_in_ancestor_path() {
+        // A dot component above `app_dir` (e.g. the user's home directory
+        // ancestry) must never affect classification — only the path
+        // relative to `app_dir` is examined.
+        let app_dir = Path::new("/Users/.hidden-home/apps/foo");
+        assert!(is_reload_relevant(&app_dir.join("main.py"), app_dir));
+    }
+
+    #[test]
+    fn is_reload_relevant_fails_open_when_path_is_not_under_app_dir() {
+        // A prefix mismatch (non-canonical event path, differing symlink
+        // resolution) leaves nothing safe to classify. Every installed app
+        // lives under `~/.plexi-<channel>/apps/<name>` — itself a dot-dir
+        // ancestor — so falling back to scanning the full path would
+        // misclassify every event for an installed app as irrelevant and
+        // kill hot reload silently. Fail open instead.
+        let app_dir = Path::new("/Users/.plexi-alpha/apps/foo");
+        let unrelated = Path::new("/Users/.plexi-alpha/apps/bar/main.py");
+        assert!(is_reload_relevant(unrelated, app_dir));
+    }
+
+    #[test]
+    fn watcher_ignores_venv_writes_but_fires_on_source_change() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".venv/lib")).unwrap();
+        let source = dir.path().join("main.py");
+        fs::write(&source, "print('v1')\n").unwrap();
+
+        let (mut watcher, rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
+        watcher.watch(99, dir.path());
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            150,
+        )));
+        // Drain any reload from FSEvents replaying the pre-watch creation
+        // of `main.py` itself — irrelevant to what this test checks.
+        let _ = poll_for_reload(&rx, Duration::from_millis(500));
+        while rx.try_recv().is_ok() {}
+
+        // Simulate tooling output from `plexi app check` / `app test`.
+        fs::write(dir.path().join(".venv/lib/marker.txt"), "x").unwrap();
+        let got = poll_for_reload(&rx, Duration::from_millis(800));
+        assert!(
+            got.is_none(),
+            "a write under .venv must never produce a ReloadRequest, got {got:?}"
+        );
+
+        // A genuine source edit still reloads.
+        fs::write(&source, "print('v2')\n").unwrap();
+        let got = poll_for_reload(&rx, Duration::from_secs(3));
+        assert_eq!(
+            got,
+            Some(ReloadRequest { pane_id: 99 }),
+            "a write to main.py must still produce a ReloadRequest"
+        );
+    }
+
+    #[test]
+    fn watcher_ignores_pycache_writes() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("__pycache__")).unwrap();
+
+        let (mut watcher, rx) = HotReloadWatcher::new(Arc::new(RecordingWake::new()));
+        watcher.watch(100, dir.path());
+        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
+            150,
+        )));
+        // Drain any reload from FSEvents replaying the pre-watch creation
+        // of the tempdir/`__pycache__` themselves.
+        let _ = poll_for_reload(&rx, Duration::from_millis(500));
+        while rx.try_recv().is_ok() {}
+
+        fs::write(dir.path().join("__pycache__/main.cpython-312.pyc"), "x").unwrap();
+        let got = poll_for_reload(&rx, Duration::from_millis(800));
+        assert!(
+            got.is_none(),
+            "a write under __pycache__ must never produce a ReloadRequest, got {got:?}"
+        );
     }
 
     #[test]
