@@ -5,7 +5,7 @@ id = "calc"
 type = "app"
 name = "Calculator"
 version = "0.1.0"
-description = "Four-function calculator. Demonstrates ctx.button() with hover and click."
+description = "Four-function calculator with connector tools for the Assistant."
 entry = "calc.py"
 
 [runtime]
