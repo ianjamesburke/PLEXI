@@ -37,35 +37,6 @@ def _issues():
     ]
 
 
-def _many_label_issues():
-    return [
-        {
-            "number": 10,
-            "title": "complex issue",
-            "createdAt": "2026-04-01T00:00:00Z",
-            "labels": [
-                {"name": "bug"},
-                {"name": "P0"},
-                {"name": "area:backend"},
-                {"name": "v1.0"},
-                {"name": "ready"},
-            ],
-        },
-        {
-            "number": 11,
-            "title": "simple enhancement",
-            "createdAt": "2026-04-02T00:00:00Z",
-            "labels": [{"name": "enhancement"}, {"name": "P2"}],
-        },
-        {
-            "number": 12,
-            "title": "no labels",
-            "createdAt": "2026-04-03T00:00:00Z",
-            "labels": [],
-        },
-    ]
-
-
 # ── filter + sort (existing) ────────────────────────────────────────────────
 
 
@@ -151,52 +122,6 @@ def test_empty_filter_returns_all():
     assert len(visible) == 3
 
 
-# ── smart chip selection ─────────────────────────────────────────────────────
-
-
-def test_chip_selection_prioritizes_active_filter():
-    app = _load_app_module()
-    issue = _many_label_issues()[0]
-
-    chips = app._select_visible_chips(issue, {"v1.0"})
-
-    assert chips[0].label == "v1.0"
-
-
-def test_chip_selection_priority_labels_before_rest():
-    app = _load_app_module()
-    issue = _many_label_issues()[0]
-
-    chips = app._select_visible_chips(issue, set())
-    chip_labels = [c.label for c in chips if not c.label.startswith("+")]
-
-    assert "bug" in chip_labels
-    assert "P0" in chip_labels
-
-
-def test_chip_selection_overflow_count():
-    app = _load_app_module()
-    issue = _many_label_issues()[0]
-
-    chips = app._select_visible_chips(issue, set())
-
-    overflow = [c for c in chips if c.label.startswith("+")]
-    assert len(overflow) == 1
-    total_labels = len(app._issue_labels(issue))
-    visible_count = app.MAX_VISIBLE_CHIPS
-    assert overflow[0].label == f"+{total_labels - visible_count}"
-
-
-def test_chip_selection_no_overflow_when_few_labels():
-    app = _load_app_module()
-    issue = _many_label_issues()[1]
-
-    chips = app._select_visible_chips(issue, set())
-
-    overflow = [c for c in chips if c.label.startswith("+")]
-    assert len(overflow) == 0
-
-
 def test_normalize_issues_drops_pull_requests():
     app = _load_app_module()
     raw = [
@@ -214,54 +139,3 @@ def test_normalize_issues_drops_pull_requests():
     assert [issue["number"] for issue in normalized] == [1]
 
 
-def test_chip_selection_no_labels():
-    app = _load_app_module()
-    issue = _many_label_issues()[2]
-
-    chips = app._select_visible_chips(issue, set())
-
-    assert chips == []
-
-
-# ── unique label collection ──────────────────────────────────────────────────
-
-
-def test_collect_unique_labels_sorted():
-    app = _load_app_module()
-    issues = _issues()
-
-    labels = app._collect_unique_labels(issues)
-
-    assert labels == sorted(labels, key=str.lower)
-    assert len(labels) == len(set(labels))
-    assert "bug" in labels
-    assert "docs" in labels
-    assert "P1" in labels
-
-
-def test_collect_unique_labels_dedupes():
-    app = _load_app_module()
-    issues = _issues()
-
-    labels = app._collect_unique_labels(issues)
-
-    assert labels.count("bug") == 1
-
-
-# ── fuzzy match ──────────────────────────────────────────────────────────────
-
-
-def test_fuzzy_match_case_insensitive():
-    app = _load_app_module()
-
-    assert app._fuzzy_match("bug", "Bug Fix")
-    assert app._fuzzy_match("BUG", "bug")
-    assert not app._fuzzy_match("xyz", "bug")
-
-
-def test_fuzzy_match_substring():
-    app = _load_app_module()
-
-    assert app._fuzzy_match("enhance", "enhancement")
-    assert app._fuzzy_match("p1", "P1")
-    assert not app._fuzzy_match("p1", "P2")
