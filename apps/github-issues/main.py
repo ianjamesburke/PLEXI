@@ -31,8 +31,6 @@ SORT_LABELS = {
     "number_desc": "number ↓",
     "number_asc": "number ↑",
 }
-PRIORITY_PREFIXES = ("p0", "p1", "p2", "p3", "p4", "bug", "enhancement", "feat", "fix")
-MAX_VISIBLE_CHIPS = 3
 
 DEFAULT_STATE: dict[str, Any] = {
     "repo": "",
@@ -47,12 +45,6 @@ DEFAULT_STATE: dict[str, Any] = {
     "detail": None,
     "filter_autofocus": True,
 }
-
-
-class RowChip:
-    def __init__(self, label: str, color: str = "neutral") -> None:
-        self.label = label
-        self.color = color
 
 
 def init(size, args) -> list:
@@ -371,42 +363,6 @@ def _issue_labels(issue: dict) -> list[str]:
         for label in (issue.get("labels") or [])
         if isinstance(label, dict) and label.get("name")
     ]
-
-
-def _collect_unique_labels(issues: list[dict]) -> list[str]:
-    labels = set()
-    for issue in issues:
-        labels.update(_issue_labels(issue))
-    return sorted(labels, key=str.lower)
-
-
-def _fuzzy_match(query: str, label: str) -> bool:
-    return query.lower() in label.lower()
-
-
-def _is_priority_label(name: str) -> bool:
-    return name.lower().startswith(PRIORITY_PREFIXES)
-
-
-def _select_visible_chips(issue: dict, active_filters: set[str]) -> list[RowChip]:
-    all_labels = _issue_labels(issue)
-    active = [label for label in all_labels if label in active_filters]
-    priority = [
-        label
-        for label in all_labels
-        if label not in active_filters and _is_priority_label(label)
-    ]
-    rest = [
-        label
-        for label in all_labels
-        if label not in active_filters and not _is_priority_label(label)
-    ]
-    visible = (active + priority + rest)[:MAX_VISIBLE_CHIPS]
-    chips = [RowChip(label) for label in visible]
-    hidden = len(all_labels) - len(visible)
-    if hidden > 0:
-        chips.append(RowChip(f"+{hidden}"))
-    return chips
 
 
 def _next_sort_mode(mode: str) -> str:
