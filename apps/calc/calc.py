@@ -10,7 +10,7 @@ from typing import Any, Callable
 from plexi_sdk import log, state, tools
 from plexi_sdk.effects import SetState, SetStatus, SetTitle, ToolResult
 from plexi_sdk.events import KeyEvent, ToolCall, UiAction
-from plexi_sdk.ui import Button, Column, Component, FooterKeys, Spacer, Text
+from plexi_sdk.ui import Button, Column, FooterKeys, HStack, Spacer, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -38,21 +38,11 @@ BINARY_OPS: dict[str, Callable[[float, float], float]] = {
 }
 
 
-class ButtonRow(Component):
-    def __init__(self, labels: list[str]) -> None:
-        self.labels = labels
-
-    def to_node(self) -> dict:
-        return {
-            "type": "row",
-            "children": [
-                Button(label, f"calc:key:{label}", style=_button_style(label)).to_node()
-                for label in self.labels
-            ],
-            "gap": 8.0,
-            "align": "start",
-            "grow": False,
-        }
+def _button_row(labels: list[str]) -> HStack:
+    return HStack(
+        [Button(label, f"calc:key:{label}", style=_button_style(label)) for label in labels],
+        gap=8.0,
+    )
 
 
 def init(size, args) -> list:
@@ -129,7 +119,7 @@ def view():
             Text("Calculator", bold=True, size=15.0),
             Text(subtitle or "ready", size=11.0),
             Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
-            *[ButtonRow(row) for row in BUTTON_ROWS],
+            *[_button_row(row) for row in BUTTON_ROWS],
             Spacer(grow=True),
             FooterKeys(
                 [
@@ -220,7 +210,17 @@ def _event_label(event) -> str | None:
         return key
     if key in {".", "+", "-", "*", "/", "%"}:
         return key
-    if key in {"=", "return", "enter"}:
+    # AUTHORING.md's key table documents canonical names ("plus", "minus",
+    # "equals", "slash") for these physical keys; accept both the canonical
+    # name and the literal glyph so the operator keys work regardless of
+    # which form a given input path delivers.
+    if key in {"plus"}:
+        return "+"
+    if key in {"minus"}:
+        return "-"
+    if key in {"slash"}:
+        return "/"
+    if key in {"=", "equals", "return", "enter"}:
         return "="
     if key == "backspace":
         return "backspace"
