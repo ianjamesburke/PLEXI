@@ -204,6 +204,23 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             }
         }
     }
+    // Stint 0751: mcp.client spawns an unsandboxed process on the host's
+    // behalf, so it is beta-gated (`ReleaseFeature::McpClient`). A stable
+    // build cannot resolve this check on its own binary tier, so surface it
+    // as a warning here rather than only discovering it at runtime.
+    if manifest
+        .app
+        .capabilities
+        .capabilities
+        .iter()
+        .any(|c| c == "mcp.client")
+        && !crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient)
+    {
+        warnings.push(format!(
+            "mcp.client — {}",
+            crate::release::feature_unavailable_message(crate::release::ReleaseFeature::McpClient)
+        ));
+    }
     warnings.extend(scaffold_metadata_warnings(app_dir));
     if scaffold_requires_semantic_chrome(app_dir) {
         warnings.push(

@@ -3299,6 +3299,23 @@ impl LivePythonPane {
             fail(self, "missing capability mcp.client".to_string());
             return;
         }
+        // Stint 0751: unsandboxed MCP server spawning is not part of stable
+        // v1's security surface (0577 tracks the sandbox that will lift this
+        // gate). Block before any registry lookup so a stable-tier host never
+        // touches `mcp_servers.toml` or spawns a process for this request.
+        if !crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient) {
+            log::info!(
+                "app::{}: mcp_connect blocked server_id={server_id} gate=McpClient",
+                self.app_id
+            );
+            fail(
+                self,
+                crate::release::feature_unavailable_message(
+                    crate::release::ReleaseFeature::McpClient,
+                ),
+            );
+            return;
+        }
         if server_id.is_empty() {
             fail(self, "mcp_connect requires a server_id".to_string());
             return;
