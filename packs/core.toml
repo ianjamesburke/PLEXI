@@ -30,3 +30,18 @@ version = "bundled"
 id      = "snake"
 source  = "local:snake"
 version = "bundled"
+
+[[app]]
+id      = "breakout"
+source  = "local:breakout"
+version = "bundled"
+
+[[app]]
+id      = "tetris"
+source  = "local:tetris"
+version = "bundled"
+
+[[app]]
+id      = "github-issues"
+source  = "local:github-issues"
+version = "bundled"
