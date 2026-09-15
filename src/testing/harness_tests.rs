@@ -5490,6 +5490,13 @@ fn app_commands_execute_while_window_hidden() {
 #[cfg(unix)]
 #[test]
 fn mcp_reply_reaches_guest_while_window_hidden() {
+    // stint 0751: mcp.client is beta-gated; this test exercises the real
+    // spawn path, so it must run at a tier where the gate is open. An
+    // isolated profile dir keeps its `mcp_servers.toml` from colliding with
+    // the beta-tier sibling tests below (all writing `config_dir()`).
+    let _channel = crate::config::set_test_channel("beta");
+    let profile_dir = tempfile::tempdir().expect("profile dir");
+    let _profile = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
@@ -5565,6 +5572,159 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
             "MCP reply must be delivered on hidden (logic-only) passes alone (last title: {title:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 0751: `mcp.client` is beta-gated (`ReleaseFeature::McpClient`) so a
+/// stable-tier host never runs `McpConnection::spawn` on a user's behalf. The
+/// server script touches a marker file the instant it starts, so "the gate
+/// blocked the connect" and "no child process ever ran" are the same
+/// assertion — no OS process inspection needed.
+#[cfg(unix)]
+#[test]
+fn stable_tier_blocks_mcp_client_and_spawns_no_server_process() {
+    let _channel = crate::config::set_test_channel("main");
+    let profile_dir = tempfile::tempdir().expect("profile dir");
+    let _profile = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let marker = tmp.path().join("spawned");
+    let server = tmp.path().join("probe-server.sh");
+    std::fs::write(
+        &server,
+        format!("#!/bin/sh\ntouch {}\nexec sleep 300\n", marker.display()),
+    )
+    .expect("write probe server");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod probe server");
+    }
+    let config_dir = crate::config::config_dir();
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("mcp_servers.toml"),
+        format!("[servers.probe]\ncommand = \"{}\"\n", server.display()),
+    )
+    .expect("write mcp_servers.toml");
+
+    let pane_id = h.launch_dev_app_without_render("mcp-hidden-probe");
+    let python_title = |h: &HostHarness| -> Option<String> {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .and_then(|pane| match &pane.runtime {
+                AppRuntime::Python(p) => Some(p.display_name()),
+                _ => None,
+            })
+    };
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let title = python_title(&h);
+        assert!(
+            !matches!(title.as_deref(), Some(t) if t.starts_with("mcp-probe:sent")),
+            "a stable-tier host must never spawn the MCP server: {title:?}"
+        );
+        if title
+            .as_deref()
+            .is_some_and(|t| t.starts_with("mcp-probe:error"))
+        {
+            let title = title.expect("checked above");
+            assert!(
+                title.contains("beta channel"),
+                "the gate error must name the required tier and reach the guest: {title}"
+            );
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "the release gate error never reached the guest (last title: {title:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    assert!(
+        !marker.exists(),
+        "stable tier must never spawn the MCP server process"
+    );
+}
+
+/// Beta-tier sibling of `stable_tier_blocks_mcp_client_and_spawns_no_server_process`:
+/// the same manifest and server, on a channel where `ReleaseFeature::McpClient`
+/// is enabled, must still reach a real spawn.
+#[cfg(unix)]
+#[test]
+fn beta_tier_allows_mcp_client_and_spawns_the_server_process() {
+    let _channel = crate::config::set_test_channel("beta");
+    let profile_dir = tempfile::tempdir().expect("profile dir");
+    let _profile = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let marker = tmp.path().join("spawned");
+    let server = tmp.path().join("probe-server.sh");
+    std::fs::write(
+        &server,
+        format!("#!/bin/sh\ntouch {}\nexec sleep 300\n", marker.display()),
+    )
+    .expect("write probe server");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod probe server");
+    }
+    let config_dir = crate::config::config_dir();
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("mcp_servers.toml"),
+        format!("[servers.probe]\ncommand = \"{}\"\n", server.display()),
+    )
+    .expect("write mcp_servers.toml");
+
+    let pane_id = h.launch_dev_app_without_render("mcp-hidden-probe");
+    let python_title = |h: &HostHarness| -> Option<String> {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .and_then(|pane| match &pane.runtime {
+                AppRuntime::Python(p) => Some(p.display_name()),
+                _ => None,
+            })
+    };
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let title = python_title(&h);
+        assert!(
+            !matches!(title.as_deref(), Some(t) if t.starts_with("mcp-probe:error")),
+            "the beta gate must stay open for the existing spawn path: {title:?}"
+        );
+        if title.as_deref() == Some("mcp-probe:sent") {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "probe did not reach the sent phase in time (last title: {title:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // `spawn()` returning success only means the child forked; its own first
+    // `touch` is a separate, asynchronous scheduling event, so poll instead
+    // of asserting on the first check.
+    let marker_start = std::time::Instant::now();
+    while !marker.exists() {
+        assert!(
+            marker_start.elapsed() < std::time::Duration::from_secs(5),
+            "beta tier must still spawn the MCP server process"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 

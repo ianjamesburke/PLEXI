@@ -13,6 +13,7 @@ pub enum ReleaseFeature {
     Daw,
     MediaIo,
     Accessibility,
+    McpClient,
 }
 
 impl ReleaseFeature {
@@ -24,6 +25,7 @@ impl ReleaseFeature {
             Self::Daw => "DAW",
             Self::MediaIo => "media I/O",
             Self::Accessibility => "experimental accessibility",
+            Self::McpClient => "MCP client",
         }
     }
 
@@ -34,7 +36,8 @@ impl ReleaseFeature {
             | Self::Marketplace
             | Self::Daw
             | Self::MediaIo
-            | Self::Accessibility => ReleaseTier::Beta,
+            | Self::Accessibility
+            | Self::McpClient => ReleaseTier::Beta,
         }
     }
 }
@@ -158,6 +161,30 @@ mod tests {
         assert!(!feature_enabled_for_channel(
             ReleaseFeature::Marketplace,
             Some("client")
+        ));
+    }
+
+    #[test]
+    fn stable_and_rc_channels_disable_mcp_client_capability() {
+        assert!(!feature_enabled_for_channel(
+            ReleaseFeature::McpClient,
+            None
+        ));
+        assert!(!feature_enabled_for_channel(
+            ReleaseFeature::McpClient,
+            Some("main")
+        ));
+        assert!(!feature_enabled_for_channel(
+            ReleaseFeature::McpClient,
+            Some("rc-010")
+        ));
+        assert!(feature_enabled_for_channel(
+            ReleaseFeature::McpClient,
+            Some("beta")
+        ));
+        assert!(feature_enabled_for_channel(
+            ReleaseFeature::McpClient,
+            Some("alpha")
         ));
     }
 
