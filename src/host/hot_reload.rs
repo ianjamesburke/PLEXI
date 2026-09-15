@@ -48,12 +48,22 @@ const EXCLUDED_DIR_NAMES: &[&str] = &[".venv", "__pycache__", ".pytest_cache", "
 /// dotfile/dot-directory.
 ///
 /// Only components below `app_dir` are examined: the app's own absolute
-/// path (e.g. a dotfile in the user's home directory ancestry) must never
+/// path (e.g. a dotfile in the user's home directory ancestry — every
+/// installed app lives under `~/.plexi-<channel>/apps/<name>`) must never
 /// affect the classification. Single source of truth for the exclusion
 /// set — both the event filter and any future caller (docs, tests) go
 /// through this function rather than re-deriving the list.
+///
+/// Fails open: if `path` cannot be stripped of the `app_dir` prefix (a
+/// non-canonical event path, a differing symlink resolution), there is
+/// nothing safe to classify, so the event is treated as relevant rather
+/// than scanning the full path — which would misclassify every event for
+/// any installed app, since `~/.plexi-<channel>/...` is itself a dot-dir
+/// ancestor. Watching a bit too much beats hot reload dying silently.
 fn is_reload_relevant(path: &Path, app_dir: &Path) -> bool {
-    let relative = path.strip_prefix(app_dir).unwrap_or(path);
+    let Ok(relative) = path.strip_prefix(app_dir) else {
+        return true;
+    };
     for component in relative.components() {
         let std::path::Component::Normal(name) = component else {
             continue;
@@ -355,6 +365,19 @@ mod tests {
         // relative to `app_dir` is examined.
         let app_dir = Path::new("/Users/.hidden-home/apps/foo");
         assert!(is_reload_relevant(&app_dir.join("main.py"), app_dir));
+    }
+
+    #[test]
+    fn is_reload_relevant_fails_open_when_path_is_not_under_app_dir() {
+        // A prefix mismatch (non-canonical event path, differing symlink
+        // resolution) leaves nothing safe to classify. Every installed app
+        // lives under `~/.plexi-<channel>/apps/<name>` — itself a dot-dir
+        // ancestor — so falling back to scanning the full path would
+        // misclassify every event for an installed app as irrelevant and
+        // kill hot reload silently. Fail open instead.
+        let app_dir = Path::new("/Users/.plexi-alpha/apps/foo");
+        let unrelated = Path::new("/Users/.plexi-alpha/apps/bar/main.py");
+        assert!(is_reload_relevant(unrelated, app_dir));
     }
 
     #[test]
