@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import random
 
-from plexi_sdk import dim, state, theme
+from plexi_sdk import dim, log, state, theme
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, MouseEvent, Resize, TimerFired
 from plexi_sdk.ui import (
@@ -174,6 +174,7 @@ def _enter_number(d, num):
     if done:
         new_state["screen"] = "win"
         secs = int(d.get("seconds", 0))
+        log.info(f"sudoku: solved difficulty={d.get('difficulty')} time={_fmt(secs)}")
         return [SetState(new_state), SetStatus(f"Solved in {_fmt(secs)}!")]
     return [SetState(new_state)]
 
@@ -182,6 +183,7 @@ def _enter_number(d, num):
 def init(size, _args):
     global _canvas_width, _canvas_height
     _canvas_width, _canvas_height = size
+    log.info("sudoku: SDK v3 canvas initialized")
     missing = {k: v for k, v in _blank().items() if state.get(k) is None}
     effects = [
         SetTitle("Sudoku"),
@@ -243,6 +245,7 @@ def _mouse(d, x, y):
         idx = _hit_rect(x, y, rects)
         if idx is not None:
             diff = DIFFICULTIES[idx]
+            log.info(f"sudoku: new game difficulty={diff}")
             return [SetState(_new_game(diff)), SetStatus(f"{diff.title()} — 00:00")]
         return []
 
@@ -278,15 +281,19 @@ def _key(d, event):
             return [SetState({"diff_idx": (idx + 1) % 3})]
         if key in ("enter", "space"):
             new = _new_game(DIFFICULTIES[idx])
+            log.info(f"sudoku: new game difficulty={new['difficulty']}")
             return [SetState(new), SetStatus(f"{DIFFICULTIES[idx].title()} — 00:00")]
         if key == "1":
             new = _new_game("easy")
+            log.info("sudoku: new game difficulty=easy")
             return [SetState(new), SetStatus("Easy — 00:00")]
         if key == "2":
             new = _new_game("medium")
+            log.info("sudoku: new game difficulty=medium")
             return [SetState(new), SetStatus("Medium — 00:00")]
         if key == "3":
             new = _new_game("hard")
+            log.info("sudoku: new game difficulty=hard")
             return [SetState(new), SetStatus("Hard — 00:00")]
         return []
 
@@ -307,9 +314,11 @@ def _game_key(d, event):
     # Always-active keys
     if key == "m":
         blank = _blank()
+        log.info("sudoku: returned to menu")
         return [SetState(blank), SetStatus("Choose difficulty")]
     if key == "r":
         new = _new_game(str(d.get("difficulty", "easy")))
+        log.info(f"sudoku: restarted difficulty={new['difficulty']}")
         return [SetState(new), SetStatus(f"{new['difficulty'].title()} — 00:00")]
 
     if screen == "win":
