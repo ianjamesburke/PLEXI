@@ -141,7 +141,7 @@ def update(event) -> list:
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
     key = event.key
-    if key in ("r", "R"):
+    if key == "r":
         data = _initial()
         log.info("tetris: restarted")
         return _set(data)
@@ -150,15 +150,15 @@ def update(event) -> list:
         return _set(data)
     if not data["alive"] or data["paused"]:
         return []
-    if key in ("left", "ArrowLeft", "h"):
+    if key in ("left", "h"):
         return _set(_move(data, dc=-1))
-    if key in ("right", "ArrowRight", "l"):
+    if key in ("right", "l"):
         return _set(_move(data, dc=1))
-    if key in ("down", "ArrowDown", "j"):
+    if key in ("down", "j"):
         return _set(_soft_drop(data, score=True))
-    if key in ("up", "ArrowUp", "k", "x"):
+    if key in ("up", "k", "x"):
         return _set(_rotate(data))
-    if key in ("space", "enter", "return", "Enter"):
+    if key in ("space", "enter"):
         while _valid(data, _shift(data["current"], dr=1)):
             data["current"]["row"] += 1
             data["score"] += 2
