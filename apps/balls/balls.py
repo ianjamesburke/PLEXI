@@ -232,7 +232,7 @@ def _draw(data: dict) -> list:
             18.0,
             f"{len(balls)} balls — click to add · click ball to remove",
             size=12.0,
-            color=theme.muted,
+            color=theme.fg,
         )
     )
     return commands
