@@ -28,16 +28,12 @@ TICK_MS = 150
 
 DIRS = {
     "up": [0, -1],
-    "ArrowUp": [0, -1],
     "k": [0, -1],
     "down": [0, 1],
-    "ArrowDown": [0, 1],
     "j": [0, 1],
     "left": [-1, 0],
-    "ArrowLeft": [-1, 0],
     "h": [-1, 0],
     "right": [1, 0],
-    "ArrowRight": [1, 0],
     "l": [1, 0],
 }
 
@@ -105,7 +101,7 @@ def update(event) -> list:
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
 
-    if event.key in ("r", "R") and not data["alive"]:
+    if event.key == "r" and not data["alive"]:
         data = _initial()
         log.info("snake: restarted")
         return _set(data)
