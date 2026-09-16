@@ -1,6 +1,7 @@
 //! Lifecycle methods — per-frame drain and tick operations on PlexiApp.
 
 use egui_term::PtyEvent;
+use crate::host::pane_lifecycle::{ExitStatus, PaneLifecycleEvent, Provenance, Source};
 
 use super::PendingNotification;
 use super::PlexiApp;
@@ -663,6 +664,12 @@ impl PlexiApp {
                         "size": size,
                     }),
                 );
+                match std::fs::read(&absolute) {
+                    Ok(value) => self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::SlotChanged {
+                        name: slot_name.clone(), value,
+                    }),
+                    Err(error) => log::error!("pane_lifecycle: cannot read committed slot {}: {error}", absolute.display()),
+                }
                 // The write path is the only thing that changes a slot's
                 // value, so it is where parked waiters are answered.
                 self.complete_slot_waits(*pane_id, slot_name);
@@ -2266,6 +2273,8 @@ impl PlexiApp {
                 agent,
                 detail,
                 session_id,
+                event,
+                blocked_reason,
             } => {
                 log::info!(
                     "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?} detail_present={}",
@@ -2285,6 +2294,21 @@ impl PlexiApp {
                     }
                 }
                 if found {
+                    let provenance = Provenance {
+                        source: if event.is_some() { Source::Hook } else { Source::LegacyReport },
+                        agent_label: agent.clone(), session_id: session_id.clone(), raw_event: event.clone(),
+                    };
+                    let fact = PaneLifecycleEvent::from_report(state, provenance.clone(), *blocked_reason);
+                    let session_started = matches!(&fact, PaneLifecycleEvent::SessionStarted { .. });
+                    let session_ended = matches!(&fact, PaneLifecycleEvent::SessionEnded { .. });
+                    self.emit_pane_lifecycle(*pane_id, fact);
+                    if session_ended {
+                        if let Some(tracked) = self.host.pane_lifecycle.get_mut(pane_id) {
+                            tracked.booted = false;
+                        }
+                    } else if *state == crate::protocol::AgentState::Idle && (session_started || event.is_none()) {
+                        self.emit_agent_booted(*pane_id, provenance);
+                    }
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
                     // Fast path: answer a parked `pane new --agent` spawn the
                     // frame the hook report lands. The host-observed detector
@@ -3111,6 +3135,7 @@ impl PlexiApp {
     /// Idle that contradicts sustained fresh PTY activity.
     pub(super) fn tick_terminal_activity(&mut self) {
         use crate::protocol::AgentState;
+        let mut transitions = Vec::new();
         for window in self.windows.iter_mut() {
             for (pane_id, pane) in window.panes.iter_mut() {
                 let Some(t) = pane.as_terminal_mut() else {
@@ -3215,9 +3240,15 @@ impl PlexiApp {
                             "observed agent: pane {pane_id} corroborated working settled; returning to hook idle"
                         );
                     }
+                    if let Some(agent) = &observed {
+                        transitions.push((*pane_id, agent.clone()));
+                    }
                     t.observed_agent = observed;
                 }
             }
+        }
+        for (pane_id, agent) in transitions {
+            self.emit_observed_agent_transition(pane_id, &agent);
         }
     }
 
@@ -3541,6 +3572,7 @@ impl PlexiApp {
     }
 
     pub(super) fn drain_pty_events(&mut self) {
+        self.observe_pane_spawns();
         let mut panes_to_close: Vec<u64> = Vec::new();
 
         while let Ok((id, event)) = self.pty_event_rx.try_recv() {
@@ -3559,9 +3591,11 @@ impl PlexiApp {
             }
             match &event {
                 PtyEvent::Exit => {
+                    let mut newly_exited = false;
                     for win in &mut self.windows {
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
+                                newly_exited = !t.exited;
                                 t.exited = true;
                                 log::info!(
                                     "pty: pane {id} process exited ephemeral={}",
@@ -3573,6 +3607,9 @@ impl PlexiApp {
                             }
                             break;
                         }
+                    }
+                    if newly_exited {
+                        self.emit_pane_lifecycle(id, PaneLifecycleEvent::Exited { status: ExitStatus::Unknown });
                     }
                 }
                 PtyEvent::Title(title) => {

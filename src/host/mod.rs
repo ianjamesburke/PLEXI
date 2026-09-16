@@ -24,6 +24,7 @@ pub mod launch_failed;
 pub mod model;
 pub mod pane;
 pub mod pane_liveness;
+pub(crate) mod pane_lifecycle;
 pub mod scheduler;
 pub mod scope;
 pub mod services;

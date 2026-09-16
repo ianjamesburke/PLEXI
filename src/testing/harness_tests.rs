@@ -6843,6 +6843,8 @@ mod agent_boot {
             agent: "claude-code".to_string(),
             detail: None,
             session_id: None,
+            event: None,
+            blocked_reason: None,
         });
     }
 
@@ -8135,5 +8137,67 @@ mod terminal_resize_debounce_tests {
                 end_grids[i]
             );
         }
+    }
+}
+
+mod pane_lifecycle_events {
+    use super::*;
+
+    fn records(pane_id: u64) -> Vec<serde_json::Value> {
+        crate::host::app_timeline::global().lock().unwrap().events().iter()
+            .filter(|event| event.app_id == "plexi.host.panes" && event.pane_id == pane_id)
+            .map(|event| event.payload.clone().unwrap()).collect()
+    }
+
+    #[test]
+    fn pane_lifecycle_hidden_hook_reports_keep_three_terminal_facts() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        for event in ["Stop", "StopFailure", "SessionEnd"] {
+            let request = serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state", "pane_id": pane_id,
+                "state": "idle", "agent": "claude-code", "session_id": "session-a",
+                "event": event
+            })).expect("hook provenance must be accepted on the wire");
+            h.inject_ipc(request);
+            h.hidden_frame();
+        }
+        let events = records(pane_id);
+        let facts: Vec<_> = events.iter().filter(|event| event["kind"] != "spawned").collect();
+        assert_eq!(facts.len(), 3, "each provider terminal fact must appear once: {events:?}");
+        for (fact, (kind, raw)) in facts.iter().zip([
+            ("turn_finished", "Stop"), ("turn_failed", "StopFailure"), ("session_ended", "SessionEnd")
+        ]) {
+            assert_eq!(fact["kind"], kind);
+            assert_eq!(fact["provenance"]["raw_event"], raw);
+            assert_eq!(fact["provenance"]["session_id"], "session-a");
+            assert_eq!(fact["provenance"]["source"], "hook");
+            assert!(fact.get("exit_status").is_none(), "a hook is not an OS exit");
+        }
+        assert_eq!(h.app.windows[0].panes[&pane_id].agent().unwrap().state, crate::protocol::AgentState::Idle);
+    }
+
+    #[test]
+    fn pane_lifecycle_slot_change_contains_final_bytes_and_spawn_is_once() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        let tmp = tempfile::tempdir().unwrap();
+        for (n, bytes) in [vec![65, 255], vec![66]].into_iter().enumerate() {
+            let response = temp_response(tmp.path(), &format!("slot-{n}"));
+            h.inject_ipc(crate::protocol::AppRequest::SlotWrite {
+                pane_id, slot_name: "status".into(), content: bytes,
+                append: n != 0, replace: false, response_file: response.clone(),
+            });
+            h.hidden_frame();
+            assert_eq!(read_json_response(&response)["ok"], true);
+        }
+        h.hidden_frame();
+        let events = records(pane_id);
+        assert_eq!(events.iter().filter(|e| e["kind"] == "spawned").count(), 1);
+        let slots: Vec<_> = events.iter().filter(|e| e["kind"] == "slot_changed").collect();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0]["value"], serde_json::json!([65, 255]));
+        assert_eq!(slots[1]["value"], serde_json::json!([65, 255, 66]));
+        assert_eq!(slots[1]["name"], "status");
     }
 }

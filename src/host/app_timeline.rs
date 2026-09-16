@@ -313,6 +313,13 @@ impl AppTimeline {
         app_id: &str,
         decls: Vec<EventStreamDecl>,
     ) -> Result<Vec<String>, String> {
+        if app_id == crate::host::pane_lifecycle::PUBLISHER {
+            return Err("pane lifecycle publisher is reserved for the host".into());
+        }
+        self.declare_streams_inner(context_id, app_id, decls)
+    }
+
+    fn declare_streams_inner(&mut self, context_id: u64, app_id: &str, decls: Vec<EventStreamDecl>) -> Result<Vec<String>, String> {
         if decls.is_empty() {
             return Err("declare_event_streams: empty stream list".to_string());
         }
@@ -391,6 +398,13 @@ impl AppTimeline {
         pane_id: u64,
         emitted: EmittedEvent,
     ) -> Result<EventOutcome, String> {
+        if app_id == crate::host::pane_lifecycle::PUBLISHER {
+            return Err("pane lifecycle publisher is reserved for the host".into());
+        }
+        self.record_event_inner(context_id, app_id, pane_id, emitted)
+    }
+
+    fn record_event_inner(&mut self, context_id: u64, app_id: &str, pane_id: u64, emitted: EmittedEvent) -> Result<EventOutcome, String> {
         // Required-field validation (spec: event name, actor, summary,
         // resource id, revision after).
         if emitted.event.trim().is_empty() {
@@ -496,6 +510,40 @@ impl AppTimeline {
         };
         self.events.push(record);
         Ok(outcome)
+    }
+
+    /// Host-only producer for the pane stream. Public app/CLI entry points
+    /// reject this namespace; subscriptions use the ordinary scoped bus.
+    pub(crate) fn record_pane_lifecycle(
+        &mut self,
+        context_id: u64,
+        pane_id: u64,
+        event: &crate::host::pane_lifecycle::PaneLifecycleEvent,
+    ) -> Result<EventOutcome, String> {
+        use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
+        if !self.has_stream(context_id, PUBLISHER, STREAM) {
+            let schema = schemars::schema_for!(crate::host::pane_lifecycle::PaneLifecycleEvent);
+            self.declare_streams_inner(context_id, PUBLISHER, vec![EventStreamDecl {
+                name: STREAM.into(),
+                schema: serde_json::to_value(schema).map_err(|error| error.to_string())?,
+                description: Some("Host pane lifecycle facts; payload schema_version=1".into()),
+            }])?;
+        }
+        let mut payload = serde_json::to_value(event).map_err(|error| error.to_string())?;
+        payload["schema_version"] = serde_json::json!(1);
+        payload["pane_id"] = serde_json::json!(pane_id);
+        payload["context_id"] = serde_json::json!(context_id);
+        let kind = payload["kind"].as_str().unwrap_or("unknown");
+        let summary = format!("pane {pane_id}: {kind}");
+        log::info!("pane_lifecycle: pane={pane_id} context={context_id} kind={kind}");
+        self.record_event_inner(context_id, PUBLISHER, pane_id, EmittedEvent {
+            event: STREAM.into(), actor: AppEventActor::System,
+            actor_id: Some(PUBLISHER.into()), caused_by: None,
+            summary, resource_id: pane_id.to_string(), resource_scope: Some("pane".into()),
+            revision_after: (self.next_event_id + 1).to_string(), payload: Some(payload),
+            state_ref: None, revision_before: None, rollback_token: None,
+            changed_resources: vec![], suggested_trigger: None,
+        })
     }
 
     fn route_to_subscriptions(&mut self, app_id: &str, record: &AppEventRecord) -> usize {
