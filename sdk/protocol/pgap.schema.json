@@ -3,6 +3,16 @@
   "definitions": {
     "AppRequest": {
       "$defs": {
+        "AgentBlockedReason": {
+          "description": "A reported blocking condition. Unknown preserves legacy reports without guessing.",
+          "enum": [
+            "permission-prompt",
+            "usage-limit",
+            "boot-failure",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "AgentState": {
           "description": "Agent state reported by a hook script.",
           "enum": [
@@ -708,7 +718,24 @@
             "agent": {
               "type": "string"
             },
+            "blocked_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentBlockedReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "event": {
+              "description": "Raw provider event; absent for installed state-only hooks.",
               "type": [
                 "string",
                 "null"

@@ -589,6 +589,26 @@ impl PlexiApp {
         }
     }
 
+    /// A provider failure/end cannot satisfy readiness via its legacy idle projection.
+    pub(crate) fn fail_agent_boots_from_terminal_report(&mut self, pane_id: u64) {
+        let (failed, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_boots)
+            .into_iter()
+            .partition(|boot| boot.pane_id == pane_id);
+        self.pending_agent_boots = live;
+        if !failed.is_empty() {
+            self.emit_agent_boot_failure(pane_id);
+        }
+        for boot in failed {
+            crate::rpc::write_json_response(
+                &boot.response_file,
+                serde_json::json!({
+                    "ok": false, "timeout": false, "pane_id": pane_id,
+                    "error": "agent failed or ended its session before reporting ready",
+                }),
+            );
+        }
+    }
+
     fn pane_exists(&self, pane_id: u64) -> bool {
         self.windows
             .iter()

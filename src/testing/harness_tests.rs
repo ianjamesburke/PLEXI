@@ -7136,6 +7136,32 @@ mod agent_boot {
     /// The tester's exact failure: a booted Codex never fires a hook, so the
     /// spawn must complete from the host-observed detector alone.
     #[test]
+    #[ignore = "requires-pty"]
+    fn pane_lifecycle_hook_silent_boot_publishes_while_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut h = HostHarness::new();
+        h.app.set_context_root(tmp.path().to_path_buf(), None);
+        h.add_test_pane();
+        let cmd = fake_idle_codex(tmp.path());
+        let response = spawn_agent_pane(&mut h, tmp.path(), &cmd, Some(120.0));
+        h.hidden_frame();
+        let pane_id = spawned_terminal(&h);
+        pump_until_response(&mut h, &response, true);
+        assert_eq!(read_json_response(&response)["pane_id"], pane_id);
+        h.run_hidden_frames(2);
+        let timeline = crate::host::app_timeline::global();
+        let timeline = timeline.lock().unwrap();
+        let facts: Vec<_> = timeline.events().iter()
+            .filter(|event| event.app_id == "plexi.host.panes" && event.pane_id == pane_id)
+            .map(|event| event.payload.as_ref().unwrap()).collect();
+        let boot: Vec<_> = facts.iter().filter(|event| event["kind"] == "agent_booted").collect();
+        assert_eq!(boot.len(), 1, "observation and waiter must not double-publish readiness");
+        assert_eq!(boot[0]["provenance"]["source"], "host_observation");
+        assert!(boot[0]["provenance"]["raw_event"].is_null());
+        assert!(facts.iter().any(|event| event["kind"] == "agent_idle"));
+    }
+
+    #[test]
     fn agent_spawn_completes_from_observed_codex_boot() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
@@ -8163,8 +8189,10 @@ mod pane_lifecycle_events {
             h.hidden_frame();
         }
         let events = records(pane_id);
-        let facts: Vec<_> = events.iter().filter(|event| event["kind"] != "spawned").collect();
+        let facts: Vec<_> = events.iter().filter(|event| matches!(event["kind"].as_str(), Some("turn_finished" | "turn_failed" | "session_ended"))).collect();
         assert_eq!(facts.len(), 3, "each provider terminal fact must appear once: {events:?}");
+        assert_eq!(events.iter().filter(|event| event["kind"] == "agent_idle").count(), 1,
+            "only the normal Stop report announces an idle prompt");
         for (fact, (kind, raw)) in facts.iter().zip([
             ("turn_finished", "Stop"), ("turn_failed", "StopFailure"), ("session_ended", "SessionEnd")
         ]) {
@@ -8200,4 +8228,66 @@ mod pane_lifecycle_events {
         assert_eq!(slots[1]["value"], serde_json::json!([65, 255, 66]));
         assert_eq!(slots[1]["name"], "status");
     }
+    #[test]
+    fn pane_lifecycle_blocking_reasons_and_legacy_reports_are_not_guessed() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        for reason in [Some("permission-prompt"), Some("usage-limit"), Some("boot-failure"), None] {
+            h.inject_ipc(serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state", "pane_id": pane_id, "state": "blocked",
+                "agent": "legacy-agent", "blocked_reason": reason
+            })).unwrap());
+            h.hidden_frame();
+        }
+        let events = records(pane_id);
+        let blocked: Vec<_> = events.iter().filter(|e| e["kind"] == "agent_blocked").collect();
+        assert_eq!(blocked.len(), 4);
+        for (fact, reason) in blocked.iter().zip(["permission-prompt", "usage-limit", "boot-failure", "unknown"]) {
+            assert_eq!(fact["reason"], reason);
+            assert_eq!(fact["provenance"]["source"], "legacy_report");
+            assert!(fact["provenance"]["raw_event"].is_null());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn pane_lifecycle_exit_unknown_survives_ephemeral_close_without_duplicate() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        h.app.windows[0].panes.get_mut(&pane_id).unwrap().as_terminal_mut().unwrap().ephemeral = true;
+        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit)).unwrap();
+        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit)).unwrap();
+        h.hidden_frame();
+        assert!(!h.app.windows.iter().any(|win| win.panes.contains_key(&pane_id)));
+        let events = records(pane_id);
+        let exits: Vec<_> = events.iter().filter(|e| e["kind"] == "exited").collect();
+        assert_eq!(exits.len(), 1, "exit must be published before removal, once");
+        assert_eq!(exits[0]["status"], "unknown");
+    }
+
+    #[test]
+    fn pane_lifecycle_failed_boot_is_not_reported_ready() {
+        for event in ["StopFailure", "SessionEnd"] {
+            let mut h = HostHarness::new();
+            let pane_id = h.add_test_pane();
+            let dir = tempfile::tempdir().unwrap();
+            let reply = temp_response(dir.path(), "failed-boot");
+            let now = std::time::Instant::now();
+            h.app.pending_agent_boots.push(crate::app::pane_wait::PendingAgentBoot {
+                pane_id, agent_cmd: "test-agent".into(), response_file: reply.clone(),
+                requested_at: now, expires_at: now + std::time::Duration::from_secs(60),
+            });
+            h.inject_ipc(serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state", "pane_id": pane_id, "state": "idle",
+                "agent": "test-agent", "event": event
+            })).unwrap());
+            h.hidden_frame();
+            let response = read_json_response(&reply);
+            assert_eq!(response["ok"], false, "terminal provider fact must fail boot: {response}");
+            let events = records(pane_id);
+            assert!(!events.iter().any(|e| e["kind"] == "agent_booted"));
+            assert!(events.iter().any(|e| e["kind"] == "agent_blocked" && e["reason"] == "boot-failure"));
+        }
+    }
+
 }

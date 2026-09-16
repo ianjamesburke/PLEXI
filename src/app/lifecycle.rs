@@ -2301,7 +2301,13 @@ impl PlexiApp {
                     let fact = PaneLifecycleEvent::from_report(state, provenance.clone(), *blocked_reason);
                     let session_started = matches!(&fact, PaneLifecycleEvent::SessionStarted { .. });
                     let session_ended = matches!(&fact, PaneLifecycleEvent::SessionEnded { .. });
+                    let boot_failed = session_ended || matches!(&fact, PaneLifecycleEvent::TurnFailed { .. });
+                    let idle = *state == crate::protocol::AgentState::Idle
+                        && matches!(&fact, PaneLifecycleEvent::TurnFinished { .. } | PaneLifecycleEvent::SessionStarted { .. });
                     self.emit_pane_lifecycle(*pane_id, fact);
+                    if idle {
+                        self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::AgentIdle { provenance: provenance.clone() });
+                    }
                     if session_ended {
                         if let Some(tracked) = self.host.pane_lifecycle.get_mut(pane_id) {
                             tracked.booted = false;
@@ -2314,7 +2320,11 @@ impl PlexiApp {
                     // frame the hook report lands. The host-observed detector
                     // path is picked up by the level-triggered re-check in
                     // `service_pending_agent_boots` instead.
-                    self.complete_agent_boots(*pane_id);
+                    if boot_failed {
+                        self.fail_agent_boots_from_terminal_report(*pane_id);
+                    } else {
+                        self.complete_agent_boots(*pane_id);
+                    }
                 } else {
                     log::warn!(
                         "pane_ipc: set_agent_state: pane_id={pane_id} not found or not agent-addressable"

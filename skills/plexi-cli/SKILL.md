@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.
-skill_version: "5.0.1"
+skill_version: "5.0.2"
 plexi_version: "0.2.6"
-last_verified: "2026-08-01"
+last_verified: "2026-09-16"
 ---
 
 # Plexi CLI
@@ -50,7 +50,9 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   project secrets and routines: `plexi workspace --help`, `plexi run --help`,
   `plexi secret --help`, and `plexi routine --help`.
 - **Agents** — install workspace definitions and report or inspect agent state:
-  `plexi agent --help`.
+  `plexi agent --help`. `agent report --event` preserves a provider lifecycle
+  event separately from its UI state; `--blocked-reason` supplies a typed reason.
+  Read `agent report --help` before using these optional fields.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
