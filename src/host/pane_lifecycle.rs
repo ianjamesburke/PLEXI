@@ -9,7 +9,7 @@
 //! provider failure is not an OS crash. PTY status is explicitly unknown until
 //! the adapter carries it. Slot values are lossless byte arrays after the write.
 //! Records have the timeline's in-memory lifetime; this is not a durable replay
-//! or restart contract. Wait/follow CLI consumers belong to the remaining stint.
+//! or restart contract. CLI wait/follow consumers use `app::event_stream`.
 use crate::protocol::{AgentBlockedReason, AgentState};
 use schemars::JsonSchema;
 use serde::Serialize;

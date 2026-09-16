@@ -91,6 +91,7 @@ impl Drop for Connection {
         match app_timeline::global().lock() {
             Ok(mut timeline) => {
                 timeline.clear_subscriber(ActorType::Agent, &self.subscriber);
+                timeline.event_ready().notify_all();
             }
             Err(error) => log::error!("events: subscription cleanup failed: {error}"),
         }
@@ -119,6 +120,20 @@ fn event_line(event: &AppEventRecord, subscription: &str) -> Value {
     line["type"] = json!("event");
     line["subscription_id"] = json!(subscription);
     line
+}
+
+fn wait_match(
+    records: &[AppEventRecord],
+    snapshot: Result<Option<AppEventRecord>, String>,
+    predicate: &str,
+) -> Result<Option<AppEventRecord>, String> {
+    match records
+        .iter()
+        .find(|event| lifecycle_matches(event, predicate))
+    {
+        Some(event) => Ok(Some(event.clone())),
+        None => snapshot,
+    }
 }
 
 pub(super) fn handle_events_subscribe(
@@ -163,6 +178,10 @@ pub(super) fn handle_events_subscribe(
             }
         }
         cancelled.store(true, Ordering::Release);
+        match app_timeline::global().lock() {
+            Ok(timeline) => timeline.event_ready().notify_all(),
+            Err(error) => log::error!("events: disconnect notification failed: {error}"),
+        }
         if disconnect_wake.send(AppRequest::Wake).is_err() {
             log::debug!("events: host stopped before disconnect wake");
         }
@@ -271,13 +290,13 @@ pub(super) fn handle_events_subscribe(
             None => Ok(None),
         }
     };
-    let mut snapshot = match snapshot {
-        Ok(snapshot) => snapshot,
-        Err(message) => {
+    let mut snapshot = snapshot;
+    if !matches!(consumer, Consumer::Wait { .. }) {
+        if let Err(message) = &snapshot {
             error(&mut socket, message);
             return;
         }
-    };
+    }
     if !matches!(consumer, Consumer::Wait { .. })
         && !send(
             &mut socket,
@@ -308,15 +327,21 @@ pub(super) fn handle_events_subscribe(
         if let Consumer::Wait { predicate, .. } = &consumer {
             // Queue first: a transient match after registration is still a match,
             // even if the state changed again before we acquired the snapshot.
-            if let Some(event) = records
-                .iter()
-                .find(|event| lifecycle_matches(event, predicate))
-                .cloned()
-                .or_else(|| snapshot.take())
-            {
-                send(&mut socket, event_line(&event, &subscription_id));
-                log::info!("pane_wait: matched {predicate} event={}", event.event_id);
-                return;
+            match wait_match(
+                &records,
+                std::mem::replace(&mut snapshot, Ok(None)),
+                predicate,
+            ) {
+                Ok(Some(event)) => {
+                    send(&mut socket, event_line(&event, &subscription_id));
+                    log::info!("pane_wait: matched {predicate} event={}", event.event_id);
+                    return;
+                }
+                Err(message) => {
+                    error(&mut socket, message);
+                    return;
+                }
+                Ok(None) => {}
             }
             if consumer.expired() {
                 send(&mut socket, json!({"type":"timeout"}));
@@ -343,14 +368,68 @@ pub(super) fn handle_events_subscribe(
                 }
             }
         }
-        // The existing host event connection services its queue here; clients
-        // block on the socket and never poll pane state.
-        let delay = match &consumer {
-            Consumer::Wait { deadline, .. } => deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(25)),
-            _ => Duration::from_millis(150),
+        // Publication and cancellation notify under this same mutex. Checking
+        // the queue before sleeping makes the handover free of lost wakeups.
+        let pending = match timeline.lock() {
+            Ok(pending) => pending,
+            Err(err) => {
+                error(&mut socket, format!("timeline lock failed: {err}"));
+                return;
+            }
         };
-        std::thread::sleep(delay);
+        if connection.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        if pending.has_deliveries_for(subscriber_type, &subscriber_id) {
+            continue;
+        }
+        if let Some(pane) = consumer.pane() {
+            if let Err(message) = pending.lifecycle_snapshot(&subscription_id, pane, None) {
+                error(&mut socket, message);
+                return;
+            }
+        }
+        let ready = pending.event_ready();
+        let result = match &consumer {
+            Consumer::Wait { deadline, .. } => ready
+                .wait_timeout(pending, deadline.saturating_duration_since(Instant::now()))
+                .map(|(guard, _)| drop(guard))
+                .map_err(|err| err.to_string()),
+            _ => ready.wait(pending).map(drop).map_err(|err| err.to_string()),
+        };
+        if let Err(err) = result {
+            error(&mut socket, format!("waiting for timeline event: {err}"));
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pane_consumer_queued_match_survives_close_before_snapshot() {
+        use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source};
+        let mut timeline = app_timeline::AppTimeline::default();
+        let outcome = timeline
+            .record_pane_lifecycle(
+                1,
+                7,
+                &PaneLifecycleEvent::AgentIdle {
+                    provenance: Provenance {
+                        source: Source::HostObservation,
+                        agent_label: "test".into(),
+                        session_id: None,
+                        raw_event: None,
+                    },
+                },
+            )
+            .unwrap();
+        let event = timeline.lifecycle_record(outcome.event_id).unwrap().clone();
+        let matched = wait_match(&[event], Err("pane is closed".into()), "idle")
+            .unwrap()
+            .unwrap();
+        assert_eq!(matched.event_id, outcome.event_id);
+        assert!(wait_match(&[], Err("pane is closed".into()), "idle").is_err());
     }
 }

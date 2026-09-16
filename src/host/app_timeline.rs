@@ -22,7 +22,7 @@ use crate::protocol::{AppEventActor, EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{ActorType, GrantDuration};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 // ── Validated event ──────────────────────────────────────────────────────────
 
@@ -293,6 +293,7 @@ pub struct AppTimeline {
     subscriptions: Vec<SubscriptionRecord>,
     deliveries: VecDeque<EventDelivery>,
     pane_locations: HashMap<u64, u64>,
+    event_ready: Arc<Condvar>,
     next_event_id: u64,
     next_delivery_id: u64,
     next_checkpoint_seq: u64,
@@ -510,6 +511,7 @@ impl AppTimeline {
             deliveries_queued,
         };
         self.events.push(record);
+        self.event_ready.notify_all();
         Ok(outcome)
     }
 
@@ -719,11 +721,15 @@ impl AppTimeline {
 
     /// Current pane ownership is host-established; records outlive ephemeral panes.
     pub(crate) fn locate_lifecycle_pane(&mut self, pane_id: u64, context_id: u64) {
-        self.pane_locations.insert(pane_id, context_id);
+        if self.pane_locations.insert(pane_id, context_id) != Some(context_id) {
+            self.event_ready.notify_all();
+        }
     }
 
     pub(crate) fn close_lifecycle_pane(&mut self, pane_id: u64) {
-        self.pane_locations.remove(&pane_id);
+        if self.pane_locations.remove(&pane_id).is_some() {
+            self.event_ready.notify_all();
+        }
     }
 
     pub(crate) fn lifecycle_record(&self, event_id: u64) -> Option<&AppEventRecord> {
@@ -881,6 +887,16 @@ impl AppTimeline {
         taken
     }
 
+    /// Socket consumers sleep on the timeline mutex, so publication and
+    /// disconnect notifications cannot race the empty-queue check.
+    pub(crate) fn event_ready(&self) -> Arc<Condvar> {
+        Arc::clone(&self.event_ready)
+    }
+
+    pub(crate) fn has_deliveries_for(&self, actor: ActorType, id: &str) -> bool {
+        self.deliveries.iter().any(|d| d.subscriber_type == actor && d.subscriber_id == id)
+    }
+
     /// Number of deliveries waiting without draining them.
     pub fn pending_delivery_count(&self) -> usize {
         self.deliveries.len()
@@ -956,6 +972,32 @@ mod tests {
             subscriber_context_id: CTX,
             created_at: "2026-06-11T00:00:00Z".to_string(),
         }
+    }
+
+    #[test]
+    fn pane_consumer_registration_queue_bridges_transient_match_before_snapshot() {
+        use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source, PUBLISHER, STREAM};
+        let mut timeline = AppTimeline::default();
+        timeline.locate_lifecycle_pane(7, CTX);
+        let mut sub = subscription(PayloadMode::Full, TriggerMode::Conversation);
+        sub.app_id = PUBLISHER.into();
+        sub.event_names = vec![STREAM.into()];
+        sub.resource_id = Some("7".into());
+        timeline.add_subscription(sub);
+        let provenance = Provenance {
+            source: Source::HostObservation, agent_label: "test".into(),
+            session_id: None, raw_event: None,
+        };
+        let idle = timeline.record_pane_lifecycle(CTX, 7,
+            &PaneLifecycleEvent::AgentIdle { provenance: provenance.clone() }).unwrap();
+        timeline.record_pane_lifecycle(CTX, 7,
+            &PaneLifecycleEvent::AgentWorking { provenance }).unwrap();
+        assert!(timeline.lifecycle_snapshot("sub-1", 7, Some("idle")).unwrap().is_none());
+        let queued = timeline.take_deliveries_for(ActorType::Agent, "chess-opponent");
+        let matched = queued.iter().filter_map(|d| timeline.lifecycle_record(d.event_id))
+            .find(|event| lifecycle_matches(event, "idle")).unwrap();
+        assert_eq!(matched.event_id, idle.event_id,
+            "registration must preserve a matching transition before the current snapshot");
     }
 
     #[test]

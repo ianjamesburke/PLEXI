@@ -8,6 +8,15 @@ impl PlexiApp {
     pub(crate) fn observe_pane_spawns(&mut self) {
         match crate::host::app_timeline::global().lock() {
             Ok(mut timeline) => {
+                for pane_id in self.host.pane_lifecycle.keys() {
+                    if !self
+                        .windows
+                        .iter()
+                        .any(|win| win.panes.contains_key(pane_id))
+                    {
+                        timeline.close_lifecycle_pane(*pane_id);
+                    }
+                }
                 for win in &self.windows {
                     for pane_id in win.panes.keys() {
                         timeline.locate_lifecycle_pane(*pane_id, win.context_id);

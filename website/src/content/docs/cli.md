@@ -771,6 +771,8 @@ Control panes — list, focus, send input, capture output, and more
 
 | Subcommand | Description |
 |---|---|
+| `wait` | Wait for current idle, blocked, or exited state; print its lifecycle record. Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure |
+| `events` | Follow brokered pane lifecycle records as NDJSON until interrupted |
 | `new` | Open a new terminal pane |
 | `name` | Rename a pane |
 | `list` | List all open panes as a JSON array |
@@ -789,6 +791,25 @@ Control panes — list, focus, send input, capture output, and more
 | `command` | Send an ordinary shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
 | `slot` | Manage host-managed named file slots for a pane |
+
+### `plexi pane wait`
+
+Wait for current idle, blocked, or exited state; print its lifecycle record. Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes |  |
+| `--until` | string | yes | Predicate: idle, blocked, or exited (any exit, including unknown status) |
+| `--timeout` | string | no | Host deadline in seconds; must be finite and positive Default: `300`. |
+
+### `plexi pane events`
+
+Follow brokered pane lifecycle records as NDJSON until interrupted
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--follow` | flag | yes |  |
+| `--pane` | string | no | Limit deliveries to one pane in the caller's allowed context |
 
 ### `plexi pane new`
 

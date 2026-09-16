@@ -241,8 +241,8 @@ pub fn record_subscription(
 /// An in-memory subscribe request handed from a transport's connection thread
 /// to the host UI thread. The UI thread owns the [`HostSubscriptionService`]
 /// (grant store + pane→identity trust), so identity resolution and the broker
-/// check happen there; the connection thread streams deliveries afterward by
-/// polling the global timeline directly. Not serialized — `reply` is a live
+/// check happen there; the connection thread then waits on timeline publication
+/// and streams its queued deliveries. Not serialized — `reply` is a live
 /// channel.
 pub struct HostSubscribeRequest {
     pub publisher_app_id: String,
