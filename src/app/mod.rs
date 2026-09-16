@@ -3207,6 +3207,16 @@ impl eframe::App for PlexiApp {
         // next uncovered (stint 0505 fix round 3).
         self.update_preamble(ctx);
 
+        // Hot reload (#83): drain any pending file-watcher reload requests.
+        // Each `ReloadRequest` causes the matching pane's WASM runtime to be
+        // dropped (sending Shutdown + reaping the child) and replaced with
+        // a fresh subprocess. Idempotent if the pane was closed since. Lives
+        // in `logic`, never `ui` — this drained per frame from `ui` until
+        // stint 0759, so a watcher save under a fully occluded host sat
+        // unserviced (`ui_mailbox: source=hot_reload has N unserviced
+        // message(s)`) until the window was next uncovered.
+        self.drain_hot_reload_requests();
+
         // One-shot notes migration off the pre-tier store. Here rather than in
         // `PlexiApp::new` because it needs the restored router to resolve the old
         // one-way-hashed directory names, and in `logic` rather than `ui` so an
@@ -4100,12 +4110,6 @@ impl eframe::App for PlexiApp {
                 }
             }
         }
-
-        // Hot reload (#83): drain any pending file-watcher reload requests.
-        // Each `ReloadRequest` causes the matching pane's WASM runtime to be
-        // dropped (sending Shutdown + reaping the child) and replaced with
-        // a fresh subprocess. Idempotent if the pane was closed since.
-        self.drain_hot_reload_requests();
 
         // App state files (stint 0644): drain external-change notices and
         // re-read the affected scope on the matching pane. Lives in `logic`,
