@@ -293,6 +293,7 @@ pub struct HostSubscribeRequest {
     /// transports that already establish identity another way (host MCP's
     /// bearer credential, a WASM/Python app's own host-known pane id).
     pub peer_ancestry: Option<Vec<u32>>,
+    pub cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
@@ -336,6 +337,7 @@ enum ConsentAction {
         payload_mode: PayloadMode,
         trigger_mode: TriggerMode,
         resource_id: Option<String>,
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
         reply: SyncSender<HostSubscribeReply>,
     },
     Publish {
@@ -348,6 +350,11 @@ enum ConsentAction {
 }
 
 impl PendingEventConsent {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        matches!(&self.action, ConsentAction::Subscribe { cancelled: Some(flag), .. }
+            if flag.load(std::sync::atomic::Ordering::Acquire))
+    }
+
     /// Human-readable target for the consent modal: `"<app> :: <events>"`.
     pub fn target_label(&self) -> String {
         let streams = if self.event_names.is_empty() {
@@ -531,6 +538,9 @@ impl HostSubscriptionService {
         &self,
         req: HostSubscribeRequest,
     ) -> Option<PendingEventConsent> {
+        if req.cancelled.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return None;
+        }
         let (subscriber_type, subscriber_id) = match &req.subscriber_override {
             Some(id) => (
                 req.subscriber_type_override.unwrap_or(ActorType::Agent),
@@ -594,11 +604,14 @@ impl HostSubscriptionService {
                     req.resource_id,
                     GrantDuration::Session,
                 );
-                let _ = req.reply.send(HostSubscribeReply::Ok {
+                if req.reply.send(HostSubscribeReply::Ok {
                     subscription_id,
                     subscriber_type,
-                    subscriber_id,
-                });
+                    subscriber_id: subscriber_id.clone(),
+                }).is_err() {
+                    self.timeline.lock().unwrap().clear_subscriber(subscriber_type, &subscriber_id);
+                    log::info!("event_subscriptions: disconnected before approval reply: {subscriber_id}");
+                }
                 None
             }
             Decision::Deny => {
@@ -624,6 +637,7 @@ impl HostSubscriptionService {
                         payload_mode: req.payload_mode,
                         trigger_mode: req.trigger_mode,
                         resource_id: req.resource_id,
+                        cancelled: req.cancelled,
                         reply: req.reply,
                     },
                 })
@@ -643,6 +657,7 @@ impl HostSubscriptionService {
         choice: ConsentChoice,
         config_dir: &Path,
     ) {
+        if consent.is_cancelled() { return; }
         let PendingEventConsent {
             subscriber_type,
             subscriber_id,
@@ -682,6 +697,7 @@ impl HostSubscriptionService {
                 payload_mode,
                 trigger_mode,
                 resource_id,
+                cancelled: _,
                 reply,
             } => {
                 if choice == ConsentChoice::Deny {
@@ -1092,6 +1108,7 @@ mod tests {
             workspace_root_override: Some(PathBuf::from("/workspace/notes")),
             context_id_override: Some(CTX),
             peer_ancestry: None,
+            cancelled: None,
             reply,
         };
 
@@ -1134,6 +1151,7 @@ mod tests {
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             context_id_override: Some(CTX),
             peer_ancestry: None,
+            cancelled: None,
             reply: tx,
         };
         (req, rx)
@@ -1163,6 +1181,7 @@ mod tests {
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             context_id_override: Some(CTX),
             peer_ancestry: None,
+            cancelled: None,
             reply: tx,
         };
         (req, rx)

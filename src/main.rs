@@ -959,6 +959,12 @@ fn main() -> eframe::Result {
                             from_cursor,
                             plain,
                         )),
+                        PaneCmd::Wait { pane_id, until, timeout } => {
+                            std::process::exit(cli::pane_lifecycle_wait_cli(pane_id, &until, timeout))
+                        }
+                        PaneCmd::Events { follow: _, pane } => {
+                            std::process::exit(cli::pane_lifecycle_follow_cli(pane))
+                        }
                         PaneCmd::Status { pane_id } => {
                             std::process::exit(cli::pane_status_cli(pane_id))
                         }

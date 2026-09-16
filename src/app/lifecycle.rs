@@ -119,6 +119,8 @@ impl PlexiApp {
     /// are reloaded from disk first so a just-granted permission applies without
     /// a host restart.
     fn drain_event_subscribe_channel(&mut self) {
+        self.pending_event_consents.retain(|consent| !consent.is_cancelled());
+        self.observe_pane_spawns();
         // Pull all pending requests before touching the grant store so the
         // reload happens at most once per frame regardless of request count.
         let mut subscribe_reqs = Vec::new();
@@ -147,6 +149,11 @@ impl PlexiApp {
                 req.from_pane_id = verified_pane_id;
                 req.context_id_override = context_id;
                 req.workspace_root_override = workspace_root;
+            }
+            if req.cancelled.is_some() {
+                req.broker_actor_override = Some(
+                    crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1,
+                );
             }
             // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
             // returns a parked consent we surface as a host modal next frame.

@@ -292,6 +292,7 @@ pub struct AppTimeline {
     checkpoints: Vec<UndoCheckpoint>,
     subscriptions: Vec<SubscriptionRecord>,
     deliveries: VecDeque<EventDelivery>,
+    pane_locations: HashMap<u64, u64>,
     next_event_id: u64,
     next_delivery_id: u64,
     next_checkpoint_seq: u64,
@@ -714,6 +715,53 @@ impl AppTimeline {
                 current_revision: current_revision.to_string(),
             })
         }
+    }
+
+    /// Current pane ownership is host-established; records outlive ephemeral panes.
+    pub(crate) fn locate_lifecycle_pane(&mut self, pane_id: u64, context_id: u64) {
+        self.pane_locations.insert(pane_id, context_id);
+    }
+
+    pub(crate) fn close_lifecycle_pane(&mut self, pane_id: u64) {
+        self.pane_locations.remove(&pane_id);
+    }
+
+    pub(crate) fn lifecycle_record(&self, event_id: u64) -> Option<&AppEventRecord> {
+        self.events.iter().rev().find(|event| event.event_id == event_id)
+    }
+
+    /// Called only after broker approval. Subscription registration precedes this
+    /// snapshot; queued deliveries bridge any transition before the snapshot lock.
+    pub(crate) fn lifecycle_snapshot(
+        &self, subscription_id: &str, pane_id: u64, predicate: Option<&str>,
+    ) -> Result<Option<AppEventRecord>, String> {
+        use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
+        let sub = self.subscriptions.iter().find(|sub| sub.subscription_id == subscription_id)
+            .ok_or("lifecycle subscription is no longer active")?;
+        if sub.app_id != PUBLISHER || !sub.event_names.iter().any(|name| name == STREAM) {
+            return Err("not a pane lifecycle subscription".into());
+        }
+        let records = || self.events.iter().rev().filter(|event|
+            event.app_id == PUBLISHER && event.event == STREAM && event.pane_id == pane_id);
+        let exited = records().find(|event| event.payload.as_ref()
+            .is_some_and(|payload| payload["kind"] == "exited"));
+        let context_id = self.pane_locations.get(&pane_id).copied()
+            .or_else(|| exited.map(|event| event.owner_context_id))
+            .ok_or("pane is closed or unknown and has no retained exit")?;
+        if context_id != sub.subscriber_context_id {
+            return Err("pane is outside the subscriber's context".into());
+        }
+        let record = if predicate == Some("exited") {
+            exited
+        } else {
+            records().find(|event| event.payload.as_ref().is_some_and(|payload| {
+                matches!(payload["kind"].as_str(), Some("agent_idle" | "agent_working" |
+                    "agent_blocked" | "agent_reported" | "session_started" | "session_ended" |
+                    "turn_finished" | "turn_failed" | "exited"))
+            }))
+        };
+        Ok(record.filter(|event| sub.matches(PUBLISHER, event)
+            && predicate.is_some_and(|predicate| lifecycle_matches(event, predicate))).cloned())
     }
 
     // ── Subscriptions ───────────────────────────────────────────────────────
@@ -1400,4 +1448,13 @@ mod tests {
         assert!(same_context.matches("chess", &record));
         assert!(!cross_context.matches("chess", &record));
     }
+}
+
+/// Predicates deliberately describe observed/reported state, never task verdicts.
+pub(crate) fn lifecycle_matches(event: &AppEventRecord, predicate: &str) -> bool {
+    let kind = match predicate {
+        "idle" => "agent_idle", "blocked" => "agent_blocked", "exited" => "exited", _ => return false,
+    };
+    event.app_id == crate::host::pane_lifecycle::PUBLISHER
+        && event.payload.as_ref().is_some_and(|payload| payload["kind"] == kind)
 }

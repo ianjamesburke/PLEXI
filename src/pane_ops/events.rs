@@ -6,6 +6,16 @@ impl PlexiApp {
     /// Register panes from all creation/restoration paths before servicing events.
     /// Called in the logic pass, including while the window is hidden.
     pub(crate) fn observe_pane_spawns(&mut self) {
+        match crate::host::app_timeline::global().lock() {
+            Ok(mut timeline) => {
+                for win in &self.windows {
+                    for pane_id in win.panes.keys() {
+                        timeline.locate_lifecycle_pane(*pane_id, win.context_id);
+                    }
+                }
+            }
+            Err(error) => log::error!("pane_lifecycle: updating pane ownership failed: {error}"),
+        }
         let fresh: Vec<_> = self
             .windows
             .iter()
