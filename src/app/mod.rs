@@ -15,6 +15,7 @@ pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod lifecycle;
+mod event_stream;
 pub mod marketplace;
 pub(crate) mod notification_image;
 mod notifications;
@@ -752,12 +753,13 @@ fn handle_socket_connection(
     // through to the normal one-shot path.
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
         match val.get("type").and_then(|t| t.as_str()) {
-            Some("events_subscribe") => {
-                handle_events_subscribe(
+            Some("events_subscribe" | "pane_lifecycle_wait" | "pane_lifecycle_follow") => {
+                event_stream::handle_events_subscribe(
                     write_half,
                     reader.lines(),
                     val,
                     &subscribe_mailbox,
+                    &mailbox,
                     peer_ancestry.as_deref(),
                 );
                 return;
@@ -856,172 +858,6 @@ fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u3
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn resolve_socket_peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> {
     None
-}
-
-/// Stream one app's event deliveries to a CLI subscriber as NDJSON. Routes the
-/// subscribe round-trip through the UI thread (`subscribe_tx`) for identity +
-/// broker check, acks, then polls the global timeline and writes one JSON line
-/// per delivery until the client disconnects, then clears the subscription.
-fn handle_events_subscribe(
-    mut write_half: std::os::unix::net::UnixStream,
-    remaining: std::io::Lines<std::io::BufReader<std::os::unix::net::UnixStream>>,
-    val: serde_json::Value,
-    subscribe_mailbox: &ui_mailbox::UiMailbox<
-        crate::host::event_subscriptions::HostSubscribeRequest,
-    >,
-    // Host-captured kernel ancestry of the socket peer (see
-    // `handle_socket_connection`'s doc comment) — forwarded so the UI thread
-    // can independently verify `from_pane_id` instead of trusting the
-    // client-forwarded `PLEXI_PANE_ID` value alone (stint 0724 Phase D).
-    peer_ancestry: Option<&[u32]>,
-) {
-    use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
-    use std::io::Write;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    let app_id = val["app_id"].as_str().unwrap_or_default().to_string();
-    let event_names: Vec<String> = val["event_names"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let payload_mode = serde_json::from_value(val["payload_mode"].clone())
-        .unwrap_or(crate::protocol::PayloadMode::Full);
-    let trigger_mode = serde_json::from_value(val["trigger_mode"].clone())
-        .unwrap_or(crate::protocol::TriggerMode::Conversation);
-    let resource_id = val["resource_id"].as_str().map(String::from);
-    let from_pane_id = val["from_pane_id"].as_u64();
-
-    let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<HostSubscribeReply>(1);
-    let req = HostSubscribeRequest {
-        publisher_app_id: app_id.clone(),
-        event_names,
-        payload_mode,
-        trigger_mode,
-        resource_id,
-        from_pane_id,
-        subscriber_override: None,
-        subscriber_type_override: None,
-        // CLI identity (`pane:N`) is already stable and unique per pane, so the
-        // broker actor is the routing id itself — no decoupling needed.
-        broker_actor_override: None,
-        // Resolved on the UI thread from `from_pane_id` (verified against
-        // `peer_ancestry` first) — see `drain_event_subscribe_channel`.
-        workspace_root_override: None,
-        context_id_override: None,
-        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
-        reply: reply_tx,
-    };
-    if subscribe_mailbox.send(req).is_err() {
-        let _ = writeln!(
-            write_half,
-            "{}",
-            serde_json::json!({"type": "error", "message": "host not accepting subscriptions"})
-        );
-        return;
-    }
-
-    // Generous wait: a first-time subscribe under the broker's default `Ask`
-    // posture blocks here until the user answers the host consent modal. A
-    // pre-granted subscribe replies near-instantly.
-    let (subscriber_type, subscriber_id, subscription_id) =
-        match reply_rx.recv_timeout(Duration::from_secs(120)) {
-            Ok(HostSubscribeReply::Ok {
-                subscription_id,
-                subscriber_type,
-                subscriber_id,
-            }) => (subscriber_type, subscriber_id, subscription_id),
-            Ok(HostSubscribeReply::Err { message }) => {
-                let _ = writeln!(
-                    write_half,
-                    "{}",
-                    serde_json::json!({"type": "error", "message": message})
-                );
-                return;
-            }
-            Err(_) => {
-                let _ = writeln!(
-                    write_half,
-                    "{}",
-                    serde_json::json!({"type": "error", "message": "subscribe consent timed out"})
-                );
-                return;
-            }
-        };
-
-    let ack = serde_json::json!({
-        "type": "subscribed",
-        "subscription_id": subscription_id,
-        "app_id": app_id,
-    });
-    if writeln!(write_half, "{ack}").is_err() {
-        return;
-    }
-    let _ = write_half.flush();
-    log::info!(
-        "events: streaming subscription {subscription_id} for {subscriber_type:?} '{subscriber_id}' -> '{app_id}'"
-    );
-
-    // Detect client disconnect: a reader thread drains the (otherwise silent)
-    // input side and flips the flag on EOF, so an idle subscription with no
-    // events still tears down promptly when the CLI exits.
-    let disconnected = Arc::new(AtomicBool::new(false));
-    {
-        let flag = Arc::clone(&disconnected);
-        std::thread::spawn(move || {
-            for _ in remaining {}
-            flag.store(true, Ordering::Relaxed);
-        });
-    }
-
-    let timeline = crate::host::app_timeline::global();
-    loop {
-        if disconnected.load(Ordering::Relaxed) {
-            break;
-        }
-        let deliveries = timeline
-            .lock()
-            .unwrap()
-            .take_deliveries_for(subscriber_type, &subscriber_id);
-        for d in deliveries {
-            let line = serde_json::json!({
-                "type": "event",
-                "subscription_id": d.subscription_id,
-                "app_id": d.app_id,
-                "event": d.event,
-                "event_id": d.event_id,
-                "resource_id": d.resource_id,
-                "trigger_mode": d.trigger_mode,
-                "summary": d.summary,
-                "payload": d.payload,
-                "state_ref": d.state_ref,
-                "created_at": d.created_at,
-            });
-            if writeln!(write_half, "{line}").is_err() {
-                disconnected.store(true, Ordering::Relaxed);
-                break;
-            }
-            let _ = write_half.flush();
-        }
-        if disconnected.load(Ordering::Relaxed) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(150));
-    }
-
-    let (subs, drops) = timeline
-        .lock()
-        .unwrap()
-        .clear_subscriber(subscriber_type, &subscriber_id);
-    log::info!(
-        "events: subscriber '{subscriber_id}' disconnected; cleared {subs} subscription(s), \
-         dropped {drops} queued delivery(ies)"
-    );
 }
 
 /// Answer `events_list`: write the declared `(context_id, app_id, stream)`
@@ -2314,6 +2150,12 @@ impl PlexiApp {
         #[cfg(test)]
         SCOPE_INVALIDATION_COUNT_FOR_TEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+        if let crate::host::scope::ScopeInvalidation::PaneClosed { pane_id, .. } = &ev {
+            match crate::host::app_timeline::global().lock() {
+                Ok(mut timeline) => timeline.close_lifecycle_pane(*pane_id),
+                Err(error) => log::error!("pane_lifecycle: closing pane ownership failed: {error}"),
+            }
+        }
         self.registries.invalidate(&ev, &self.router);
 
         // A context's root moved: every live app pane in that context must
@@ -2509,6 +2351,7 @@ impl PlexiApp {
             // path resolved it, not a client claim), so there is no peer
             // ancestry to verify against.
             peer_ancestry: None,
+            cancelled: None,
             reply,
         };
         self.host_subscriptions.reload(&crate::config::config_dir());

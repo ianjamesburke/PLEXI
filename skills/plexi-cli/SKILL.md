@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.
-skill_version: "5.0.2"
+skill_version: "5.0.3"
 plexi_version: "0.2.6"
 last_verified: "2026-09-16"
 ---
@@ -28,6 +28,18 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   output recency, child pids) — never trust the claim alone for liveness;
   add `--stale-after <secs>` to raise a typed `stale_claim` when the claim
   looks fresh but output has gone quiet.
+- **Lifecycle events** — `plexi pane wait <id> --until idle|blocked|exited
+  --timeout <seconds>` waits for current state or a later matching event. It
+  prints the matching JSON record and exits 0; timeout exits 2; permission,
+  missing-pane, transport, and argument errors exit 1. `idle` describes agent
+  readiness, not task success. `blocked` retains its typed reason. `exited`
+  matches any recorded PTY exit, including explicitly unknown status; it does
+  not promise a successful exit. A retained exit remains queryable after the
+  pane closes, for this host lifetime. `plexi pane events --follow [--pane <id>]`
+  streams new lifecycle records as NDJSON, scoped to the caller's context and
+  subject to event-stream consent. Stop, StopFailure, and SessionEnd remain
+  distinct raw facts. Each invocation owns its subscription; interruption or
+  a broken output pipe releases it. Events are not replayed after host restart.
 - **Slots** — store a small, named pane result that another pane can inspect or
   wait for: `plexi pane slot --help`.
 - **Contexts** — create or enter scoped project spaces, including pre-populated

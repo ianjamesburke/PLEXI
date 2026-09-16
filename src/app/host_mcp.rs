@@ -499,6 +499,7 @@ fn tool_subscribe_and_wait(
         // registration — see `register_pane_credential`); there is no raw
         // socket peer to independently verify here.
         peer_ancestry: None,
+        cancelled: None,
         reply: reply_tx,
     };
     subscribe_tx

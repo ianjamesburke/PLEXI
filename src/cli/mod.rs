@@ -1181,7 +1181,7 @@ pub use demo::demo_cli;
 pub use doctor::doctor_cli;
 pub use events::{
     events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
-    events_subscribe_cli, EmitArgs,
+    events_subscribe_cli, pane_lifecycle_wait_cli, pane_lifecycle_follow_cli, EmitArgs,
 };
 pub use host::{host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{

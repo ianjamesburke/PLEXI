@@ -917,6 +917,10 @@ impl PlexiApp {
         // without it a closed run would block its routine forever), then park
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
+            match crate::host::app_timeline::global().lock() {
+                Ok(mut timeline) => timeline.close_lifecycle_pane(pane_id),
+                Err(error) => log::error!("pane_lifecycle: closing pane {pane_id}: {error}"),
+            }
             crate::app::host_mcp::revoke_pane_credentials(pane_id);
             if self.pane_heartbeats.remove(&pane_id).is_some() {
                 log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");

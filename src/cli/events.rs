@@ -303,3 +303,169 @@ fn trigger_mode_json(s: &str) -> &'static str {
         _ => "conversation",
     }
 }
+
+/// Consume lifecycle records without leaking subscription acks to stdout.
+fn consume_lifecycle<R: BufRead, W: Write, E: Write>(
+    reader: R,
+    output: &mut W,
+    errors: &mut E,
+    wait: bool,
+) -> i32 {
+    for line in reader.lines() {
+        let value: serde_json::Value = match line {
+            Ok(line) => match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = writeln!(errors, "error: invalid lifecycle reply: {error}");
+                    return 1;
+                }
+            },
+            Err(error) => {
+                let _ = writeln!(errors, "error: reading lifecycle stream: {error}");
+                return 1;
+            }
+        };
+        match value["type"].as_str() {
+            Some("subscribed") if !wait => {}
+            Some("event") => {
+                if let Err(error) = writeln!(output, "{value}").and_then(|()| output.flush()) {
+                    let _ = writeln!(errors, "error: writing lifecycle output: {error}");
+                    return 1;
+                }
+                if wait {
+                    return 0;
+                }
+            }
+            Some("timeout") if wait => {
+                let _ = writeln!(errors, "pane wait timed out");
+                return 2;
+            }
+            Some("error") => {
+                let _ = writeln!(
+                    errors,
+                    "error: {}",
+                    value["message"]
+                        .as_str()
+                        .unwrap_or("lifecycle request failed")
+                );
+                return 1;
+            }
+            _ => {
+                let _ = writeln!(errors, "error: unexpected lifecycle reply");
+                return 1;
+            }
+        }
+    }
+    let _ = writeln!(errors, "error: host closed the lifecycle connection");
+    1
+}
+
+pub fn pane_lifecycle_wait_cli(pane: u64, predicate: &str, timeout: f64) -> i32 {
+    if !matches!(predicate, "idle" | "blocked" | "exited") || !timeout.is_finite() || timeout <= 0.0
+    {
+        eprintln!(
+            "error: --until must be idle, blocked, or exited; --timeout must be finite and positive"
+        );
+        return 1;
+    }
+    let Some(client_timeout) = std::time::Duration::try_from_secs_f64(timeout)
+        .ok()
+        .and_then(|value| value.checked_add(std::time::Duration::from_secs(5)))
+    else {
+        eprintln!("error: timeout is too large");
+        return 1;
+    };
+    lifecycle_request(
+        serde_json::json!({"type":"pane_lifecycle_wait", "pane_id":pane,
+        "until":predicate, "timeout":timeout, "from_pane_id":from_pane_id()}),
+        Some(client_timeout),
+    )
+}
+
+pub fn pane_lifecycle_follow_cli(pane: Option<u64>) -> i32 {
+    lifecycle_request(
+        serde_json::json!({"type":"pane_lifecycle_follow", "pane_id":pane,
+        "from_pane_id":from_pane_id()}),
+        None,
+    )
+}
+
+fn lifecycle_request(request: serde_json::Value, timeout: Option<std::time::Duration>) -> i32 {
+    let stream = match connect_and_send(&request) {
+        Ok(stream) => stream,
+        Err(code) => return code,
+    };
+    if let Err(error) = stream.set_read_timeout(timeout) {
+        eprintln!("error: setting lifecycle response deadline: {error}");
+        return 1;
+    }
+    // SIGINT exits the CLI and closes this socket. The host's connection owner
+    // also observes EOF on cancellation and cleans up an idle subscription.
+    consume_lifecycle(
+        BufReader::new(stream),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+        timeout.is_some(),
+    )
+}
+
+#[cfg(test)]
+mod pane_consumer_output_tests {
+    use super::consume_lifecycle;
+    #[test]
+    fn pane_consumer_broken_stdout_exits_with_plumbing_error() {
+        struct Broken;
+        impl std::io::Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut errors = Vec::new();
+        assert_eq!(
+            consume_lifecycle(
+                b"{\"type\":\"event\"}\n".as_slice(),
+                &mut Broken,
+                &mut errors,
+                false
+            ),
+            1
+        );
+        assert!(
+            String::from_utf8(errors)
+                .unwrap()
+                .contains("writing lifecycle output")
+        );
+    }
+
+    #[test]
+    fn pane_consumer_exit_codes_and_stdout_are_branchable() {
+        for (input, wait, expected, stdout) in [
+            ("{\"type\":\"timeout\"}\n", true, 2, false),
+            (
+                "{\"type\":\"error\",\"message\":\"denied\"}\n",
+                true,
+                1,
+                false,
+            ),
+            (
+                "{\"type\":\"event\",\"payload\":{\"kind\":\"exited\",\"status\":\"unknown\"}}\n",
+                true,
+                0,
+                true,
+            ),
+            ("{\"type\":\"subscribed\"}\n", false, 1, false),
+            ("bad json\n", true, 1, false),
+        ] {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            assert_eq!(
+                consume_lifecycle(input.as_bytes(), &mut out, &mut err, wait),
+                expected
+            );
+            assert_eq!(!out.is_empty(), stdout);
+        }
+    }
+}

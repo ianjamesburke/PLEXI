@@ -970,6 +970,25 @@ pub enum AccountCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
+    /// Wait for current idle, blocked, or exited state; print its lifecycle record.
+    /// Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure.
+    Wait {
+        pane_id: u64,
+        /// Predicate: idle, blocked, or exited (any exit, including unknown status).
+        #[arg(long)]
+        until: String,
+        /// Host deadline in seconds; must be finite and positive.
+        #[arg(long, default_value_t = 300.0)]
+        timeout: f64,
+    },
+    /// Follow brokered pane lifecycle records as NDJSON until interrupted.
+    Events {
+        #[arg(long, required = true)]
+        follow: bool,
+        /// Limit deliveries to one pane in the caller's allowed context.
+        #[arg(long)]
+        pane: Option<u64>,
+    },
     /// Open a new terminal pane.
     ///
     /// Examples:
