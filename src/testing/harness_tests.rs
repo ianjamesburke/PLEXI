@@ -5584,8 +5584,7 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
 fn write_hidden_axis_probe(dir: &std::path::Path, title: &str) {
     std::fs::write(
         dir.join("manifest.toml"),
-        format!(
-            "schema_version = 1\n\n\
+        "schema_version = 1\n\n\
              [app]\n\
              id = \"hidden-axis-probe\"\n\
              type = \"app\"\n\
@@ -5593,8 +5592,7 @@ fn write_hidden_axis_probe(dir: &std::path::Path, title: &str) {
              entry = \"main.py\"\n\
              version = \"0.1.0\"\n\
              description = \"stint 0759 HostHarness fixture\"\n\
-             watch = true\n"
-        ),
+             watch = true\n",
     )
     .expect("write manifest.toml");
     std::fs::write(
@@ -5765,6 +5763,34 @@ fn set_timer_fires_while_window_hidden() {
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+#[test]
+fn future_timer_keeps_a_hidden_pane_wake_scheduled() {
+    let tmp = tempfile::tempdir().expect("app dir");
+    write_hidden_axis_probe(tmp.path(), "waiting");
+    let entry = tmp.path().join("main.py");
+    let source = std::fs::read_to_string(&entry).expect("read probe");
+    std::fs::write(&entry, source.replace("30, repeat=False", "60000, repeat=False"))
+        .expect("give the timer a future deadline");
+    let mut h = HostHarness::new();
+    let pane_id = h
+        .app
+        .launch_app_by_path_with_layout_no_review_modal(
+            &tmp.path().to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .expect("launch timer probe")
+        .expect("pane id");
+    h.wait_for_first_render(pane_id);
+    h.run_hidden_frames(3);
+    assert_eq!(python_pane_title(&h, pane_id).as_deref(), Some("waiting"));
+    assert!(
+        h.app.background_processes_need_wake(true),
+        "a registered future timer must keep a hidden host wake scheduled before it becomes due"
+    );
 }
 
 /// Stint 0751: `mcp.client` is beta-gated (`ReleaseFeature::McpClient`) so a

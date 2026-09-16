@@ -3528,12 +3528,12 @@ impl PlexiApp {
     /// wedges whenever the pane is idle or the window is occluded (CLAUDE.md
     /// trap; the MCP handshake stall this fixes is documented on
     /// `LivePythonPane::service_external_io`).
-    pub(super) fn service_python_pane_runtimes(&mut self) {
+    pub(super) fn service_python_pane_runtimes(&mut self, ctx: &egui::Context) {
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
                 if let Some(app) = pane.as_app_mut() {
                     if let crate::host::pane::AppRuntime::Python(python) = &mut app.runtime {
-                        python.service_external_io();
+                        python.service_external_io(ctx);
                     }
                 }
             }

@@ -1150,7 +1150,7 @@ pub struct LivePythonPane {
     /// Off-paint-thread JSON + tree decode (stint 0438). Recreated on
     /// `relaunch` since it is bound to the runtime's stdout.
     decoder: PythonOutputDecoder,
-    /// Egui repaint target for the decoder, installed on the first `ui()` and
+    /// Egui repaint target for the decoder, installed by logic servicing and
     /// shared with the decoder so a ready frame wakes the paint loop.
     repaint: RepaintHook,
     /// The repaint this pane last scheduled, published so the decoder can let a
@@ -2412,12 +2412,7 @@ impl LivePythonPane {
                 self.pending_click_carry.is_none()
             );
         }
-        {
-            let mut repaint = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
-            if repaint.is_none() {
-                *repaint = Some((ui.ctx().clone(), ui.ctx().viewport_id()));
-            }
-        }
+        self.bind_repaint(ui.ctx());
         if let Some(error) = &self.error {
             if pending_click.is_some() {
                 // Fatal and does not self-heal without a relaunch (which
@@ -2664,7 +2659,8 @@ impl LivePythonPane {
     /// server's handshake sat undelivered for 88 s and was then killed by the
     /// bridge's own 90 s deadline, while polling `plexi pane state` — which
     /// forces paints — made the identical setup succeed in 3 s.
-    pub fn service_external_io(&mut self) {
+    pub fn service_external_io(&mut self, ctx: &egui::Context) {
+        self.bind_repaint(ctx);
         if self.error.is_some() {
             // A fatal pane never drains again (`ui` early-returns the same
             // way); draining here would spam the decoder-disconnected error
@@ -2672,6 +2668,13 @@ impl LivePythonPane {
             return;
         }
         self.drain_runtime();
+    }
+
+    fn bind_repaint(&self, ctx: &egui::Context) {
+        let mut repaint = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
+        if repaint.is_none() {
+            *repaint = Some((ctx.clone(), ctx.viewport_id()));
+        }
     }
 
     /// Edge-latched diagnostics for the MCP inbound watermark: engage and
@@ -3501,6 +3504,9 @@ impl LivePythonPane {
         }
         self.initialized = true;
         self.viewport_size = Some(size);
+        log::info!(
+            "app::{}: sending Python init size={}x{}", self.app_id, size.0, size.1
+        );
         if let Err(error) = self.runtime.send(&json!({
             "type": "init", "app_id": self.app_id,
             "workspace_root": self.config.workspace_root,
@@ -3511,6 +3517,7 @@ impl LivePythonPane {
             "args": self.config.launch_args,
             "size": [size.0, size.1]
         })) {
+            log::error!("app::{}: Python init send failed: {error}", self.app_id);
             self.error = Some(error.to_string());
         }
     }
@@ -3955,7 +3962,12 @@ impl LivePythonPane {
                     let timer_ids = std::mem::take(&mut self.pending_timer_events);
                     match self.runtime.send(&python_render_event(frame_id, timer_ids)) {
                         Ok(()) => self.drain_runtime(),
-                        Err(error) => self.error = Some(error.to_string()),
+                        Err(error) => {
+                            log::error!(
+                                "app::{}: background render send failed: {error}", self.app_id
+                            );
+                            self.error = Some(error.to_string());
+                        }
                     }
                 }
             }
@@ -3972,26 +3984,22 @@ impl LivePythonPane {
     /// Whether [`Self::background_tick`] can currently make progress. Cheap and
     /// non-consuming — the host asks this of every off-screen pane every frame.
     ///
-    /// Stint 0759: also true while the guest handshake has never been sent
-    /// (`!self.initialized` — otherwise a pane ticked only from here never
-    /// gets the `init` send that starts it booting at all), while a ready
-    /// pane has never committed a first frame (`self.tree.is_none()` —
-    /// otherwise it never gets the one `poll_render` call it needs to leave
-    /// `starting`), and while a registered timer is already due (otherwise a
-    /// repeating timer's fire is invisible to this predicate and the pane is
-    /// never ticked to deliver it).
+    /// Keep polling through startup and for future timer/render deadlines.
+    /// Checking only already-due timers lets an idle hidden host go to sleep
+    /// before the deadline, with nothing left to wake it when the timer is due.
     pub fn needs_background_tick(&self) -> bool {
         self.decoder.has_queued_output()
             || !self.pending_commands.is_empty()
             || (self.error.is_none()
                 && !self.runtime.is_finished()
-                && (!self.initialized || (self.ready && (self.tree.is_none() || self.has_due_timer()))))
-    }
-
-    /// True when at least one registered timer's deadline has passed.
-    fn has_due_timer(&self) -> bool {
-        let now = std::time::Instant::now();
-        self.timers.values().any(|timer| timer.deadline <= now)
+                && (!self.initialized
+                    || !self.ready
+                    || self.tree.is_none()
+                    || !self.timers.is_empty()
+                    || !self.pending_timer_events.is_empty()
+                    || self.frame_scheduler
+                        .next_repaint_deadline(std::time::Instant::now())
+                        .is_some()))
     }
     pub fn display_name(&self) -> String {
         self.title.clone().unwrap_or_else(|| self.app_id.clone())
@@ -8419,6 +8427,20 @@ mod tests {
 
         assert_eq!(event["frame_id"], 7);
         assert_eq!(event["timer_ids"], json!(["drop"]));
+    }
+
+    #[test]
+    fn external_io_installs_a_wake_target_before_any_paint() {
+        let app = tempdir().expect("app dir");
+        std::fs::write(app.path().join("main.py"), "def init(size, args): return []\n")
+            .expect("write app");
+        let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.hidden-wake"))
+            .expect("launch pane");
+        pane.service_external_io(&egui::Context::default());
+        assert!(
+            pane.repaint.lock().expect("repaint lock").is_some(),
+            "guest replies must have a host wake target before the pane ever paints"
+        );
     }
 
     #[test]

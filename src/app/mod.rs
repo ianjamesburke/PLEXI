@@ -3308,7 +3308,7 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::PythonRuntimes,
         );
         crate::platform::logging::time_drain("service_python_pane_runtimes", || {
-            self.service_python_pane_runtimes()
+            self.service_python_pane_runtimes(ctx)
         });
 
         // Host agent runtime (Phase C): consume queued event deliveries and
