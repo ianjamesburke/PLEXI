@@ -458,6 +458,7 @@ impl PlexiApp {
                 .partition(|boot| boot.pane_id == pane_id);
             self.pending_agent_boots = live;
             for boot in failed {
+                self.emit_agent_boot_failure(boot.pane_id);
                 let script_detail = script
                     .as_deref()
                     .map(|path| format!(" script {path:?}"))
@@ -497,6 +498,7 @@ impl PlexiApp {
                 .partition(|boot| now >= boot.expires_at || !self.pane_exists(boot.pane_id));
             self.pending_agent_boots = live;
             for boot in done {
+                self.emit_agent_boot_failure(boot.pane_id);
                 let elapsed = now
                     .saturating_duration_since(boot.requested_at)
                     .as_secs_f64();
@@ -573,6 +575,7 @@ impl PlexiApp {
             .into_iter()
             .partition(|boot| boot.pane_id == pane_id);
         self.pending_agent_boots = live;
+        self.emit_agent_booted(pane_id, self.pane_observation_provenance(pane_id));
         for boot in booted {
             log::info!(
                 "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} reported ready after {:.2}s",
@@ -582,6 +585,26 @@ impl PlexiApp {
             crate::rpc::write_json_response(
                 &boot.response_file,
                 serde_json::json!({ "pane_id": pane_id }),
+            );
+        }
+    }
+
+    /// A provider failure/end cannot satisfy readiness via its legacy idle projection.
+    pub(crate) fn fail_agent_boots_from_terminal_report(&mut self, pane_id: u64) {
+        let (failed, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_boots)
+            .into_iter()
+            .partition(|boot| boot.pane_id == pane_id);
+        self.pending_agent_boots = live;
+        if !failed.is_empty() {
+            self.emit_agent_boot_failure(pane_id);
+        }
+        for boot in failed {
+            crate::rpc::write_json_response(
+                &boot.response_file,
+                serde_json::json!({
+                    "ok": false, "timeout": false, "pane_id": pane_id,
+                    "error": "agent failed or ended its session before reporting ready",
+                }),
             );
         }
     }

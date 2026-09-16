@@ -773,6 +773,7 @@ impl PlexiApp {
     /// Close a tile in a specific context by its TileId. Handles sibling focus
     /// transfer, container cleanup, and pane removal.
     pub(crate) fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
+        self.observe_pane_spawns();
         // Resolved up front, before Phase 3 takes a mutable borrow of
         // `self.windows[ctx_idx]` that would otherwise conflict with a
         // `&self` router lookup at the `PaneClosed` emit site below.

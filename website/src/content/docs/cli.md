@@ -282,6 +282,8 @@ Example: plexi agent report --state working --agent claude-code
 | `--agent` | string | no | Agent name (e.g. "claude-code") Default: `unknown`. |
 | `--detail` | string | no | Active tool detail (optional, from hook event JSON) |
 | `--session-id` | string | no | Session ID (optional, from hook event JSON) |
+| `--event` | string | no | Raw provider lifecycle event, retained separately from the UI state |
+| `--blocked-reason` | string | no | Explicit blocking reason; state-only callers remain supported |
 
 ### `plexi agent status`
 

@@ -313,11 +313,15 @@ fn main() -> eframe::Result {
                             agent,
                             detail,
                             session_id,
+                            event,
+                            blocked_reason,
                         } => std::process::exit(cli::agent_report_cli(
                             state.as_str(),
                             agent.as_str(),
                             detail.as_deref(),
                             session_id.as_deref(),
+                            event.as_deref(),
+                            blocked_reason,
                         )),
                         AgentCmd::Status {
                             blocked,

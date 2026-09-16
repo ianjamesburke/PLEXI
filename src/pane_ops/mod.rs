@@ -12,6 +12,7 @@
 //! unchanged.
 
 mod create;
+mod events;
 mod layout;
 mod workspace;
 

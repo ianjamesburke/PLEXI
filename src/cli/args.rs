@@ -1751,6 +1751,12 @@ pub enum AgentCmd {
         /// Session ID (optional, from hook event JSON)
         #[arg(long)]
         session_id: Option<String>,
+        /// Raw provider lifecycle event, retained separately from the UI state.
+        #[arg(long)]
+        event: Option<String>,
+        /// Explicit blocking reason; state-only callers remain supported.
+        #[arg(long, value_enum, requires = "state")]
+        blocked_reason: Option<crate::protocol::AgentBlockedReason>,
     },
     /// Show current agent state for all panes.
     ///

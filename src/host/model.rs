@@ -30,6 +30,7 @@ pub struct HostModel {
     contexts: Vec<HostContext>,
     active_context: usize,
     next_pane_id: PaneId,
+    pub(crate) pane_lifecycle: HashMap<PaneId, crate::host::pane_lifecycle::PaneLifecycleState>,
 }
 
 impl HostModel {
@@ -38,6 +39,7 @@ impl HostModel {
             contexts: vec![HostContext::default()],
             active_context: 0,
             next_pane_id: 1,
+            pane_lifecycle: HashMap::new(),
         };
         let initial = HostPane { id: 0, group: None };
         model.context_mut().panes.push(initial);

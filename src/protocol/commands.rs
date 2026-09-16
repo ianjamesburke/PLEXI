@@ -11,6 +11,16 @@ pub enum AgentState {
     Idle,
 }
 
+/// A reported blocking condition. Unknown preserves legacy reports without guessing.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentBlockedReason {
+    PermissionPrompt,
+    UsageLimit,
+    BootFailure,
+    Unknown,
+}
+
 /// App-reported "pip" status — a traffic-light health indicator an app sets for
 /// itself via the SDK (`App.set_pip_status`). Optional: when unset the host
 /// falls back to derived activity. Distinct from `AgentState` (the hook-script
@@ -206,6 +216,11 @@ pub enum AppRequest {
         detail: Option<String>,
         #[serde(default)]
         session_id: Option<String>,
+        /// Raw provider event; absent for installed state-only hooks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_reason: Option<AgentBlockedReason>,
     },
     /// Report an app's own pip status (red/yellow/green) for its activity dot.
     /// Fire-and-forget; set by the app process via `App.set_pip_status`. Takes
@@ -3391,6 +3406,7 @@ mod ai_stream_chunk_tests {
                 agent,
                 detail,
                 session_id,
+                ..
             } => {
                 assert_eq!(*pane_id, 7);
                 assert_eq!(*state, AgentState::Working);

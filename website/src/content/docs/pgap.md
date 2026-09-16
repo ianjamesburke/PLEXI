@@ -163,7 +163,9 @@ Report agent state for a pane. Called by hook scripts via `plexi agent report`.
 | Field | Type | Required |
 |-------|------|----------|
 | `agent` | `string` | yes |
+| `blocked_reason` | `variant` | no |
 | `detail` | `string?` | no |
+| `event` | `string?` | no |
 | `pane_id` | `integer` | yes |
 | `session_id` | `string?` | no |
 | `state` | `AgentState` | yes |

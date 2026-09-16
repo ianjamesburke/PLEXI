@@ -239,6 +239,8 @@ pub fn agent_report_cli(
     agent: &str,
     detail: Option<&str>,
     session_id: Option<&str>,
+    event: Option<&str>,
+    blocked_reason: Option<crate::protocol::AgentBlockedReason>,
 ) -> i32 {
     log::info!(
         "agent_report:cli: state={state} agent={agent} detail_present={}",
@@ -274,6 +276,15 @@ pub fn agent_report_cli(
     }
     if let Some(sid) = session_id {
         payload["session_id"] = serde_json::Value::String(sid.to_string());
+    }
+    // The shared hook script uses an invocation-scoped env var so older
+    // channel CLIs can still accept its unchanged state-report arguments.
+    let hook_event = std::env::var("PLEXI_AGENT_EVENT").ok();
+    if let Some(event) = event.or(hook_event.as_deref()).and_then(non_empty_string) {
+        payload["event"] = serde_json::Value::String(event.to_string());
+    }
+    if let Some(reason) = blocked_reason {
+        payload["blocked_reason"] = serde_json::json!(reason);
     }
     super::send_to_socket(payload)
 }
@@ -515,8 +526,10 @@ case "$EVENT" in
     PostToolUse|PostToolBatch|tool_result)
                                       STATE="working"; DETAIL=$(tool_detail) ;;
     SessionStart|session_start)       STATE="idle" ;;
-    Stop|StopFailure|SessionEnd|agent_end|session_shutdown)
-                                      STATE="idle" ;;
+    Stop|agent_end)                   STATE="idle" ;;
+    StopFailure)                     STATE="idle" ;;
+    SessionEnd|session_shutdown)     STATE="idle" ;;
+    UsageLimit|BootFailure)          STATE="blocked" ;;
     SubagentStart|SubagentStop)       exit 0 ;;
     *)                                exit 0 ;;
 esac
@@ -525,7 +538,7 @@ SESSION_ID=$(jq -r '.session_id // .sessionId // empty' <<< "$INPUT" 2>/dev/null
 ARGS=(agent report --state "$STATE" --agent "$AGENT_NAME")
 [ -n "$SESSION_ID" ] && ARGS+=(--session-id "$SESSION_ID")
 [ -n "$DETAIL" ] && ARGS+=(--detail "$DETAIL")
-"{binary}" "${{ARGS[@]}}" >/dev/null 2>&1 || true
+PLEXI_AGENT_EVENT="$EVENT" "{binary}" "${{ARGS[@]}}" >/dev/null 2>&1 || true
 exit 0
 "#
     )
@@ -920,6 +933,44 @@ mod agent_tests {
             "PLEXI_AGENT_NAME=codex /tmp/current/claude-code-agent-state.sh"
         );
         assert_eq!(hooks[0]["hooks"][0]["statusMessage"], "Plexi agent state");
+    }
+
+    #[test]
+    fn pane_lifecycle_hook_preserves_stop_failure_and_session_end() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("capture");
+        fs::write(&capture, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'hook_event=%s\\n' \"${PLEXI_AGENT_EVENT:-}\"\n").unwrap();
+        fs::set_permissions(&capture, fs::Permissions::from_mode(0o755)).unwrap();
+        let script = dir.path().join("hook.sh");
+        fs::write(&script, super::agent_state_script(capture.to_str().unwrap()).replace(
+            ">/dev/null 2>&1 || true", "|| true"
+        )).unwrap();
+        let reports: Vec<_> = ["Stop", "StopFailure", "SessionEnd"].into_iter().map(|event| {
+            let mut child = Command::new("bash").arg(&script)
+                .env("PLEXI_SOCKET", "unused-test-socket")
+                .env("PLEXI_PANE_ID", "7")
+                .env("PLEXI_AGENT_NAME", "claude-code")
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+                .spawn().unwrap();
+            write!(child.stdin.take().unwrap(), "{}", serde_json::json!({
+                "hook_event_name": event, "session_id": "test-session"
+            })).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let args = String::from_utf8(output.stdout).unwrap();
+            assert!(args.contains("agent\nreport\n"), "hook did not report: {args}");
+            args
+        }).collect();
+        assert_ne!(reports[0], reports[1], "normal stop and failure lost their distinction at the source");
+        assert_ne!(reports[0], reports[2], "normal stop and session end lost their distinction at the source");
+        assert_ne!(reports[1], reports[2], "failure and session end lost their distinction at the source");
+        for (report, event) in reports.iter().zip(["Stop", "StopFailure", "SessionEnd"]) {
+            assert!(report.contains(&format!("hook_event={event}\n")), "raw provenance missing: {report}");
+            assert!(!report.contains("--event\n"), "shared hook must retain old CLI arguments");
+        }
     }
 
     #[test]
