@@ -4885,7 +4885,9 @@ enabled = ["allowed.tool"]
 
         // A user-actor event lands as a visible row and auto-starts a turn.
         assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
-        app.pump_turn_io();
+        // Observe dispatch before pumping outcomes: the mock broker can finish
+        // within one pump_turn_io call, legitimately clearing in_flight.
+        app.pump_deliveries();
         assert_eq!(event_rows(&app), 1);
         let row = app
             .model
