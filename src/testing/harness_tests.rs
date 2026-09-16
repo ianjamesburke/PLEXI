@@ -5575,6 +5575,224 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
     }
 }
 
+// -- Occlusion axis: hot reload, pane init, timers (stint 0759) -----------
+
+/// Write a minimal manifest-backed CPython-in-WASM app to `dir`. `title`
+/// becomes the guest's `set_title` on `init`, observable host-side with no
+/// paint. Shared fixture for the stint 0759 hidden-window regression guards
+/// below.
+fn write_hidden_axis_probe(dir: &std::path::Path, title: &str) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 1\n\n\
+             [app]\n\
+             id = \"hidden-axis-probe\"\n\
+             type = \"app\"\n\
+             name = \"Hidden Axis Probe\"\n\
+             entry = \"main.py\"\n\
+             version = \"0.1.0\"\n\
+             description = \"stint 0759 HostHarness fixture\"\n\
+             watch = true\n",
+    )
+    .expect("write manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        format!(
+            "from plexi_sdk.effects import SetTimer, SetTitle\n\
+             from plexi_sdk.events import TimerFired\n\
+             from plexi_sdk.ui import Column\n\n\
+             TIMER_ID = 1\n\n\
+             def init(size, args):\n\
+             \x20   return [SetTitle({title:?}), SetTimer(TIMER_ID, 30, repeat=False)]\n\n\
+             def update(event):\n\
+             \x20   if isinstance(event, TimerFired) and event.id == TIMER_ID:\n\
+             \x20       return [SetTitle(\"fired\")]\n\
+             \x20   return []\n\n\
+             def view():\n\
+             \x20   return Column([])\n"
+        ),
+    )
+    .expect("write main.py");
+}
+
+fn python_pane_title(h: &HostHarness, pane_id: PaneId) -> Option<String> {
+    h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| match &pane.runtime {
+            AppRuntime::Python(p) => Some(p.display_name()),
+            _ => None,
+        })
+}
+
+fn python_pane_has_rendered_tree(h: &HostHarness, pane_id: PaneId) -> bool {
+    h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .is_some_and(|pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()))
+}
+
+fn python_pane_error(h: &HostHarness, pane_id: PaneId) -> Option<String> {
+    h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| match &pane.runtime {
+            AppRuntime::Python(p) => p.error().map(str::to_string),
+            _ => None,
+        })
+}
+
+/// Stint 0759: `drain_hot_reload_requests` lived in `App::ui` — a watcher
+/// save under a fully occluded host sat unserviced until the window was next
+/// uncovered (`ui_mailbox: source=hot_reload has N unserviced message(s)`, the
+/// stint 0602 live-drive evidence). It now runs from `App::logic`; this
+/// rewrites the watched app's `main.py` and requires the debounced reload to
+/// land through `hidden_frame` passes alone.
+#[test]
+fn hot_reload_serviced_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("app dir");
+    write_hidden_axis_probe(tmp.path(), "v1");
+    let mut h = HostHarness::new();
+    h.app
+        .launch_app_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .expect("launch hidden-axis-probe");
+    let pane_id = *h.state().open_panes.last().expect("pane appears");
+
+    let start = std::time::Instant::now();
+    while python_pane_title(&h, pane_id).as_deref() != Some("v1") {
+        h.run_frames(1);
+        assert!(
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "baseline title must land before the reload is triggered (last title: {:?})",
+            python_pane_title(&h, pane_id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // Debounced watcher save: rewrite main.py with a new title. Any file
+    // change under the watched app dir (main.py included) triggers a reload
+    // — every CPython-in-WASM pane is watched unconditionally
+    // (`open_python_wasm_app_pane`), independent of the manifest's `watch`
+    // flag, which only affects raw process apps.
+    write_hidden_axis_probe(tmp.path(), "v2");
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::host::hot_reload::DEBOUNCE_MS + 150,
+    ));
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_hidden_frames(1);
+        if python_pane_title(&h, pane_id).as_deref() == Some("v2") {
+            break;
+        }
+        assert!(
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "hot reload must be serviced on hidden (logic-only) passes alone (last title: {:?})",
+            python_pane_title(&h, pane_id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 0759: a WASM Python pane's first frame commit depends on
+/// `frame_scheduler.poll_render` admission, which used to run only inside
+/// `LivePythonPane::ui`. A pane opened under a hidden window never got a
+/// `ui()` pass at all, so it never left `lifecycle=starting`. This launches a
+/// pane and runs *only* `hidden_frame` passes from the moment it opens —
+/// `App::ui` never runs for it — and requires it to reach a committed tree.
+#[test]
+fn new_wasm_app_pane_reaches_running_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("app dir");
+    write_hidden_axis_probe(tmp.path(), "v1");
+    let mut h = HostHarness::new();
+    h.app
+        .launch_app_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .expect("launch hidden-axis-probe");
+    let pane_id = *h.state().open_panes.last().expect("pane appears");
+    assert!(
+        !python_pane_has_rendered_tree(&h, pane_id),
+        "the pane must not already have a committed tree before any pass runs"
+    );
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_hidden_frames(1);
+        if python_pane_has_rendered_tree(&h, pane_id) {
+            break;
+        }
+        assert!(
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "a newly opened pane must reach lifecycle=running on hidden (logic-only) \
+             passes alone — App::ui never ran for it"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 0759: `LivePythonPane::background_tick` deliberately never called
+/// `fire_due_timers` — timers were flushed solely by the render request in
+/// `ui`, so a `SetTimer` registered by a pane that never gets a `ui()` pass
+/// (the active context under a hidden window, exactly like this test) froze
+/// forever. This launches a pane whose `init` sets a one-shot 30ms timer and
+/// runs only hidden passes; the timer's `update()` handler flips the title to
+/// "fired", which must land with `App::ui` never running.
+#[test]
+fn set_timer_fires_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("app dir");
+    write_hidden_axis_probe(tmp.path(), "v1");
+    let mut h = HostHarness::new();
+    h.app
+        .launch_app_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .expect("launch hidden-axis-probe");
+    let pane_id = *h.state().open_panes.last().expect("pane appears");
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_hidden_frames(1);
+        if python_pane_title(&h, pane_id).as_deref() == Some("fired") {
+            break;
+        }
+        assert!(
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "a due SetTimer must fire on hidden (logic-only) passes alone (last title: {:?}, error: {:?})",
+            python_pane_title(&h, pane_id),
+            python_pane_error(&h, pane_id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn future_timer_keeps_a_hidden_pane_wake_scheduled() {
+    let tmp = tempfile::tempdir().expect("app dir");
+    write_hidden_axis_probe(tmp.path(), "waiting");
+    let entry = tmp.path().join("main.py");
+    let source = std::fs::read_to_string(&entry).expect("read probe");
+    std::fs::write(&entry, source.replace("30, repeat=False", "60000, repeat=False"))
+        .expect("give the timer a future deadline");
+    let mut h = HostHarness::new();
+    let pane_id = h
+        .app
+        .launch_app_by_path_with_layout_no_review_modal(
+            &tmp.path().to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .expect("launch timer probe")
+        .expect("pane id");
+    h.wait_for_first_render(pane_id);
+    h.run_hidden_frames(3);
+    assert_eq!(python_pane_title(&h, pane_id).as_deref(), Some("waiting"));
+    assert!(
+        h.app.background_processes_need_wake(true),
+        "a registered future timer must keep a hidden host wake scheduled before it becomes due"
+    );
+}
+
 /// Stint 0751: `mcp.client` is beta-gated (`ReleaseFeature::McpClient`) so a
 /// stable-tier host never runs `McpConnection::spawn` on a user's behalf. The
 /// server script touches a marker file the instant it starts, so "the gate

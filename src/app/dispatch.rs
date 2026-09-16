@@ -223,16 +223,19 @@ impl PlexiApp {
         })
     }
 
-    /// True when any non-active-context pane or parked background app has
-    /// pending background work. Drives the bounded 100ms wake loop in
-    /// `update()` — this MUST use the same predicate as the tick gate in
-    /// [`Self::drain_all_app_commands`], otherwise work could be marked
-    /// pending without a frame ever being scheduled to drain it (#2021).
-    pub(crate) fn background_processes_need_wake(&self) -> bool {
+    /// True when any pane or parked background app needing a headless tick
+    /// (a non-active context always; the active context too when
+    /// `window_hidden`, per the same reasoning as
+    /// [`Self::drain_all_app_commands`]) has pending background work. Drives
+    /// the bounded 100ms wake loop in `update()` — this MUST use the same
+    /// predicate as the tick gate in [`Self::drain_all_app_commands`],
+    /// otherwise work could be marked pending without a frame ever being
+    /// scheduled to drain it (#2021).
+    pub(crate) fn background_processes_need_wake(&self, window_hidden: bool) -> bool {
         let active = self.active_window;
         let inactive_context_needs_wake =
             self.windows.iter().enumerate().any(|(ctx_idx, context)| {
-                ctx_idx != active
+                (ctx_idx != active || window_hidden)
                     && context.panes.values().any(|pane| {
                         pane.as_app()
                             .is_some_and(|app_pane| app_pane.runtime.needs_background_tick())
@@ -261,12 +264,18 @@ impl PlexiApp {
     /// rendered here: unsafe commands are held while a modal owns input and
     /// released on the next modal-free pass, exactly as before.
     pub(super) fn service_app_commands(&mut self, ctx: &egui::Context) {
+        // eframe skips `App::ui` entirely while the window is hidden
+        // (minimized or fully occluded) — the active context's own panes
+        // then get no `ui()` pass either, so they need the same headless
+        // tick as a non-active context (stint 0759; see
+        // `drain_all_app_commands`).
+        let window_hidden = ctx.input(|i| i.viewport().visible()) == Some(false);
         // Drain every app pane's pending_commands every frame — including
         // while a modal holds focus. Background apps emitting notifications
         // must reach the queue *now*, not be buffered until the modal
         // closes (which caused the "ghost queue appears on reopen" bug).
-        let fresh_cmds = self.drain_all_app_commands();
-        if self.background_processes_need_wake() {
+        let fresh_cmds = self.drain_all_app_commands(window_hidden);
+        if self.background_processes_need_wake(window_hidden) {
             crate::platform::frame_diag::note(
                 crate::platform::frame_diag::RepaintCause::AppIdlePoll,
             );
@@ -1434,7 +1443,13 @@ impl PlexiApp {
     /// — can surface Global-scope notifications while the user is elsewhere.
     /// Parked background apps (pane closed, process alive) are also ticked so
     /// their timers and notifications keep firing while detached.
-    pub(super) fn drain_all_app_commands(&mut self) -> Vec<AppCommand> {
+    ///
+    /// `window_hidden` is true when eframe is running a logic-only pass (the
+    /// window is minimized or fully occluded), in which case `App::ui` never
+    /// runs for *any* pane this frame — including the active context's own.
+    /// The active context is then treated as non-active for tick purposes
+    /// too, so its panes still get the headless tick (stint 0759).
+    pub(super) fn drain_all_app_commands(&mut self, window_hidden: bool) -> Vec<AppCommand> {
         // Collect (context_id, pane_id, type_id, commands) per pane. We capture
         // context_id (stable u64) and type_id here because the manifest-declared
         // notification scope is looked up from the registry by type_id, and we
@@ -1446,14 +1461,19 @@ impl PlexiApp {
             let context_id = context.context_id;
             for (pane_id, pane) in context.panes.iter_mut() {
                 if let Some(app_pane) = pane.as_app_mut() {
-                    // Active-context panes are already fully updated by ui()
-                    // this frame. Non-active panes need a headless tick so
+                    // Active-context panes are already fully updated by
+                    // ui() this frame — unless the window is hidden, in
+                    // which case ui() never runs at all and the active
+                    // context needs the same headless tick as everyone
+                    // else (stint 0759). Non-active panes always need it:
                     // timer/async events reach the subprocess and control
                     // commands flow out — but only when they actually have
                     // pending background work; idle apps are skipped so a
                     // busy foreground doesn't tick every background app on
                     // every frame (#2021).
-                    if ctx_idx != active && app_pane.runtime.needs_background_tick() {
+                    if (ctx_idx != active || window_hidden)
+                        && app_pane.runtime.needs_background_tick()
+                    {
                         app_pane.runtime.background_tick();
                     }
                     let type_id = app_pane.runtime.type_id().to_string();

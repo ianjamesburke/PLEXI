@@ -1150,7 +1150,7 @@ pub struct LivePythonPane {
     /// Off-paint-thread JSON + tree decode (stint 0438). Recreated on
     /// `relaunch` since it is bound to the runtime's stdout.
     decoder: PythonOutputDecoder,
-    /// Egui repaint target for the decoder, installed on the first `ui()` and
+    /// Egui repaint target for the decoder, installed by logic servicing and
     /// shared with the decoder so a ready frame wakes the paint loop.
     repaint: RepaintHook,
     /// The repaint this pane last scheduled, published so the decoder can let a
@@ -2412,12 +2412,7 @@ impl LivePythonPane {
                 self.pending_click_carry.is_none()
             );
         }
-        {
-            let mut repaint = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
-            if repaint.is_none() {
-                *repaint = Some((ui.ctx().clone(), ui.ctx().viewport_id()));
-            }
-        }
+        self.bind_repaint(ui.ctx());
         if let Some(error) = &self.error {
             if pending_click.is_some() {
                 // Fatal and does not self-heal without a relaunch (which
@@ -2449,22 +2444,11 @@ impl LivePythonPane {
                     .request_repaint_after(std::time::Duration::from_millis(5));
                 return;
             }
-            self.initialized = true;
-            self.viewport_size = Some((size.x, size.y));
-            if let Err(error) = self.runtime.send(&json!({
-                "type": "init", "app_id": self.app_id,
-                "workspace_root": self.config.workspace_root,
-                "capabilities": self.config.capabilities,
-                "states": self.states_json(),
-                "state_scopes": self.scope_names(),
-                "theme": {},
-                "args": self.config.launch_args,
-                "size": [size.x, size.y]
-            })) {
-                self.error = Some(error.to_string());
+            self.ensure_initialized((size.x, size.y));
+            if self.error.is_some() {
                 if pending_click.is_some() {
                     log::error!(
-                        "app::{}: dropping pending pane click — init send failed: {error}",
+                        "app::{}: dropping pending pane click — init send failed",
                         self.app_id
                     );
                 }
@@ -2675,7 +2659,8 @@ impl LivePythonPane {
     /// server's handshake sat undelivered for 88 s and was then killed by the
     /// bridge's own 90 s deadline, while polling `plexi pane state` — which
     /// forces paints — made the identical setup succeed in 3 s.
-    pub fn service_external_io(&mut self) {
+    pub fn service_external_io(&mut self, ctx: &egui::Context) {
+        self.bind_repaint(ctx);
         if self.error.is_some() {
             // A fatal pane never drains again (`ui` early-returns the same
             // way); draining here would spam the decoder-disconnected error
@@ -2683,6 +2668,13 @@ impl LivePythonPane {
             return;
         }
         self.drain_runtime();
+    }
+
+    fn bind_repaint(&self, ctx: &egui::Context) {
+        let mut repaint = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
+        if repaint.is_none() {
+            *repaint = Some((ctx.clone(), ctx.viewport_id()));
+        }
     }
 
     /// Edge-latched diagnostics for the MCP inbound watermark: engage and
@@ -3496,6 +3488,40 @@ impl LivePythonPane {
         )
     }
 
+    /// Send the guest's `init` handshake exactly once. `size` is the pane's
+    /// real available size when called from `ui`; `background_tick` (stint
+    /// 0759) passes [`HEADLESS_INIT_VIEWPORT`] (or the last known size) for a
+    /// pane that has never been painted, so the guest still boots and calls
+    /// its own `init(size, args)` off-screen. The ordinary `viewport_changed`
+    /// resize path in `ui` corrects the size the moment a real paint happens
+    /// — it compares against `self.viewport_size` unconditionally, so a
+    /// headless guess here is never mistaken for the real thing on the first
+    /// visible frame. A send failure is recorded on `self.error`; the caller
+    /// decides what to do with a pending click, if any.
+    fn ensure_initialized(&mut self, size: (f32, f32)) {
+        if self.initialized {
+            return;
+        }
+        self.initialized = true;
+        self.viewport_size = Some(size);
+        log::info!(
+            "app::{}: sending Python init size={}x{}", self.app_id, size.0, size.1
+        );
+        if let Err(error) = self.runtime.send(&json!({
+            "type": "init", "app_id": self.app_id,
+            "workspace_root": self.config.workspace_root,
+            "capabilities": self.config.capabilities,
+            "states": self.states_json(),
+            "state_scopes": self.scope_names(),
+            "theme": {},
+            "args": self.config.launch_args,
+            "size": [size.0, size.1]
+        })) {
+            log::error!("app::{}: Python init send failed: {error}", self.app_id);
+            self.error = Some(error.to_string());
+        }
+    }
+
     /// Every declared scope's state file, resolved against the *current*
     /// context root. The watcher registration in `pane_ops::create` re-syncs
     /// against this each drain pass, so `plexi context set-root` follows.
@@ -3898,15 +3924,54 @@ impl LivePythonPane {
     /// call to a pane that was not painting sat in the decoder channel until
     /// the broker's 30s timeout fired.
     ///
-    /// This drains only. It deliberately does not call `fire_due_timers`:
-    /// timers push onto `pending_timer_events`, which is flushed solely by the
-    /// render request in `ui`, so firing them here would grow that queue
-    /// without bound behind an off-screen repeating timer. Delivering timers to
-    /// an unpainted pane is a separate capability, not part of unwedging the
-    /// command path.
+    /// Stint 0759: this now also drives the guest handshake and the
+    /// render-admission cycle `ui` used to own exclusively — the initial
+    /// `init` send (`ensure_initialized`), then `fire_due_timers`, then
+    /// `poll_render`, then the send/drain that flushes `pending_timer_events`
+    /// — because a pane that never gets a `ui()` pass at all (opened under a
+    /// hidden window, or in a context that never becomes active) otherwise
+    /// never even tells the guest its size: the guest's own `init(size,
+    /// args)` never runs, `ready` never arrives, and `self.tree` never
+    /// leaves `None`. A due `SetTimer` has the same dependency once past
+    /// that point. Both used to require a real `ui.available_size()`; a
+    /// pane serviced only here gets [`HEADLESS_INIT_VIEWPORT`] instead, and
+    /// the ordinary resize path corrects it the moment a real paint happens.
+    /// The old restriction against calling `fire_due_timers` here (unbounded
+    /// `pending_timer_events` growth) no longer applies: this method now
+    /// performs the same send that flushes that queue, so nothing
+    /// accumulates. Mirrors `ui`'s finished/error handling so a pane that
+    /// exits while parked still stops its scheduler and clears its timers.
     pub fn background_tick(&mut self) {
         let before = self.pending_commands.len();
+        if self.error.is_none() && !self.initialized {
+            let size = self.viewport_size.unwrap_or(HEADLESS_INIT_VIEWPORT);
+            self.ensure_initialized(size);
+        }
         self.drain_runtime();
+        if self.error.is_none() {
+            if self.runtime.is_finished() {
+                self.frame_scheduler.stop();
+                // No guest is left to service timers; firing them would
+                // send to a dead runtime and misreport a clean exit.
+                self.timers.clear();
+                self.pending_timer_events.clear();
+            } else if self.ready {
+                self.fire_due_timers();
+                let now = std::time::Instant::now();
+                if let Some(frame_id) = self.frame_scheduler.poll_render(now) {
+                    let timer_ids = std::mem::take(&mut self.pending_timer_events);
+                    match self.runtime.send(&python_render_event(frame_id, timer_ids)) {
+                        Ok(()) => self.drain_runtime(),
+                        Err(error) => {
+                            log::error!(
+                                "app::{}: background render send failed: {error}", self.app_id
+                            );
+                            self.error = Some(error.to_string());
+                        }
+                    }
+                }
+            }
+        }
         let produced = self.pending_commands.len().saturating_sub(before);
         if produced > 0 {
             log::info!(
@@ -3918,8 +3983,23 @@ impl LivePythonPane {
 
     /// Whether [`Self::background_tick`] can currently make progress. Cheap and
     /// non-consuming — the host asks this of every off-screen pane every frame.
+    ///
+    /// Keep polling through startup and for future timer/render deadlines.
+    /// Checking only already-due timers lets an idle hidden host go to sleep
+    /// before the deadline, with nothing left to wake it when the timer is due.
     pub fn needs_background_tick(&self) -> bool {
-        self.decoder.has_queued_output() || !self.pending_commands.is_empty()
+        self.decoder.has_queued_output()
+            || !self.pending_commands.is_empty()
+            || (self.error.is_none()
+                && !self.runtime.is_finished()
+                && (!self.initialized
+                    || !self.ready
+                    || self.tree.is_none()
+                    || !self.timers.is_empty()
+                    || !self.pending_timer_events.is_empty()
+                    || self.frame_scheduler
+                        .next_repaint_deadline(std::time::Instant::now())
+                        .is_some()))
     }
     pub fn display_name(&self) -> String {
         self.title.clone().unwrap_or_else(|| self.app_id.clone())
@@ -4400,6 +4480,14 @@ fn scheduler_repaint_after(mode: Option<&str>, fps: Option<u64>) -> std::time::D
         _ => std::time::Duration::from_millis(16),
     }
 }
+
+/// Stint 0759: the size `LivePythonPane::background_tick` hands the guest's
+/// `init` handshake when the pane has never been painted (no real
+/// `ui.available_size()` exists yet) and no prior viewport size is cached.
+/// Arbitrary but valid per [`valid_python_viewport`] — the guest needs *a*
+/// size to lay out its first view, and the ordinary resize path corrects it
+/// the instant the pane is actually painted.
+const HEADLESS_INIT_VIEWPORT: (f32, f32) = (800.0, 600.0);
 
 fn valid_python_viewport(width: f32, height: f32) -> bool {
     width.is_finite() && height.is_finite() && width > 1.0 && height > 1.0
@@ -8339,6 +8427,20 @@ mod tests {
 
         assert_eq!(event["frame_id"], 7);
         assert_eq!(event["timer_ids"], json!(["drop"]));
+    }
+
+    #[test]
+    fn external_io_installs_a_wake_target_before_any_paint() {
+        let app = tempdir().expect("app dir");
+        std::fs::write(app.path().join("main.py"), "def init(size, args): return []\n")
+            .expect("write app");
+        let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.hidden-wake"))
+            .expect("launch pane");
+        pane.service_external_io(&egui::Context::default());
+        assert!(
+            pane.repaint.lock().expect("repaint lock").is_some(),
+            "guest replies must have a host wake target before the pane ever paints"
+        );
     }
 
     #[test]
