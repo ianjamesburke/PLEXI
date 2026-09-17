@@ -536,6 +536,9 @@ pub struct PlexiApp {
     /// positions.
     pub(crate) pending_pane_pointer_frames:
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
+    // Drop after the host resources that may still refer to these test paths.
+    #[cfg(test)]
+    _test_scratch: Option<tempfile::TempDir>,
 }
 
 struct PendingAppSubscriptionReply {
@@ -1578,6 +1581,8 @@ impl PlexiApp {
                     pane_heartbeats: restored_heartbeats,
                     last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
+                    #[cfg(test)]
+                    _test_scratch: None,
                     renaming_window: None,
                     rename_buffer: String::new(),
                     editing_description: None,
@@ -1852,6 +1857,8 @@ impl PlexiApp {
             pane_heartbeats: HashMap::new(),
             last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
+            #[cfg(test)]
+            _test_scratch: None,
             renaming_window: None,
             rename_buffer: String::new(),
             editing_description: None,
@@ -2467,9 +2474,14 @@ impl PlexiApp {
             crate::host::hot_reload::HotReloadWatcher::new(std::sync::Arc::clone(&ui_wake));
         let (sw_watcher, sw_rx) =
             crate::host::state_watch::StateWatcher::new(std::sync::Arc::clone(&ui_wake));
-        let path =
-            std::env::temp_dir().join(format!("plexi-test-workspace-{}", uuid::Uuid::new_v4()));
+        let scratch = tempfile::Builder::new()
+            .prefix(&format!("plexi-test-host-{}-", std::process::id()))
+            .tempdir()
+            .expect("create owned test scratch");
+        let path = scratch.path().join("workspace");
+        let permission_store_dir = scratch.path().join("permissions");
         std::fs::create_dir_all(&path).expect("create isolated test workspace");
+        std::fs::create_dir_all(&permission_store_dir).expect("create test permission store");
         // Standing ruling: a context root must gitignore its app_states dir.
         if path.is_dir() {
             if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(&path) {
@@ -2565,12 +2577,8 @@ impl PlexiApp {
                 pending_submits: Vec::new(),
                 pane_heartbeats: HashMap::new(),
                 last_sent_window_title: None,
-                permission_store_dir: {
-                    let dir = std::env::temp_dir()
-                        .join(format!("plexi-test-perms-{}", uuid::Uuid::new_v4()));
-                    std::fs::create_dir_all(&dir).expect("create test permission store dir");
-                    dir
-                },
+                permission_store_dir,
+                _test_scratch: Some(scratch),
                 renaming_window: None,
                 rename_buffer: String::new(),
                 editing_description: None,
