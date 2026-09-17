@@ -96,6 +96,7 @@ pub struct TerminalViewState {
     cursor_visible: bool,
     copy_mode: Option<CopyModeState>,
     search_mode: Option<SearchModeState>,
+    keyboard: crate::keyboard::KeyboardEncoder,
     /// Selection captured when this pane lost focus. Used to keep the selection
     /// highlight visible in unfocused panes even if the alacritty backend clears
     /// the live selection due to new terminal output.
@@ -112,6 +113,7 @@ impl Default for TerminalViewState {
             cursor_visible: true,
             copy_mode: None,
             search_mode: None,
+            keyboard: crate::keyboard::KeyboardEncoder::default(),
             frozen_selection_range: None,
         }
     }
@@ -304,7 +306,15 @@ impl<'a> TerminalView<'a> {
             .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
         let mut events = supplied.map(|s| s.events).unwrap_or_default();
         events.extend(layout.ctx.input(|i| i.events.clone()));
-        for event in events {
+        let keyboard_mode =
+            if state.search_mode.is_none() && state.copy_mode.is_none() {
+                self.backend.keyboard_mode()
+            } else {
+                TermMode::empty()
+            };
+        for crate::keyboard::PreparedEvent { event, encoding } in
+            state.keyboard.prepare(events, keyboard_mode)
+        {
             let mut input_actions = vec![];
 
             match event {
@@ -360,7 +370,8 @@ impl<'a> TerminalView<'a> {
                                 self.backend,
                                 &self.bindings_layout,
                                 modifiers,
-                            ));
+                                encoding,
+                            ))
                         }
                     } else if let egui::Event::Key {
                         key: Key::Y,
@@ -403,7 +414,8 @@ impl<'a> TerminalView<'a> {
                                 self.backend,
                                 &self.bindings_layout,
                                 modifiers,
-                            ));
+                                encoding,
+                            ))
                         }
                     } else if let egui::Event::Key {
                         key: Key::A,
@@ -488,7 +500,8 @@ impl<'a> TerminalView<'a> {
                                     self.backend,
                                     &self.bindings_layout,
                                     modifiers,
-                                ));
+                                    encoding,
+                                ))
                             }
                         } else {
                             input_actions.push(process_keyboard_event(
@@ -496,7 +509,8 @@ impl<'a> TerminalView<'a> {
                                 self.backend,
                                 &self.bindings_layout,
                                 modifiers,
-                            ));
+                                encoding,
+                            ))
                         }
                     } else {
                         input_actions.push(process_keyboard_event(
@@ -504,7 +518,8 @@ impl<'a> TerminalView<'a> {
                             self.backend,
                             &self.bindings_layout,
                             modifiers,
-                        ));
+                            encoding,
+                        ))
                     }
                 },
                 egui::Event::MouseWheel { unit, delta, .. } if has_pointer => {
@@ -1103,7 +1118,15 @@ fn process_keyboard_event(
     backend: &TerminalBackend,
     bindings_layout: &BindingsLayout,
     modifiers: Modifiers,
+    encoding: Option<Vec<u8>>,
 ) -> InputAction {
+    if let Some(bytes) = encoding {
+        return if bytes.is_empty() {
+            InputAction::Ignore
+        } else {
+            InputAction::BackendCall(BackendCommand::Write(bytes))
+        };
+    }
     match event {
         egui::Event::Text(text) => {
             process_text_event(&text, modifiers, backend, bindings_layout)

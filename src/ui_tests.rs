@@ -1922,6 +1922,236 @@ mod tests {
         }
     }
 
+    /// Exercise egui input ownership and the real terminal widget/PTY writer.
+    /// Scene keys cannot express separate press, repeat and release events.
+    #[test]
+    fn terminal_kitty_press_repeat_release_reaches_pty_once() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    args: vec![concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/tests/fixtures/kitty-keyboard-probe.sh"
+                    )
+                    .into()],
+                    working_directory: Some(std::env::temp_dir()),
+                    ..Default::default()
+                },
+                18.0,
+            )
+            .expect("start keyboard fixture");
+            terminal.backend.enable_input_tap();
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("KITTY_READY"))
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "keyboard fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for (pressed, repeat) in [(true, false), (true, true), (false, false)] {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key: egui::Key::J,
+                physical_key: Some(egui::Key::J),
+                pressed,
+                repeat,
+                modifiers: egui::Modifiers::NONE,
+            });
+            if pressed {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text("j".into()));
+            }
+            h.step();
+        }
+        let bytes = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&id)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .take_input_tap()
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            "\x1b[106;1:1u\x1b[106;1:2u\x1b[106;1:3u"
+        );
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let received = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("KEY_EVENTS_OK"))
+            });
+            if received {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child did not receive the key event sequence"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.save_screenshot(&evidence_png!())
+            .expect("render keyboard fixture");
+    }
+
+    /// Optional consumer smoke test through crossterm, the real PTY and egui
+    /// input ownership. PLEXI_NOOISE_BIN names the installed nooise executable.
+    #[test]
+    #[ignore = "requires installed nooise and audio device"]
+    fn terminal_kitty_nooise_lead_supports_holds() {
+        let binary = std::env::var("PLEXI_NOOISE_BIN").expect("set PLEXI_NOOISE_BIN");
+        let mut h = PlexiUiHarness::new_sized(1500.0, 1000.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        let workspace = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: binary,
+                    working_directory: Some(workspace),
+                    ..Default::default()
+                },
+                16.0,
+            )
+            .expect("start nooise");
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+            app.sidebar_visible = false;
+        });
+        let capture = |h: &mut PlexiUiHarness| {
+            h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(100)
+                    .join("\n")
+            })
+        };
+        let wait_for = |h: &mut PlexiUiHarness, needle: &str| {
+            let deadline =
+                Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(15));
+            loop {
+                h.run_steps(2);
+                let text = capture(h);
+                if text.contains(needle) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "missing {needle}: {text}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait_for(&mut h, "BROWSE");
+        let modes = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&id)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .sync()
+                .terminal_mode
+        });
+        assert!(modes.contains(
+            egui_term::TerminalMode::REPORT_EVENT_TYPES
+                | egui_term::TerminalMode::REPORT_ALL_KEYS_AS_ESC
+        ));
+        let send = |h: &mut PlexiUiHarness, key, text: Option<&str>, pressed, repeat| {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat,
+                modifiers: egui::Modifiers::NONE,
+            });
+            if let Some(text) = text {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text(text.into()));
+            }
+            h.step();
+        };
+        send(&mut h, egui::Key::I, Some("i"), true, false);
+        send(&mut h, egui::Key::I, None, false, false);
+        wait_for(&mut h, "LEAD");
+        // Adjust Level in Browse so this smoke test also works with nooise
+        // versions predating arrow-key adjustments inside Lead mode.
+        send(&mut h, egui::Key::Escape, None, true, false);
+        send(&mut h, egui::Key::Escape, None, false, false);
+        wait_for(&mut h, "BROWSE");
+        for _ in 0..10 {
+            send(&mut h, egui::Key::ArrowRight, None, true, false);
+            send(&mut h, egui::Key::ArrowRight, None, false, false);
+        }
+        send(&mut h, egui::Key::I, Some("i"), true, false);
+        send(&mut h, egui::Key::I, None, false, false);
+        wait_for(&mut h, "LEAD");
+        send(&mut h, egui::Key::J, Some("j"), true, false);
+        for _ in 0..3 {
+            std::thread::sleep(Duration::from_millis(40));
+            send(&mut h, egui::Key::J, Some("j"), true, true);
+        }
+        send(&mut h, egui::Key::J, None, false, false);
+        wait_for(&mut h, "Space");
+        let text = capture(&mut h);
+        assert!(
+            !text.contains("no key-up"),
+            "nooise fell back to taps: {text}"
+        );
+        assert!(
+            !text.contains("level is 0"),
+            "lead level must be audible: {text}"
+        );
+        h.save_screenshot(&evidence_png!())
+            .expect("render nooise lead");
+    }
+
     /// Visual review for the terminal reflow debounce (stint 0719). The
     /// debounce holds a resize while the layout is still moving and commits
     /// once the drag settles, so the pixel risk is a *stranded* commit: a

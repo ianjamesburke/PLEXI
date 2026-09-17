@@ -12,6 +12,7 @@ mod bindings;
 mod diag;
 mod font;
 mod graphics;
+mod keyboard;
 mod theme;
 mod types;
 mod view;
