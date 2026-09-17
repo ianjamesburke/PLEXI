@@ -1,6 +1,42 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.0] — 2026-09-17
+
+### Changes
+- feat(term): deliver negotiated key release and repeat events (#2617)
+- fix(terminal): restore bold contrast and smooth shade cells (#2616)
+- feat(panes): wait for lifecycle conditions and follow events (#2615)
+- Publish pane lifecycle events with provider provenance (#2613)
+- Keep app startup, timers, and reloads running while hidden (#2612)
+- fix(host/hot-reload): ignore .venv and cache dirs in the app watcher (#2611)
+- release: gate the MCP client to the beta tier (#2610)
+- apps(calc): modernize SDK usage, regenerate registry (#2609)
+- apps(balls): canvas text contrast + watch=true (#2608)
+- apps(packs): promote breakout, tetris, github-issues into the core pack (#2607)
+- apps(github-issues): remove dead label-chip code (#2606)
+- apps(tetris): drop unreachable legacy key arms (#2605)
+- apps(sudoku): add SDK logging (#2603)
+- apps(snake): modernize SDK usage (#2604)
+- testing: give scene-live real framebuffer shots (#2602)
+- fix(host/wasm): start the headless response clock at guest start, not launch (#2598)
+- fix: clear alpha's three clippy -D warnings errors, add clippy to the gate (#2599)
+- fix(host/pane): split claimed_state from observed_state in pane state (#2597)
+- fix(host/runtime): restore WASM and Python app panes instead of terminals (#2596)
+- testing: make just build part of the pre-push gate (#2595)
+- fix(ui): collapse line breaks in single-line list rows (#2593)
+- fix(ui/sidebar): wrap context list in a vertical ScrollArea (#2592)
+- notes: store on the context-root tier, delete the inbox layer (#2591)
+- fix(build): guard doc generator recipes against stdout-redirect truncation
+- perf(build): drop CPU throttle from cargo-with-lease, keep flock
+- fix(host): route TextInput Escape to apps (#2590)
+- fix(testing): make cargo_lease tests independent of how the suite was launched
+- perf(build): throttle build CPU, cap test threads, trim debuginfo
+- host/scope: one host-stamped origin and resolved-source policy across contexts (#2589)
+- feat(sdk+apps/wikipedia): search-to-results-to-detail pattern, wikipedia exemplar rewrite (#2587)
+- fix(host/context): auto sidebar name follows explicit root changes (#2588)
+- feat(host/context): auto sidebar name follows explicit root changes (#2572)
+- fix(mcp): enforce guest stdin wake arming identity (#2573)
 ## [0.2.6] — 2026-08-03
 
 ### Changes
