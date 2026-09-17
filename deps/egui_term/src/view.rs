@@ -686,9 +686,6 @@ impl<'a> TerminalView<'a> {
             }
 
             let is_wide_char = flags.contains(cell::Flags::WIDE_CHAR);
-            let is_inverse = flags.contains(cell::Flags::INVERSE);
-            let is_dim =
-                flags.intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD);
             let is_selected =
                 selection_range.is_some_and(|r| r.contains(indexed.point));
             let is_hovered_hyperling =
@@ -702,8 +699,7 @@ impl<'a> TerminalView<'a> {
                 indexed.point.line.0 + content.grid.display_offset() as i32;
             let y = layout_min.y + (cell_height * line_num as f32);
 
-            let mut fg = self.theme.get_color(indexed.fg);
-            let mut bg = self.theme.get_color(indexed.bg);
+            let (fg, mut bg) = cell_colors(&self.theme, &indexed.cell);
             let cell_width = if is_wide_char {
                 cell_width * 2.0
             } else {
@@ -717,14 +713,6 @@ impl<'a> TerminalView<'a> {
                 ),
             )
             .round_to_pixels(painter.pixels_per_point());
-
-            if is_dim {
-                fg = fg.linear_multiply(0.7);
-            }
-
-            if is_inverse {
-                std::mem::swap(&mut fg, &mut bg);
-            }
 
             if is_selected {
                 // Uniform selection highlight: fixed tint over the global
@@ -853,7 +841,9 @@ impl<'a> TerminalView<'a> {
                         },
                         Align2::CENTER_TOP,
                         indexed.c,
-                        self.font.font_type(),
+                        self.font.font_type_for_bold(
+                            flags.contains(cell::Flags::BOLD),
+                        ),
                         glyph_fg,
                     )
                 }));
@@ -1892,9 +1882,59 @@ fn grid_size(size: Vec2, padding: Vec2) -> Vec2 {
     )
 }
 
+fn cell_colors(theme: &TerminalTheme, cell: &cell::Cell) -> (Color32, Color32) {
+    let mut fg = theme.get_color(cell.fg);
+    let mut bg = theme.get_color(cell.bg);
+    // DIM_BOLD is the union of DIM and BOLD, not an independent flag.
+    // Intersecting it treats ordinary bold text as faint.
+    if cell.flags.contains(cell::Flags::DIM) {
+        fg = fg.linear_multiply(0.7);
+    }
+    if cell.flags.contains(cell::Flags::INVERSE) {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    (fg, bg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bold_preserves_ansi_indexed_and_truecolor_foregrounds() {
+        let theme = TerminalTheme::default();
+        for color in [
+            Color::Named(NamedColor::Cyan),
+            Color::Indexed(14),
+            Color::Spec(alacritty_terminal::vte::ansi::Rgb {
+                r: 117,
+                g: 223,
+                b: 255,
+            }),
+        ] {
+            let cell = cell::Cell {
+                fg: color,
+                flags: cell::Flags::BOLD,
+                ..Default::default()
+            };
+            assert_eq!(cell_colors(&theme, &cell).0, theme.get_color(color));
+        }
+    }
+
+    #[test]
+    fn faint_and_bold_faint_dim_before_inverse() {
+        let theme = TerminalTheme::default();
+        for flags in [cell::Flags::DIM, cell::Flags::DIM_BOLD] {
+            let mut cell = cell::Cell {
+                flags,
+                ..Default::default()
+            };
+            let expected = theme.get_color(cell.fg).linear_multiply(0.7);
+            assert_eq!(cell_colors(&theme, &cell).0, expected);
+            cell.flags.insert(cell::Flags::INVERSE);
+            assert_eq!(cell_colors(&theme, &cell).1, expected);
+        }
+    }
 
     #[test]
     fn grid_size_subtracts_padding_without_growing_layout() {

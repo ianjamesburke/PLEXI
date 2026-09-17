@@ -185,6 +185,23 @@ pub(crate) fn maybe_push_graphics_element(
     fg: Color32,
     pixels_per_point: f32,
 ) -> bool {
+    // Shade cells express coverage, not a font-specific stipple pattern.
+    // Alpha coverage keeps per-cell backgrounds, inverse and selection intact.
+    let coverage = match c {
+        '\u{2591}' => Some(ONE_QUARTER),
+        '\u{2592}' => Some(HALF),
+        '\u{2593}' => Some(THREE_QUARTERS),
+        _ => None,
+    };
+    if let Some(coverage) = coverage {
+        shapes.push(Shape::Rect(RectShape::filled(
+            cell_rect.round_to_pixels(pixels_per_point),
+            CornerRadius::ZERO,
+            fg.gamma_multiply(coverage),
+        )));
+        return true;
+    }
+
     if let Some(corner_shapes) = corner_shapes(c, cell_rect, fg) {
         shapes.extend(corner_shapes);
         return true;
@@ -280,4 +297,32 @@ impl RectFraction {
 
 fn lerp(min: f32, max: f32, t: f32) -> f32 {
     min + (max - min) * t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shade_cells_are_uniform_full_cell_coverage() {
+        let cell = Rect::from_min_max(pos2(10.0, 20.0), pos2(20.0, 40.0));
+        let fg = Color32::from_rgb(120, 220, 240);
+        for ppp in [1.0, 1.5, 2.0] {
+            for (c, coverage) in [('░', 0.25), ('▒', 0.5), ('▓', 0.75)] {
+                let mut shapes = Vec::new();
+                assert!(maybe_push_graphics_element(
+                    &mut shapes,
+                    c,
+                    cell,
+                    fg,
+                    ppp
+                ));
+                let [Shape::Rect(shape)] = shapes.as_slice() else {
+                    panic!("shade must be a single solid rectangle");
+                };
+                assert_eq!(shape.rect, cell.round_to_pixels(ppp));
+                assert_eq!(shape.fill, fg.gamma_multiply(coverage));
+            }
+        }
+    }
 }
