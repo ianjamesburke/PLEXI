@@ -1852,6 +1852,76 @@ mod tests {
         println!("Screenshot saved to {}", evidence_png!());
     }
 
+    /// Scenes cannot seed terminal PTY output. Exercise the real terminal
+    /// widget with the same ANSI fixture used by installed-host validation.
+    #[test]
+    fn screenshot_terminal_bold_and_shades() {
+        for ppp in [1.0, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_ppp(1000.0, 900.0, ppp);
+            h.step();
+            let id = add_focused_pane(&mut h);
+            let workspace = h.workspace_root().to_path_buf();
+            h.with_app_mut(|app| {
+                let terminal = crate::host::pane::TerminalPane::new(
+                    id,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        args: vec![concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/tests/fixtures/terminal-rendering.sh"
+                        )
+                        .into()],
+                        working_directory: Some(workspace),
+                        ..Default::default()
+                    },
+                    18.0,
+                )
+                .expect("start terminal fixture");
+                app.windows[app.active_window]
+                    .panes
+                    .insert(id, Pane::Terminal(Box::new(terminal)));
+                app.sidebar_visible = false;
+            });
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(Duration::from_secs(10));
+            loop {
+                h.run_steps(2);
+                let ready = h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&id)
+                        .and_then(|pane| pane.as_terminal_mut())
+                        .expect("fixture terminal")
+                        .backend
+                        .capture_lines(50)
+                        .iter()
+                        .any(|line| line.contains("RENDER_FIXTURE_READY"))
+                });
+                if ready {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "terminal fixture timed out"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let path = evidence_png!(&format!("_ppp{ppp}"));
+            let image = h.render().expect("render terminal fixture");
+            image.save(&path).expect("save terminal screenshot");
+            assert!(
+                image
+                    .pixels()
+                    .filter(|p| p.0 == [117, 223, 255, 255])
+                    .count()
+                    > 100,
+                "bold RGB slider must retain its requested foreground; screenshot: {path}"
+            );
+        }
+    }
+
     /// Visual review for the terminal reflow debounce (stint 0719). The
     /// debounce holds a resize while the layout is still moving and commits
     /// once the drag settles, so the pixel risk is a *stranded* commit: a

@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 pub const FONT_SIZE: f32 = 14.0;
 const FONT_NAME: &str = "JetBrainsMono Nerd Font";
+const BOLD_FONT_NAME: &str = "JetBrainsMono Nerd Font Bold";
+const TERMINAL_BOLD_FAMILY: &str = "terminal-bold";
 const UI_FONT_NAME: &str = "Inter";
 const UI_FONT_MEDIUM_NAME: &str = "Inter Medium";
 const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
@@ -1010,6 +1012,10 @@ pub fn terminal_font(size: f32) -> TerminalFont {
     TerminalFont::new(FontSettings {
         font_type: FontId::monospace(size),
     })
+    .with_bold_font(FontId::new(
+        size,
+        egui::FontFamily::Name(TERMINAL_BOLD_FAMILY.into()),
+    ))
 }
 
 // System fonts tried at runtime as additional fallbacks (macOS only).
@@ -1026,6 +1032,12 @@ pub fn font_definitions() -> egui::FontDefinitions {
         FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
             "../../fonts/JetBrainsMonoNerdFont-Regular.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        BOLD_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../fonts/JetBrainsMonoNerdFont-Bold.ttf"
         ))),
     );
     fonts.font_data.insert(
@@ -1124,17 +1136,47 @@ pub fn font_definitions() -> egui::FontDefinitions {
         }
     }
 
+    let mut bold = fonts.families[&egui::FontFamily::Monospace].clone();
+    bold.insert(0, BOLD_FONT_NAME.to_owned());
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(TERMINAL_BOLD_FAMILY.into()), bold);
+
     fonts
 }
 
 pub fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
+    log::info!("terminal renderer: regular/bold JetBrains Mono with geometric shade cells");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ThemeConfig;
+
+    #[test]
+    fn terminal_bold_face_preserves_regular_cell_metrics() {
+        let ctx = egui::Context::default();
+        setup_fonts(&ctx);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            ui.fonts_mut(|fonts| {
+                for size in [12.0, 18.0, 28.0] {
+                    let terminal = terminal_font(size);
+                    let regular = terminal.font_type();
+                    let bold = terminal.font_type_for_bold(true);
+                    assert_ne!(regular.family, bold.family);
+                    assert_eq!(fonts.row_height(&regular), fonts.row_height(&bold));
+                    for c in "mMW08[]".chars() {
+                        assert_eq!(
+                            fonts.glyph_width(&regular, c),
+                            fonts.glyph_width(&bold, c)
+                        );
+                    }
+                }
+            });
+        });
+    }
 
     /// pip_working/idle/blocked fall back to warning/success/danger when not set,
     /// and use the override color when set. pip_dim defaults to 0.72.
