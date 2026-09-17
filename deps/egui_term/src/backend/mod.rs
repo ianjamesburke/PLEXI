@@ -35,6 +35,13 @@ pub type TerminalMode = TermMode;
 pub type PtyEvent = Event;
 pub type SelectionType = AlacrittySelectionType;
 
+fn terminal_config() -> term::Config {
+    term::Config {
+        kitty_keyboard: true,
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum BackendCommand {
     Write(Vec<u8>),
@@ -267,7 +274,7 @@ impl TerminalBackend {
             env: settings.env,
             ..tty::Options::default()
         };
-        let config = term::Config::default();
+        let config = terminal_config();
         let terminal_size = TerminalSize::default();
         let pty = tty::new(&pty_config, terminal_size.into(), id)?;
         let child_pid = pty.child().id();
@@ -507,6 +514,18 @@ impl TerminalBackend {
         self.last_content.grid.update_from(terminal.grid());
         self.last_content.selectable_range = selectable_range;
         self.last_content.cursor = cursor.clone();
+        let keyboard_mode =
+            *terminal.mode() & TermMode::KITTY_KEYBOARD_PROTOCOL;
+        if keyboard_mode
+            != self.last_content.terminal_mode
+                & TermMode::KITTY_KEYBOARD_PROTOCOL
+        {
+            log::info!(
+                "terminal {} keyboard protocol: {:?}",
+                self.id,
+                keyboard_mode
+            );
+        }
         self.last_content.terminal_mode = *terminal.mode();
         self.last_content.terminal_size = self.size;
         self.last_content.cursor_visible =
@@ -517,6 +536,12 @@ impl TerminalBackend {
 
     pub fn last_content(&self) -> &RenderableContent {
         &self.last_content
+    }
+
+    /// Input precedes painting, and the PTY can negotiate after the last
+    /// rendered snapshot. Encode against the current parser state.
+    pub(crate) fn keyboard_mode(&self) -> TermMode {
+        *self.term.lock().mode() & TermMode::KITTY_KEYBOARD_PROTOCOL
     }
 
     pub fn child_pid(&self) -> u32 {
@@ -1489,6 +1514,55 @@ impl EventListener for EventProxy {
 mod tests {
     use super::is_url_char;
     use super::TerminalBackend;
+
+    #[test]
+    fn kitty_negotiation_queries_and_screen_stacks() {
+        use super::{EventProxy, Term, TermMode, TerminalSize};
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut term = Term::new(
+            super::terminal_config(),
+            &TerminalSize {
+                cell_width: 8,
+                cell_height: 16,
+                num_cols: 80,
+                num_lines: 24,
+                layout_size: crate::types::Size::default(),
+            },
+            EventProxy(sender),
+        );
+        let mut parser: alacritty_terminal::vte::ansi::Processor<
+            alacritty_terminal::vte::ansi::StdSyncHandler,
+        > = alacritty_terminal::vte::ansi::Processor::new();
+        for (sequence, flags) in [
+            ("\x1b[?u", 0),
+            ("\x1b[>1u\x1b[?u", 1),
+            ("\x1b[?1049h\x1b[?u", 0),
+            ("\x1b[>10u\x1b[?u", 10),
+            ("\x1b[>3u\x1b[?u", 3),
+            ("\x1b[<u\x1b[?u", 10),
+            ("\x1b[<u\x1b[?u", 0),
+            ("\x1b[?1049l\x1b[?u", 1),
+            ("\x1b[<u\x1b[?u", 0),
+        ] {
+            parser.advance(&mut term, sequence.as_bytes());
+            let replies: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|event| match event {
+                    super::Event::PtyWrite(reply) => Some(reply),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                replies,
+                [format!("\x1b[?{flags}u")],
+                "sequence {sequence:?}"
+            );
+            assert_eq!(
+                term.mode().contains(TermMode::REPORT_EVENT_TYPES),
+                flags & 2 != 0
+            );
+        }
+    }
 
     fn scrolled_term() -> super::Term<super::EventProxy> {
         use super::{EventProxy, Term, TerminalSize};

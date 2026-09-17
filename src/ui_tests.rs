@@ -1922,6 +1922,115 @@ mod tests {
         }
     }
 
+    /// Exercise egui input ownership and the real terminal widget/PTY writer.
+    /// Scene keys cannot express separate press, repeat and release events.
+    #[test]
+    fn terminal_kitty_press_repeat_release_reaches_pty_once() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    args: vec![concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/tests/fixtures/kitty-keyboard-probe.sh"
+                    )
+                    .into()],
+                    working_directory: Some(std::env::temp_dir()),
+                    ..Default::default()
+                },
+                18.0,
+            )
+            .expect("start keyboard fixture");
+            terminal.backend.enable_input_tap();
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("KITTY_READY"))
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "keyboard fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for (pressed, repeat) in [(true, false), (true, true), (false, false)] {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key: egui::Key::J,
+                physical_key: Some(egui::Key::J),
+                pressed,
+                repeat,
+                modifiers: egui::Modifiers::NONE,
+            });
+            if pressed {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text("j".into()));
+            }
+            h.step();
+        }
+        let bytes = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&id)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .take_input_tap()
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            "\x1b[106;1:1u\x1b[106;1:2u\x1b[106;1:3u"
+        );
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let received = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("KEY_EVENTS_OK"))
+            });
+            if received {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child did not receive the key event sequence"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.save_screenshot(&evidence_png!())
+            .expect("render keyboard fixture");
+    }
+
     /// Visual review for the terminal reflow debounce (stint 0719). The
     /// debounce holds a resize while the layout is still moving and commits
     /// once the drag settles, so the pixel risk is a *stranded* commit: a
