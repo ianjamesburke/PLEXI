@@ -136,12 +136,12 @@ fn encode_key(
         return Some(Vec::new());
     }
     // Kitty deliberately preserves these C0 keys unless report-all is set.
-    if !all && matches!(code.number, 9 | 13 | 127) {
+    if !all && code.suffix == 'u' && matches!(code.number, 9 | 13 | 127) {
         return if pressed { None } else { Some(Vec::new()) };
     }
     let chord = mods.ctrl || mods.alt || mods.mac_cmd;
     let encode = all
-        || (code.text && disambiguate && chord)
+        || (code.text && (disambiguate || types) && chord)
         || (!code.text && (disambiguate || types));
     if !encode {
         return if pressed { None } else { Some(Vec::new()) };
@@ -401,6 +401,20 @@ mod tests {
                 [Some(expected.into())]
             );
         }
+        assert_eq!(
+            encoded(
+                vec![key(Key::F3, Modifiers::NONE, false, false)],
+                TermMode::REPORT_EVENT_TYPES
+            ),
+            [Some("\x1b[13;1:3~".into())]
+        );
+        assert_eq!(
+            encoded(
+                vec![key(Key::J, Modifiers::CTRL, true, true)],
+                TermMode::REPORT_EVENT_TYPES
+            ),
+            [Some("\x1b[106;5:2u".into())]
+        );
     }
 
     #[test]
