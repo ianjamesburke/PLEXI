@@ -268,30 +268,35 @@ impl FileStore {
         });
     }
 
-    fn load() -> std::collections::BTreeMap<String, String> {
+    /// Fallible on purpose. An unreadable or corrupt store must NOT read as
+    /// empty: every writer below does read-modify-write, so an empty read
+    /// followed by a save would rewrite the file and destroy every secret it
+    /// still holds. A missing file is the one case that really is empty.
+    fn load() -> Result<std::collections::BTreeMap<String, String>, SecretError> {
         Self::warn_once();
         let path = Self::path();
         let raw = match std::fs::read_to_string(&path) {
             Ok(raw) => raw,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Default::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
             Err(e) => {
-                log::error!("workspace_secrets::FileStore: read {} failed: {e}", path.display());
-                return Default::default();
-            }
-        };
-        match serde_json::from_str(&raw) {
-            Ok(map) => map,
-            Err(e) => {
-                // Refuse to silently start from empty: an unreadable store
-                // that looks empty would let `add_new` overwrite live secrets.
                 log::error!(
-                    "workspace_secrets::FileStore: {} is not valid JSON ({e}); treating as \
-                     unreadable — no secret will resolve until it is repaired",
+                    "workspace_secrets::FileStore: read {} failed: {e}",
                     path.display()
                 );
-                Default::default()
+                return Err(SecretError::Backend(format!(
+                    "read {} failed: {e}",
+                    path.display()
+                )));
             }
-        }
+        };
+        serde_json::from_str(&raw).map_err(|e| {
+            log::error!(
+                "workspace_secrets::FileStore: {} is not valid JSON ({e}) — refusing to read or \
+                 write until it is repaired, so no secret is lost to a rewrite",
+                path.display()
+            );
+            SecretError::Backend(format!("{} is not valid JSON: {e}", path.display()))
+        })
     }
 
     fn save(map: &std::collections::BTreeMap<String, String>) -> Result<(), SecretError> {
@@ -338,12 +343,17 @@ impl FileStore {
 impl NonDestructiveStore for FileStore {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
         let _guard = Self::lock();
-        Self::load().get(account).map(|v| Zeroizing::new(v.clone()))
+        // `Option` has no room for "the store is broken" — `load` already
+        // logged which file and why, so a miss here is not silent.
+        Self::load()
+            .ok()?
+            .get(account)
+            .map(|v| Zeroizing::new(v.clone()))
     }
 
     fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
         let _guard = Self::lock();
-        let mut map = Self::load();
+        let mut map = Self::load()?;
         if map.contains_key(account) {
             return Err(SecretError::AlreadyExists(account.to_string()));
         }
@@ -353,7 +363,7 @@ impl NonDestructiveStore for FileStore {
 
     fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
         let _guard = Self::lock();
-        let mut map = Self::load();
+        let mut map = Self::load()?;
         match map.get(account) {
             None => Ok(()), // already gone — nothing to lose
             Some(current) if current == expected => {
@@ -367,6 +377,7 @@ impl NonDestructiveStore for FileStore {
     fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
         let _guard = Self::lock();
         Self::load()
+            .unwrap_or_default()
             .into_keys()
             .filter(|a| a.starts_with(prefix))
             .collect()
@@ -376,7 +387,7 @@ impl NonDestructiveStore for FileStore {
         // The file IS the backend, so there is no index/backend skew to
         // reconcile here — the scan and the listing read the same bytes.
         let _guard = Self::lock();
-        let accounts: Vec<String> = Self::load().into_keys().collect();
+        let accounts: Vec<String> = Self::load()?.into_keys().collect();
         log::info!(
             "workspace_secrets::scan: found {} secret(s) in the file store",
             accounts.len()
@@ -389,14 +400,14 @@ impl NonDestructiveStore for FileStore {
 impl SecretStore for FileStore {
     fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
         let _guard = Self::lock();
-        let mut map = Self::load();
+        let mut map = Self::load()?;
         map.insert(account.to_string(), value.to_string());
         Self::save(&map)
     }
 
     fn delete(&self, account: &str) -> Result<(), SecretError> {
         let _guard = Self::lock();
-        let mut map = Self::load();
+        let mut map = Self::load()?;
         map.remove(account);
         Self::save(&map)
     }

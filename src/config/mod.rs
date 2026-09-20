@@ -1387,7 +1387,45 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
     false
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Linux opener chain: VS Code → the XDG default handler. `xdg-open` is the
+/// desktop-agnostic entry point every Linux DE honours, so there is no third
+/// candidate worth adding — a machine with no XDG handler has no configured
+/// editor to fall back to, and the caller reports that honestly.
+#[cfg(target_os = "linux")]
+pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
+    for opener in ["code", "xdg-open"] {
+        match std::process::Command::new(opener)
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => {
+                log::info!(
+                    "open_file_with_fallback: opened {} with {opener}",
+                    path.display()
+                );
+                return true;
+            }
+            Ok(status) => log::warn!(
+                "open_file_with_fallback: {opener} exited {status:?} for {}, trying next",
+                path.display()
+            ),
+            Err(e) => log::warn!(
+                "open_file_with_fallback: {opener} unavailable ({e}) for {}, trying next",
+                path.display()
+            ),
+        }
+    }
+    log::warn!(
+        "open_file_with_fallback: no opener succeeded for {}",
+        path.display()
+    );
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
     log::warn!(
         "open_file_with_fallback: no platform implementation for {}",
