@@ -137,14 +137,19 @@ impl PlexiApp {
         });
         if self.shutdown_requested {
             // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).
-            // eframe 0.34's macOS CloseRequested path may destroy the window
-            // without terminating the process. Save synchronously, then exit
-            // successfully so launchd also treats this as a clean stop.
+            // This one cannot route through the window-close path: a hidden or
+            // occluded host runs no `App::ui` pass at all, so the close request
+            // would never be seen. Save synchronously, then exit successfully
+            // so launchd also treats this as a clean stop.
             log::info!("host: shutdown requested — saving workspace and exiting");
             self.save_workspace_now();
             self.workspace_dirty = false;
             log::info!("workspace: synchronous save (shutdown/update-quit)");
-            std::process::exit(0);
+            // `on_exit` never runs on this path — exiting from mid-frame is
+            // what makes it reliable — so close the focus segment here, the
+            // same way the window-close path does from `on_exit`.
+            self.bank_final_focus_segment();
+            crate::app::quit::exit_host("host stop");
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {

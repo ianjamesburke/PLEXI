@@ -912,3 +912,54 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
         "navigating must move focus to the window that owns the note"
     );
 }
+
+/// The focus journal is the crash-recovery checkpoint: whatever is left on
+/// disk at startup is reported as a crashed session. Quitting through
+/// `plexi host stop` exits from mid-frame and never reaches `App::on_exit`,
+/// so the banking that clears the journal has to be its own step that both
+/// quit paths call — otherwise every clean stop is followed by a bogus
+/// `crash_recovery` segment measuring the time the host was *not* running.
+#[test]
+fn banking_the_final_focus_segment_clears_the_journal() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+    let (tile_a, _) = app.add_test_pane();
+    let win_id = app.windows[0].window_id;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let journal = dir.path().join("focus-journal.jsonl");
+    std::fs::write(&journal, "{}\n").expect("seed journal");
+    app.focus_journal_path = journal.clone();
+
+    app.windows[0].focused_pane = Some(tile_a);
+    app.last_logged_focus = Some((win_id, tile_a));
+    app.focus_started_at = Some(std::time::Instant::now());
+
+    app.bank_final_focus_segment();
+
+    assert!(
+        !journal.exists(),
+        "a banked shutdown segment must leave no journal for startup to read as a crash"
+    );
+}
+
+#[test]
+fn banking_clears_the_journal_even_with_nothing_focused() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let journal = dir.path().join("focus-journal.jsonl");
+    std::fs::write(&journal, "{}\n").expect("seed journal");
+    app.focus_journal_path = journal.clone();
+    app.last_logged_focus = None;
+
+    app.bank_final_focus_segment();
+
+    assert!(
+        !journal.exists(),
+        "a stale journal must not survive a quit just because no pane was focused"
+    );
+}

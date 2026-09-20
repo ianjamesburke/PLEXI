@@ -29,6 +29,8 @@ fail() {
   if [[ -n "${2:-}" ]]; then printf -- '--- output ---\n%s\n--------------\n' "$2" >&2; fi
 }
 
+skip() { STEP_N=$((STEP_N + 1)); printf 'skip %d: %s\n' "$STEP_N" "$1"; }
+
 cleanup() {
   if [[ "$HOST_STARTED" == 1 ]]; then
     "$PLEXI" host stop >/dev/null 2>&1
@@ -36,6 +38,35 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+# Quitting means the process is gone and pane IPC is unbound — a host that
+# destroyed its window but stayed parked in the event loop still answers `kill
+# -0` and still owns its socket, which is the shape of the Linux quit hang.
+assert_host_is_gone() {
+  local what="$1" pid="$2" socket="$3" n
+  for n in $(seq 1 25); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    fail "$what: pid $pid still alive 5s after quit" "$(ps -o pid=,stat=,wchan=,args= -p "$pid" 2>&1)"
+    kill -TERM "$pid" 2>/dev/null
+    return 1
+  fi
+  ok "$what: host process exited"
+  if [[ -e "$socket" ]]; then
+    fail "$what: $socket outlived the host"
+    rm -f "$socket"
+    return 1
+  fi
+  ok "$what: notify socket unbound"
+}
+
+# The window id of a host, as X sees it. Empty when there is no way to ask.
+host_window_id() {
+  command -v xdotool >/dev/null 2>&1 || return 1
+  DISPLAY="${DISPLAY:-}" xdotool search --pid "$1" 2>/dev/null | head -1
+}
 
 # ── Preconditions ────────────────────────────────────────────────────────────
 if [[ ! -x "$PLEXI" ]]; then
@@ -138,6 +169,9 @@ if [[ "$HOST_STARTED" == 1 ]]; then
   fi
 
   # ── 8. clean shutdown ──────────────────────────────────────────────────────
+  host_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
+    <<<"$("$PLEXI" host status --json 2>&1)")"
+  host_socket="$PLEXI_SOCKET"
   out="$("$PLEXI" host stop 2>&1)"
   if [[ $? -eq 0 ]]; then
     HOST_STARTED=0
@@ -146,11 +180,52 @@ if [[ "$HOST_STARTED" == 1 ]]; then
     fail "host stop" "$out"
   fi
 
+  if [[ "$host_pid" =~ ^[0-9]+$ ]]; then
+    assert_host_is_gone "host stop" "$host_pid" "$host_socket"
+  else
+    fail "host status did not report a pid to watch" "$host_pid"
+  fi
+
   out="$("$PLEXI" host status --json 2>&1)"
   if grep -q '"ready"[[:space:]]*:[[:space:]]*false' <<<"$out"; then
     ok "host status reports not ready after stop"
   else
     fail "host status after stop" "$out"
+  fi
+fi
+
+# ── 9. quitting from the window leaves nothing behind ────────────────────────
+# The regression guard for the Linux quit hang: `host stop` exits the process
+# itself, but a quit that comes from the window — the X button, or the quit
+# hotkey, both of which reach eframe as `CloseRequested` — used to destroy the
+# window and leave the process parked in the event loop owning `notify.sock`.
+# Driving the hotkey needs only a keyboard, so this works without a window
+# manager; the WM's close button lands on the same eframe path.
+out="$("$PLEXI" host start --ephemeral --timeout-secs 90 2>&1)"
+if [[ $? -ne 0 ]]; then
+  fail "host start (window-quit check)" "$out"
+else
+  HOST_STARTED=1
+  status="$("$PLEXI" host status --json 2>&1)"
+  host_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' <<<"$status")"
+  host_socket="$(sed -n 's/.*"socket"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$status")"
+  win="$(host_window_id "$host_pid" || true)"
+  if [[ -z "$win" ]]; then
+    skip "window quit: no xdotool/window id on this display — cannot drive the X quit path"
+    "$PLEXI" host stop >/dev/null 2>&1 && HOST_STARTED=0
+  else
+    # Quit is Cmd/Ctrl+Q, triple-tapped when `confirm_quit` is on (the
+    # default) and single when it is off — four presses inside the 1.5s
+    # window satisfies both. The window dies mid-sequence, so later presses
+    # are expected to fail.
+    for _ in 1 2 3 4; do
+      DISPLAY="${DISPLAY:-}" xdotool key --clearmodifiers --window "$win" ctrl+q >/dev/null 2>&1 || true
+      sleep 0.2
+    done
+    # Either way the host is no longer ours to stop: it quit, or the
+    # assertion already SIGTERM'd the leftover.
+    assert_host_is_gone "window quit" "$host_pid" "$host_socket" || true
+    HOST_STARTED=0
   fi
 fi
 

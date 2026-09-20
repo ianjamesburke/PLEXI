@@ -26,6 +26,7 @@ pub(crate) mod pane_wait;
 pub mod permissions;
 pub mod plexi_descriptor;
 pub(crate) mod python_env;
+pub(crate) mod quit;
 pub mod registry;
 pub(crate) mod registry_views;
 pub mod registry_watcher;
@@ -40,8 +41,7 @@ pub mod video_player_app;
 #[cfg(test)]
 pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
 pub(crate) use focus::{
-    ContextCloseState, FocusKind, FocusSegmentReason, PendingRawWasmLaunch,
-    FOCUS_HEARTBEAT_INTERVAL,
+    ContextCloseState, FocusKind, PendingRawWasmLaunch, FOCUS_HEARTBEAT_INTERVAL,
 };
 pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
@@ -665,6 +665,8 @@ fn spawn_socket_listener(
         }
     };
     log::info!("pane_ipc: listening on {:?}", path);
+    // Teardown removes exactly this socket, so it has to know which one it is.
+    quit::record_notify_socket(&path);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let stream = match stream {
@@ -4109,22 +4111,12 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Exit,
         );
         log::info!("quit_phase: on_exit begin");
-        if let Some((window_id, tile_id)) = self.last_logged_focus {
-            let duration_secs = self
-                .focus_started_at
-                .map(|t| t.elapsed().as_secs())
-                .unwrap_or(0);
-            log::info!(
-                "focus_changed: shutdown — banking final session duration_secs={duration_secs}"
-            );
-            self.emit_focus_changed_for_tile(
-                window_id,
-                tile_id,
-                duration_secs,
-                FocusSegmentReason::Shutdown,
-            );
-        }
+        self.bank_final_focus_segment();
         log::info!("quit_phase: on_exit complete");
+        // eframe stops here: it has destroyed the window but will only end the
+        // process on a later winit event that a chrome close need never send
+        // (see `quit`). Finish the quit ourselves.
+        quit::exit_host("window closed");
     }
 }
 
