@@ -132,8 +132,8 @@ how ~35 dead-code warnings pointed at it.
 the release workflow is macOS-only — so a `cfg(unix)` assumption landing on
 alpha is invisible until someone tries.
 
-The file is currently staged at `.github/workflows-pending/build-windows.yml`
-because the token that pushed this branch lacks GitHub's `workflow` OAuth
+The file lives at `.github/workflows/build-windows.yml`. Earlier it was held
+out of `.github/workflows/` because the push token lacked GitHub's `workflow` OAuth
 scope. See that directory's README for the two commands that activate it.
 
 ## Phase 4 — Keyboard ⛔ blocked on a product decision
