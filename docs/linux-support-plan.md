@@ -203,13 +203,20 @@ must say so rather than pretend:
 - **AVFoundation parity.** No Linux hardware video decode. The video pane
   reports "unsupported on this platform"; it does not fall back to a silent
   black frame.
-- **macOS installer / `.app` bundle / `cargo-bundle`.** No Linux packaging, no
-  `.desktop` entry, no `install.sh` Linux branch. Build from source only.
+- **Installer / `.app` bundle / `cargo-bundle`.** No Linux packaging, no
+  `.desktop` entry, no `install.sh` Linux branch. Build from source only —
+  which is why `host start` launches `current_exe()` on Linux instead of a
+  well-known install path.
 - **App Nap.** A macOS-only energy concept with no Linux analogue — the Linux
   arm is a documented no-op, not an emulation.
-- **Keychain-backed secrets.** No libsecret / gnome-keyring integration in v0.
-  The Linux secrets store is whatever the platform seam's Linux arm defines,
-  and the `Why:` for any weaker storage must be recorded where the arm lives.
+- **Keyring-backed secrets.** No libsecret / gnome-keyring integration in v0.
+  Linux resolves `system_store()` to a file-backed `SecretStore` (`FileStore`,
+  in the secrets store module) writing a `0600` JSON file in the channel
+  profile dir. That is strictly weaker than the macOS Keychain — same-user
+  readable, not encrypted at rest — and the store says so in the log the first
+  time it is touched. It exists because the alternative is no store at all,
+  which makes `plexi ai onboard`, the OpenRouter key lookup, terminal env
+  injection and the Secrets app dead code on Linux.
 - **Finder service / macOS menu bar / dock integration.**
 - **Wayland.** X11 only for v0. Wayland may work incidentally; it is not
   verified and not claimed.
