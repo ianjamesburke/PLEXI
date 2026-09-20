@@ -239,7 +239,7 @@ fn probe_ollama() -> (bool, Vec<String>) {
 }
 
 fn check_openrouter_configured() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         use crate::workspace::secrets::{keychain_user_name, system_store};
         let store = system_store();
@@ -247,7 +247,7 @@ fn check_openrouter_configured() -> bool {
             .iter()
             .any(|name| store.get(&keychain_user_name(name)).is_some())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         false
     }
