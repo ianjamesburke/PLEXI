@@ -46,8 +46,10 @@ Windows GUI behavior cannot be verified from the Linux development container.
 What *is* verifiable here, and what proves it:
 
 ```bash
-# Native MSVC target — the same toolchain windows-latest uses.
-cargo xwin check --bin plexi --target x86_64-pc-windows-msvc
+# Native MSVC target — the same toolchain windows-latest uses. `build` rather
+# than `check` because linking a PE against the MSVC CRT is its own failure
+# mode, and it is the half of the CI job a `check` does not cover.
+cargo xwin build --bin plexi --target x86_64-pc-windows-msvc
 
 # GNU target — a second opinion, faster to iterate against.
 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
@@ -73,7 +75,9 @@ with Windows. Note that alpha does not currently compile for Linux either — se
 
 ## Phase 1 — Compile ✅
 
-`cargo check --bin plexi` is clean on both Windows targets.
+Clean on both Windows targets, and `x86_64-pc-windows-msvc` links a real
+`plexi.exe` (~146 MB debug PE) — codegen and the link step, not just type
+checking.
 
 The platform seam:
 

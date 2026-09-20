@@ -343,18 +343,33 @@ mod windows_impl {
     #[derive(Debug)]
     pub struct IpcListener {
         name: String,
+        /// An instance created by `bind` and not yet consumed by `accept`.
+        ///
+        /// This is the named-pipe stand-in for a listen backlog. `bind` must
+        /// leave an instance in existence: callers treat a successful bind as
+        /// "the endpoint is now reachable" and only then spawn the accept
+        /// thread, so a client connecting in that window would otherwise get
+        /// `ERROR_FILE_NOT_FOUND` from a pipe name that momentarily does not
+        /// exist. Holding it here lets that client connect and simply wait,
+        /// which is what the Unix path does.
+        ///
+        /// `Mutex` only because `accept` takes `&self`, matching
+        /// `UnixListener`; it is never contended in practice — one accept loop
+        /// owns a listener.
+        pending: std::sync::Mutex<Option<OwnedHandle>>,
     }
 
     impl IpcListener {
         pub fn bind(endpoint: impl AsRef<Path>) -> io::Result<Self> {
             let name = endpoint_str(endpoint.as_ref());
-            // Create one instance eagerly so a client connecting immediately
-            // after `bind` returns does not race the first `accept`, and so a
-            // name collision with another running host fails here rather than
-            // inside the accept loop.
-            let probe = Self::create_instance(&name)?;
-            drop(probe);
-            Ok(Self { name })
+            // Fails here, not inside the accept loop, when another host on
+            // this channel already owns the name — the analogue of
+            // `UnixListener::bind` reporting `EADDRINUSE`.
+            let pending = Self::create_instance(&name)?;
+            Ok(Self {
+                name,
+                pending: std::sync::Mutex::new(Some(pending)),
+            })
         }
 
         fn create_instance(name: &str) -> io::Result<OwnedHandle> {
@@ -382,7 +397,18 @@ mod windows_impl {
 
         /// Block until a client connects, returning its instance.
         pub fn accept(&self) -> io::Result<IpcStream> {
-            let handle = Self::create_instance(&self.name)?;
+            // Consume the instance `bind` left waiting before creating a new
+            // one, so the very first client is served by the instance it
+            // actually connected to.
+            let pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            let handle = match pending {
+                Some(handle) => handle,
+                None => Self::create_instance(&self.name)?,
+            };
             let raw = handle.as_raw_handle() as _;
             // SAFETY: `handle` owns a live server-side pipe instance. A null
             // OVERLAPPED means "block until connected", which is what we want.
