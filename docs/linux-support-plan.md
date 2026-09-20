@@ -195,6 +195,40 @@ decode, menu construction) stay macOS-gated; a Linux stub gets its own test
 asserting the *stub's* contract (returns the documented error, logs once), not
 a skipped test. A test that is silently absent on Linux is invisible rot.
 
+## Phase 6 — Install
+
+`install.sh` and `scripts/install.sh` take a Linux branch rather than
+refusing. Same script, same channel/suffix rules, same profile seeding; only
+the artifact and its placement differ, because Linux has no `.app` bundle.
+
+| | macOS | Linux |
+|---|---|---|
+| Build | `cargo bundle --release` | `cargo build --release` |
+| Installed binary | `/Applications/Plexi<Cap>.app/Contents/MacOS/plexi<suffix>` | `$XDG_DATA_HOME/plexi<suffix>/bin/plexi<suffix>` |
+| PATH entry | `/usr/local/bin/plexi<suffix>` (sudo) | `$HOME/.local/bin/plexi<suffix>` (no sudo) |
+| Launcher | `Info.plist` + `lsregister` | `.desktop` entry + hicolor icon |
+| Signing | `codesign` with "Plexi Dev" | n/a |
+
+Both platforms resolve every later step — the channel-routing shim, the
+non-main symlink, completions, core-pack seeding — through a single
+`$stable_bin` variable, so the two branches cannot drift apart on where the
+binary actually is.
+
+Two Linux details that are easy to get wrong:
+
+- **The binary keeps its channel suffix on disk.** `config_dir_name()` derives
+  the profile from `current_exe()`'s basename, so a binary installed as plain
+  `plexi` reads `~/.plexi/` no matter which channel built it.
+- **`rsync` is not guaranteed.** It ships with macOS but not with a minimal
+  Debian or Fedora install, and every use in the installer is "replace this
+  directory with that one". `sync_tree` falls back to `cp -R`, so the
+  installer does not hard-require a package the user may not have.
+
+`PLEXI_BIN_DIR` overrides the PATH entry's directory. The installer warns when
+that directory is not on `$PATH` instead of silently installing a command the
+shell cannot find. `scripts/uninstall.sh` reverses all of it, including the
+`.desktop` entry and the icon.
+
 ## Non-goals for v0
 
 Explicitly out of scope. Each is a stub or an unsupported path, and the binary
@@ -203,10 +237,10 @@ must say so rather than pretend:
 - **AVFoundation parity.** No Linux hardware video decode. The video pane
   reports "unsupported on this platform"; it does not fall back to a silent
   black frame.
-- **Installer / `.app` bundle / `cargo-bundle`.** No Linux packaging, no
-  `.desktop` entry, no `install.sh` Linux branch. Build from source only —
-  which is why `host start` launches `current_exe()` on Linux instead of a
-  well-known install path.
+- **Distro packaging.** No `.deb`, `.rpm`, AUR recipe, Flatpak or AppImage,
+  and no `cargo-bundle` equivalent. `install.sh` builds from source and
+  installs into the user's home (Phase 6); there is nothing to publish to a
+  package repository.
 - **App Nap.** A macOS-only energy concept with no Linux analogue — the Linux
   arm is a documented no-op, not an emulation.
 - **Keyring-backed secrets.** No libsecret / gnome-keyring integration in v0.
@@ -220,8 +254,10 @@ must say so rather than pretend:
 - **Finder service / macOS menu bar / dock integration.**
 - **Wayland.** X11 only for v0. Wayland may work incidentally; it is not
   verified and not claimed.
-- **Release channels on Linux.** No `plexi-alpha`/`plexi-beta` Linux shims, no
-  channel promotion. The channel resolver still works; the installers do not.
+- **Channel promotion on Linux.** `scripts/install.sh <channel>` installs any
+  channel (`plexi-alpha`, `plexi-beta`, `plexi-pr-<N>`) with the same suffix
+  rules as macOS, but the promotion and release-tagging scripts around it are
+  untested off macOS.
 - **CI.** No Linux job added to the pipeline in v0.
 
 ## Definition of done — "alpha runs on this Linux VM"
@@ -235,10 +271,14 @@ All of the following are simultaneously true on the reference machine:
    up; `plexi host status` agrees.
 5. `plexi host screenshot` produces a PNG that, when read, shows the Plexi UI —
    chrome and at least one pane — not a blank surface.
-6. `bash scripts/linux-smoke.sh` exits 0 end to end.
+6. `bash scripts/linux-smoke.sh` exits 0 end to end — against the *installed*
+   binary, not just the one in `target/release/`.
 7. Every macOS capability with no Linux implementation is reachable only
    through a stub that logs at `info` and, where it must fail, returns an
    error naming the platform — verified by grepping the log after a smoke run.
 
-Anything short of all seven is "Linux compiles", which is a different and much
+8. `bash scripts/install.sh <channel>` completes on a machine with no
+   `rsync` and no `sudo`, and the resulting `plexi` on `$PATH` starts a host.
+
+Anything short of all eight is "Linux compiles", which is a different and much
 weaker claim.
