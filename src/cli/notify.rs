@@ -128,11 +128,11 @@ pub fn notify_cli(
     );
 
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
+    use crate::platform::ipc::{self, IpcStream};
+    let mut stream = match IpcStream::connect(&socket_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-            let _ = std::fs::remove_file(&socket_path);
+            ipc::remove_stale_endpoint(&socket_path);
             eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
             return 1;
         }
@@ -223,8 +223,8 @@ pub fn dismiss_notify_cli(
         "response_file": response_file,
     });
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
+    use crate::platform::ipc::IpcStream;
+    let mut stream = match IpcStream::connect(&socket_path) {
         Ok(stream) => stream,
         Err(e) => {
             eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");

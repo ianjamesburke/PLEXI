@@ -20,8 +20,7 @@
 
 use serde::Deserialize;
 use std::io::Write;
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use crate::platform::ipc::{self, IpcStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -304,11 +303,11 @@ enum RunningState {
 /// `ConnectionRefused` means the socket file is stale (owning process died
 /// without cleanup) — remove it and treat as not-running.
 fn probe_notify_socket(socket_path: &Path) -> RunningState {
-    match UnixStream::connect(socket_path) {
+    match IpcStream::connect(socket_path) {
         Ok(_) => RunningState::Running,
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
             log::info!("host: stale socket at {socket_path:?} (connection refused) — removing");
-            let _ = std::fs::remove_file(socket_path);
+            ipc::remove_stale_endpoint(socket_path);
             RunningState::NotRunning
         }
         Err(e) => {
@@ -327,7 +326,7 @@ fn probe_notify_socket(socket_path: &Path) -> RunningState {
 /// directory via `host_config_dir` — never the (possibly env-shadowed)
 /// `config::config_dir()`.
 fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize> {
-    let mut stream = UnixStream::connect(socket_path).ok()?;
+    let mut stream = IpcStream::connect(socket_path).ok()?;
     let response_file =
         crate::rpc::response_file_in(&host_config_dir(channel), "host-status", "json");
     let request = crate::protocol::AppRequest::ListPanes {
@@ -537,7 +536,7 @@ pub fn host_start_cli(
     }
 
     let (channel, bundle_path, binary_path) = resolve_channel_paths();
-    let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
+    let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
     log::info!(
         "host_start: socket={socket_path:?} pane_count={}",
         specs.len()
@@ -618,17 +617,7 @@ pub fn host_start_cli(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    // SAFETY: the pre_exec closure only calls libc::setsid(), an
-    // async-signal-safe syscall, between fork and exec — no allocation, no
-    // locking, no access to the parent's heap state.
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    detach_from_terminal(&mut cmd);
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -662,13 +651,45 @@ pub fn host_start_cli(
 /// `plexi host stop` — clean shutdown request over `notify.sock` first
 /// (`AppRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
 /// `lsof -t`) if the socket doesn't confirm exit within a short timeout.
+/// Detach the spawned host from this terminal so closing the terminal — or
+/// Ctrl-C in it — does not take the host down with it.
+///
+/// Unix: `setsid()` between fork and exec puts the child in its own session,
+/// with no controlling terminal.
+#[cfg(unix)]
+fn detach_from_terminal(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt as _;
+    // SAFETY: the pre_exec closure only calls libc::setsid(), an
+    // async-signal-safe syscall, between fork and exec — no allocation, no
+    // locking, no access to the parent's heap state.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// Windows has no fork, so the same effect is requested up front through
+/// creation flags: `DETACHED_PROCESS` drops the console the parent owns (the
+/// analogue of losing the controlling terminal) and `CREATE_NEW_PROCESS_GROUP`
+/// keeps a Ctrl-C in the launching console from reaching the host.
+#[cfg(windows)]
+fn detach_from_terminal(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt as _;
+    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+}
+
 pub fn host_stop_cli() -> i32 {
     let channel = crate::config::build_channel();
-    let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
+    let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
     let pid = detect_pid(&socket_path);
     log::info!("host_stop: channel={channel:?} socket={socket_path:?} pid={pid:?}");
 
-    match UnixStream::connect(&socket_path) {
+    match IpcStream::connect(&socket_path) {
         Ok(mut stream) => {
             let payload = serde_json::to_string(&crate::protocol::AppRequest::Shutdown)
                 .unwrap_or_else(|_| "{\"type\":\"shutdown\"}".to_string());
@@ -685,12 +706,12 @@ pub fn host_stop_cli() -> i32 {
                     // stale-socket idiom `probe_notify_socket` uses).
                     let deadline = Instant::now() + Duration::from_secs(5);
                     loop {
-                        match UnixStream::connect(&socket_path) {
+                        match IpcStream::connect(&socket_path) {
                             Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
                                 log::info!(
                                     "host_stop: method=socket pid={pid:?} — clean shutdown confirmed"
                                 );
-                                let _ = std::fs::remove_file(&socket_path);
+                                ipc::remove_stale_endpoint(&socket_path);
                                 println!("Plexi host stopped (clean shutdown).");
                                 return 0;
                             }
@@ -760,7 +781,7 @@ pub fn host_stop_cli() -> i32 {
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
-    let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
+    let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
     let pid = detect_pid(&socket_path);
     let pane_count = query_ready_status(&socket_path, channel.as_deref());
     let ready = pane_count.is_some();
@@ -804,7 +825,7 @@ pub fn host_status_cli(json: bool) -> i32 {
 pub fn host_log_cli(source: &str, message: &str) -> i32 {
     let channel = crate::config::build_channel();
     let profile_dir = host_config_dir(channel.as_deref());
-    let socket_path = profile_dir.join("notify.sock");
+    let socket_path = ipc::endpoint_in(&profile_dir);
     let response_file = crate::rpc::response_file_in(&profile_dir, "host-log-response", "json");
     log::info!(
         "host_log:cli: channel={channel:?} source={source} message_chars={}",
@@ -817,7 +838,7 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
         "message": message,
         "response_file": response_file,
     });
-    let mut stream = match UnixStream::connect(&socket_path) {
+    let mut stream = match IpcStream::connect(&socket_path) {
         Ok(stream) => stream,
         Err(e) => {
             log::error!("host_log: could not connect to {socket_path:?}: {e}");

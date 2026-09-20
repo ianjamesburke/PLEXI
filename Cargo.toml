@@ -112,6 +112,25 @@ eframe = { version = "0.34.3", default-features = false, features = ["x11", "way
 # machines with no Vulkan ICD — Mesa lavapipe covers the headless case.
 wgpu = { version = "29", default-features = false, features = ["vulkan", "gles"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows wgpu backend. The base entry names only `metal`; without `dx12`
+# `create_surface` reports `NoAvailableAdapter` and the host never opens a
+# window. Cargo unions target-specific features with the base entry.
+wgpu = { version = "29", default-features = false, features = ["dx12"] }
+# Win32 APIs used by the port:
+#   Threading        — TerminateProcess / OpenProcess (src/app/win.rs)
+#   Pipes + IO       — named-pipe IPC and typed-pipe transport
+#   Storage_FileSystem — CreateFileW / ReadFile / WriteFile on pipe handles
+#   Security_Credentials — Credential Manager secret storage
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security_Credentials",
+] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Background hosts use winit's macOS event-loop activation policy hook.
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
