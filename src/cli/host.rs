@@ -212,6 +212,7 @@ fn host_config_dir(channel: Option<&str>) -> PathBuf {
 /// Resolve the app bundle + binary-inside-bundle paths for the *running CLI
 /// binary's own channel* (never `PLEXI_CHANNEL` — that env var is exactly
 /// what must be stripped from the launched child).
+#[cfg(target_os = "macos")]
 fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
     let channel = crate::config::build_channel();
     let cap = crate::cli::install::channel_bundle_cap(channel.as_deref());
@@ -229,12 +230,47 @@ fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
     (channel, bundle_path, binary_path)
 }
 
+/// Linux has no app bundle — packaging is a v0 non-goal (see
+/// `docs/linux-support-plan.md`) and the same executable is both the CLI and
+/// the host. So the host to launch is *this* binary, resolved through
+/// `current_exe` rather than a well-known install path: a build-from-source
+/// tree is the only supported layout, and hardcoding one would break the
+/// moment the tree moved.
+///
+/// Both returned paths are that executable. `host_start_cli` existence-checks
+/// them separately (bundle, then binary-inside-bundle); pointing both at the
+/// real binary keeps those checks meaningful instead of vacuous.
+#[cfg(not(target_os = "macos"))]
+fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
+    let channel = crate::config::build_channel();
+    let binary_path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(e) => {
+            // An empty path fails the existence check in `host_start_cli`
+            // with a message naming the channel, which is the honest outcome:
+            // we cannot name a host to launch.
+            log::error!("host: current_exe() failed: {e} — cannot resolve a host binary to launch");
+            PathBuf::new()
+        }
+    };
+    log::info!("host: resolved channel={channel:?} binary={binary_path:?} (no bundle on this platform)");
+    (channel, binary_path.clone(), binary_path)
+}
+
 /// Best-effort pid lookup for the process holding `notify.sock` open. No
 /// pid-file mechanism exists anywhere in this codebase (confirmed: `src/app/`
 /// and `src/config/` have no precedent), so this shells out to `lsof -t` as a
 /// diagnostic only — failure here never blocks the caller, it just means pid
 /// is reported as unknown.
 fn detect_pid(socket_path: &Path) -> Option<u32> {
+    // `lsof` is not installed by default on a minimal Linux, and without a pid
+    // `host stop`'s SIGTERM fallback has nothing to signal. /proc answers the
+    // same question from the kernel with no external dependency, so try it
+    // first and keep `lsof` as the fallback.
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = detect_pid_via_proc(socket_path) {
+        return Some(pid);
+    }
     match std::process::Command::new("lsof")
         .arg("-t")
         .arg(socket_path)
@@ -387,6 +423,85 @@ fn collect_pane_specs(
 
 /// `plexi host start [--layout <file>] [--pane <spec>]... [--timeout-secs <n>] [--background]`
 ///
+/// Linux pid lookup for the process holding `socket_path` open, straight from
+/// /proc — no `lsof`, no other binary.
+///
+/// Two steps, because the kernel exposes the mapping in two places:
+/// `/proc/net/unix` maps a bound socket *path* to its inode, and a process's
+/// `/proc/<pid>/fd/*` symlinks resolve to `socket:[<inode>]`. Matching the two
+/// gives the listener.
+///
+/// Best-effort, exactly like the `lsof` path it fronts: any unreadable entry
+/// (a process that exited mid-scan, another user's `/proc/<pid>/fd`) is
+/// skipped rather than failing the lookup.
+#[cfg(target_os = "linux")]
+fn detect_pid_via_proc(socket_path: &Path) -> Option<u32> {
+    let target = socket_path.to_str()?;
+    let unix_table = match std::fs::read_to_string("/proc/net/unix") {
+        Ok(table) => table,
+        Err(e) => {
+            log::warn!("host: could not read /proc/net/unix ({e}) — falling back to lsof");
+            return None;
+        }
+    };
+    // Columns: Num RefCount Protocol Flags Type St Inode Path
+    let inodes: Vec<String> = unix_table
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let inode = fields.nth(6)?;
+            // The path is the remainder; a bound path never contains spaces
+            // here because the kernel prints it verbatim and Plexi's socket
+            // path never has any.
+            (fields.next()? == target).then(|| inode.to_string())
+        })
+        .collect();
+    if inodes.is_empty() {
+        return None;
+    }
+
+    let self_pid = std::process::id();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::warn!("host: could not read /proc ({e}) — pid unknown for {socket_path:?}");
+            return None;
+        }
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue; // not a pid directory
+        };
+        if pid == self_pid {
+            continue; // this CLI may have the socket open too
+        }
+        let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
+            continue; // exited mid-scan, or another user's process
+        };
+        for fd in fds.flatten() {
+            let Ok(link) = std::fs::read_link(fd.path()) else {
+                continue;
+            };
+            let Some(link) = link.to_str() else { continue };
+            let Some(inode) = link
+                .strip_prefix("socket:[")
+                .and_then(|rest| rest.strip_suffix(']'))
+            else {
+                continue;
+            };
+            if inodes.iter().any(|i| i == inode) {
+                log::info!("host: /proc resolved pid {pid} as the owner of {socket_path:?}");
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
 /// Launches this channel's app bundle detached (survives the CLI process
 /// exiting), seeds any declared panes via the spawn-queue before launch, and
 /// blocks until a `notify.sock` round trip confirms the host is ready (or the

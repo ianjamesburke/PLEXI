@@ -99,6 +99,11 @@ perf-clippy:
 build:
     bash scripts/cargo-with-lease.sh cargo build --release
 
+# Linux bringup smoke check: drives a real host through the CLI on an X
+# display and asserts a signal at every step. Needs `just build` first.
+linux-smoke:
+    bash scripts/linux-smoke.sh
+
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
 # Run after any change to src/protocol/.
 gen-schema:
