@@ -174,10 +174,17 @@ bash scripts/linux-smoke.sh
 ```
 
 It drives, in order: `--version`, `doctor`, host start, host status, a pane
-spawn, `pane state` on that pane, a screenshot, and host shutdown — asserting
-a success signal at each step and exiting non-zero at the first failure. Each
-step prints `ok: <step>` on success and `FAIL: <step>` with the captured
-command output on failure, so a red run names its own phase.
+spawn, `pane state` on that pane, a screenshot, host shutdown, and a second
+host quit from the window itself — asserting a success signal at each step and
+exiting non-zero at the first failure. Each step prints `ok: <step>` on success
+and `FAIL: <step>` with the captured command output on failure, so a red run
+names its own phase.
+
+Both quit steps assert the same two things, because quitting on Linux means
+both: the process is gone, and `notify.sock` is unbound. The window quit is
+driven with `xdotool` (skipped, not failed, where there is none) and needs no
+window manager — the quit hotkey and the WM's close button reach eframe as the
+same `CloseRequested`.
 
 ## Phase 5 — The standing gates
 
