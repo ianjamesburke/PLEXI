@@ -34,8 +34,40 @@ fn claimed_state(pane: &Pane) -> Option<serde_json::Value> {
 /// fails with `EPERM` (process exists, no permission) would misreport, but
 /// every pid this module checks is a host-spawned child, so permission is
 /// never the failure mode in practice.
+#[cfg(unix)]
 fn pid_is_alive(pid: u32) -> bool {
     pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// Windows has no signal-0 probe. `OpenProcess` for the query-limited right
+/// succeeds for a live process and for a zombie one whose handle is still
+/// held, so the exit code is checked too: `STILL_ACTIVE` is the only answer
+/// that counts as alive.
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: plain scalar arguments; a null return is the documented failure
+    // signal and is checked before any use.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut exit_code: u32 = 0;
+    // SAFETY: `handle` is live until the CloseHandle below; `exit_code` is a
+    // local out-param.
+    let alive = unsafe {
+        let ok = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        ok != 0 && exit_code == STILL_ACTIVE as u32
+    };
+    alive
 }
 
 /// Direct children of `pid`, via `pgrep -P` — never `proc_listchildpids`,

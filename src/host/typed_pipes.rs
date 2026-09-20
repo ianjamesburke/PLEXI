@@ -1,13 +1,20 @@
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::PathBuf;
-extern crate libc;
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
-/// Binary pipes use unix domain sockets with u32-BE length-prefixed frames.
-/// A lock-free ring (ArrayQueue) decouples the write path from the socket drain
-/// thread so the audio callback can enqueue frames without blocking or allocating.
-/// JSON pipes are metadata-only registrations; routing is handled by the PGAP wire.
+/// Binary frames are `u32 BE length || payload` over a platform-native
+/// transport: an AF_UNIX socket at `pipes_dir/<uuid>.sock` on Unix, a Win32
+/// named pipe `\\.\pipe\plexi-<uuid>` on Windows. On Windows the pipe name
+/// *is* the value in `BinaryPipeAllocation::socket_path` — there is no
+/// filesystem entry to create or clean up.
+///
+/// A lock-free ring (ArrayQueue) decouples the write path from the drain
+/// thread so the audio callback can enqueue frames without blocking or
+/// allocating. JSON pipes are metadata-only registrations; routing is handled
+/// by the PGAP wire.
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -147,111 +154,260 @@ impl TypedPipeRegistry {
 
         // Create a private per-user pipes directory with restrictive permissions.
         // Sockets are named by UUID — pipe_id is never embedded in the filesystem path.
-        std::fs::create_dir_all(&self.pipes_dir)
-            .map_err(|e| PipeError::BindFailed(format!("create pipes dir: {e}")))?;
+        // Windows named pipes live in the kernel namespace, so there is no
+        // directory to create or secure there.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir_all(&self.pipes_dir)
+                .map_err(|e| PipeError::BindFailed(format!("create pipes dir: {e}")))?;
             std::fs::set_permissions(&self.pipes_dir, std::fs::Permissions::from_mode(0o700))
                 .map_err(|e| PipeError::BindFailed(format!("secure pipes dir: {e}")))?;
         }
-        let socket_name = format!("{}.sock", uuid::Uuid::new_v4());
-        let socket_path = self
-            .pipes_dir
-            .join(&socket_name)
-            .to_string_lossy()
-            .into_owned();
-        log::info!("typed_pipes: opening binary pipe {pipe_id} at {socket_path}");
+        #[cfg(unix)]
+        {
+            let socket_name = format!("{}.sock", uuid::Uuid::new_v4());
+            let socket_path = self
+                .pipes_dir
+                .join(&socket_name)
+                .to_string_lossy()
+                .into_owned();
+            log::info!("typed_pipes: opening binary pipe {pipe_id} at {socket_path}");
 
-        let listener = UnixListener::bind(&socket_path)
-            .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
-        // Prevent child processes (app subprocesses) from inheriting this socket FD.
-        unsafe {
-            use std::os::unix::io::AsRawFd;
-            libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
-        }
-        // Non-blocking so the drain thread's accept loop can observe `shutdown`
-        // and exit if the app never connects (e.g. start_capture failed and no
-        // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| PipeError::BindFailed(format!("set_nonblocking: {e}")))?;
+            let listener = UnixListener::bind(&socket_path)
+                .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
+            // Prevent child processes (app subprocesses) from inheriting this socket FD.
+            unsafe {
+                use std::os::unix::io::AsRawFd;
+                libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+            // Non-blocking so the drain thread's accept loop can observe `shutdown`
+            // and exit if the app never connects (e.g. start_capture failed and no
+            // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| PipeError::BindFailed(format!("set_nonblocking: {e}")))?;
 
-        let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let error_flag = Arc::new(AtomicBool::new(false));
+            let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let error_flag = Arc::new(AtomicBool::new(false));
 
-        let ring_drain = Arc::clone(&ring);
-        let shutdown_drain = Arc::clone(&shutdown);
-        let error_flag_drain = Arc::clone(&error_flag);
-        let socket_path_drain = socket_path.clone();
-        let pipe_id_log = pipe_id.clone();
+            let ring_drain = Arc::clone(&ring);
+            let shutdown_drain = Arc::clone(&shutdown);
+            let error_flag_drain = Arc::clone(&error_flag);
+            let socket_path_drain = socket_path.clone();
+            let pipe_id_log = pipe_id.clone();
 
-        // Drain thread: blocks waiting for the app to connect, then drains the
-        // ring into the socket. Exits when `shutdown` is set and ring is empty.
-        let drain_handle = thread::Builder::new()
-            .name(format!("pipe-drain-{pipe_id}"))
-            .spawn(move || {
-                log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
-                // Poll for a client connection. Listener is non-blocking so we
-                // can observe `shutdown` and exit if the app never connects
-                // (e.g. start_capture failed before PipeOpened was sent).
-                let stream = loop {
-                    match listener.accept() {
-                        Ok((s, _)) => break s,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            if shutdown_drain.load(Ordering::Acquire) {
+            // Drain thread: blocks waiting for the app to connect, then drains the
+            // ring into the socket. Exits when `shutdown` is set and ring is empty.
+            let drain_handle = thread::Builder::new()
+                .name(format!("pipe-drain-{pipe_id}"))
+                .spawn(move || {
+                    log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
+                    // Poll for a client connection. Listener is non-blocking so we
+                    // can observe `shutdown` and exit if the app never connects
+                    // (e.g. start_capture failed before PipeOpened was sent).
+                    let stream = loop {
+                        match listener.accept() {
+                            Ok((s, _)) => break s,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                if shutdown_drain.load(Ordering::Acquire) {
+                                    let _ = std::fs::remove_file(&socket_path_drain);
+                                    return;
+                                }
+                                thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            Err(e) => {
+                                log::error!("typed_pipes: accept failed on {socket_path_drain}: {e}");
                                 let _ = std::fs::remove_file(&socket_path_drain);
                                 return;
                             }
-                            thread::sleep(std::time::Duration::from_millis(50));
                         }
-                        Err(e) => {
-                            log::error!("typed_pipes: accept failed on {socket_path_drain}: {e}");
-                            let _ = std::fs::remove_file(&socket_path_drain);
-                            return;
-                        }
-                    }
-                };
-                // Switch to blocking mode for the write loop.
-                let _ = stream.set_nonblocking(false);
-                let mut writer = stream;
-                loop {
-                    if let Some(frame) = ring_drain.pop() {
-                        if let Err(e) = write_frame(&mut writer, &frame) {
-                            log::warn!("typed_pipes: drain write error: {e}");
-                            error_flag_drain.store(true, Ordering::Release);
+                    };
+                    // Switch to blocking mode for the write loop.
+                    let _ = stream.set_nonblocking(false);
+                    let mut writer = stream;
+                    loop {
+                        if let Some(frame) = ring_drain.pop() {
+                            if let Err(e) = write_frame(&mut writer, &frame) {
+                                log::warn!("typed_pipes: drain write error: {e}");
+                                error_flag_drain.store(true, Ordering::Release);
+                                break;
+                            }
+                        } else if shutdown_drain.load(Ordering::Acquire) {
                             break;
+                        } else {
+                            thread::sleep(std::time::Duration::from_millis(1));
                         }
-                    } else if shutdown_drain.load(Ordering::Acquire) {
-                        break;
-                    } else {
-                        thread::sleep(std::time::Duration::from_millis(1));
                     }
-                }
-                // Signal end-of-stream.
-                let _ = write_eos(&mut writer);
-                let _ = std::fs::remove_file(&socket_path_drain);
-            })
-            .map_err(|e| PipeError::BindFailed(format!("thread spawn: {e}")))?;
+                    // Signal end-of-stream.
+                    let _ = write_eos(&mut writer);
+                    let _ = std::fs::remove_file(&socket_path_drain);
+                })
+                .map_err(|e| PipeError::BindFailed(format!("thread spawn: {e}")))?;
 
-        let entry = BinaryPipeEntry {
-            direction,
-            socket_path: socket_path.clone(),
-            shutdown,
-            drain_handle: Some(drain_handle),
-            ring: Arc::clone(&ring),
-            error_flag,
-        };
+            let entry = BinaryPipeEntry {
+                direction,
+                socket_path: socket_path.clone(),
+                shutdown,
+                drain_handle: Some(drain_handle),
+                ring: Arc::clone(&ring),
+                error_flag,
+            };
 
-        self.pipes.insert(pipe_id, PipeEntry::Binary(entry));
+            self.pipes.insert(pipe_id, PipeEntry::Binary(entry));
 
-        let allocation = BinaryPipeAllocation { socket_path };
-        log::info!(
-            "typed_pipes: binary allocation ready at {}",
-            allocation.socket_path
-        );
-        Ok(allocation)
+            let allocation = BinaryPipeAllocation { socket_path };
+            log::info!(
+                "typed_pipes: binary allocation ready at {}",
+                allocation.socket_path
+            );
+            return Ok(allocation);
+        }
+
+        #[cfg(windows)]
+        {
+            // Direction does not select the pipe's access mode: the drain
+            // thread only ever writes, exactly as on Unix, where the socket
+            // type does not vary by direction either. A duplex instance keeps
+            // the two platforms' capabilities identical.
+            let _ = direction;
+            let pipe_name = format!(r"\\.\pipe\plexi-{}", uuid::Uuid::new_v4());
+            log::info!("typed_pipes: opening binary pipe {pipe_id} at {pipe_name}");
+
+            let wide_name: Vec<u16> =
+                pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
+
+            // FILE_FLAG_OVERLAPPED is what lets the drain thread poll for a
+            // client while still observing `shutdown`. Without it
+            // `ConnectNamedPipe` blocks forever when the app never connects
+            // (e.g. start_capture failed before PipeOpened was sent) and
+            // `close()` -> `join()` deadlocks.
+            //
+            // SAFETY: NUL-terminated wide string; a null security descriptor
+            // gives the default ACL, so only this user can connect.
+            let pipe_handle = unsafe {
+                windows_sys::Win32::System::Pipes::CreateNamedPipeW(
+                    wide_name.as_ptr(),
+                    windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX
+                        | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED,
+                    windows_sys::Win32::System::Pipes::PIPE_TYPE_BYTE
+                        | windows_sys::Win32::System::Pipes::PIPE_WAIT,
+                    1,
+                    PIPE_BUFFER_BYTES,
+                    PIPE_BUFFER_BYTES,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if pipe_handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                return Err(PipeError::BindFailed(format!(
+                    "CreateNamedPipeW({pipe_name}): {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
+
+            let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let error_flag = Arc::new(AtomicBool::new(false));
+
+            let ring_drain = Arc::clone(&ring);
+            let shutdown_drain = Arc::clone(&shutdown);
+            let error_flag_drain = Arc::clone(&error_flag);
+            let pipe_id_log = pipe_id.clone();
+            let pipe_name_log = pipe_name.clone();
+
+            // HANDLE is `*mut c_void`, which is `!Send`. Casting through
+            // `usize` across the thread boundary is the documented stdlib
+            // pattern (see `std::os::windows::io::OwnedHandle`).
+            let pipe_handle_raw = pipe_handle as usize;
+
+            let drain_handle = thread::Builder::new()
+                .name(format!("pipe-drain-{pipe_id}"))
+                .spawn(move || {
+                    let pipe_handle =
+                        pipe_handle_raw as windows_sys::Win32::Foundation::HANDLE;
+                    log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
+
+                    let connected = win32_await_client(
+                        pipe_handle,
+                        &shutdown_drain,
+                        &pipe_id_log,
+                        &pipe_name_log,
+                    );
+                    if !connected {
+                        // SAFETY: nothing else holds this handle.
+                        unsafe {
+                            windows_sys::Win32::Foundation::CloseHandle(pipe_handle);
+                        }
+                        // A shutdown-triggered exit is the designed path, not
+                        // an error the caller should see on the pipe.
+                        if !shutdown_drain.load(Ordering::Acquire) {
+                            error_flag_drain.store(true, Ordering::Release);
+                        }
+                        return;
+                    }
+
+                    let mut failed = false;
+                    loop {
+                        if let Some(frame) = ring_drain.pop() {
+                            if let Err(e) = win32_write_frame(pipe_handle, &frame) {
+                                log::warn!(
+                                    "typed_pipes: drain write error on {pipe_id_log}: {e}"
+                                );
+                                failed = true;
+                                break;
+                            }
+                        } else if shutdown_drain.load(Ordering::Acquire) {
+                            break;
+                        } else {
+                            thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
+
+                    if failed {
+                        error_flag_drain.store(true, Ordering::Release);
+                    } else {
+                        // Length-0 EOS sentinel. Errors are ignored: by this
+                        // point the peer may already be gone.
+                        let _ = win32_write_frame(pipe_handle, &[]);
+                    }
+
+                    // SAFETY: the drain thread is the sole owner by now.
+                    unsafe {
+                        windows_sys::Win32::Foundation::CloseHandle(pipe_handle);
+                    }
+                })
+                .map_err(|e| PipeError::BindFailed(format!("thread spawn: {e}")))?;
+
+            let entry = BinaryPipeEntry {
+                direction,
+                socket_path: pipe_name.clone(),
+                shutdown,
+                drain_handle: Some(drain_handle),
+                ring: Arc::clone(&ring),
+                error_flag,
+            };
+            self.pipes.insert(pipe_id, PipeEntry::Binary(entry));
+
+            let allocation = BinaryPipeAllocation {
+                socket_path: pipe_name,
+            };
+            log::info!(
+                "typed_pipes: binary allocation ready at {}",
+                allocation.socket_path
+            );
+            return Ok(allocation);
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (pipe_id, direction);
+            log::warn!("typed_pipes: open_binary requested on an unsupported platform");
+            Err(PipeError::BindFailed(
+                "binary pipes are not supported on this platform".to_owned(),
+            ))
+        }
     }
 
     /// Register a JSON pipe. No socket — routing is handled by the PGAP wire.
@@ -276,7 +432,12 @@ impl TypedPipeRegistry {
             if let Some(handle) = b.drain_handle.take() {
                 let _ = handle.join();
             }
+            // Unix leaves a socket inode behind; a Windows pipe name has no
+            // filesystem entry and disappears with its last handle.
+            #[cfg(unix)]
             let _ = std::fs::remove_file(&b.socket_path);
+            #[cfg(not(unix))]
+            let _ = &b.socket_path;
         }
     }
 
@@ -346,6 +507,7 @@ impl Drop for TypedPipeRegistry {
 // ---------------------------------------------------------------------------
 
 /// Write a length-prefixed frame: `u32 BE length || payload`.
+#[cfg(unix)]
 fn write_frame(writer: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
     let len = payload.len() as u32;
     writer.write_all(&len.to_be_bytes())?;
@@ -354,15 +516,195 @@ fn write_frame(writer: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
 }
 
 /// Write a length-0 EOS sentinel.
+#[cfg(unix)]
 fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
     writer.write_all(&0u32.to_be_bytes())
+}
+
+/// Both directions of a Windows pipe instance. Frames are camera/audio-sized
+/// bursts, so this only has to absorb a hiccup in the reader, not buffer a
+/// stream.
+#[cfg(windows)]
+const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
+
+/// Block until the app connects, or until `shutdown` is set.
+///
+/// The Windows analogue of the Unix non-blocking accept loop: the pipe was
+/// created `FILE_FLAG_OVERLAPPED`, so `ConnectNamedPipe` returns immediately
+/// with `ERROR_IO_PENDING` and completion is observed by waiting on the
+/// OVERLAPPED's event in 50 ms slices — the same cadence, and the same reason:
+/// an app that never connects must not wedge `close()` -> `join()`.
+#[cfg(windows)]
+fn win32_await_client(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    shutdown: &AtomicBool,
+    pipe_id: &str,
+    pipe_name: &str,
+) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows_sys::Win32::System::IO::{CancelIoEx, OVERLAPPED};
+
+    // Manual-reset event, initially non-signaled, used as OVERLAPPED.hEvent.
+    // SAFETY: all arguments are plain flags / null.
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() || event == INVALID_HANDLE_VALUE {
+        log::error!(
+            "typed_pipes: CreateEventW failed for pipe {pipe_id} at {pipe_name}: {}",
+            std::io::Error::last_os_error()
+        );
+        return false;
+    }
+
+    let mut overlapped = OVERLAPPED::default();
+    overlapped.hEvent = event;
+
+    // SAFETY: `overlapped` lives until this function returns, and any still-
+    // pending I/O is cancelled with `CancelIoEx` before that happens — the
+    // kernel never writes into a freed stack slot.
+    let rc = unsafe { ConnectNamedPipe(handle, &mut overlapped) };
+    let connected = if rc != 0 {
+        true
+    } else {
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error().map(|code| code as u32) {
+            // The client connected between CreateNamedPipeW and
+            // ConnectNamedPipe. Still a successful accept.
+            Some(ERROR_PIPE_CONNECTED) => true,
+            Some(ERROR_IO_PENDING) => loop {
+                // SAFETY: `event` is live for the whole loop.
+                match unsafe { WaitForSingleObject(event, 50) } {
+                    WAIT_OBJECT_0 => break true,
+                    WAIT_TIMEOUT => {
+                        if shutdown.load(Ordering::Acquire) {
+                            // SAFETY: cancels the pending I/O that references
+                            // `overlapped`, before it goes out of scope.
+                            unsafe { CancelIoEx(handle, &overlapped) };
+                            break false;
+                        }
+                    }
+                    other => {
+                        log::error!(
+                            "typed_pipes: WaitForSingleObject returned {other} for pipe {pipe_id}"
+                        );
+                        break false;
+                    }
+                }
+            },
+            _ => {
+                log::error!("typed_pipes: ConnectNamedPipe failed for {pipe_id}: {error}");
+                false
+            }
+        }
+    };
+
+    // SAFETY: no pending I/O references `event` any more.
+    unsafe { CloseHandle(event) };
+    connected
+}
+
+/// Win32 analogue of [`write_frame`].
+#[cfg(windows)]
+fn win32_write_frame(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    win32_write_all(handle, &(payload.len() as u32).to_be_bytes())?;
+    if !payload.is_empty() {
+        win32_write_all(handle, payload)?;
+    }
+    Ok(())
+}
+
+/// Loop `WriteFile` over short writes — rare on a byte-mode pipe, but possible
+/// under buffer pressure.
+///
+/// The pipe was created with `FILE_FLAG_OVERLAPPED`, so `WriteFile` must be
+/// issued through an `OVERLAPPED` struct; passing null is undefined per the
+/// Win32 docs. `GetOverlappedResult` with `bWait = TRUE` then blocks, keeping
+/// this call synchronous from the drain loop's perspective.
+#[cfg(windows)]
+fn win32_write_all(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    buf: &[u8],
+) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    use windows_sys::Win32::System::Threading::CreateEventW;
+    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+
+    /// Closes the event even on the early-return paths below.
+    struct EventGuard(HANDLE);
+    impl Drop for EventGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+                // SAFETY: the guard owns the handle.
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+    }
+
+    // Manual-reset event, initially non-signaled. Reused across chunks.
+    // SAFETY: all arguments are plain flags / null.
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() || event == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let _event_guard = EventGuard(event);
+
+    let mut offset = 0usize;
+    while offset < buf.len() {
+        let remaining = (buf.len() - offset).min(u32::MAX as usize) as u32;
+        let mut overlapped = OVERLAPPED::default();
+        overlapped.hEvent = event;
+
+        // SAFETY: `buf` is valid for `remaining` bytes from `offset`, and
+        // `overlapped` outlives the blocking GetOverlappedResult below.
+        let rc = unsafe {
+            WriteFile(
+                handle,
+                buf.as_ptr().add(offset),
+                remaining,
+                std::ptr::null_mut(),
+                &mut overlapped,
+            )
+        };
+        if rc == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error().map(|code| code as u32) != Some(ERROR_IO_PENDING) {
+                return Err(error);
+            }
+        }
+
+        let mut written: u32 = 0;
+        // SAFETY: `overlapped` describes the I/O issued just above; bWait = TRUE
+        // blocks until it completes, so it is still borrowed for the duration.
+        let ok = unsafe { GetOverlappedResult(handle, &overlapped, &mut written, 1) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if written == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "named pipe accepted zero bytes",
+            ));
+        }
+        offset += written as usize;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     //! Unit tests for the typed-pipe registry primitives that the directed
     //! inter-agent pipe routing (#286) builds on.
