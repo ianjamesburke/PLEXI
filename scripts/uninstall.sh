@@ -9,9 +9,22 @@
 # ~/plexi-backlog-archive/ before the profile dir is deleted.
 set -euo pipefail
 
-if [[ "$(uname)" != "Darwin" ]]; then
-  echo "uninstall is macOS-only."
-  exit 1
+os="$(uname)"
+case "$os" in
+  Darwin|Linux) ;;
+  *)
+    echo "uninstall supports macOS and Linux only (this is $os)."
+    exit 1
+    ;;
+esac
+
+# Where install.sh put things, per platform. Kept in one place so the two
+# scripts cannot drift.
+if [[ "$os" == "Darwin" ]]; then
+  BIN_DIR="/usr/local/bin"
+else
+  BIN_DIR="${PLEXI_BIN_DIR:-$HOME/.local/bin}"
+  DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
 fi
 
 channel="${1:-all}"
@@ -44,8 +57,13 @@ uninstall_channel() {
   local cap="$2"      # e.g. "" | " Alpha" | " Beta" | " PR123"
 
   local profile_dir="$HOME/.plexi${suffix}"
-  local app="/Applications/Plexi${cap}.app"
-  local bin="/usr/local/bin/plexi${suffix}"
+  local bin="$BIN_DIR/plexi${suffix}"
+  local app
+  if [[ "$os" == "Darwin" ]]; then
+    app="/Applications/Plexi${cap}.app"
+  else
+    app="$DATA_DIR/plexi${suffix}"
+  fi
 
   # Archive backlog before deleting the profile dir
   local backlog_src="$profile_dir/backlog"
@@ -60,6 +78,11 @@ uninstall_channel() {
   remove_dir  "$profile_dir"
   remove_dir  "$app"
   remove_file "$bin"
+
+  if [[ "$os" != "Darwin" ]]; then
+    remove_file "$DATA_DIR/applications/plexi${suffix}.desktop"
+    remove_file "$DATA_DIR/icons/hicolor/512x512/apps/plexi${suffix}.png"
+  fi
 }
 
 # Remove shell integration snippet from rc files.
@@ -106,7 +129,7 @@ _channel_cap() {
 }
 
 _all_channels() {
-  for bin in /usr/local/bin/plexi*; do
+  for bin in "$BIN_DIR"/plexi*; do
     [[ -e "$bin" || -L "$bin" ]] || continue
     name="$(basename "$bin")"
     if [[ "$name" == "plexi" ]]; then
@@ -122,8 +145,13 @@ case "$channel" in
     channels=($(_all_channels))
     echo ""
     echo "This will remove all Plexi channels: ${channels[*]:-none found}"
-    echo "  • /Applications/Plexi*.app"
-    echo "  • /usr/local/bin/plexi*"
+    if [[ "$os" == "Darwin" ]]; then
+      echo "  • /Applications/Plexi*.app"
+    else
+      echo "  • $DATA_DIR/plexi*  (installed binaries)"
+      echo "  • $DATA_DIR/applications/plexi*.desktop"
+    fi
+    echo "  • $BIN_DIR/plexi*"
     echo "  • ~/.plexi*/  (profile directories)"
     echo "  • Shell integration from ~/.zshrc / ~/.bashrc"
     echo "  • Shell completions (zsh, bash, fish)"
@@ -142,8 +170,13 @@ case "$channel" in
   main)
     echo ""
     echo "This will remove the main Plexi channel:"
-    echo "  • /Applications/Plexi.app"
-    echo "  • /usr/local/bin/plexi  (contextual shim)"
+    if [[ "$os" == "Darwin" ]]; then
+      echo "  • /Applications/Plexi.app"
+    else
+      echo "  • $DATA_DIR/plexi  (installed binary)"
+      echo "  • $DATA_DIR/applications/plexi.desktop"
+    fi
+    echo "  • $BIN_DIR/plexi  (contextual shim)"
     echo "  • ~/.plexi/  (profile directory)"
     echo "  • Shell integration from ~/.zshrc / ~/.bashrc"
     echo "  • Shell completions (zsh, bash, fish)"
