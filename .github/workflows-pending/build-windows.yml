@@ -1,0 +1,69 @@
+# Windows bring-up gate.
+#
+# The host is developed on macOS and the release workflow only builds there,
+# so nothing else in CI notices when a `cfg(unix)`-only assumption lands on
+# alpha. This job compiles `plexi.exe` on a real `windows-latest` runner and
+# is the proof-of-concept gate for the Windows v1 port.
+#
+# Scope is deliberately the binary only — no installer, no tests. Terminal
+# host + CLI is the v1 cut; the GUI itself still needs a human on Windows.
+name: Build (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'feature/windows-**'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'src/**'
+      - 'deps/**'
+      - '.github/workflows/build-windows.yml'
+
+# A second push to the same branch supersedes the first; these builds are long
+# and the runner minutes are not worth spending on a stale commit.
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      CARGO_TARGET_DIR: target
+      # Backtraces on a build-script panic; the runner has no other diagnostics.
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-cargo-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            windows-x64-cargo-
+
+      # `cargo check` first: it reaches every module without paying for
+      # codegen, so a `cfg(unix)` regression fails in minutes instead of
+      # after a full link.
+      - name: Check
+        run: cargo check --bin plexi
+
+      - name: Build
+        run: cargo build --bin plexi
+
+      - name: Show binary
+        shell: pwsh
+        run: Get-ChildItem target\debug\plexi.exe | Format-List Name, Length
