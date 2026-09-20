@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 const TERMINAL_ENV_NAMES_VAR: &str = "PLEXI_TERMINAL_ENV_NAMES";
 const TERMINAL_ENV_VALUE_PREFIX: &str = "PLEXI_TERMINAL_ENV_VALUE_";
 
+#[cfg(unix)]
 pub fn detect_shell() -> String {
     if let Ok(shell) = std::env::var("SHELL") {
         if Path::new(&shell).exists() {
@@ -32,6 +33,50 @@ pub fn detect_shell() -> String {
     }
 
     "/bin/sh".to_string()
+}
+
+/// Windows has no `$SHELL` convention, so the order is: an explicit `$SHELL`
+/// override (set by a user who wants git-bash or similar), then PowerShell 7
+/// (`pwsh`), then Windows PowerShell (`powershell`), then `%ComSpec%`.
+///
+/// `pwsh` outranks `powershell` deliberately: it is the version still shipping
+/// updates, and it is what a developer who installed it expects to get.
+#[cfg(windows)]
+pub fn detect_shell() -> String {
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.is_empty() && Path::new(&shell).exists() {
+            log::info!("detect_shell: using $SHELL override -> {shell}");
+            return shell;
+        }
+    }
+    for candidate in ["pwsh.exe", "powershell.exe"] {
+        if let Some(path) = which_on_path(candidate) {
+            log::info!("detect_shell: found {candidate} on PATH -> {path}");
+            return path;
+        }
+    }
+    if let Ok(comspec) = std::env::var("ComSpec") {
+        if Path::new(&comspec).exists() {
+            log::info!("detect_shell: falling back to %ComSpec% -> {comspec}");
+            return comspec;
+        }
+    }
+    log::warn!("detect_shell: no pwsh/powershell/ComSpec found, returning bare \"cmd.exe\"");
+    "cmd.exe".to_string()
+}
+
+/// First `name` found on `PATH`. Windows has no `which(1)`, and shelling out
+/// to `where.exe` would cost a subprocess on every pane spawn.
+#[cfg(windows)]
+fn which_on_path(name: &str) -> Option<String> {
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
 }
 
 /// Resolve the user's login-shell PATH and install it as the process PATH.

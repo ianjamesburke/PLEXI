@@ -463,11 +463,9 @@ fn resolve_command_socket_from(
         return Some(socket.to_path_buf());
     }
     if let Some(channel) = binary_channel {
-        return Some(
-            home_dir
-                .join(format!(".plexi-{channel}"))
-                .join("notify.sock"),
-        );
+        return Some(crate::platform::ipc::endpoint_in(
+            &home_dir.join(format!(".plexi-{channel}")),
+        ));
     }
     ambient_socket.map(std::path::PathBuf::from)
 }
@@ -606,7 +604,7 @@ pub(super) fn check_reply_error(content: &str) -> Result<(), i32> {
 /// seeds the queue explicitly and launches the draining host itself in the
 /// same command.
 pub(super) fn require_spawn_servicing_host(intent: &str) -> Result<(), i32> {
-    let socket = crate::config::config_dir().join("notify.sock");
+    let socket = crate::platform::ipc::endpoint_path();
     if spawn_socket_accepting(&socket) {
         return Ok(());
     }
@@ -625,7 +623,7 @@ pub(super) fn require_spawn_servicing_host(intent: &str) -> Result<(), i32> {
 }
 
 fn spawn_socket_accepting(socket: &std::path::Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket).is_ok()
+    crate::platform::ipc::IpcStream::connect(socket).is_ok()
 }
 
 /// Human channel name from a profile dir basename: `.plexi-alpha` → `alpha`,
@@ -705,6 +703,14 @@ enum SocketTransportError {
     },
 }
 
+/// Bounded connect + write for a fire-and-forget CLI request.
+///
+/// Unix takes the raw-fd path below rather than `UnixStream`: std offers no
+/// `connect_timeout` for `AF_UNIX`, and a plain `connect` against a listener
+/// with a full backlog blocks forever — a hung terminal for the caller. A
+/// non-blocking socket driven by `poll` is the only way to hold a deadline
+/// across both the connect and the write.
+#[cfg(unix)]
 fn wait_for_socket(
     fd: std::os::fd::RawFd,
     events: libc::c_short,
@@ -736,6 +742,7 @@ fn wait_for_socket(
     }
 }
 
+#[cfg(unix)]
 fn classify_connect_wait(result: std::io::Result<bool>) -> Result<(), SocketTransportError> {
     match result {
         Ok(true) => Ok(()),
@@ -744,6 +751,7 @@ fn classify_connect_wait(result: std::io::Result<bool>) -> Result<(), SocketTran
     }
 }
 
+#[cfg(unix)]
 fn connect_unix_deadline(
     socket_path: &std::path::Path,
     deadline: std::time::Instant,
@@ -832,6 +840,7 @@ fn connect_unix_deadline(
     Ok(fd)
 }
 
+#[cfg(unix)]
 fn send_line_to_socket(
     socket_path: &std::path::Path,
     line: &[u8],
@@ -900,6 +909,40 @@ fn send_line_to_socket(
     Ok(())
 }
 
+/// Windows counterpart of the raw-fd path above.
+///
+/// `ipc::connect_timeout` already bounds the connect (`WaitNamedPipeW` with
+/// the remaining budget), so only the write needs covering here. A request is
+/// one JSON line — far under the pipe's 64 KiB buffer — so the write lands in
+/// the kernel buffer and returns without waiting for the host to read it.
+/// There is therefore no blocking window for a write deadline to police, and
+/// `WriteTimeout` is unreachable on this path.
+#[cfg(windows)]
+fn send_line_to_socket(
+    socket_path: &std::path::Path,
+    line: &[u8],
+    timeout: std::time::Duration,
+) -> Result<(), SocketTransportError> {
+    use std::io::Write as _;
+
+    let mut stream = crate::platform::ipc::connect_timeout(socket_path, timeout).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            SocketTransportError::ConnectTimeout
+        } else {
+            SocketTransportError::Connect(e)
+        }
+    })?;
+    stream
+        .write_all(line)
+        .and_then(|()| stream.flush())
+        .map_err(|source| SocketTransportError::Write {
+            source,
+            // `write_all` does not report a partial count; the frame either
+            // landed whole or the caller must retry the whole thing.
+            bytes_written: 0,
+        })
+}
+
 pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
     let socket_path = match resolve_command_socket() {
         Some(path) => path,
@@ -922,7 +965,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
         Err(SocketTransportError::Connect(e))
             if e.kind() == std::io::ErrorKind::ConnectionRefused =>
         {
-            let _ = std::fs::remove_file(&socket_path);
+            crate::platform::ipc::remove_stale_endpoint(&socket_path);
             eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
             1
         }
@@ -1087,10 +1130,10 @@ mod transport_deadline_tests {
 /// All errors are ignored silently and intentionally: no instance running
 /// means the queue is drained at next startup — the designed fallback.
 pub(super) fn nudge_running_instance() {
+    use crate::platform::ipc::{self, IpcStream};
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let path = crate::config::config_dir().join("notify.sock");
-    let Ok(mut stream) = UnixStream::connect(&path) else {
+    let path = ipc::endpoint_path();
+    let Ok(mut stream) = IpcStream::connect(&path) else {
         return;
     };
     let Ok(payload) = serde_json::to_string(&crate::protocol::AppRequest::Wake) else {

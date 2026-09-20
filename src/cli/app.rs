@@ -406,9 +406,25 @@ fn write_python_scaffold_support_files(app_dir: &std::path::Path, name: &str) ->
     Ok(())
 }
 
-fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
+/// `chmod +x` a scaffolded entry point.
+///
+/// Unix needs it: `main.py` is launched directly, and without the bit the app
+/// never starts. Windows decides executability from the file extension and has
+/// no mode bits to set, so there is nothing to do.
+#[cfg(unix)]
+fn mark_executable(path: &std::path::Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    std::fs::set_permissions(path, perms)
+}
 
+#[cfg(not(unix))]
+fn mark_executable(_path: &std::path::Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml — shape lives in the template file beside the other scaffold
     // artifacts so it can't silently diverge from the documented manifest. The
     // feature-gated marketplace placeholder is appended in Rust.
@@ -433,10 +449,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;
 
-    // chmod +x main.py
-    let mut perms = std::fs::metadata(&main_path)?.permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(&main_path, perms)?;
+    mark_executable(&main_path)?;
 
     // tests/test_app.py — a working AppHarness example co-located with the app
     // so agents learn the test pattern from the scaffold, not from docs.
@@ -456,8 +469,6 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 }
 
 fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     // manifest.toml — ai.query capability pre-configured.
     std::fs::write(app_dir.join("manifest.toml"), format!(
         "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"An agent app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"ai.query\"]\n\n[launch]\n{mp}",
@@ -473,9 +484,7 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;
 
-    let mut perms = std::fs::metadata(&main_path)?.permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(&main_path, perms)?;
+    mark_executable(&main_path)?;
 
     log::info!(
         "scaffold_agent_python_app: created agent scaffold at {}",

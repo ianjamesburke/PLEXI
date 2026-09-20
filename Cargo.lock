@@ -4122,6 +4122,7 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wgpu",
+ "windows-sys 0.61.2",
  "winit",
  "zeroize",
 ]
