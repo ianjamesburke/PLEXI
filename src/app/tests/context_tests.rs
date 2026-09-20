@@ -1588,7 +1588,7 @@ fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
         runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
             std::env::temp_dir(),
         ))),
-        workspace_root: std::env::temp_dir(),
+        workspace_root: crate::testing::scratch_context_root("context"),
         permissions,
         manifest_id: format!("test-{pane_id}"),
         name: format!("Test App {pane_id}"),
@@ -3412,7 +3412,7 @@ fn set_context_root_on_an_inactive_context_rescans_its_registry() {
     });
     app.windows.push(Window {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context"),
         tree: egui_tiles::Tree::empty("inactive_set_root_test"),
         panes: HashMap::new(),
         focused_pane: None,

@@ -125,7 +125,9 @@ fn key_str_clipboard_chords_translate_like_physical_input() {
 
 #[test]
 fn key_str_to_egui_raw_input_chords_set_modifiers_and_suppress_text() {
-    let raw = key_str_to_egui_raw_input("ctrl+c").expect("ctrl+c must map");
+    // ctrl+b is a chord on every platform and a clipboard chord on none, so
+    // it isolates the property under test: press + release, no Text.
+    let raw = key_str_to_egui_raw_input("ctrl+b").expect("ctrl+b must map");
     assert!(raw.modifiers.ctrl);
     assert_eq!(
         raw.events.len(),
@@ -136,6 +138,31 @@ fn key_str_to_egui_raw_input_chords_set_modifiers_and_suppress_text() {
 
     let raw = key_str_to_egui_raw_input("cmd+enter").expect("cmd+enter must map");
     assert!(raw.modifiers.command);
+}
+
+#[test]
+fn ctrl_c_is_a_copy_chord_only_where_ctrl_is_the_command_modifier() {
+    // egui's `command` modifier is cmd on macOS and ctrl everywhere else, and
+    // egui-winit translates a physical command+c into `Event::Copy` before
+    // egui sees it. The synthetic path mirrors that, so the same key string
+    // legitimately produces different events per platform — assert the
+    // divergence rather than letting one platform's shape look like a bug.
+    let raw = key_str_to_egui_raw_input("ctrl+c").expect("ctrl+c must map");
+    assert!(raw.modifiers.ctrl);
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            raw.events.len(),
+            2,
+            "on macOS ctrl is not the command modifier, so ctrl+c stays a raw chord; got {:?}",
+            raw.events
+        );
+    } else {
+        assert_eq!(
+            raw.events,
+            vec![egui::Event::Copy],
+            "off macOS ctrl IS the command modifier, so ctrl+c must translate like physical input"
+        );
+    }
 }
 
 #[test]
@@ -157,7 +184,7 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
     let ctx_id = app.router.active().context_id;
     app.windows.push(crate::host::context::Window {
         name: "Window 1".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("w1"),
         panes: std::collections::HashMap::new(),
         focused_pane: None,
@@ -502,7 +529,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     let ctx2_id: u64 = 2;
     app.router.push(crate::host::context::Context {
         name: "Context 2".into(),
-        root: std::env::temp_dir(),
+        root: crate::testing::scratch_context_root("context-2"),
         description: None,
         context_id: ctx2_id,
         parent_id: None,
@@ -511,7 +538,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     });
     app.windows.push(crate::host::context::Window {
         name: "Context 2".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
         panes: std::collections::HashMap::new(),
         focused_pane: None,
@@ -581,7 +608,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
     let ctx2_id: u64 = 2;
     app.router.push(crate::host::context::Context {
         name: "Context 2".into(),
-        root: std::env::temp_dir(),
+        root: crate::testing::scratch_context_root("context-2"),
         description: None,
         context_id: ctx2_id,
         parent_id: None,
@@ -590,7 +617,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
     });
     app.windows.push(crate::host::context::Window {
         name: "Context 2".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
         panes: std::collections::HashMap::new(),
         focused_pane: None,

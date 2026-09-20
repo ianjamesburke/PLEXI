@@ -734,7 +734,7 @@ fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
         runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
             crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.to_path_buf()),
         )),
-        workspace_root: std::env::temp_dir(),
+        workspace_root: crate::testing::scratch_context_root("focus"),
         permissions: crate::app::permissions::AppPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
@@ -818,7 +818,7 @@ fn open_note_entries_ignores_non_note_editor_panes() {
         runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
             crate::app::text_editor_app::TextEditorApp::new(source.clone()),
         )),
-        workspace_root: std::env::temp_dir(),
+        workspace_root: crate::testing::scratch_context_root("focus"),
         permissions: crate::app::permissions::AppPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
@@ -866,7 +866,7 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
             runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
                 crate::app::text_editor_app::TextEditorApp::new_for_test_note(note.clone()),
             )),
-            workspace_root: std::env::temp_dir(),
+            workspace_root: crate::testing::scratch_context_root("focus"),
             permissions: crate::app::permissions::AppPermissions::builtin(),
             manifest_id: "text-editor".to_string(),
             name: "Text Editor".to_string(),
@@ -884,7 +884,7 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     app.next_window_id += 1;
     app.windows.push(crate::host::context::Window {
         name: "second".to_string(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("focus"),
         tree: egui_tiles::Tree::new("second", tile, tiles),
         panes,
         focused_pane: Some(tile),

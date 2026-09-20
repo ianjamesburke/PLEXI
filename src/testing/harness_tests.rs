@@ -2277,7 +2277,12 @@ fn notification_modal_handle_key_returns_consumed() {
 /// — rather than hardcoding `home_dir()`.
 #[test]
 fn cwd_for_welcome_tab_returns_context_root_when_set() {
-    let root = std::path::PathBuf::from("/tmp");
+    // Any real directory proves the point, but it must be a *private* one:
+    // `set_context_root` auto-inits a workspace, so rooting this at the
+    // shared temp dir itself leaves a `/tmp/.plexi` behind on Linux and
+    // every later `tempfile::tempdir()` inherits it as a workspace root.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
     let mut h = HostHarness::new();
     h.app.set_context_root(root.clone(), None);
     assert_eq!(
@@ -7494,7 +7499,12 @@ mod agent_boot {
         h.add_test_pane();
 
         let fake = tmp.path().join("codex");
-        std::fs::copy("/bin/zsh", &fake).expect("copy zsh");
+        // Any shell that takes `-c` will do, and the point is the name on
+        // disk, not the interpreter. `/bin/sh` is the one path present on
+        // both macOS and Linux — `/bin/zsh` does not exist on a stock
+        // Debian, which is why this copy, not the assertion, was the
+        // failure there.
+        std::fs::copy("/bin/sh", &fake).expect("copy /bin/sh");
         let cmd = format!(
             "{} -c 'while :; do echo streaming-banner; sleep 0.05; done'",
             fake.display()
