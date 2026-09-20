@@ -775,61 +775,88 @@ fn connect_unix_deadline(
         *dst = src as libc::c_char;
     }
 
-    let raw_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if raw_fd < 0 {
-        return Err(SocketTransportError::Connect(
-            std::io::Error::last_os_error(),
-        ));
-    }
-    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) };
-    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(SocketTransportError::Connect(
-            std::io::Error::last_os_error(),
-        ));
-    }
-
     let addr_len =
         (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1) as libc::socklen_t;
-    let rc = unsafe {
-        libc::connect(
-            raw_fd,
-            &addr as *const libc::sockaddr_un as *const libc::sockaddr,
-            addr_len,
-        )
-    };
-    if rc == 0 {
+
+    // A full accept queue is answered with EAGAIN, not EINPROGRESS, and the
+    // difference matters: EINPROGRESS means the connect started and will
+    // complete, while EAGAIN means it never started and must be reissued
+    // (unix(7)). Waiting for POLLOUT on a socket that is not connecting
+    // returns immediately — writable, with SO_ERROR 0 — so treating EAGAIN
+    // like EINPROGRESS hands back an unconnected fd whose first write fails
+    // ENOTCONN, reporting a saturated host as a write-phase failure. Each
+    // retry gets a fresh socket; the loop is bounded by the caller's
+    // deadline.
+    let mut backlog_retries = 0u32;
+    loop {
+        let raw_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+        if raw_fd < 0 {
+            return Err(SocketTransportError::Connect(
+                std::io::Error::last_os_error(),
+            ));
+        }
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) };
+        let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+        {
+            return Err(SocketTransportError::Connect(
+                std::io::Error::last_os_error(),
+            ));
+        }
+
+        let rc = unsafe {
+            libc::connect(
+                raw_fd,
+                &addr as *const libc::sockaddr_un as *const libc::sockaddr,
+                addr_len,
+            )
+        };
+        if rc == 0 {
+            return Ok(fd);
+        }
+        let error = std::io::Error::last_os_error();
+        let code = error.raw_os_error();
+        if code.is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK) {
+            if std::time::Instant::now() >= deadline {
+                log::info!(
+                    "cli_transport: listener backlog full at {} after {backlog_retries} retries — connect deadline expired",
+                    socket_path.display()
+                );
+                return Err(SocketTransportError::ConnectTimeout);
+            }
+            backlog_retries += 1;
+            drop(fd);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
+        }
+        if code != Some(libc::EINPROGRESS) {
+            return Err(SocketTransportError::Connect(error));
+        }
+
+        classify_connect_wait(wait_for_socket(raw_fd, libc::POLLOUT, deadline))?;
+        let mut socket_error: libc::c_int = 0;
+        let mut socket_error_len = std::mem::size_of_val(&socket_error) as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                raw_fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                &mut socket_error as *mut _ as *mut libc::c_void,
+                &mut socket_error_len,
+            )
+        };
+        if rc < 0 {
+            return Err(SocketTransportError::Connect(
+                std::io::Error::last_os_error(),
+            ));
+        }
+        if socket_error != 0 {
+            return Err(SocketTransportError::Connect(
+                std::io::Error::from_raw_os_error(socket_error),
+            ));
+        }
         return Ok(fd);
     }
-    let error = std::io::Error::last_os_error();
-    if !error.raw_os_error().is_some_and(|code| {
-        code == libc::EINPROGRESS || code == libc::EAGAIN || code == libc::EWOULDBLOCK
-    }) {
-        return Err(SocketTransportError::Connect(error));
-    }
-    classify_connect_wait(wait_for_socket(raw_fd, libc::POLLOUT, deadline))?;
-    let mut socket_error: libc::c_int = 0;
-    let mut socket_error_len = std::mem::size_of_val(&socket_error) as libc::socklen_t;
-    let rc = unsafe {
-        libc::getsockopt(
-            raw_fd,
-            libc::SOL_SOCKET,
-            libc::SO_ERROR,
-            &mut socket_error as *mut _ as *mut libc::c_void,
-            &mut socket_error_len,
-        )
-    };
-    if rc < 0 {
-        return Err(SocketTransportError::Connect(
-            std::io::Error::last_os_error(),
-        ));
-    }
-    if socket_error != 0 {
-        return Err(SocketTransportError::Connect(
-            std::io::Error::from_raw_os_error(socket_error),
-        ));
-    }
-    Ok(fd)
 }
 
 fn send_line_to_socket(
@@ -984,6 +1011,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
 mod transport_deadline_tests {
     use super::{connect_unix_deadline, send_line_to_socket, SocketTransportError};
     use std::io::{BufRead as _, BufReader};
+    use std::os::fd::AsRawFd as _;
     use std::os::unix::net::UnixListener;
     use std::time::{Duration, Instant};
 
@@ -1028,7 +1056,20 @@ mod transport_deadline_tests {
     fn saturated_listener_returns_connect_phase_within_deadline() {
         let dir = unique_socket_dir("connect");
         let socket = dir.join("notify.sock");
-        let _listener = UnixListener::bind(&socket).expect("bind");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        // How many connects a kernel queues before refusing is not portable:
+        // `UnixListener::bind` picks its own backlog hint, and Linux caps it
+        // at `net.core.somaxconn` (4096 by default), so the queue here is far
+        // deeper than the 512 probes below. Re-`listen` with the smallest
+        // backlog so saturation is a property of this test rather than of the
+        // host kernel.
+        let rc = unsafe { libc::listen(listener.as_raw_fd(), 0) };
+        assert_eq!(
+            rc,
+            0,
+            "shrinking the listen backlog: {}",
+            std::io::Error::last_os_error()
+        );
         let mut queued = Vec::new();
         let started = Instant::now();
         let error = loop {
