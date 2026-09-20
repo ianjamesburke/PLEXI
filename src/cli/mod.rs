@@ -694,6 +694,10 @@ const SOCKET_TRANSPORT_DEADLINE: std::time::Duration = std::time::Duration::from
 enum SocketTransportError {
     ConnectTimeout,
     Connect(std::io::Error),
+    /// Only the Unix raw-fd transport can stop part-way through a frame and
+    /// report how far it got; the Windows path hands the whole line to the
+    /// pipe buffer in one call.
+    #[cfg(unix)]
     WriteTimeout {
         bytes_written: usize,
     },
@@ -1011,6 +1015,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
             eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
             1
         }
+        #[cfg(unix)]
         Err(SocketTransportError::WriteTimeout { bytes_written }) => {
             log::warn!(
                 "cli: socket write timed out path={socket_path:?} bytes_written={bytes_written} payload_bytes={} deadline_ms={}",

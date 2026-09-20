@@ -18,7 +18,6 @@
 //! bind/incoming, `Read`/`Write`, `try_clone`, `shutdown`, and read/write
 //! timeouts. It is not a general socket library.
 
-use std::io;
 use std::path::{Path, PathBuf};
 
 /// Address of this channel's IPC endpoint.
@@ -84,39 +83,31 @@ pub fn pipe_name_for_channel(channel: Option<&str>) -> String {
 #[cfg(unix)]
 pub use std::os::unix::net::{UnixListener as IpcListener, UnixStream as IpcStream};
 
+/// Unlink a leftover socket file before binding.
+///
+/// A previous host that died without unlinking leaves a socket inode that
+/// `bind` refuses with `EADDRINUSE`, so the new host must clear it first.
+///
+/// There is no Windows counterpart — a named pipe has no filesystem entry, so
+/// a dead host leaves nothing behind — but the call site is shared, so both
+/// platforms answer it.
 #[cfg(unix)]
-pub use unix_impl::{connect_timeout, remove_stale_endpoint};
-
-#[cfg(unix)]
-mod unix_impl {
-    use super::*;
-
-    /// Connect, giving up after `timeout`.
-    ///
-    /// `UnixStream::connect_timeout` does not exist, and a plain `connect` on a
-    /// socket whose listener has a full backlog blocks indefinitely — which for
-    /// a fire-and-forget CLI means a hung terminal. Callers that need a bounded
-    /// connect use the raw-fd path in `cli::send_line_to_socket`; this helper
-    /// covers the simple case where a blocking connect is acceptable.
-    pub fn connect_timeout(endpoint: &Path, _timeout: std::time::Duration) -> io::Result<IpcStream> {
-        IpcStream::connect(endpoint)
-    }
-
-    /// Unlink a leftover socket file before binding.
-    ///
-    /// A previous host that died without unlinking leaves a socket inode that
-    /// `bind` refuses with `EADDRINUSE`, so the new host must clear it first.
-    pub fn remove_stale_endpoint(endpoint: &Path) {
-        let _ = std::fs::remove_file(endpoint);
-    }
+pub fn remove_stale_endpoint(endpoint: &Path) {
+    let _ = std::fs::remove_file(endpoint);
 }
 
 #[cfg(windows)]
-pub use windows_impl::{connect_timeout, remove_stale_endpoint, IpcListener, IpcStream};
+pub use windows_impl::{connect_timeout, IpcListener, IpcStream};
+
+/// See the Unix counterpart. A named pipe has no filesystem entry, so there is
+/// nothing for a dead host to leave behind.
+#[cfg(windows)]
+pub fn remove_stale_endpoint(_endpoint: &Path) {}
 
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
+    use std::io;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
     use std::time::{Duration, Instant};
 
@@ -448,9 +439,6 @@ mod windows_impl {
         IpcStream::connect_deadline(endpoint, Instant::now() + timeout)
     }
 
-    /// No-op on Windows: a named pipe has no filesystem entry, so a dead host
-    /// leaves nothing behind for the next one to clear.
-    pub fn remove_stale_endpoint(_endpoint: &Path) {}
 }
 
 #[cfg(test)]
@@ -479,8 +467,7 @@ mod tests {
             line
         });
 
-        let mut client = connect_timeout(&endpoint, std::time::Duration::from_secs(5))
-            .expect("connect to the listener");
+        let mut client = IpcStream::connect(&endpoint).expect("connect to the listener");
         client.write_all(b"{\"hello\":1}\n").expect("write");
         client.flush().expect("flush");
         drop(client);
