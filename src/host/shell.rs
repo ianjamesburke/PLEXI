@@ -267,7 +267,7 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     // startup (see `install_login_shell_path`), so inheriting it here is
     // enough — no per-shell augmentation needed.
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let workspace_root = working_directory
             .and_then(crate::app::registry::resolve_workspace_root)

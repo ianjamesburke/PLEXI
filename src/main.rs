@@ -34,6 +34,9 @@ mod rpc;
 #[cfg(test)]
 mod scenes;
 #[cfg(not(test))] // only the not(test) legacy index/keychain migrations use it
+// Legacy pre-#322 Keychain index record. Read only by the macOS index cache
+// and the macOS legacy-secret migration, so it exists on exactly their cfg.
+#[cfg(all(target_os = "macos", not(test)))]
 mod secrets;
 mod spatial;
 #[cfg(test)]
@@ -194,7 +197,10 @@ fn main() -> eframe::Result {
     // dialog (macOS ACLs are per-binary), so ephemeral CLI processes must
     // never run it. An attended host launch is the one place a prompt can be
     // answered.
-    #[cfg(target_os = "macos")]
+    // On Linux the store is a plain 0600 file with no ACL prompt, so the
+    // host-startups-only restriction below is about macOS; keeping one code
+    // path is worth more than skipping a cheap no-op migration.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         if !cli_mode {
             let migrated = crate::workspace::secrets::migrate_legacy_global_secrets(
