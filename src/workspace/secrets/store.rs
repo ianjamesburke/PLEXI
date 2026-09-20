@@ -622,3 +622,270 @@ mod tests {
         store.delete_if_value("plexi:user:X", "anything").unwrap();
     }
 }
+
+/// Windows Credential Manager backend.
+///
+/// The Win32 analogue of [`MacKeychain`]: generic credentials, one per
+/// account, persisted per-user. Unlike macOS there is no index sidecar —
+/// `CredEnumerateW` takes a wildcard filter, so prefix listing and full scan
+/// are both native and always agree with the backend.
+///
+/// Every account becomes the TargetName `plexi/<account>`. The prefix groups
+/// Plexi's entries in the Credential Manager UI and gives `CredEnumerateW`
+/// something to filter on; workspace accounts already start with `plexi:`, so
+/// the result reads `plexi/plexi:<workspace-id>:<key>`. That redundancy is
+/// deliberate — callers pass their account strings through verbatim and the
+/// prefix rule stays a one-liner.
+///
+/// Private, non-constructible outside this module, and absent from test
+/// builds entirely — [`super::system_store`] is the only handle.
+#[cfg(all(windows, not(test)))]
+pub(super) struct CredentialManager;
+
+#[cfg(all(windows, not(test)))]
+impl CredentialManager {
+    /// Prefix applied to every account before it becomes a TargetName.
+    const TARGET_PREFIX: &'static str = "plexi/";
+
+    fn target_name(account: &str) -> String {
+        format!("{}{account}", Self::TARGET_PREFIX)
+    }
+
+    /// NUL-terminated UTF-16, for Win32 PCWSTR / PWSTR arguments.
+    fn to_wide_nul(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Decode a NUL-terminated UTF-16 buffer (e.g. `CREDENTIALW.TargetName`).
+    /// The length is capped so a missing terminator cannot run off the end;
+    /// real TargetNames are orders of magnitude under the cap.
+    ///
+    /// # Safety
+    /// `ptr` must be null, or a valid NUL-terminated UTF-16 string the OS owns
+    /// for the duration of the call.
+    unsafe fn read_wide_nul(ptr: *const u16) -> String {
+        const MAX_CHARS: usize = 4096;
+        if ptr.is_null() {
+            return String::new();
+        }
+        let mut len = 0usize;
+        while len < MAX_CHARS && unsafe { *ptr.add(len) } != 0 {
+            len += 1;
+        }
+        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(ptr, len) })
+    }
+
+    /// Accounts whose TargetName matches `filter`, a wildcard pattern such as
+    /// `plexi/*`. The `plexi/` prefix is stripped back off before returning,
+    /// so callers only ever see the account strings they passed in.
+    fn enumerate(filter: &str) -> Result<Vec<String>, SecretError> {
+        use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+        use windows_sys::Win32::Security::Credentials::{
+            CredEnumerateW, CredFree, CREDENTIALW,
+        };
+
+        let wide = Self::to_wide_nul(filter);
+        let mut count: u32 = 0;
+        let mut credentials: *mut *mut CREDENTIALW = std::ptr::null_mut();
+        // SAFETY: NUL-terminated wide string; both out-params point at locals.
+        let ok = unsafe { CredEnumerateW(wide.as_ptr(), 0, &mut count, &mut credentials) };
+        if ok == 0 {
+            let error = std::io::Error::last_os_error();
+            // No Plexi credentials stored yet — an empty set, not a failure.
+            if error.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
+                return Ok(Vec::new());
+            }
+            return Err(SecretError::Backend(format!(
+                "CredEnumerateW('{filter}') failed: {error}"
+            )));
+        }
+
+        let mut accounts = Vec::with_capacity(count as usize);
+        // SAFETY: on success `credentials` points at a single OS-allocated
+        // block of `count` CREDENTIALW pointers, freed once below.
+        for i in 0..count as usize {
+            unsafe {
+                let entry = *credentials.add(i);
+                if entry.is_null() {
+                    continue;
+                }
+                let target = Self::read_wide_nul((*entry).TargetName);
+                accounts.push(
+                    target
+                        .strip_prefix(Self::TARGET_PREFIX)
+                        .map(str::to_string)
+                        .unwrap_or(target),
+                );
+            }
+        }
+        // SAFETY: frees the block CredEnumerateW allocated; nothing above
+        // retained a pointer into it (every string was copied).
+        unsafe { CredFree(credentials as *const core::ffi::c_void) };
+        Ok(accounts)
+    }
+
+    fn write(account: &str, value: &str) -> Result<(), SecretError> {
+        use windows_sys::Win32::Security::Credentials::{
+            CredWriteW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW,
+        };
+
+        let target = Self::target_name(account);
+        // Both buffers are borrowed by `credential` and must outlive the call.
+        let mut wide_target = Self::to_wide_nul(&target);
+        let blob = Zeroizing::new(value.as_bytes().to_vec());
+
+        // SAFETY: CREDENTIALW is a plain C struct; an all-zero value is the
+        // documented starting point before filling in the fields below.
+        let mut credential: CREDENTIALW = unsafe { std::mem::zeroed() };
+        credential.Type = CRED_TYPE_GENERIC;
+        credential.TargetName = wide_target.as_mut_ptr();
+        credential.CredentialBlobSize = blob.len() as u32;
+        credential.CredentialBlob = blob.as_ptr() as *mut u8;
+        credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
+
+        // SAFETY: every pointer in `credential` is live until the explicit
+        // drops below.
+        let ok = unsafe { CredWriteW(&credential, 0) };
+        let error = std::io::Error::last_os_error();
+        // Explicit drops tie the buffer lifetimes past the FFI call; NLL would
+        // otherwise be free to release them at their last named use above.
+        drop(blob);
+        drop(wide_target);
+
+        if ok == 0 {
+            return Err(SecretError::Backend(format!(
+                "CredWriteW('{target}') failed: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn remove(account: &str) -> Result<(), SecretError> {
+        use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+        use windows_sys::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
+
+        let target = Self::target_name(account);
+        let wide = Self::to_wide_nul(&target);
+        // SAFETY: NUL-terminated wide string; the rest are plain flags.
+        let ok = unsafe { CredDeleteW(wide.as_ptr(), CRED_TYPE_GENERIC, 0) };
+        if ok == 0 {
+            let error = std::io::Error::last_os_error();
+            // Already gone — success, nothing to lose.
+            if error.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
+                return Ok(());
+            }
+            return Err(SecretError::Backend(format!(
+                "CredDeleteW('{target}') failed: {error}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(windows, not(test)))]
+impl NonDestructiveStore for CredentialManager {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+        use windows_sys::Win32::Security::Credentials::{
+            CredFree, CredReadW, CRED_TYPE_GENERIC, CREDENTIALW,
+        };
+
+        let target = Self::target_name(account);
+        let wide = Self::to_wide_nul(&target);
+        let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
+        // SAFETY: NUL-terminated wide string; `credential` is a local out-param.
+        let ok = unsafe { CredReadW(wide.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
+        if ok == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
+                log::warn!(
+                    "workspace_secrets::CredentialManager::get: CredReadW('{target}') failed: {error}"
+                );
+            }
+            return None;
+        }
+        // SAFETY: CredReadW returned TRUE, so `credential` points at one
+        // OS-allocated CREDENTIALW that stays valid until the CredFree below.
+        let value = unsafe {
+            let cred = &*credential;
+            let size = cred.CredentialBlobSize as usize;
+            if cred.CredentialBlob.is_null() || size == 0 {
+                String::new()
+            } else {
+                String::from_utf8_lossy(std::slice::from_raw_parts(cred.CredentialBlob, size))
+                    .trim()
+                    .to_string()
+            }
+        };
+        // SAFETY: frees the block CredReadW allocated; `value` owns its bytes.
+        unsafe { CredFree(credential as *const core::ffi::c_void) };
+        Some(Zeroizing::new(value))
+    }
+
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        // Read-then-write. `CredWriteW` has no create-only flag — the closest,
+        // `CRED_PRESERVE_CREDENTIAL_BLOB`, still updates the entry and only
+        // keeps the old blob — so unlike macOS's `SecItemAdd` the duplicate
+        // check cannot be pushed into the backend. A concurrent writer landing
+        // between this read and the write below still wins. The window is
+        // irreducible here; do not document it as closed.
+        if self.get(account).is_some() {
+            return Err(SecretError::AlreadyExists(account.to_string()));
+        }
+        Self::write(account, value)
+    }
+
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        // Read-compare-delete, with the same irreducible gap as `add_new` and
+        // as the macOS path above.
+        match self.get(account) {
+            None => Ok(()), // already gone — nothing to lose
+            Some(current) if current.as_str() == expected => Self::remove(account),
+            Some(_) => Err(SecretError::ValueChanged(account.to_string())),
+        }
+    }
+
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        // Filtered in Rust rather than by passing `plexi/<prefix>*` to
+        // `CredEnumerateW`: a caller's prefix may contain `*` or `?`, which
+        // the Win32 filter would interpret as wildcards.
+        match Self::enumerate("plexi/*") {
+            Ok(accounts) => accounts
+                .into_iter()
+                .filter(|account| account.starts_with(prefix))
+                .collect(),
+            Err(error) => {
+                log::warn!(
+                    "workspace_secrets::CredentialManager::list_with_prefix('{prefix}'): {error}"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Names only. `CredEnumerateW` does return the blob alongside each entry,
+    /// but nothing here reads it, so no secret value is materialised by a scan.
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        let accounts = Self::enumerate("plexi/*")?;
+        log::info!(
+            "workspace_secrets::CredentialManager::scan_accounts: {} account(s)",
+            accounts.len()
+        );
+        Ok(accounts)
+    }
+}
+
+#[cfg(all(windows, not(test)))]
+impl SecretStore for CredentialManager {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        // `CredWriteW` upserts, which is exactly the contract here.
+        Self::write(account, value)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        Self::remove(account)
+    }
+}
+
+/// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
+/// interior mutability so tests can share a single instance behind `&dyn`.
