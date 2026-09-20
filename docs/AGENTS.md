@@ -33,3 +33,4 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `search-results-detail-pattern.md` | Search→results→detail SDK vocabulary: `SelectList` usage, `Pending` wrapper for declarative loading state, canvas `ListRow` deletion — decision doc, taste call pending | 0728 |
 | `wasm-runtime.md` | WASM runtime architecture | see file |
 | `wasm-runtime-impl-plan.md` | WASM runtime build sequence (G1-G7, G11-G13) | see file |
+| `windows-support-plan.md` | Windows x86_64 as a third host platform: what the PR #1604 replay landed, the Win32 platform seam, and the keymap decision that blocks Phase 4 | none yet |
