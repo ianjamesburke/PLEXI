@@ -14,7 +14,7 @@ use super::KEYCHAIN_SERVICE;
 
 #[cfg(all(target_os = "macos", not(test)))]
 use super::index::{index_read, index_write};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use super::system_store;
 
 /// Legacy → canonical friendly-name spellings. One canonical form per secret;
@@ -272,12 +272,14 @@ pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     Ok(report)
 }
 
-/// Test variant. The index-file layer is compiled out of test binaries
-/// entirely — its only possible target is the user's real
-/// `secrets-index.json` — so there is no file to read back or persist and the
-/// scan is the whole truth. Keeps the Secrets app's load path callable under
-/// test without giving a test binary a route to the real index.
-#[cfg(all(target_os = "macos", test))]
+/// Index-free variant, for test builds and for Windows.
+///
+/// Test binaries have the index-file layer compiled out entirely — its only
+/// possible target is the user's real `secrets-index.json` — so there is no
+/// file to read back or persist. Windows never had one: `CredEnumerateW`
+/// enumerates the backend directly, so the scan is already authoritative and
+/// a sidecar could only go stale. Either way the scan is the whole truth.
+#[cfg(any(all(target_os = "macos", test), all(windows, not(test))))]
 pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     let store = system_store();
     let scanned = store.scan_accounts()?;

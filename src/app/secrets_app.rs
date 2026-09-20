@@ -60,7 +60,7 @@ fn reconcile_status_line(report: &crate::workspace::secrets::ReconcileReport) ->
 /// keychain scan so keys written out-of-band are visible. Returns the entries
 /// plus a status line describing any reconciliation the user should know about.
 fn load_entries() -> (Vec<ManagedSecret>, Option<String>) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         use crate::workspace::secrets::{
             reconcile_index_with_keychain, system_store,
@@ -86,7 +86,7 @@ fn load_entries() -> (Vec<ManagedSecret>, Option<String>) {
             .collect();
         (entries, status)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         (Vec::new(), None)
     }
@@ -201,7 +201,7 @@ impl SecretsApp {
             return;
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             use crate::workspace::secrets::{
                 keychain_user_name, keychain_workspace_name, system_store,
@@ -265,7 +265,7 @@ impl SecretsApp {
                 }
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             log::warn!("secrets_manager: commit_add: Keychain not available on this platform");
         }
@@ -273,7 +273,7 @@ impl SecretsApp {
 
     fn delete_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.selected).cloned() {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             {
                 use crate::workspace::secrets::system_store;
                 let store = system_store();
@@ -293,7 +293,7 @@ impl SecretsApp {
                     }
                 }
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", windows)))]
             {
                 log::warn!("secrets_manager: delete_selected: Keychain not available");
             }
@@ -452,7 +452,7 @@ impl App for SecretsApp {
             if let Some(entry) = self.entries.get(self.selected) {
                 let account = entry.account.clone();
                 let name = entry.name.clone();
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 {
                     use crate::workspace::secrets::system_store;
                     match system_store().get(&account) {

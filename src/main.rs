@@ -33,7 +33,9 @@ mod render;
 mod rpc;
 #[cfg(test)]
 mod scenes;
-#[cfg(not(test))] // only the not(test) legacy index/keychain migrations use it
+// Only the not(test) legacy index/keychain migrations read it, and those are
+// macOS-only — no other platform ever wrote a pre-#322 Keychain record.
+#[cfg(all(target_os = "macos", not(test)))]
 mod secrets;
 mod spatial;
 #[cfg(test)]

@@ -43,6 +43,9 @@ mod store;
 #[cfg(all(target_os = "macos", not(test)))]
 mod index;
 
+// Consumed by the macOS startup migration in `main.rs` and by tests. No other
+// platform ever had a legacy Keychain to migrate from.
+#[cfg(any(target_os = "macos", test))]
 pub use migrate::migrate_legacy_global_secrets;
 pub use store::{NonDestructiveStore, SecretStore};
 
@@ -51,7 +54,7 @@ pub use store::{NonDestructiveStore, SecretStore};
 #[cfg(test)]
 pub use store::{InMemoryKeychain, SecretError};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub use reconcile::reconcile_index_with_keychain;
 #[cfg(test)]
 pub use reconcile::AccountRename;
@@ -83,7 +86,8 @@ pub fn keychain_user_name(friendly: &str) -> String {
 // ── Backend selector ─────────────────────────────────────────────────────────
 
 /// The process-wide secret store handle — the ONLY way to reach a store
-/// backend. Production builds return the real macOS Keychain; test builds
+/// backend. Production builds return the platform keychain — macOS Keychain
+/// or Windows Credential Manager; test builds
 /// ALWAYS return a process-local in-memory store, and the real backend type
 /// is not even compiled under `cfg(test)`, so a test that tries to name it
 /// does not build. Default-safe, opt-in-dangerous — except the opt-in does
@@ -93,11 +97,19 @@ pub fn keychain_user_name(friendly: &str) -> String {
 /// compiled test binary is a new unsigned app and each login-keychain value
 /// read from a test fires its own credential dialog — an unattended agent
 /// gate cannot click one, so a prompting test silently stalls automation.
-#[cfg(target_os = "macos")]
+/// Windows Credential Manager does not prompt, but a test binary writing into
+/// the developer's real credential store is its own problem, so the same rule
+/// applies there.
+#[cfg(any(target_os = "macos", windows))]
 pub fn system_store() -> &'static dyn SecretStore {
-    #[cfg(not(test))]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
         static STORE: store::MacKeychain = store::MacKeychain;
+        &STORE
+    }
+    #[cfg(all(windows, not(test)))]
+    {
+        static STORE: store::CredentialManager = store::CredentialManager;
         &STORE
     }
     #[cfg(test)]

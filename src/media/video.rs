@@ -152,19 +152,26 @@ pub trait VideoDecoder: Send + Sync {
 /// Reader-style obj-c objects are not documented thread-safe; we never
 /// share them across threads.
 pub struct AvfVideoDecoder {
+    /// Only `avf_impl` hands out handles, so off macOS this state has no
+    /// reader — the type still exists because the factory returns it and its
+    /// `VideoDecoder` impl answers `NotImplemented`.
+    #[cfg(target_os = "macos")]
     next_handle_id: std::sync::atomic::AtomicU64,
 }
 
 impl AvfVideoDecoder {
     pub fn new() -> Self {
         Self {
+            #[cfg(target_os = "macos")]
             next_handle_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
     /// Resolve a wire `source` string to a local filesystem path. Accepts
     /// either an absolute path or a `file://` URL. Returns the path string
-    /// the caller passes to `NSURL::fileURLWithPath:`.
+    /// the caller passes to `NSURL::fileURLWithPath:` — so it is only ever
+    /// called from `avf_impl`.
+    #[cfg(target_os = "macos")]
     fn resolve_path(source: &str) -> Result<String, VideoError> {
         if source.is_empty() {
             return Err(VideoError::InvalidSource("source URL is empty".to_owned()));

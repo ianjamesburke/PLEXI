@@ -97,6 +97,9 @@ enum PipeEntry {
 pub struct TypedPipeRegistry {
     pipes: HashMap<String, PipeEntry>,
     /// Private directory where binary pipe sockets are created (mode 0700).
+    /// Unix-only: a Windows named pipe lives in the kernel namespace, so
+    /// there is no directory to hold or secure.
+    #[cfg(unix)]
     pipes_dir: PathBuf,
     /// Host-established owner of this registry (stint 0724 Phase D 2/2) —
     /// the pane it belongs to. `None` until `set_owner` is called: the
@@ -112,8 +115,13 @@ pub struct TypedPipeRegistry {
 
 impl TypedPipeRegistry {
     pub fn new(pipes_dir: PathBuf) -> Self {
+        // Every caller passes the same directory on every platform; Windows
+        // simply has nothing to do with it.
+        #[cfg(not(unix))]
+        let _ = pipes_dir;
         Self {
             pipes: HashMap::new(),
+            #[cfg(unix)]
             pipes_dir,
             owner: None,
         }

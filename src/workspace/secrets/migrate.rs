@@ -3,6 +3,7 @@
 //! Non-destructive by construction: the signature takes
 //! [`NonDestructiveStore`], so this layer cannot express an overwrite.
 
+#[cfg(any(target_os = "macos", test))]
 use super::store::NonDestructiveStore;
 
 #[cfg(any(target_os = "macos", test))]
@@ -91,7 +92,7 @@ fn migrate_legacy_value(
     }
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 pub fn migrate_legacy_global_secrets(_store: &dyn NonDestructiveStore) -> usize {
     0
 }

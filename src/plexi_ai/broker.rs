@@ -374,7 +374,7 @@ fn resolve_openrouter_api_key(
     // An empty value is treated as unset so it falls through to the keychain.
     let process_env = std::env::var(api_key_env).ok().filter(|v| !v.is_empty());
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let store = crate::workspace::secrets::system_store();
         match resolve_openrouter_api_key_from_store(
@@ -389,7 +389,7 @@ fn resolve_openrouter_api_key(
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     if let Some(k) = process_env {
         log::info!("ai_broker: resolved {api_key_env} from process env");
         return Ok(k);
@@ -400,7 +400,7 @@ fn resolve_openrouter_api_key(
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn resolve_openrouter_api_key_from_store(
     api_key_env: &str,
     workspace_root: Option<&std::path::Path>,

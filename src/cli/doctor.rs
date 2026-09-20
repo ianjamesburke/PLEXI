@@ -35,7 +35,7 @@ struct LlmServerReport {
 /// Check whether an `OPENROUTER_API_KEY` global secret is stored and, if so,
 /// validate it against the OpenRouter models endpoint.
 fn check_openrouter() -> OpenRouterReport {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         use crate::workspace::secrets::{keychain_user_name, system_store};
         let store = system_store();
@@ -74,7 +74,7 @@ fn check_openrouter() -> OpenRouterReport {
             }
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         log::info!(
             "cli:doctor: openrouter check skipped -- keychain not available on this platform"
