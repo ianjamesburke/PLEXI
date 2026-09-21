@@ -95,7 +95,6 @@ pub fn complete_run_cli() -> i32 {
 }
 
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
-    use clap::CommandFactory;
     use clap_complete::{generate, Shell};
     let Ok(shell_variant) = shell.parse::<Shell>() else {
         eprintln!("error: unsupported shell {shell:?} — supported: bash, zsh, fish");
@@ -106,7 +105,7 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         shell,
         binary_name
     );
-    let mut cmd = crate::cli::args::Cli::command();
+    let mut cmd = crate::cli::help::gated_command();
     if shell_variant == Shell::Zsh {
         // Generate to a buffer so we can post-process the zsh script.
         let mut buf = Vec::new();

@@ -252,14 +252,13 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Commands, ConfigCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
     };
-    use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
 
-    match Cli::try_parse_from(&args) {
+    match cli::help::parse_gated(&args) {
         Ok(cli) => {
             if let Some(socket) = cli.socket {
                 cli::set_command_socket_override(socket);
@@ -1123,7 +1122,10 @@ fn main() -> eframe::Result {
                             changed_resources: &changed_resources,
                         })),
                         EventsCmd::List { json } => std::process::exit(cli::events_list_cli(json)),
-                        EventsCmd::McpConfig => std::process::exit(cli::events_mcp_config_cli()),
+                        EventsCmd::McpConfig => {
+                            exit_if_feature_disabled(crate::release::ReleaseFeature::McpClient);
+                            std::process::exit(cli::events_mcp_config_cli())
+                        }
                     },
                     Commands::CompleteOpen { prefix } => {
                         std::process::exit(cli::complete_open_cli(&prefix));
@@ -1319,8 +1321,7 @@ fn main() -> eframe::Result {
     // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
     // show help rather than attempting to launch a second GUI.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        use clap::CommandFactory;
-        let _ = Cli::command().print_help();
+        let _ = cli::help::gated_command().print_help();
         println!();
         std::process::exit(0);
     }

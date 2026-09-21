@@ -93,6 +93,12 @@ pub fn log_feature_blocked(feature: ReleaseFeature) {
 
 pub fn feature_unavailable_message(feature: ReleaseFeature) -> String {
     log_feature_blocked(feature);
+    feature_unavailable_text(feature)
+}
+
+/// The user-facing unavailable text without the block-log side effect, for
+/// static surfaces such as generated help.
+pub fn feature_unavailable_text(feature: ReleaseFeature) -> String {
     format!(
         "{} requires the {} channel and is not part of the stable v1 surface. Use {} to try it.",
         feature.name(),
@@ -101,7 +107,7 @@ pub fn feature_unavailable_message(feature: ReleaseFeature) -> String {
     )
 }
 
-fn feature_enabled_for_channel(feature: ReleaseFeature, channel: Option<&str>) -> bool {
+pub(crate) fn feature_enabled_for_channel(feature: ReleaseFeature, channel: Option<&str>) -> bool {
     ReleaseTier::for_channel(channel).is_some_and(|tier| tier >= feature.minimum_tier())
 }
 
