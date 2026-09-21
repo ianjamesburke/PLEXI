@@ -22,6 +22,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 ## CLI Design Rules
 
 - **Namespace design:** verify a new command belongs in the right namespace. Place it where the noun already lives, not at top level.
+- **Clap docs describe the command, not its history.** Do not put ticket or stint identifiers in clap doc comments.
 - **Pane naming:** always name panes after spawning them. Every `plexi pane new`, `plexi app open`, split, or new window should be followed by `plexi pane name <id> "descriptive name"`.
 - **Tips:** use `print_tip()` from `src/cli/mod.rs`. Never raw `eprintln!`. Respects `config.cli.tips` and `NO_COLOR`.
 - **An absent flag must reach the host as absent.** A clap `default_value` on an optional flag means the CLI can never send "unset", so a host-side default is dead code and changing it silently does nothing. `plexi notify --scope` carried `default_value = "global"`, which is why the host's fallback was unreachable. Leave `Option<String>` flags without a `default_value` and let the host resolve the default (`NotifyScope::default()`); map every *named* value explicitly, never by falling through to the host's fallback.

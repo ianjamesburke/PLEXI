@@ -250,7 +250,7 @@ fn main() -> eframe::Result {
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
+        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -670,12 +670,7 @@ fn main() -> eframe::Result {
                     Commands::Uninstall { keep_data, yes } => {
                         std::process::exit(cli::plexi_uninstall_cli(keep_data, yes))
                     }
-                    Commands::Update { subcommand } => match subcommand {
-                        Some(UpdateCmd::Apps { id }) => {
-                            std::process::exit(cli::update_cli(id.as_deref()))
-                        }
-                        None => std::process::exit(cli::self_update_cli()),
-                    },
+                    Commands::Update => std::process::exit(cli::self_update_cli()),
                     Commands::Host { cmd } => match cmd {
                         HostCmd::Start {
                             layout,
@@ -811,22 +806,6 @@ fn main() -> eframe::Result {
                     }
                     Commands::Pane { cmd } => match cmd {
                         PaneCmd::Name { first, second } => {
-                            let (pane_id, name) = match second {
-                                Some(title) => match first.parse::<u64>() {
-                                    Ok(id) => (Some(id), title),
-                                    Err(_) => {
-                                        eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
-                                        std::process::exit(1);
-                                    }
-                                },
-                                None => (None, first),
-                            };
-                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
-                        }
-                        PaneCmd::SetTitle { first, second } => {
-                            eprintln!(
-                                "warning: `pane set-title` is deprecated — use `pane name` instead"
-                            );
                             let (pane_id, name) = match second {
                                 Some(title) => match first.parse::<u64>() {
                                     Ok(id) => (Some(id), title),

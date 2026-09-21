@@ -441,6 +441,22 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
     }
 }
 
+/// Delete an account only when it exists at the exact scope selected by the
+/// caller. Store backends may treat an absent delete as a successful no-op, so
+/// the read is what makes the CLI's not-found contract portable.
+fn delete_existing_secret(
+    store: &dyn crate::workspace::secrets::SecretStore,
+    account: &str,
+    friendly: &str,
+) -> Result<(), String> {
+    if store.get(account).is_none() {
+        return Err(format!("secret '{friendly}' not found"));
+    }
+    store
+        .delete(account)
+        .map_err(|error| format!("keychain delete failed: {error}"))
+}
+
 /// `plexi secret delete <friendly-name>` — remove the Keychain entry.
 ///
 /// When `global` is true, deletes the user-scoped entry (`plexi:user:<name>`)
@@ -457,17 +473,15 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
 
         if global {
             let account = keychain_user_name(friendly);
-            return match store.delete(&account) {
+            return match delete_existing_secret(store, &account, friendly) {
                 Ok(()) => {
                     log::info!("secret_delete:cli: deleted globally account={account}");
                     println!("Deleted global secret '{friendly}'");
                     0
                 }
-                Err(e) => {
-                    log::warn!(
-                        "secret_delete:cli: not found or failed friendly={friendly} err={e}"
-                    );
-                    eprintln!("error: keychain delete failed: {e}");
+                Err(error) => {
+                    log::warn!("secret_delete:cli: rejected friendly={friendly} err={error}");
+                    eprintln!("error: {error}");
                     1
                 }
             };
@@ -481,7 +495,7 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
             }
         };
         let account = keychain_workspace_name(&cfg.id, friendly);
-        match store.delete(&account) {
+        match delete_existing_secret(store, &account, friendly) {
             Ok(()) => {
                 log::info!(
                     "secret_delete:cli: deleted workspace_id={} account={account}",
@@ -490,9 +504,9 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
                 println!("Deleted '{friendly}' from workspace {}", cfg.id);
                 0
             }
-            Err(e) => {
-                log::warn!("secret_delete:cli: keychain delete failed account={account} err={e}");
-                eprintln!("error: keychain delete failed: {e}");
+            Err(error) => {
+                log::warn!("secret_delete:cli: rejected account={account} err={error}");
+                eprintln!("error: {error}");
                 1
             }
         }
@@ -509,13 +523,24 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
 
 #[cfg(test)]
 mod secret_set_tests {
-    use super::{secret_list_scope, SecretListScope};
+    use super::{delete_existing_secret, secret_list_scope, SecretListScope};
+    use crate::workspace::secrets::InMemoryKeychain;
     use std::fs;
     use tempfile::TempDir;
 
     #[test]
     fn secret_list_global_uses_user_scope_without_workspace_lookup() {
         assert!(matches!(secret_list_scope(true), SecretListScope::UserOnly));
+    }
+
+    #[test]
+    fn secret_delete_missing_key_returns_not_found_error() {
+        let store = InMemoryKeychain::new();
+
+        let error = delete_existing_secret(&store, "plexi:user:missing", "missing")
+            .expect_err("an absent secret must not report a successful delete");
+
+        assert_eq!(error, "secret 'missing' not found");
     }
 
     /// Helper: checks whether a given `cwd` path would be rejected by the

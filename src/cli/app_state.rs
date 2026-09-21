@@ -1,7 +1,7 @@
 //! `plexi app state get/set` — the sanctioned surface for reading and writing
-//! a file-backed app's state (stint 0645).
+//! a file-backed app's state.
 //!
-//! An agent could write the state file directly once stint 0644 landed; the
+//! An agent could write the state file directly; the
 //! file is on disk. These verbs exist to make that *correct*: they resolve the
 //! app's declared state path so no caller ever hardcodes one, they validate the
 //! document in the app's declared format before it reaches disk, they write
@@ -9,7 +9,7 @@
 //! traced. Direct file writes stay possible and stay unsupported.
 //!
 //! The commands are **disk-direct and host-independent** — no socket, no
-//! `AppRequest`. A running app picks the write up through the 0644 state
+//! `AppRequest`. A running app picks the write up through the state
 //! watcher within one debounce window; a not-running app sees it on next load.
 //!
 //! Entitlement here is structural, not checked: there is no path argument and
