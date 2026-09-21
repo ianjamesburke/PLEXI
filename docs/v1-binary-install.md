@@ -14,6 +14,24 @@ Every GitHub release publishes these archives:
 | Linux x86_64 | `plexi-linux-x64.tar.gz` | `plexi` |
 | Windows x64 | `plexi-windows-x64.zip` | `plexi.exe` |
 
+## Windows (x64)
+
+Preferred one-liner (no Rust):
+
+```powershell
+irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/v0.3.1-windows.1/scripts/install-windows.ps1 | iex
+```
+
+Or pin a tag/channel:
+
+```powershell
+iex "& { $(irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/v0.3.1-windows.1/scripts/install-windows.ps1) } -Channel alpha -Tag v0.3.1-windows.1"
+```
+
+Expect `plexi-alpha.exe --version` and `%USERPROFILE%\.plexi-alpha\installed_tag` matching the tag.
+`plexi-alpha update` downloads the newer `plexi-windows-x64.zip` via the same script (asset-prefer, not cargo).
+
+
 The public command is `curl -fsSL https://plexiapp.com/install | sh`. It installs
 under `~/.local/share/plexi/<channel>` and puts the channel command in
 `~/.local/bin`: `plexi`, `plexi-beta`, or `plexi-alpha`. Set `PLEXI_INSTALL_DIR`

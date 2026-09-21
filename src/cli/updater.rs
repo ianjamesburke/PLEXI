@@ -228,17 +228,42 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;
 
     log::info!("background_build: downloading binary asset for {tag} channel={channel}");
-    let installer =
-        format!("https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag}/scripts/install.sh");
-    let install_cmd = format!(
-        "curl -fsSL '{}' | bash -s -- --channel '{}' --tag '{}'",
-        installer, channel, tag,
-    );
-    let mut install = Command::new("bash");
-    install
-        .args(["-l", "-c", &install_cmd])
-        .env("PLEXI_INSTALL_TAG", tag);
-    let status = run_logged_command(&mut install, &log_path, "binary install")?;
+    #[cfg(windows)]
+    let status = {
+        let script_url = format!(
+            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag}/scripts/install-windows.ps1"
+        );
+        let ps = format!(
+            concat!(
+                "$ErrorActionPreference='Stop'; ",
+                "$script = Join-Path $env:TEMP ('plexi-install-' + [guid]::NewGuid().ToString() + '.ps1'); ",
+                "Invoke-WebRequest -UseBasicParsing -Uri '{0}' -OutFile $script; ",
+                "& $script -Channel '{1}' -Tag '{2}'; ",
+                "Remove-Item -Force $script -ErrorAction SilentlyContinue"
+            ),
+            script_url, channel, tag
+        );
+        let mut install = Command::new("powershell");
+        install
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+            .env("PLEXI_INSTALL_TAG", tag);
+        run_logged_command(&mut install, &log_path, "binary install")?
+    };
+    #[cfg(not(windows))]
+    let status = {
+        let installer = format!(
+            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag}/scripts/install.sh"
+        );
+        let install_cmd = format!(
+            "curl -fsSL '{}' | bash -s -- --channel '{}' --tag '{}'",
+            installer, channel, tag,
+        );
+        let mut install = Command::new("bash");
+        install
+            .args(["-l", "-c", &install_cmd])
+            .env("PLEXI_INSTALL_TAG", tag);
+        run_logged_command(&mut install, &log_path, "binary install")?
+    };
 
     if !status.success() {
         return Err(format!(

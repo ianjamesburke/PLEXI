@@ -26,6 +26,9 @@ pub struct Prerelease {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PreKind {
+    /// Disposable Windows dogfood tags (`vX.Y.Z-windows.N`). Sorted below
+    /// alpha so a normal alpha install never "upgrades" into a windows-only cut.
+    Windows,
     Alpha,
     Beta,
 }
@@ -42,7 +45,7 @@ pub enum UpdateChannel {
 }
 
 impl ReleaseTag {
-    /// Parse `vX.Y.Z`, `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`.
+    /// Parse `vX.Y.Z`, `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, `vX.Y.Z-windows.N`.
     /// Returns `None` for malformed tags or unrecognized prerelease schemes
     /// (e.g. old `-rc1` tags).
     pub fn parse(tag: &str) -> Option<Self> {
@@ -62,6 +65,7 @@ impl ReleaseTag {
                 let kind = match kind_str {
                     "alpha" => PreKind::Alpha,
                     "beta" => PreKind::Beta,
+                    "windows" => PreKind::Windows,
                     _ => return None,
                 };
                 let num = num_str.parse().ok()?;
@@ -146,6 +150,10 @@ pub fn resolve_best(
     channel: UpdateChannel,
     current: &ReleaseTag,
 ) -> Option<ReleaseTag> {
+    let current_is_windows = matches!(
+        current.pre.as_ref().map(|p| p.kind),
+        Some(PreKind::Windows)
+    );
     releases
         .iter()
         .filter(|r| !r.draft)
@@ -159,6 +167,16 @@ pub fn resolve_best(
             } else {
                 channel.accepts(t)
             }
+        })
+        // Windows dogfood tags stay on their own track: a `*-windows.N` install
+        // only updates to a newer windows tag, and alpha/stable never jump onto
+        // a windows-only cut that may lack other OS assets.
+        .filter(|(_, t)| {
+            let candidate_is_windows = matches!(
+                t.pre.as_ref().map(|p| p.kind),
+                Some(PreKind::Windows)
+            );
+            current_is_windows == candidate_is_windows
         })
         .filter(|(_, t)| t > current)
         .map(|(_, t)| t)
@@ -361,7 +379,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_windows() {
+        let t = tag("v0.3.1-windows.1");
+        assert_eq!(
+            t.pre,
+            Some(Prerelease {
+                kind: PreKind::Windows,
+                num: 1
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_best_windows_stays_on_windows_track() {
+        let releases = vec![
+            rel("v0.3.1-alpha.6"),
+            rel("v0.3.1-windows.1"),
+            rel("v0.3.1-windows.2"),
+        ];
+        let current = tag("v0.3.1-windows.1");
+        let best = resolve_best(&releases, UpdateChannel::Alpha, &current).unwrap();
+        assert_eq!(best.raw, "v0.3.1-windows.2");
+    }
+
+    #[test]
+    fn resolve_best_alpha_ignores_windows_tags() {
+        let releases = vec![rel("v0.3.1-windows.9"), rel("v0.3.1-alpha.6")];
+        let current = tag("v0.3.1-alpha.5");
+        let best = resolve_best(&releases, UpdateChannel::Alpha, &current).unwrap();
+        assert_eq!(best.raw, "v0.3.1-alpha.6");
+    }
+
+    #[test]
     fn resolve_best_beta_rejects_alpha_accepts_beta() {
+
         let releases = vec![rel("v0.1.13-alpha.9"), rel("v0.1.13-beta.1")];
         let current = tag("v0.1.12");
         let best = resolve_best(&releases, UpdateChannel::Beta, &current).unwrap();
