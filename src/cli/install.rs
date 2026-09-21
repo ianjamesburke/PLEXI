@@ -633,8 +633,8 @@ mod update_tests {
 ///
 /// Returns `Ok(human_readable_message)` on success and `Err(error_message)` on
 /// failure so callers can surface the outcome appropriately.
-/// CLI-only self-update: check for a newer release, build, and install inline.
-/// The GUI uses `spawn_update_check` (background build) + restart instead.
+/// CLI-only self-update: download and install a signed-channel release asset.
+/// The GUI uses the same asset installer in the background, then restarts.
 fn run_self_update() -> Result<String, String> {
     let binary_name = crate::config::current_exe_basename();
     let binary_name = binary_name.as_str();
@@ -691,61 +691,24 @@ fn run_self_update() -> Result<String, String> {
     log::info!("cli: self-update selected tag={tag_name} install_target_channel={channel}");
     println!("Latest:  {tag_name}");
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let src_dir = std::path::PathBuf::from(&home).join(".plexi-src");
-    let repo = "https://github.com/ianjamesburke/PLEXI.git";
-    let install_script = src_dir.join("scripts/install.sh");
-
-    println!("Updating source...");
-    if src_dir.join(".git").is_dir() {
-        let fetch = std::process::Command::new("git")
-            .args([
-                "-C",
-                &src_dir.to_string_lossy(),
-                "fetch",
-                "origin",
-                "--tags",
-                "--force",
-            ])
-            .status()
-            .map_err(|e| format!("error: git fetch failed: {e}"))?;
-        if !fetch.success() {
-            return Err("error: git fetch failed".to_string());
-        }
-    } else {
-        println!("Cloning source to ~/.plexi-src...");
-        let clone = std::process::Command::new("git")
-            .args(["clone", repo, &src_dir.to_string_lossy()])
-            .status()
-            .map_err(|e| format!("error: git clone failed: {e}"))?;
-        if !clone.success() {
-            return Err("error: git clone failed".to_string());
-        }
-    }
-    let checkout = std::process::Command::new("git")
+    println!("Downloading v{latest_version} release asset...");
+    let script_url = format!(
+        "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install.sh"
+    );
+    let install = std::process::Command::new("bash")
         .args([
-            "-C",
-            &src_dir.to_string_lossy(),
-            "checkout",
-            "--force",
+            "-c",
+            "curl -fsSL \"$1\" | bash -s -- --channel \"$2\" --tag \"$3\"",
+            "plexi-update",
+            &script_url,
+            &channel,
             &tag_name,
         ])
-        .status()
-        .map_err(|e| format!("error: git checkout failed: {e}"))?;
-    if !checkout.success() {
-        return Err(format!("error: git checkout of tag {tag_name} failed"));
-    }
-
-    println!("Building v{latest_version} (this takes a few minutes)...");
-    let install = std::process::Command::new("bash")
-        .arg(&install_script)
-        .arg(&channel)
         .env("PLEXI_INSTALL_TAG", &tag_name)
-        .current_dir(&src_dir)
         .status()
         .map_err(|e| format!("error: failed to run install script: {e}"))?;
     if !install.success() {
-        return Err("error: install script failed — check output above".to_string());
+        return Err("error: binary install failed — this release may predate binary assets; use a current v1 release or build a checkout with scripts/install.sh --from-source".to_string());
     }
 
     Ok(format!(
