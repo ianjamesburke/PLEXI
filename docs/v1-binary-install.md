@@ -37,10 +37,10 @@ under `~/.local/share/plexi/<channel>` and puts the channel command in
 `~/.local/bin`: `plexi`, `plexi-beta`, or `plexi-alpha`. Set `PLEXI_INSTALL_DIR`
 or `PLEXI_BIN_DIR` before running it to choose user-owned destinations.
 
-Until this branch lands on `main`, the served top-level installer still delegates
-to `main/scripts/install.sh`. To exercise the binary installer before that merge,
-download this branch's `scripts/install.sh` directly (or run it from this
-checkout); it is the version that selects and downloads release assets.
+The served top-level installer delegates to `alpha/scripts/install.sh` and
+defaults to `--channel alpha` until `main` publishes binary assets. An explicit
+`--channel` still selects that channel; contributors can opt into a source build
+with `--from-source`.
 
 `scripts/install.sh --dry-run --channel alpha` prints the selected platform,
 asset URL, and destinations without downloading. CI can point
