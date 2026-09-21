@@ -56,20 +56,55 @@ EOF
     echo "error: Plexi Windows releases currently support x64 only" >&2; exit 1
   fi
 
-  # Stable releases have no suffix; alpha/beta use their newest prerelease.
-  if [[ -z "$TAG" ]]; then
-    command -v curl >/dev/null 2>&1 || { echo "error: curl is required to download Plexi" >&2; exit 1; }
-    releases="$(curl -fsSL -A 'plexi-installer' "https://api.github.com/repos/${REPO_SLUG}/releases")" || { echo "error: could not query Plexi releases" >&2; exit 1; }
-    if [[ "$CHANNEL" == main ]]; then
-      TAG="$(printf '%s' "$releases" | sed -nE 's/.*"tag_name":"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' | head -1)"
-    else
-      TAG="$(printf '%s' "$releases" | sed -nE 's/.*"tag_name":"(v[0-9]+\.[0-9]+\.[0-9]+-'"$CHANNEL"'\.[0-9]+)".*/\1/p' | head -1)"
-    fi
-    [[ -n "$TAG" ]] || { echo "error: no published ${CHANNEL} release found" >&2; exit 1; }
-  fi
-
   ASSET="plexi-${OS}-${ARCH}"
   [[ "$OS" == windows ]] && ASSET+=".zip" || ASSET+=".tar.gz"
+
+  # Stable releases have no suffix; alpha/beta use their newest prerelease that
+  # actually publishes this platform asset (skip empty cuts waiting on Actions).
+  if [[ -z "$TAG" ]]; then
+    command -v curl >/dev/null 2>&1 || { echo "error: curl is required to download Plexi" >&2; exit 1; }
+    candidates=""
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      if [[ "$CHANNEL" == main ]]; then
+        candidates="$(gh api "repos/${REPO_SLUG}/releases" --paginate --jq '.[].tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' 2>/dev/null || true)"
+      else
+        candidates="$(gh api "repos/${REPO_SLUG}/releases" --paginate --jq '.[].tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+-'"$CHANNEL"'\\.[0-9]+$"))' 2>/dev/null || true)"
+      fi
+    fi
+    if [[ -z "$candidates" ]]; then
+      releases="$(curl -fsSL -A 'plexi-installer' "https://api.github.com/repos/${REPO_SLUG}/releases")" || {
+        echo "error: could not query Plexi releases (pass --tag, or authenticate gh)" >&2
+        exit 1
+      }
+      if command -v jq >/dev/null 2>&1; then
+        if [[ "$CHANNEL" == main ]]; then
+          candidates="$(printf '%s' "$releases" | jq -r '.[].tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))')"
+        else
+          candidates="$(printf '%s' "$releases" | jq -r --arg c "$CHANNEL" '.[].tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+-" + $c + "\\.[0-9]+$"))')"
+        fi
+      else
+        if [[ "$CHANNEL" == main ]]; then
+          candidates="$(printf '%s' "$releases" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')"
+        else
+          candidates="$(printf '%s' "$releases" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+-'"$CHANNEL"'\.[0-9]+"' | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+-'"$CHANNEL"'\.[0-9]+')"
+        fi
+      fi
+    fi
+    TAG=""
+    while IFS= read -r candidate; do
+      [[ -n "$candidate" ]] || continue
+      code="$(curl -sI -o /dev/null -w '%{http_code}' -L "${RELEASE_BASE}/${candidate}/${ASSET}" || true)"
+      if [[ "$code" == "200" ]]; then
+        TAG="$candidate"
+        break
+      fi
+    done <<< "$candidates"
+    [[ -n "$TAG" ]] || {
+      echo "error: no published ${CHANNEL} release with ${ASSET} found" >&2
+      exit 1
+    }
+  fi
+
   URL="${RELEASE_BASE}/${TAG}/${ASSET}"
   binary_name="plexi"
   [[ "$CHANNEL" != main ]] && binary_name+="-${CHANNEL}"
