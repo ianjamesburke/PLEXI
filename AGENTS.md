@@ -58,6 +58,15 @@ Eng status and Ian Mac hand-verify live in one file (do not fork a second board)
 
 After any `v*-alpha.*` cut or land-on-alpha merge: update that checklist’s **Alpha tag** / **Hand** / **Ian note** columns and refresh its **Dogfood now** section. Eng `done` is not Mac `pass`.
 
+## Platform bring-up bases
+
+Do **not** invent a parallel Windows or Linux stack from bare `alpha` when an owner branch already exists:
+
+- **Windows** — build on `feature/windows-v1-bringup` (Zach Christmas / PR #1604) until its seams are on `alpha`. Check that tree first for ConPTY / `egui_term` / named pipes / Credential Manager.
+- **Linux** — build on `feature/linux-alpha-bringup` until integrated.
+
+Release/binary CI for an OS must compile a tree that includes that OS bring-up, not soft-fail an incomplete alpha-only checkout.
+
 ## Branches
 
 `alpha` is the starting branch. Every feature branch, worktree, and PR originates from alpha. Never branch from `main` or `beta`. Feature branch naming: `feature/<issue-number>-short-description`.
