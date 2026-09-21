@@ -78,6 +78,8 @@ Every app pane — Rust WASM component or Python app — runs inside its own `wa
 
 Beyond the link-time boundary, protected effects (`file-read`, `file-write`, `http-fetch`, `ai-query`, `pipe.open`, `gpu.render`, `audio.playback`, `audio:record`, `open-pane`, `spawn.app`, `clipboard.read`, `clipboard.write`, `notify`, and scoped filesystem/network forms) require an explicit capability grant. A component requests one with `request-capability`; the host prompts the user on first request, remembers the decision per app and workspace, and returns `capability-granted` or `capability-denied` on every subsequent request. A protected effect invoked without its grant returns an error result instead of executing. Every requested capability and every executed effect is logged.
 
+**Python apps use a different grant model.** The prompt-and-remember flow above applies to Rust WASM components. A Python app's grants are its manifest: `[app.capabilities]` in `plexi.toml` is accepted at install time, and `LivePythonPane::has_capability` checks membership in that list. A Python `RequestCapability` returns `granted` only for a declared capability and never shows a consent prompt; protected bridge effects (file access, HTTP, MCP, `spawn.app`, `panes.spawn`, `panes.control`, `notify`) are dropped with a logged denial when undeclared. The two models are not at parity.
+
 **Trust labels.** `trust_label()` (`src/app/package.rs`) classifies a package before install:
 
 | Label | When |
