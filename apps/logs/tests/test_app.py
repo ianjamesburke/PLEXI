@@ -1,7 +1,7 @@
 """Tests for the Logs app.
 
 Run with:  plexi app test          (from apps/logs)
-       or:  uv run pytest tests/
+       or:  uv run --no-project --with pytest pytest tests/
 
 Pure-function tests cover log parsing and the host-log result handling. The
 AppHarness tests drive the real init -> read_host_log -> render lifecycle: the

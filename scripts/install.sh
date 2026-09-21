@@ -1,13 +1,132 @@
 #!/usr/bin/env bash
-# Usage: scripts/install.sh [channel]
+# Usage: scripts/install.sh [--channel main|alpha|beta] [--tag vX.Y.Z] [--dry-run]
+#        scripts/install.sh --from-source [channel]
 # Derives channel from git branch (main→main, alpha→alpha, beta→beta).
 # Falls back to .channel file, then "main". Must be run from the repo root.
 set -euo pipefail
 
-if [[ "$(uname)" != "Darwin" ]]; then
-  echo "install is macOS-only."
-  exit 1
+# The release path is self-contained: consumers need neither a package manager
+# nor a Rust toolchain. The historical installer below remains available for
+# contributors as an explicit --from-source escape hatch.
+if [[ "${1:-}" != "--from-source" ]]; then
+  REPO_SLUG="ianjamesburke/PLEXI"
+  CHANNEL="main"
+  TAG=""
+  DRY_RUN=0
+  INSTALL_ROOT="${PLEXI_INSTALL_DIR:-$HOME/.local/share/plexi}"
+  BIN_DIR="${PLEXI_BIN_DIR:-$HOME/.local/bin}"
+  RELEASE_BASE="${PLEXI_RELEASE_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download}"
+
+  usage() {
+    cat <<'EOF'
+Usage: install.sh [--channel main|alpha|beta] [--tag vX.Y.Z] [--dry-run]
+
+Installs a prebuilt Plexi release into a user-owned directory. No package
+manager or compiler is required. --tag is mainly for updater/CI use.
+
+Contributors with a checkout may use: scripts/install.sh --from-source [channel]
+EOF
+  }
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --channel|-c) CHANNEL="${2:?--channel requires a value}"; shift 2 ;;
+      --channel=*|-c=*) CHANNEL="${1#*=}"; shift ;;
+      --tag) TAG="${2:?--tag requires a value}"; shift 2 ;;
+      --tag=*) TAG="${1#*=}"; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --help|-h) usage; exit 0 ;;
+      *) echo "error: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
+    esac
+  done
+  case "$CHANNEL" in main|alpha|beta) ;; *) echo "error: channel must be main, alpha, or beta" >&2; exit 2;; esac
+
+  case "$(uname -s)" in
+    Darwin) OS="macos" ;;
+    Linux) OS="linux" ;;
+    MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+    *) echo "error: unsupported operating system: $(uname -s)" >&2; exit 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) ARCH="x64" ;;
+    arm64|aarch64) ARCH="arm64" ;;
+    *) echo "error: unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  if [[ "$OS" == windows && "$ARCH" != x64 ]]; then
+    echo "error: Plexi Windows releases currently support x64 only" >&2; exit 1
+  fi
+
+  # Stable releases have no suffix; alpha/beta use their newest prerelease.
+  if [[ -z "$TAG" ]]; then
+    command -v curl >/dev/null 2>&1 || { echo "error: curl is required to download Plexi" >&2; exit 1; }
+    releases="$(curl -fsSL -A 'plexi-installer' "https://api.github.com/repos/${REPO_SLUG}/releases")" || { echo "error: could not query Plexi releases" >&2; exit 1; }
+    if [[ "$CHANNEL" == main ]]; then
+      TAG="$(printf '%s' "$releases" | sed -nE 's/.*"tag_name":"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' | head -1)"
+    else
+      TAG="$(printf '%s' "$releases" | sed -nE 's/.*"tag_name":"(v[0-9]+\.[0-9]+\.[0-9]+-'"$CHANNEL"'\.[0-9]+)".*/\1/p' | head -1)"
+    fi
+    [[ -n "$TAG" ]] || { echo "error: no published ${CHANNEL} release found" >&2; exit 1; }
+  fi
+
+  ASSET="plexi-${OS}-${ARCH}"
+  [[ "$OS" == windows ]] && ASSET+=".zip" || ASSET+=".tar.gz"
+  URL="${RELEASE_BASE}/${TAG}/${ASSET}"
+  binary_name="plexi"
+  [[ "$CHANNEL" != main ]] && binary_name+="-${CHANNEL}"
+  destination="${INSTALL_ROOT}/${CHANNEL}"
+
+  echo "Plexi ${TAG} (${CHANNEL}, ${OS}/${ARCH})"
+  echo "Asset: ${URL}"
+  echo "Install: ${destination}; command: ${BIN_DIR}/${binary_name}"
+  if [[ "$DRY_RUN" == 1 ]]; then exit 0; fi
+
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  archive="${tmp}/${ASSET}"
+  curl -fL --retry 3 --connect-timeout 15 -o "$archive" "$URL"
+  mkdir -p "$destination" "$BIN_DIR" "$tmp/unpack"
+  if [[ "$OS" == windows ]]; then
+    if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$tmp/unpack";
+    elif command -v powershell.exe >/dev/null 2>&1; then powershell.exe -NoProfile -Command "Expand-Archive -Force '$archive' '$tmp/unpack'";
+    else echo "error: unzip or PowerShell is required to unpack the Windows release" >&2; exit 1; fi
+    source_binary="$(find "$tmp/unpack" -name plexi.exe -type f -print -quit)"
+  else
+    tar -xzf "$archive" -C "$tmp/unpack"
+    source_binary="$(find "$tmp/unpack" -name plexi -type f -print -quit)"
+  fi
+  [[ -n "$source_binary" ]] || { echo "error: release asset did not contain the Plexi binary" >&2; exit 1; }
+  rm -rf "$destination"; mkdir -p "$destination"
+  cp -R "$tmp/unpack/." "$destination/"
+  if [[ "$OS" == windows ]]; then cp "$source_binary" "$BIN_DIR/${binary_name}.exe"; else install -m 0755 "$source_binary" "$BIN_DIR/$binary_name"; fi
+  profile_suffix=""
+  [[ "$CHANNEL" != main ]] && profile_suffix="-$CHANNEL"
+  mkdir -p "${HOME}/.plexi${profile_suffix}" 2>/dev/null || true
+  echo "$TAG" > "${HOME}/.plexi${profile_suffix}/installed_tag" 2>/dev/null || true
+  echo "Installed ${BIN_DIR}/${binary_name}."
+  exit 0
 fi
+shift
+
+os="$(uname)"
+case "$os" in
+  Darwin|Linux) ;;
+  *)
+    echo "install supports macOS and Linux only (this is $os)."
+    exit 1
+    ;;
+esac
+
+# rsync is standard on macOS but not on a minimal Debian/Fedora install, and
+# every use here is "replace this directory with that one". Fall back to cp so
+# the installer does not hard-require a package the user may not have.
+sync_tree() {
+  local src="$1" dest="$2"   # both are directories; src contents land in dest
+  if command -v rsync &>/dev/null; then
+    rsync -a "${src%/}/" "$dest"
+  else
+    mkdir -p "$dest"
+    cp -R "${src%/}/." "$dest"
+  fi
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -54,15 +173,37 @@ if [[ -z "$_target_dir" ]]; then
   exit 1
 fi
 
-app_src="${_target_dir}/release/bundle/osx/Plexi.app"
-app_dest="/Applications/${display}.app"
-bin_dest="/usr/local/bin/plexi${suffix}"
+if [[ "$os" == "Darwin" ]]; then
+  app_src="${_target_dir}/release/bundle/osx/Plexi.app"
+  app_dest="/Applications/${display}.app"
+  # The real binary inside the installed bundle. Every later reference — shim
+  # target, symlink target, completions, pack seeding — goes through this one
+  # name, so the Linux branch only has to redefine where it points.
+  stable_bin="$app_dest/Contents/MacOS/plexi${suffix}"
+  bin_dest="/usr/local/bin/plexi${suffix}"
+else
+  # Linux has no app bundle: the release binary is installed into a
+  # per-channel dir under XDG data home and $bin_dest is the PATH entry that
+  # points at it — the same two-level shape as macOS, so channel routing
+  # below is identical apart from the target path. ~/.local/bin keeps the
+  # whole install sudo-free.
+  app_src="${_target_dir}/release/plexi"
+  app_dest="${XDG_DATA_HOME:-$HOME/.local/share}/plexi${suffix}"
+  stable_bin="$app_dest/bin/plexi${suffix}"
+  bin_dest="${PLEXI_BIN_DIR:-$HOME/.local/bin}/plexi${suffix}"
+fi
 bin_dir="$(dirname "$bin_dest")"
 profile_dir="$HOME/.plexi${suffix}"
 
 bin_install_needs_sudo=false
 if [[ ! -d "$bin_dir" || ! -w "$bin_dir" ]]; then
-  bin_install_needs_sudo=true
+  # A missing directory under $HOME is ours to create; only a system-owned
+  # prefix needs an admin prompt.
+  if [[ "$bin_dir" == "$HOME"/* ]]; then
+    mkdir -p "$bin_dir"
+  else
+    bin_install_needs_sudo=true
+  fi
 fi
 
 # Non-interactive callers (background updater, CI) set PLEXI_SKIP_BIN_INSTALL=1
@@ -75,61 +216,109 @@ if [[ "$skip_bin_install" != "1" ]] && $bin_install_needs_sudo; then
   sudo -v
 fi
 
+# cargo-bundle only produces a macOS .app; on Linux the plain release binary
+# is the artifact.
+if [[ "$os" == "Darwin" ]]; then
+  _build_cmd=(cargo bundle --release)
+else
+  _build_cmd=(cargo build --release)
+fi
+
 # Embed a second, compile-time identity for test-only behavior. The runtime
 # basename remains necessary for profile routing, but is not a security
 # boundary: any installed binary can be renamed. Explicitly clear the marker
 # for every real channel so an inherited shell variable cannot taint a
 # production build.
 if [[ "$channel" =~ ^pr-[0-9]+$ ]]; then
-  PLEXI_BUILD_TEST_CHANNEL="$channel" bash scripts/cargo-with-lease.sh cargo bundle --release
+  PLEXI_BUILD_TEST_CHANNEL="$channel" bash scripts/cargo-with-lease.sh "${_build_cmd[@]}"
 else
-  env -u PLEXI_BUILD_TEST_CHANNEL bash scripts/cargo-with-lease.sh cargo bundle --release
+  env -u PLEXI_BUILD_TEST_CHANNEL bash scripts/cargo-with-lease.sh "${_build_cmd[@]}"
 fi
 
-if [[ ! -d "$app_src" ]]; then
-  echo "Error: bundle not found at: $app_src"
-  echo "  Expected cargo to produce the bundle at that path."
-  echo "  If you changed target-dir in .cargo/config.toml, update the cargo metadata"
-  echo "  resolver in scripts/install.sh to match (see INVARIANT comment above)."
-  exit 1
-fi
+if [[ "$os" == "Darwin" ]]; then
+  if [[ ! -d "$app_src" ]]; then
+    echo "Error: bundle not found at: $app_src"
+    echo "  Expected cargo to produce the bundle at that path."
+    echo "  If you changed target-dir in .cargo/config.toml, update the cargo metadata"
+    echo "  resolver in scripts/install.sh to match (see INVARIANT comment above)."
+    exit 1
+  fi
 
-rm -rf "$app_dest"
-cp -R "$app_src" "$app_dest"
+  rm -rf "$app_dest"
+  cp -R "$app_src" "$app_dest"
 
-# cargo-bundle reads bundle metadata from Cargo.toml and has no per-run
-# override for app name or bundle ID. Keep the manifest canonical, then patch
-# the copied bundle so installs never dirty tracked source files.
-/usr/bin/plutil -replace CFBundleName -string "$display" "$app_dest/Contents/Info.plist"
-/usr/bin/plutil -replace CFBundleDisplayName -string "$display" "$app_dest/Contents/Info.plist"
-/usr/bin/plutil -replace CFBundleIdentifier -string "$bundle_id" "$app_dest/Contents/Info.plist"
-/usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
+  # cargo-bundle reads bundle metadata from Cargo.toml and has no per-run
+  # override for app name or bundle ID. Keep the manifest canonical, then patch
+  # the copied bundle so installs never dirty tracked source files.
+  /usr/bin/plutil -replace CFBundleName -string "$display" "$app_dest/Contents/Info.plist"
+  /usr/bin/plutil -replace CFBundleDisplayName -string "$display" "$app_dest/Contents/Info.plist"
+  /usr/bin/plutil -replace CFBundleIdentifier -string "$bundle_id" "$app_dest/Contents/Info.plist"
+  /usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
 
-# For non-main channels, rename the binary inside the installed bundle from
-# "plexi" to "plexi-<channel>" and update CFBundleExecutable to match.
-# config_dir_name() detects the channel from current_exe() file_name(), so the
-# binary name inside the bundle must contain the channel suffix or the app
-# silently reads ~/.plexi/apps/ instead of ~/.plexi-<channel>/apps/.
-if [[ -n "$suffix" ]]; then
-  mv "$app_dest/Contents/MacOS/plexi" "$app_dest/Contents/MacOS/plexi${suffix}"
-fi
+  # For non-main channels, rename the binary inside the installed bundle from
+  # "plexi" to "plexi-<channel>" and update CFBundleExecutable to match.
+  # config_dir_name() detects the channel from current_exe() file_name(), so the
+  # binary name inside the bundle must contain the channel suffix or the app
+  # silently reads ~/.plexi/apps/ instead of ~/.plexi-<channel>/apps/.
+  if [[ -n "$suffix" ]]; then
+    mv "$app_dest/Contents/MacOS/plexi" "$app_dest/Contents/MacOS/plexi${suffix}"
+  fi
 
-# Sign the assembled bundle with the stable "Plexi Dev" identity so its code
-# signature's designated requirement pins to the cert instead of a per-build
-# cdhash. macOS keys keychain "Always Allow" ACLs off the designated
-# requirement, so an ad-hoc bundle (fresh cdhash every rebuild) makes the AI
-# broker's OPENROUTER_API_KEY read re-prompt after every install; a stable
-# identity stops it. Must run AFTER every bundle mutation above (Info.plist
-# patch, binary rename) — any change invalidates the signature.
-# `just codesign-setup` creates the identity one time.
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "Plexi Dev"; then
-  if codesign --force --deep --sign "Plexi Dev" "$app_dest" && codesign --verify "$app_dest"; then
-    echo "Signed $app_dest with stable 'Plexi Dev' identity (no per-install keychain re-prompt)"
+  # Sign the assembled bundle with the stable "Plexi Dev" identity so its code
+  # signature's designated requirement pins to the cert instead of a per-build
+  # cdhash. macOS keys keychain "Always Allow" ACLs off the designated
+  # requirement, so an ad-hoc bundle (fresh cdhash every rebuild) makes the AI
+  # broker's OPENROUTER_API_KEY read re-prompt after every install; a stable
+  # identity stops it. Must run AFTER every bundle mutation above (Info.plist
+  # patch, binary rename) — any change invalidates the signature.
+  # `just codesign-setup` creates the identity one time.
+  if security find-identity -v -p codesigning 2>/dev/null | grep -q "Plexi Dev"; then
+    if codesign --force --deep --sign "Plexi Dev" "$app_dest" && codesign --verify "$app_dest"; then
+      echo "Signed $app_dest with stable 'Plexi Dev' identity (no per-install keychain re-prompt)"
+    else
+      echo "warning: codesign with 'Plexi Dev' failed — installed UNSIGNED; the AI-broker keychain re-prompt will persist"
+    fi
   else
-    echo "warning: codesign with 'Plexi Dev' failed — installed UNSIGNED; the AI-broker keychain re-prompt will persist"
+    echo "warning: no 'Plexi Dev' code-signing identity — installing UNSIGNED; run 'just codesign-setup' once to stop the per-install AI-broker keychain re-prompt"
   fi
 else
-  echo "warning: no 'Plexi Dev' code-signing identity — installing UNSIGNED; run 'just codesign-setup' once to stop the per-install AI-broker keychain re-prompt"
+  if [[ ! -x "$app_src" ]]; then
+    echo "Error: release binary not found at: $app_src"
+    echo "  Expected 'cargo build --release' to produce it there."
+    exit 1
+  fi
+
+  # Install the binary under its channel name: config_dir_name() resolves the
+  # profile from current_exe()'s basename, so a binary installed as plain
+  # "plexi" would read ~/.plexi/ no matter which channel built it.
+  mkdir -p "$app_dest/bin"
+  install -m 0755 "$app_src" "$stable_bin"
+
+  # A .desktop entry is what makes this a real Linux install rather than a
+  # loose binary: the launcher, the dock and xdg-open all read it.
+  desktop_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
+  mkdir -p "$desktop_dir" "$icon_dir"
+  icon_name="plexi${suffix}"
+  if [[ -f "$REPO_ROOT/assets/app-icon.png" ]]; then
+    cp "$REPO_ROOT/assets/app-icon.png" "$icon_dir/${icon_name}.png"
+  fi
+  cat > "$desktop_dir/${icon_name}.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$display
+Comment=Spatial terminal window manager
+Exec=$stable_bin
+Icon=$icon_name
+Terminal=false
+Categories=Development;System;TerminalEmulator;
+StartupWMClass=plexi
+EOF
+  chmod 0644 "$desktop_dir/${icon_name}.desktop"
+  if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database "$desktop_dir" 2>/dev/null || true
+  fi
+  echo "Desktop entry: $desktop_dir/${icon_name}.desktop"
 fi
 
 if [[ "$skip_bin_install" != "1" ]]; then
@@ -139,11 +328,15 @@ if [[ "$skip_bin_install" != "1" ]]; then
     # active channel binary from PLEXI_CHANNEL. Outside Plexi, it runs stable.
     # Remove first so an old symlink is not followed when writing the script.
     shim_tmp="$(mktemp)"
-    cat > "$shim_tmp" <<'EOF'
+    # The two install-time paths are interpolated; the logic below is literal.
+    cat > "$shim_tmp" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-stable_binary="/Applications/Plexi.app/Contents/MacOS/plexi"
+stable_binary="$stable_bin"
+channel_bin_dir="$bin_dir"
+EOF
+    cat >> "$shim_tmp" <<'EOF'
 
 if [[ ! -x "$stable_binary" ]]; then
   echo "error: stable Plexi binary not found at $stable_binary" >&2
@@ -151,7 +344,7 @@ if [[ ! -x "$stable_binary" ]]; then
 fi
 
 if [[ -n "${PLEXI_CHANNEL:-}" ]]; then
-  channel_binary="/usr/local/bin/plexi-${PLEXI_CHANNEL}"
+  channel_binary="$channel_bin_dir/plexi-${PLEXI_CHANNEL}"
   if [[ -x "$channel_binary" ]]; then
     exec "$channel_binary" "$@"
   fi
@@ -172,10 +365,10 @@ EOF
   else
     if $bin_install_needs_sudo; then
       [[ -d "$bin_dir" ]] || sudo mkdir -p "$bin_dir"
-      sudo ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
+      sudo ln -sf "$stable_bin" "$bin_dest"
     else
       [[ -d "$bin_dir" ]] || mkdir -p "$bin_dir"
-      ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
+      ln -sf "$stable_bin" "$bin_dest"
     fi
   fi
 else
@@ -218,7 +411,7 @@ install_completions() {
 
 if [[ "$skip_bin_install" != "1" ]] && [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" || "$channel" == rc-* ]]; then
   if [[ "$channel" == "main" ]]; then
-    install_completions "$app_dest/Contents/MacOS/plexi"
+    install_completions "$stable_bin"
   else
     install_completions "$bin_dest"
   fi
@@ -276,7 +469,7 @@ if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
     app_dir="$(dirname "$manifest")"
     app_name="$(basename "$app_dir")"
     rm -rf "$profile_dir/apps/$app_name"
-    rsync -a "$app_dir/" "$profile_dir/apps/$app_name/"
+    sync_tree "$app_dir" "$profile_dir/apps/$app_name"
     # Flattening changes app_dir's depth relative to the source tree
     # (nested app dir → apps/<name>), so a manifest `entry` that escapes
     # app_dir with `../` no longer resolves post-flatten even though it
@@ -320,7 +513,7 @@ with open(dest_manifest, "w") as f:
 PYEOF
   done
 else
-  bundled_bin="$app_dest/Contents/MacOS/plexi${suffix}"
+  bundled_bin="$stable_bin"
   # Unset any inherited PLEXI_CHANNEL (in-pane installs leak it) so the
   # binary resolves its profile from its own basename — PLEXI_CHANNEL wins
   # over the basename and would seed the wrong profile ("main" has no valid
@@ -335,11 +528,13 @@ fi
 find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
 find "$profile_dir/apps" -name '*.py' -exec chmod +x {} \;
 
-lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
-if [[ -x "$lsregister_bin" ]]; then
-  "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
+if [[ "$os" == "Darwin" ]]; then
+  lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+  if [[ -x "$lsregister_bin" ]]; then
+    "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
+  fi
+  /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
 fi
-/System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -399,7 +594,7 @@ install_agents() {
     local name
     name="$(basename "$agent_dir")"
     mkdir -p "$agents_dest/$name"
-    rsync -a "$agent_dir" "$agents_dest/$name/"
+    sync_tree "$agent_dir" "$agents_dest/$name"
     installed=$((installed + 1))
   done
 
@@ -431,8 +626,20 @@ if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
 else
   echo "Apps: $(ls "$profile_dir/apps" 2>/dev/null | wc -l | tr -d ' ') seeded from canonical packs (stable channel)"
 fi
+case ":${PATH}:" in
+  *":${bin_dir}:"*) ;;
+  *)
+    echo ""
+    echo "warning: $bin_dir is not on your PATH — '$(basename "$bin_dest")' will not be found."
+    echo "  Add this to your shell profile:  export PATH=\"$bin_dir:\$PATH\""
+    ;;
+esac
 if ! command -v micro &>/dev/null; then
-  echo "tip: brew install micro — preferred editor for plexi notes open"
+  if [[ "$os" == "Darwin" ]]; then
+    echo "tip: brew install micro — preferred editor for plexi notes open"
+  else
+    echo "tip: install micro (apt install micro / dnf install micro) — preferred editor for plexi notes open"
+  fi
 fi
 echo ""
 echo "New to shell configuration? https://github.com/ianjamesburke/dotfiles has a starter setup and explanation."

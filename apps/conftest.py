@@ -1,6 +1,6 @@
 """Import paths for every app's test suite.
 
-`plexi app test` runs `uv run pytest tests/` with the app directory as cwd, so
+`plexi app test` runs pytest under `uv run` with the app directory as cwd, so
 each suite needs two things on `sys.path`: the worktree's `sdk/python` (the
 `plexi_sdk` under test, not an installed copy) and the app's own directory (its
 entry module). This conftest is the single place that arranges both — test

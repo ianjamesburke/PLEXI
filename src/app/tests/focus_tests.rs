@@ -734,7 +734,7 @@ fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
         runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
             crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.to_path_buf()),
         )),
-        workspace_root: std::env::temp_dir(),
+        workspace_root: crate::testing::scratch_context_root("focus"),
         permissions: crate::app::permissions::AppPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
@@ -818,7 +818,7 @@ fn open_note_entries_ignores_non_note_editor_panes() {
         runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
             crate::app::text_editor_app::TextEditorApp::new(source.clone()),
         )),
-        workspace_root: std::env::temp_dir(),
+        workspace_root: crate::testing::scratch_context_root("focus"),
         permissions: crate::app::permissions::AppPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
@@ -866,7 +866,7 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
             runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
                 crate::app::text_editor_app::TextEditorApp::new_for_test_note(note.clone()),
             )),
-            workspace_root: std::env::temp_dir(),
+            workspace_root: crate::testing::scratch_context_root("focus"),
             permissions: crate::app::permissions::AppPermissions::builtin(),
             manifest_id: "text-editor".to_string(),
             name: "Text Editor".to_string(),
@@ -884,7 +884,7 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     app.next_window_id += 1;
     app.windows.push(crate::host::context::Window {
         name: "second".to_string(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("focus"),
         tree: egui_tiles::Tree::new("second", tile, tiles),
         panes,
         focused_pane: Some(tile),
@@ -910,5 +910,56 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     assert_eq!(
         app.active_window, other_window_idx,
         "navigating must move focus to the window that owns the note"
+    );
+}
+
+/// The focus journal is the crash-recovery checkpoint: whatever is left on
+/// disk at startup is reported as a crashed session. Quitting through
+/// `plexi host stop` exits from mid-frame and never reaches `App::on_exit`,
+/// so the banking that clears the journal has to be its own step that both
+/// quit paths call — otherwise every clean stop is followed by a bogus
+/// `crash_recovery` segment measuring the time the host was *not* running.
+#[test]
+fn banking_the_final_focus_segment_clears_the_journal() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+    let (tile_a, _) = app.add_test_pane();
+    let win_id = app.windows[0].window_id;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let journal = dir.path().join("focus-journal.jsonl");
+    std::fs::write(&journal, "{}\n").expect("seed journal");
+    app.focus_journal_path = journal.clone();
+
+    app.windows[0].focused_pane = Some(tile_a);
+    app.last_logged_focus = Some((win_id, tile_a));
+    app.focus_started_at = Some(std::time::Instant::now());
+
+    app.bank_final_focus_segment();
+
+    assert!(
+        !journal.exists(),
+        "a banked shutdown segment must leave no journal for startup to read as a crash"
+    );
+}
+
+#[test]
+fn banking_clears_the_journal_even_with_nothing_focused() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let journal = dir.path().join("focus-journal.jsonl");
+    std::fs::write(&journal, "{}\n").expect("seed journal");
+    app.focus_journal_path = journal.clone();
+    app.last_logged_focus = None;
+
+    app.bank_final_focus_segment();
+
+    assert!(
+        !journal.exists(),
+        "a stale journal must not survive a quit just because no pane was focused"
     );
 }

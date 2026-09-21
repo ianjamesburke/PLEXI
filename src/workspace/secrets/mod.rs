@@ -54,7 +54,7 @@ pub use store::{NonDestructiveStore, SecretStore};
 #[cfg(test)]
 pub use store::{InMemoryKeychain, SecretError};
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub use reconcile::reconcile_index_with_keychain;
 #[cfg(test)]
 pub use reconcile::AccountRename;
@@ -87,7 +87,7 @@ pub fn keychain_user_name(friendly: &str) -> String {
 
 /// The process-wide secret store handle — the ONLY way to reach a store
 /// backend. Production builds return the platform keychain — macOS Keychain
-/// or Windows Credential Manager; test builds
+/// Windows Credential Manager, or the Linux file store; test builds
 /// ALWAYS return a process-local in-memory store, and the real backend type
 /// is not even compiled under `cfg(test)`, so a test that tries to name it
 /// does not build. Default-safe, opt-in-dangerous — except the opt-in does
@@ -99,8 +99,9 @@ pub fn keychain_user_name(friendly: &str) -> String {
 /// gate cannot click one, so a prompting test silently stalls automation.
 /// Windows Credential Manager does not prompt, but a test binary writing into
 /// the developer's real credential store is its own problem, so the same rule
-/// applies there.
-#[cfg(any(target_os = "macos", windows))]
+/// applies there. Likewise the Linux file store: a test binary must never
+/// write into the developer's real secrets file.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub fn system_store() -> &'static dyn SecretStore {
     #[cfg(all(target_os = "macos", not(test)))]
     {
@@ -110,6 +111,11 @@ pub fn system_store() -> &'static dyn SecretStore {
     #[cfg(all(windows, not(test)))]
     {
         static STORE: store::CredentialManager = store::CredentialManager;
+        &STORE
+    }
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        static STORE: store::FileStore = store::FileStore;
         &STORE
     }
     #[cfg(test)]

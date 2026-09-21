@@ -457,7 +457,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `prune` | Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines |
 | `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
 | `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
-| `test` | Run an app's AppHarness tests with `uv run pytest tests/` |
+| `test` | Run an app's AppHarness tests with `uv run --with pytest pytest tests/` |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `state` | Read or replace a file-backed app's state document (stint 0645) |
 | `init` | Create a new app from a template |
@@ -565,7 +565,7 @@ This is the compiler-like gate for generated Plexi apps. It checks the manifest,
 
 ### `plexi app test`
 
-Run an app's AppHarness tests with `uv run pytest tests/`.
+Run an app's AppHarness tests with `uv run --with pytest pytest tests/`.
 
 Runs the Python tests in the app's `tests/` directory (the `tests/test_app.py` scaffolded by `plexi app init`). AppHarness spawns the app as a real subprocess and checks it renders without overlap; see `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
 

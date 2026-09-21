@@ -196,7 +196,7 @@ pub fn workspace_secret_set(
         return 1;
     }
 
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, system_store,
@@ -288,7 +288,7 @@ pub fn workspace_secret_set(
             }
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (friendly, effective_friendly, value, global);
         eprintln!("error: keychain not available on this platform");
@@ -320,7 +320,7 @@ fn secret_list_scope(global: bool) -> SecretListScope {
 pub fn workspace_secret_list(global: bool) -> i32 {
     let scope = secret_list_scope(global);
     log::info!("secret_list:cli: global={global}");
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, system_store,
@@ -363,7 +363,7 @@ pub fn workspace_secret_list(global: bool) -> i32 {
         }
         0
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = scope;
         eprintln!("error: keychain not available on this platform");
@@ -381,7 +381,7 @@ pub fn workspace_secret_list(global: bool) -> i32 {
 pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
     log::info!("secret_get:cli: friendly={friendly} global={global}");
 
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, system_store,
@@ -433,7 +433,7 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
             }
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (friendly, global);
         eprintln!("error: keychain not available on this platform");
@@ -448,7 +448,7 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
 /// the workspace-scoped entry.
 pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
     log::info!("secret_delete:cli: friendly={friendly} global={global}");
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, system_store,
@@ -497,7 +497,7 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
             }
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (friendly, global);
         eprintln!("error: keychain not available on this platform");

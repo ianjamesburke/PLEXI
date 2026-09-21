@@ -99,6 +99,11 @@ perf-clippy:
 build:
     bash scripts/cargo-with-lease.sh cargo build --release
 
+# Linux bringup smoke check: drives a real host through the CLI on an X
+# display and asserts a signal at every step. Needs `just build` first.
+linux-smoke:
+    bash scripts/linux-smoke.sh
+
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
 # Run after any change to src/protocol/.
 gen-schema:
@@ -256,7 +261,7 @@ codesign-setup:
 # Derives channel from git branch (main/alpha/beta). Alias for: just channel-install
 # Run from repo root or any worktree: just install
 install: fetch-python-runtime regen-if-stale
-    bash scripts/install.sh
+    bash scripts/install.sh --from-source
 
 # Editable install of plexi-sdk into your virtual environment for local development.
 # Makes `plexi_sdk` importable in your IDE/type-checker with live source changes.
@@ -343,12 +348,12 @@ pr-install number:
     ( cd "$_wt" && just fetch-python-runtime sdk-smoke )
     ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} )
     if rg -q 'cargo-with-lease\.sh' "$_wt/scripts/install.sh"; then
-      ( cd "$_wt" && bash scripts/install.sh "pr-{{number}}" )
+      ( cd "$_wt" && bash scripts/install.sh --from-source "pr-{{number}}" )
     else
       # Older PR heads predate the leaf wrapper. Treat their opaque install
       # script as the compatibility leaf; newer heads acquire inside their
       # own bundle invocation and must never acquire twice.
-      ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh "pr-{{number}}" )
+      ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
     fi
     # Provenance trace: which head this channel is actually running. Written
     # after install.sh (pr-clean wipes the profile dir); path matches
@@ -364,7 +369,7 @@ pr-install number:
 #   just channel-install pr-123   — install as PR build
 #   just channel-install rc-010   — install a stable-tier local release candidate
 channel-install channel="": fetch-python-runtime regen-if-stale
-    bash scripts/install.sh {{channel}}
+    bash scripts/install.sh --from-source {{channel}}
 
 # Remove a channel: app bundle, CLI binary, and profile directory.
 # Works for any channel name: main, alpha, beta, pr-123, gpui, etc.

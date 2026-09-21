@@ -650,7 +650,7 @@ pub enum AppCmd {
         #[arg(long, value_hint = ValueHint::DirPath)]
         png_dir: Option<String>,
     },
-    /// Run an app's AppHarness tests with `uv run pytest tests/`.
+    /// Run an app's AppHarness tests with `uv run --with pytest pytest tests/`.
     ///
     /// Runs the Python tests in the app's `tests/` directory (the
     /// `tests/test_app.py` scaffolded by `plexi app init`). AppHarness spawns

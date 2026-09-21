@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - 'feature/windows-**'
+      - 'fix/windows-**'
   pull_request:
     paths:
       - 'Cargo.toml'

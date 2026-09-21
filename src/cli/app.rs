@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
 pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
-pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 3;
+pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 4;
 
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn app_init_config_dir() -> String {
@@ -260,9 +260,56 @@ pub fn app_init(
     }
 }
 
+/// `uv run` arguments for `plexi app test`, built for one app directory.
+///
+/// The runner has to provision its own pytest. Neither the maintained apps
+/// under `apps/` nor a fresh `plexi app init` scaffold declares a Python
+/// project, so a bare `uv run pytest` resolves against whatever project happens
+/// to sit above the app — which does not depend on pytest — and dies with
+/// `Failed to spawn: pytest`. `--with pytest` makes the command self-contained.
+/// `--no-project` keeps uv from adopting (and materializing a `.venv` for) an
+/// unrelated ancestor project when the app declares none of its own; an app that
+/// does ship a `pyproject.toml` stays in project mode so its declared
+/// dependencies are installed alongside pytest.
+///
+/// `--python` pins the interpreter to the app venv (`python_env::PYTHON_APP_VENV_VERSION`).
+/// Without it uv picks whatever `python3` is on PATH, which on a stock Mac is
+/// older than the SDK's floor and dies importing `plexi_sdk` (`tomllib`).
+fn app_test_uv_args(app_dir: &std::path::Path, python: &std::path::Path) -> Vec<String> {
+    let mut args = vec!["run".to_string()];
+    if !app_dir.join("pyproject.toml").is_file() {
+        args.push("--no-project".to_string());
+    }
+    args.push("--python".to_string());
+    args.push(python.display().to_string());
+    args.extend(
+        ["--with", "pytest", "pytest", "tests/"]
+            .into_iter()
+            .map(str::to_string),
+    );
+    args
+}
+
+/// App id and declared Python dependencies for the app venv, from
+/// `manifest.toml` when it parses, else the directory name and no dependencies.
+fn app_test_identity(app_dir: &std::path::Path) -> (String, Vec<String>) {
+    let manifest = std::fs::read_to_string(app_dir.join("manifest.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<crate::app::registry::AppManifest>(&text).ok());
+    if let Some(manifest) = manifest {
+        return (manifest.app.id, manifest.app.dependencies);
+    }
+    let id = std::fs::canonicalize(app_dir)
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "app".to_string());
+    (id, Vec::new())
+}
+
 /// `plexi app test [<app-path>]` — run an app's AppHarness tests via
-/// `uv run pytest tests/` inside the app directory. Streams pytest output live
-/// and returns its exit code so CI and ship scripts can gate on it.
+/// `uv run` + pytest inside the app directory, on the app's Python venv.
+/// Streams pytest output live and returns its exit code so CI and ship
+/// scripts can gate on it.
 pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
     let app_dir = std::path::Path::new(path);
     let tests_dir = app_dir.join("tests");
@@ -277,13 +324,29 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
         return 1;
     }
 
+    let (app_id, deps) = app_test_identity(app_dir);
+    let python = match crate::app::python_env::ensure_app_venv(&app_id, app_dir, &deps) {
+        Ok(python) => python,
+        Err(e) => {
+            log::error!("app_test:cli[{app_id}]: app Python venv setup failed: {e}");
+            eprintln!(
+                "error: could not prepare the Python {} app venv for {}: {e}",
+                crate::app::python_env::PYTHON_APP_VENV_VERSION,
+                app_dir.display()
+            );
+            return 1;
+        }
+    };
+
+    let uv_args = app_test_uv_args(app_dir, &python);
     log::info!(
-        "app_test:cli: running `uv run pytest tests/` in {} (snapshot={snapshot})",
+        "app_test:cli: running `uv {}` in {} (snapshot={snapshot})",
+        uv_args.join(" "),
         app_dir.display()
     );
 
     let mut cmd = std::process::Command::new("uv");
-    cmd.args(["run", "pytest", "tests/"]).current_dir(app_dir);
+    cmd.args(&uv_args).current_dir(app_dir);
     cmd.env("PYTHONPATH", crate::config::build_pythonpath(None));
     if snapshot {
         cmd.env("PLEXI_UPDATE_SNAPSHOTS", "1");
@@ -293,7 +356,7 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
             log::error!("app_test:cli: failed to spawn uv: {e}");
-            eprintln!("error: could not run `uv run pytest` ({e}). Is uv installed?");
+            eprintln!("error: could not run `uv run` ({e}). Is uv installed?");
             1
         }
     }
@@ -438,16 +501,31 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     );
     std::fs::write(app_dir.join("manifest.toml"), manifest)?;
 
-    // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
-    // do NOT copy plexi_sdk.py alongside (the package uses relative imports
-    // that break when imported as a flat single file).
-    // __CLASS_NAME__ and __DISPLAY_NAME__ are substituted below.
-    let template = include_str!("../../sdk/python/plexi_sdk/templates/app_init.py");
-    let main_py = template
-        .replace("__CLASS_NAME__", &to_struct_name(name))
-        .replace("__DISPLAY_NAME__", &to_title_case(name));
+    // main.py + app_tools.py + app_ui.py — plexi_sdk is injected via PYTHONPATH
+    // by the host at launch; do NOT copy plexi_sdk.py alongside (the package uses
+    // relative imports that break when imported as a flat single file).
+    // main.py is the thin lifecycle wiring; tools and UI live in their own
+    // modules. `app_` prefixes keep `from plexi_sdk import tools` unshadowed.
+    // __DISPLAY_NAME__ is substituted below.
+    let display_name = to_title_case(name);
+    let main_template = include_str!("../../sdk/python/plexi_sdk/templates/app_init.py");
+    let tools_template = include_str!("../../sdk/python/plexi_sdk/templates/app_init_tools.py");
+    let ui_template = include_str!("../../sdk/python/plexi_sdk/templates/app_init_ui.py");
     let main_path = app_dir.join("main.py");
-    std::fs::write(&main_path, main_py)?;
+    std::fs::write(
+        &main_path,
+        main_template
+            .replace("__CLASS_NAME__", &to_struct_name(name))
+            .replace("__DISPLAY_NAME__", &display_name),
+    )?;
+    std::fs::write(
+        app_dir.join("app_tools.py"),
+        tools_template.replace("__DISPLAY_NAME__", &display_name),
+    )?;
+    std::fs::write(
+        app_dir.join("app_ui.py"),
+        ui_template.replace("__DISPLAY_NAME__", &display_name),
+    )?;
 
     mark_executable(&main_path)?;
 
@@ -462,6 +540,11 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     let fixtures_dir = app_dir.join("fixtures");
     std::fs::create_dir_all(&fixtures_dir)?;
     std::fs::write(fixtures_dir.join("state.json"), "{\n  \"count\": 3\n}\n")?;
+
+    log::info!(
+        "app_init: wrote python scaffold modules main.py app_tools.py app_ui.py at {}",
+        app_dir.display()
+    );
 
     write_python_scaffold_support_files(app_dir, name)?;
 
@@ -2286,6 +2369,100 @@ mod version_pin_tests {
 }
 
 #[cfg(test)]
+mod app_test_command_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    const VENV_PYTHON: &str = "/apps/todo/.venv/bin/python";
+
+    fn venv_python() -> std::path::PathBuf {
+        std::path::PathBuf::from(VENV_PYTHON)
+    }
+
+    /// The interpreter must be pinned to the app venv. Left to uv, a stock
+    /// Mac resolves to system Python 3.9 and `plexi_sdk` dies on `tomllib`.
+    #[test]
+    fn app_test_pins_the_interpreter_to_the_app_venv() {
+        let dir = TempDir::new().unwrap();
+        let args = app_test_uv_args(dir.path(), &venv_python());
+        let at = args.iter().position(|a| a == "--python").unwrap();
+        assert_eq!(args[at + 1], VENV_PYTHON);
+    }
+
+    /// Identity falls back to the directory name with no dependencies when
+    /// the app has no readable manifest, and reads both from one when it does.
+    #[test]
+    fn app_test_identity_reads_manifest_else_dir_name() {
+        let dir = TempDir::new().unwrap();
+        let (id, deps) = app_test_identity(dir.path());
+        assert_eq!(
+            id,
+            dir.path().file_name().unwrap().to_string_lossy(),
+            "no manifest → directory name"
+        );
+        assert!(deps.is_empty());
+
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n[app]\nid = \"todo\"\nname = \"Todo\"\nentry = \"main.py\"\ntype = \"app\"\ndependencies = [\"httpx\"]\n",
+        )
+        .unwrap();
+        let (id, deps) = app_test_identity(dir.path());
+        assert_eq!(id, "todo");
+        assert_eq!(deps, vec!["httpx".to_string()]);
+    }
+
+    /// The generated command must ask uv for pytest itself. Apps do not depend
+    /// on pytest, so dropping `--with pytest` puts `plexi app test` back to
+    /// `Failed to spawn: pytest` for every maintained and scaffolded app.
+    #[test]
+    fn app_test_provisions_pytest_for_an_app_without_a_project() {
+        let dir = TempDir::new().unwrap();
+        let args = app_test_uv_args(dir.path(), &venv_python());
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "--no-project",
+                "--python",
+                VENV_PYTHON,
+                "--with",
+                "pytest",
+                "pytest",
+                "tests/"
+            ],
+            "an app declaring no pyproject.toml runs pytest in an isolated uv environment"
+        );
+    }
+
+    /// An app that declares its own project keeps project mode, so uv installs
+    /// the author's dependencies next to pytest.
+    #[test]
+    fn app_test_keeps_project_mode_when_the_app_declares_one() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"x\"\n",
+        )
+        .unwrap();
+        let args = app_test_uv_args(dir.path(), &venv_python());
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "--python",
+                VENV_PYTHON,
+                "--with",
+                "pytest",
+                "pytest",
+                "tests/"
+            ],
+            "an app with its own project must not be run with --no-project"
+        );
+    }
+}
+
+#[cfg(test)]
 mod scaffold_marketplace_tests {
     use super::*;
     use tempfile::TempDir;
@@ -2472,13 +2649,32 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
-    fn python_scaffold_writes_self_documenting_main() {
+    fn python_scaffold_splits_tools_and_ui_from_thin_main() {
         let dir = TempDir::new().unwrap();
         let app_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&app_dir).unwrap();
         scaffold_python_app(&app_dir, "myapp").unwrap();
 
-        let main_src = std::fs::read_to_string(app_dir.join("main.py")).unwrap();
+        let read = |file: &str| {
+            std::fs::read_to_string(app_dir.join(file))
+                .unwrap_or_else(|e| panic!("python scaffold must write {file}: {e}"))
+        };
+        let main_src = read("main.py");
+        let tools_src = read("app_tools.py");
+        let ui_src = read("app_ui.py");
+
+        for (file, src) in [
+            ("main.py", &main_src),
+            ("app_tools.py", &tools_src),
+            ("app_ui.py", &ui_src),
+        ] {
+            assert!(
+                !src.contains("__DISPLAY_NAME__") && !src.contains("__CLASS_NAME__"),
+                "{file} must substitute its placeholders"
+            );
+        }
+
+        // main.py: thin lifecycle wiring only.
         assert!(
             main_src.contains("SDK v3 app generated by `plexi app init`"),
             "generated main.py should identify the SDK v3 scaffold"
@@ -2496,57 +2692,75 @@ mod scaffold_marketplace_tests {
             "generated main.py should explain component/effect separation"
         );
         assert!(
-            main_src.contains("ActionBar("),
-            "generated main.py should demonstrate the standard action-row primitive"
+            main_src.contains("import app_tools") && main_src.contains("import app_ui"),
+            "generated main.py should import the tools and UI modules"
         );
         assert!(
-            main_src.contains("Card("),
-            "generated main.py should demonstrate the standard surface primitive"
+            main_src.contains("tools.expose()"),
+            "generated main.py must expose tools from init"
         );
         assert!(
-            main_src.contains("Section("),
-            "generated main.py should demonstrate semantic section chrome"
+            main_src.contains("tools.dispatch(event)"),
+            "generated main.py must dispatch tool calls first in update"
         );
         assert!(
-            main_src.contains("Badge("),
-            "generated main.py should demonstrate semantic badges"
+            main_src.contains("app_ui.build_view("),
+            "generated main.py must delegate view to the UI module"
         );
         assert!(
-            main_src.contains("Divider("),
-            "generated main.py should demonstrate semantic dividers"
+            !main_src.contains("plexi_sdk.ui") && !main_src.contains("AppBar("),
+            "generated main.py must not build UI itself"
+        );
+
+        // app_tools.py: plain functions on the SDK decorator API.
+        assert!(
+            tools_src.contains("from plexi_sdk import state, tools"),
+            "generated app_tools.py should use the SDK tools module"
         );
         assert!(
-            main_src.contains("TextEdit("),
-            "generated main.py should demonstrate the host-rendered text edit primitive"
+            tools_src.contains("@tools.tool("),
+            "generated app_tools.py should declare tools with the decorator"
         );
         assert!(
-            main_src.contains("SelectList("),
-            "generated main.py should demonstrate the host-rendered select list primitive"
+            tools_src.contains("read_only=True"),
+            "generated app_tools.py should demonstrate a read-only tool"
         );
+
+        // app_ui.py: the component tree and the primitive guidance.
+        for needle in [
+            "def build_view(",
+            "ActionBar(",
+            "Card(",
+            "Section(",
+            "Badge(",
+            "Divider(",
+            "TextEdit(",
+            "SelectList(",
+            "Scrollable(",
+            "UiValueChange",
+            "FooterKeys(",
+            "SPACE_MD",
+            "padding=SPACE_MD",
+            "log.debug",
+            "log.info",
+            "log.warn",
+            "log.error",
+        ] {
+            assert!(
+                ui_src.contains(needle),
+                "generated app_ui.py should mention {needle}"
+            );
+        }
         assert!(
-            main_src.contains("Scrollable("),
-            "generated main.py should keep proof components inside a scroll body"
+            !ui_src.contains("SetState("),
+            "generated app_ui.py must stay free of effects"
         );
+
+        let agents = std::fs::read_to_string(app_dir.join("AGENTS.md")).unwrap();
         assert!(
-            main_src.contains("UiValueChange"),
-            "generated main.py should handle editable component value changes"
+            agents.contains("app_tools.py") && agents.contains("app_ui.py"),
+            "AGENTS.md must document the tools-vs-UI module split"
         );
-        assert!(
-            main_src.contains("FooterKeys("),
-            "generated main.py should keep shortcut hints in the footer"
-        );
-        assert!(
-            main_src.contains("SPACE_MD"),
-            "generated main.py should keep semantic shell content inset"
-        );
-        assert!(
-            main_src.contains("padding=SPACE_MD"),
-            "generated main.py must keep root semantic shell content padding"
-        );
-        assert!(main_src.contains("log.debug"));
-        assert!(main_src.contains("log.info"));
-        assert!(main_src.contains("log.warn"));
-        assert!(main_src.contains("log.error"));
     }
 
     #[test]

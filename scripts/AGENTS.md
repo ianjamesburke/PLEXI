@@ -21,6 +21,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - Scripts are the only place `just` recipes call into. Do not duplicate logic in the justfile.
 - `default-config.toml` is the config template seeded on install. Keep in sync with `docs/CONFIG.md`.
 - **Bump at release boundaries, not after every PR.** Run `just bump` once at end of a batch or before promoting.
+- **CHANGELOG is self-building.** `just bump` runs **git-cliff** (`cliff.toml`) to prepend unreleased conventional commits into `CHANGELOG.md`. Preview with `just changelog`. Do not hand-write release notes into CHANGELOG for a cut — fix commit messages if the cliff output is wrong. Full tag/promote flow: `RELEASE_CHANNELS.md`.
 - **App seeding is channel-gated.** `packs/core.toml` is the single source of truth for the maintained/core app set (owned by `apps/AGENTS.md`). `install.sh` syncs maintained top-level app dirs on `alpha`/`pr-*`, discovered by `manifest.toml`; it must not flatten `apps/dev/` into the user-visible app registry. On `beta`/`main` it seeds exactly the canonical set through the host's own pack applier (`plexi app install --pack core --refresh` always — `--refresh` re-extracts installed core apps from the new binary so updates reach existing profiles; `--pack packs/examples.toml` on a fresh profile) so no app list is duplicated here. Never enumerate app names in this script.
 
 ## Traps
@@ -33,6 +34,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - **Worktree dir gone after `wtp remove`.** Finish all file edits and cd away before cleanup steps.
 - **Skill file edits don't need `bump + install`.** When the only change is `.claude/skills/*.md` or non-Rust config, commit directly to alpha. `just bump && just install` is only needed when Rust code changes should be reflected in the running build.
 - **`scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`** — it installs whatever tree it lives in. Never call it directly for a PR build; `just pr-install <N>` resolves the PR's head into the right worktree and runs the script from there (safe from any cwd).
+- **`install.sh` has a macOS branch and a Linux branch, joined by `$stable_bin`.** Every step after the build — the channel-routing shim, the non-main symlink, completions, core-pack seeding — resolves the installed binary through that one variable. Touching any of them means checking both platforms; the layout table is in `docs/linux-support-plan.md` (Phase 6). Linux installs into `$HOME` and never calls `sudo`.
 - **`just merge-pr` must run from the canonical alpha checkout.** Stint state lives in ignored `.stint/` files that feature worktrees may not have. If a PR body references stint IDs, running merge closeout from a feature worktree can fail before merge with missing `.stint/tasks`; rerun from `/Users/ianburke/Documents/GitHub/PLEXI` on `alpha`.
 
 ## Child DOX Index

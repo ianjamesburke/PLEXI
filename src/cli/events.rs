@@ -250,16 +250,44 @@ pub fn events_list_cli(json: bool) -> i32 {
 
 /// `plexi events mcp-config` — print the host MCP server config block.
 pub fn events_mcp_config_cli() -> i32 {
-    let port = std::env::var("PLEXI_HOST_MCP_PORT").ok();
-    let token = std::env::var("PLEXI_HOST_MCP_TOKEN").ok();
+    match mcp_config_output(
+        crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient),
+        std::env::var("PLEXI_HOST_MCP_PORT").ok(),
+        std::env::var("PLEXI_HOST_MCP_TOKEN").ok(),
+    ) {
+        Ok(config) => {
+            println!("{config}");
+            log::info!("events: printed host MCP config");
+            0
+        }
+        Err(message) => {
+            eprintln!("error: {message}");
+            1
+        }
+    }
+}
+
+/// Build the host MCP client config, or the error to print.
+///
+/// Fails closed on `mcp_client_enabled == false` *before* the port/token are
+/// inspected, so the endpoint and bearer token can never appear in either
+/// output stream on a channel without the MCP client feature.
+fn mcp_config_output(
+    mcp_client_enabled: bool,
+    port: Option<String>,
+    token: Option<String>,
+) -> Result<String, String> {
+    if !mcp_client_enabled {
+        return Err(crate::release::feature_unavailable_message(
+            crate::release::ReleaseFeature::McpClient,
+        ));
+    }
     let (port, token) = match (port, token) {
         (Some(p), Some(t)) if !p.is_empty() && !t.is_empty() => (p, t),
         _ => {
-            eprintln!(
-                "error: PLEXI_HOST_MCP_PORT / PLEXI_HOST_MCP_TOKEN not set — run this inside a \
+            return Err("PLEXI_HOST_MCP_PORT / PLEXI_HOST_MCP_TOKEN not set — run this inside a \
                  Plexi terminal pane on a build with the host MCP server"
-            );
-            return 1;
+                .to_string());
         }
     };
     let config = serde_json::json!({
@@ -271,17 +299,8 @@ pub fn events_mcp_config_cli() -> i32 {
             }
         }
     });
-    match serde_json::to_string_pretty(&config) {
-        Ok(s) => {
-            println!("{s}");
-            log::info!("events: printed host MCP config for port {port}");
-            0
-        }
-        Err(e) => {
-            eprintln!("error: could not serialize MCP config: {e}");
-            1
-        }
-    }
+    serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("could not serialize MCP config: {e}"))
 }
 
 /// Map the CLI `--payload` value to the wire `PayloadMode` (snake_case serde).
@@ -467,5 +486,47 @@ mod pane_consumer_output_tests {
             );
             assert_eq!(!out.is_empty(), stdout);
         }
+    }
+
+    #[test]
+    fn mcp_config_never_leaks_endpoint_or_token_off_channel() {
+        use crate::release::{feature_enabled_for_channel, ReleaseFeature};
+        use super::mcp_config_output;
+        for channel in [None, Some("main"), Some("rc-010"), Some("client")] {
+            let enabled = feature_enabled_for_channel(ReleaseFeature::McpClient, channel);
+            let err = mcp_config_output(
+                enabled,
+                Some("54321".into()),
+                Some("s3cret-token".into()),
+            )
+            .expect_err("gate must refuse");
+            assert!(!err.contains("http://"), "{channel:?}: {err}");
+            assert!(!err.contains("Bearer"), "{channel:?}: {err}");
+            assert!(!err.contains("54321"), "{channel:?}: {err}");
+            assert!(!err.contains("s3cret-token"), "{channel:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn mcp_config_gate_fires_before_env_is_inspected() {
+        use super::mcp_config_output;
+        // Missing env on a gated channel reports the gate, not "not set".
+        let err = mcp_config_output(false, None, None).unwrap_err();
+        assert!(err.contains("MCP client"), "{err}");
+        assert!(!err.contains("PLEXI_HOST_MCP_PORT"), "{err}");
+    }
+
+    #[test]
+    fn mcp_config_prints_on_enabled_channels() {
+        use crate::release::{feature_enabled_for_channel, ReleaseFeature};
+        use super::mcp_config_output;
+        for channel in [Some("alpha"), Some("beta"), Some("pr-2259")] {
+            let enabled = feature_enabled_for_channel(ReleaseFeature::McpClient, channel);
+            let out = mcp_config_output(enabled, Some("54321".into()), Some("tok".into()))
+                .expect("enabled channel prints config");
+            assert!(out.contains("http://127.0.0.1:54321/mcp"));
+            assert!(out.contains("Bearer tok"));
+        }
+        assert!(mcp_config_output(true, None, Some("tok".into())).is_err());
     }
 }

@@ -374,7 +374,7 @@ fn resolve_openrouter_api_key(
     // An empty value is treated as unset so it falls through to the keychain.
     let process_env = std::env::var(api_key_env).ok().filter(|v| !v.is_empty());
 
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         let store = crate::workspace::secrets::system_store();
         match resolve_openrouter_api_key_from_store(
@@ -389,10 +389,15 @@ fn resolve_openrouter_api_key(
         }
     }
 
-    #[cfg(not(any(target_os = "macos", windows)))]
-    if let Some(k) = process_env {
-        log::info!("ai_broker: resolved {api_key_env} from process env");
-        return Ok(k);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        // No platform secret store, so the workspace route cannot be
+        // consulted — the process environment is the only source.
+        let _ = workspace_root;
+        if let Some(k) = process_env {
+            log::info!("ai_broker: resolved {api_key_env} from process env");
+            return Ok(k);
+        }
     }
 
     Err(format!(
@@ -400,7 +405,7 @@ fn resolve_openrouter_api_key(
     ))
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn resolve_openrouter_api_key_from_store(
     api_key_env: &str,
     workspace_root: Option<&std::path::Path>,

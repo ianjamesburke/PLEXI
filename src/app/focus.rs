@@ -346,6 +346,31 @@ impl PlexiApp {
         })
     }
 
+    /// Bank the focus segment that was still open when the host was told to
+    /// quit, and with it clear the focus journal. Every quit path calls this:
+    /// a path that skips it leaves the journal on disk, and the next startup
+    /// reads that as a crash and emits a `crash_recovery` segment whose
+    /// duration is really the time the host spent *not running*.
+    pub(crate) fn bank_final_focus_segment(&self) {
+        let Some((window_id, tile_id)) = self.last_logged_focus else {
+            // Nothing was focused, so there is no segment to close — but a
+            // journal from an earlier segment may still be on disk.
+            crate::app::focus_journal::clear_journal(&self.focus_journal_path);
+            return;
+        };
+        let duration_secs = self
+            .focus_started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+        log::info!("focus_changed: shutdown — banking final session duration_secs={duration_secs}");
+        self.emit_focus_changed_for_tile(
+            window_id,
+            tile_id,
+            duration_secs,
+            FocusSegmentReason::Shutdown,
+        );
+    }
+
     /// Collect metadata and emit a `FocusChanged` event. Called when the
     /// focused pane changes and on shutdown. Clears the focus journal on clean
     /// transitions so crash-recovery only fires if the process was killed.

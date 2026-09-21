@@ -60,7 +60,7 @@ fn reconcile_status_line(report: &crate::workspace::secrets::ReconcileReport) ->
 /// keychain scan so keys written out-of-band are visible. Returns the entries
 /// plus a status line describing any reconciliation the user should know about.
 fn load_entries() -> (Vec<ManagedSecret>, Option<String>) {
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{
             reconcile_index_with_keychain, system_store,
@@ -86,7 +86,7 @@ fn load_entries() -> (Vec<ManagedSecret>, Option<String>) {
             .collect();
         (entries, status)
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         (Vec::new(), None)
     }
@@ -201,7 +201,7 @@ impl SecretsApp {
             return;
         }
 
-        #[cfg(any(target_os = "macos", windows))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
             use crate::workspace::secrets::{
                 keychain_user_name, keychain_workspace_name, system_store,
@@ -265,15 +265,15 @@ impl SecretsApp {
                 }
             }
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
-            log::warn!("secrets_manager: commit_add: Keychain not available on this platform");
+            log::warn!("secrets_manager: commit_add: no secret store on this platform");
         }
     }
 
     fn delete_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.selected).cloned() {
-            #[cfg(any(target_os = "macos", windows))]
+            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
             {
                 use crate::workspace::secrets::system_store;
                 let store = system_store();
@@ -293,9 +293,13 @@ impl SecretsApp {
                     }
                 }
             }
-            #[cfg(not(any(target_os = "macos", windows)))]
+            #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
             {
-                log::warn!("secrets_manager: delete_selected: Keychain not available");
+                self.status_msg = Some("No secret store on this platform.".into());
+                log::warn!(
+                    "secrets_manager: delete_selected: no secret store on this platform (entry '{}')",
+                    entry.name
+                );
             }
         }
     }
@@ -452,7 +456,7 @@ impl App for SecretsApp {
             if let Some(entry) = self.entries.get(self.selected) {
                 let account = entry.account.clone();
                 let name = entry.name.clone();
-                #[cfg(any(target_os = "macos", windows))]
+                #[cfg(any(target_os = "macos", target_os = "linux", windows))]
                 {
                     use crate::workspace::secrets::system_store;
                     match system_store().get(&account) {
@@ -469,6 +473,13 @@ impl App for SecretsApp {
                             );
                         }
                     }
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                {
+                    self.status_msg = Some("No secret store on this platform.".into());
+                    log::warn!(
+                        "secrets_manager: copy of '{name}' skipped — no secret store on this platform (account='{account}')"
+                    );
                 }
             }
         }

@@ -484,6 +484,199 @@ impl SecretStore for CredentialManager {
     }
 }
 
+/// Linux file-backed secret store.
+///
+/// **This is not an OS keyring.** Linux has no Plexi-blessed Keychain
+/// equivalent in v0 (libsecret/gnome-keyring integration is an explicit
+/// non-goal — see `docs/linux-support-plan.md`), so values live in a
+/// `0600` JSON file inside the channel profile directory. That is strictly
+/// weaker than the macOS Keychain: anything running as the same user can read
+/// it, and it is not encrypted at rest.
+///
+/// Why this exists rather than "no store on Linux": with no backend at all
+/// every secret-consuming path — `plexi ai onboard`, the OpenRouter key
+/// lookup, terminal env injection, the Secrets app — is dead code on Linux,
+/// which both breaks the `-D warnings` gate across the whole subsystem and
+/// makes the host unusable for its primary AI flow. A weak-but-honest store
+/// keeps one code path on both platforms; the weakness is logged on first use
+/// so it can never be mistaken for keyring-backed storage.
+///
+/// Private and non-constructible outside this module — [`super::system_store`]
+/// is the only handle. Absent from test builds, like `MacKeychain`.
+#[cfg(all(target_os = "linux", not(test)))]
+pub(super) struct FileStore;
+
+#[cfg(all(target_os = "linux", not(test)))]
+impl FileStore {
+    fn path() -> std::path::PathBuf {
+        crate::config::config_dir().join("secrets.json")
+    }
+
+    /// Serializes every read-modify-write in this process. Cross-process
+    /// atomicity is NOT provided — the rename below is atomic, but a
+    /// concurrent writer in another process can still clobber an interleaved
+    /// update. Do not document this as closed.
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn warn_once() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            log::info!(
+                "workspace_secrets::FileStore: Linux has no keyring backend; secrets are stored \
+                 in {} with mode 0600 — readable by any process running as this user",
+                Self::path().display()
+            );
+        });
+    }
+
+    /// Fallible on purpose. An unreadable or corrupt store must NOT read as
+    /// empty: every writer below does read-modify-write, so an empty read
+    /// followed by a save would rewrite the file and destroy every secret it
+    /// still holds. A missing file is the one case that really is empty.
+    fn load() -> Result<std::collections::BTreeMap<String, String>, SecretError> {
+        Self::warn_once();
+        let path = Self::path();
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+            Err(e) => {
+                log::error!(
+                    "workspace_secrets::FileStore: read {} failed: {e}",
+                    path.display()
+                );
+                return Err(SecretError::Backend(format!(
+                    "read {} failed: {e}",
+                    path.display()
+                )));
+            }
+        };
+        serde_json::from_str(&raw).map_err(|e| {
+            log::error!(
+                "workspace_secrets::FileStore: {} is not valid JSON ({e}) — refusing to read or \
+                 write until it is repaired, so no secret is lost to a rewrite",
+                path.display()
+            );
+            SecretError::Backend(format!("{} is not valid JSON: {e}", path.display()))
+        })
+    }
+
+    fn save(map: &std::collections::BTreeMap<String, String>) -> Result<(), SecretError> {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                SecretError::Backend(format!("create {} failed: {e}", parent.display()))
+            })?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let body = serde_json::to_vec_pretty(map)
+            .map_err(|e| SecretError::Backend(format!("serialize secrets failed: {e}")))?;
+        {
+            // Create at 0600 rather than chmod after the fact — the widened
+            // mode must never exist on disk, not even briefly.
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| {
+                    SecretError::Backend(format!("open {} failed: {e}", tmp.display()))
+                })?;
+            f.write_all(&body)
+                .and_then(|()| f.sync_all())
+                .map_err(|e| {
+                    SecretError::Backend(format!("write {} failed: {e}", tmp.display()))
+                })?;
+            // An existing tmp file from a crashed run keeps its old mode.
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            SecretError::Backend(format!("rename into {} failed: {e}", path.display()))
+        })
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+impl NonDestructiveStore for FileStore {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        let _guard = Self::lock();
+        // `Option` has no room for "the store is broken" — `load` already
+        // logged which file and why, so a miss here is not silent.
+        Self::load()
+            .ok()?
+            .get(account)
+            .map(|v| Zeroizing::new(v.clone()))
+    }
+
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        let _guard = Self::lock();
+        let mut map = Self::load()?;
+        if map.contains_key(account) {
+            return Err(SecretError::AlreadyExists(account.to_string()));
+        }
+        map.insert(account.to_string(), value.to_string());
+        Self::save(&map)
+    }
+
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        let _guard = Self::lock();
+        let mut map = Self::load()?;
+        match map.get(account) {
+            None => Ok(()), // already gone — nothing to lose
+            Some(current) if current == expected => {
+                map.remove(account);
+                Self::save(&map)
+            }
+            Some(_) => Err(SecretError::ValueChanged(account.to_string())),
+        }
+    }
+
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let _guard = Self::lock();
+        Self::load()
+            .unwrap_or_default()
+            .into_keys()
+            .filter(|a| a.starts_with(prefix))
+            .collect()
+    }
+
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        // The file IS the backend, so there is no index/backend skew to
+        // reconcile here — the scan and the listing read the same bytes.
+        let _guard = Self::lock();
+        let accounts: Vec<String> = Self::load()?.into_keys().collect();
+        log::info!(
+            "workspace_secrets::scan: found {} secret(s) in the file store",
+            accounts.len()
+        );
+        Ok(accounts)
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+impl SecretStore for FileStore {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        let _guard = Self::lock();
+        let mut map = Self::load()?;
+        map.insert(account.to_string(), value.to_string());
+        Self::save(&map)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        let _guard = Self::lock();
+        let mut map = Self::load()?;
+        map.remove(account);
+        Self::save(&map)
+    }
+}
+
 /// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
 /// interior mutability so tests can share a single instance behind `&dyn`.
 #[cfg(test)]

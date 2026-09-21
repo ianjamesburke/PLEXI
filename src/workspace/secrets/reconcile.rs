@@ -14,7 +14,7 @@ use super::KEYCHAIN_SERVICE;
 
 #[cfg(all(target_os = "macos", not(test)))]
 use super::index::{index_read, index_write};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use super::system_store;
 
 /// Legacy → canonical friendly-name spellings. One canonical form per secret;
@@ -272,6 +272,22 @@ pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     Ok(report)
 }
 
+/// Linux variant. The file store IS its own index — `scan_accounts` and
+/// `list_with_prefix` read the same bytes — so there is no separate
+/// `secrets-index.json` to reconcile against or persist. Reconciliation still
+/// runs for its other job: collapsing legacy friendly-name spellings onto one
+/// canonical account, non-destructively.
+#[cfg(all(target_os = "linux", not(test)))]
+pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
+    let store = system_store();
+    let scanned = store.scan_accounts()?;
+    // Passing the scan as the index makes every live account already-indexed,
+    // so nothing is reported adopted or stale. On a backend that cannot drift
+    // from itself those two categories are meaningless; renames and conflicts
+    // are the only real findings.
+    Ok(reconcile(&scanned, &scanned, store))
+}
+
 /// Index-free variant, for test builds and for Windows.
 ///
 /// Test binaries have the index-file layer compiled out entirely — its only
@@ -279,7 +295,10 @@ pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
 /// file to read back or persist. Windows never had one: `CredEnumerateW`
 /// enumerates the backend directly, so the scan is already authoritative and
 /// a sidecar could only go stale. Either way the scan is the whole truth.
-#[cfg(any(all(target_os = "macos", test), all(windows, not(test))))]
+#[cfg(any(
+    all(any(target_os = "macos", target_os = "linux", windows), test),
+    all(windows, not(test))
+))]
 pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     let store = system_store();
     let scanned = store.scan_accounts()?;

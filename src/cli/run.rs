@@ -156,7 +156,7 @@ pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
     let mut missing: Vec<&str> = Vec::new();
 
     if !secret_keys.is_empty() {
-        #[cfg(any(target_os = "macos", windows))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
             use crate::workspace::secrets::{
                 resolve, system_store, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets,
@@ -229,7 +229,7 @@ pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
                 }
             }
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
             for key in &secret_keys {
                 missing.push(key);

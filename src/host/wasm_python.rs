@@ -2955,6 +2955,16 @@ impl LivePythonPane {
             Some("status_summary") => {}
             _ => {
                 if let Some(command) = app_command_from_python_message(&message) {
+                    if let Some(capability) = required_capability_for_python_app_command(&command) {
+                        if !self.has_capability(capability) {
+                            log::info!(
+                                "app::{}: {} denied: missing capability {capability}",
+                                self.app_id,
+                                message_type.unwrap_or("<missing>")
+                            );
+                            return;
+                        }
+                    }
                     self.pending_commands.push(command);
                 } else {
                     log::warn!(
@@ -2967,10 +2977,7 @@ impl LivePythonPane {
     }
 
     fn has_capability(&self, capability: &str) -> bool {
-        self.config
-            .capabilities
-            .iter()
-            .any(|item| item == capability)
+        manifest_declares(&self.config.capabilities, capability)
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
@@ -4685,6 +4692,32 @@ fn canonicalize_picked_path(path: &Path) -> Result<PathBuf, String> {
     resolve_concrete_path(path.to_path_buf(), true)
 }
 
+/// Manifest capability a Python guest must declare before the host executes
+/// this bridge command. `None` = ungated. Python grants are manifest membership
+/// (`LivePythonPane::has_capability`), not WIT session prompts (#2641).
+fn required_capability_for_python_app_command(
+    command: &crate::app::app_trait::AppCommand,
+) -> Option<&'static str> {
+    use crate::app::app_trait::AppCommand;
+    use crate::app::permissions::Capability;
+    match command {
+        AppCommand::SpawnApp { .. } => Some(Capability::SpawnApp.as_str()),
+        AppCommand::SpawnPane { .. } => Some(Capability::PanesSpawn.as_str()),
+        AppCommand::ForwardPaneRequest {
+            request: crate::protocol::AppRequest::FocusPane { .. },
+        } => Some(Capability::PanesControl.as_str()),
+        // Raw WASM capability string, not a `Capability` variant (same literal as WIT).
+        AppCommand::ShowNotification { .. } => Some("notify"),
+        _ => None,
+    }
+}
+
+/// Manifest-membership grant check shared by `LivePythonPane::has_capability`
+/// and its tests.
+fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
+    capabilities.iter().any(|item| item == capability)
+}
+
 fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_trait::AppCommand> {
     use crate::app::app_trait::AppCommand;
     let text = |key: &str| {
@@ -6098,6 +6131,43 @@ mod tests {
             &config.context_root,
         )
         .expect("resolve state path")
+    }
+
+    #[test]
+    fn python_bridge_protected_commands_require_capabilities() {
+        let required = |message: Value| {
+            app_command_from_python_message(&message)
+                .and_then(|command| required_capability_for_python_app_command(&command))
+        };
+        assert_eq!(
+            required(serde_json::json!({"type": "spawn_app", "app_id": "x"})),
+            Some("spawn.app")
+        );
+        assert_eq!(
+            required(
+                serde_json::json!({"type": "spawn_pane", "app_id": "x", "layout": "split_h"})
+            ),
+            Some("panes.spawn")
+        );
+        assert_eq!(
+            required(serde_json::json!({"type": "focus_pane", "pane_id": 1})),
+            Some("panes.control")
+        );
+        assert_eq!(
+            required(serde_json::json!({"type": "show_notification", "title": "t", "body": "b"})),
+            Some("notify")
+        );
+        assert_eq!(
+            required(serde_json::json!({"type": "pipe_send", "pipe_id": "p"})),
+            None
+        );
+    }
+
+    #[test]
+    fn python_bridge_gate_is_manifest_membership() {
+        assert!(!manifest_declares(&[], "spawn.app"));
+        assert!(manifest_declares(&["spawn.app".to_string()], "spawn.app"));
+        assert!(!manifest_declares(&["spawn.app".to_string()], "notify"));
     }
 
     #[test]
