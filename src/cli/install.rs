@@ -692,28 +692,73 @@ fn run_self_update() -> Result<String, String> {
     println!("Latest:  {tag_name}");
 
     println!("Downloading v{latest_version} release asset...");
-    let script_url = format!(
-        "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install.sh"
-    );
-    let install = std::process::Command::new("bash")
-        .args([
-            "-c",
-            "curl -fsSL \"$1\" | bash -s -- --channel \"$2\" --tag \"$3\"",
-            "plexi-update",
-            &script_url,
-            &channel,
-            &tag_name,
-        ])
-        .env("PLEXI_INSTALL_TAG", &tag_name)
-        .status()
-        .map_err(|e| format!("error: failed to run install script: {e}"))?;
-    if !install.success() {
-        return Err("error: binary install failed — this release may predate binary assets; use a current v1 release or build a checkout with scripts/install.sh --from-source".to_string());
-    }
+    run_binary_asset_install(&channel, &tag_name)?;
 
     Ok(format!(
         "Installed v{latest_version}. Restart Plexi to apply."
     ))
+}
+
+/// Prefer the platform installer that downloads the release zip/tarball.
+/// Never falls back to a cargo source build from this path (BIN-07).
+pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let script_url = format!(
+            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install-windows.ps1"
+        );
+        // Build the PowerShell command without nesting format args that fight Rust.
+        let ps = format!(
+            concat!(
+                "$ErrorActionPreference='Stop'; ",
+                "$script = Join-Path $env:TEMP ('plexi-install-' + [guid]::NewGuid().ToString() + '.ps1'); ",
+                "Invoke-WebRequest -UseBasicParsing -Uri '{0}' -OutFile $script; ",
+                "& $script -Channel '{1}' -Tag '{2}'; ",
+                "Remove-Item -Force $script -ErrorAction SilentlyContinue"
+            ),
+            script_url, channel, tag_name
+        );
+        let status = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &ps,
+            ])
+            .env("PLEXI_INSTALL_TAG", tag_name)
+            .status()
+            .map_err(|e| format!("error: failed to run Windows install script: {e}"))?;
+        if !status.success() {
+            return Err(
+                "error: binary install failed — this release may predate Windows assets; use scripts/install-windows.ps1 -Tag <tag> or a current v0.3.1-windows.N cut"
+                    .to_string(),
+            );
+        }
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        let script_url = format!(
+            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install.sh"
+        );
+        let install = std::process::Command::new("bash")
+            .args([
+                "-c",
+                "curl -fsSL \"$1\" | bash -s -- --channel \"$2\" --tag \"$3\"",
+                "plexi-update",
+                &script_url,
+                channel,
+                tag_name,
+            ])
+            .env("PLEXI_INSTALL_TAG", tag_name)
+            .status()
+            .map_err(|e| format!("error: failed to run install script: {e}"))?;
+        if !install.success() {
+            return Err("error: binary install failed — this release may predate binary assets; use a current v1 release or build a checkout with scripts/install.sh --from-source".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// `plexi update` — thin CLI wrapper around `run_self_update`.
