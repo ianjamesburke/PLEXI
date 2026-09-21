@@ -15,14 +15,14 @@ PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the 
 ```
 plexi config list                  Print all known keys with type, value, and description.
 plexi config list --json           Same, as a JSON array.
-plexi config get KEY               Print the resolved effective value of a single key.
+plexi config get KEY               Print a value from the selected config file.
 plexi config set KEY=VALUE ...     Write one or more keys in-place (e.g. theme.preset=dracula).
 plexi config edit                  Open config.toml in $EDITOR.
 plexi config check                 Validate known keys and TOML syntax.
 plexi config reset                 Back up config.toml → config.toml.bak and write the default template.
 ```
 
-`config list` is the canonical way to discover valid keys before writing. `config set` resolves scope the same way as the rest of config: workspace when inside a workspace, global otherwise. Override with `-g`/`--global` or `-w`/`--workspace`.
+`config list` is the canonical way to discover valid keys before writing. Every `config` subcommand defaults to the workspace config when inside a workspace and the channel-global config otherwise. Override with `-g`/`--global` or `-w`/`--workspace`.
 
 ## Theme
 

@@ -68,6 +68,8 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
+  Every `config` verb defaults to the workspace config when run in a workspace,
+  otherwise the channel-global config; `--global` selects only the latter.
 - **Marketplace and tool registry** — search and publish apps, manage an account,
   and refresh CLI-tool knowledge: `plexi account --help`, `plexi registry --help`.
 - **Notes** — capture and browse notes across their two storage tiers
