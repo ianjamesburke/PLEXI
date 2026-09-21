@@ -73,6 +73,12 @@ same reason.
 
 ## Traps
 
+- **The host's launch env leaks into every pane.** Anything not overridden in
+  `build_env` is inherited by PTY children from whatever launched the host. A
+  sandbox/agent session exporting `NO_COLOR=1 FORCE_COLOR=0` turned every Linux
+  pane monochrome despite `COLORTERM=truecolor`, because color libraries check
+  those first. `scrub_launcher_color_overrides` clears them at host startup, before
+  the login-shell probes (which would otherwise re-adopt the inherited value).
 - **`shared_dir()`, never `home_dir().join(".plexi")`.** `crate::config::shared_dir()`
   carries a thread-local test override; re-deriving the path by hand produces a
   tier no test can isolate, so unit tests write into the developer's real

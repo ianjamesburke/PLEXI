@@ -1343,6 +1343,7 @@ fn main() -> eframe::Result {
     // CLI subcommands already inherit the full shell environment from the
     // calling terminal — running this there corrupts terminal signal state
     // (zsh -i hijacks SIGINT) and spams the user's stdout with log noise.
+    crate::host::shell::scrub_launcher_color_overrides();
     crate::host::shell::install_login_shell_path();
     crate::host::shell::install_login_shell_env();
 
