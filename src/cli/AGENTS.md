@@ -63,6 +63,8 @@ Any change to a CLI verb, flag, or agent-facing behavior updates this file **and
 - **Profile reconciliation is narrowly scoped.** `app prune --dry-run` reports only positively identified retired first-party pre-v3 installs; never infer deletability from absence from the current core pack, because user and marketplace apps also live in the global profile.
 - **Building a `-c` command string:** use `cmd_from_args` (in `src/app/mod.rs`), not `shell_join` directly. A single-arg array is already a shell expression; `shell_join(["echo hello"])` yields `'echo hello'`.
 - **Shell suffix construction:** when appending a stay-alive or exec suffix to a user command string, use the absolute shell path from `settings.shell` (already resolved), not `$SHELL`. `trim_end_matches([';', ' '])` the user command before appending to prevent `;;` syntax errors.
+- **`PLEXI_CONTEXT_ID` is a spawn-time stamp, never the answer to "which context am I in".** A pane moved by `context push` keeps its old value forever (a parent cannot mutate a live child's environment). Commands that *report* the caller's context ask the host by `PLEXI_PANE_ID` (`context current` → `get_pane_info`, which carries `context_id`/`context_name`/`context_description`), the same truth as `pane info`. The env id is only a request field the host validates (`resolve_parent_context`). `pane list --current` still reads the env id — same class, not yet migrated.
+- **Verbs that act on a caller-named id must round-trip.** `context zoom <id>` sends a `response_file` and the host replies `{"error"}` for an id naming no live context; fire-and-forget (`send_to_socket`) cannot report a bad id, so it exited 0 silently. Use `request` + `check_reply_error`.
 
 ## Style
 
