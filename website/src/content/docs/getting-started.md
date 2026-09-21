@@ -4,7 +4,8 @@ description: Get Plexi running on macOS, Linux, or Windows.
 order: 1
 ---
 
-Plexi runs on macOS (Apple Silicon or Intel), Linux x86_64, and Windows x64.
+Plexi has prebuilt alpha assets for Linux x86_64 and macOS Apple Silicon. macOS
+Intel and Windows are not yet available through the public curl installer.
 
 ## Install
 
@@ -14,14 +15,16 @@ Open Terminal and run:
 curl -fsSL https://plexiapp.com/install | sh
 ```
 
-The installer detects your platform, downloads the matching release asset, and
-installs the CLI into `~/.local/bin` (or your configured Plexi user directory).
-It does not need Git, Rust, a package manager, or administrator access. Open a
-new shell after installation if it asks you to refresh `PATH`.
+For now, the public installer defaults to the alpha channel, detects your
+platform, downloads the matching available release asset, and installs the CLI
+into `~/.local/bin` (or your configured Plexi user directory). It does not need
+Git, Rust, a package manager, or administrator access. Open a new shell after
+installation if it asks you to refresh `PATH`. Contributors can build from a
+checkout with `bash -s -- --from-source`.
 
 macOS builds are not notarized yet. If Gatekeeper blocks Plexi, right-click the
-app and choose **Open**, then confirm. On Windows, use **More info → Run anyway**
-when SmartScreen appears.
+app and choose **Open**, then confirm. When Windows binary installs are
+available, SmartScreen may require **More info → Run anyway**.
 
 Plexi does not request Accessibility permission on first launch. Its app bundle
 declares camera and microphone permissions for video rooms, which macOS requests
