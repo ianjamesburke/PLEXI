@@ -19,12 +19,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS arm64
-            os: macos-14
-            kind: macos-arm64
-          - name: macOS x64
-            os: macos-13
-            kind: macos-x64
           - name: Linux x64
             os: ubuntu-22.04
             kind: linux-x64
@@ -32,11 +26,6 @@ jobs:
             os: windows-latest
             kind: windows-x64
     runs-on: ${{ matrix.os }}
-    # macOS bundling depends on cargo-bundle tooling that can drift. Windows
-    # must produce plexi-windows-x64.zip when the tagged tree includes the
-    # windows-v1-bringup seams — soft-fail here previously claimed an empty Win
-    # asset. Keep Linux publishable if macOS tooling misses.
-    continue-on-error: ${{ startsWith(matrix.kind, 'macos-') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -86,8 +75,49 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # macOS bundles are useful but must never be a release-publish dependency:
+  # an unavailable hosted macOS runner can remain queued indefinitely.
+  build-macos:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            kind: macos-arm64
+          - name: macOS x64
+            os: macos-13
+            kind: macos-x64
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build macOS bundle
+        run: |
+          # Pinned: 0.12 moved osx_info_plist_exts under nested macos/osx
+          # settings, which Cargo.toml's top-level metadata does not use.
+          cargo install cargo-bundle --version 0.11.0 --locked
+          cargo bundle --release
+          mkdir -p dist/package
+          cp -R target/release/bundle/osx/Plexi.app dist/package/
+          cp target/release/plexi dist/package/plexi
+          tar -C dist/package -czf dist/plexi-${{ matrix.kind }}.tar.gz Plexi.app plexi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.kind }}
+          path: dist/*
+          if-no-files-found: error
+
   publish:
     needs: build
+    # This job deliberately does not need build-macos. A queued optional macOS
+    # runner must not hold Linux/Windows release assets hostage.
+    if: ${{ always() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -102,6 +132,14 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          # Artifacts also carry a package/ staging directory; publish only
+          # release archives, and tolerate absent optional macOS artifacts.
+          assets=(dist/*.tar.gz dist/*.zip)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No release artifacts were downloaded; refusing to publish an empty release." >&2
+            exit 1
+          fi
           prerelease=false; latest=true
           if [[ "$TAG" == *-alpha.* || "$TAG" == *-beta.* || "$TAG" == *-* ]]; then
             prerelease=true; latest=false
@@ -111,4 +149,4 @@ jobs:
             [[ "$prerelease" == true ]] && args+=(--prerelease)
             gh release create "$TAG" "${args[@]}"
           fi
-          gh release upload "$TAG" dist/* --clobber
+          gh release upload "$TAG" "${assets[@]}" --clobber
