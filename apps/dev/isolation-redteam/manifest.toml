@@ -1,0 +1,21 @@
+schema_version = 1
+
+[app]
+id = "isolation-redteam"
+type = "app"
+name = "Isolation Redteam"
+entry = "main.py"
+version = "0.1.0"
+description = "Adversarial fixture: proves WASM/CPython isolation denials and capability gaps (audit/wasm-isolation-redteam)"
+watch = true
+
+# Intentionally empty — every protected effect must deny by default.
+[app.capabilities]
+capabilities = []
+
+[launch]
+
+[marketplace]
+visibility = "private"
+price = "free"
+publisher = "plexi-audit"
