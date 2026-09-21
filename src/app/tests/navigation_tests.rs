@@ -8,7 +8,7 @@ fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     tree.root = Some(tile);
     Window {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context-b"),
         tree,
         panes: HashMap::new(),
         focused_pane: None,
@@ -26,7 +26,7 @@ fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
     tree.root = Some(tile);
     Window {
         name: "Test".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context-b"),
         tree,
         panes: HashMap::new(),
         focused_pane: None,
@@ -44,7 +44,7 @@ fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
     tree.root = Some(tile);
     Window {
         name: "Test".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context-b"),
         tree,
         panes: HashMap::new(),
         focused_pane: None,
@@ -76,7 +76,7 @@ fn pane_navigate_cross_window_updates_active_window() {
     h.app.windows.push(second_window(2, 2, 9901));
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        root: std::env::temp_dir(),
+        root: crate::testing::scratch_context_root("context-b"),
         description: None,
         context_id: 2,
         parent_id: None,
@@ -105,7 +105,7 @@ fn pane_navigate_cross_window_syncs_router() {
     h.app.windows.push(second_window(2, 2, 9902));
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        root: std::env::temp_dir(),
+        root: crate::testing::scratch_context_root("context-b"),
         description: None,
         context_id: 2,
         parent_id: None,
@@ -487,7 +487,7 @@ fn get_previous_pane_info_steps_exceeds_history_returns_error() {
 fn empty_window(context_id: u64, window_id: u64) -> Window {
     Window {
         name: "Ctx".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("context-b"),
         tree: egui_tiles::Tree::empty("on_launch_test"),
         panes: HashMap::new(),
         focused_pane: None,
@@ -502,7 +502,7 @@ fn empty_window(context_id: u64, window_id: u64) -> Window {
 fn context_b(context_id: u64) -> crate::host::context::Context {
     crate::host::context::Context {
         name: "Context B".into(),
-        root: std::env::temp_dir(),
+        root: crate::testing::scratch_context_root("context-b"),
         description: None,
         context_id,
         parent_id: None,

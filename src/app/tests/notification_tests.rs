@@ -9,7 +9,7 @@ fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
     tree.root = Some(tile);
     Window {
         name: "Test".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("notification"),
         tree,
         panes: HashMap::new(),
         focused_pane: None,
@@ -194,7 +194,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
     let sender_id = h.add_test_pane();
     h.app.windows.push(crate::host::context::Window {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("notification"),
         tree: {
             let mut tree = egui_tiles::Tree::empty("test_tree_2");
             let tile = tree.tiles.insert_pane(9903);
@@ -211,7 +211,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
     });
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        root: std::env::temp_dir(),
+        root: crate::testing::scratch_context_root("notification"),
         description: None,
         context_id: 2,
         parent_id: None,
@@ -1458,7 +1458,7 @@ fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotifica
 fn push_second_context_window(h: &mut HostHarness, ctx_id: u64, window_id: u64) -> usize {
     h.app.windows.push(Window {
         name: "Context B".into(),
-        path: std::env::temp_dir(),
+        path: crate::testing::scratch_context_root("notification"),
         tree: {
             let mut tree = egui_tiles::Tree::empty("resurface_test_tree");
             let tile = tree.tiles.insert_pane(9_000_000 + window_id);
@@ -1475,7 +1475,7 @@ fn push_second_context_window(h: &mut HostHarness, ctx_id: u64, window_id: u64) 
     });
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
-        root: std::env::temp_dir(),
+        root: crate::testing::scratch_context_root("notification"),
         description: None,
         context_id: ctx_id,
         parent_id: None,

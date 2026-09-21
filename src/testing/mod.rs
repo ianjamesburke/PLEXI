@@ -167,6 +167,26 @@ fn reserve_pane_id_block() -> u64 {
     NEXT_TEST_PANE_ID_BLOCK.fetch_add(10_000, std::sync::atomic::Ordering::SeqCst)
 }
 
+/// A private, per-process directory for a test fixture that needs a real
+/// context or workspace root.
+///
+/// Never hand a fixture `std::env::temp_dir()` itself. Opening a context at a
+/// root makes the host write workspace state under it — `<root>/.plexi*/` —
+/// and on Linux `temp_dir()` is the shared `/tmp`, the parent of every
+/// `tempfile::tempdir()` in the suite. One such fixture turns `/tmp` into a
+/// workspace and the workspace-resolution tests then fail on every later run,
+/// on a machine where nothing changed. macOS hides this: `temp_dir()` is a
+/// private per-user dir there.
+#[cfg(test)]
+pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "plexi-scratch-{label}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Headless egui test harness wrapping `PlexiApp`.
 ///
 /// ```rust,no_run

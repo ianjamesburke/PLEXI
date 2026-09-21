@@ -51,7 +51,7 @@ pub use store::{NonDestructiveStore, SecretStore};
 #[cfg(test)]
 pub use store::{InMemoryKeychain, SecretError};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use reconcile::reconcile_index_with_keychain;
 #[cfg(test)]
 pub use reconcile::AccountRename;
@@ -93,11 +93,16 @@ pub fn keychain_user_name(friendly: &str) -> String {
 /// compiled test binary is a new unsigned app and each login-keychain value
 /// read from a test fires its own credential dialog — an unattended agent
 /// gate cannot click one, so a prompting test silently stalls automation.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn system_store() -> &'static dyn SecretStore {
-    #[cfg(not(test))]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
         static STORE: store::MacKeychain = store::MacKeychain;
+        &STORE
+    }
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        static STORE: store::FileStore = store::FileStore;
         &STORE
     }
     #[cfg(test)]

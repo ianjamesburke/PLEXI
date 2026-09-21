@@ -26,6 +26,7 @@ pub(crate) mod pane_wait;
 pub mod permissions;
 pub mod plexi_descriptor;
 pub(crate) mod python_env;
+pub(crate) mod quit;
 pub mod registry;
 pub(crate) mod registry_views;
 pub mod registry_watcher;
@@ -40,8 +41,7 @@ pub mod video_player_app;
 #[cfg(test)]
 pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
 pub(crate) use focus::{
-    ContextCloseState, FocusKind, FocusSegmentReason, PendingRawWasmLaunch,
-    FOCUS_HEARTBEAT_INTERVAL,
+    ContextCloseState, FocusKind, PendingRawWasmLaunch, FOCUS_HEARTBEAT_INTERVAL,
 };
 pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
@@ -665,6 +665,8 @@ fn spawn_socket_listener(
         }
     };
     log::info!("pane_ipc: listening on {:?}", path);
+    // Teardown removes exactly this socket, so it has to know which one it is.
+    quit::record_notify_socket(&path);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let stream = match stream {
@@ -822,7 +824,7 @@ pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> Vec<u32> {
 /// Resolve the pid of the process on the other end of a connected
 /// `AF_UNIX` `SOCK_STREAM` socket. macOS has no stable-std API for this
 /// (`getsockopt(SOL_LOCAL, LOCAL_PEERPID)`, verified against `libc` 0.2's
-/// apple bindings); Linux exposes it directly via `UnixStream::peer_cred`.
+/// apple bindings); Linux answers the same question via `SO_PEERCRED`.
 #[cfg(target_os = "macos")]
 fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
     use std::os::unix::io::AsRawFd;
@@ -846,13 +848,27 @@ fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u3
 
 #[cfg(target_os = "linux")]
 fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
-    match stream.peer_cred() {
-        Ok(cred) => cred.pid.map(|p| p as u32),
-        Err(e) => {
-            log::warn!("pane_ipc: peer_cred failed: {e}");
-            None
-        }
+    // `UnixStream::peer_cred` is still unstable (`peer_credentials_unix_socket`),
+    // so read the same kernel-provided credentials directly. `SO_PEERCRED`
+    // yields the pid recorded at `connect()` time — exactly the peer identity
+    // `resolve_socket_peer_pane` needs to walk back to the owning shell.
+    use std::os::unix::io::AsRawFd;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc != 0 || cred.pid <= 0 {
+        log::warn!("pane_ipc: SO_PEERCRED getsockopt failed (rc={rc})");
+        return None;
     }
+    Some(cred.pid as u32)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -3965,10 +3981,17 @@ impl eframe::App for PlexiApp {
         self.drain_crash_restarts();
 
         // Reload configuration from disk when the user clicks
-        // "Reload Configuration" in the app menu.
-        crate::platform::macos_menu::apply_version_title_once();
-        if crate::platform::macos_menu::take_reload_config_flag() {
-            self.reload_config();
+        // "Reload Configuration" in the app menu. The native menu bar is a
+        // macOS affordance; Linux has no equivalent surface in v0, so the
+        // drain is gated with the menu itself (`platform::macos_menu` is not
+        // compiled elsewhere). Config still hot-reloads via the fs watcher
+        // below on every platform.
+        #[cfg(target_os = "macos")]
+        {
+            crate::platform::macos_menu::apply_version_title_once();
+            if crate::platform::macos_menu::take_reload_config_flag() {
+                self.reload_config();
+            }
         }
 
         // Config hot-reload (#1115): drain filesystem watcher signals.
@@ -4088,22 +4111,12 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Exit,
         );
         log::info!("quit_phase: on_exit begin");
-        if let Some((window_id, tile_id)) = self.last_logged_focus {
-            let duration_secs = self
-                .focus_started_at
-                .map(|t| t.elapsed().as_secs())
-                .unwrap_or(0);
-            log::info!(
-                "focus_changed: shutdown — banking final session duration_secs={duration_secs}"
-            );
-            self.emit_focus_changed_for_tile(
-                window_id,
-                tile_id,
-                duration_secs,
-                FocusSegmentReason::Shutdown,
-            );
-        }
+        self.bank_final_focus_segment();
         log::info!("quit_phase: on_exit complete");
+        // eframe stops here: it has destroyed the window but will only end the
+        // process on a later winit event that a chrome close need never send
+        // (see `quit`). Finish the quit ourselves.
+        quit::exit_host("window closed");
     }
 }
 

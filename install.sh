@@ -57,7 +57,15 @@ _on_error() {
   echo ""
   echo "Common causes:"
   echo "  • Rust / cargo not installed — https://rustup.rs"
-  echo "  • cargo-bundle install failed — try: cargo install cargo-bundle"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "  • cargo-bundle install failed — try: cargo install cargo-bundle"
+  else
+    echo "  • missing build dependencies — on Debian/Ubuntu:"
+    echo "      sudo apt install build-essential pkg-config libssl-dev \\"
+    echo "        libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev \\"
+    echo "        libasound2-dev libfontconfig1-dev"
+    echo "  • no GPU driver — install mesa-vulkan-drivers (lavapipe works headless)"
+  fi
   echo "  • git clone failed — check your network connection"
   echo "  • cargo build failed — check the output above for compiler errors"
   echo ""
@@ -65,16 +73,24 @@ _on_error() {
 }
 trap '_on_error $LINENO' ERR
 
-# macOS only
-if [[ "$(uname)" != "Darwin" ]]; then
-  echo "Error: Plexi is macOS-only. This installer does not support $(uname)."
-  exit 1
-fi
+# macOS and Linux
+OS="$(uname)"
+case "$OS" in
+  Darwin|Linux) ;;
+  *)
+    echo "Error: Plexi supports macOS and Linux. This installer does not support $OS."
+    exit 1
+    ;;
+esac
 
 # Require git
 if ! command -v git &>/dev/null; then
   echo "Error: 'git' is required but not found."
-  echo "  Install Xcode Command Line Tools: xcode-select --install"
+  if [[ "$OS" == "Darwin" ]]; then
+    echo "  Install Xcode Command Line Tools: xcode-select --install"
+  else
+    echo "  Install it with your package manager, e.g. sudo apt install git"
+  fi
   exit 1
 fi
 
@@ -122,8 +138,9 @@ if [ ! -f "Cargo.toml" ] || ! grep -q 'name = "plexi"' Cargo.toml 2>/dev/null; t
   cd "$SRC_DIR"
 fi
 
-# Install cargo-bundle if needed
-if ! command -v cargo-bundle &>/dev/null; then
+# cargo-bundle builds the macOS .app. Linux installs the plain release binary
+# plus a .desktop entry, so it is not needed there.
+if [[ "$OS" == "Darwin" ]] && ! command -v cargo-bundle &>/dev/null; then
   echo "Installing cargo-bundle..."
   if ! cargo install cargo-bundle; then
     echo "Error: 'cargo install cargo-bundle' failed."

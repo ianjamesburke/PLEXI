@@ -1025,7 +1025,7 @@ mod tests {
                 runtime: AppRuntime::Builtin(Box::new(
                     crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
                 )),
-                workspace_root: std::env::temp_dir(),
+                workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
@@ -1075,7 +1075,7 @@ mod tests {
                 runtime: AppRuntime::Builtin(Box::new(
                     crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
                 )),
-                workspace_root: std::env::temp_dir(),
+                workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
@@ -1413,7 +1413,7 @@ mod tests {
             app.next_window_id += 1;
             app.windows.push(Window {
                 name: "child window".to_string(),
-                path: std::env::temp_dir(),
+                path: crate::testing::scratch_context_root("ui"),
                 tree: egui_tiles::Tree::empty("child window"),
                 panes: std::collections::HashMap::new(),
                 focused_pane: None,
@@ -3100,7 +3100,7 @@ mod tests {
             app.next_window_id += 1;
             app.windows.push(Window {
                 name: "palette metadata extra".to_string(),
-                path: std::env::temp_dir(),
+                path: crate::testing::scratch_context_root("ui"),
                 tree: egui_tiles::Tree::new("palette metadata extra", extra_root, extra_tiles),
                 panes: extra_panes,
                 focused_pane: Some(extra_tile_a),
@@ -3757,7 +3757,7 @@ mod tests {
                 runtime: AppRuntime::Builtin(Box::new(
                     crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
                 )),
-                workspace_root: std::env::temp_dir(),
+                workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
@@ -3816,7 +3816,7 @@ mod tests {
             app.next_window_id += 1;
             app.windows.push(crate::host::context::Window {
                 name: String::new(),
-                path: std::env::temp_dir(),
+                path: crate::testing::scratch_context_root("ui"),
                 tree: egui_tiles::Tree::empty("plexi"),
                 panes: std::collections::HashMap::new(),
                 focused_pane: None,
@@ -4157,7 +4157,7 @@ mod tests {
                     runtime: AppRuntime::Builtin(Box::new(TextEditorApp::new_for_test_note(
                         path.clone(),
                     ))),
-                    workspace_root: std::env::temp_dir(),
+                    workspace_root: crate::testing::scratch_context_root("ui"),
                     permissions: AppPermissions::builtin(),
                     manifest_id: "text-editor".to_string(),
                     name: "Text Editor".to_string(),

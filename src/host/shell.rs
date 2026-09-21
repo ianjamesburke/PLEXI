@@ -62,6 +62,49 @@ pub fn install_login_shell_path() {
     }
 }
 
+/// Color-suppression vars that describe the *launcher's* output, not a pane's.
+///
+/// `NO_COLOR` / `FORCE_COLOR=0` exported by whatever started the host (a
+/// sandbox session, CI wrapper, agent harness) are inherited by every PTY
+/// child, and chalk/supports-color/Node's `getColorDepth` put them ahead of
+/// `COLORTERM` — so a pane advertising truecolor still renders monochrome
+/// (Claude Code loses its orange). A pane is a fresh terminal whose
+/// capabilities `build_env` states explicitly; a user who wants these set in
+/// panes sets them in their shell rc, which the pane's login shell sources.
+const LAUNCHER_COLOR_OVERRIDES: &[&str] = &["NO_COLOR", "FORCE_COLOR"];
+
+fn launcher_color_overrides_present(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, String)> {
+    LAUNCHER_COLOR_OVERRIDES
+        .iter()
+        .filter_map(|&k| lookup(k).map(|v| (k, v.to_string_lossy().into_owned())))
+        .collect()
+}
+
+/// Drop launcher color overrides from the host process env so no PTY child
+/// or login-shell probe inherits them. Must run before
+/// `install_login_shell_path`/`install_login_shell_env`, otherwise the probe
+/// shell inherits the launcher's value and it is re-adopted as if the user's
+/// profile had set it.
+pub fn scrub_launcher_color_overrides() {
+    let present = launcher_color_overrides_present(|k| std::env::var_os(k));
+    if present.is_empty() {
+        return;
+    }
+    for (k, _) in &present {
+        // SAFETY: called once, early in main(), before any threads read env.
+        unsafe {
+            std::env::remove_var(k);
+        }
+    }
+    let summary: Vec<String> = present.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    log::info!(
+        "shell: scrubbed launcher color overrides from pane env: [{}]",
+        summary.join(", ")
+    );
+}
+
 /// Adopt user-defined env vars from the login shell that are missing from the
 /// process environment.
 ///
@@ -267,7 +310,7 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     // startup (see `install_login_shell_path`), so inheriting it here is
     // enough — no per-shell augmentation needed.
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let workspace_root = working_directory
             .and_then(crate::app::registry::resolve_workspace_root)
@@ -855,6 +898,23 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launcher_color_overrides_are_detected_for_scrubbing() {
+        let found = launcher_color_overrides_present(|k| match k {
+            "NO_COLOR" => Some("1".into()),
+            "FORCE_COLOR" => Some("0".into()),
+            _ => None,
+        });
+        assert_eq!(
+            found,
+            vec![
+                ("NO_COLOR", "1".to_string()),
+                ("FORCE_COLOR", "0".to_string())
+            ]
+        );
+        assert!(launcher_color_overrides_present(|_| None).is_empty());
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
