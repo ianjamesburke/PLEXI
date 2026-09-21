@@ -616,6 +616,7 @@ Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.
 | Field | Type | Required |
 |-------|------|----------|
 | `context_id` | `integer` | yes |
+| `response_file` | `string?` | no |
 
 ### `zoom_out_of_context`
 

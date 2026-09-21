@@ -793,7 +793,12 @@ pub enum AppRequest {
         context_id: Option<u64>,
     },
     /// Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.
-    ZoomIntoContext { context_id: u64 },
+    ZoomIntoContext {
+        context_id: u64,
+        /// Host replies `{"context_id":N}`, or `{"error":"..."}` for an unknown id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
     /// Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.
     ZoomOutOfContext,
     /// Push a pane into a new sub-context. Sent by `plexi context push`.

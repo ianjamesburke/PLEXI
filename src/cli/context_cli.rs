@@ -226,12 +226,26 @@ pub fn context_sub_cli(
 
 /// `plexi context zoom <context_id>`
 ///
-/// Zoom into a sub-context by its numeric context_id.
+/// Zoom into a sub-context by its numeric context_id. The host answers, so an
+/// id naming no live context is an `error:` on stderr and exit 1 rather than a
+/// silent success.
 pub fn context_zoom_cli(context_id: u64) -> i32 {
-    send_to_socket(serde_json::json!({
-        "type": "zoom_into_context",
-        "context_id": context_id,
-    }))
+    log::info!("context_zoom_cli: context_id={context_id}");
+    let content = match super::request(
+        serde_json::json!({
+            "type": "zoom_into_context",
+            "context_id": context_id,
+        }),
+        "context-zoom-response",
+        "context zoom",
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    match super::check_reply_error(&content) {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
 }
 
 /// `plexi context zoom-out`
@@ -344,38 +358,63 @@ fn caller_context_id() -> Option<u64> {
 
 /// `plexi context current`
 ///
-/// Prints the context ID and name for the current pane as JSON.
-/// Reads PLEXI_CONTEXT_ID and PLEXI_CONTEXT_NAME set at pane spawn time.
+/// Prints the context ID, name and description for the calling pane as JSON.
+/// The host answers with the context that currently owns the pane (the same
+/// truth `pane info` reports). `PLEXI_CONTEXT_ID` is spawn-time only: a pane
+/// moved by `context push` keeps its stale stamp, so it is never the answer.
 pub fn context_current_cli() -> i32 {
-    let context_id = match std::env::var("PLEXI_CONTEXT_ID") {
-        Ok(v) => v,
+    let pane_id = match std::env::var("PLEXI_PANE_ID") {
+        Ok(v) => match v.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("error: PLEXI_PANE_ID is not a valid number: {v}");
+                return 1;
+            }
+        },
         Err(_) => {
-            eprintln!("error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane");
+            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
             return 1;
         }
     };
-    let context_name = std::env::var("PLEXI_CONTEXT_NAME").unwrap_or_default();
-    let context_description = std::env::var("PLEXI_CONTEXT_DESCRIPTION").unwrap_or_default();
-    let id_num: u64 = match context_id.parse() {
-        Ok(n) => n,
-        Err(_) => {
-            eprintln!("error: PLEXI_CONTEXT_ID is not a valid number: {context_id}");
-            return 1;
-        }
+    log::info!("context_current_cli: pane_id={pane_id}");
+    let content = match super::request(
+        serde_json::json!({ "type": "get_pane_info", "pane_id": pane_id }),
+        "pane-info-response",
+        "context current",
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
     };
-    let json = serde_json::json!({
-        "context_id": id_num,
-        "context_name": context_name,
-        "context_description": context_description,
-    });
-    match serde_json::to_string_pretty(&json) {
-        Ok(s) => println!("{s}"),
-        Err(e) => {
-            eprintln!("error: failed to serialize context JSON: {e}");
-            return 1;
+    match render_current_context(&content) {
+        Ok(out) => {
+            println!("{out}");
+            0
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            1
         }
     }
-    0
+}
+
+/// Project a host `get_pane_info` reply onto the `context current` JSON shape.
+fn render_current_context(reply: &str) -> Result<String, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(reply).map_err(|e| format!("invalid JSON from host: {e}"))?;
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        return Err(err.to_string());
+    }
+    let context_id = v
+        .get("context_id")
+        .and_then(|c| c.as_u64())
+        .ok_or_else(|| "host reply carried no context_id".to_string())?;
+    let text = |key: &str| v.get(key).and_then(|x| x.as_str()).unwrap_or_default();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "context_id": context_id,
+        "context_name": text("context_name"),
+        "context_description": text("context_description"),
+    }))
+    .map_err(|e| format!("failed to serialize context JSON: {e}"))
 }
 
 /// `plexi context list`
@@ -438,3 +477,28 @@ mod context_sub_tests {
     }
 }
 
+#[cfg(test)]
+mod context_current_tests {
+    use super::render_current_context;
+
+    #[test]
+    fn projects_the_host_context_not_the_env_stamp() {
+        let reply = r#"{"id":5,"type":"terminal","context_id":6,"context_name":"child","context_description":"d","window_id":9}"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&render_current_context(reply).expect("ok")).expect("json");
+        assert_eq!(out["context_id"], 6);
+        assert_eq!(out["context_name"], "child");
+        assert_eq!(out["context_description"], "d");
+    }
+
+    #[test]
+    fn host_error_is_surfaced() {
+        let err = render_current_context(r#"{"error":"pane 5 not found"}"#).unwrap_err();
+        assert_eq!(err, "pane 5 not found");
+    }
+
+    #[test]
+    fn reply_without_context_id_is_an_error() {
+        assert!(render_current_context(r#"{"id":5}"#).is_err());
+    }
+}

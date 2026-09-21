@@ -414,6 +414,8 @@ impl PlexiApp {
                                     "title": t.name.clone().unwrap_or_else(|| "terminal".to_string()),
                                     "focused": focused,
                                     "context_id": win.context_id,
+                                    "context_name": self.context_name_for(win.context_id),
+                                    "context_description": self.context_description_for(win.context_id),
                                     "window_id": win.window_id,
                                     "cwd": cwd,
                                     "agent": agent,
@@ -428,6 +430,8 @@ impl PlexiApp {
                                     "title": a.name.clone(),
                                     "focused": focused,
                                     "context_id": win.context_id,
+                                    "context_name": self.context_name_for(win.context_id),
+                                    "context_description": self.context_description_for(win.context_id),
                                     "window_id": win.window_id,
                                     "cwd": a.workspace_root.to_string_lossy().as_ref(),
                                     "manifest_id": a.manifest_id.clone(),
@@ -2895,8 +2899,13 @@ impl PlexiApp {
                 };
                 self.mark_workspace_dirty();
             }
-            crate::protocol::AppRequest::ZoomIntoContext { context_id } => {
-                log::info!("pane_ipc: kind=zoom_into_context context_id={context_id}");
+            crate::protocol::AppRequest::ZoomIntoContext {
+                context_id,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=zoom_into_context context_id={context_id} response_file={response_file:?}"
+                );
                 if let Some(ctx_idx) = self.router.position(|c| c.context_id == *context_id) {
                     let current_ctx_id = self.router.active().context_id;
                     let current_win_id = self.windows[self.active_window].window_id;
@@ -2904,6 +2913,21 @@ impl PlexiApp {
                     self.router
                         .push_depth(current_ctx_id, current_win_id, current_focused);
                     self.switch_workspace(ctx_idx);
+                    if let Some(rf) = response_file {
+                        write_json_response(rf, serde_json::json!({ "context_id": context_id }));
+                    }
+                } else {
+                    log::warn!("pane_ipc: zoom_into_context: no context with id {context_id}");
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": format!(
+                                    "no context with id {context_id} — run `plexi context list` to see live ids"
+                                )
+                            }),
+                        );
+                    }
                 }
             }
             crate::protocol::AppRequest::ZoomOutOfContext => {

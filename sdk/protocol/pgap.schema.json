@@ -2173,6 +2173,13 @@
               "minimum": 0,
               "type": "integer"
             },
+            "response_file": {
+              "description": "Host replies `{\"context_id\":N}`, or `{\"error\":\"...\"}` for an unknown id.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "zoom_into_context",
               "type": "string"

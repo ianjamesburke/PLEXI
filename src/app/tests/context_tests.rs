@@ -3550,3 +3550,271 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
         "root A must be untouched by root B's invalidation"
     );
 }
+
+/// Send `request` through the real IPC channel and return the JSON the host
+/// wrote to its `response_file`.
+fn ipc_json_reply(
+    h: &mut crate::testing::HostHarness,
+    dir: &std::path::Path,
+    make: impl FnOnce(String) -> crate::protocol::AppRequest,
+) -> serde_json::Value {
+    let response_file = dir
+        .join(format!("reply-{}.json", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned();
+    h.inject_ipc(make(response_file.clone()));
+    h.app.drain_pane_cmd_channel();
+    let content = std::fs::read_to_string(&response_file).expect("host must write a reply");
+    serde_json::from_str(&content).expect("reply must be JSON")
+}
+
+/// CLI-07 / #2622: after `context push`, the pushed pane's spawn-time
+/// `PLEXI_CONTEXT_ID` is stale forever, so `context current` must not read it.
+/// `get_pane_info` — the request `context current` now sends — has to report the
+/// context that owns the pane *now*, with that context's name and description.
+#[test]
+fn get_pane_info_reports_host_context_after_push() {
+    let mut h = crate::testing::HostHarness::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let _anchor = h.add_test_pane();
+    let pushed = h.add_test_pane();
+    let parent_id = h.app.router.active().context_id;
+
+    let before = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::AppRequest::GetPaneInfo {
+            pane_id: pushed,
+            response_file: rf,
+        }
+    });
+    assert_eq!(before["context_id"].as_u64(), Some(parent_id));
+
+    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "name": "pushed-child",
+        "pane_id": pushed,
+    }))
+    .expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .expect("push must create a child context")
+        .clone();
+    h.app
+        .router
+        .get_mut(
+            h.app
+                .router
+                .position(|c| c.context_id == child.context_id)
+                .unwrap(),
+        )
+        .description = Some("probe".to_string());
+
+    let after = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::AppRequest::GetPaneInfo {
+            pane_id: pushed,
+            response_file: rf,
+        }
+    });
+    assert_eq!(
+        after["context_id"].as_u64(),
+        Some(child.context_id),
+        "pane info must follow the push into the child context"
+    );
+    assert_ne!(after["context_id"].as_u64(), Some(parent_id));
+    assert_eq!(after["context_name"].as_str(), Some("pushed-child"));
+    assert_eq!(after["context_description"].as_str(), Some("probe"));
+}
+
+/// CLI-07 / #2622: `context zoom <unknown>` used to exit 0 silently. The host
+/// now answers with a typed error and leaves the active context untouched.
+#[test]
+fn zoom_into_unknown_context_replies_error_and_does_not_move() {
+    let mut h = crate::testing::HostHarness::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let active_before = h.app.router.active().context_id;
+    let depth_before = h.app.router.current_depth();
+
+    let reply = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::AppRequest::ZoomIntoContext {
+            context_id: 999_999,
+            response_file: Some(rf),
+        }
+    });
+    let err = reply["error"]
+        .as_str()
+        .expect("unknown id must be an error");
+    assert!(err.contains("999999"), "error must name the id: {err}");
+    assert_eq!(h.app.router.active().context_id, active_before);
+    assert_eq!(h.app.router.current_depth(), depth_before);
+}
+
+/// The success side of the same reply contract: a live id zooms and the host
+/// says so, so the CLI can tell success from a bad id.
+#[test]
+fn zoom_into_live_context_replies_context_id() {
+    let mut h = crate::testing::HostHarness::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let _anchor = h.add_test_pane();
+    let pushed = h.add_test_pane();
+    let parent_id = h.app.router.active().context_id;
+    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "pane_id": pushed,
+    }))
+    .expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+    // Push already zooms in; return to the parent so the explicit zoom is a real move.
+    h.app.router.set_active(
+        h.app
+            .router
+            .position(|c| c.context_id == parent_id)
+            .unwrap(),
+    );
+    let child_id = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .expect("child context")
+        .context_id;
+
+    let reply = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::AppRequest::ZoomIntoContext {
+            context_id: child_id,
+            response_file: Some(rf),
+        }
+    });
+    assert!(
+        reply.get("error").is_none(),
+        "live id must not error: {reply}"
+    );
+    assert_eq!(reply["context_id"].as_u64(), Some(child_id));
+    assert_eq!(h.app.router.active().context_id, child_id);
+}
+
+/// Wire compat: the CLI payload (with `response_file`) and the legacy
+/// fire-and-forget payload (without) both deserialize.
+#[test]
+fn zoom_into_context_payload_deserializes_with_and_without_reply() {
+    let with: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "zoom_into_context", "context_id": 4, "response_file": "/tmp/x.json",
+    }))
+    .expect("with response_file");
+    assert!(matches!(
+        with,
+        crate::protocol::AppRequest::ZoomIntoContext {
+            context_id: 4,
+            response_file: Some(_)
+        }
+    ));
+    let without: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        "type": "zoom_into_context", "context_id": 4,
+    }))
+    .expect("without response_file");
+    assert!(matches!(
+        without,
+        crate::protocol::AppRequest::ZoomIntoContext {
+            context_id: 4,
+            response_file: None
+        }
+    ));
+}
+
+/// CLI-07 / #2622: every terminal a spawn path creates must carry, in
+/// `PLEXI_CONTEXT_ID`, the context of the window it was placed in — including
+/// when the caller lives in a context that is not the active one.
+#[test]
+fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx, ft);
+    let (tile, caller) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile);
+    let caller_ctx = app.windows[0].context_id;
+
+    let other_ctx: u64 = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context 2".into(),
+        root: crate::testing::scratch_context_root("context-2"),
+        description: None,
+        context_id: other_ctx,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(Window {
+        name: "Context 2".into(),
+        path: crate::testing::scratch_context_root("context-2"),
+        tree: egui_tiles::Tree::empty("ctx2_tree"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id: 10,
+        context_id: other_ctx,
+    });
+    app.active_window = 1;
+    app.router.set_active(1);
+
+    let mut spawned_any = false;
+    for layout in ["split_h", "tab", "new_window"] {
+        let total_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+        let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some(layout.to_string()),
+            args: vec![],
+            from_pane_id: Some(caller),
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
+        });
+        app.drain_pane_cmd_channel();
+        let total_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+        spawned_any |= total_after > total_before;
+    }
+    if !spawned_any {
+        return; // PTY unavailable in this test environment.
+    }
+
+    let mut checked = 0;
+    for win in &app.windows {
+        for pane in win.panes.values() {
+            let Some(terminal) = pane.as_terminal() else {
+                continue;
+            };
+            assert_eq!(
+                terminal.spawn_env.get("PLEXI_CONTEXT_ID"),
+                Some(&win.context_id.to_string()),
+                "pane {} lives in context {} but was stamped with another",
+                terminal.id,
+                win.context_id
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+    assert!(
+        app.windows
+            .iter()
+            .filter(|w| w.context_id == caller_ctx)
+            .flat_map(|w| w.panes.values())
+            .any(|p| p.as_terminal().is_some()),
+        "spawns must land in the caller's context, not the active one"
+    );
+}
