@@ -260,8 +260,28 @@ pub fn app_init(
     }
 }
 
+/// `uv run` arguments for `plexi app test`, built for one app directory.
+///
+/// The runner has to provision its own pytest. Neither the maintained apps
+/// under `apps/` nor a fresh `plexi app init` scaffold declares a Python
+/// project, so a bare `uv run pytest` resolves against whatever project happens
+/// to sit above the app — which does not depend on pytest — and dies with
+/// `Failed to spawn: pytest`. `--with pytest` makes the command self-contained.
+/// `--no-project` keeps uv from adopting (and materializing a `.venv` for) an
+/// unrelated ancestor project when the app declares none of its own; an app that
+/// does ship a `pyproject.toml` stays in project mode so its declared
+/// dependencies are installed alongside pytest.
+fn app_test_uv_args(app_dir: &std::path::Path) -> Vec<&'static str> {
+    let mut args = vec!["run"];
+    if !app_dir.join("pyproject.toml").is_file() {
+        args.push("--no-project");
+    }
+    args.extend(["--with", "pytest", "pytest", "tests/"]);
+    args
+}
+
 /// `plexi app test [<app-path>]` — run an app's AppHarness tests via
-/// `uv run pytest tests/` inside the app directory. Streams pytest output live
+/// `uv run` + pytest inside the app directory. Streams pytest output live
 /// and returns its exit code so CI and ship scripts can gate on it.
 pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
     let app_dir = std::path::Path::new(path);
@@ -277,13 +297,15 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
         return 1;
     }
 
+    let uv_args = app_test_uv_args(app_dir);
     log::info!(
-        "app_test:cli: running `uv run pytest tests/` in {} (snapshot={snapshot})",
+        "app_test:cli: running `uv {}` in {} (snapshot={snapshot})",
+        uv_args.join(" "),
         app_dir.display()
     );
 
     let mut cmd = std::process::Command::new("uv");
-    cmd.args(["run", "pytest", "tests/"]).current_dir(app_dir);
+    cmd.args(&uv_args).current_dir(app_dir);
     cmd.env("PYTHONPATH", crate::config::build_pythonpath(None));
     if snapshot {
         cmd.env("PLEXI_UPDATE_SNAPSHOTS", "1");
@@ -293,7 +315,7 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
             log::error!("app_test:cli: failed to spawn uv: {e}");
-            eprintln!("error: could not run `uv run pytest` ({e}). Is uv installed?");
+            eprintln!("error: could not run `uv run` ({e}). Is uv installed?");
             1
         }
     }
@@ -2273,6 +2295,51 @@ mod version_pin_tests {
         let parsed: crate::app::marketplace::InstalledRegistrySource =
             toml::from_str(&text).unwrap();
         assert_eq!(parsed, metadata);
+    }
+}
+
+#[cfg(test)]
+mod app_test_command_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// The generated command must ask uv for pytest itself. Apps do not depend
+    /// on pytest, so dropping `--with pytest` puts `plexi app test` back to
+    /// `Failed to spawn: pytest` for every maintained and scaffolded app.
+    #[test]
+    fn app_test_provisions_pytest_for_an_app_without_a_project() {
+        let dir = TempDir::new().unwrap();
+        let args = app_test_uv_args(dir.path());
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "--no-project",
+                "--with",
+                "pytest",
+                "pytest",
+                "tests/"
+            ],
+            "an app declaring no pyproject.toml runs pytest in an isolated uv environment"
+        );
+    }
+
+    /// An app that declares its own project keeps project mode, so uv installs
+    /// the author's dependencies next to pytest.
+    #[test]
+    fn app_test_keeps_project_mode_when_the_app_declares_one() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"x\"\n",
+        )
+        .unwrap();
+        let args = app_test_uv_args(dir.path());
+        assert_eq!(
+            args,
+            vec!["run", "--with", "pytest", "pytest", "tests/"],
+            "an app with its own project must not be run with --no-project"
+        );
     }
 }
 
