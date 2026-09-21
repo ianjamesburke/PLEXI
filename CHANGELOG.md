@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.1] — 2026-09-21
+
+### Changes
+- merge: provision pytest for plexi app test
+- fix(cli): provision pytest for `plexi app test`
 ## [0.3.0] — 2026-09-17
 
 ### Changes
