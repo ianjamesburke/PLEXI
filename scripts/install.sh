@@ -1,8 +1,110 @@
 #!/usr/bin/env bash
-# Usage: scripts/install.sh [channel]
+# Usage: scripts/install.sh [--channel main|alpha|beta] [--tag vX.Y.Z] [--dry-run]
+#        scripts/install.sh --from-source [channel]
 # Derives channel from git branch (main→main, alpha→alpha, beta→beta).
 # Falls back to .channel file, then "main". Must be run from the repo root.
 set -euo pipefail
+
+# The release path is self-contained: consumers need neither a package manager
+# nor a Rust toolchain. The historical installer below remains available for
+# contributors as an explicit --from-source escape hatch.
+if [[ "${1:-}" != "--from-source" ]]; then
+  REPO_SLUG="ianjamesburke/PLEXI"
+  CHANNEL="main"
+  TAG=""
+  DRY_RUN=0
+  INSTALL_ROOT="${PLEXI_INSTALL_DIR:-$HOME/.local/share/plexi}"
+  BIN_DIR="${PLEXI_BIN_DIR:-$HOME/.local/bin}"
+  RELEASE_BASE="${PLEXI_RELEASE_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download}"
+
+  usage() {
+    cat <<'EOF'
+Usage: install.sh [--channel main|alpha|beta] [--tag vX.Y.Z] [--dry-run]
+
+Installs a prebuilt Plexi release into a user-owned directory. No package
+manager or compiler is required. --tag is mainly for updater/CI use.
+
+Contributors with a checkout may use: scripts/install.sh --from-source [channel]
+EOF
+  }
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --channel|-c) CHANNEL="${2:?--channel requires a value}"; shift 2 ;;
+      --channel=*|-c=*) CHANNEL="${1#*=}"; shift ;;
+      --tag) TAG="${2:?--tag requires a value}"; shift 2 ;;
+      --tag=*) TAG="${1#*=}"; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --help|-h) usage; exit 0 ;;
+      *) echo "error: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
+    esac
+  done
+  case "$CHANNEL" in main|alpha|beta) ;; *) echo "error: channel must be main, alpha, or beta" >&2; exit 2;; esac
+
+  case "$(uname -s)" in
+    Darwin) OS="macos" ;;
+    Linux) OS="linux" ;;
+    MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+    *) echo "error: unsupported operating system: $(uname -s)" >&2; exit 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) ARCH="x64" ;;
+    arm64|aarch64) ARCH="arm64" ;;
+    *) echo "error: unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  if [[ "$OS" == windows && "$ARCH" != x64 ]]; then
+    echo "error: Plexi Windows releases currently support x64 only" >&2; exit 1
+  fi
+
+  # Stable releases have no suffix; alpha/beta use their newest prerelease.
+  if [[ -z "$TAG" ]]; then
+    command -v curl >/dev/null 2>&1 || { echo "error: curl is required to download Plexi" >&2; exit 1; }
+    releases="$(curl -fsSL -A 'plexi-installer' "https://api.github.com/repos/${REPO_SLUG}/releases")" || { echo "error: could not query Plexi releases" >&2; exit 1; }
+    if [[ "$CHANNEL" == main ]]; then
+      TAG="$(printf '%s' "$releases" | sed -nE 's/.*"tag_name":"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' | head -1)"
+    else
+      TAG="$(printf '%s' "$releases" | sed -nE 's/.*"tag_name":"(v[0-9]+\.[0-9]+\.[0-9]+-'"$CHANNEL"'\.[0-9]+)".*/\1/p' | head -1)"
+    fi
+    [[ -n "$TAG" ]] || { echo "error: no published ${CHANNEL} release found" >&2; exit 1; }
+  fi
+
+  ASSET="plexi-${OS}-${ARCH}"
+  [[ "$OS" == windows ]] && ASSET+=".zip" || ASSET+=".tar.gz"
+  URL="${RELEASE_BASE}/${TAG}/${ASSET}"
+  binary_name="plexi"
+  [[ "$CHANNEL" != main ]] && binary_name+="-${CHANNEL}"
+  destination="${INSTALL_ROOT}/${CHANNEL}"
+
+  echo "Plexi ${TAG} (${CHANNEL}, ${OS}/${ARCH})"
+  echo "Asset: ${URL}"
+  echo "Install: ${destination}; command: ${BIN_DIR}/${binary_name}"
+  if [[ "$DRY_RUN" == 1 ]]; then exit 0; fi
+
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  archive="${tmp}/${ASSET}"
+  curl -fL --retry 3 --connect-timeout 15 -o "$archive" "$URL"
+  mkdir -p "$destination" "$BIN_DIR" "$tmp/unpack"
+  if [[ "$OS" == windows ]]; then
+    if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$tmp/unpack";
+    elif command -v powershell.exe >/dev/null 2>&1; then powershell.exe -NoProfile -Command "Expand-Archive -Force '$archive' '$tmp/unpack'";
+    else echo "error: unzip or PowerShell is required to unpack the Windows release" >&2; exit 1; fi
+    source_binary="$(find "$tmp/unpack" -name plexi.exe -type f -print -quit)"
+  else
+    tar -xzf "$archive" -C "$tmp/unpack"
+    source_binary="$(find "$tmp/unpack" -name plexi -type f -print -quit)"
+  fi
+  [[ -n "$source_binary" ]] || { echo "error: release asset did not contain the Plexi binary" >&2; exit 1; }
+  rm -rf "$destination"; mkdir -p "$destination"
+  cp -R "$tmp/unpack/." "$destination/"
+  if [[ "$OS" == windows ]]; then cp "$source_binary" "$BIN_DIR/${binary_name}.exe"; else install -m 0755 "$source_binary" "$BIN_DIR/$binary_name"; fi
+  profile_suffix=""
+  [[ "$CHANNEL" != main ]] && profile_suffix="-$CHANNEL"
+  mkdir -p "${HOME}/.plexi${profile_suffix}" 2>/dev/null || true
+  echo "$TAG" > "${HOME}/.plexi${profile_suffix}/installed_tag" 2>/dev/null || true
+  echo "Installed ${BIN_DIR}/${binary_name}."
+  exit 0
+fi
+shift
 
 os="$(uname)"
 case "$os" in

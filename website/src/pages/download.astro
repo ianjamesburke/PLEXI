@@ -4,7 +4,7 @@ import Newsletter from '../components/Newsletter.astro';
 
 const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
 ---
-<Layout title="Download Plexi" description="Install Plexi on macOS with a single command.">
+<Layout title="Download Plexi" description="Install Plexi on macOS, Linux, or Windows with a single command.">
   <header class="dl-hero">
     <div class="wrap">
       <h1>Install Plexi</h1>
@@ -24,8 +24,8 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
           </button>
         </div>
         <p class="install-note">
-          You'll be asked for your password &mdash; it installs the app to /Applications
-          and sets up the CLI in one shot.
+          Downloads a prebuilt binary for macOS, Linux, or Windows into your user
+          directory. No package manager, Rust, or administrator password is required.
         </p>
       </div>
 

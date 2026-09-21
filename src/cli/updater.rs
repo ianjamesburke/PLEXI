@@ -14,7 +14,7 @@ use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
 pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
 
 /// Spawns a background thread that checks for updates, and if a newer version
-/// is found, builds and installs it silently. Only sends on `mailbox` when the
+/// is found, downloads and installs it silently. Only sends on `mailbox` when the
 /// new binary is ready - the UI badge means "restart to apply", not
 /// "downloading". The mailbox wakes the UI thread so the badge appears even on
 /// an idle host.
@@ -104,9 +104,7 @@ fn update_cache_fresh_for_channel(cache_path: &Path, channel: UpdateChannel, now
     std::fs::read(cache_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|json| {
-            cached_json_fresh_for_channel(&json, channel, now)
-        })
+        .is_some_and(|json| cached_json_fresh_for_channel(&json, channel, now))
 }
 
 fn cached_json_fresh_for_channel(
@@ -220,68 +218,31 @@ fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str)
     latest_raw
 }
 
-/// Clone/fetch the source repo, check out the target tag, and run the install
-/// script. This builds the binary and copies it into /Applications/ while the
-/// current instance keeps running. The running binary is not affected because
-/// macOS loads it into memory at launch.
+/// Download the target tag's installer, which selects and installs its matching
+/// release asset. Releases before the v1 binary-asset cutover fail cleanly;
+/// contributors can still opt into `scripts/install.sh --from-source`.
 fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let src_dir = std::path::PathBuf::from(&home).join(".plexi-src");
-    let repo = "https://github.com/ianjamesburke/PLEXI.git";
-
     let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
 
     let log_path = profile_dir.join("update.log");
     std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;
 
-    log::info!("background_build: fetching source for {tag}");
-    if src_dir.join(".git").is_dir() {
-        let mut command = Command::new("git");
-        command.args([
-            "-C",
-            &src_dir.to_string_lossy(),
-            "fetch",
-            "origin",
-            "--tags",
-            "--force",
-        ]);
-        let status = run_logged_command(&mut command, &log_path, "git fetch")?;
-        if !status.success() {
-            return Err("git fetch failed".to_string());
-        }
-    } else {
-        let mut command = Command::new("git");
-        command.args(["clone", repo, &src_dir.to_string_lossy()]);
-        let status = run_logged_command(&mut command, &log_path, "git clone")?;
-        if !status.success() {
-            return Err("git clone failed".to_string());
-        }
-    }
-
-    let mut checkout = Command::new("git");
-    checkout.args(["-C", &src_dir.to_string_lossy(), "checkout", "--force", tag]);
-    let status = run_logged_command(&mut checkout, &log_path, "git checkout")?;
-    if !status.success() {
-        return Err(format!("git checkout {tag} failed"));
-    }
-
-    log::info!("background_build: running install.sh for {tag} channel={channel}; sudo/bin install skipped because PLEXI_SKIP_BIN_INSTALL=1 and the updater has no TTY");
-
+    log::info!("background_build: downloading binary asset for {tag} channel={channel}");
+    let installer =
+        format!("https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag}/scripts/install.sh");
     let install_cmd = format!(
-        "PLEXI_INSTALL_TAG='{}' PLEXI_SKIP_BIN_INSTALL=1 bash '{}' '{}'",
-        tag,
-        src_dir.join("scripts/install.sh").display(),
-        channel,
+        "curl -fsSL '{}' | bash -s -- --channel '{}' --tag '{}'",
+        installer, channel, tag,
     );
     let mut install = Command::new("bash");
     install
         .args(["-l", "-c", &install_cmd])
-        .current_dir(&src_dir);
-    let status = run_logged_command(&mut install, &log_path, "install.sh")?;
+        .env("PLEXI_INSTALL_TAG", tag);
+    let status = run_logged_command(&mut install, &log_path, "binary install")?;
 
     if !status.success() {
         return Err(format!(
-            "install.sh exited {status} — see {}",
+            "binary installer exited {status} (the release may predate v1 assets) — see {}",
             log_path.display()
         ));
     }
