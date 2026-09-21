@@ -45,8 +45,18 @@ pub(crate) enum SocketRelease {
 }
 
 fn identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+    // Unix notify sockets are filesystem inodes; (dev, ino) detects reuse.
+    // Windows uses named pipes with no filesystem entry — identity is unused.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// Remember the socket [`exit_host`] must remove. Called once, right after the

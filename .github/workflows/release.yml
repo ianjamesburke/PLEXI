@@ -32,10 +32,11 @@ jobs:
             os: windows-latest
             kind: windows-x64
     runs-on: ${{ matrix.os }}
-    # Windows has not yet had its first hosted platform validation, and macOS
-    # bundling depends on cargo-bundle tooling that can drift. Keep the Linux
-    # release path publishable while a mac/Windows tooling miss is fixed.
-    continue-on-error: ${{ matrix.kind == 'windows-x64' || startsWith(matrix.kind, 'macos-') }}
+    # macOS bundling depends on cargo-bundle tooling that can drift. Windows
+    # must produce plexi-windows-x64.zip when the tagged tree includes the
+    # windows-v1-bringup seams — soft-fail here previously claimed an empty Win
+    # asset. Keep Linux publishable if macOS tooling misses.
+    continue-on-error: ${{ startsWith(matrix.kind, 'macos-') }}
     steps:
       - uses: actions/checkout@v6
         with:
