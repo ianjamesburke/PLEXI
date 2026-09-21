@@ -1230,17 +1230,20 @@ pub fn sdk_path_override() -> Option<PathBuf> {
 pub fn build_pythonpath(bundle_sdk: Option<&std::path::Path>) -> String {
     let mut entries = Vec::new();
     if let Some(dev_sdk) = sdk_path_override() {
-        entries.push(dev_sdk.to_string_lossy().into_owned());
+        entries.push(dev_sdk);
     }
     if let Some(source_sdk) = source_sdk_path() {
-        entries.push(source_sdk.to_string_lossy().into_owned());
+        entries.push(source_sdk);
     }
     let sdk_dir = config_dir().join("sdk");
-    entries.push(sdk_dir.to_string_lossy().into_owned());
+    entries.push(sdk_dir);
     if let Some(bsdk) = bundle_sdk.filter(|p| p.exists()) {
-        entries.push(bsdk.to_string_lossy().into_owned());
+        entries.push(bsdk.to_path_buf());
     }
-    entries.join(":")
+    std::env::join_paths(entries)
+        .expect("SDK paths must not contain the platform path separator")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn source_sdk_path() -> Option<PathBuf> {

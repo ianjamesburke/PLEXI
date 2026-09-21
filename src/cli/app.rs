@@ -306,6 +306,18 @@ fn app_test_identity(app_dir: &std::path::Path) -> (String, Vec<String>) {
     (id, Vec::new())
 }
 
+/// Builds the import path for app tests, keeping the app's entry module ahead
+/// of the injected Plexi SDK.
+fn app_test_pythonpath(app_dir: &std::path::Path) -> String {
+    let sdk_paths = crate::config::build_pythonpath(None);
+    let mut paths = vec![app_dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&sdk_paths));
+    std::env::join_paths(paths)
+        .expect("app test PYTHONPATH entries must not contain the platform path separator")
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// `plexi app test [<app-path>]` — run an app's AppHarness tests via
 /// `uv run` + pytest inside the app directory, on the app's Python venv.
 /// Streams pytest output live and returns its exit code so CI and ship
@@ -347,7 +359,7 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
 
     let mut cmd = std::process::Command::new("uv");
     cmd.args(&uv_args).current_dir(app_dir);
-    cmd.env("PYTHONPATH", crate::config::build_pythonpath(None));
+    cmd.env("PYTHONPATH", app_test_pythonpath(app_dir));
     if snapshot {
         cmd.env("PLEXI_UPDATE_SNAPSHOTS", "1");
     }
@@ -2387,6 +2399,20 @@ mod app_test_command_tests {
         let args = app_test_uv_args(dir.path(), &venv_python());
         let at = args.iter().position(|a| a == "--python").unwrap();
         assert_eq!(args[at + 1], VENV_PYTHON);
+    }
+
+    #[test]
+    fn app_test_pythonpath_puts_the_app_root_before_the_sdk() {
+        let dir = TempDir::new().unwrap();
+        let pythonpath = app_test_pythonpath(dir.path());
+        let mut entries = std::env::split_paths(&pythonpath);
+
+        assert_eq!(entries.next().as_deref(), Some(dir.path()));
+        assert_eq!(
+            entries.collect::<Vec<_>>(),
+            std::env::split_paths(&crate::config::build_pythonpath(None)).collect::<Vec<_>>(),
+            "the SDK path entries follow the app root"
+        );
     }
 
     /// Identity falls back to the directory name with no dependencies when
