@@ -204,14 +204,8 @@ pub enum Commands {
     /// split a pane (⌘D) and navigate between panes (⌘L / ⌘H).
     /// Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
     Demo,
-    /// Update installed apps or Plexi itself.
-    ///
-    /// Run with the `apps` subcommand to update one or all installed apps.
-    /// Run with no subcommand to update the Plexi binary itself.
-    Update {
-        #[command(subcommand)]
-        subcommand: Option<UpdateCmd>,
-    },
+    /// Update the Plexi binary for this channel.
+    Update,
     /// Uninstalls the app, CLI, and optionally your profile data.
     ///
     /// Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi),
@@ -666,7 +660,7 @@ pub enum AppCmd {
     },
     /// Show details about an installed app: id, name, version, and available tools.
     Info { id: String },
-    /// Read or replace a file-backed app's state document (stint 0645).
+    /// Read or replace a file-backed app's state document.
     ///
     /// Only apps that declare a `[state]` section are addressable. The state
     /// path is resolved from the manifest and the calling context — callers
@@ -685,76 +679,7 @@ pub enum AppCmd {
     /// workspace is detected, pass --global to scaffold into the global registry.
     ///
     /// Use --open to launch it in a split-right pane after scaffolding.
-    #[command(after_long_help = r#"APP DEVELOPMENT GUIDE:
-
-  Canonical authoring guide: sdk/python/AUTHORING.md (full API: website docs sdk.md).
-  This block is a quick reference; the guide is the source of truth.
-
-  Two rendering modes (pick one per app):
-    view()                  Declarative UI trees: forms, lists, dashboards
-    view() + Canvas(...)    Canvas drawing: games, animations, visualizations
-
-  SDK v3 module functions:
-    init(size, args)   Return startup effects such as SetTitle/SetState
-    update(event)      Return effects after key, mouse, timer, and render events
-    view()             Return the current component tree; keep it pure
-
-  UI components:
-    Read plexi_sdk/ui.py for the full API. Key widgets:
-    AppBar, ActionBar, Column, HStack, Label, Spacer, FooterKeys, SelectList, TextEdit,
-    Card, Section, Tabs, Grid, Toggle,
-    ButtonRow, ProgressBar, Divider, Scrollable,
-    Canvas, CanvasRect, CanvasText, CanvasCircle
-
-  Key names (use these exact strings in KeyEvent handlers):
-    space, return, escape, up, down, left, right, backspace, tab
-    a-z (lowercase), plus, minus, equals, f1-f12
-
-  State:
-    state.get("key", default)        Read runtime state
-    SetState({"key": value})         Update process-local runtime state
-    PersistState({"key": value})     Save state across app restarts
-
-  Canvas apps:
-    Return Canvas([...]) from view().
-    For animation, return SetSchedulerMode("continuous", fps=60) from init()
-    and update simulation state from RenderFrame events.
-
-  Effects:
-    SetTitle, SetStatus, SetTimer, SetSchedulerMode, SetState, PersistState,
-    HttpFetch, AiQuery, FileRead, FileWrite, CloseSelf
-    Logging is not an effect: call log.debug/info/warn/error from plexi_sdk.
-
-  Generated files:
-    AGENTS.md              Agent-facing app contract and validation loop
-    .gitignore             Ignores runtime/test/render noise, not source/tests/fixtures
-    plexi.scaffold.toml    Machine-readable CLI/SDK/schema/runtime/template/profile metadata
-
-  Development loop:
-    Read AGENTS.md first.
-    Use TDD and extend tests for behavior changes.
-    Run `plexi app test .` regularly.
-    New Python apps set `watch = true`; after `plexi app open .`, source edits
-    should hot-reload into the same pane without reopening. Verify with
-    `plexi pane state <pane-id>` and the host log's `hot_reload` lines.
-    Use `plexi app check` as the final gate; do not look for `plexi app build`.
-
-  Headless testing:
-    PLEXI_CHANNEL=alpha plexi app check <path> --png-dir render-output/check
-    PLEXI_CHANNEL=pr-123 plexi app check <path> --png-dir render-output/check
-    plexi-pr-123 app check <path> --png-dir render-output/check
-    PLEXI_CHANNEL=alpha plexi app render <path>                          JSON frame tree
-    PLEXI_CHANNEL=alpha plexi app render <path> --png --output shot.png  PNG image
-    Use --state file.json to pre-populate state before init().
-    The state file is a plain JSON object, e.g. {"count": 3}.
-
-  Runtime probes:
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi app open <path>
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi app action <pane-id> <handler-id>
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane key <pane-id> <key>
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane state <pane-id>
-    Inspect ~/.plexi-alpha/plexi.log or ~/.plexi-pr-N/plexi.log for app logs.
-"#)]
+    /// See `sdk/python/AUTHORING.md` for the canonical authoring guide.
     Init {
         #[arg(required_unless_present = "wasm")]
         name: Option<String>,
@@ -863,17 +788,6 @@ pub enum AppCmd {
         /// Optional arguments forwarded to the action handler
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum UpdateCmd {
-    /// Compatibility alias for `plexi app update`.
-    ///
-    /// Omit the app id to update all installed apps visible from the current workspace.
-    Apps {
-        /// App id to update (omit to update all installed apps)
-        id: Option<String>,
     },
 }
 
@@ -1064,14 +978,6 @@ pub enum PaneCmd {
         /// Pane id (from `plexi pane list`) or the new name if renaming the current pane
         first: String,
         /// New name when a pane id is given as the first argument
-        second: Option<String>,
-    },
-    /// Deprecated: use `plexi pane name` instead.
-    #[command(hide = true)]
-    SetTitle {
-        /// Pane id (from `plexi pane list`) or title when used alone
-        first: String,
-        /// Title when pane-id is given as the first argument
         second: Option<String>,
     },
     /// List all open panes as a JSON array.
@@ -2029,6 +1935,16 @@ mod tests {
             panic!("expected secret command");
         };
         assert!(matches!(cmd, SecretCmd::List { global: false }));
+    }
+
+    #[test]
+    fn removed_update_apps_alias_is_rejected() {
+        assert!(Cli::try_parse_from(["plexi", "update", "apps"]).is_err());
+    }
+
+    #[test]
+    fn removed_pane_set_title_alias_is_rejected() {
+        assert!(Cli::try_parse_from(["plexi", "pane", "set-title", "Example"]).is_err());
     }
 
     #[test]
