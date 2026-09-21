@@ -145,7 +145,8 @@ jobs:
             prerelease=true; latest=false
           fi
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            args=(--title "$TAG" --generate-notes --latest="$latest")
+            args=(--title "$TAG" --generate-notes)
+            [[ "$latest" == true ]] && args+=(--latest)
             [[ "$prerelease" == true ]] && args+=(--prerelease)
             gh release create "$TAG" "${args[@]}"
           fi
