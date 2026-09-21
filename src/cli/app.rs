@@ -271,18 +271,45 @@ pub fn app_init(
 /// unrelated ancestor project when the app declares none of its own; an app that
 /// does ship a `pyproject.toml` stays in project mode so its declared
 /// dependencies are installed alongside pytest.
-fn app_test_uv_args(app_dir: &std::path::Path) -> Vec<&'static str> {
-    let mut args = vec!["run"];
+///
+/// `--python` pins the interpreter to the app venv (`python_env::PYTHON_APP_VENV_VERSION`).
+/// Without it uv picks whatever `python3` is on PATH, which on a stock Mac is
+/// older than the SDK's floor and dies importing `plexi_sdk` (`tomllib`).
+fn app_test_uv_args(app_dir: &std::path::Path, python: &std::path::Path) -> Vec<String> {
+    let mut args = vec!["run".to_string()];
     if !app_dir.join("pyproject.toml").is_file() {
-        args.push("--no-project");
+        args.push("--no-project".to_string());
     }
-    args.extend(["--with", "pytest", "pytest", "tests/"]);
+    args.push("--python".to_string());
+    args.push(python.display().to_string());
+    args.extend(
+        ["--with", "pytest", "pytest", "tests/"]
+            .into_iter()
+            .map(str::to_string),
+    );
     args
 }
 
+/// App id and declared Python dependencies for the app venv, from
+/// `manifest.toml` when it parses, else the directory name and no dependencies.
+fn app_test_identity(app_dir: &std::path::Path) -> (String, Vec<String>) {
+    let manifest = std::fs::read_to_string(app_dir.join("manifest.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<crate::app::registry::AppManifest>(&text).ok());
+    if let Some(manifest) = manifest {
+        return (manifest.app.id, manifest.app.dependencies);
+    }
+    let id = std::fs::canonicalize(app_dir)
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "app".to_string());
+    (id, Vec::new())
+}
+
 /// `plexi app test [<app-path>]` — run an app's AppHarness tests via
-/// `uv run` + pytest inside the app directory. Streams pytest output live
-/// and returns its exit code so CI and ship scripts can gate on it.
+/// `uv run` + pytest inside the app directory, on the app's Python venv.
+/// Streams pytest output live and returns its exit code so CI and ship
+/// scripts can gate on it.
 pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
     let app_dir = std::path::Path::new(path);
     let tests_dir = app_dir.join("tests");
@@ -297,7 +324,21 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
         return 1;
     }
 
-    let uv_args = app_test_uv_args(app_dir);
+    let (app_id, deps) = app_test_identity(app_dir);
+    let python = match crate::app::python_env::ensure_app_venv(&app_id, app_dir, &deps) {
+        Ok(python) => python,
+        Err(e) => {
+            log::error!("app_test:cli[{app_id}]: app Python venv setup failed: {e}");
+            eprintln!(
+                "error: could not prepare the Python {} app venv for {}: {e}",
+                crate::app::python_env::PYTHON_APP_VENV_VERSION,
+                app_dir.display()
+            );
+            return 1;
+        }
+    };
+
+    let uv_args = app_test_uv_args(app_dir, &python);
     log::info!(
         "app_test:cli: running `uv {}` in {} (snapshot={snapshot})",
         uv_args.join(" "),
@@ -2303,18 +2344,59 @@ mod app_test_command_tests {
     use super::*;
     use tempfile::TempDir;
 
+    const VENV_PYTHON: &str = "/apps/todo/.venv/bin/python";
+
+    fn venv_python() -> std::path::PathBuf {
+        std::path::PathBuf::from(VENV_PYTHON)
+    }
+
+    /// The interpreter must be pinned to the app venv. Left to uv, a stock
+    /// Mac resolves to system Python 3.9 and `plexi_sdk` dies on `tomllib`.
+    #[test]
+    fn app_test_pins_the_interpreter_to_the_app_venv() {
+        let dir = TempDir::new().unwrap();
+        let args = app_test_uv_args(dir.path(), &venv_python());
+        let at = args.iter().position(|a| a == "--python").unwrap();
+        assert_eq!(args[at + 1], VENV_PYTHON);
+    }
+
+    /// Identity falls back to the directory name with no dependencies when
+    /// the app has no readable manifest, and reads both from one when it does.
+    #[test]
+    fn app_test_identity_reads_manifest_else_dir_name() {
+        let dir = TempDir::new().unwrap();
+        let (id, deps) = app_test_identity(dir.path());
+        assert_eq!(
+            id,
+            dir.path().file_name().unwrap().to_string_lossy(),
+            "no manifest → directory name"
+        );
+        assert!(deps.is_empty());
+
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n[app]\nid = \"todo\"\nname = \"Todo\"\nentry = \"main.py\"\ntype = \"app\"\ndependencies = [\"httpx\"]\n",
+        )
+        .unwrap();
+        let (id, deps) = app_test_identity(dir.path());
+        assert_eq!(id, "todo");
+        assert_eq!(deps, vec!["httpx".to_string()]);
+    }
+
     /// The generated command must ask uv for pytest itself. Apps do not depend
     /// on pytest, so dropping `--with pytest` puts `plexi app test` back to
     /// `Failed to spawn: pytest` for every maintained and scaffolded app.
     #[test]
     fn app_test_provisions_pytest_for_an_app_without_a_project() {
         let dir = TempDir::new().unwrap();
-        let args = app_test_uv_args(dir.path());
+        let args = app_test_uv_args(dir.path(), &venv_python());
         assert_eq!(
             args,
             vec![
                 "run",
                 "--no-project",
+                "--python",
+                VENV_PYTHON,
                 "--with",
                 "pytest",
                 "pytest",
@@ -2334,10 +2416,18 @@ mod app_test_command_tests {
             "[project]\nname = \"x\"\n",
         )
         .unwrap();
-        let args = app_test_uv_args(dir.path());
+        let args = app_test_uv_args(dir.path(), &venv_python());
         assert_eq!(
             args,
-            vec!["run", "--with", "pytest", "pytest", "tests/"],
+            vec![
+                "run",
+                "--python",
+                VENV_PYTHON,
+                "--with",
+                "pytest",
+                "pytest",
+                "tests/"
+            ],
             "an app with its own project must not be run with --no-project"
         );
     }
