@@ -413,8 +413,6 @@ impl SecretStore for FileStore {
     }
 }
 
-/// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
-/// interior mutability so tests can share a single instance behind `&dyn`.
 #[cfg(test)]
 pub struct InMemoryKeychain {
     store: std::sync::Mutex<HashMap<String, String>>,
@@ -886,6 +884,3 @@ impl SecretStore for CredentialManager {
         Self::remove(account)
     }
 }
-
-/// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
-/// interior mutability so tests can share a single instance behind `&dyn`.
