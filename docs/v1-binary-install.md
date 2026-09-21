@@ -38,7 +38,7 @@ under `~/.local/share/plexi/<channel>` and puts the channel command in
 or `PLEXI_BIN_DIR` before running it to choose user-owned destinations.
 
 The served top-level installer delegates to `alpha/scripts/install.sh` and
-defaults to `--channel alpha` until `main` publishes binary assets. An explicit
+defaults to `--channel alpha` until `main` publishes binary assets. Auto tag selection skips channel cuts that lack the platform asset (so an empty `alpha.N` waiting on Actions falls back to the newest cut that has it). An explicit
 `--channel` still selects that channel; contributors can opt into a source build
 with `--from-source`.
 
