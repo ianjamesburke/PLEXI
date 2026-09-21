@@ -6,6 +6,7 @@ pub mod finder_service;
 pub mod format;
 pub mod frame_diag;
 pub mod fs;
+pub mod ipc;
 pub mod logging;
 #[cfg(target_os = "macos")]
 pub mod macos_menu;

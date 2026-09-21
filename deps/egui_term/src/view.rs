@@ -512,6 +512,23 @@ impl<'a> TerminalView<'a> {
                                 encoding,
                             ))
                         }
+                    } else if cfg!(target_os = "windows")
+                        && matches!(&event, egui::Event::Copy)
+                    {
+                        // Windows Terminal convention: Ctrl+C copies a selection
+                        // (then clears it so the next Ctrl+C interrupts), else sends ^C.
+                        let content = self.backend.selectable_content();
+                        if content.trim().is_empty() {
+                            input_actions.push(InputAction::BackendCall(
+                                BackendCommand::Write([0x3].to_vec()),
+                            ));
+                        } else {
+                            input_actions
+                                .push(InputAction::WriteToClipboard(content));
+                            input_actions.push(InputAction::BackendCall(
+                                BackendCommand::ClearSelection,
+                            ));
+                        }
                     } else {
                         input_actions.push(process_keyboard_event(
                             event,
@@ -1132,7 +1149,13 @@ fn process_keyboard_event(
             process_text_event(&text, modifiers, backend, bindings_layout)
         },
         egui::Event::Paste(text) => InputAction::BackendCall(
-            #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+            // Windows Terminal convention: Ctrl+V always pastes (not a literal ^V).
+            #[cfg(target_os = "windows")]
+            BackendCommand::Write(text.as_bytes().to_vec()),
+            #[cfg(all(
+                not(target_os = "windows"),
+                not(any(target_os = "ios", target_os = "macos"))
+            ))]
             if modifiers.contains(Modifiers::COMMAND | Modifiers::SHIFT) {
                 BackendCommand::Write(text.as_bytes().to_vec())
             } else {
@@ -1145,6 +1168,7 @@ fn process_keyboard_event(
             },
         ),
         egui::Event::Copy => {
+            #[cfg(not(target_os = "windows"))]
             let copy_if_nonempty = |content: String| -> InputAction {
                 if content.trim().is_empty() {
                     InputAction::Ignore
@@ -1152,7 +1176,16 @@ fn process_keyboard_event(
                     InputAction::WriteToClipboard(content)
                 }
             };
-            #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+            // Windows Copy is handled in the outer dispatcher; defensive Ignore
+            // here in case one bypasses it.
+            #[cfg(target_os = "windows")]
+            {
+                InputAction::Ignore
+            }
+            #[cfg(all(
+                not(target_os = "windows"),
+                not(any(target_os = "ios", target_os = "macos"))
+            ))]
             if modifiers.contains(Modifiers::COMMAND | Modifiers::SHIFT) {
                 copy_if_nonempty(backend.selectable_content())
             } else {

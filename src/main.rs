@@ -33,9 +33,8 @@ mod render;
 mod rpc;
 #[cfg(test)]
 mod scenes;
-#[cfg(not(test))] // only the not(test) legacy index/keychain migrations use it
-// Legacy pre-#322 Keychain index record. Read only by the macOS index cache
-// and the macOS legacy-secret migration, so it exists on exactly their cfg.
+// Only the not(test) legacy index/keychain migrations read it, and those are
+// macOS-only — no other platform ever wrote a pre-#322 Keychain record.
 #[cfg(all(target_os = "macos", not(test)))]
 mod secrets;
 mod spatial;
@@ -197,10 +196,7 @@ fn main() -> eframe::Result {
     // dialog (macOS ACLs are per-binary), so ephemeral CLI processes must
     // never run it. An attended host launch is the one place a prompt can be
     // answered.
-    // On Linux the store is a plain 0600 file with no ACL prompt, so the
-    // host-startups-only restriction below is about macOS; keeping one code
-    // path is worth more than skipping a cheap no-op migration.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
         if !cli_mode {
             let migrated = crate::workspace::secrets::migrate_legacy_global_secrets(
@@ -252,13 +248,14 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Commands, ConfigCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
     };
+    use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
 
-    match cli::help::parse_gated(&args) {
+    match Cli::try_parse_from(&args) {
         Ok(cli) => {
             if let Some(socket) = cli.socket {
                 cli::set_command_socket_override(socket);
@@ -1122,10 +1119,7 @@ fn main() -> eframe::Result {
                             changed_resources: &changed_resources,
                         })),
                         EventsCmd::List { json } => std::process::exit(cli::events_list_cli(json)),
-                        EventsCmd::McpConfig => {
-                            exit_if_feature_disabled(crate::release::ReleaseFeature::McpClient);
-                            std::process::exit(cli::events_mcp_config_cli())
-                        }
+                        EventsCmd::McpConfig => std::process::exit(cli::events_mcp_config_cli()),
                     },
                     Commands::CompleteOpen { prefix } => {
                         std::process::exit(cli::complete_open_cli(&prefix));
@@ -1321,7 +1315,8 @@ fn main() -> eframe::Result {
     // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
     // show help rather than attempting to launch a second GUI.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        let _ = cli::help::gated_command().print_help();
+        use clap::CommandFactory;
+        let _ = Cli::command().print_help();
         println!();
         std::process::exit(0);
     }
@@ -1344,7 +1339,6 @@ fn main() -> eframe::Result {
     // CLI subcommands already inherit the full shell environment from the
     // calling terminal — running this there corrupts terminal signal state
     // (zsh -i hijacks SIGINT) and spams the user's stdout with log noise.
-    crate::host::shell::scrub_launcher_color_overrides();
     crate::host::shell::install_login_shell_path();
     crate::host::shell::install_login_shell_env();
 

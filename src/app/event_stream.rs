@@ -7,7 +7,7 @@ use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
 use crate::protocol::{AppRequest, PayloadMode, TriggerMode};
 use serde_json::{Value, json};
 use std::io::{BufReader, Lines, Write};
-use std::os::unix::net::UnixStream;
+use crate::platform::ipc::IpcStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -74,7 +74,7 @@ impl Consumer {
 
 /// Owns all early-return cleanup, including a disconnected consent request.
 struct Connection {
-    socket: UnixStream,
+    socket: IpcStream,
     cancelled: Arc<AtomicBool>,
     subscriber: String,
     wake: UiMailbox<AppRequest>,
@@ -102,7 +102,7 @@ impl Drop for Connection {
     }
 }
 
-fn send(socket: &mut UnixStream, value: Value) -> bool {
+fn send(socket: &mut IpcStream, value: Value) -> bool {
     if let Err(error) = writeln!(socket, "{value}").and_then(|()| socket.flush()) {
         log::info!("events: writing connection reply failed: {error}");
         false
@@ -111,7 +111,7 @@ fn send(socket: &mut UnixStream, value: Value) -> bool {
     }
 }
 
-fn error(socket: &mut UnixStream, message: impl AsRef<str>) {
+fn error(socket: &mut IpcStream, message: impl AsRef<str>) {
     send(socket, json!({"type":"error", "message":message.as_ref()}));
 }
 
@@ -137,8 +137,8 @@ fn wait_match(
 }
 
 pub(super) fn handle_events_subscribe(
-    mut socket: UnixStream,
-    remaining: Lines<BufReader<UnixStream>>,
+    mut socket: IpcStream,
+    remaining: Lines<BufReader<IpcStream>>,
     val: Value,
     subscribe: &UiMailbox<HostSubscribeRequest>,
     wake: &UiMailbox<AppRequest>,

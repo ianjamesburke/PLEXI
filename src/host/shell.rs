@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 const TERMINAL_ENV_NAMES_VAR: &str = "PLEXI_TERMINAL_ENV_NAMES";
 const TERMINAL_ENV_VALUE_PREFIX: &str = "PLEXI_TERMINAL_ENV_VALUE_";
 
+#[cfg(unix)]
 pub fn detect_shell() -> String {
     if let Ok(shell) = std::env::var("SHELL") {
         if Path::new(&shell).exists() {
@@ -32,6 +33,50 @@ pub fn detect_shell() -> String {
     }
 
     "/bin/sh".to_string()
+}
+
+/// Windows has no `$SHELL` convention, so the order is: an explicit `$SHELL`
+/// override (set by a user who wants git-bash or similar), then PowerShell 7
+/// (`pwsh`), then Windows PowerShell (`powershell`), then `%ComSpec%`.
+///
+/// `pwsh` outranks `powershell` deliberately: it is the version still shipping
+/// updates, and it is what a developer who installed it expects to get.
+#[cfg(windows)]
+pub fn detect_shell() -> String {
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.is_empty() && Path::new(&shell).exists() {
+            log::info!("detect_shell: using $SHELL override -> {shell}");
+            return shell;
+        }
+    }
+    for candidate in ["pwsh.exe", "powershell.exe"] {
+        if let Some(path) = which_on_path(candidate) {
+            log::info!("detect_shell: found {candidate} on PATH -> {path}");
+            return path;
+        }
+    }
+    if let Ok(comspec) = std::env::var("ComSpec") {
+        if Path::new(&comspec).exists() {
+            log::info!("detect_shell: falling back to %ComSpec% -> {comspec}");
+            return comspec;
+        }
+    }
+    log::warn!("detect_shell: no pwsh/powershell/ComSpec found, returning bare \"cmd.exe\"");
+    "cmd.exe".to_string()
+}
+
+/// First `name` found on `PATH`. Windows has no `which(1)`, and shelling out
+/// to `where.exe` would cost a subprocess on every pane spawn.
+#[cfg(windows)]
+fn which_on_path(name: &str) -> Option<String> {
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
 }
 
 /// Resolve the user's login-shell PATH and install it as the process PATH.
@@ -60,49 +105,6 @@ pub fn install_login_shell_path() {
             std::env::set_var("PATH", new_path);
         }
     }
-}
-
-/// Color-suppression vars that describe the *launcher's* output, not a pane's.
-///
-/// `NO_COLOR` / `FORCE_COLOR=0` exported by whatever started the host (a
-/// sandbox session, CI wrapper, agent harness) are inherited by every PTY
-/// child, and chalk/supports-color/Node's `getColorDepth` put them ahead of
-/// `COLORTERM` — so a pane advertising truecolor still renders monochrome
-/// (Claude Code loses its orange). A pane is a fresh terminal whose
-/// capabilities `build_env` states explicitly; a user who wants these set in
-/// panes sets them in their shell rc, which the pane's login shell sources.
-const LAUNCHER_COLOR_OVERRIDES: &[&str] = &["NO_COLOR", "FORCE_COLOR"];
-
-fn launcher_color_overrides_present(
-    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> Vec<(&'static str, String)> {
-    LAUNCHER_COLOR_OVERRIDES
-        .iter()
-        .filter_map(|&k| lookup(k).map(|v| (k, v.to_string_lossy().into_owned())))
-        .collect()
-}
-
-/// Drop launcher color overrides from the host process env so no PTY child
-/// or login-shell probe inherits them. Must run before
-/// `install_login_shell_path`/`install_login_shell_env`, otherwise the probe
-/// shell inherits the launcher's value and it is re-adopted as if the user's
-/// profile had set it.
-pub fn scrub_launcher_color_overrides() {
-    let present = launcher_color_overrides_present(|k| std::env::var_os(k));
-    if present.is_empty() {
-        return;
-    }
-    for (k, _) in &present {
-        // SAFETY: called once, early in main(), before any threads read env.
-        unsafe {
-            std::env::remove_var(k);
-        }
-    }
-    let summary: Vec<String> = present.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    log::info!(
-        "shell: scrubbed launcher color overrides from pane env: [{}]",
-        summary.join(", ")
-    );
 }
 
 /// Adopt user-defined env vars from the login shell that are missing from the
@@ -310,7 +312,7 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     // startup (see `install_login_shell_path`), so inheriting it here is
     // enough — no per-shell augmentation needed.
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         let workspace_root = working_directory
             .and_then(crate::app::registry::resolve_workspace_root)
@@ -898,23 +900,6 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn launcher_color_overrides_are_detected_for_scrubbing() {
-        let found = launcher_color_overrides_present(|k| match k {
-            "NO_COLOR" => Some("1".into()),
-            "FORCE_COLOR" => Some("0".into()),
-            _ => None,
-        });
-        assert_eq!(
-            found,
-            vec![
-                ("NO_COLOR", "1".to_string()),
-                ("FORCE_COLOR", "0".to_string())
-            ]
-        );
-        assert!(launcher_color_overrides_present(|_| None).is_empty());
-    }
 
     #[cfg(target_os = "macos")]
     #[test]

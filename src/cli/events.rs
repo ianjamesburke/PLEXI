@@ -16,12 +16,12 @@
 //! to set the subscriber/emitter identity, so a CLI agent cannot spoof another.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use crate::platform::ipc::{self, IpcStream};
 
 /// Connect to the running host's command socket. Mirrors the connect/cleanup
 /// behaviour of `send_to_socket`, but returns the live stream so the caller can
 /// stream NDJSON responses back.
-fn connect_socket() -> Result<UnixStream, i32> {
+fn connect_socket() -> Result<IpcStream, i32> {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
@@ -29,10 +29,10 @@ fn connect_socket() -> Result<UnixStream, i32> {
             return Err(1);
         }
     };
-    match UnixStream::connect(&socket_path) {
+    match IpcStream::connect(&socket_path) {
         Ok(s) => Ok(s),
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-            let _ = std::fs::remove_file(&socket_path);
+            ipc::remove_stale_endpoint(&socket_path);
             eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
             Err(1)
         }
@@ -51,7 +51,7 @@ fn from_pane_id() -> Option<u64> {
 /// sent type. Returns the live stream so the caller can read its reply (a
 /// single line for publish, an open NDJSON stream for subscribe). Shared
 /// prologue for [`stream_control_line`] and [`send_and_read_reply`].
-fn connect_and_send(payload: &serde_json::Value) -> Result<UnixStream, i32> {
+fn connect_and_send(payload: &serde_json::Value) -> Result<IpcStream, i32> {
     let mut stream = connect_socket()?;
     let line = format!("{payload}\n");
     if let Err(e) = stream.write_all(line.as_bytes()) {

@@ -653,11 +653,11 @@ fn spawn_socket_listener(
     >,
     publish_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
 ) {
-    use std::os::unix::net::UnixListener;
+    use crate::platform::ipc::{self, IpcListener};
 
-    let path = crate::config::config_dir().join("notify.sock");
-    let _ = std::fs::remove_file(&path);
-    let listener = match UnixListener::bind(&path) {
+    let path = ipc::endpoint_path();
+    ipc::remove_stale_endpoint(&path);
+    let listener = match IpcListener::bind(&path) {
         Ok(l) => l,
         Err(e) => {
             log::error!("pane_ipc: failed to bind {:?}: {e}", path);
@@ -709,7 +709,7 @@ fn spawn_socket_listener(
 /// because they keep the socket open and stream NDJSON back — a transport the
 /// normal request/response-file path does not support.
 fn handle_socket_connection(
-    stream: std::os::unix::net::UnixStream,
+    stream: crate::platform::ipc::IpcStream,
     mailbox: ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
@@ -821,12 +821,15 @@ pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> Vec<u32> {
     ancestry
 }
 
-/// Resolve the pid of the process on the other end of a connected
-/// `AF_UNIX` `SOCK_STREAM` socket. macOS has no stable-std API for this
+/// Resolve the pid of the process on the other end of a connected IPC stream.
+///
+/// Every platform needs its own call: macOS has no stable-std API
 /// (`getsockopt(SOL_LOCAL, LOCAL_PEERPID)`, verified against `libc` 0.2's
-/// apple bindings); Linux answers the same question via `SO_PEERCRED`.
+/// apple bindings); Linux exposes it via `UnixStream::peer_cred`; Windows
+/// answers it for the named-pipe transport with
+/// `GetNamedPipeClientProcessId`.
 #[cfg(target_os = "macos")]
-fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+fn resolve_socket_peer_pid(stream: &crate::platform::ipc::IpcStream) -> Option<u32> {
     use std::os::unix::io::AsRawFd;
     let mut pid: libc::pid_t = 0;
     let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
@@ -847,7 +850,7 @@ fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u3
 }
 
 #[cfg(target_os = "linux")]
-fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+fn resolve_socket_peer_pid(stream: &crate::platform::ipc::IpcStream) -> Option<u32> {
     // `UnixStream::peer_cred` is still unstable (`peer_credentials_unix_socket`),
     // so read the same kernel-provided credentials directly. `SO_PEERCRED`
     // yields the pid recorded at `connect()` time — exactly the peer identity
@@ -871,8 +874,30 @@ fn resolve_socket_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u3
     Some(cred.pid as u32)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn resolve_socket_peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+#[cfg(windows)]
+fn resolve_socket_peer_pid(stream: &crate::platform::ipc::IpcStream) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    let mut pid: u32 = 0;
+    // SAFETY: `stream` owns a live server-side named-pipe handle for the
+    // duration of the call, and `pid` is a local out-param.
+    let ok = unsafe {
+        windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId(
+            stream.as_raw_handle() as _,
+            &mut pid,
+        )
+    };
+    if ok == 0 || pid == 0 {
+        log::warn!(
+            "pane_ipc: GetNamedPipeClientProcessId failed: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
+    Some(pid)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn resolve_socket_peer_pid(_stream: &crate::platform::ipc::IpcStream) -> Option<u32> {
     None
 }
 
@@ -880,7 +905,7 @@ fn resolve_socket_peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u
 /// triples and close. Pure discovery — no grant check, no identity, no
 /// streaming. Context-qualified since stint 0724 Phase D: the same `app_id`
 /// may declare different streams/schemas in different contexts.
-fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serde_json::Value) {
+fn handle_events_list(mut write_half: crate::platform::ipc::IpcStream, val: &serde_json::Value) {
     use std::io::Write;
     let json_mode = val["json"].as_bool().unwrap_or(false);
     let streams = crate::host::app_timeline::global()
@@ -919,7 +944,7 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
 /// Like subscribe, a first-time publish under the broker's default `Ask` posture
 /// blocks here until the user answers the host consent modal.
 fn handle_events_publish(
-    mut write_half: std::os::unix::net::UnixStream,
+    mut write_half: crate::platform::ipc::IpcStream,
     val: serde_json::Value,
     publish_mailbox: &ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
     // See `handle_events_subscribe`'s matching parameter.
@@ -929,7 +954,7 @@ fn handle_events_publish(
     use std::io::Write;
     use std::time::Duration;
 
-    let reply_err = |mut w: std::os::unix::net::UnixStream, message: String| {
+    let reply_err = |mut w: crate::platform::ipc::IpcStream, message: String| {
         let _ = writeln!(
             w,
             "{}",
@@ -2811,11 +2836,7 @@ impl PlexiApp {
         );
         let mut env = shell::build_env(working_directory.as_deref());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
-        let socket = crate::config::config_dir()
-            .join("notify.sock")
-            .to_string_lossy()
-            .into_owned();
-        env.insert("PLEXI_SOCKET".into(), socket);
+        env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());
         // Host MCP discovery. The bearer is registered against this trusted
         // pane/context identity; requests cannot supply their own workspace.
         let workspace_root = context_root
@@ -3981,11 +4002,9 @@ impl eframe::App for PlexiApp {
         self.drain_crash_restarts();
 
         // Reload configuration from disk when the user clicks
-        // "Reload Configuration" in the app menu. The native menu bar is a
-        // macOS affordance; Linux has no equivalent surface in v0, so the
-        // drain is gated with the menu itself (`platform::macos_menu` is not
-        // compiled elsewhere). Config still hot-reloads via the fs watcher
-        // below on every platform.
+        // "Reload Configuration" in the app menu. macOS-only: the hook is an
+        // NSMenu item. Elsewhere the command palette and the config file
+        // watcher below cover the same ground.
         #[cfg(target_os = "macos")]
         {
             crate::platform::macos_menu::apply_version_title_once();
