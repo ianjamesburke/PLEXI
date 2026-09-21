@@ -32,9 +32,10 @@ jobs:
             os: windows-latest
             kind: windows-x64
     runs-on: ${{ matrix.os }}
-    # Windows has not yet had its first hosted platform validation. Keep the
-    # macOS/Linux release path publishable while that separate gate is fixed.
-    continue-on-error: ${{ matrix.kind == 'windows-x64' }}
+    # Windows has not yet had its first hosted platform validation, and macOS
+    # bundling depends on cargo-bundle tooling that can drift. Keep the Linux
+    # release path publishable while a mac/Windows tooling miss is fixed.
+    continue-on-error: ${{ matrix.kind == 'windows-x64' || startsWith(matrix.kind, 'macos-') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -55,7 +56,9 @@ jobs:
       - name: Build macOS bundle
         if: startsWith(matrix.kind, 'macos-')
         run: |
-          cargo install cargo-bundle --locked
+          # Pinned: 0.12 moved osx_info_plist_exts under nested macos/osx
+          # settings, which Cargo.toml's top-level metadata does not use.
+          cargo install cargo-bundle --version 0.11.0 --locked
           cargo bundle --release
           mkdir -p dist/package
           cp -R target/release/bundle/osx/Plexi.app dist/package/
