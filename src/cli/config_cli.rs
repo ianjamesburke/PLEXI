@@ -260,15 +260,9 @@ pub fn config_check(scope: ConfigScope) -> i32 {
             return 1;
         }
     };
-    let mut diags = if scope == ConfigScope::Effective {
-        crate::config::validate_all()
-    } else {
-        Vec::new()
-    };
-    if scope != ConfigScope::Effective {
-        for path in &paths {
-            diags.extend(crate::config::validate_from_path(path));
-        }
+    let mut diags = Vec::new();
+    for path in &paths {
+        diags.extend(crate::config::validate_from_path(path));
     }
     if diags.is_empty() {
         for path in paths {
@@ -349,35 +343,7 @@ pub fn config_edit(scope: ConfigScope) -> i32 {
 pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
     log::info!("config_get: resolving key={key} scope={scope:?}");
 
-    // agents.* are special-cased because they have programmatic defaults
-    // not stored in config.toml — always return via effective_*() for those.
-    if scope == ConfigScope::Effective {
-        match key {
-            "agents.low" | "agents.medium" | "agents.high" => {
-                let config = crate::config::PlexiConfig::load_with_workspace(
-                    crate::config::active_workspace_root().as_deref(),
-                );
-                let agents = config.agents.as_ref();
-                let value = match key {
-                    "agents.low" => agents
-                        .map(|a| a.effective_low())
-                        .unwrap_or(crate::config::DEFAULT_AGENT_LOW),
-                    "agents.medium" => agents
-                        .map(|a| a.effective_medium())
-                        .unwrap_or(crate::config::DEFAULT_AGENT_MEDIUM),
-                    _ => agents
-                        .map(|a| a.effective_high())
-                        .unwrap_or(crate::config::DEFAULT_AGENT_HIGH),
-                };
-                println!("{value}");
-                return 0;
-            }
-            _ => {}
-        };
-    }
-
-    // Generic path: load config as a raw TOML value and walk the dot-separated key.
-    // Effective scope overlays workspace config on top of the global config.
+    // Load the selected config as a raw TOML value and walk the dot-separated key.
     let paths = match config_paths_for_scope(scope, false) {
         Ok(paths) => paths,
         Err(msg) => {
@@ -385,6 +351,10 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
             return 1;
         }
     };
+    config_get_from_paths(key, &paths)
+}
+
+fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
     let mut root = toml::Value::Table(toml::map::Map::new());
     for path in paths {
         match std::fs::read_to_string(&path) {
@@ -395,15 +365,7 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
                     return 1;
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if scope == ConfigScope::Workspace {
-                    eprintln!(
-                        "error: workspace config does not exist at {}",
-                        path.display()
-                    );
-                    return 1;
-                }
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
                 eprintln!("error: could not read {}: {e}", path.display());
                 return 1;
@@ -465,6 +427,10 @@ pub fn config_reset(scope: ConfigScope) -> i32 {
             return 1;
         }
     };
+    config_reset_at_path(&path, scope)
+}
+
+fn config_reset_at_path(path: &std::path::Path, scope: ConfigScope) -> i32 {
     log::info!(
         "config_reset: writing default config to {} scope={scope:?}",
         path.display()
@@ -479,45 +445,36 @@ pub fn config_reset(scope: ConfigScope) -> i32 {
 }
 
 fn writable_config_path(scope: ConfigScope) -> Result<PathBuf, String> {
-    match scope {
-        ConfigScope::Effective | ConfigScope::Global => {
-            let path = crate::config::ensure_config_exists();
-            Ok(path)
-        }
-        ConfigScope::Workspace => {
-            let root = crate::config::active_workspace_root()
-                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
-            let path = crate::config::workspace_config_path(&root);
-            if !path.exists() {
-                write_default_config(&path)?;
-            }
-            Ok(path)
-        }
-    }
+    config_path_for_scope(scope, crate::config::active_workspace_root().as_deref())
 }
 
 fn config_paths_for_scope(
     scope: ConfigScope,
-    include_missing_workspace: bool,
+    _include_missing_workspace: bool,
 ) -> Result<Vec<PathBuf>, String> {
-    let global = crate::config::config_path();
+    Ok(vec![config_path_for_scope(
+        scope,
+        crate::config::active_workspace_root().as_deref(),
+    )?])
+}
+
+/// Resolve the one config file selected by a config command. With no explicit
+/// scope flag, every config verb targets the active workspace when there is
+/// one and the channel-global config otherwise.
+fn config_path_for_scope(
+    scope: ConfigScope,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<PathBuf, String> {
     match scope {
-        ConfigScope::Global => Ok(vec![global]),
+        ConfigScope::Global => Ok(crate::config::config_path()),
         ConfigScope::Workspace => {
-            let root = crate::config::active_workspace_root()
-                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
-            Ok(vec![crate::config::workspace_config_path(&root)])
+            let root = workspace_root.ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+            Ok(crate::config::workspace_config_path(root))
         }
-        ConfigScope::Effective => {
-            let mut paths = vec![global];
-            if let Some(root) = crate::config::active_workspace_root() {
-                let workspace = crate::config::workspace_config_path(&root);
-                if include_missing_workspace || workspace.exists() {
-                    paths.push(workspace);
-                }
-            }
-            Ok(paths)
-        }
+        ConfigScope::Effective => Ok(workspace_root.map_or_else(
+            crate::config::config_path,
+            crate::config::workspace_config_path,
+        )),
     }
 }
 
@@ -612,8 +569,7 @@ pub fn config_list(scope: ConfigScope, json: bool) -> i32 {
 pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
     log::info!("config_set: {} pair(s) scope={scope:?}", pairs.len());
 
-    // Resolve the target write path, defaulting to workspace if inside one.
-    let path = match writable_config_path_defaulting_to_workspace(scope) {
+    let path = match writable_config_path(scope) {
         Ok(p) => p,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -621,9 +577,16 @@ pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
         }
     };
 
-    let raw = match std::fs::read_to_string(&path) {
+    config_set_at_path(pairs, &path)
+}
+
+fn config_set_at_path(pairs: &[String], path: &std::path::Path) -> i32 {
+    let creating = !path.exists();
+    let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::config::CONFIG_TEMPLATE.to_string()
+        }
         Err(e) => {
             eprintln!("error: could not read {}: {e}", path.display());
             return 1;
@@ -678,11 +641,18 @@ pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
             return 1;
         }
     }
-    if let Err(e) = std::fs::write(&path, doc.to_string()) {
+    if let Err(e) = std::fs::write(path, doc.to_string()) {
         eprintln!("error: could not write {}: {e}", path.display());
         return 1;
     }
-    eprintln!("✓ wrote {}", path.display());
+    if creating {
+        eprintln!(
+            "warning: created default config at {} and wrote the requested setting(s)",
+            path.display()
+        );
+    } else {
+        eprintln!("✓ wrote {}", path.display());
+    }
     0
 }
 
@@ -757,39 +727,6 @@ fn toml_edit_set(
     Ok(())
 }
 
-/// Like `writable_config_path` but defaults to workspace when inside one
-/// (scope=Effective resolves to workspace if available, global otherwise).
-fn writable_config_path_defaulting_to_workspace(scope: ConfigScope) -> Result<PathBuf, String> {
-    match scope {
-        ConfigScope::Workspace => {
-            let root = crate::config::active_workspace_root()
-                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
-            let path = crate::config::workspace_config_path(&root);
-            if !path.exists() {
-                write_default_config(&path)?;
-            }
-            Ok(path)
-        }
-        ConfigScope::Global => {
-            let path = crate::config::ensure_config_exists();
-            Ok(path)
-        }
-        ConfigScope::Effective => {
-            // Default: workspace if available, global otherwise.
-            if let Some(root) = crate::config::active_workspace_root() {
-                let path = crate::config::workspace_config_path(&root);
-                if !path.exists() {
-                    write_default_config(&path)?;
-                }
-                Ok(path)
-            } else {
-                let path = crate::config::ensure_config_exists();
-                Ok(path)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,5 +750,43 @@ mod tests {
         assert!(text.contains("[marketplace]"));
         assert!(text.contains("registry_url = \"http://127.0.0.1:8765/registry/v1/index.json\""));
         assert!(text.contains("cdn_url = \"http://127.0.0.1:8765/registry/v1/packages\""));
+    }
+
+    #[test]
+    fn config_default_scope_keeps_set_get_and_reset_in_workspace() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_path = crate::config::workspace_config_path(workspace.path());
+        let global_path = crate::config::config_path();
+
+        assert_eq!(
+            config_path_for_scope(ConfigScope::Effective, Some(workspace.path())).unwrap(),
+            workspace_path,
+            "default set/get/reset scope must select the workspace config"
+        );
+        assert_eq!(
+            config_path_for_scope(ConfigScope::Global, Some(workspace.path())).unwrap(),
+            global_path,
+            "--global must select the global config"
+        );
+
+        assert_eq!(
+            config_set_at_path(&["theme.preset=dracula".to_string()], &workspace_path),
+            0
+        );
+        assert_eq!(
+            config_get_from_paths("theme.preset", &[workspace_path.clone()]),
+            0
+        );
+        assert_eq!(
+            config_reset_at_path(&workspace_path, ConfigScope::Effective),
+            0
+        );
+        assert!(workspace_path.exists());
+        assert!(
+            !global_path.exists(),
+            "default workspace operations must not touch global config"
+        );
     }
 }

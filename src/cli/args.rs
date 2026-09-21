@@ -1454,28 +1454,33 @@ pub enum ContextCmd {
 
 #[derive(Subcommand)]
 pub enum ConfigCmd {
-    /// Validate your config.toml and report any errors.
+    /// Validate the selected config.toml and report any errors.
+    ///
+    /// Reads the workspace config inside a workspace, otherwise the global config.
     Check {
         #[command(flatten)]
         scope: ConfigScopeArgs,
     },
-    /// Open config.toml in your $EDITOR.
+    /// Open the selected config.toml in your $EDITOR.
+    ///
+    /// Opens the workspace config inside a workspace, otherwise the global config.
     Edit {
         #[command(flatten)]
         scope: ConfigScopeArgs,
     },
-    /// Print the resolved value of a config key to stdout.
+    /// Print a config key from the selected config.toml to stdout.
     ///
     /// Supports dotted keys: agents.low, agents.medium, agents.high.
-    /// Returns the effective value (user setting or built-in default).
+    /// Reads the workspace config inside a workspace, otherwise the global config.
     Get {
         #[command(flatten)]
         scope: ConfigScopeArgs,
         /// Dotted key to retrieve (e.g. agents.medium).
         key: String,
     },
-    /// Overwrite config.toml with the built-in default template.
+    /// Overwrite the selected config.toml with the built-in default template.
     ///
+    /// Writes the workspace config inside a workspace, otherwise the global config.
     /// Creates a backup at config.toml.bak before overwriting.
     Reset {
         #[command(flatten)]
@@ -1484,6 +1489,7 @@ pub enum ConfigCmd {
     /// Print all known config keys with type, current value, and description.
     ///
     /// Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output.
+    /// Reads the workspace config inside a workspace, otherwise the global config.
     List {
         #[command(flatten)]
         scope: ConfigScopeArgs,
@@ -1491,10 +1497,11 @@ pub enum ConfigCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Set one or more config keys in-place.
+    /// Set one or more keys in the selected config.toml.
     ///
     /// Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14).
-    /// Scope defaults to workspace when inside a workspace, global otherwise.
+    /// Writes the workspace config inside a workspace, otherwise the global config.
+    /// Pass --global to read or write only the global config.
     Set {
         #[command(flatten)]
         scope: ConfigScopeArgs,

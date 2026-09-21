@@ -325,15 +325,6 @@ fn check_unknown_keys(
     }
 }
 
-pub fn validate_all() -> Vec<ConfigDiagnostic> {
-    let mut diags = validate_from_path(&config_path());
-    if let Some(root) = active_workspace_root() {
-        let project_path = workspace_config_path(&root);
-        diags.extend(validate_from_path(&project_path));
-    }
-    diags
-}
-
 /// Per-action keybinding overrides. Each field is the name of an action;
 /// the value is a key combo string like `"cmd+d"` or `"cmd+shift+d"`.
 /// Omitting a field preserves the default binding for that action.
@@ -701,12 +692,6 @@ impl LocalBackendConfig {
     }
 }
 
-pub const DEFAULT_AGENT_LOW: &str =
-    "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'";
-pub const DEFAULT_AGENT_MEDIUM: &str =
-    "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'";
-pub const DEFAULT_AGENT_HIGH: &str = "claude --dangerously-skip-permissions '{cmd}'";
-
 /// Coding agent command templates for dispatch. Each field is a shell command template
 /// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
 #[derive(Deserialize, Default, Clone)]
@@ -720,15 +705,6 @@ pub struct AgentsConfig {
 }
 
 impl AgentsConfig {
-    pub fn effective_low(&self) -> &str {
-        self.low.as_deref().unwrap_or(DEFAULT_AGENT_LOW)
-    }
-    pub fn effective_medium(&self) -> &str {
-        self.medium.as_deref().unwrap_or(DEFAULT_AGENT_MEDIUM)
-    }
-    pub fn effective_high(&self) -> &str {
-        self.high.as_deref().unwrap_or(DEFAULT_AGENT_HIGH)
-    }
     fn overlay(&mut self, other: Self) {
         if other.low.is_some() {
             self.low = other.low;
@@ -1320,19 +1296,6 @@ pub fn migrate_config(path: &Path) {
         Ok(()) => log::info!("config migrate: {} migrated to v{version}", path.display()),
         Err(e) => log::error!("config migrate: failed to write {}: {e}", path.display()),
     }
-}
-
-/// Ensures the config file exists, creating it from the default template if not.
-/// Returns the config file path.
-pub fn ensure_config_exists() -> std::path::PathBuf {
-    let path = config_path();
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&path, CONFIG_TEMPLATE);
-    }
-    path
 }
 
 pub fn open_config_file() {
