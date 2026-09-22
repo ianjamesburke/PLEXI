@@ -15,8 +15,18 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
 
   <section class="dl-section">
     <div class="wrap">
+      <div class="install-intro">
+        <p class="eyebrow">Current release channel</p>
+        <h2>Choose your platform</h2>
+        <p>Each command installs the current Plexi alpha release for its supported platform.</p>
+      </div>
+
+      <div class="install-list">
       <div class="install-block">
-        <div class="install-label">macOS (Apple Silicon; Intel when published)</div>
+        <div class="install-heading">
+          <span class="platform-mark">01</span>
+          <div class="install-label">macOS <span>(Apple Silicon; Intel when published)</span></div>
+        </div>
         <div class="install-cmd-row">
           <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
           <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy to clipboard">
@@ -33,7 +43,10 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
       </div>
 
       <div class="install-block">
-        <div class="install-label">Linux (x86_64, X11)</div>
+        <div class="install-heading">
+          <span class="platform-mark">02</span>
+          <div class="install-label">Linux <span>(x86_64, X11)</span></div>
+        </div>
         <div class="install-cmd-row">
           <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
           <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy to clipboard">
@@ -50,7 +63,10 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
       </div>
 
       <div class="install-block">
-        <div class="install-label">Windows (x64)</div>
+        <div class="install-heading">
+          <span class="platform-mark">03</span>
+          <div class="install-label">Windows <span>(x64)</span></div>
+        </div>
         <div class="install-cmd-row">
           <code class="install-cmd">{WINDOWS_INSTALL_CMD}</code>
           <button class="copy-btn" data-cmd={WINDOWS_INSTALL_CMD} aria-label="Copy to clipboard">
@@ -63,6 +79,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
           release and verifies its SHA-256 checksum; it does not build from source. The Unix
           <code>curl | bash</code> command is not a Windows installer.
         </p>
+      </div>
       </div>
 
       <p class="install-note trust-note">
@@ -104,30 +121,63 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
 </script>
 
 <style>
-  .dl-hero { padding: 120px 0 40px; }
+  .dl-hero { padding: 112px 0 32px; }
   .dl-hero h1 {
     font-size: 56px; line-height: 1.05; letter-spacing: 0;
     font-weight: 600; margin: 0 0 16px;
   }
   .dl-hero .tagline { font-size: 16px; color: var(--fg-2); max-width: 560px; }
 
-  .dl-section { padding: 32px 0 80px; }
+  .dl-section { padding: 32px 0 88px; }
+
+  .install-intro { max-width: 620px; margin-bottom: 30px; }
+  .install-intro .eyebrow {
+    color: var(--accent-light);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .install-intro h2 {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    margin-bottom: 8px;
+  }
+  .install-intro > p:last-child { color: var(--fg-2); font-size: 14px; }
+
+  .install-list { max-width: 860px; display: grid; gap: 14px; }
 
   .install-block {
     background: var(--bg-2);
     border: 1px solid var(--border-2);
-    border-radius: 12px;
-    padding: 32px;
-    max-width: 760px;
-    margin-bottom: 16px;
+    border-radius: 10px;
+    padding: 28px 30px 30px;
+    transition: border-color 150ms, transform 150ms, box-shadow 150ms;
+  }
+  .install-block:hover {
+    border-color: var(--border-3);
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.2);
+    transform: translateY(-1px);
+  }
+  .install-heading { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; }
+  .platform-mark {
+    color: var(--accent-light);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    line-height: 1;
   }
 
   .install-label {
     font-size: 14px;
     color: var(--fg-2);
-    margin-bottom: 12px;
-    font-weight: 500;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.3;
   }
+  .install-label span { color: var(--fg-3); font-size: 13px; font-weight: 400; }
 
   .install-cmd-row {
     display: flex;
@@ -136,7 +186,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
     background: var(--bg);
     border: 1px solid var(--border-2);
     border-radius: 8px;
-    padding: 14px 16px;
+    padding: 13px 14px 13px 16px;
     overflow-x: auto;
   }
 
@@ -173,16 +223,33 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
   .copy-icon { font-size: 14px; }
 
   .install-note {
-    margin-top: 16px;
+    margin-top: 14px;
     font-size: 13px;
     color: var(--fg-3);
     line-height: 1.6;
   }
 
-  .trust-note { max-width: 760px; }
+  .trust-note {
+    max-width: 860px;
+    border-left: 2px solid var(--accent);
+    padding: 2px 0 2px 16px;
+  }
 
   @media (max-width: 720px) {
     .dl-hero h1 { font-size: 40px; }
-    .install-block { padding: 24px 16px; }
+    .install-block { padding: 24px 20px; }
+    .install-intro h2 { font-size: 24px; }
+    .install-cmd-row { align-items: stretch; }
+    .copy-btn { justify-content: center; }
+  }
+
+  @media (max-width: 480px) {
+    .dl-hero { padding-top: 72px; }
+    .install-heading { align-items: flex-start; }
+    .install-label { font-size: 15px; }
+    .install-label span { display: block; margin-top: 2px; }
+    .install-cmd-row { flex-direction: column; gap: 10px; }
+    .install-cmd { font-size: 12px; overflow-x: auto; padding-bottom: 2px; }
+    .copy-btn { width: 100%; padding: 9px 12px; }
   }
 </style>

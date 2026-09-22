@@ -187,17 +187,17 @@ nav.top {
   background: rgba(9, 10, 12, 0.88); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--border);
 }
-nav.top .row { display: flex; align-items: center; justify-content: space-between; height: 64px; }
-nav.top .brand { display: flex; align-items: center; gap: 11px; font-weight: 650; letter-spacing: 0; font-size: 14px; text-transform: lowercase; }
+nav.top .row { display: flex; align-items: center; justify-content: space-between; height: 68px; }
+nav.top .brand { display: flex; align-items: center; gap: 11px; font-weight: 650; letter-spacing: 0.01em; font-size: 14px; text-transform: lowercase; }
 nav.top .brand svg { display: block; }
-nav.top .links { display: flex; gap: 26px; color: var(--fg-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
+nav.top .links { display: flex; gap: 24px; color: var(--fg-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 nav.top .links a { transition: color 150ms; }
 nav.top .links a:hover { color: var(--fg); }
 nav.top .cta { display: flex; gap: 10px; align-items: center; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 10px;
-  padding: 10px 18px; font-size: 13px; font-weight: 600; line-height: 1;
+  padding: 10px 18px; font-size: 12px; font-weight: 650; line-height: 1;
   border-radius: 6px; cursor: pointer; font-family: var(--mono);
   color: #ffffff; letter-spacing: 0;
   background: linear-gradient(180deg, var(--accent-light), var(--accent));
@@ -386,7 +386,7 @@ footer { padding: 42px 0 52px; border-top: 1px solid var(--border); color: var(-
 footer .row { display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap; }
 footer .foot-brand { display: flex; align-items: center; gap: 14px; }
 footer .foot-brand .copy { font-size: 13px; }
-footer .links { display: flex; gap: 24px; text-transform: uppercase; letter-spacing: 0; font-size: 12px; }
+footer .links { display: flex; gap: 24px; text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; }
 footer .links a { transition: color 150ms; }
 footer .links a:hover { color: var(--fg); }
 
