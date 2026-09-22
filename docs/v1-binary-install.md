@@ -3,6 +3,12 @@
 Plexi v1 consumer installs download release assets. They do not require Homebrew,
 apt, yay, winget, Git, or a Rust toolchain.
 
+On Linux, the installer is a self-contained user-directory install, not a distro
+package: Plexi does not provide an apt, yay, AUR, Flatpak, AppImage, `.deb`, or
+`.rpm` path. Linux support is currently x86_64 under X11; Wayland is not
+supported. Linux secrets use a mode-`0600` file, not an encrypted OS keyring,
+and Linux hardware video decoding is not implemented.
+
 ## Assets
 
 Every GitHub release publishes these archives:

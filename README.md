@@ -29,21 +29,26 @@ If you run into any issues, don't hesitate to reach out directly: adhdisntreal@g
 
 ## Install
 
-> **macOS only.** Linux is untested.
+> **Platform status:** macOS is the primary platform. Linux x86_64 is available
+> for X11 sessions; Wayland is not yet supported. Linux has no distro package
+> and stores secrets in a local file rather than an encrypted OS keyring. See
+> [Linux support](docs/linux-support-plan.md) for the current limitations.
 
 ### One-liner
 
-Plexi needs Git and a Rust toolchain. If Rust is missing, the installer offers
-to install it with rustup. A cold build takes several minutes.
+The public installer downloads a release asset and does not require a package
+manager, Git, Rust, or administrator access. On Linux it installs into your
+home directory; there is no apt, yay, or AUR package.
 
 ```bash
 curl -fsSL https://plexiapp.com/install | sh
 ```
 
-The installer clones Plexi into `~/.plexi-src`, builds it on your Mac, copies
-Plexi.app to `/Applications`, installs the `plexi` CLI, and adds shell
-completions. It may ask for your password to write the CLI to `/usr/local/bin`.
-Restart your terminal when done.
+The installer places the CLI in `~/.local/bin` (or `PLEXI_BIN_DIR`) and its
+files in a user-owned directory. Restart your terminal when done. Linux support
+is X11-only; Wayland is not claimed as supported. Linux secrets are stored in a
+mode-`0600` file and are not encrypted at rest. Linux video decode is not
+implemented, so Plexi does not promise hardware video decoding there.
 
 First run:
 
@@ -276,15 +281,19 @@ Full current runtime reference: [`docs/wasm-runtime.md`](docs/wasm-runtime.md). 
 
 ## Secrets management *(in development)*
 
-Workspace-scoped secrets store credentials in the macOS Keychain. Secrets use canonical environment-variable names (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.) as their primary identity. A workspace value wins over a global fallback value — two workspaces can hold different values for the same key.
+Workspace-scoped secrets store credentials in the macOS Keychain on macOS and
+in a mode-`0600`, unencrypted file on Linux. Secrets use canonical
+environment-variable names (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.) as
+their primary identity. A workspace value wins over a global fallback value —
+two workspaces can hold different values for the same key.
 
 **CLI:**
 
 ```bash
-plexi secret set <KEY>          # prompt for value, store in Keychain
+plexi secret set <KEY>          # prompt for value, store in the platform secret store
 plexi secret get <KEY>          # retrieve (requires workspace context)
 plexi secret list               # list keys scoped to current workspace
-plexi secret delete <KEY>       # remove from Keychain
+plexi secret delete <KEY>       # remove from the platform secret store
 ```
 
 **From an app**, request the `secrets.get` capability in the manifest. The SDK effect API for secret access is documented in [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md).

@@ -4,7 +4,11 @@ description: Store and access secrets inside Plexi apps.
 order: 6
 ---
 
-Plexi has a built-in secrets store scoped to each workspace. Secrets are stored through the system keychain and are available to apps through the host-brokered `secrets.get` capability.
+Plexi has a built-in secrets store scoped to each workspace. On macOS, secrets
+are stored through the system keychain. On Linux, they are stored in a
+mode-`0600` file in the Plexi profile; that file is not encrypted at rest.
+Secrets are available to apps through the host-brokered `secrets.get`
+capability.
 
 ## Set a Secret
 
