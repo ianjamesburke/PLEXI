@@ -773,6 +773,13 @@ impl App for CliRendererApp {
         matches!(self.view, View::Form)
     }
 
+    fn submit_on_focused_text_input_enter(&self) -> bool {
+        // CLI form fields are all single-line controls; bare Enter is the
+        // documented Run action, not text entry. Keep this scoped to Form so
+        // list navigation and loading/error views retain their normal routing.
+        matches!(self.view, View::Form)
+    }
+
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         match &self.view {
             View::List => {
@@ -1169,6 +1176,74 @@ mod tests {
                 AppCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
             )),
             "plain Enter should queue a RunInLinkedTerminal for the greet command"
+        );
+    }
+
+    #[test]
+    fn focused_text_field_enter_runs_the_form() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet — a leaf form with a text field
+        app.terminal_pane_id = 5;
+        app.field_values.insert("name".into(), "Ada".into());
+
+        // Mount the form once so its first field takes real egui focus, as it
+        // does when `app open --cli` first shows a command form.
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let rctx = AppRenderContext {
+                    colors: &colors,
+                    pane_id: 1,
+                };
+                app.ui(ui, &rctx, None);
+            });
+        });
+        // Production's post-frame focus reconciler applies the form's claim
+        // only when this pane owns input. Reproduce that hand-off here before
+        // feeding the next frame's focused-field key event.
+        let field_id = egui::Id::new(("cli_renderer_field", "name"));
+        let surfaces = crate::ui::focus::drain_text_surfaces(&ctx);
+        assert_eq!(
+            surfaces.claim_for(crate::ui::focus::SurfaceKey::Pane(1)),
+            Some(field_id)
+        );
+        ctx.memory_mut(|memory| memory.request_focus(field_id));
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(field_id),
+            "the regression must exercise Enter while the auto-focused field owns egui focus"
+        );
+
+        // This mirrors the focused-TextEdit dispatcher path: CLI forms opt in
+        // to receiving bare Enter before the event is returned to TextEdit.
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ui| {
+                let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+                assert!(app.submit_on_focused_text_input_enter());
+                assert_eq!(app.handle_key(&input), KeyDisposition::Consumed);
+                assert!(input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                input.give_back(ui.ctx());
+            },
+        );
+
+        assert!(
+            app.take_pending_commands().iter().any(|command| matches!(
+                command,
+                AppCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
+            )),
+            "focused bare Enter should queue the CLI form command, not reach TextEdit"
         );
     }
 

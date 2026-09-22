@@ -65,6 +65,41 @@ impl PlexiApp {
             ctx.memory_mut(|m| m.data.insert_temp(gate_id, text_surface_focused));
         }
         if text_surface_focused {
+            // Most focused declarative TextInputs own every key until their
+            // render pass. CLI renderer forms are the narrow exception: their
+            // single-line fields advertise bare Enter as the Run action, so
+            // route and claim it before TextEdit can turn it into a newline.
+            // Cmd+Enter remains available to the host pane-zoom binding.
+            let bare_enter: Vec<egui::Event> = input
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.is_none()
+                    )
+                })
+                .cloned()
+                .collect();
+            if !bare_enter.is_empty() && app_pane.runtime.submit_on_focused_text_input_enter() {
+                let synthetic = crate::app::input_router::PlexiInput::synthetic(
+                    bare_enter,
+                    input.modifiers(),
+                );
+                if app_pane.runtime.handle_key(&synthetic)
+                    == crate::app::app_trait::KeyDisposition::Consumed
+                {
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                    log::info!(
+                        "app_keys: pane {pane_id} bare Enter submitted from focused TextInput"
+                    );
+                }
+            }
             if input.events().iter().any(|event| {
                 matches!(
                     event,

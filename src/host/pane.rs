@@ -915,6 +915,15 @@ impl AppRuntime {
         }
     }
 
+    /// Whether this runtime asks the host to route bare Enter to its action
+    /// handler while a declarative text input has focus.
+    pub fn submit_on_focused_text_input_enter(&self) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.submit_on_focused_text_input_enter(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+        }
+    }
+
     pub fn wants_close(&self) -> bool {
         match self {
             AppRuntime::Builtin(app) => app.wants_close(),

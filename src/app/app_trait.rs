@@ -270,6 +270,14 @@ pub trait App: Send {
         false
     }
 
+    /// Whether bare Enter submits the current app action even while one of its
+    /// declarative text inputs owns egui focus. Apps opt in only where Enter
+    /// has no text-editing meaning; the dispatcher delivers that key before
+    /// returning the rest of the input buffer to the focused `TextEdit`.
+    fn submit_on_focused_text_input_enter(&self) -> bool {
+        false
+    }
+
     /// Returns true if the app wants to close itself (e.g. after saving).
     fn wants_close(&self) -> bool {
         false
