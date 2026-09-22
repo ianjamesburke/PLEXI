@@ -237,20 +237,35 @@ mod tests {
     }
 
     #[test]
-    fn stable_hides_mcp_config_and_wrapper_flags_but_keeps_events() {
-        let cmd = gated_for(None);
-        let events = cmd.find_subcommand("events").unwrap();
-        assert!(!events.is_hide_set());
-        let subs = visible_subs(events);
-        assert!(!subs.contains(&"mcp-config".to_string()), "{subs:?}");
-        assert!(subs.contains(&"subscribe".to_string()), "{subs:?}");
-        let open = cmd
-            .find_subcommand("app")
-            .unwrap()
-            .find_subcommand("open")
-            .unwrap();
-        for flag in ["mcp", "cli"] {
-            assert!(open.get_arguments().find(|a| a.get_id() == flag).unwrap().is_hide_set());
+    fn stable_hides_mcp_client_config_but_shows_app_wrapper_flags() {
+        for channel in [None, Some("main"), Some("rc-010")] {
+            let cmd = gated_for(channel);
+            let events = cmd.find_subcommand("events").unwrap();
+            assert!(!events.is_hide_set(), "{channel:?}");
+            let subs = visible_subs(events);
+            assert!(
+                !subs.contains(&"mcp-config".to_string()),
+                "{channel:?}: {subs:?}"
+            );
+            assert!(
+                subs.contains(&"subscribe".to_string()),
+                "{channel:?}: {subs:?}"
+            );
+            let open = cmd
+                .find_subcommand("app")
+                .unwrap()
+                .find_subcommand("open")
+                .unwrap();
+            for flag in ["mcp", "cli"] {
+                assert!(
+                    !open
+                        .get_arguments()
+                        .find(|a| a.get_id() == flag)
+                        .unwrap()
+                        .is_hide_set(),
+                    "{channel:?}: --{flag}"
+                );
+            }
         }
     }
 

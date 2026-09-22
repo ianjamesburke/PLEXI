@@ -30,8 +30,8 @@ Release-gated features are centralized in `src/release.rs`.
 - Unknown named channels disable release-gated features.
 
 Use release gates for product surface that is not part of stable v1, such as
-the experimental DAW, media I/O, accessibility, Assistant, app wrappers, and
-marketplace/account flows. Use config sections for
+the experimental DAW, media I/O, accessibility, Assistant, and
+marketplace/account flows. CLI and MCP app wrappers are part of stable v1. Use config sections for
 stable user preferences, such as `[effects]`.
 
 ## Local RC Flow
