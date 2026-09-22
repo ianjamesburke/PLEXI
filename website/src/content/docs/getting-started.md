@@ -45,7 +45,9 @@ irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-
 
 This downloads the current Windows x64 alpha release, verifies its SHA-256
 checksum, and does not require Rust or Visual Studio. It does not build from
-source. The Unix `curl | bash` command is not a Windows installer.
+source. The installer adds its user-owned command directory to the user `PATH`
+and records the installed tag; Windows shell completions are TBD. The Unix
+`curl | bash` command is not a Windows installer.
 
 ### Source builds and unsigned releases
 

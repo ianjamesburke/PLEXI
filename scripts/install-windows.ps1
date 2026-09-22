@@ -4,15 +4,15 @@
   Install a prebuilt Plexi Windows x64 release (no Rust / no Visual Studio).
 
 .EXAMPLE
-  # One-liner from a published tag (dogfood):
-  irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/v0.3.1-windows.1/scripts/install-windows.ps1 | iex
+  # Canonical one-liner: install the latest alpha release.
+  irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex
 
   # Explicit channel + tag:
-  .\scripts\install-windows.ps1 -Channel alpha -Tag v0.3.1-windows.1
+  .\scripts\install-windows.ps1 -Channel beta -Tag vX.Y.Z-beta.N
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('main', 'alpha', 'beta')]
+  [ValidateSet('stable', 'alpha', 'beta', 'main')]
   [string]$Channel = 'alpha',
 
   [string]$Tag = '',
@@ -25,29 +25,49 @@ $RepoSlug = 'ianjamesburke/PLEXI'
 $ReleaseBase = if ($env:PLEXI_RELEASE_BASE_URL) { $env:PLEXI_RELEASE_BASE_URL.TrimEnd('/') } else { "https://github.com/$RepoSlug/releases/download" }
 $InstallRoot = if ($env:PLEXI_INSTALL_DIR) { $env:PLEXI_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Plexi' }
 $BinDir = if ($env:PLEXI_BIN_DIR) { $env:PLEXI_BIN_DIR } else { Join-Path $InstallRoot 'bin' }
+$Asset = 'plexi-windows-x64.zip'
+
+# `main` remains accepted for in-product update calls from older binaries. The
+# public installer contract calls this user-facing channel `stable`.
+if ($Channel -eq 'main') { $Channel = 'stable' }
 
 function Get-LatestTag([string]$ChannelName) {
   $headers = @{ 'User-Agent' = 'plexi-installer'; Accept = 'application/vnd.github+json' }
   $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases" -Headers $headers
-  if ($ChannelName -eq 'main') {
-    $match = $releases | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+$' } | Select-Object -First 1
+  if ($ChannelName -eq 'stable') {
+    $match = $releases | Where-Object {
+      $_.tag_name -match '^v\d+\.\d+\.\d+$' -and $_.assets.name -contains $Asset
+    } | Select-Object -First 1
   } else {
-    $match = $releases | Where-Object { $_.tag_name -match ("^v\d+\.\d+\.\d+-" + [regex]::Escape($ChannelName) + "\.\d+$") } | Select-Object -First 1
+    $match = $releases | Where-Object {
+      $_.tag_name -match ("^v\d+\.\d+\.\d+-" + [regex]::Escape($ChannelName) + "\.\d+$") -and $_.assets.name -contains $Asset
+    } | Select-Object -First 1
   }
-  if (-not $match) { throw "No published $ChannelName release found" }
+  if (-not $match) { throw "No published $ChannelName release with $Asset found" }
   return $match.tag_name
+}
+
+function Assert-TagMatchesChannel([string]$ChannelName, [string]$ReleaseTag) {
+  $pattern = if ($ChannelName -eq 'stable') {
+    '^v\d+\.\d+\.\d+$'
+  } else {
+    "^v\d+\.\d+\.\d+-" + [regex]::Escape($ChannelName) + "\.\d+$"
+  }
+  if ($ReleaseTag -notmatch $pattern) {
+    throw "Tag $ReleaseTag does not belong to the $ChannelName channel"
+  }
 }
 
 if (-not $Tag) {
   $Tag = Get-LatestTag $Channel
 }
+Assert-TagMatchesChannel $Channel $Tag
 
-$Asset = 'plexi-windows-x64.zip'
 $Url = "$ReleaseBase/$Tag/$Asset"
 $ChecksumUrl = "$Url.sha256"
-$BinaryName = if ($Channel -eq 'main') { 'plexi.exe' } else { "plexi-$Channel.exe" }
+$BinaryName = if ($Channel -eq 'stable') { 'plexi.exe' } else { "plexi-$Channel.exe" }
 $Destination = Join-Path $InstallRoot $Channel
-$ProfileSuffix = if ($Channel -eq 'main') { '' } else { "-$Channel" }
+$ProfileSuffix = if ($Channel -eq 'stable') { '' } else { "-$Channel" }
 $ProfileDir = Join-Path $env:USERPROFILE ".plexi$ProfileSuffix"
 
 Write-Host "Plexi $Tag ($Channel, windows/x64)"
@@ -62,7 +82,8 @@ try {
   Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $archive
   $checksumFile = Join-Path $tmp "$Asset.sha256"
   Invoke-WebRequest -UseBasicParsing -Uri $ChecksumUrl -OutFile $checksumFile
-  $checksumLine = Get-Content -Path $checksumFile | Where-Object { $_ -match "^([A-Fa-f0-9]{64})\\s+\\*?$([regex]::Escape($Asset))$" } | Select-Object -First 1
+  $checksumPattern = "^[A-Fa-f0-9]{64}\s+\*?{0}$" -f [regex]::Escape($Asset)
+  $checksumLine = Get-Content -Path $checksumFile | Where-Object { $_ -match $checksumPattern } | Select-Object -First 1
   if (-not $checksumLine) { throw "Release checksum file did not contain a SHA-256 for $Asset" }
   $expectedChecksum = ([regex]::Match($checksumLine, '^[A-Fa-f0-9]{64}')).Value.ToLowerInvariant()
   $actualChecksum = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
@@ -126,6 +147,7 @@ try {
   Write-Host "Installed $installed"
   & $installed --version
   Write-Host ("installed_tag=" + (Get-Content (Join-Path $ProfileDir 'installed_tag') -Raw))
+  Write-Host 'Shell completions are TBD on Windows.'
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
