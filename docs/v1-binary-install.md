@@ -20,6 +20,10 @@ Every GitHub release publishes these archives:
 | Linux x86_64 | `plexi-linux-x64.tar.gz` | `plexi` |
 | Windows x64 | `plexi-windows-x64.zip` | `plexi.exe` |
 
+Each archive has a matching `.sha256` sidecar. The installers verify it before
+replacing an existing install; see [Opening an unsigned Plexi build](unsigned-install.md)
+for the separate operating-system trust prompts.
+
 ## Windows (x64)
 
 Preferred one-liner (no Rust):
