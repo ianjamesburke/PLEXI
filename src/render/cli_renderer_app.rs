@@ -77,6 +77,10 @@ pub struct CliRendererApp {
     pending_commands: Vec<AppCommand>,
     /// Last command string that was run (shown as a hint).
     last_run: String,
+    /// Fully assembled command selected before its linked terminal was ready.
+    /// Keeping the command rather than the leaf path lets the list remain at
+    /// its parent level while the terminal-link handshake completes.
+    pending_auto_run: Option<String>,
     /// Whether we already requested a linked terminal.
     terminal_requested: bool,
     /// Unique request ID for the terminal link.
@@ -133,6 +137,7 @@ impl CliRendererApp {
             terminal_link_failed: false,
             pending_commands: vec![],
             last_run: String::new(),
+            pending_auto_run: None,
             terminal_requested: false,
             terminal_request_id: format!("cli-term-{}", uuid::Uuid::new_v4()),
             binary_name,
@@ -193,6 +198,7 @@ impl CliRendererApp {
         };
         let name = cmd.name.clone();
         let has_children = !cmd.commands.is_empty();
+        let has_fields = !cmd.flags.is_empty() || !cmd.args.is_empty();
         // Collect defaults before mutating self
         let defaults: Vec<(String, String)> = if !has_children {
             cmd.flags
@@ -212,6 +218,16 @@ impl CliRendererApp {
         self.cmd_path.push(name);
         if has_children {
             self.selected = 0;
+            self.view = View::List;
+        } else if !has_fields {
+            // Argless leaves have nothing to configure. Run them directly, but
+            // return to this list so the user can run a neighboring command.
+            let command = self.build_command_string();
+            if !self.execute_command(command.clone()) {
+                self.pending_auto_run = Some(command);
+                self.request_terminal();
+            }
+            self.cmd_path.pop();
             self.view = View::List;
         } else {
             self.field_values.clear();
@@ -281,13 +297,19 @@ impl CliRendererApp {
     }
 
     fn execute(&mut self) {
+        let _ = self.execute_command(self.build_command_string());
+    }
+
+    /// Queue an already assembled command in the linked terminal. Returns
+    /// whether it was queued, so an argless leaf can retry after its terminal
+    /// link becomes ready.
+    fn execute_command(&mut self, cmd: String) -> bool {
         if self.terminal_pane_id == 0 {
             log::warn!("CliRendererApp: no linked terminal, cannot run");
-            return;
+            return false;
         }
-        let cmd = self.build_command_string();
         if cmd.is_empty() {
-            return;
+            return false;
         }
         self.last_run = cmd.clone();
         self.pending_commands.push(AppCommand::RunInLinkedTerminal {
@@ -297,6 +319,7 @@ impl CliRendererApp {
             echo: true,
         });
         log::info!("CliRendererApp: queued run '{cmd}'");
+        true
     }
 
     fn request_terminal(&mut self) {
@@ -888,6 +911,11 @@ impl App for CliRendererApp {
                         "CliRendererApp: linked terminal ready, pane_id={}",
                         terminal_pane_id
                     );
+                    if let Some(command) = self.pending_auto_run.take() {
+                        if !self.execute_command(command.clone()) {
+                            self.pending_auto_run = Some(command);
+                        }
+                    }
                 }
             }
         }
@@ -930,7 +958,8 @@ mod tests {
                 "name": "remote",
                 "description": "Manage remotes",
                 "commands": [
-                    {"name": "add", "args": [{"name": "url", "type": "string", "required": true}]}
+                    {"name": "add", "args": [{"name": "url", "type": "string", "required": true}]},
+                    {"name": "status", "description": "Show remote status"}
                 ]
             }
         ]
@@ -976,7 +1005,67 @@ mod tests {
             .iter()
             .map(|c| c.name.as_str())
             .collect();
-        assert_eq!(names, vec!["add"]);
+        assert_eq!(names, vec!["add", "status"]);
+    }
+
+    #[test]
+    fn navigate_into_argless_leaf_runs_in_linked_terminal_and_stays_in_list() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(1); // remote — parent with children
+        app.terminal_pane_id = 5; // pretend the linked terminal is ready
+
+        app.navigate_into(1); // status — leaf with no flags or args
+
+        assert_eq!(app.view, View::List);
+        assert_eq!(app.cmd_path, vec!["remote".to_string()]);
+        assert_eq!(app.last_run, "demo remote status");
+        assert!(
+            app.take_pending_commands().iter().any(|command| matches!(
+                command,
+                AppCommand::RunInLinkedTerminal {
+                    terminal_pane_id: 5,
+                    command,
+                    ..
+                } if command == "demo remote status"
+            )),
+            "argless leaf must queue directly in its linked terminal"
+        );
+    }
+
+    #[test]
+    fn argless_leaf_waits_for_linked_terminal_then_runs() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(1); // remote — parent with children
+
+        app.navigate_into(1); // status — leaf with no flags or args
+
+        assert_eq!(app.view, View::List);
+        assert_eq!(app.cmd_path, vec!["remote".to_string()]);
+        assert_eq!(
+            app.pending_auto_run.as_deref(),
+            Some("demo remote status"),
+            "argless command must wait for the terminal handshake"
+        );
+
+        let request_id = app.terminal_request_id.clone();
+        app.queue_outbound_event(crate::protocol::PlexiEvent::LinkedTerminalReady {
+            request_id,
+            terminal_pane_id: 5,
+        });
+
+        assert!(app.pending_auto_run.is_none());
+        assert_eq!(app.last_run, "demo remote status");
+        assert!(
+            app.take_pending_commands().iter().any(|command| matches!(
+                command,
+                AppCommand::RunInLinkedTerminal {
+                    terminal_pane_id: 5,
+                    command,
+                    ..
+                } if command == "demo remote status"
+            )),
+            "terminal readiness must flush the deferred argless command"
+        );
     }
 
     #[test]
