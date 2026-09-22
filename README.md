@@ -29,26 +29,51 @@ If you run into any issues, don't hesitate to reach out directly: adhdisntreal@g
 
 ## Install
 
-> **Platform status:** macOS is the primary platform. Linux x86_64 is available
-> for X11 sessions; Wayland is not yet supported. Linux has no distro package
-> and stores secrets in a local file rather than an encrypted OS keyring. See
-> [Linux support](docs/linux-support-plan.md) for the current limitations.
+### macOS (Apple Silicon)
 
-### One-liner
-
-The public installer downloads a release asset and does not require a package
-manager, Git, Rust, or administrator access. On Linux it installs into your
-home directory; there is no apt, yay, or AUR package.
+Downloads the current Apple Silicon alpha release. Requires `bash`, `curl`,
+`tar`, and `shasum`, not Git, Rust, a package manager, or administrator access.
 
 ```bash
-curl -fsSL https://plexiapp.com/install | sh
+curl -fsSL https://plexiapp.com/install | bash
 ```
 
-The installer places the CLI in `~/.local/bin` (or `PLEXI_BIN_DIR`) and its
-files in a user-owned directory. Restart your terminal when done. Linux support
-is X11-only; Wayland is not claimed as supported. Linux secrets are stored in a
-mode-`0600` file and are not encrypted at rest. Linux video decode is not
-implemented, so Plexi does not promise hardware video decoding there.
+macOS Intel has no current download path. From a checkout, build it with Rust
+and Python 3 using `scripts/install.sh --from-source alpha`.
+
+### Linux (x86_64, X11)
+
+Downloads the current Linux x64 alpha release. Requires `bash`, `curl`, `tar`,
+and `sha256sum` (or `shasum`); it installs into user-owned directories.
+
+```bash
+curl -fsSL https://plexiapp.com/install | bash
+```
+
+Linux support is X11-only; Wayland is not supported. This is not an apt, yay,
+AUR, Flatpak, AppImage, `.deb`, or `.rpm` package. Linux secrets are stored in a
+mode-`0600` file and are not encrypted at rest; hardware video decoding is not
+implemented. See [Linux support](docs/linux-support-plan.md) for limitations.
+
+### Windows (x64)
+
+Run this in Windows PowerShell 5.1 or later. It downloads the current Windows
+x64 alpha release and verifies its SHA-256 checksum; it does not build from
+source.
+
+```powershell
+irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex
+```
+
+The Unix `curl | bash` command is not a Windows installer. Windows has no
+equivalent source-install script.
+
+### Unsigned alpha builds
+
+Alpha builds are unsigned and not notarized. Follow [Opening an unsigned Plexi
+build](docs/unsigned-install.md) before bypassing a macOS Gatekeeper or Windows
+SmartScreen warning. Linux users who unpack an archive manually may need
+`chmod +x plexi`.
 
 First run:
 
@@ -63,20 +88,6 @@ To install a pre-release channel, pass `--channel`:
 ```bash
 curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
 curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
-```
-
-**First launch (unsigned app):** Plexi alpha builds are unsigned on purpose.
-If macOS blocks the app, right-click `Plexi.app`, choose **Open**, then choose
-**Open** in the confirmation dialog. See [Opening an unsigned Plexi
-build](docs/unsigned-install.md) for the optional `xattr -cr` command, Windows
-SmartScreen steps, and the Linux permission fallback.
-
-### Build from source
-
-Needs Rust ([rustup.rs](https://rustup.rs)).
-
-```bash
-just install
 ```
 
 ---

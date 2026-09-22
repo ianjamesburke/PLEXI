@@ -2,9 +2,10 @@
 import Layout from '../layouts/Layout.astro';
 import Newsletter from '../components/Newsletter.astro';
 
-const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
+const UNIX_INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | bash';
+const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex';
 ---
-<Layout title="Download Plexi" description="Install the Plexi tiling terminal host and CLI. Current alpha binaries are available for Linux x64 and macOS Apple Silicon.">
+<Layout title="Download Plexi" description="Install the Plexi tiling terminal host and CLI on macOS Apple Silicon, Linux x64, or Windows x64.">
   <header class="dl-hero">
     <div class="wrap">
       <h1>Install Plexi</h1>
@@ -15,21 +16,62 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
   <section class="dl-section">
     <div class="wrap">
       <div class="install-block">
-        <div class="install-label">Open Terminal and run:</div>
+        <div class="install-label">macOS (Apple Silicon)</div>
         <div class="install-cmd-row">
-          <code class="install-cmd">{INSTALL_CMD}</code>
-          <button class="copy-btn" data-cmd={INSTALL_CMD} aria-label="Copy to clipboard">
+          <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
+          <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy to clipboard">
             <span class="copy-icon">&#x2398;</span>
             <span class="copy-label">Copy</span>
           </button>
         </div>
         <p class="install-note">
-          Currently installs the alpha prebuilt channel. Binary assets are available for
-          Linux x64 and macOS Apple Silicon; macOS Intel and Windows are not yet available
-          through this command. Contributors can use <code>bash -s -- --from-source</code>
-          to build from source instead.
+          Downloads the current Apple Silicon alpha release. Requires <code>bash</code>,
+          <code>curl</code>, <code>tar</code>, and <code>shasum</code>; it does not need Rust,
+          Git, or administrator access. macOS Intel has no current download path—build it from
+          a checkout instead.
         </p>
       </div>
+
+      <div class="install-block">
+        <div class="install-label">Linux (x86_64, X11)</div>
+        <div class="install-cmd-row">
+          <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
+          <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy to clipboard">
+            <span class="copy-icon">&#x2398;</span>
+            <span class="copy-label">Copy</span>
+          </button>
+        </div>
+        <p class="install-note">
+          Downloads the current Linux x64 alpha release. Requires <code>bash</code>,
+          <code>curl</code>, <code>tar</code>, and <code>sha256sum</code> (or <code>shasum</code>).
+          Plexi supports X11 sessions; Wayland is not supported. This is a download install,
+          not an apt, AUR, Flatpak, AppImage, <code>.deb</code>, or <code>.rpm</code> package.
+        </p>
+      </div>
+
+      <div class="install-block">
+        <div class="install-label">Windows (x64)</div>
+        <div class="install-cmd-row">
+          <code class="install-cmd">{WINDOWS_INSTALL_CMD}</code>
+          <button class="copy-btn" data-cmd={WINDOWS_INSTALL_CMD} aria-label="Copy to clipboard">
+            <span class="copy-icon">&#x2398;</span>
+            <span class="copy-label">Copy</span>
+          </button>
+        </div>
+        <p class="install-note">
+          Run in Windows PowerShell 5.1 or later. It downloads the current Windows x64 alpha
+          release and verifies its SHA-256 checksum; it does not build from source. The Unix
+          <code>curl | bash</code> command is not a Windows installer.
+        </p>
+      </div>
+
+      <p class="install-note trust-note">
+        Alpha builds are unsigned and not notarized. Before bypassing an operating-system warning,
+        read the <a href="https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md">unsigned-build opening guide</a>.
+        From a macOS or Linux checkout, <code>scripts/install.sh --from-source alpha</code> is
+        the explicit source-build path and requires Rust plus Python 3; Windows has no equivalent
+        source-install script.
+      </p>
 
     </div>
   </section>
@@ -76,7 +118,8 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
     border: 1px solid var(--border-2);
     border-radius: 12px;
     padding: 32px;
-    max-width: 640px;
+    max-width: 760px;
+    margin-bottom: 16px;
   }
 
   .install-label {
@@ -135,6 +178,8 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
     color: var(--fg-3);
     line-height: 1.6;
   }
+
+  .trust-note { max-width: 760px; }
 
   @media (max-width: 720px) {
     .dl-hero h1 { font-size: 40px; }
