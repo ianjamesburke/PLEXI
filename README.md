@@ -41,6 +41,7 @@ curl -fsSL https://plexiapp.com/install | bash
 The installer selects the matching macOS archive. If the selected channel has
 no Intel archive, it stops with a clear missing-asset error; from a checkout,
 build with Rust and Python 3 using `scripts/install.sh --from-source alpha`.
+It verifies the release archive's SHA-256 checksum before installing it.
 
 ### Linux (x86_64, X11)
 
@@ -50,6 +51,8 @@ and `sha256sum` (or `shasum`); it installs into user-owned directories.
 ```bash
 curl -fsSL https://plexiapp.com/install | bash
 ```
+
+It verifies the release archive's SHA-256 checksum before installing it.
 
 Linux support is X11-only; Wayland is not supported. This is not an apt, yay,
 AUR, Flatpak, AppImage, `.deb`, or `.rpm` package. Linux secrets are stored in a
@@ -75,6 +78,9 @@ Alpha builds are unsigned and not notarized. Follow [Opening an unsigned Plexi
 build](docs/unsigned-install.md) before bypassing a macOS Gatekeeper or Windows
 SmartScreen warning. Linux users who unpack an archive manually may need
 `chmod +x plexi`.
+
+See [v1 binary install](docs/v1-binary-install.md) and [release artifact
+policy](docs/release-artifacts.md) for supported release assets and channels.
 
 First run:
 

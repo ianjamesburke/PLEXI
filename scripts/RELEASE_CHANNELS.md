@@ -107,9 +107,20 @@ shim executes.
 
 ## Release Tags
 
-Three lanes publish source-build tags. The updater resolves these tags, checks
-out the selected commit, and builds it locally. `.github/workflows/release.yml`
-records tag metadata for that lookup. It does not publish binary assets.
+Three lanes publish GitHub releases with downloadable binary assets. For v1,
+each release requires `plexi-linux-x64.tar.gz`, `plexi-macos-arm64.tar.gz`, and
+`plexi-windows-x64.zip`, each with a matching SHA-256 sidecar.
+`plexi-macos-x64.tar.gz` is a best-effort optional asset: do not describe it as
+published unless it is present on that release. The release workflow builds the
+archives and publishes the assets for the tag; installers and self-update use
+the matching asset rather than building the tagged source locally. See
+[v1 binary install](../docs/v1-binary-install.md) and
+[Release artifacts](../docs/release-artifacts.md) for the install and artifact
+contracts.
+
+Alpha assets are intentionally unsigned and not notarized. Their archive
+checksums provide install-time integrity verification; the OS warning flow is
+documented in [Opening an unsigned Plexi build](../docs/unsigned-install.md).
 
 | Lane | Tag scheme | Branch tagged from |
 |---|---|---|
@@ -144,9 +155,9 @@ Standard release batch:
 ```sh
 just bump                          # bump Cargo.toml, write CHANGELOG, commit + tag locally
 just promote beta                  # alpha→beta
-just release beta                  # publish vX.Y.Z-beta.N source-build tag, trigger CI
+just release beta                  # publish vX.Y.Z-beta.N binary release, trigger CI
 just promote main                  # beta→main
-just release main                  # publish vX.Y.Z source-build tag, trigger CI
+just release main                  # publish vX.Y.Z binary release, trigger CI
 ```
 
 Promote code only and stop there (test locally before publishing):
@@ -177,7 +188,7 @@ it.
 
 `plexi update` lists all published tags (not just `/latest`), filters by the running
 binary's channel, picks the highest SemVer candidate newer than the current
-version, checks out that exact tag in `~/.plexi-src`, and rebuilds. The install
+version, and installs that release's matching verified binary asset. The install
 target channel is always the running binary's channel — updating `plexi-alpha`
 to a stable tag still installs as `alpha`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cut and publish a source-build release tag for a channel. Never moves code
+# Cut and publish a binary release tag for a channel. Never moves code
 # between branches — that's `just promote`. Run this only after
 # `just promote beta|main` has landed on the target branch and you're ready
 # to make the result live for that channel's auto-updaters.
@@ -59,7 +59,7 @@ if [[ "$channel" == "beta" ]]; then
     git -C "$tree" tag "$tag" "$local_head"
     git -C "$tree" push origin "$tag"
     echo ""
-    echo "Published $tag for source-build updates."
+    echo "Published $tag for binary-asset updates."
 else
     tag="v$version"
     if git -C "$tree" tag -l "$tag" | grep -q "$tag"; then
@@ -72,7 +72,7 @@ else
         echo "Creating tag $tag at main HEAD..."
         git -C "$tree" tag "$tag" "$local_head"
     fi
-    echo "Publishing tag $tag for source-build updates..."
+    echo "Publishing tag $tag for binary-asset updates..."
     git -C "$tree" push origin "$tag" --force
     echo ""
     echo "REMINDER: republish the agent-skill mirror from this release tree —"
