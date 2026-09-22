@@ -4,8 +4,11 @@ description: Get Plexi running on macOS, Linux, or Windows.
 order: 1
 ---
 
-Plexi has prebuilt alpha assets for Linux x86_64 and macOS Apple Silicon. macOS
-Intel and Windows are not yet available through the public curl installer.
+Plexi is a tiling terminal host with a scriptable CLI for macOS, Linux, and
+Windows. Its stable v1 surface includes panes, subcontexts, agent status hooks,
+Quick Note, and the local app runtime. The public installer currently has
+prebuilt alpha assets for Linux x86_64 and macOS Apple Silicon; macOS Intel and
+Windows are not yet available through this curl installer.
 
 ## Install
 
@@ -30,15 +33,20 @@ Plexi does not request Accessibility permission on first launch. Its app bundle
 declares camera and microphone permissions for video rooms, which macOS requests
 only when a feature uses them.
 
-## Teach Your Agent
+## Script the Host
 
-Plexi is built to be driven by coding agents. If you use Claude Code, Cursor, Codex, or any agent that supports [skills](https://skills.sh/), install the Plexi skill so your agent knows the CLI:
+The CLI is designed for scripts and tools that need to control a running host.
+It covers panes, contexts, status reporting, notes, and local apps. The v1
+surface exposes agent status hooks; it does not ship a full Assistant product.
+
+If you use a tool that supports [skills](https://skills.sh/), you can install
+the Plexi skill to document that CLI surface:
 
 ```sh
 npx -y skills@latest add ianjamesburke/plexi-skills
 ```
 
-Run it in a project to install for that project, or add `-g` for a global install. The skill documents the `plexi` CLI surface — panes, apps, contexts, notifications — so your agent can drive Plexi without trial and error. To update it later, run `npx skills update`.
+Run it in a project to install for that project, or add `-g` for a global install. To update it later, run `npx skills update`.
 
 To pin the skill to a Plexi release, use the same current CLI:
 
@@ -72,8 +80,12 @@ Plexi ships three channels. Each is a fully isolated instance with its own binar
 | Beta | `plexi-beta` | `~/.plexi-beta/` |
 | Alpha | `plexi-alpha` | `~/.plexi-alpha/` |
 
+Stable v1 keeps Assistant, marketplace, and MCP client surfaces gated. Use a
+beta or worktree channel only when you are explicitly testing those features.
+
 ## Next Steps
 
 - [Quick Note](/docs/quick-note) — open a persistent scratch pane from anywhere
 - [Panes & Pages](/docs/panes) — understand the layout model
 - [Apps](/docs/apps) — build and run Plexi apps
+- [Python SDK](/docs/sdk) — author apps for the local runtime

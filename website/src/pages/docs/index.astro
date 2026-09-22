@@ -2,11 +2,12 @@
 import Layout from '../../layouts/Layout.astro';
 import { docsNav } from '../../lib/docsNav';
 ---
-<Layout title="Docs — Plexi" description="Plexi documentation.">
+<Layout title="Docs — Plexi" description="Documentation for the Plexi tiling terminal host, scriptable CLI, and local app runtime.">
   <section class="docs-index">
     <div class="wrap">
       <header class="index-header">
         <h1>Documentation</h1>
+        <p>Start with the tiling terminal host, its scriptable CLI, and local app authoring. Assistant, marketplace, and MCP surfaces are gated outside stable v1.</p>
       </header>
       <div class="sections">
         {docsNav.map(group => (
@@ -39,6 +40,12 @@ import { docsNav } from '../../lib/docsNav';
     font-weight: 600;
     letter-spacing: 0;
     margin-bottom: 10px;
+  }
+  .index-header p {
+    color: var(--fg-2);
+    font-size: 15px;
+    line-height: 1.7;
+    max-width: 680px;
   }
 .sections {
     display: grid;
