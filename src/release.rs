@@ -116,35 +116,32 @@ mod tests {
     use super::{feature_enabled_for_channel, ReleaseFeature, ReleaseTier};
 
     #[test]
-    fn stable_and_rc_channels_disable_beta_features() {
-        assert!(!feature_enabled_for_channel(
+    fn v1_channels_disable_all_excluded_runtime_surfaces() {
+        // These surfaces may remain compiled for alpha/beta development, but
+        // a normal v1 host boot must not construct or contact any of them.
+        // Keep this list synchronized with every excluded runtime entry point.
+        for feature in [
             ReleaseFeature::Assistant,
-            None
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("main")
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("rc-010")
-        ));
+            ReleaseFeature::Marketplace,
+            ReleaseFeature::McpClient,
+        ] {
+            assert!(!feature_enabled_for_channel(feature, None));
+            assert!(!feature_enabled_for_channel(feature, Some("main")));
+            assert!(!feature_enabled_for_channel(feature, Some("rc-010")));
+        }
     }
 
     #[test]
-    fn alpha_beta_and_pr_channels_enable_beta_features() {
-        assert!(feature_enabled_for_channel(
+    fn alpha_beta_and_pr_channels_enable_excluded_development_surfaces() {
+        for feature in [
             ReleaseFeature::Assistant,
-            Some("alpha")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("beta")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("pr-2259")
-        ));
+            ReleaseFeature::Marketplace,
+            ReleaseFeature::McpClient,
+        ] {
+            assert!(feature_enabled_for_channel(feature, Some("alpha")));
+            assert!(feature_enabled_for_channel(feature, Some("beta")));
+            assert!(feature_enabled_for_channel(feature, Some("pr-2259")));
+        }
     }
 
     #[test]
@@ -167,30 +164,6 @@ mod tests {
         assert!(!feature_enabled_for_channel(
             ReleaseFeature::Marketplace,
             Some("client")
-        ));
-    }
-
-    #[test]
-    fn stable_and_rc_channels_disable_mcp_client_capability() {
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            None
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("main")
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("rc-010")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("beta")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("alpha")
         ));
     }
 

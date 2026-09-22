@@ -1289,11 +1289,17 @@ impl PlexiApp {
             &crate::config::config_dir(),
             crate::host::app_timeline::global(),
         );
-        if let Err(e) = host_mcp::start_host_mcp_server(
-            event_subscribe_mailbox.with_source("host_mcp_subscribe"),
-            &crate::config::config_dir(),
-        ) {
-            log::warn!("host_mcp: failed to start host MCP server: {e}");
+        if crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient) {
+            if let Err(e) = host_mcp::start_host_mcp_server(
+                event_subscribe_mailbox.with_source("host_mcp_subscribe"),
+                &crate::config::config_dir(),
+            ) {
+                log::warn!("host_mcp: failed to start host MCP server: {e}");
+            }
+        } else {
+            // MCP is outside the stable v1 host. Do not bind a listener or
+            // create pane credentials merely because the terminal host boots.
+            crate::release::log_feature_blocked(crate::release::ReleaseFeature::McpClient);
         }
 
         // One-time migration: remove the legacy file-queue directory if it
