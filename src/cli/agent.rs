@@ -546,11 +546,13 @@ exit 0
 
 fn install_claude_code_hooks(script_str: &str) -> i32 {
     let settings_path = claude_settings_path();
-    let mut settings = read_json_settings(&settings_path);
-
-    register_agent_hooks(&mut settings, CLAUDE_CODE_HOOK_EVENTS, script_str, None);
-
-    let code = write_json_settings(&settings_path, &settings);
+    let code = install_json_agent_hooks(
+        &settings_path,
+        CLAUDE_CODE_HOOK_EVENTS,
+        script_str,
+        None,
+        "Claude Code",
+    );
     if code == 0 {
         println!(
             "Registered Claude Code hooks in {} for {} lifecycle events.",
@@ -563,17 +565,14 @@ fn install_claude_code_hooks(script_str: &str) -> i32 {
 
 fn install_codex_hooks(script_str: &str) -> i32 {
     let hooks_path = codex_hooks_path();
-    let mut settings = read_json_settings(&hooks_path);
     let command = format!("PLEXI_AGENT_NAME=codex {script_str}");
-
-    register_agent_hooks(
-        &mut settings,
+    let code = install_json_agent_hooks(
+        &hooks_path,
         CODEX_HOOK_EVENTS,
         &command,
         Some("Plexi agent state"),
+        "Codex",
     );
-
-    let code = write_json_settings(&hooks_path, &settings);
     if code == 0 {
         println!(
             "Registered Codex hooks in {} for {} lifecycle events.",
@@ -585,6 +584,30 @@ fn install_codex_hooks(script_str: &str) -> i32 {
     code
 }
 
+fn install_json_agent_hooks(
+    path: &Path,
+    events: &[&str],
+    command: &str,
+    status_message: Option<&str>,
+    label: &str,
+) -> i32 {
+    let mut settings = match read_json_settings(path) {
+        Ok(settings) => settings,
+        Err(e) => {
+            eprintln!("error: refusing to modify {label} config: {e}");
+            return 1;
+        }
+    };
+    let changed = match register_agent_hooks(&mut settings, events, command, status_message) {
+        Ok(changed) => changed,
+        Err(e) => {
+            eprintln!("error: refusing to modify {label} config: {e}");
+            return 1;
+        }
+    };
+    if changed { write_json_settings(path, &settings) } else { 0 }
+}
+
 /// Point every lifecycle event at `command`, dropping any Plexi entry already
 /// there. Re-installing from a second channel therefore rewrites stale
 /// channel-suffixed script paths instead of stacking a duplicate beside them.
@@ -593,13 +616,20 @@ fn register_agent_hooks(
     events: &[&str],
     command: &str,
     status_message: Option<&str>,
-) {
+) -> Result<bool, String> {
+    if !settings.is_object() {
+        return Err("top-level JSON value is not an object".to_string());
+    }
     if settings.get("hooks").is_none() {
         settings["hooks"] = serde_json::json!({});
+    } else if !settings["hooks"].is_object() {
+        return Err("the existing 'hooks' value is not an object".to_string());
     }
+    let mut changed = false;
     for event in events {
-        register_json_hook(settings, event, command, status_message);
+        changed |= register_json_hook(settings, event, command, status_message)?;
     }
+    Ok(changed)
 }
 
 fn register_json_hook(
@@ -607,11 +637,12 @@ fn register_json_hook(
     event: &str,
     command: &str,
     status_message: Option<&str>,
-) {
-    let event_hooks = settings["hooks"][event]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+) -> Result<bool, String> {
+    let event_value = &settings["hooks"][event];
+    if !event_value.is_null() && !event_value.is_array() {
+        return Err(format!("the existing hooks.{event} value is not an array"));
+    }
+    let event_hooks = event_value.as_array().cloned().unwrap_or_default();
 
     let mut hook = serde_json::json!({"type": "command", "command": command});
     if let Some(message) = status_message {
@@ -621,26 +652,48 @@ fn register_json_hook(
         "matcher": "",
         "hooks": [hook]
     });
-    let mut event_hooks: Vec<serde_json::Value> = event_hooks
+    let mut next_entries: Vec<serde_json::Value> = event_hooks
         .into_iter()
         .filter(|entry| !contains_plexi_agent_hook(entry))
         .collect();
-    event_hooks.push(new_entry);
-    match settings["hooks"][event].as_array_mut() {
-        Some(a) => *a = event_hooks,
-        None => settings["hooks"][event] = serde_json::Value::Array(event_hooks),
+    next_entries.push(new_entry);
+    let changed = event_value.as_array() != Some(&next_entries);
+    if changed {
+        settings["hooks"][event] = serde_json::Value::Array(next_entries);
     }
+    Ok(changed)
 }
 
 fn install_pi_extension(script_str: &str) -> i32 {
     let extension_path = pi_extension_path();
+    let content = pi_extension_script(script_str);
+    if extension_path.exists() {
+        let existing = match std::fs::read_to_string(&extension_path) {
+            Ok(existing) => existing,
+            Err(e) => {
+                eprintln!("error: could not read {}: {e}", extension_path.display());
+                return 1;
+            }
+        };
+        if existing == content {
+            return 0;
+        }
+        if !is_plexi_pi_extension(&existing) {
+            eprintln!("error: refusing to overwrite unknown Pi extension {}; move it aside first.", extension_path.display());
+            return 1;
+        }
+    }
     if let Some(parent) = extension_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("error: could not create {}: {e}", parent.display());
             return 1;
         }
     }
-    if let Err(e) = std::fs::write(&extension_path, pi_extension_script(script_str)) {
+    if let Err(e) = backup_existing_file(&extension_path) {
+        eprintln!("error: {e}");
+        return 1;
+    }
+    if let Err(e) = std::fs::write(&extension_path, content) {
         eprintln!("error: could not write {}: {e}", extension_path.display());
         return 1;
     }
@@ -654,7 +707,8 @@ fn install_pi_extension(script_str: &str) -> i32 {
 
 fn pi_extension_script(script_str: &str) -> String {
     format!(
-        r#"import {{ spawn }} from "node:child_process";
+        r#"// Plexi-managed agent state extension.
+import {{ spawn }} from "node:child_process";
 import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
 
 const hookCommand = {script_json};
@@ -724,15 +778,27 @@ fn uninstall_json_hooks(path: &Path, events: &[&str], label: &str) -> i32 {
         return 0;
     }
 
-    let mut settings = read_json_settings(path);
+    let mut settings = match read_json_settings(path) {
+        Ok(settings) => settings,
+        Err(e) => {
+            eprintln!("error: refusing to modify {label} config: {e}");
+            return 1;
+        }
+    };
     let mut removed = 0usize;
 
     if let Some(hooks_map) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
         for event in events {
-            if let Some(event_arr) = hooks_map.get_mut(*event).and_then(|v| v.as_array_mut()) {
+            let remove_empty_event = if let Some(event_arr) = hooks_map.get_mut(*event).and_then(|v| v.as_array_mut()) {
                 let before = event_arr.len();
                 event_arr.retain(|entry| !contains_plexi_agent_hook(entry));
                 removed += before - event_arr.len();
+                event_arr.is_empty()
+            } else {
+                false
+            };
+            if remove_empty_event {
+                hooks_map.remove(*event);
             }
         }
     }
@@ -762,12 +828,32 @@ fn uninstall_pi_extension() -> i32 {
         );
         return 0;
     }
+    let existing = match std::fs::read_to_string(&extension_path) {
+        Ok(existing) => existing,
+        Err(e) => {
+            eprintln!("error: could not read {}: {e}", extension_path.display());
+            return 1;
+        }
+    };
+    if !is_plexi_pi_extension(&existing) {
+        eprintln!("error: refusing to remove unknown Pi extension {}; remove it manually if intended.", extension_path.display());
+        return 1;
+    }
+    if let Err(e) = backup_existing_file(&extension_path) {
+        eprintln!("error: {e}");
+        return 1;
+    }
     if let Err(e) = std::fs::remove_file(&extension_path) {
         eprintln!("error: could not remove {}: {e}", extension_path.display());
         return 1;
     }
     println!("Removed Pi extension {}.", extension_path.display());
     0
+}
+
+fn is_plexi_pi_extension(content: &str) -> bool {
+    content.contains("Plexi-managed agent state extension.")
+        || (content.contains("const hookCommand =") && content.contains("PLEXI_AGENT_NAME: \"pi\""))
 }
 
 fn contains_plexi_agent_hook(entry: &serde_json::Value) -> bool {
@@ -810,24 +896,14 @@ fn pi_extension_path() -> PathBuf {
         .join(PLEXI_PI_EXTENSION)
 }
 
-fn read_json_settings(path: &Path) -> serde_json::Value {
-    if path.exists() {
-        match std::fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
-                log::warn!(
-                    "agent_hook: could not parse {}: {e} — treating as empty",
-                    path.display()
-                );
-                serde_json::json!({})
-            }),
-            Err(e) => {
-                log::warn!("agent_hook: could not read {}: {e}", path.display());
-                serde_json::json!({})
-            }
-        }
-    } else {
-        serde_json::json!({})
+fn read_json_settings(path: &Path) -> Result<serde_json::Value, String> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
     }
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("could not parse {}: {e}", path.display()))
 }
 
 fn write_json_settings(path: &Path, settings: &serde_json::Value) -> i32 {
@@ -844,6 +920,10 @@ fn write_json_settings(path: &Path, settings: &serde_json::Value) -> i32 {
             return 1;
         }
     };
+    if let Err(e) = backup_existing_file(path) {
+        eprintln!("error: {e}");
+        return 1;
+    }
     let tmp_path = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp_path, &json) {
         eprintln!("error: could not write temp settings: {e}");
@@ -856,6 +936,26 @@ fn write_json_settings(path: &Path, settings: &serde_json::Value) -> i32 {
     }
     log::info!("agent_hook: wrote {}", path.display());
     0
+}
+
+/// Preserve the first pre-Plexi configuration before any mutation. Later
+/// installs and uninstalls deliberately keep that original recovery point.
+fn backup_existing_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let backup = path.with_extension(format!(
+        "{}.plexi-hook.bak",
+        path.extension().and_then(|extension| extension.to_str()).unwrap_or("bak")
+    ));
+    if backup.exists() {
+        return Ok(());
+    }
+    std::fs::copy(path, &backup).map_err(|e| {
+        format!("could not back up {} to {}: {e}", path.display(), backup.display())
+    })?;
+    log::info!("agent_hook: backed up {} to {}", path.display(), backup.display());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -912,19 +1012,19 @@ mod agent_tests {
             "PreToolUse",
             "PLEXI_AGENT_NAME=codex /tmp/claude-code-agent-state.sh",
             Some("Plexi agent state"),
-        );
+        ).unwrap();
         super::register_json_hook(
             &mut settings,
             "PreToolUse",
             "PLEXI_AGENT_NAME=codex /tmp/claude-code-agent-state.sh",
             Some("Plexi agent state"),
-        );
+        ).unwrap();
         super::register_json_hook(
             &mut settings,
             "PreToolUse",
             "PLEXI_AGENT_NAME=codex /tmp/current/claude-code-agent-state.sh",
             Some("Plexi agent state"),
-        );
+        ).unwrap();
 
         let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(hooks.len(), 1);
@@ -1032,8 +1132,8 @@ mod agent_tests {
         let neutral = "/home/u/.plexi/hooks/claude-code-agent-state.sh";
 
         let mut settings = serde_json::json!({});
-        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, stale, None);
-        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None);
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, stale, None).unwrap();
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None).unwrap();
 
         for event in super::CLAUDE_CODE_HOOK_EVENTS {
             let entries = settings["hooks"][*event].as_array().unwrap();
@@ -1058,7 +1158,7 @@ mod agent_tests {
         });
         let neutral = "/home/u/.plexi/hooks/claude-code-agent-state.sh";
 
-        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None);
+        super::register_agent_hooks(&mut settings, super::CLAUDE_CODE_HOOK_EVENTS, neutral, None).unwrap();
 
         let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
@@ -1067,5 +1167,86 @@ mod agent_tests {
             "/usr/local/bin/my-own-hook"
         );
         assert_eq!(entries[1]["hooks"][0]["command"], neutral);
+    }
+
+    #[test]
+    fn json_hook_round_trip_preserves_user_config_and_removes_only_plexi_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = serde_json::json!({
+            "model": "user-choice",
+            "hooks": {"PreToolUse": [{
+                "matcher": "*.rs",
+                "hooks": [{"type": "command", "command": "/usr/local/bin/user-hook"}]
+            }]}
+        });
+        fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        for _ in 0..2 {
+            assert_eq!(super::install_json_agent_hooks(
+                &path, super::CLAUDE_CODE_HOOK_EVENTS,
+                "/tmp/claude-code-agent-state.sh", None, "Claude Code"), 0);
+        }
+        let installed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(installed["model"], "user-choice");
+        assert_eq!(installed["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            fs::read_to_string(path.with_extension("json.plexi-hook.bak")).unwrap(),
+            serde_json::to_string_pretty(&original).unwrap()
+        );
+
+        assert_eq!(super::uninstall_json_hooks(&path, super::CLAUDE_CODE_HOOK_EVENTS, "Claude Code"), 0);
+        let removed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(removed["model"], "user-choice");
+        assert_eq!(removed["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(removed["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "/usr/local/bin/user-hook");
+    }
+
+    #[test]
+    fn invalid_or_unknown_hook_config_is_refused_without_modification() {
+        let dir = tempfile::tempdir().unwrap();
+        let invalid = dir.path().join("invalid.json");
+        fs::write(&invalid, "{ definitely not json").unwrap();
+        assert_eq!(super::install_json_agent_hooks(
+            &invalid, super::CODEX_HOOK_EVENTS, "plexi", None, "Codex"), 1);
+        assert_eq!(fs::read_to_string(&invalid).unwrap(), "{ definitely not json");
+
+        let unexpected = dir.path().join("unexpected.json");
+        let source = r#"{"hooks":{"SessionStart":"do not replace"}}"#;
+        fs::write(&unexpected, source).unwrap();
+        assert_eq!(super::install_json_agent_hooks(
+            &unexpected, super::CODEX_HOOK_EVENTS, "plexi", None, "Codex"), 1);
+        assert_eq!(fs::read_to_string(&unexpected).unwrap(), source);
+    }
+
+    #[test]
+    fn codex_hook_round_trip_removes_only_plexi_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let original = serde_json::json!({
+            "hooks": {"SessionStart": [{
+                "matcher": "project-*",
+                "hooks": [{"type": "command", "command": "/usr/local/bin/user-codex-hook"}]
+            }]}
+        });
+        fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        assert_eq!(
+            super::install_json_agent_hooks(
+                &path,
+                super::CODEX_HOOK_EVENTS,
+                "PLEXI_AGENT_NAME=codex /tmp/claude-code-agent-state.sh",
+                Some("Plexi agent state"),
+                "Codex"
+            ),
+            0
+        );
+        assert_eq!(
+            super::uninstall_json_hooks(&path, super::CODEX_HOOK_EVENTS, "Codex"),
+            0
+        );
+        let removed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(removed, original);
     }
 }
