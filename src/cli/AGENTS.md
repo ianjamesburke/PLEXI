@@ -56,6 +56,8 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **`plexi demo` is macOS-only until platform keymaps exist.** On Linux and
   Windows it refuses before teaching any shortcut; do not infer or document a
   replacement chord until the host keymap defines one.
+- **Routines are post-v1.** `plexi routine` stays compiled for beta and
+  worktree development but is release-gated and hidden from stable help.
 
 ## Documentation Rule for CLI Changes
 

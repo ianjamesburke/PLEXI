@@ -6,7 +6,7 @@ order: 7
 
 The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and local apps from outside the UI. This reference is generated from the complete public command inventory; hidden implementation commands are omitted, and beta-only entries are labelled where they appear.
 
-Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, and local app runtime. Assistant, marketplace, MCP client, and app-wrapper surfaces are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
+Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, and local app runtime. Assistant, marketplace, MCP client, app-wrapper, and routine surfaces are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
 
 Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). A channel-named binary always targets its own profile; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` when run inside a Plexi pane.
 
@@ -115,6 +115,8 @@ Manage workspace routines — scheduled shell commands.
 Routines are declared in `routines.toml` inside the workspace channel directory — `{workspace_channel_dir}/routines.toml`, e.g. `.plexi-alpha/routines.toml` on the alpha channel — and run automatically on schedule. **Requires Plexi to be running** — there is no background daemon. Routines only fire while the host process is open.
 
 Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
+
+> **Beta-gated:** Routines are a post-v1 beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
 ### Routine file format (`{workspace_channel_dir}/routines.toml`)
 

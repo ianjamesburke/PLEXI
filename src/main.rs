@@ -275,34 +275,37 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::workspace_clean_cli(dry_run))
                         }
                     },
-                    Commands::Routine { cmd } => match cmd {
-                        RoutineCmd::List => std::process::exit(cli::routine_list()),
-                        RoutineCmd::Run { name, force } => {
-                            std::process::exit(cli::routine_run(&name, force))
+                    Commands::Routine { cmd } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Routines);
+                        match cmd {
+                            RoutineCmd::List => std::process::exit(cli::routine_list()),
+                            RoutineCmd::Run { name, force } => {
+                                std::process::exit(cli::routine_run(&name, force))
+                            }
+                            RoutineCmd::Add {
+                                name,
+                                command,
+                                schedule,
+                                context,
+                                ephemeral,
+                            } => std::process::exit(cli::routine_add(
+                                &name,
+                                &command,
+                                &schedule,
+                                context.as_deref(),
+                                ephemeral,
+                            )),
+                            RoutineCmd::Remove { name } => {
+                                std::process::exit(cli::routine_remove(&name))
+                            }
+                            RoutineCmd::Enable { name } => {
+                                std::process::exit(cli::routine_set_enabled(&name, true))
+                            }
+                            RoutineCmd::Disable { name } => {
+                                std::process::exit(cli::routine_set_enabled(&name, false))
+                            }
                         }
-                        RoutineCmd::Add {
-                            name,
-                            command,
-                            schedule,
-                            context,
-                            ephemeral,
-                        } => std::process::exit(cli::routine_add(
-                            &name,
-                            &command,
-                            &schedule,
-                            context.as_deref(),
-                            ephemeral,
-                        )),
-                        RoutineCmd::Remove { name } => {
-                            std::process::exit(cli::routine_remove(&name))
-                        }
-                        RoutineCmd::Enable { name } => {
-                            std::process::exit(cli::routine_set_enabled(&name, true))
-                        }
-                        RoutineCmd::Disable { name } => {
-                            std::process::exit(cli::routine_set_enabled(&name, false))
-                        }
-                    },
+                    }
                     Commands::Agent { cmd } => match cmd {
                         AgentCmd::Init { name, from } => {
                             std::process::exit(cli::agent_init(&name, from))
