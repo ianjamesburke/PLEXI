@@ -52,10 +52,7 @@ Remove pane slot files for panes that are no longer open
 
 Store and retrieve secrets (API keys, passwords, tokens) for your project.
 
-On macOS, secrets are saved to the system keychain. On Linux, they are saved in
-a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as
-environment variables when you run commands. Use `plexi workspace init` first
-to scope secrets to a project.
+On macOS, secrets are saved to the system keychain. On Linux, they are saved in a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as environment variables when you run commands. Use `plexi workspace init` first to scope secrets to a project.
 
 | Subcommand | Description |
 |---|---|
@@ -68,9 +65,7 @@ to scope secrets to a project.
 
 Save a secret to the platform secret store.
 
-Plexi will prompt you to type the value (hidden). On macOS the secret is stored
-in the system keychain; on Linux it is stored in a mode-`0600`, unencrypted
-profile file. It can be injected into commands automatically.
+Plexi will prompt you to type the value (hidden). On macOS the secret is stored in the system keychain; on Linux it is stored in a mode-`0600`, unencrypted profile file. It can be injected into commands automatically.
 
 Use --from-env to read the value from an existing environment variable instead of typing it. Use --global to make the secret available across all projects, not just the current one.
 

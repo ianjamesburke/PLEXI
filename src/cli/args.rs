@@ -65,8 +65,10 @@ pub enum Commands {
     },
     /// Store and retrieve secrets (API keys, passwords, tokens) for your project.
     ///
-    /// Secrets are saved to your system keychain and injected as environment variables when you run commands.
-    /// Use `plexi workspace init` first to scope secrets to a project.
+    /// On macOS, secrets are saved to the system keychain. On Linux, they are saved in
+    /// a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as
+    /// environment variables when you run commands. Use `plexi workspace init` first
+    /// to scope secrets to a project.
     #[command(alias = "secrets")]
     Secret {
         #[command(subcommand)]
@@ -418,10 +420,11 @@ pub enum WorkspaceCmd {
 
 #[derive(Subcommand)]
 pub enum SecretCmd {
-    /// Save a secret to your keychain.
+    /// Save a secret to the platform secret store.
     ///
-    /// Plexi will prompt you to type the value (hidden). The secret is stored in your
-    /// system keychain and can be injected into commands automatically.
+    /// Plexi will prompt you to type the value (hidden). On macOS the secret is stored
+    /// in the system keychain; on Linux it is stored in a mode-`0600`, unencrypted
+    /// profile file. It can be injected into commands automatically.
     ///
     /// Use --from-env to read the value from an existing environment variable instead of typing it.
     /// Use --global to make the secret available across all projects, not just the current one.
@@ -434,10 +437,8 @@ pub enum SecretCmd {
         /// Store this secret globally so it's available in all projects, not just this one
         #[arg(long)]
         global: bool,
-        /// Use a different name for the Keychain entry than the canonical env var name.
-        ///
-        /// Useful when the Keychain entry already exists under a different name.
-        /// Example: plexi secret set OPENAI_API_KEY --alias openai_personal
+        /// Use a different platform-store entry name than the canonical env var name.
+        /// On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal
         #[arg(long)]
         alias: Option<String>,
     },
