@@ -120,10 +120,19 @@ The renderer receives that event in `queue_outbound_event`. If the
 
 ### 3.2 Run
 
-A command runs when the user presses **Enter** in a leaf form (`handle_key`) or clicks the Run button . Both call `execute`:
+A leaf with flags or positional arguments runs when the user presses **Enter** in
+its form (`handle_key`) or clicks the Run button. An argless leaf runs as soon
+as it is selected from the command list: the renderer temporarily includes its
+name while assembling and queuing the command, then returns to the parent list
+with the last-run hint updated. This avoids a form whose only control is Run.
+If the linked terminal is still connecting, the assembled argless command is
+held and queued when its matching `LinkedTerminalReady` event arrives.
 
-- If `terminal_pane_id == 0`, `execute` logs `no linked terminal, cannot run`
- and returns — **nothing is sent**.
+All run paths call `execute` or its shared command-queue helper:
+
+- A form run with `terminal_pane_id == 0` logs `no linked terminal, cannot run`
+ and returns — **nothing is sent**. An argless-list selection instead retains
+ its assembled command for the matching terminal-ready event.
 - Otherwise it assembles the command string with `build_command_string`
  — binary name + breadcrumb path + flags + positional args, with
  space-containing values single-quoted and bool flags rendered bare — and
@@ -327,8 +336,9 @@ render → inspect → act loop from
 | **Error** | Bad/missing descriptor | Render error message; pane stays alive; no terminal requested |
 | **Loading → List** | First `ui` frame, descriptor OK | Request linked terminal, show command list |
 | **Ready** | `LinkedTerminalReady` event matches `request_id` | Store `terminal_pane_id`; Run button enabled |
-| **Run** | Enter in a form / Run click, terminal ready | Write assembled command to the linked terminal PTY |
-| **Run blocked** | Same, but `terminal_pane_id == 0` | No-op; warn `no linked terminal, cannot run` |
+| **Run** | Select argless leaf, or Enter in a form / Run click, terminal ready | Write assembled command to the linked terminal PTY; argless leaves remain in their parent command list |
+| **Run pending** | Select argless leaf while terminal is connecting | Queue the assembled command after matching `LinkedTerminalReady` |
+| **Run blocked** | Form run, but `terminal_pane_id == 0` | No-op; warn `no linked terminal, cannot run` |
 | **Reload** | (none) | No watch/reload; close and re-open to refresh |
 | **Close** | Pane closed by user/host | `wants_close` is always `false` — the renderer never self-closes; the host owns close |
 | **Crash / restore** | — | `serialize_state` is `None`; the pane is not restored with state on layout reload |
