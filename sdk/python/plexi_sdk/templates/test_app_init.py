@@ -21,15 +21,17 @@ APP_DIR = Path(__file__).resolve().parent.parent
 APP = APP_DIR / "main.py"
 if not APP.exists():
     # This template is collected as part of the SDK suite before `app init`
-    # copies it into a generated app. Materialize the three templates under
+    # copies it into a generated app. Materialize the package layout under
     # their generated names and exercise them in a scratch directory.
     _TEMPLATES = Path(__file__).resolve().parent
     _SCRATCH = Path(__file__).resolve().parent / "__pycache__" / "scaffold_app"
     _SCRATCH.mkdir(parents=True, exist_ok=True)
+    (_SCRATCH / "app").mkdir(exist_ok=True)
+    (_SCRATCH / "app" / "__init__.py").touch()
     for _src, _dst in (
         ("app_init.py", "main.py"),
-        ("app_init_tools.py", "app_tools.py"),
-        ("app_init_ui.py", "app_ui.py"),
+        ("app_init_tools.py", "app/tools.py"),
+        ("app_init_ui.py", "app/ui.py"),
     ):
         shutil.copyfile(_TEMPLATES / _src, _SCRATCH / _dst)
     APP_DIR = _SCRATCH
@@ -62,12 +64,12 @@ def test_snapshot(tmp_path):
 
 
 def test_tools_are_declared_and_dispatch():
-    """init exposes the app_tools declarations; a ToolCall gets a ToolResult."""
+    """init exposes the app.tools declarations; a ToolCall gets a ToolResult."""
     import sys
 
     sys.path.insert(0, str(APP_DIR))
     try:
-        import app_tools  # noqa: F401  (registers the tools)
+        from app import tools as app_tools  # noqa: F401  (registers the tools)
         from plexi_sdk import tools
 
         names = {decl.name for decl in tools.declarations()}

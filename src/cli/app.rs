@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
 pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
-pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 4;
+pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 5;
 
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn app_init_config_dir() -> String {
@@ -513,11 +513,12 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     );
     std::fs::write(app_dir.join("manifest.toml"), manifest)?;
 
-    // main.py + app_tools.py + app_ui.py — plexi_sdk is injected via PYTHONPATH
+    // main.py + app/tools.py + app/ui.py — plexi_sdk is injected via PYTHONPATH
     // by the host at launch; do NOT copy plexi_sdk.py alongside (the package uses
     // relative imports that break when imported as a flat single file).
     // main.py is the thin lifecycle wiring; tools and UI live in their own
-    // modules. `app_` prefixes keep `from plexi_sdk import tools` unshadowed.
+    // modules. The package avoids a root-level tools.py that would shadow
+    // `plexi_sdk.tools`.
     // __DISPLAY_NAME__ is substituted below.
     let display_name = to_title_case(name);
     let main_template = include_str!("../../sdk/python/plexi_sdk/templates/app_init.py");
@@ -530,12 +531,18 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
             .replace("__CLASS_NAME__", &to_struct_name(name))
             .replace("__DISPLAY_NAME__", &display_name),
     )?;
+    let package_dir = app_dir.join("app");
+    std::fs::create_dir_all(&package_dir)?;
     std::fs::write(
-        app_dir.join("app_tools.py"),
+        package_dir.join("__init__.py"),
+        "\"\"\"Application modules for this Plexi app.\"\"\"\n",
+    )?;
+    std::fs::write(
+        package_dir.join("tools.py"),
         tools_template.replace("__DISPLAY_NAME__", &display_name),
     )?;
     std::fs::write(
-        app_dir.join("app_ui.py"),
+        package_dir.join("ui.py"),
         ui_template.replace("__DISPLAY_NAME__", &display_name),
     )?;
 
@@ -554,7 +561,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     std::fs::write(fixtures_dir.join("state.json"), "{\n  \"count\": 3\n}\n")?;
 
     log::info!(
-        "app_init: wrote python scaffold modules main.py app_tools.py app_ui.py at {}",
+        "app_init: wrote python scaffold modules main.py app/tools.py app/ui.py at {}",
         app_dir.display()
     );
 
@@ -2686,13 +2693,23 @@ mod scaffold_marketplace_tests {
                 .unwrap_or_else(|e| panic!("python scaffold must write {file}: {e}"))
         };
         let main_src = read("main.py");
-        let tools_src = read("app_tools.py");
-        let ui_src = read("app_ui.py");
+        let package_src = read("app/__init__.py");
+        let tools_src = read("app/tools.py");
+        let ui_src = read("app/ui.py");
+        assert!(
+            !app_dir.join("app_tools.py").exists() && !app_dir.join("app_ui.py").exists(),
+            "v5 scaffold must not write the flat v4 modules"
+        );
+        assert!(
+            !app_dir.join("tools.py").exists(),
+            "v5 scaffold must not write a root tools.py that shadows plexi_sdk.tools"
+        );
 
         for (file, src) in [
             ("main.py", &main_src),
-            ("app_tools.py", &tools_src),
-            ("app_ui.py", &ui_src),
+            ("app/__init__.py", &package_src),
+            ("app/tools.py", &tools_src),
+            ("app/ui.py", &ui_src),
         ] {
             assert!(
                 !src.contains("__DISPLAY_NAME__") && !src.contains("__CLASS_NAME__"),
@@ -2718,7 +2735,8 @@ mod scaffold_marketplace_tests {
             "generated main.py should explain component/effect separation"
         );
         assert!(
-            main_src.contains("import app_tools") && main_src.contains("import app_ui"),
+            main_src.contains("from app import tools as app_tools")
+                && main_src.contains("from app import ui as app_ui"),
             "generated main.py should import the tools and UI modules"
         );
         assert!(
@@ -2738,21 +2756,21 @@ mod scaffold_marketplace_tests {
             "generated main.py must not build UI itself"
         );
 
-        // app_tools.py: plain functions on the SDK decorator API.
+        // app/tools.py: plain functions on the SDK decorator API.
         assert!(
             tools_src.contains("from plexi_sdk import state, tools"),
-            "generated app_tools.py should use the SDK tools module"
+            "generated app/tools.py should use the SDK tools module"
         );
         assert!(
             tools_src.contains("@tools.tool("),
-            "generated app_tools.py should declare tools with the decorator"
+            "generated app/tools.py should declare tools with the decorator"
         );
         assert!(
             tools_src.contains("read_only=True"),
-            "generated app_tools.py should demonstrate a read-only tool"
+            "generated app/tools.py should demonstrate a read-only tool"
         );
 
-        // app_ui.py: the component tree and the primitive guidance.
+        // app/ui.py: the component tree and the primitive guidance.
         for needle in [
             "def build_view(",
             "ActionBar(",
@@ -2774,17 +2792,17 @@ mod scaffold_marketplace_tests {
         ] {
             assert!(
                 ui_src.contains(needle),
-                "generated app_ui.py should mention {needle}"
+                "generated app/ui.py should mention {needle}"
             );
         }
         assert!(
             !ui_src.contains("SetState("),
-            "generated app_ui.py must stay free of effects"
+            "generated app/ui.py must stay free of effects"
         );
 
         let agents = std::fs::read_to_string(app_dir.join("AGENTS.md")).unwrap();
         assert!(
-            agents.contains("app_tools.py") && agents.contains("app_ui.py"),
+            agents.contains("app/tools.py") && agents.contains("app/ui.py"),
             "AGENTS.md must document the tools-vs-UI module split"
         );
     }
