@@ -38,6 +38,8 @@ pub fn gated_command() -> clap::Command {
 }
 
 /// `Cli::try_parse_from` over the gated command tree.
+// Retained for gated parse/completions callers while clap wiring uses another path.
+#[allow(dead_code)]
 pub fn parse_gated<I, T>(args: I) -> Result<Cli, clap::Error>
 where
     I: IntoIterator<Item = T>,
