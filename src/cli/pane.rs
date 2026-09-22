@@ -103,7 +103,7 @@ fn response_error(content: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Terse success ack for `pane slot write`, printed to stderr so stdout stays byte-clean.
+/// Terse success ack for `pane slot write`, printed to stdout with other CLI payloads.
 fn slot_write_ack(name: &str, bytes: usize, append: bool) -> String {
     let verb = if append { "+<-" } else { "<-" };
     format!("slot {name:?} {verb} {bytes} bytes")
@@ -162,7 +162,7 @@ pub fn pane_slot_write_cli(
         eprintln!("error: {err}");
         return 1;
     }
-    eprintln!("{}", slot_write_ack(name, bytes.len(), append));
+    println!("{}", slot_write_ack(name, bytes.len(), append));
     0
 }
 

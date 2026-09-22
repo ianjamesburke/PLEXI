@@ -65,6 +65,13 @@ fn log_allowed(target: &str, level: log::Level, plexi_level: log::LevelFilter) -
     }
 }
 
+/// CLI commands write their user-facing diagnostics explicitly as `error:` lines.
+/// Their structured records remain in the profile log, but must not be mirrored
+/// to stderr where they would corrupt machine-facing command output.
+fn stderr_log_allowed(cli_mode: bool, target: &str) -> bool {
+    !cli_mode || !(target == "plexi::cli" || target.starts_with("plexi::cli::"))
+}
+
 /// How often the watchdog samples the frame counter. Short enough to catch brief freezes.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// UI thread is considered frozen after this many seconds without a frame tick.
@@ -169,8 +176,8 @@ fn rotate_and_prune(
 
 /// Initialise the logger. Must be called before any `log::` macro is used.
 /// If the log file cannot be opened, falls back to stderr-only and logs a warning.
-/// When `cli_mode` is true, INFO/DEBUG logs are suppressed on stderr (file-only)
-/// so CLI callers (especially agents) don't see noisy socket-level trace lines.
+/// When `cli_mode` is true, CLI-targeted logs are file-only so command output
+/// remains a clean stdout payload plus explicit stderr diagnostics.
 pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
     let log_file_path = log_path();
     let config_dir = crate::config::config_dir();
@@ -216,6 +223,7 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             if cli_mode {
                 let stderr_dispatch = fern::Dispatch::new()
                     .level(log::LevelFilter::Warn)
+                    .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
                     .chain(std::io::stderr());
                 dispatch.chain(stderr_dispatch).chain(file)
             } else {
@@ -674,6 +682,14 @@ mod tests {
             log::Level::Info,
             log::LevelFilter::Warn
         ));
+    }
+
+    #[test]
+    fn cli_records_are_file_only_in_cli_mode() {
+        assert!(!stderr_log_allowed(true, "plexi::cli::pane"));
+        assert!(stderr_log_allowed(true, "plexi::host"));
+        assert!(stderr_log_allowed(true, "plexi::client"));
+        assert!(stderr_log_allowed(false, "plexi::cli::pane"));
     }
 
     /// SDK log-bridge targets (`app::<id>`) follow the dynamic level too.

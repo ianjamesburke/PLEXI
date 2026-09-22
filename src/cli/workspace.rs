@@ -339,7 +339,7 @@ pub fn workspace_secret_list(global: bool) -> i32 {
         };
         let user_entries = store.list_with_prefix(&user_prefix);
         if workspace_entries.is_empty() && user_entries.is_empty() {
-            eprintln!("No secrets stored.");
+            println!("No secrets stored.");
             return 0;
         }
         if let Some((workspace_id, workspace_prefix)) = workspace_id {
