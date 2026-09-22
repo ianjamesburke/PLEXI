@@ -23,15 +23,16 @@ Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta
 "#
     );
 
-    for sub in cmd.get_subcommands() {
-        if sub.is_hide_set() {
-            continue;
-        }
-        emit_subcommand(sub, "plexi", 2);
+    let subcommands = cmd
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .collect::<Vec<_>>();
+    for (index, sub) in subcommands.iter().enumerate() {
+        emit_subcommand(sub, "plexi", 2, index + 1 == subcommands.len());
     }
 }
 
-fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
+fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize, is_last: bool) {
     let name = cmd.get_name();
     let full_path = format!("{parent_path} {name}");
     let heading = "#".repeat(depth);
@@ -142,8 +143,14 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         }
         println!();
 
-        for sub in subs {
-            emit_subcommand(sub, &full_path, depth + 1);
+        let subcommand_count = subs.len();
+        for (index, sub) in subs.into_iter().enumerate() {
+            emit_subcommand(
+                sub,
+                &full_path,
+                depth + 1,
+                is_last && index + 1 == subcommand_count,
+            );
         }
     } else if !args.is_empty() {
         println!("| Flag / Arg | Type | Required | Description |");
@@ -151,7 +158,9 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         for arg in args {
             emit_arg_row(arg, &full_path);
         }
-        println!();
+        if !is_last {
+            println!();
+        }
     }
 }
 
