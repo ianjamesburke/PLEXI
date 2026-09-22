@@ -1,4 +1,4 @@
-use super::install_hint::{install_hint, InstallTarget};
+use super::install_hint::{install_hint_for, InstallPlatform, InstallTarget};
 use super::pane::pane_send_cli;
 
 const FZF_INSTALL: InstallTarget = InstallTarget {
@@ -109,10 +109,7 @@ pub fn notes_list_cli() -> i32 {
 /// ordering have exactly one implementation.
 pub fn notes_open_cli() -> i32 {
     if !binary_in_path("fzf") {
-        eprintln!(
-            "error: fzf is not installed — {} to enable the picker",
-            install_hint(FZF_INSTALL)
-        );
+        eprintln!("{}", missing_picker_error(InstallPlatform::current()));
         return 1;
     }
 
@@ -159,12 +156,69 @@ pub fn notes_open_cli() -> i32 {
     let self_exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "plexi".to_string());
-    let cmd = format!(
-        "selected=$(\"{self_exe}\" notes list | fzf --header='Select note'); \
-         [ -n \"$selected\" ] && {editor} \"$selected\"\r"
-    );
+    let cmd = notes_open_command(&self_exe, editor);
     log::info!("notes_open: injecting fzf picker into pane {pane_id}");
     pane_send_cli(pane_id, &cmd, false)
+}
+
+fn missing_picker_error(platform: InstallPlatform) -> String {
+    format!(
+        "error: fzf is not installed — {} to enable the picker",
+        install_hint_for(platform, FZF_INSTALL)
+    )
+}
+
+/// Build the shell expression injected into the calling terminal pane.
+///
+/// The binary path can contain spaces (notably an installed app bundle path on
+/// macOS), so it must be shell-quoted as one command argument rather than
+/// interpolated into the expression.
+fn notes_open_command(self_exe: &str, editor: &str) -> String {
+    let list_command = crate::host::shell::shell_join(&[
+        self_exe.to_owned(),
+        "notes".to_owned(),
+        "list".to_owned(),
+    ]);
+    format!(
+        "selected=$({list_command} | fzf --header='Select note'); \
+         [ -n \"$selected\" ] && {editor} \"$selected\"\r"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{missing_picker_error, notes_open_command, InstallPlatform};
+
+    #[test]
+    fn missing_picker_hint_uses_each_platforms_native_install_path() {
+        assert_eq!(
+            missing_picker_error(InstallPlatform::Macos),
+            "error: fzf is not installed — brew install fzf to enable the picker"
+        );
+        assert_eq!(
+            missing_picker_error(InstallPlatform::Linux),
+            "error: fzf is not installed — sudo apt install fzf (or https://github.com/junegunn/fzf#installation) to enable the picker"
+        );
+        assert_eq!(
+            missing_picker_error(InstallPlatform::Windows),
+            "error: fzf is not installed — winget install junegunn.fzf (or https://github.com/junegunn/fzf#installation) to enable the picker"
+        );
+    }
+
+    #[test]
+    fn picker_command_uses_the_running_binary_and_opens_the_selected_note() {
+        let command = notes_open_command("/Applications/Plexi Beta/plexi", "nano");
+
+        assert!(
+            command.starts_with("selected=$('/Applications/Plexi Beta/plexi' notes list | fzf"),
+            "{command}"
+        );
+        assert!(command.contains("--header='Select note'"), "{command}");
+        assert!(
+            command.ends_with("[ -n \"$selected\" ] && nano \"$selected\"\r"),
+            "{command}"
+        );
+    }
 }
 
 fn print_demo_divider() {
