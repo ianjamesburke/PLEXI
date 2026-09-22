@@ -11,19 +11,11 @@ and Linux hardware video decoding is not implemented.
 
 ## Assets
 
-Alpha releases publish these download archives when the corresponding platform
-build is available:
-
-| Platform | Asset | Contents |
-| --- | --- | --- |
-| macOS Apple Silicon | `plexi-macos-arm64.tar.gz` | `Plexi.app` and `plexi` |
-| macOS Intel (when published) | `plexi-macos-x64.tar.gz` | `Plexi.app` and `plexi` |
-| Linux x86_64 | `plexi-linux-x64.tar.gz` | `plexi` |
-| Windows x64 | `plexi-windows-x64.zip` | `plexi.exe` |
-
-Each archive has a matching `.sha256` sidecar. The installers verify it before
-replacing an existing install; see [Opening an unsigned Plexi build](unsigned-install.md)
-for the separate operating-system trust prompts.
+The required v1 archives, their platform coverage, and the optional macOS Intel
+artifact are defined in [Release artifacts](release-artifacts.md). Each archive
+has a matching `.sha256` sidecar. The installers verify it before replacing an
+existing install; see [Opening an unsigned Plexi build](unsigned-install.md) for
+the separate operating-system trust prompts.
 
 ## Failed installs
 

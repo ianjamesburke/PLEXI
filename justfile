@@ -450,7 +450,7 @@ bump bump="patch":
 promote to="" *flags="":
     bash scripts/promote.sh "{{to}}" {{flags}}
 
-# Cut and publish the source-build release tag for a channel already
+# Cut and publish the binary release tag for a channel already
 # promoted to its target branch. Never moves code — that's `just promote`.
 #   just release beta — cut vX.Y.Z-beta.N at beta HEAD, publish, trigger CI
 #   just release main — cut/retag vX.Y.Z at main HEAD, publish, trigger CI
