@@ -134,7 +134,10 @@ EOF
     echo "error: could not download ${ASSET} for ${OS}/${ARCH} from ${TAG}; that release may not publish this platform asset" >&2
     exit 1
   fi
-  curl -fL --retry 3 --connect-timeout 15 -o "$checksum_file" "$CHECKSUM_URL"
+  if ! curl -fL --retry 3 --connect-timeout 15 -o "$checksum_file" "$CHECKSUM_URL"; then
+    echo "error: could not download the SHA-256 checksum for ${ASSET}; refusing to install" >&2
+    exit 1
+  fi
   expected_checksum="$(awk -v asset="$ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "$checksum_file")"
   if [[ ! "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]]; then
     echo "error: release checksum file did not contain a SHA-256 for ${ASSET}" >&2
@@ -147,7 +150,10 @@ EOF
   fi
 
   mkdir -p "$BIN_DIR" "$tmp/unpack" "$tmp/staged"
-  tar -xzf "$archive" -C "$tmp/unpack"
+  if ! tar -xzf "$archive" -C "$tmp/unpack"; then
+    echo "error: downloaded ${ASSET} is not a valid release archive; refusing to install" >&2
+    exit 1
+  fi
   source_binary="$(find "$tmp/unpack" -name plexi -type f -print -quit)"
   [[ -n "$source_binary" ]] || { echo "error: release asset did not contain the Plexi binary" >&2; exit 1; }
 

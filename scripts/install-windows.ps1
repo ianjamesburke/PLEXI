@@ -107,6 +107,7 @@ try {
     if ($binaryReplacementStarted -and (Test-Path $installedBinary)) { Remove-Item -Force $installedBinary }
     if ($hadBinary -and (Test-Path $previousBinary)) { Move-Item -Force $previousBinary $installedBinary }
     if ($hadTag) { Copy-Item -Force $previousTag $tagPath } elseif (Test-Path $tagPath) { Remove-Item -Force $tagPath }
+    [Console]::Error.WriteLine('error: installation activation failed; the existing install was restored or left unchanged.')
     throw
   }
 

@@ -32,6 +32,13 @@ case "${INSTALL_FIXTURE:-}" in
       printf 'not the expected archive' > "$output"
     fi
     ;;
+  corrupted-archive)
+    if [[ "$url" == *.sha256 ]]; then
+      printf 'not a gzip archive' | sha256sum | sed 's#  .*#  plexi-linux-x64.tar.gz#' > "$output"
+    else
+      printf 'not a gzip archive' > "$output"
+    fi
+    ;;
   activation-failure)
     if [[ "$url" == *.sha256 ]]; then
       sha256sum "$INSTALL_ARCHIVE" | sed 's#  .*#  plexi-linux-x64.tar.gz#' > "$output"
@@ -121,6 +128,7 @@ run_installer missing-asset --channel bad
 [[ $(<"$work/output") == *'channel must be main, alpha, or beta'* ]]
 assert_absent "$work/install"
 assert_absent "$work/home/.plexi/installed_tag"
+echo 'case: invalid channel rejects without mutation: PASS'
 
 # A failed download leaves a prior install and its marker untouched.
 mkdir -p "$work/install/alpha" "$work/bin-install" "$work/home/.plexi-alpha"
@@ -131,6 +139,7 @@ run_installer missing-asset --channel alpha --tag v0.0.2-alpha.1
 [[ $(<"$work/install/alpha/keep") == 'old payload' ]]
 [[ $(<"$work/bin-install/plexi-alpha") == 'old command' ]]
 [[ $(<"$work/home/.plexi-alpha/installed_tag") == 'v0.0.1-alpha.1' ]]
+echo 'case: missing asset preserves prior install: PASS'
 
 # A downloaded but corrupted archive is rejected before the live paths move.
 run_installer checksum-mismatch --channel alpha --tag v0.0.2-alpha.1
@@ -138,6 +147,16 @@ run_installer checksum-mismatch --channel alpha --tag v0.0.2-alpha.1
 [[ $(<"$work/bin-install/plexi-alpha") == 'old command' ]]
 [[ $(<"$work/home/.plexi-alpha/installed_tag") == 'v0.0.1-alpha.1' ]]
 rg -q 'SHA-256 mismatch' "$work/output"
+echo 'case: checksum mismatch preserves prior install: PASS'
+
+# Even an archive paired with a matching checksum must unpack successfully
+# before activation; a corrupt release download cannot replace a working install.
+run_installer corrupted-archive --channel alpha --tag v0.0.2-alpha.1
+[[ $(<"$work/install/alpha/keep") == 'old payload' ]]
+[[ $(<"$work/bin-install/plexi-alpha") == 'old command' ]]
+[[ $(<"$work/home/.plexi-alpha/installed_tag") == 'v0.0.1-alpha.1' ]]
+rg -q 'not a valid release archive' "$work/output"
+echo 'case: corrupt archive preserves prior install: PASS'
 
 # A failure while activating the staged command rolls back the already-swapped
 # payload and restores the old marker instead of leaving a half-install.
@@ -146,5 +165,6 @@ run_installer activation-failure --channel alpha --tag v0.0.2-alpha.1
 [[ $(<"$work/bin-install/plexi-alpha") == 'old command' ]]
 [[ $(<"$work/home/.plexi-alpha/installed_tag") == 'v0.0.1-alpha.1' ]]
 rg -q 'restoring the previous install' "$work/output"
+echo 'case: interrupted activation rolls back prior install: PASS'
 
 echo "release installer failure harness: PASS"
