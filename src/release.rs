@@ -33,8 +33,8 @@ impl ReleaseFeature {
 
     pub fn minimum_tier(self) -> ReleaseTier {
         match self {
+            Self::AppWrappers => ReleaseTier::Stable,
             Self::Assistant
-            | Self::AppWrappers
             | Self::Marketplace
             | Self::Daw
             | Self::MediaIo
@@ -132,6 +132,19 @@ mod tests {
             assert!(!feature_enabled_for_channel(feature, None));
             assert!(!feature_enabled_for_channel(feature, Some("main")));
             assert!(!feature_enabled_for_channel(feature, Some("rc-010")));
+        }
+    }
+
+    #[test]
+    fn v1_channels_allow_app_wrapper_open_routes() {
+        // `app open --cli`, `cli:<name>`, `app open --mcp`, and `mcp:<name>`
+        // all check this one feature gate before resolving or spawning a
+        // wrapper. Keep the stable and RC release-candidate paths explicit.
+        for channel in [None, Some("main"), Some("rc-010")] {
+            assert!(
+                feature_enabled_for_channel(ReleaseFeature::AppWrappers, channel),
+                "{channel:?}"
+            );
         }
     }
 
