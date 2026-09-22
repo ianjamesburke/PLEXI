@@ -59,8 +59,10 @@ sudo apt-get install -y build-essential pkg-config cmake \
 
 Why each group is load-bearing:
 
-- **X11 + xkbcommon + wayland** — winit's Linux backends. Missing headers fail
-  the *link*, not the compile, so they surface late and look like an unrelated
+- **X11 + xkbcommon** — the supported Linux display path. The Wayland
+  development library may be needed by the current dependency build, but that
+  does not make Wayland a supported runtime backend. Missing headers fail the
+  *link*, not the compile, so they surface late and look like an unrelated
   error.
 - **ALSA (`libasound2-dev`)** — `cpal` and `rodio` have no Linux backend
   without it; the build fails inside `alsa-sys`' build script.
@@ -91,8 +93,9 @@ list:
 - `wgpu` enables only the `metal` backend — Linux needs `vulkan` (and `gl` as
   a fallback), or `create_surface` finds no adapter at runtime even though the
   build is green.
-- `eframe` runs `default-features = false`, which drops winit's `x11` /
-  `wayland` features; they must be re-enabled for Linux.
+- `eframe` runs `default-features = false`, which drops winit's Linux backend
+  features; the X11 feature must be enabled for the supported Linux path. A
+  Wayland feature compiling is not evidence of Wayland support.
 - `notify` enables `macos_fsevent` with defaults off. Linux needs the inotify
   backend enabled explicitly for the hot-reload watcher.
 - The `objc2*` / `security-framework` / `core-foundation` block is already

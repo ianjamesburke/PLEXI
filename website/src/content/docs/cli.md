@@ -52,20 +52,25 @@ Remove pane slot files for panes that are no longer open
 
 Store and retrieve secrets (API keys, passwords, tokens) for your project.
 
-Secrets are saved to your system keychain and injected as environment variables when you run commands. Use `plexi workspace init` first to scope secrets to a project.
+On macOS, secrets are saved to the system keychain. On Linux, they are saved in
+a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as
+environment variables when you run commands. Use `plexi workspace init` first
+to scope secrets to a project.
 
 | Subcommand | Description |
 |---|---|
-| `set` | Save a secret to your keychain |
+| `set` | Save a secret to the platform secret store |
 | `get` | Print a stored secret's value to stdout |
 | `list` | Show stored secrets |
 | `delete` | Delete a stored secret |
 
 ### `plexi secret set`
 
-Save a secret to your keychain.
+Save a secret to the platform secret store.
 
-Plexi will prompt you to type the value (hidden). The secret is stored in your system keychain and can be injected into commands automatically.
+Plexi will prompt you to type the value (hidden). On macOS the secret is stored
+in the system keychain; on Linux it is stored in a mode-`0600`, unencrypted
+profile file. It can be injected into commands automatically.
 
 Use --from-env to read the value from an existing environment variable instead of typing it. Use --global to make the secret available across all projects, not just the current one.
 
@@ -74,7 +79,7 @@ Use --from-env to read the value from an existing environment variable instead o
 | `<friendly_name>` | string | yes | Name for this secret — also the environment variable name it will be injected as |
 | `--from-env` | flag | no | Read the value from the environment variable named FRIENDLY_NAME instead of prompting |
 | `--global` | flag | no | Store this secret globally so it's available in all projects, not just this one |
-| `--alias` | string | no | Use a different name for the Keychain entry than the canonical env var name.  Useful when the Keychain entry already exists under a different name. Example: plexi secret set OPENAI_API_KEY --alias openai_personal |
+| `--alias` | string | no | Use a different platform-store entry name than the canonical env var name. On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal |
 
 ### `plexi secret get`
 
@@ -1484,4 +1489,3 @@ Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
 |---|---|---|---|
 | `--pane` | string | no | Crop the capture to this pane's current screen rect |
 | `--output` / `-o` | string | no | Where to write the PNG (default: <profile>/screenshots/<timestamp>.png) |
-
