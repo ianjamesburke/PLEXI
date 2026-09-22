@@ -53,6 +53,9 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
   candidate list by shelling `plexi notes list`, so ordering and tier resolution
   have exactly one implementation, and it fails loudly — never printing a directory
   instead — when fzf, a pane, or a host is missing.
+- **`plexi demo` is macOS-only until platform keymaps exist.** On Linux and
+  Windows it refuses before teaching any shortcut; do not infer or document a
+  replacement chord until the host keymap defines one.
 
 ## Documentation Rule for CLI Changes
 
