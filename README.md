@@ -60,9 +60,11 @@ curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
 curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
 ```
 
-**First launch (unsigned app):** macOS may block it on first open.
-- **macOS 15+:** System Settings → Privacy & Security → "Open Anyway".
-- **Or:** `xattr -cr /Applications/Plexi.app && open /Applications/Plexi.app`
+**First launch (unsigned app):** Plexi alpha builds are unsigned on purpose.
+If macOS blocks the app, right-click `Plexi.app`, choose **Open**, then choose
+**Open** in the confirmation dialog. See [Opening an unsigned Plexi
+build](docs/unsigned-install.md) for the optional `xattr -cr` command, Windows
+SmartScreen steps, and the Linux permission fallback.
 
 ### Build from source
 
