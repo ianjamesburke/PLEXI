@@ -1,9 +1,16 @@
+use super::install_hint::InstallPlatform;
 use super::notes::{print_step_complete, print_step_header};
 
 const TOTAL_STEPS: u8 = 11;
 const CMD: &str = "\u{2318}";
 
 pub fn demo_cli() -> i32 {
+    if !demo_supported_on(InstallPlatform::current()) {
+        eprintln!("error: `plexi demo` is not supported on this OS until its keymap is set");
+        log::info!("demo_cli: refused because this OS has no supported demo keymap");
+        return 1;
+    }
+
     let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
         Ok(v) => v,
         Err(_) => {
@@ -269,6 +276,10 @@ pub fn demo_cli() -> i32 {
     0
 }
 
+fn demo_supported_on(platform: InstallPlatform) -> bool {
+    platform == InstallPlatform::Macos
+}
+
 fn print_intro() {
     eprintln!("\x1b[1;36mPlexi - Quick Tutorial\x1b[0m");
     explain(&[
@@ -416,6 +427,20 @@ fn capture_pane_split(kind: &str, obj: &serde_json::Value, direction: &str, out:
 fn watch_error(path: &std::path::Path, error: std::io::Error) -> i32 {
     eprintln!("error watching {}: {error}", path.display());
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::demo_supported_on;
+    use crate::cli::install_hint::InstallPlatform;
+
+    #[test]
+    fn demo_requires_the_macos_keymap() {
+        assert!(demo_supported_on(InstallPlatform::Macos));
+        assert!(!demo_supported_on(InstallPlatform::Linux));
+        assert!(!demo_supported_on(InstallPlatform::Windows));
+        assert!(!demo_supported_on(InstallPlatform::Other));
+    }
 }
 
 /// Tails `path` from `offset`, advancing the cursor as lines are consumed.

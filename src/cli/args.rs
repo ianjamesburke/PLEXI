@@ -171,7 +171,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// Browse and open scratchpad notes created with Cmd+Shift+Space.
+    /// Browse and open scratchpad notes.
     ///
     /// Each scratchpad session writes a timestamped file to `<config_dir>/notes/`.
     /// Use `plexi notes list` to print note paths, or `plexi notes open` to pick one with fzf.
@@ -182,7 +182,7 @@ pub enum Commands {
     /// Capture a quick note to the inbox.
     ///
     /// Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter
-    /// capturing cwd, workspace, and context root. Triage later via Cmd+O, then t.
+    /// capturing cwd, workspace, and context root. Triage later in the notes picker.
     ///
     /// Example: plexi note "remember to update the docs"
     Note {
@@ -200,9 +200,8 @@ pub enum Commands {
     },
     /// Interactive keybinding tutorial — learn split and navigate in real time.
     ///
-    /// Walk through two fundamental Plexi interactions inside a live pane:
-    /// split a pane (⌘D) and navigate between panes (⌘L / ⌘H).
-    /// Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
+    /// Walk through macOS pane controls inside a live pane.
+    /// Requires macOS and a Plexi pane (PLEXI_PANE_ID must be set).
     Demo,
     /// Update the Plexi binary for this channel.
     Update,

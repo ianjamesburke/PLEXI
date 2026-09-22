@@ -1,4 +1,12 @@
+use super::install_hint::{install_hint, InstallTarget};
 use super::pane::pane_send_cli;
+
+const FZF_INSTALL: InstallTarget = InstallTarget {
+    brew: Some("fzf"),
+    apt: Some("fzf"),
+    winget: Some("junegunn.fzf"),
+    url: "https://github.com/junegunn/fzf#installation",
+};
 
 use super::binary_in_path;
 
@@ -101,7 +109,10 @@ pub fn notes_list_cli() -> i32 {
 /// ordering have exactly one implementation.
 pub fn notes_open_cli() -> i32 {
     if !binary_in_path("fzf") {
-        eprintln!("error: fzf is not installed — run `brew install fzf` to enable the picker");
+        eprintln!(
+            "error: fzf is not installed — {} to enable the picker",
+            install_hint(FZF_INSTALL)
+        );
         return 1;
     }
 

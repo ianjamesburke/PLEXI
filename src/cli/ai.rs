@@ -1,5 +1,14 @@
 use serde::Serialize;
 
+use crate::cli::install_hint::{install_hint, InstallTarget};
+
+const OLLAMA_INSTALL: InstallTarget = InstallTarget {
+    brew: Some("ollama"),
+    apt: None,
+    winget: Some("Ollama.Ollama"),
+    url: "https://ollama.com/download",
+};
+
 // ── Hardware detection ────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -358,7 +367,10 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
     } else if integrations.ollama_installed {
         format!("{warn} Ollama installed but not running")
     } else {
-        format!("{no} Ollama not installed  {dim}(brew install ollama){reset}")
+        format!(
+            "{no} Ollama not installed  {dim}({}){reset}",
+            install_hint(OLLAMA_INSTALL)
+        )
     };
     println!("  {ollama_status}");
 
@@ -581,14 +593,14 @@ pub fn ai_setup_cli() -> i32 {
         println!("{bold}Step 1/3: Install Ollama{reset}");
         println!("  Ollama is not installed.");
         println!();
-        println!("  Install with Homebrew:");
-        println!("    {dim}brew install ollama{reset}");
-        println!();
-        println!("  Or with the official installer:");
-        println!("    {dim}curl -fsSL https://ollama.com/install.sh | sh{reset}");
+        println!("  Install Ollama:");
+        println!("    {dim}{}{reset}", install_hint(OLLAMA_INSTALL));
         println!();
         println!("{yellow}Re-run `plexi ai setup` after installing Ollama.{reset}");
-        crate::cli::print_tip("After `brew install ollama`, run `ollama serve` in a terminal pane, then re-run `plexi ai setup`.");
+        crate::cli::print_tip(&format!(
+            "After `{}`, run `ollama serve` in a terminal pane, then re-run `plexi ai setup`.",
+            install_hint(OLLAMA_INSTALL)
+        ));
         return 0;
     }
 
@@ -610,7 +622,7 @@ pub fn ai_setup_cli() -> i32 {
         println!("    {dim}ollama serve{reset}");
         println!();
         println!("{yellow}Re-run `plexi ai setup` after starting Ollama.{reset}");
-        crate::cli::print_tip("Open a new Plexi pane with Cmd+D, run `ollama serve`, then come back and re-run `plexi ai setup`.");
+        crate::cli::print_tip("Run `ollama serve` in another terminal pane, then come back and re-run `plexi ai setup`.");
         return 0;
     }
 
@@ -784,7 +796,10 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
         }
     } else {
         print_report(&hw, &integrations, &recommendation);
-        crate::cli::print_tip("Run `plexi secret set OPENROUTER_API_KEY --global` to configure cloud AI, or `brew install ollama && ollama pull llama3.2:3b` for local AI.");
+        crate::cli::print_tip(&format!(
+            "Run `plexi secret set OPENROUTER_API_KEY --global` to configure cloud AI, or `{}` then `ollama pull llama3.2:3b` for local AI.",
+            install_hint(OLLAMA_INSTALL)
+        ));
     }
 
     0

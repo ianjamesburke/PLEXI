@@ -32,7 +32,7 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     (
         "confirm_quit",
         "bool",
-        "Triple-press Cmd+Q confirmation before quitting (default true)",
+        "Triple-press quit confirmation before quitting (default true)",
     ),
     (
         "confirm_close",

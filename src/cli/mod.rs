@@ -221,6 +221,7 @@ pub mod doctor;
 pub mod events;
 pub mod host;
 pub mod install;
+mod install_hint;
 pub mod install_host;
 pub mod list;
 pub mod marketplace;
