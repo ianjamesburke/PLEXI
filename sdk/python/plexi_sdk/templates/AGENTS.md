@@ -19,10 +19,10 @@ Machine-readable drift data lives in `plexi.scaffold.toml`. Run `plexi app check
 
 ## Module Layout
 
-- `main.py` — thin wiring only: `init` returns `tools.expose()`, `update` calls `tools.dispatch(event)` first and then handles keys/UI actions, `view` delegates to `app_ui.build_view(...)`. Do not grow logic here.
-- `app_tools.py` — assistant-callable tools as plain Python functions registered with `@tools.tool(...)` (`from plexi_sdk import tools`). No UI code.
-- `app_ui.py` — pure view builders (`Column`, `AppBar`, `Text`, `FooterKeys`, ...). No effects.
-- `app_` prefixes are deliberate: a bare `tools.py` would shadow `plexi_sdk.tools`. Add further modules the same way and import them from `main.py`.
+- `main.py` — thin wiring only: `init` returns `tools.expose()`, `update` calls `tools.dispatch(event)` first and then handles keys/UI actions, `view` delegates to `app.ui.build_view(...)`. Do not grow logic here.
+- `app/tools.py` — assistant-callable tools as plain Python functions registered with `@tools.tool(...)` (`from plexi_sdk import tools`). No UI code.
+- `app/ui.py` — pure view builders (`Column`, `AppBar`, `Text`, `FooterKeys`, ...). No effects.
+- `app/__init__.py` — marks the app package. The package avoids a bare root-level `tools.py`, which would shadow `plexi_sdk.tools`. Add further modules there and import them from `main.py`.
 
 ## Build Loop
 

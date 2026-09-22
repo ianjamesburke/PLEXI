@@ -3,8 +3,8 @@
 Plexi calls init(size, args), update(event), and view().
 This file is deliberately thin. It only wires the lifecycle:
 
-    app_tools.py  assistant-callable tools (plain functions + @tools.tool)
-    app_ui.py     view builders (the component tree)
+    app/tools.py  assistant-callable tools (plain functions + @tools.tool)
+    app/ui.py     view builders (the component tree)
     main.py       init / update / view, delegating to the two modules above
 
 Do not mutate Plexi state in-place: return effects.
@@ -15,8 +15,8 @@ from plexi_sdk import log, state, tools
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import KeyEvent
 
-import app_tools  # noqa: F401  (importing registers the @tools.tool functions)
-import app_ui
+from app import tools as app_tools  # noqa: F401  (importing registers @tools.tool functions)
+from app import ui as app_ui
 
 
 def init(size, args):
