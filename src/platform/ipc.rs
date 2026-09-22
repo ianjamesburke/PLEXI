@@ -337,9 +337,9 @@ mod windows_impl {
     /// Server side of a named pipe.
     ///
     /// Unlike `UnixListener` there is no persistent listening object: each
-    /// accepted client consumes one *instance*, and the next accept creates a
-    /// fresh one. `PIPE_UNLIMITED_INSTANCES` is what lets concurrent clients
-    /// coexist under the same name.
+    /// accepted client consumes one *instance*. `pending` is therefore kept
+    /// as a spare, unconnected instance at all times. `PIPE_UNLIMITED_INSTANCES`
+    /// is what lets concurrent clients coexist under the same name.
     #[derive(Debug)]
     pub struct IpcListener {
         name: String,
@@ -396,19 +396,35 @@ mod windows_impl {
         }
 
         /// Block until a client connects, returning its instance.
+        ///
+        /// Before waiting on the instance we took, create and publish its
+        /// replacement. A named pipe has no kernel listen backlog: if an
+        /// accepted instance were returned before its replacement existed,
+        /// another CLI process could see `ERROR_FILE_NOT_FOUND` merely because
+        /// the accept loop was doing synchronous bookkeeping or starting a
+        /// handler thread. The spare makes an accepted connection behave like
+        /// a Unix listener with an available backlog slot.
         pub fn accept(&self) -> io::Result<IpcStream> {
-            // Consume the instance `bind` left waiting before creating a new
-            // one, so the very first client is served by the instance it
-            // actually connected to.
-            let pending = self
+            // Take the old spare and replenish it while that old handle is
+            // still alive. If creating the replacement fails, restore the old
+            // one so the endpoint remains reachable and a later accept can
+            // retry instead of permanently dropping the listener.
+            let mut pending = self
                 .pending
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take();
-            let handle = match pending {
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let handle = match pending.take() {
                 Some(handle) => handle,
                 None => Self::create_instance(&self.name)?,
             };
+            match Self::create_instance(&self.name) {
+                Ok(replacement) => *pending = Some(replacement),
+                Err(error) => {
+                    *pending = Some(handle);
+                    return Err(error);
+                }
+            };
+            drop(pending);
             let raw = handle.as_raw_handle() as _;
             // SAFETY: `handle` owns a live server-side pipe instance. A null
             // OVERLAPPED means "block until connected", which is what we want.
@@ -530,5 +546,28 @@ mod tests {
             pipe_name_for_channel(Some("pr-1604")),
             r"\\.\pipe\plexi-pr-1604"
         );
+    }
+
+    /// Windows named pipes have no listen backlog. Once `accept` returns its
+    /// connected instance, a second client must still be able to open the
+    /// name before the caller starts another `accept` call.
+    #[cfg(windows)]
+    #[test]
+    fn accept_keeps_a_spare_pipe_instance_reachable() {
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\plexi-ipc-spare-{}", std::process::id()));
+        let listener = IpcListener::bind(&endpoint).expect("bind");
+
+        let first_client = IpcStream::connect(&endpoint).expect("first client connects");
+        let first_server = listener.accept().expect("first accept");
+
+        // No second accept is in progress here. This would return
+        // ERROR_FILE_NOT_FOUND with a one-instance listener that replenished
+        // only at the beginning of its next accept call.
+        let second_client =
+            connect_timeout(&endpoint, std::time::Duration::from_millis(250)).expect("spare");
+
+        drop(second_client);
+        drop(first_server);
+        drop(first_client);
     }
 }
