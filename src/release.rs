@@ -14,6 +14,7 @@ pub enum ReleaseFeature {
     MediaIo,
     Accessibility,
     McpClient,
+    Routines,
 }
 
 impl ReleaseFeature {
@@ -26,6 +27,7 @@ impl ReleaseFeature {
             Self::MediaIo => "media I/O",
             Self::Accessibility => "experimental accessibility",
             Self::McpClient => "MCP client",
+            Self::Routines => "routines",
         }
     }
 
@@ -37,7 +39,8 @@ impl ReleaseFeature {
             | Self::Daw
             | Self::MediaIo
             | Self::Accessibility
-            | Self::McpClient => ReleaseTier::Beta,
+            | Self::McpClient
+            | Self::Routines => ReleaseTier::Beta,
         }
     }
 }
@@ -124,6 +127,7 @@ mod tests {
             ReleaseFeature::Assistant,
             ReleaseFeature::Marketplace,
             ReleaseFeature::McpClient,
+            ReleaseFeature::Routines,
         ] {
             assert!(!feature_enabled_for_channel(feature, None));
             assert!(!feature_enabled_for_channel(feature, Some("main")));
@@ -137,6 +141,7 @@ mod tests {
             ReleaseFeature::Assistant,
             ReleaseFeature::Marketplace,
             ReleaseFeature::McpClient,
+            ReleaseFeature::Routines,
         ] {
             assert!(feature_enabled_for_channel(feature, Some("alpha")));
             assert!(feature_enabled_for_channel(feature, Some("beta")));

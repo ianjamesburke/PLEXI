@@ -79,6 +79,9 @@ pub fn gate_command(cmd: clap::Command, enabled: impl Fn(ReleaseFeature) -> bool
             events.mut_subcommand("mcp-config", |c| c.hide(true))
         });
     }
+    if !enabled(ReleaseFeature::Routines) {
+        cmd = cmd.mut_subcommand("routine", |routine| routine.hide(true));
+    }
     if !enabled(ReleaseFeature::AppWrappers) {
         cmd = cmd.mut_subcommand("app", |app| {
             app.mut_subcommand("open", |open| {
@@ -248,6 +251,24 @@ mod tests {
             .unwrap();
         for flag in ["mcp", "cli"] {
             assert!(open.get_arguments().find(|a| a.get_id() == flag).unwrap().is_hide_set());
+        }
+    }
+
+    #[test]
+    fn stable_hides_routines_but_beta_and_alpha_keep_them() {
+        for channel in [None, Some("main"), Some("rc-010")] {
+            let cmd = gated_for(channel);
+            assert!(
+                cmd.find_subcommand("routine").unwrap().is_hide_set(),
+                "{channel:?}"
+            );
+        }
+        for channel in [Some("beta"), Some("alpha"), Some("pr-2259")] {
+            let cmd = gated_for(channel);
+            assert!(
+                !cmd.find_subcommand("routine").unwrap().is_hide_set(),
+                "{channel:?}"
+            );
         }
     }
 

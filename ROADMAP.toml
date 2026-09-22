@@ -577,7 +577,7 @@ note = "Only descriptor lookup and title formatting exist. The app-tool bridge i
 
 [[node]]
 id = "routines"
-title = "Routines — scheduled commands firing into named contexts"
+title = "Routines (post-v1 beta) — scheduled commands firing into named contexts"
 status = "green"
 deps = ["cli", "contexts"]
 evidence = [
@@ -590,6 +590,7 @@ evidence = [
   "corrupt_state_file_degrades_to_startup_fire",
 ]
 stints = []
+note = "CUT from v1 (Plexi Lead, 2026-09-22). Kept as a beta-gated post-v1 surface; stable help and execution reject it."
 
 # ---------------------------------------------------------------------------
 # WASM runtime
