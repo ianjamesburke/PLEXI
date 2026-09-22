@@ -37,14 +37,22 @@ irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-
 
 It downloads the newest Windows x64 alpha release and verifies its checksum; it
 does not build from source. The Unix `curl | bash` installer is not a Windows
-install path. To pin a tag/channel:
+install path. To select stable, beta, or alpha and optionally pin a tag:
 
 ```powershell
-iex "& { $(irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1) } -Channel alpha -Tag vX.Y.Z-alpha.N"
+iex "& { $(irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1) } -Channel beta -Tag vX.Y.Z-beta.N"
 ```
 
-Expect `plexi-alpha.exe --version` and `%USERPROFILE%\.plexi-alpha\installed_tag` matching the tag.
-`plexi-alpha update` downloads the newer `plexi-windows-x64.zip` via the same script (asset-prefer, not cargo).
+`-Channel stable` installs `plexi.exe` and records its tag in
+`%USERPROFILE%\.plexi\installed_tag`; beta and alpha install `plexi-beta.exe` /
+`plexi-alpha.exe` and use the matching isolated profile directory. The install
+is per-user under `%LOCALAPPDATA%\Plexi`, and its `bin` directory is added to
+the user `PATH`, so a new PowerShell session finds the command. Windows shell
+completions are TBD. `plexi-alpha update` downloads the newer
+`plexi-windows-x64.zip` via the same script (asset-prefer, not cargo).
+
+Hand smoke for this installer is tracked as BIN-06 / BIN-Win; this document
+defines the command and artifact contract, not a Windows GUI pass.
 
 
 ## macOS and Linux downloads

@@ -70,7 +70,9 @@ irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-
 ```
 
 The Unix `curl | bash` command is not a Windows installer. Windows has no
-equivalent source-install script.
+equivalent source-install script. The installer writes the selected release tag
+to `%USERPROFILE%\.plexi[-alpha|-beta]\installed_tag`, adds its per-user command
+directory to the user `PATH`, and currently has no Windows shell completions.
 
 ### Unsigned alpha builds
 

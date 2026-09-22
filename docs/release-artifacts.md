@@ -38,4 +38,7 @@ Stable releases use `vX.Y.Z`, beta releases use `vX.Y.Z-beta.N`, and alpha
 releases use `vX.Y.Z-alpha.N`. Installers and `plexi update` select release
 assets accepted by the running channel. The detailed channel and promotion
 rules live in [Release Channels](../scripts/RELEASE_CHANNELS.md); consumer
-installation commands live in [v1 binary install](v1-binary-install.md).
+installation commands live in [v1 binary install](v1-binary-install.md). On
+Windows, the PowerShell installer names those channels `stable`, `beta`, and
+`alpha`: their commands are `plexi.exe`, `plexi-beta.exe`, and
+`plexi-alpha.exe`, respectively.
