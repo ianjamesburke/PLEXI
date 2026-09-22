@@ -140,6 +140,13 @@ jobs:
             echo "No release artifacts were downloaded; refusing to publish an empty release." >&2
             exit 1
           fi
+          for asset in "${assets[@]}"; do
+            (
+              cd dist
+              sha256sum "$(basename "$asset")" > "$(basename "$asset").sha256"
+            )
+          done
+          assets+=(dist/*.sha256)
           prerelease=false; latest=true
           if [[ "$TAG" == *-alpha.* || "$TAG" == *-beta.* || "$TAG" == *-* ]]; then
             prerelease=true; latest=false

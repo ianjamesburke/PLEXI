@@ -106,6 +106,7 @@ EOF
   fi
 
   URL="${RELEASE_BASE}/${TAG}/${ASSET}"
+  CHECKSUM_URL="${URL}.sha256"
   binary_name="plexi"
   [[ "$CHANNEL" != main ]] && binary_name+="-${CHANNEL}"
   destination="${INSTALL_ROOT}/${CHANNEL}"
@@ -115,10 +116,34 @@ EOF
   echo "Install: ${destination}; command: ${BIN_DIR}/${binary_name}"
   if [[ "$DRY_RUN" == 1 ]]; then exit 0; fi
 
+  sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "$1" | awk '{print $1}'
+    else
+      echo "error: sha256sum or shasum is required to verify Plexi downloads" >&2
+      return 1
+    fi
+  }
+
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   archive="${tmp}/${ASSET}"
+  checksum_file="${tmp}/${ASSET}.sha256"
   curl -fL --retry 3 --connect-timeout 15 -o "$archive" "$URL"
-  mkdir -p "$destination" "$BIN_DIR" "$tmp/unpack"
+  curl -fL --retry 3 --connect-timeout 15 -o "$checksum_file" "$CHECKSUM_URL"
+  expected_checksum="$(awk -v asset="$ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "$checksum_file")"
+  if [[ ! "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]]; then
+    echo "error: release checksum file did not contain a SHA-256 for ${ASSET}" >&2
+    exit 1
+  fi
+  actual_checksum="$(sha256_file "$archive")"
+  if [[ "$actual_checksum" != "$expected_checksum" ]]; then
+    echo "error: SHA-256 mismatch for ${ASSET}; refusing to install" >&2
+    exit 1
+  fi
+
+  mkdir -p "$BIN_DIR" "$tmp/unpack" "$tmp/staged"
   if [[ "$OS" == windows ]]; then
     if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$tmp/unpack";
     elif command -v powershell.exe >/dev/null 2>&1; then powershell.exe -NoProfile -Command "Expand-Archive -Force '$archive' '$tmp/unpack'";
@@ -129,13 +154,66 @@ EOF
     source_binary="$(find "$tmp/unpack" -name plexi -type f -print -quit)"
   fi
   [[ -n "$source_binary" ]] || { echo "error: release asset did not contain the Plexi binary" >&2; exit 1; }
-  rm -rf "$destination"; mkdir -p "$destination"
-  cp -R "$tmp/unpack/." "$destination/"
-  if [[ "$OS" == windows ]]; then cp "$source_binary" "$BIN_DIR/${binary_name}.exe"; else install -m 0755 "$source_binary" "$BIN_DIR/$binary_name"; fi
+
+  # Stage every mutable artifact before touching the live install. The commit
+  # below can then either complete as a unit or restore the previous payload.
+  staged_destination="$tmp/staged/payload"
+  mkdir -p "$staged_destination"
+  cp -R "$tmp/unpack/." "$staged_destination/"
+  if [[ "$OS" == windows ]]; then
+    staged_binary="$tmp/staged/${binary_name}.exe"
+    cp "$source_binary" "$staged_binary"
+    installed_binary="$BIN_DIR/${binary_name}.exe"
+  else
+    staged_binary="$tmp/staged/$binary_name"
+    install -m 0755 "$source_binary" "$staged_binary"
+    installed_binary="$BIN_DIR/$binary_name"
+  fi
   profile_suffix=""
   [[ "$CHANNEL" != main ]] && profile_suffix="-$CHANNEL"
-  mkdir -p "${HOME}/.plexi${profile_suffix}" 2>/dev/null || true
-  echo "$TAG" > "${HOME}/.plexi${profile_suffix}/installed_tag" 2>/dev/null || true
+  profile_dir="${HOME}/.plexi${profile_suffix}"
+  mkdir -p "$profile_dir"
+
+  previous_destination="$tmp/previous-payload"
+  previous_binary="$tmp/previous-binary"
+  previous_tag="$tmp/previous-installed_tag"
+  had_destination=0; had_binary=0; had_tag=0
+  replacement_started=0; binary_replacement_started=0
+  [[ -e "$destination" || -L "$destination" ]] && had_destination=1
+  [[ -e "$installed_binary" || -L "$installed_binary" ]] && had_binary=1
+  [[ -e "$profile_dir/installed_tag" ]] && { cp "$profile_dir/installed_tag" "$previous_tag"; had_tag=1; }
+  rollback_install() {
+    [[ "$replacement_started" == 1 ]] && rm -rf "$destination"
+    [[ "$had_destination" == 1 && ( -e "$previous_destination" || -L "$previous_destination" ) ]] && mv "$previous_destination" "$destination"
+    [[ "$binary_replacement_started" == 1 ]] && rm -f "$installed_binary"
+    [[ "$had_binary" == 1 && ( -e "$previous_binary" || -L "$previous_binary" ) ]] && mv "$previous_binary" "$installed_binary"
+    if [[ "$had_tag" == 1 ]]; then
+      cp "$previous_tag" "$profile_dir/installed_tag"
+    else
+      rm -f "$profile_dir/installed_tag"
+    fi
+  }
+  if [[ "$had_destination" == 1 ]] && ! mv "$destination" "$previous_destination"; then
+    echo "error: could not prepare the existing install for replacement" >&2; exit 1
+  fi
+  replacement_started=1
+  if ! mv "$staged_destination" "$destination"; then
+    echo "error: could not activate the staged install; restoring the previous install" >&2
+    rollback_install; exit 1
+  fi
+  if [[ "$had_binary" == 1 ]] && ! mv "$installed_binary" "$previous_binary"; then
+    echo "error: could not prepare the existing command for replacement; restoring the previous install" >&2
+    rollback_install; exit 1
+  fi
+  binary_replacement_started=1
+  if ! mv "$staged_binary" "$installed_binary"; then
+    echo "error: could not activate the new command; restoring the previous install" >&2
+    rollback_install; exit 1
+  fi
+  if ! printf '%s\n' "$TAG" > "$profile_dir/installed_tag.new" || ! mv "$profile_dir/installed_tag.new" "$profile_dir/installed_tag"; then
+    echo "error: could not record the installed release; restoring the previous install" >&2
+    rollback_install; exit 1
+  fi
   echo "Installed ${BIN_DIR}/${binary_name}."
   exit 0
 fi
