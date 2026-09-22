@@ -5,6 +5,21 @@
 #   curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
 set -euo pipefail
 
+# `/install` is the public Unix entrypoint. Detect Git Bash before fetching the
+# delegated script so Windows users receive the supported command immediately.
+case "$(uname -s)" in
+  Darwin|Linux) ;;
+  MINGW*|MSYS*|CYGWIN*)
+    echo "error: curl | bash is not a Windows installer. Run this in Windows PowerShell instead:" >&2
+    echo "  irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex" >&2
+    exit 1
+    ;;
+  *)
+    echo "error: unsupported operating system: $(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
 # Keep the served file small and delegate to the alpha binary installer. Until
 # main publishes binary assets, the public command honestly defaults to alpha.
 # The delegated script downloads a release asset; this wrapper never clones or

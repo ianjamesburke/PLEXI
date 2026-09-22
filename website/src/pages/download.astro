@@ -16,7 +16,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
   <section class="dl-section">
     <div class="wrap">
       <div class="install-block">
-        <div class="install-label">macOS (Apple Silicon)</div>
+        <div class="install-label">macOS (Apple Silicon; Intel when published)</div>
         <div class="install-cmd-row">
           <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
           <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy to clipboard">
@@ -25,10 +25,10 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
           </button>
         </div>
         <p class="install-note">
-          Downloads the current Apple Silicon alpha release. Requires <code>bash</code>,
+          Downloads the matching current macOS alpha release. Requires <code>bash</code>,
           <code>curl</code>, <code>tar</code>, and <code>shasum</code>; it does not need Rust,
-          Git, or administrator access. macOS Intel has no current download path—build it from
-          a checkout instead.
+          Git, or administrator access. The installer selects your architecture; Intel works when
+          that release publishes its x64 archive and otherwise reports the missing asset clearly.
         </p>
       </div>
 

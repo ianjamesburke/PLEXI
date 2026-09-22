@@ -54,6 +54,16 @@ exec /bin/mv "$@"
 EOF
 chmod +x "$fake_bin/mv"
 
+cat > "$fake_bin/uname" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  -s) if [[ -n "${INSTALL_UNAME_S:-}" ]]; then printf '%s\n' "$INSTALL_UNAME_S"; else /usr/bin/uname -s; fi ;;
+  -m) if [[ -n "${INSTALL_UNAME_M:-}" ]]; then printf '%s\n' "$INSTALL_UNAME_M"; else /usr/bin/uname -m; fi ;;
+  *) echo "unexpected uname argument: $1" >&2; exit 99 ;;
+esac
+EOF
+chmod +x "$fake_bin/uname"
+
 assert_absent() {
   [[ ! -e "$1" ]] || { echo "expected absent: $1" >&2; exit 1; }
 }
@@ -72,6 +82,39 @@ run_installer() {
   [[ $status -ne 0 ]] || { echo "installer unexpectedly succeeded" >&2; cat "$work/output" >&2; exit 1; }
   ! rg -q '^Installed ' "$work/output" || { echo "installer printed false success" >&2; cat "$work/output" >&2; exit 1; }
 }
+
+assert_dry_run() {
+  local system="$1" machine="$2" expected="$3"
+  INSTALL_UNAME_S="$system" INSTALL_UNAME_M="$machine" PATH="$fake_bin:$PATH" HOME="$work/home" \
+    PLEXI_INSTALL_DIR="$work/install" PLEXI_BIN_DIR="$work/bin-install" \
+    bash "$repo_root/scripts/install.sh" --channel alpha --tag v0.0.2-alpha.1 --dry-run >"$work/output" 2>&1
+  rg -q "$expected" "$work/output" || { cat "$work/output" >&2; exit 1; }
+}
+
+# The public Unix entrypoint selects published macOS/Linux assets by host
+# platform and refuses Git Bash rather than pretending to install Windows.
+assert_dry_run Darwin arm64 'macos/arm64'
+assert_dry_run Darwin x86_64 'macos/x64'
+assert_dry_run Linux x86_64 'linux/x64'
+set +e
+INSTALL_UNAME_S=MINGW64_NT-10.0 INSTALL_UNAME_M=x86_64 PATH="$fake_bin:$PATH" HOME="$work/home" \
+  bash "$repo_root/scripts/install.sh" --dry-run >"$work/output" 2>&1
+windows_status=$?
+set -e
+[[ $windows_status -ne 0 ]] || { echo "Windows Git Bash was accepted" >&2; exit 1; }
+rg -q 'Windows PowerShell' "$work/output"
+rg -q 'install-windows.ps1' "$work/output"
+
+# The tiny script served from plexiapp.com/install performs the same handoff
+# before it downloads the delegated Unix installer.
+set +e
+INSTALL_UNAME_S=MINGW64_NT-10.0 INSTALL_UNAME_M=x86_64 PATH="$fake_bin:$PATH" HOME="$work/home" \
+  bash "$repo_root/install.sh" >"$work/output" 2>&1
+windows_wrapper_status=$?
+set -e
+[[ $windows_wrapper_status -ne 0 ]] || { echo "public Windows wrapper was accepted" >&2; exit 1; }
+rg -q 'Windows PowerShell' "$work/output"
+rg -q 'install-windows.ps1' "$work/output"
 
 # Invalid input fails before any network or profile mutation.
 run_installer missing-asset --channel bad

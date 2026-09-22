@@ -44,7 +44,11 @@ EOF
   case "$(uname -s)" in
     Darwin) OS="macos" ;;
     Linux) OS="linux" ;;
-    MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+    MINGW*|MSYS*|CYGWIN*)
+      echo "error: curl | bash is not a Windows installer. Run this in Windows PowerShell instead:" >&2
+      echo "  irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex" >&2
+      exit 1
+      ;;
     *) echo "error: unsupported operating system: $(uname -s)" >&2; exit 1 ;;
   esac
   case "$(uname -m)" in
@@ -52,12 +56,8 @@ EOF
     arm64|aarch64) ARCH="arm64" ;;
     *) echo "error: unsupported architecture: $(uname -m)" >&2; exit 1 ;;
   esac
-  if [[ "$OS" == windows && "$ARCH" != x64 ]]; then
-    echo "error: Plexi Windows releases currently support x64 only" >&2; exit 1
-  fi
-
   ASSET="plexi-${OS}-${ARCH}"
-  [[ "$OS" == windows ]] && ASSET+=".zip" || ASSET+=".tar.gz"
+  ASSET+=".tar.gz"
 
   # Stable releases have no suffix; alpha/beta use their newest prerelease that
   # actually publishes this platform asset (skip empty cuts waiting on Actions).
@@ -130,7 +130,10 @@ EOF
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   archive="${tmp}/${ASSET}"
   checksum_file="${tmp}/${ASSET}.sha256"
-  curl -fL --retry 3 --connect-timeout 15 -o "$archive" "$URL"
+  if ! curl -fL --retry 3 --connect-timeout 15 -o "$archive" "$URL"; then
+    echo "error: could not download ${ASSET} for ${OS}/${ARCH} from ${TAG}; that release may not publish this platform asset" >&2
+    exit 1
+  fi
   curl -fL --retry 3 --connect-timeout 15 -o "$checksum_file" "$CHECKSUM_URL"
   expected_checksum="$(awk -v asset="$ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "$checksum_file")"
   if [[ ! "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]]; then
@@ -144,15 +147,8 @@ EOF
   fi
 
   mkdir -p "$BIN_DIR" "$tmp/unpack" "$tmp/staged"
-  if [[ "$OS" == windows ]]; then
-    if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$tmp/unpack";
-    elif command -v powershell.exe >/dev/null 2>&1; then powershell.exe -NoProfile -Command "Expand-Archive -Force '$archive' '$tmp/unpack'";
-    else echo "error: unzip or PowerShell is required to unpack the Windows release" >&2; exit 1; fi
-    source_binary="$(find "$tmp/unpack" -name plexi.exe -type f -print -quit)"
-  else
-    tar -xzf "$archive" -C "$tmp/unpack"
-    source_binary="$(find "$tmp/unpack" -name plexi -type f -print -quit)"
-  fi
+  tar -xzf "$archive" -C "$tmp/unpack"
+  source_binary="$(find "$tmp/unpack" -name plexi -type f -print -quit)"
   [[ -n "$source_binary" ]] || { echo "error: release asset did not contain the Plexi binary" >&2; exit 1; }
 
   # Stage every mutable artifact before touching the live install. The commit
@@ -160,15 +156,9 @@ EOF
   staged_destination="$tmp/staged/payload"
   mkdir -p "$staged_destination"
   cp -R "$tmp/unpack/." "$staged_destination/"
-  if [[ "$OS" == windows ]]; then
-    staged_binary="$tmp/staged/${binary_name}.exe"
-    cp "$source_binary" "$staged_binary"
-    installed_binary="$BIN_DIR/${binary_name}.exe"
-  else
-    staged_binary="$tmp/staged/$binary_name"
-    install -m 0755 "$source_binary" "$staged_binary"
-    installed_binary="$BIN_DIR/$binary_name"
-  fi
+  staged_binary="$tmp/staged/$binary_name"
+  install -m 0755 "$source_binary" "$staged_binary"
+  installed_binary="$BIN_DIR/$binary_name"
   profile_suffix=""
   [[ "$CHANNEL" != main ]] && profile_suffix="-$CHANNEL"
   profile_dir="${HOME}/.plexi${profile_suffix}"

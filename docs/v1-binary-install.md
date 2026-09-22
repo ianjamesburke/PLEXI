@@ -11,11 +11,13 @@ and Linux hardware video decoding is not implemented.
 
 ## Assets
 
-The current alpha release publishes these download archives:
+Alpha releases publish these download archives when the corresponding platform
+build is available:
 
 | Platform | Asset | Contents |
 | --- | --- | --- |
 | macOS Apple Silicon | `plexi-macos-arm64.tar.gz` | `Plexi.app` and `plexi` |
+| macOS Intel (when published) | `plexi-macos-x64.tar.gz` | `Plexi.app` and `plexi` |
 | Linux x86_64 | `plexi-linux-x64.tar.gz` | `plexi` |
 | Windows x64 | `plexi-windows-x64.zip` | `plexi.exe` |
 
@@ -37,7 +39,7 @@ does not build from source. The Unix `curl | bash` installer is not a Windows
 install path. To pin a tag/channel:
 
 ```powershell
-iex "& { $(irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/v0.3.1-windows.1/scripts/install-windows.ps1) } -Channel alpha -Tag v0.3.1-windows.1"
+iex "& { $(irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1) } -Channel alpha -Tag vX.Y.Z-alpha.N"
 ```
 
 Expect `plexi-alpha.exe --version` and `%USERPROFILE%\.plexi-alpha\installed_tag` matching the tag.
@@ -52,15 +54,19 @@ under `~/.local/share/plexi/<channel>` and puts the channel command in
 `~/.local/bin`: `plexi`, `plexi-beta`, or `plexi-alpha`. Set `PLEXI_INSTALL_DIR`
 or `PLEXI_BIN_DIR` before running it to choose user-owned destinations.
 
-The macOS download currently targets Apple Silicon. Linux requires an X11
-session; Wayland is not supported. The installer requires `bash`, `curl`, and
-`tar`, plus `shasum` on macOS or `sha256sum` (or `shasum`) on Linux.
+The installer chooses the matching macOS architecture. Apple Silicon is the
+current expected asset; Intel installs when the selected release includes
+`plexi-macos-x64.tar.gz`, otherwise the installer reports that the asset is not
+published. Linux requires an X11 session; Wayland is not supported. The
+installer requires `bash`, `curl`, and `tar`, plus `shasum` on macOS or
+`sha256sum` (or `shasum`) on Linux.
 
 The served top-level installer delegates to `alpha/scripts/install.sh` and
 defaults to `--channel alpha` until `main` publishes binary assets. Auto tag selection skips channel cuts that lack the platform asset (so an empty `alpha.N` waiting on Actions falls back to the newest cut that has it). An explicit
 `--channel` still selects that channel; from a macOS or Linux checkout,
 contributors can opt into a source build with `scripts/install.sh --from-source
-alpha`. That path requires Rust and Python 3. Windows has no equivalent
+alpha`. That path requires Rust and Python 3. On Windows, Git Bash receives a
+PowerShell command instead of attempting a Unix install; Windows has no
 source-install script.
 
 `scripts/install.sh --dry-run --channel alpha` prints the selected platform,
