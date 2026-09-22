@@ -350,7 +350,7 @@ mod socket_resolution_tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn pr_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+    fn ambient_socket_override_wins_over_binary_channel() {
         let actual = resolve_command_socket_from(
             None,
             Some("pr-2384"),
@@ -360,12 +360,12 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/Users/test/.plexi-pr-2384/notify.sock"))
+            Some(PathBuf::from("/tmp/alpha.sock"))
         );
     }
 
     #[test]
-    fn alpha_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+    fn ambient_socket_override_wins_for_alpha_binary() {
         let actual = resolve_command_socket_from(
             None,
             Some("alpha"),
@@ -375,12 +375,12 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock"))
+            Some(PathBuf::from("/tmp/beta.sock"))
         );
     }
 
     #[test]
-    fn beta_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+    fn ambient_socket_override_wins_for_beta_binary() {
         let actual = resolve_command_socket_from(
             None,
             Some("beta"),
@@ -390,7 +390,7 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/Users/test/.plexi-beta/notify.sock"))
+            Some(PathBuf::from("/tmp/alpha.sock"))
         );
     }
 
@@ -462,12 +462,15 @@ fn resolve_command_socket_from(
     if let Some(socket) = explicit_socket {
         return Some(socket.to_path_buf());
     }
+    if let Some(socket) = ambient_socket {
+        return Some(std::path::PathBuf::from(socket));
+    }
     if let Some(channel) = binary_channel {
         return Some(crate::platform::ipc::endpoint_in(
             &home_dir.join(format!(".plexi-{channel}")),
         ));
     }
-    ambient_socket.map(std::path::PathBuf::from)
+    None
 }
 
 static COMMAND_SOCKET_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> =
@@ -676,10 +679,10 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     if let Some(path) = socket.as_ref() {
         let source = if explicit.is_some() {
             "--socket"
-        } else if channel.is_some() {
-            "binary-channel"
-        } else {
+        } else if ambient.is_some() {
             "PLEXI_SOCKET"
+        } else {
+            "binary-channel"
         };
         log::info!(
             "cli: resolved command socket source={source} binary_channel={channel:?} path={path:?}"

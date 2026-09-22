@@ -952,9 +952,24 @@ fn is_matching_test_channel(compiled: Option<&str>, runtime: Option<&str>) -> bo
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// Strip the Windows executable suffix before deriving a Plexi channel.
+///
+/// `current_exe()` includes `.exe` on Windows. Channel names are part of
+/// persistent profile and named-pipe identities, so `plexi-alpha.exe` must
+/// name the same channel as the Unix/macOS `plexi-alpha` binary. Accept the
+/// suffix on every platform so this pure naming rule stays testable without a
+/// Windows-only test build.
+fn channel_binary_basename(basename: &str) -> &str {
+    basename
+        .strip_suffix(".exe")
+        .or_else(|| basename.strip_suffix(".EXE"))
+        .unwrap_or(basename)
+}
+
 /// Maps a binary basename to its config directory name.
 /// `plexi` → `.plexi`; `plexi-<suffix>` → `.plexi-<suffix>`.
 fn channel_suffix_from_basename(basename: &str) -> String {
+    let basename = channel_binary_basename(basename);
     if let Some(suffix) = basename.strip_prefix("plexi-").filter(|s| !s.is_empty()) {
         format!(".plexi-{suffix}")
     } else {
@@ -965,7 +980,9 @@ fn channel_suffix_from_basename(basename: &str) -> String {
 /// The channel named by the running binary itself, if any: `plexi-alpha` →
 /// `Some("alpha")`, `plexi` → `None`.
 fn channel_from_basename(basename: &str) -> Option<&str> {
-    basename.strip_prefix("plexi-").filter(|s| !s.is_empty())
+    channel_binary_basename(basename)
+        .strip_prefix("plexi-")
+        .filter(|s| !s.is_empty())
 }
 
 /// Resolve the profile dir name (`.plexi`, `.plexi-alpha`, …) from the running
@@ -1832,6 +1849,16 @@ mod tests {
     #[test]
     fn config_dir_name_alpha() {
         assert_eq!(channel_suffix_from_basename("plexi-alpha"), ".plexi-alpha");
+    }
+
+    #[test]
+    fn windows_executable_suffix_does_not_become_part_of_the_channel() {
+        assert_eq!(channel_suffix_from_basename("plexi-alpha.exe"), ".plexi-alpha");
+        assert_eq!(channel_from_basename("plexi-alpha.exe"), Some("alpha"));
+        assert_eq!(
+            resolve_channel_dir("plexi-alpha.exe", Some("beta")),
+            ".plexi-alpha"
+        );
     }
 
     #[test]
