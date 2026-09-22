@@ -267,7 +267,7 @@ pub fn config_check(scope: ConfigScope) -> i32 {
     if diags.is_empty() {
         for path in paths {
             if path.exists() {
-                eprintln!("✓ {} is valid", path.display());
+                println!("✓ {} is valid", path.display());
             }
         }
         return 0;
