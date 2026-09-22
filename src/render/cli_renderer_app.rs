@@ -6,7 +6,7 @@
 //! the assembled command in a linked terminal pane.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
-use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor};
+use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor, ROOT_COMMAND_NAME};
 use crate::ui::{
     button::{self, ButtonKind},
     style,
@@ -256,7 +256,12 @@ impl CliRendererApp {
             return String::new();
         };
         let mut parts = vec![d.name.clone()];
-        parts.extend(self.cmd_path.iter().cloned());
+        parts.extend(
+            self.cmd_path
+                .iter()
+                .filter(|name| name.as_str() != ROOT_COMMAND_NAME)
+                .cloned(),
+        );
 
         if let Some(cmd) = self.current_command() {
             for flag in &cmd.flags {
@@ -352,7 +357,11 @@ impl CliRendererApp {
             .commands_at_path()
             .iter()
             .map(|c| CmdRow {
-                name: c.name.clone(),
+                name: if c.name == ROOT_COMMAND_NAME {
+                    format!("Run {}", self.binary_name)
+                } else {
+                    c.name.clone()
+                },
                 description: c.description.clone(),
                 has_children: !c.commands.is_empty(),
             })
@@ -378,7 +387,18 @@ impl CliRendererApp {
                 format!("{}  {}", d.name, ver)
             }
         } else {
-            format!("{} {}", d.name, self.cmd_path.join(" "))
+            let path = self
+                .cmd_path
+                .iter()
+                .filter(|name| name.as_str() != ROOT_COMMAND_NAME)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if path.is_empty() {
+                d.name.clone()
+            } else {
+                format!("{} {path}", d.name)
+            }
         };
         let top_desc = if self.cmd_path.is_empty() {
             d.description.clone()
@@ -486,7 +506,18 @@ impl CliRendererApp {
         };
 
         let d = self.descriptor.as_ref().unwrap();
-        let title = format!("{} {}", d.name, self.cmd_path.join(" "));
+        let path = self
+            .cmd_path
+            .iter()
+            .filter(|name| name.as_str() != ROOT_COMMAND_NAME)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let title = if path.is_empty() {
+            d.name.clone()
+        } else {
+            format!("{} {path}", d.name)
+        };
         let cmd_desc = cmd.description.clone();
         let args: Vec<ArgSpec> = cmd.args.clone();
         let flags: Vec<ArgSpec> = cmd.flags.clone();
@@ -1094,6 +1125,41 @@ mod tests {
         assert!(cmd.contains("'Ada Lovelace'"), "got: {cmd}");
         // Unset path flag is omitted.
         assert!(!cmd.contains("--output"), "got: {cmd}");
+    }
+
+    #[test]
+    fn generated_root_form_omits_synthetic_command_name() {
+        let (mut app, _dir) = app_from_fixture();
+        let root = Command {
+            name: ROOT_COMMAND_NAME.to_string(),
+            description: Some("Run demo with options".to_string()),
+            icon: None,
+            ui_hint: None,
+            args: vec![],
+            flags: vec![ArgSpec {
+                name: "--verbose".to_string(),
+                ty: ArgType::Bool,
+                required: Some(false),
+                default: None,
+                description: None,
+                placeholder: None,
+                enum_values: None,
+                min: None,
+                max: None,
+            }],
+            writes: vec![],
+            reads: vec![],
+            streaming: None,
+            output_format: None,
+            commands: vec![],
+        };
+        app.descriptor.as_mut().unwrap().commands = vec![root];
+
+        app.navigate_into(0);
+        app.field_values.insert("--verbose".into(), "true".into());
+
+        assert_eq!(app.view, View::Form);
+        assert_eq!(app.build_command_string(), "demo --verbose");
     }
 
     #[test]
