@@ -29,17 +29,18 @@ If you run into any issues, don't hesitate to reach out directly: adhdisntreal@g
 
 ## Install
 
-### macOS (Apple Silicon)
+### macOS (Apple Silicon; Intel when published)
 
-Downloads the current Apple Silicon alpha release. Requires `bash`, `curl`,
+Downloads the matching current macOS alpha release. Requires `bash`, `curl`,
 `tar`, and `shasum`, not Git, Rust, a package manager, or administrator access.
 
 ```bash
 curl -fsSL https://plexiapp.com/install | bash
 ```
 
-macOS Intel has no current download path. From a checkout, build it with Rust
-and Python 3 using `scripts/install.sh --from-source alpha`.
+The installer selects the matching macOS archive. If the selected channel has
+no Intel archive, it stops with a clear missing-asset error; from a checkout,
+build with Rust and Python 3 using `scripts/install.sh --from-source alpha`.
 
 ### Linux (x86_64, X11)
 

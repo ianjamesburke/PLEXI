@@ -31,13 +31,8 @@ function Get-LatestTag([string]$ChannelName) {
   $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases" -Headers $headers
   if ($ChannelName -eq 'main') {
     $match = $releases | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+$' } | Select-Object -First 1
-  } elseif ($ChannelName -eq 'alpha') {
-    # Prefer disposable windows dogfood tags when present; else newest alpha.
-    $win = $releases | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+-windows\.\d+$' } | Select-Object -First 1
-    if ($win) { return $win.tag_name }
-    $match = $releases | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+-alpha\.\d+$' } | Select-Object -First 1
   } else {
-    $match = $releases | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+-beta\.\d+$' } | Select-Object -First 1
+    $match = $releases | Where-Object { $_.tag_name -match ("^v\d+\.\d+\.\d+-" + [regex]::Escape($ChannelName) + "\.\d+$") } | Select-Object -First 1
   }
   if (-not $match) { throw "No published $ChannelName release found" }
   return $match.tag_name
