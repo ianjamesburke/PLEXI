@@ -24,6 +24,10 @@ use serde::{Deserialize, Serialize};
 /// major 0, on the assumption that v1 is a breaking format change.
 pub const PLEXI_DESCRIPTOR_MAJOR: u32 = 0;
 
+/// Synthetic leaf used by the help crawler for CLIs that have flags but no
+/// subcommands. Renderers omit it when assembling the executable command.
+pub const ROOT_COMMAND_NAME: &str = "__plexi_root__";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlexiDescriptor {

@@ -13,7 +13,9 @@
 //! depth-capped, and the whole crawl is bounded by a wall-clock budget and a
 //! hard ceiling on the number of `--help` probes.
 
-use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor, UiHint};
+use crate::app::plexi_descriptor::{
+    ArgSpec, ArgType, Command, PlexiDescriptor, UiHint, ROOT_COMMAND_NAME,
+};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -252,6 +254,12 @@ fn enrich_commands(
     budget: &mut CrawlBudget,
 ) {
     for cmd in cmds.iter_mut() {
+        // A flag-only CLI has no real subcommand to probe. Its fields were
+        // collected from the top-level help and the synthetic leaf must not
+        // become an argument to the executable.
+        if cmd.name == ROOT_COMMAND_NAME {
+            continue;
+        }
         if !budget.take_probe() {
             break;
         }
@@ -295,7 +303,26 @@ fn enrich_commands(
 /// command names + descriptions are extracted here; flags/args/subcommands are
 /// filled in by the recursive `enrich_commands` pass.
 pub(crate) fn parse_help(cli_name: &str, text: &str, version: Option<String>) -> PlexiDescriptor {
-    let commands = extract_commands(text);
+    let mut commands = extract_commands(text);
+    if commands.is_empty() {
+        let flags = parse_flags(text);
+        let args = parse_positional_args(text);
+        if !flags.is_empty() || !args.is_empty() {
+            commands.push(Command {
+                name: ROOT_COMMAND_NAME.to_string(),
+                description: Some(format!("Run {cli_name} with options")),
+                icon: None,
+                ui_hint: Some(UiHint::Form),
+                args,
+                flags,
+                writes: vec![],
+                reads: vec![],
+                streaming: None,
+                output_format: None,
+                commands: vec![],
+            });
+        }
+    }
     let description = extract_description(text);
 
     PlexiDescriptor {
@@ -906,6 +933,54 @@ SUBCOMMANDS:
     }
 
     #[test]
+    fn parse_flag_only_help_creates_a_root_form() {
+        let help = r#"Usage: curl [options...] <url>
+ -d, --data <data>           HTTP POST data
+ -f, --fail                  Fail fast with no output on HTTP errors
+ -o, --output <file>         Write to file instead of stdout
+ -v, --verbose               Make the operation more talkative
+"#;
+
+        let d = parse_help("curl", help, None);
+        assert_eq!(d.default_view, Some(UiHint::List));
+        assert_eq!(d.commands.len(), 1);
+        let root = &d.commands[0];
+        assert_eq!(root.name, ROOT_COMMAND_NAME);
+        assert_eq!(root.ui_hint, Some(UiHint::Form));
+        assert!(root.flags.iter().any(|flag| flag.name == "--data"));
+        assert!(root.flags.iter().any(|flag| flag.name == "--verbose"));
+    }
+
+    #[test]
+    fn parse_flag_only_jq_and_tar_help_create_forms() {
+        let jq = r#"jq - commandline JSON processor
+
+Command options:
+  -n, --null-input          use `null` as the single input value;
+  -f, --from-file file      load filter from the file;
+      --arg name value      set a named argument;
+"#;
+        let tar = r#"Usage: tar [OPTION...] [FILE]...
+
+ Main operation mode:
+  -c, --create               create a new archive
+  -x, --extract, --get       extract files from an archive
+  -f, --file=ARCHIVE         use archive file
+"#;
+
+        for (name, help, expected_flag) in [("jq", jq, "--null-input"), ("tar", tar, "--create")] {
+            let d = parse_help(name, help, None);
+            let root = d.commands.first().expect("flag-only root command");
+            assert_eq!(root.name, ROOT_COMMAND_NAME);
+            assert!(
+                root.flags.iter().any(|flag| flag.name == expected_flag),
+                "{name} flags were {:?}",
+                root.flags.iter().map(|flag| &flag.name).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn cache_round_trip() {
         let tmp = tempfile::TempDir::new().unwrap();
         let cache_file = tmp.path().join("test.json");
@@ -993,6 +1068,20 @@ collaborate (see also: git help workflows)
         assert!(!result.from_cache);
         assert_eq!(result.descriptor.name, "mock-cli");
         assert!(result.descriptor.commands.len() >= 2);
+    }
+
+    #[test]
+    fn crawl_flag_only_cli_keeps_top_level_flags_without_root_probe() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runner = MapRunner::new(Some("curl 8.0")).with(
+            "--help",
+            "Usage: curl [options] <url>\n -v, --verbose  Be loud\n",
+        );
+
+        let result = crawl_with_runner("curl", &runner, &tmp.path().join("cache")).unwrap();
+        let root = result.descriptor.commands.first().unwrap();
+        assert_eq!(root.name, ROOT_COMMAND_NAME);
+        assert!(root.flags.iter().any(|flag| flag.name == "--verbose"));
     }
 
     #[test]
