@@ -28,10 +28,9 @@ function priceLabel(price: any): string {
 const sourceUrl = app.source?.startsWith('github:')
   ? `https://github.com/${app.source.slice('github:'.length)}`
   : null;
-const installCmd = `plexi app install ${app.id}`;
 ---
 
-<Layout title={`${app.name} — Plexi Apps`} description={app.description}>
+<Layout title={`${app.name} — Plexi Apps`} description={`${app.description} This marketplace listing is beta-gated.`}>
   <div class="wrap">
     <nav class="breadcrumb">
       <a href="/">plexi</a>
@@ -48,12 +47,13 @@ const installCmd = `plexi app install ${app.id}`;
         <span class="version">v{app.version}</span>
       </div>
       <p class="desc">{app.description}</p>
+      <p class="beta-note">Marketplace listings and installs are beta-gated; stable v1 supports local app authoring and opening apps by path.</p>
     </header>
 
     <div class="install-block" id="install-block">
-      <span class="install-label">install</span>
-      <span class="install-cmd">{installCmd}</span>
-      <button class="copy-btn" data-cmd={installCmd}>Copy</button>
+      <span class="install-label">stable v1</span>
+      <span class="install-cmd">plexi app open ./my-app</span>
+      <a class="copy-btn" href="/docs/apps">Author a local app</a>
     </div>
 
     <div class="meta">
@@ -92,14 +92,6 @@ const installCmd = `plexi app install ${app.id}`;
     </div>
   </div>
 </Layout>
-
-<script>
-  document.querySelector('.copy-btn')?.addEventListener('click', function(this: HTMLButtonElement) {
-    navigator.clipboard.writeText(this.dataset.cmd!);
-    this.textContent = 'Copied!';
-    setTimeout(() => { this.textContent = 'Copy'; }, 1500);
-  });
-</script>
 
 <style>
   .breadcrumb {
@@ -158,6 +150,13 @@ const installCmd = `plexi app install ${app.id}`;
     color: var(--fg-2);
     line-height: 1.6;
     max-width: 560px;
+  }
+
+  .beta-note {
+    color: var(--fg-3);
+    font-size: 14px;
+    line-height: 1.6;
+    margin-top: 14px;
   }
 
   .install-block {

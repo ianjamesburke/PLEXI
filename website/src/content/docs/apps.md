@@ -42,7 +42,8 @@ Pass the path to the app folder:
 plexi app open ./my-app
 ```
 
-The app opens in a pane. Use this during development; no marketplace install is required.
+The app opens in a pane. Local app authoring and `plexi app` are part of the
+stable v1 surface; a hosted marketplace is not.
 
 ## The App Pattern
 

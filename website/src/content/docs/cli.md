@@ -4,9 +4,11 @@ description: Complete reference for all plexi subcommands and flags.
 order: 7
 ---
 
-The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and apps from outside the UI.
+The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and local apps from outside the UI.
 
-All commands work identically across build channels (`plexi`, `plexi-alpha`, `plexi-beta`). When run inside a Plexi pane, `PLEXI_SOCKET` routes host commands to the correct running instance automatically.
+Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, and local app runtime. Assistant, marketplace, and MCP client commands are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
+
+Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). When run inside a Plexi pane, `PLEXI_SOCKET` routes host commands to the correct running instance automatically.
 
 ## `plexi run`
 
@@ -459,7 +461,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
 | `test` | Run an app's AppHarness tests with `uv run --with pytest pytest tests/` |
 | `info` | Show details about an installed app: id, name, version, and available tools |
-| `state` | Read or replace a file-backed app's state document (stint 0645) |
+| `state` | Read or replace a file-backed app's state document |
 | `init` | Create a new app from a template |
 | `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
 | `inspect` | Show the trust sheet for a local app directory or .plexipkg package |
@@ -584,7 +586,7 @@ Show details about an installed app: id, name, version, and available tools
 
 ### `plexi app state`
 
-Read or replace a file-backed app's state document (stint 0645).
+Read or replace a file-backed app's state document.
 
 Only apps that declare a `[state]` section are addressable. The state path is resolved from the manifest and the calling context — callers never pass a path, and there is no flag to address another context.
 
@@ -620,7 +622,7 @@ Scaffolds the folder structure and files you need to build a Plexi app: manifest
 
 By default, the app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
 
-Use --open to launch it in a split-right pane after scaffolding.
+Use --open to launch it in a split-right pane after scaffolding. See `sdk/python/AUTHORING.md` for the canonical authoring guide.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -679,6 +681,8 @@ Validate, package, and submit an app to the Plexi marketplace.
 
 Reads the `[marketplace]` manifest section (publisher, visibility, price), validates the directory, builds a `.plexipkg`, and submits it. Without a configured `[marketplace].submit_url` the package is prepared locally but not uploaded — the artifact path is printed.
 
+> **Beta-gated:** Marketplace publishing and catalog browsing are beta surfaces. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | no | App directory to publish (default: current directory) Default: `.`. |
@@ -687,9 +691,13 @@ Reads the `[marketplace]` manifest section (publisher, visibility, price), valid
 
 Browse every public app in the hosted marketplace
 
+> **Beta-gated:** Marketplace publishing and catalog browsing are beta surfaces. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
 ### `plexi app search`
 
 Search the public marketplace catalog
+
+> **Beta-gated:** Marketplace publishing and catalog browsing are beta surfaces. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -725,6 +733,8 @@ Manage your Plexi marketplace account (only needed to publish or buy paid apps).
 
 Free apps install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
 
+> **Beta-gated:** Marketplace account management is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
 | Subcommand | Description |
 |---|---|
 | `status` | Show whether you are logged in |
@@ -735,11 +745,15 @@ Free apps install without an account. Login requires the accounts backend enable
 
 Show whether you are logged in
 
+> **Beta-gated:** Marketplace account management is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
 ### `plexi account login`
 
 Log in to your marketplace account via emailed sign-in link.
 
 Runs the device-code flow: plexiapp.com emails a link, you click it in any browser, and the CLI stores the session. Magic-link login creates the account on first use — there is no separate signup.
+
+> **Beta-gated:** Marketplace account management is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -748,6 +762,8 @@ Runs the device-code flow: plexiapp.com emails a link, you click it in any brows
 ### `plexi account logout`
 
 Log out and clear the local session
+
+> **Beta-gated:** Marketplace account management is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
 ## `plexi registry`
 
@@ -1185,6 +1201,8 @@ Print the host MCP server config for an MCP-aware agent.
 
 Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
 
+> **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
 ## `plexi notify`
 
 Send a notification to the Plexi UI
@@ -1255,16 +1273,18 @@ Check your Plexi config file for errors
 
 | Subcommand | Description |
 |---|---|
-| `check` | Validate your config.toml and report any errors |
-| `edit` | Open config.toml in your $EDITOR |
-| `get` | Print the resolved value of a config key to stdout |
-| `reset` | Overwrite config.toml with the built-in default template |
+| `check` | Validate the selected config.toml and report any errors |
+| `edit` | Open the selected config.toml in your $EDITOR |
+| `get` | Print a config key from the selected config.toml to stdout |
+| `reset` | Overwrite the selected config.toml with the built-in default template |
 | `list` | Print all known config keys with type, current value, and description |
-| `set` | Set one or more config keys in-place |
+| `set` | Set one or more keys in the selected config.toml |
 
 ### `plexi config check`
 
-Validate your config.toml and report any errors
+Validate the selected config.toml and report any errors.
+
+Reads the workspace config inside a workspace, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1273,7 +1293,9 @@ Validate your config.toml and report any errors
 
 ### `plexi config edit`
 
-Open config.toml in your $EDITOR
+Open the selected config.toml in your $EDITOR.
+
+Opens the workspace config inside a workspace, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1282,9 +1304,9 @@ Open config.toml in your $EDITOR
 
 ### `plexi config get`
 
-Print the resolved value of a config key to stdout.
+Print a config key from the selected config.toml to stdout.
 
-Supports dotted keys: agents.low, agents.medium, agents.high. Returns the effective value (user setting or built-in default).
+Supports dotted keys: agents.low, agents.medium, agents.high. Reads the workspace config inside a workspace, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1294,9 +1316,9 @@ Supports dotted keys: agents.low, agents.medium, agents.high. Returns the effect
 
 ### `plexi config reset`
 
-Overwrite config.toml with the built-in default template.
+Overwrite the selected config.toml with the built-in default template.
 
-Creates a backup at config.toml.bak before overwriting.
+Writes the workspace config inside a workspace, otherwise the global config. Creates a backup at config.toml.bak before overwriting.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1307,7 +1329,7 @@ Creates a backup at config.toml.bak before overwriting.
 
 Print all known config keys with type, current value, and description.
 
-Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output.
+Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output. Reads the workspace config inside a workspace, otherwise the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1317,9 +1339,9 @@ Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output.
 
 ### `plexi config set`
 
-Set one or more config keys in-place.
+Set one or more keys in the selected config.toml.
 
-Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14). Scope defaults to workspace when inside a workspace, global otherwise.
+Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14). Writes the workspace config inside a workspace, otherwise the global config. Pass --global to read or write only the global config.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1329,7 +1351,7 @@ Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14)
 
 ## `plexi notes`
 
-Browse and open scratchpad notes created with Cmd+Shift+Space.
+Browse and open scratchpad notes.
 
 Each scratchpad session writes a timestamped file to `<config_dir>/notes/`. Use `plexi notes list` to print note paths, or `plexi notes open` to pick one with fzf.
 
@@ -1354,7 +1376,7 @@ Candidates come from `plexi notes list`. Requires fzf and a running host; both a
 
 Capture a quick note to the inbox.
 
-Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter capturing cwd, workspace, and context root. Triage later via Cmd+O, then t.
+Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter capturing cwd, workspace, and context root. Triage later in the notes picker.
 
 Example: plexi note "remember to update the docs"
 
@@ -1376,27 +1398,11 @@ Checks every installed app's declared capabilities against your current config.t
 
 Interactive keybinding tutorial — learn split and navigate in real time.
 
-Walk through two fundamental Plexi interactions inside a live pane: split a pane (⌘D) and navigate between panes (⌘L / ⌘H). Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
+Walk through macOS pane controls inside a live pane. Requires macOS and a Plexi pane (PLEXI_PANE_ID must be set).
 
 ## `plexi update`
 
-Update installed apps or Plexi itself.
-
-Run with the `apps` subcommand to update one or all installed apps. Run with no subcommand to update the Plexi binary itself.
-
-| Subcommand | Description |
-|---|---|
-| `apps` | Compatibility alias for `plexi app update` |
-
-### `plexi update apps`
-
-Compatibility alias for `plexi app update`.
-
-Omit the app id to update all installed apps visible from the current workspace.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<id>` | string | no | App id to update (omit to update all installed apps) |
+Update the Plexi binary for this channel
 
 ## `plexi uninstall`
 

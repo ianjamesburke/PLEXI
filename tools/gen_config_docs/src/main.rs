@@ -421,7 +421,9 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
         println!("| Action | Description |");
         println!("|---|---|");
         for f in &s.fields {
-            let desc = if f.doc.is_empty() {
+            let desc = if f.name == "open_assistant" {
+                "open assistant (beta-gated; not part of stable v1)".to_string()
+            } else if f.doc.is_empty() {
                 human_action_name(&f.name)
             } else {
                 f.doc.clone()
@@ -458,7 +460,7 @@ A handler here overrides an app's own `file_types` association. Unmapped extensi
     print!(
         r#"### Marketplace (`[marketplace]`)
 
-All fields are optional. Omitting the section uses the official `plexiapp.com` registry and CDN. Override only to point at a private registry or to test publishing flows.
+Marketplace configuration is beta-gated and is not part of stable v1. Use it only in a beta or explicit worktree channel while testing publishing flows. All fields are optional.
 
 "#
     );

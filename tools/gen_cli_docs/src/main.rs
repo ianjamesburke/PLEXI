@@ -14,9 +14,11 @@ description: Complete reference for all plexi subcommands and flags.
 order: 7
 ---
 
-The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and apps from outside the UI.
+The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and local apps from outside the UI.
 
-All commands work identically across build channels (`plexi`, `plexi-alpha`, `plexi-beta`). When run inside a Plexi pane, `PLEXI_SOCKET` routes host commands to the correct running instance automatically.
+Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, and local app runtime. Assistant, marketplace, and MCP client commands are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
+
+Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). When run inside a Plexi pane, `PLEXI_SOCKET` routes host commands to the correct running instance automatically.
 
 "#
     );
@@ -54,6 +56,11 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
             .trim()
             .to_string();
         println!("{normalized}");
+        println!();
+    }
+
+    if let Some(feature) = beta_gated_feature(&full_path) {
+        println!("> **Beta-gated:** {feature} This reference is included for beta and worktree testing; it is not available from the stable v1 channel.");
         println!();
     }
 
@@ -145,6 +152,19 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
             emit_arg_row(arg);
         }
         println!();
+    }
+}
+
+fn beta_gated_feature(full_path: &str) -> Option<&'static str> {
+    match full_path {
+        "plexi account" | "plexi account status" | "plexi account login" | "plexi account logout" => {
+            Some("Marketplace account management is a beta surface.")
+        }
+        "plexi app publish" | "plexi app browse" | "plexi app search" => {
+            Some("Marketplace publishing and catalog browsing are beta surfaces.")
+        }
+        "plexi events mcp-config" => Some("MCP client configuration is a beta surface."),
+        _ => None,
     }
 }
 

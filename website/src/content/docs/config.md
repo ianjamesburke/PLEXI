@@ -224,7 +224,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `open_config` | open config |
 | `reload_config` | reload config |
 | `open_secrets_manager` | open secrets manager |
-| `open_assistant` | open assistant |
+| `open_assistant` | open assistant (beta-gated; not part of stable v1) |
 | `force_reload_app` | force reload app |
 | `toggle_notification_modal` | toggle notification modal |
 | `open_scratchpad` | open scratchpad |
@@ -256,7 +256,7 @@ A handler here overrides an app's own `file_types` association. Unmapped extensi
 
 ### Marketplace (`[marketplace]`)
 
-All fields are optional. Omitting the section uses the official `plexiapp.com` registry and CDN. Override only to point at a private registry or to test publishing flows.
+Marketplace configuration is beta-gated and is not part of stable v1. Use it only in a beta or explicit worktree channel while testing publishing flows. All fields are optional.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
