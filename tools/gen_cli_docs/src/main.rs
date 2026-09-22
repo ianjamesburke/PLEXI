@@ -14,11 +14,11 @@ description: Complete reference for all plexi subcommands and flags.
 order: 7
 ---
 
-The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and local apps from outside the UI.
+The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and local apps from outside the UI. This reference is generated from the complete public command inventory; hidden implementation commands are omitted, and beta-only entries are labelled where they appear.
 
-Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, and local app runtime. Assistant, marketplace, and MCP client commands are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
+Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, and local app runtime. Assistant, marketplace, MCP client, and app-wrapper surfaces are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
 
-Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). When run inside a Plexi pane, `PLEXI_SOCKET` routes host commands to the correct running instance automatically.
+Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). A channel-named binary always targets its own profile; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` when run inside a Plexi pane.
 
 "#
     );
@@ -149,7 +149,7 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         println!("| Flag / Arg | Type | Required | Description |");
         println!("|---|---|---|---|");
         for arg in args {
-            emit_arg_row(arg);
+            emit_arg_row(arg, &full_path);
         }
         println!();
     }
@@ -157,9 +157,10 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
 
 fn beta_gated_feature(full_path: &str) -> Option<&'static str> {
     match full_path {
-        "plexi account" | "plexi account status" | "plexi account login" | "plexi account logout" => {
-            Some("Marketplace account management is a beta surface.")
-        }
+        "plexi account"
+        | "plexi account status"
+        | "plexi account login"
+        | "plexi account logout" => Some("Marketplace account management is a beta surface."),
         "plexi app publish" | "plexi app browse" | "plexi app search" => {
             Some("Marketplace publishing and catalog browsing are beta surfaces.")
         }
@@ -168,7 +169,16 @@ fn beta_gated_feature(full_path: &str) -> Option<&'static str> {
     }
 }
 
-fn emit_arg_row(arg: &Arg) {
+fn beta_gated_arg(full_path: &str, id: &str) -> Option<&'static str> {
+    match (full_path, id) {
+        ("plexi app open", "mcp" | "cli") => {
+            Some("Beta-gated: app wrappers are not available from the stable v1 channel.")
+        }
+        _ => None,
+    }
+}
+
+fn emit_arg_row(arg: &Arg, full_path: &str) {
     let id = arg.get_id().as_str();
     let is_positional = arg.get_long().is_none() && arg.get_short().is_none();
 
@@ -217,7 +227,10 @@ fn emit_arg_row(arg: &Arg) {
         })
         .unwrap_or_default();
 
-    let desc = format!("{help}{default}").trim().to_string();
+    let gate = beta_gated_arg(full_path, id)
+        .map(|text| format!(" {text}"))
+        .unwrap_or_default();
+    let desc = format!("{help}{default}{gate}").trim().to_string();
 
     println!("| {flag} | {ty} | {required} | {desc} |");
 }
