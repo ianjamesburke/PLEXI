@@ -357,7 +357,7 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
 fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
     let mut root = toml::Value::Table(toml::map::Map::new());
     for path in paths {
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(data) => match toml::from_str::<toml::Value>(&data) {
                 Ok(val) => toml_merge(&mut root, val),
                 Err(e) => {
@@ -435,7 +435,7 @@ fn config_reset_at_path(path: &std::path::Path, scope: ConfigScope) -> i32 {
         "config_reset: writing default config to {} scope={scope:?}",
         path.display()
     );
-    match write_default_config(&path) {
+    match write_default_config(path) {
         Ok(()) => 0,
         Err(msg) => {
             eprintln!("error: {msg}");
