@@ -82,7 +82,7 @@ try {
   Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $archive
   $checksumFile = Join-Path $tmp "$Asset.sha256"
   Invoke-WebRequest -UseBasicParsing -Uri $ChecksumUrl -OutFile $checksumFile
-  $checksumPattern = "^[A-Fa-f0-9]{64}\s+\*?{0}$" -f [regex]::Escape($Asset)
+  $checksumPattern = '^[A-Fa-f0-9]{64}\s+\*?' + [regex]::Escape($Asset) + '$'
   $checksumLine = Get-Content -Path $checksumFile | Where-Object { $_ -match $checksumPattern } | Select-Object -First 1
   if (-not $checksumLine) { throw "Release checksum file did not contain a SHA-256 for $Asset" }
   $expectedChecksum = ([regex]::Match($checksumLine, '^[A-Fa-f0-9]{64}')).Value.ToLowerInvariant()
