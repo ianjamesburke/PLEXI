@@ -6,38 +6,55 @@ order: 1
 
 Plexi is a tiling terminal host with a scriptable CLI for macOS, Linux, and
 Windows. Its stable v1 surface includes panes, subcontexts, agent status hooks,
-Quick Note, and the local app runtime. The public installer currently has
-prebuilt alpha assets for Linux x86_64 and macOS Apple Silicon; macOS Intel and
-Windows are not yet available through this curl installer.
-
-Linux is currently supported on x86_64 X11 sessions. Wayland is not supported.
-The Linux installer is a user-directory install, not a distro package: there is
-no apt, yay, AUR, Flatpak, AppImage, `.deb`, or `.rpm` install path.
+Quick Note, and the local app runtime.
 
 ## Install
 
-Open Terminal and run:
+### macOS (Apple Silicon)
 
 ```sh
-curl -fsSL https://plexiapp.com/install | sh
+curl -fsSL https://plexiapp.com/install | bash
 ```
 
-For now, the public installer defaults to the alpha channel, detects your
-platform, downloads the matching available release asset, and installs the CLI
-into `~/.local/bin` (or your configured Plexi user directory). It does not need
-Git, Rust, a package manager, or administrator access. Open a new shell after
-installation if it asks you to refresh `PATH`. Contributors can build from a
-checkout with `bash -s -- --from-source`.
+This downloads the current Apple Silicon alpha release. It requires `bash`,
+`curl`, `tar`, and `shasum`, but not Git, Rust, a package manager, or
+administrator access. macOS Intel has no current download path; build from a
+checkout instead.
+
+### Linux (x86_64, X11)
+
+```sh
+curl -fsSL https://plexiapp.com/install | bash
+```
+
+This downloads the current Linux x64 alpha release. It requires `bash`, `curl`,
+`tar`, and `sha256sum` (or `shasum`), and installs into user-owned directories.
+Plexi supports X11 sessions; Wayland is not supported. This is not an apt, yay,
+AUR, Flatpak, AppImage, `.deb`, or `.rpm` package.
 
 On Linux, secrets are kept in a mode-`0600` file rather than an encrypted OS
 keyring. Hardware video decoding is not implemented on Linux.
 
-Plexi alpha builds are unsigned on purpose. If Gatekeeper or SmartScreen blocks
-your download, follow the [unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md): it covers Finder's
-**Open** flow and optional `xattr -cr` command on macOS, plus **More info** →
-**Run anyway** on Windows after you confirm the download is from the official
-Plexi GitHub release. Linux users who unpack an archive manually may need
-`chmod +x plexi`.
+### Windows (x64)
+
+Run this in Windows PowerShell 5.1 or later:
+
+```powershell
+irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex
+```
+
+This downloads the current Windows x64 alpha release, verifies its SHA-256
+checksum, and does not require Rust or Visual Studio. It does not build from
+source. The Unix `curl | bash` command is not a Windows installer.
+
+### Source builds and unsigned releases
+
+From a macOS or Linux checkout, use `scripts/install.sh --from-source alpha` to
+build and install from source; it requires Rust and Python 3. Windows has no
+equivalent source-install script. All alpha builds are unsigned and not
+notarized. Follow the [unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md)
+before bypassing a Gatekeeper or SmartScreen warning. Linux users who unpack an
+archive manually may need `chmod +x plexi`.
 
 Plexi does not request Accessibility permission on first launch. Its app bundle
 declares camera and microphone permissions for video rooms, which macOS requests
