@@ -25,6 +25,15 @@ Each archive has a matching `.sha256` sidecar. The installers verify it before
 replacing an existing install; see [Opening an unsigned Plexi build](unsigned-install.md)
 for the separate operating-system trust prompts.
 
+## Failed installs
+
+An invalid channel, unavailable asset, unavailable or mismatched checksum, or
+invalid archive exits nonzero without printing an install-success line. Downloads
+and extraction finish in a temporary directory before activation. If activation
+is interrupted, the installer restores the previous payload, command, and
+`installed_tag` marker (or removes any newly-created marker), so a prior working
+install remains the reported install.
+
 ## Windows (x64)
 
 Run this download installer in Windows PowerShell 5.1 or later (no Rust or
