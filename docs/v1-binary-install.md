@@ -60,11 +60,10 @@ with `scripts/install.sh --from-source [channel]`.
 
 ## Unsigned builds
 
-v1 assets are deliberately unsigned and not notarized. On macOS, open a blocked
-app with Finder's contextual **Open** command and confirm the dialog. On Windows,
-use SmartScreen's **More info** then **Run anyway** only after confirming the
-download came from the Plexi GitHub release. Linux may need `chmod +x plexi` when
-an archive was unpacked manually; the installer sets it automatically.
+v1 assets are deliberately unsigned and not notarized. See [Opening an unsigned
+Plexi build](unsigned-install.md) for the Finder **Open** flow and optional
+`xattr -cr` command on macOS, the SmartScreen **More info** → **Run anyway** flow
+on Windows, and the manual Linux `chmod +x` fallback.
 
 ## Release dry run
 

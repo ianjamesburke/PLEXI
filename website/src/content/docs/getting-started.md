@@ -25,9 +25,12 @@ Git, Rust, a package manager, or administrator access. Open a new shell after
 installation if it asks you to refresh `PATH`. Contributors can build from a
 checkout with `bash -s -- --from-source`.
 
-macOS builds are not notarized yet. If Gatekeeper blocks Plexi, right-click the
-app and choose **Open**, then confirm. When Windows binary installs are
-available, SmartScreen may require **More info → Run anyway**.
+Plexi alpha builds are unsigned on purpose. If Gatekeeper or SmartScreen blocks
+your download, follow the [unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md): it covers Finder's
+**Open** flow and optional `xattr -cr` command on macOS, plus **More info** →
+**Run anyway** on Windows after you confirm the download is from the official
+Plexi GitHub release. Linux users who unpack an archive manually may need
+`chmod +x plexi`.
 
 Plexi does not request Accessibility permission on first launch. Its app bundle
 declares camera and microphone permissions for video rooms, which macOS requests
