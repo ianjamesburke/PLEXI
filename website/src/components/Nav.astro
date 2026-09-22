@@ -15,7 +15,7 @@ import Logo from './Logo.astro';
       <a href="/support">Support</a>
     </div>
     <div class="cta">
-      <a class="btn" href="/download">Download</a>
+      <a class="btn nav-download" href="/download">Download alpha</a>
     </div>
     <button class="mobile-menu-btn" aria-label="Menu" aria-expanded="false">
       <span class="bar"></span>
@@ -28,7 +28,7 @@ import Logo from './Logo.astro';
     <a href="/blog">Blog</a>
     <a href="/docs">Docs</a>
     <a href="/support">Support</a>
-    <a class="btn" href="/download">Download</a>
+    <a class="btn" href="/download">Download alpha</a>
   </div>
 </nav>
 
@@ -64,6 +64,7 @@ import Logo from './Logo.astro';
     transition: color 150ms;
   }
   .mobile-menu a:last-child { border-bottom: none; margin-top: 8px; }
+  .mobile-menu .btn { justify-content: center; margin-top: 16px; }
   .mobile-menu a:hover { color: var(--fg); }
 
   @media (max-width: 980px) {

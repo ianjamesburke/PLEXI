@@ -5,7 +5,7 @@ import Logo from './Logo.astro';
   <div class="wrap row">
     <div class="foot-brand">
       <Logo size={22} stroke="#6a727c" ariaLabel="" />
-      <span class="copy">© 2026 Plexi · macOS · Linux · Windows · open source</span>
+      <span class="copy">© 2026 Plexi <span aria-hidden="true">·</span> macOS <span aria-hidden="true">·</span> Linux <span aria-hidden="true">·</span> Windows <span aria-hidden="true">·</span> open source</span>
     </div>
     <div class="links">
       <a href="https://github.com/ianjamesburke/PLEXI">GitHub</a>
@@ -37,4 +37,8 @@ import Logo from './Logo.astro';
   }
   footer .legal-row a { color: var(--fg-4); transition: color 150ms; }
   footer .legal-row a:hover { color: var(--fg-2); }
+  @media (max-width: 600px) {
+    footer .foot-brand { align-items: flex-start; }
+    footer .foot-brand .copy { max-width: 28ch; line-height: 1.55; }
+  }
 </style>
