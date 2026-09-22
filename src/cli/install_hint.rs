@@ -37,7 +37,7 @@ pub(crate) fn install_hint(target: InstallTarget) -> String {
     install_hint_for(InstallPlatform::current(), target)
 }
 
-fn install_hint_for(platform: InstallPlatform, target: InstallTarget) -> String {
+pub(super) fn install_hint_for(platform: InstallPlatform, target: InstallTarget) -> String {
     match platform {
         InstallPlatform::Macos => target
             .brew
