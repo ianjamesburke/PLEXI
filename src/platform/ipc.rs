@@ -53,9 +53,7 @@ pub fn endpoint_in(profile_dir: &Path) -> PathBuf {
     }
     #[cfg(windows)]
     {
-        PathBuf::from(pipe_name_for_channel(channel_from_profile_dir(
-            profile_dir,
-        )))
+        PathBuf::from(pipe_name_for_channel(channel_from_profile_dir(profile_dir)))
     }
 }
 
@@ -337,33 +335,24 @@ mod windows_impl {
     /// Server side of a named pipe.
     ///
     /// Unlike `UnixListener` there is no persistent listening object: each
-    /// accepted client consumes one *instance*. `pending` is therefore kept
-    /// as a small backlog of instances. `PIPE_UNLIMITED_INSTANCES` is what
-    /// lets concurrent clients coexist under the same name.
+    /// accepted client consumes one *instance*.  Each outstanding instance
+    /// therefore has its own blocking `ConnectNamedPipe` worker and completed
+    /// connections are delivered to `accept` over a channel.
     ///
-    /// One spare is not enough: a client consumes it as soon as `CreateFileW`
-    /// succeeds, before the accept thread gets a chance to take that handle
-    /// and replenish it. A short CLI burst can otherwise make the name vanish
-    /// again even though the host and accept loop are still alive.
+    /// It is tempting to retain several bare `CreateNamedPipeW` handles and
+    /// call `ConnectNamedPipe` on them one at a time.  That is not a backlog:
+    /// Windows is free to assign a `CreateFileW` client to *any* available
+    /// instance, while the serial acceptor can be blocked waiting on a
+    /// different one.  A pane spawn can then claim every bare instance and
+    /// make the pipe name disappear, even with a four-handle queue.  Keeping
+    /// every instance actively accepting removes that ordering race.
     const PENDING_PIPE_BACKLOG: usize = 4;
 
     #[derive(Debug)]
     pub struct IpcListener {
-        name: String,
-        /// Instances created by `bind` and not yet consumed by `accept`.
-        ///
-        /// This is the named-pipe stand-in for a listen backlog. `bind` must
-        /// leave an instance in existence: callers treat a successful bind as
-        /// "the endpoint is now reachable" and only then spawn the accept
-        /// thread, so a client connecting in that window would otherwise get
-        /// `ERROR_FILE_NOT_FOUND` from a pipe name that momentarily does not
-        /// exist. Holding it here lets that client connect and simply wait,
-        /// which is what the Unix path does.
-        ///
-        /// `Mutex` only because `accept` takes `&self`, matching
-        /// `UnixListener`; it is never contended in practice — one accept loop
-        /// owns a listener.
-        pending: std::sync::Mutex<std::collections::VecDeque<OwnedHandle>>,
+        /// `Receiver` is not `Sync`; keep it behind a mutex so this retains
+        /// the `&self` accept signature of `UnixListener`.
+        accepted: std::sync::Mutex<std::sync::mpsc::Receiver<io::Result<IpcStream>>>,
     }
 
     impl IpcListener {
@@ -372,14 +361,84 @@ mod windows_impl {
             // Fails here, not inside the accept loop, when another host on
             // this channel already owns the name — the analogue of
             // `UnixListener::bind` reporting `EADDRINUSE`.
-            let mut pending = std::collections::VecDeque::with_capacity(PENDING_PIPE_BACKLOG);
+            let (sender, receiver) = std::sync::mpsc::channel();
             for _ in 0..PENDING_PIPE_BACKLOG {
-                pending.push_back(Self::create_instance(&name)?);
+                // Create the instance synchronously so `bind` still reports a
+                // name collision before saying the listener is live.  The
+                // worker owns this first instance and immediately begins its
+                // connect, rather than leaving it as an unarmed spare.
+                let handle = Self::create_instance(&name)?;
+                Self::spawn_accept_worker(name.clone(), handle, sender.clone())?;
             }
             Ok(Self {
-                name,
-                pending: std::sync::Mutex::new(pending),
+                accepted: std::sync::Mutex::new(receiver),
             })
+        }
+
+        fn spawn_accept_worker(
+            name: String,
+            handle: OwnedHandle,
+            sender: std::sync::mpsc::Sender<io::Result<IpcStream>>,
+        ) -> io::Result<()> {
+            std::thread::Builder::new()
+                .name("plexi-pipe-accept".to_string())
+                .spawn(move || Self::accept_worker(name, handle, sender))
+                .map(|_| ())
+        }
+
+        fn accept_worker(
+            name: String,
+            handle: OwnedHandle,
+            sender: std::sync::mpsc::Sender<io::Result<IpcStream>>,
+        ) {
+            let raw = handle.as_raw_handle() as _;
+            // SAFETY: `handle` owns this live server-side pipe instance. A
+            // null OVERLAPPED intentionally makes this worker wait for just
+            // this instance; other workers keep the rest connectable.
+            let connected = unsafe { ConnectNamedPipe(raw, std::ptr::null_mut()) };
+            if connected == 0 {
+                let error = io::Error::last_os_error();
+                // A client can win the small window before ConnectNamedPipe.
+                if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
+                    // A cancelled/short-lived client consumes this instance.
+                    // Replace its worker before reporting the failed accept;
+                    // otherwise a few abandoned CLI connects would silently
+                    // drain every instance and recreate ERROR_FILE_NOT_FOUND.
+                    if let Ok(replacement) = Self::create_instance(&name) {
+                        let _ = Self::spawn_accept_worker(name, replacement, sender.clone());
+                    }
+                    let _ = sender.send(Err(error));
+                    return;
+                }
+            }
+
+            // Publish a fresh armed instance before handing this connection
+            // to the application.  If a transient thread/pipe creation error
+            // occurs, the other workers remain live and the error is visible
+            // in the host accept loop rather than silently dropping the name.
+            match Self::create_instance(&name).and_then(|replacement| {
+                Self::spawn_accept_worker(name, replacement, sender.clone())
+            }) {
+                Ok(()) => {}
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                }
+            }
+
+            // Byte mode, blocking — matches the stream semantics callers
+            // already have on Unix.
+            // SAFETY: `handle` is live; both out-params point at locals.
+            unsafe {
+                let mut mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+                SetNamedPipeHandleState(raw, &mut mode, std::ptr::null_mut(), std::ptr::null_mut());
+            }
+            // SAFETY: re-wrapping the handle we still exclusively own.
+            let owned = unsafe { OwnedHandle::from_raw_handle(handle.into_raw_handle()) };
+            let _ = sender.send(Ok(IpcStream {
+                file: std::fs::File::from(owned),
+                read_timeout: std::cell::Cell::new(None),
+                is_server: true,
+            }));
         }
 
         fn create_instance(name: &str) -> io::Result<OwnedHandle> {
@@ -405,67 +464,17 @@ mod windows_impl {
             Ok(unsafe { OwnedHandle::from_raw_handle(raw as _) })
         }
 
-        /// Block until a client connects, returning its instance.
-        ///
-        /// Before waiting on the instance we took, create and publish its
-        /// replacement. A named pipe has no kernel listen backlog: if an
-        /// accepted instance were returned before its replacement existed,
-        /// another CLI process could see `ERROR_FILE_NOT_FOUND` merely because
-        /// the accept loop was doing synchronous bookkeeping or starting a
-        /// handler thread. The spare makes an accepted connection behave like
-        /// a Unix listener with an available backlog slot.
+        /// Block until one of the armed instances connects.
         pub fn accept(&self) -> io::Result<IpcStream> {
-            // Take the oldest pending instance and replenish it while that
-            // handle is still alive. If creating the replacement fails,
-            // restore the old one so the endpoint remains reachable and a
-            // later accept can retry instead of permanently dropping the
-            // listener.
-            let mut pending = self
-                .pending
+            let accepted = self
+                .accepted
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let handle = match pending.pop_front() {
-                Some(handle) => handle,
-                None => Self::create_instance(&self.name)?,
-            };
-            match Self::create_instance(&self.name) {
-                Ok(replacement) => pending.push_back(replacement),
-                Err(error) => {
-                    pending.push_front(handle);
-                    return Err(error);
-                }
-            };
-            drop(pending);
-            let raw = handle.as_raw_handle() as _;
-            // SAFETY: `handle` owns a live server-side pipe instance. A null
-            // OVERLAPPED means "block until connected", which is what we want.
-            let connected = unsafe { ConnectNamedPipe(raw, std::ptr::null_mut()) };
-            if connected == 0 {
-                let error = io::Error::last_os_error();
-                // The client connected between CreateNamedPipeW and
-                // ConnectNamedPipe. That is a successful accept, not a failure.
-                if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
-                    return Err(error);
-                }
-            }
-            // Byte mode, blocking — matches the stream semantics callers
-            // already have on Unix.
-            // SAFETY: `handle` is live; both out-params point at locals.
-            unsafe {
-                let mut mode = PIPE_READMODE_BYTE | PIPE_WAIT;
-                SetNamedPipeHandleState(
-                    raw,
-                    &mut mode,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                );
-            }
-            // SAFETY: re-wrapping the handle we still exclusively own.
-            let owned = unsafe { OwnedHandle::from_raw_handle(handle.into_raw_handle()) };
-            Ok(IpcStream {
-                file: std::fs::File::from(owned),
-                read_timeout: std::cell::Cell::new(None),
-                is_server: true,
+            accepted.recv().unwrap_or_else(|_| {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "all named-pipe accept workers stopped",
+                ))
             })
         }
 
@@ -491,7 +500,6 @@ mod windows_impl {
     pub fn connect_timeout(endpoint: &Path, timeout: Duration) -> io::Result<IpcStream> {
         IpcStream::connect_deadline(endpoint, Instant::now() + timeout)
     }
-
 }
 
 #[cfg(test)]
@@ -552,7 +560,10 @@ mod tests {
     #[test]
     fn pipe_name_is_channel_scoped() {
         assert_eq!(pipe_name_for_channel(None), r"\\.\pipe\plexi");
-        assert_eq!(pipe_name_for_channel(Some("alpha")), r"\\.\pipe\plexi-alpha");
+        assert_eq!(
+            pipe_name_for_channel(Some("alpha")),
+            r"\\.\pipe\plexi-alpha"
+        );
         assert_eq!(
             pipe_name_for_channel(Some("pr-1604")),
             r"\\.\pipe\plexi-pr-1604"
@@ -564,7 +575,7 @@ mod tests {
     /// to open the name before the caller starts another `accept` call.
     #[cfg(windows)]
     #[test]
-    fn accept_keeps_a_pipe_backlog_reachable() {
+    fn accept_workers_keep_every_backlog_slot_reachable() {
         let endpoint = PathBuf::from(format!(r"\\.\pipe\plexi-ipc-spare-{}", std::process::id()));
         let listener = IpcListener::bind(&endpoint).expect("bind");
 
@@ -582,7 +593,16 @@ mod tests {
             })
             .collect();
 
+        // More importantly, these are not merely bare instances which a
+        // client can claim while the serial acceptor waits on another handle.
+        // Every connection is accepted without relying on pipe-instance
+        // selection order.
+        let servers: Vec<_> = (0..PENDING_PIPE_BACKLOG)
+            .map(|_| listener.accept().expect("worker accepts backlog client"))
+            .collect();
+
         drop(clients);
+        drop(servers);
         drop(first_server);
         drop(first_client);
     }
