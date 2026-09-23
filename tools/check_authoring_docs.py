@@ -5,11 +5,14 @@ Guards the authoring docs the same way check-sdk-docs guards the generated SDK
 reference: doc rot becomes a CI failure. Two checks, both against live source:
 
 1. Effect/component name drift. Ground truth is parsed (ast, no imports) from
-   sdk/python/plexi_sdk/effects.py and ui.py. Every effect/component name that
-   the canonical guide (sdk/python/AUTHORING.md, inside <!-- drift-check:* -->
-   markers) or the `plexi app init --help` block (src/cli/args.rs) names must
-   exist in the SDK. Catches the exact rot fixed in stint 0332 (LogInfo/LogWarn/
-   LogError and HttpRequest in help text; TextInput vs TextEdit).
+   sdk/python/plexi_sdk/effects.py and ui.py. Every effect/component name in
+   the canonical guide (sdk/python/AUTHORING.md, inside
+   <!-- drift-check:* --> markers) must exist in the SDK. Catches the exact rot
+   fixed in stint 0332 (TextInput vs TextEdit).
+
+   `plexi app init --help` intentionally links to the canonical guide instead
+   of duplicating an API reference. Keep a small smoke check that `plexi app
+   check --help` still advertises the verification loop.
 
 2. Dead relative links. Every relative markdown link in the authoring-path docs
    must resolve to a file that exists (catches the dead SDK_QUICKSTART.md link).
@@ -78,32 +81,6 @@ def _backticked_idents(block: str) -> set[str]:
     return {t for t in re.findall(r"`([A-Za-z0-9]+)`", block) if IDENT.match(t)}
 
 
-def _help_block(rs: str) -> str:
-    """The after_long_help raw-string body in args.rs (text, not parsed Rust)."""
-    m = re.search(r'APP DEVELOPMENT GUIDE:(.*?)"#', rs, re.DOTALL)
-    if not m:
-        raise SystemExit("ERROR: could not locate the APP DEVELOPMENT GUIDE help block in args.rs.")
-    return m.group(1)
-
-
-def _help_region(help_text: str, start: str, end_pred) -> set[str]:
-    """CapWords tokens on the list lines after `start` up to end_pred(line)."""
-    lines = help_text.splitlines()
-    out: set[str] = set()
-    collecting = False
-    for line in lines:
-        if start in line:
-            collecting = True
-            continue
-        if collecting:
-            if end_pred(line):
-                break
-            for tok in re.split(r"[,\s/]+", line.strip()):
-                if IDENT.match(tok):
-                    out.add(tok)
-    return out
-
-
 def check_names() -> list[str]:
     errors: list[str] = []
     effects = _public_top_level(EFFECTS_PY)
@@ -113,26 +90,15 @@ def check_names() -> list[str]:
     doc_effects = _backticked_idents(_marker_block(authoring, "effects"))
     doc_components = _backticked_idents(_marker_block(authoring, "components"))
 
-    help_text = _help_block(ARGS_RS.read_text(encoding="utf-8"))
-    help_components = _help_region(
-        help_text, "Key widgets:", lambda ln: ln.strip() == ""
-    )
-    help_effects = _help_region(
-        help_text, "Effects:", lambda ln: "Logging is not an effect" in ln
-    )
-
-    for name in sorted(doc_effects | help_effects):
+    for name in sorted(doc_effects):
         if name not in effects:
-            where = "AUTHORING.md" if name in doc_effects else "args.rs help"
-            errors.append(
-                f"effect `{name}` in {where} does not exist in effects.py"
-            )
-    for name in sorted(doc_components | help_components):
+            errors.append(f"effect `{name}` in AUTHORING.md does not exist in effects.py")
+    for name in sorted(doc_components):
         if name not in components:
-            where = "AUTHORING.md" if name in doc_components else "args.rs help"
-            errors.append(
-                f"component `{name}` in {where} does not exist in ui.py"
-            )
+            errors.append(f"component `{name}` in AUTHORING.md does not exist in ui.py")
+
+    if "APP CHECK LOOP:" not in ARGS_RS.read_text(encoding="utf-8"):
+        errors.append("args.rs is missing the APP CHECK LOOP help block")
     return errors
 
 
