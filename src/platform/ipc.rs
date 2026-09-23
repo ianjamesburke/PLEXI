@@ -338,12 +338,19 @@ mod windows_impl {
     ///
     /// Unlike `UnixListener` there is no persistent listening object: each
     /// accepted client consumes one *instance*. `pending` is therefore kept
-    /// as a spare, unconnected instance at all times. `PIPE_UNLIMITED_INSTANCES`
-    /// is what lets concurrent clients coexist under the same name.
+    /// as a small backlog of instances. `PIPE_UNLIMITED_INSTANCES` is what
+    /// lets concurrent clients coexist under the same name.
+    ///
+    /// One spare is not enough: a client consumes it as soon as `CreateFileW`
+    /// succeeds, before the accept thread gets a chance to take that handle
+    /// and replenish it. A short CLI burst can otherwise make the name vanish
+    /// again even though the host and accept loop are still alive.
+    const PENDING_PIPE_BACKLOG: usize = 4;
+
     #[derive(Debug)]
     pub struct IpcListener {
         name: String,
-        /// An instance created by `bind` and not yet consumed by `accept`.
+        /// Instances created by `bind` and not yet consumed by `accept`.
         ///
         /// This is the named-pipe stand-in for a listen backlog. `bind` must
         /// leave an instance in existence: callers treat a successful bind as
@@ -356,7 +363,7 @@ mod windows_impl {
         /// `Mutex` only because `accept` takes `&self`, matching
         /// `UnixListener`; it is never contended in practice — one accept loop
         /// owns a listener.
-        pending: std::sync::Mutex<Option<OwnedHandle>>,
+        pending: std::sync::Mutex<std::collections::VecDeque<OwnedHandle>>,
     }
 
     impl IpcListener {
@@ -365,10 +372,13 @@ mod windows_impl {
             // Fails here, not inside the accept loop, when another host on
             // this channel already owns the name — the analogue of
             // `UnixListener::bind` reporting `EADDRINUSE`.
-            let pending = Self::create_instance(&name)?;
+            let mut pending = std::collections::VecDeque::with_capacity(PENDING_PIPE_BACKLOG);
+            for _ in 0..PENDING_PIPE_BACKLOG {
+                pending.push_back(Self::create_instance(&name)?);
+            }
             Ok(Self {
                 name,
-                pending: std::sync::Mutex::new(Some(pending)),
+                pending: std::sync::Mutex::new(pending),
             })
         }
 
@@ -405,22 +415,23 @@ mod windows_impl {
         /// handler thread. The spare makes an accepted connection behave like
         /// a Unix listener with an available backlog slot.
         pub fn accept(&self) -> io::Result<IpcStream> {
-            // Take the old spare and replenish it while that old handle is
-            // still alive. If creating the replacement fails, restore the old
-            // one so the endpoint remains reachable and a later accept can
-            // retry instead of permanently dropping the listener.
+            // Take the oldest pending instance and replenish it while that
+            // handle is still alive. If creating the replacement fails,
+            // restore the old one so the endpoint remains reachable and a
+            // later accept can retry instead of permanently dropping the
+            // listener.
             let mut pending = self
                 .pending
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let handle = match pending.take() {
+            let handle = match pending.pop_front() {
                 Some(handle) => handle,
                 None => Self::create_instance(&self.name)?,
             };
             match Self::create_instance(&self.name) {
-                Ok(replacement) => *pending = Some(replacement),
+                Ok(replacement) => pending.push_back(replacement),
                 Err(error) => {
-                    *pending = Some(handle);
+                    pending.push_front(handle);
                     return Err(error);
                 }
             };
@@ -548,25 +559,30 @@ mod tests {
         );
     }
 
-    /// Windows named pipes have no listen backlog. Once `accept` returns its
-    /// connected instance, a second client must still be able to open the
-    /// name before the caller starts another `accept` call.
+    /// Windows named pipes have no kernel listen backlog. Once `accept`
+    /// returns its connected instance, a burst of clients must still be able
+    /// to open the name before the caller starts another `accept` call.
     #[cfg(windows)]
     #[test]
-    fn accept_keeps_a_spare_pipe_instance_reachable() {
+    fn accept_keeps_a_pipe_backlog_reachable() {
         let endpoint = PathBuf::from(format!(r"\\.\pipe\plexi-ipc-spare-{}", std::process::id()));
         let listener = IpcListener::bind(&endpoint).expect("bind");
 
         let first_client = IpcStream::connect(&endpoint).expect("first client connects");
         let first_server = listener.accept().expect("first accept");
 
-        // No second accept is in progress here. This would return
-        // ERROR_FILE_NOT_FOUND with a one-instance listener that replenished
-        // only at the beginning of its next accept call.
-        let second_client =
-            connect_timeout(&endpoint, std::time::Duration::from_millis(250)).expect("spare");
+        // No second accept is in progress here. Each successful `CreateFileW`
+        // consumes an available instance immediately, so a single spare only
+        // protects the first follow-up CLI command; the rest would see
+        // ERROR_FILE_NOT_FOUND before the accept loop got to run again.
+        let clients: Vec<_> = (0..PENDING_PIPE_BACKLOG)
+            .map(|_| {
+                connect_timeout(&endpoint, std::time::Duration::from_millis(250))
+                    .expect("backlog instance")
+            })
+            .collect();
 
-        drop(second_client);
+        drop(clients);
         drop(first_server);
         drop(first_client);
     }
