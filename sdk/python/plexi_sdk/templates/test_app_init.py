@@ -81,6 +81,7 @@ def test_tools_are_declared_and_dispatch():
         ))
         assert effects is not None
         assert isinstance(effects[0], ToolResult)
+        assert effects[0].output_json is not None
         assert json.loads(effects[0].output_json) == {"greeting": "Hello, Ada!"}
     finally:
         sys.path.remove(str(APP_DIR))
