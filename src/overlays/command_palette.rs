@@ -78,6 +78,26 @@ enum PaletteEntry {
 }
 
 impl PaletteEntry {
+    /// Stable identity for a result while the palette is live.  Display order
+    /// is deliberately not an identity: agents can update their state and
+    /// panes can close while the user is deciding what to open.
+    fn selection_key(&self) -> String {
+        match self {
+            PaletteEntry::Command { command, .. } => format!("command:{command:?}"),
+            PaletteEntry::Context {
+                context_id, pane_id, ..
+            } => format!("context:{context_id}:{}", pane_id.unwrap_or_default()),
+            PaletteEntry::UnavailableContext { name, .. } => format!("unavailable:{name}"),
+            PaletteEntry::Agent {
+                window_id, pane_id, ..
+            } => format!("agent:{window_id}:{pane_id}"),
+            PaletteEntry::App { id, .. } => format!("app:{id}"),
+            PaletteEntry::Builtin { id, .. } => format!("builtin:{id}"),
+            PaletteEntry::Note { path, .. } => format!("note:{}", path.display()),
+            PaletteEntry::UserCommand { name, scope, .. } => format!("run:{scope:?}:{name}"),
+        }
+    }
+
     fn group_rank(&self) -> usize {
         match self {
             PaletteEntry::Context { .. } | PaletteEntry::UnavailableContext { .. } => 0,
@@ -200,6 +220,14 @@ fn searchable_text(parts: &[&str]) -> String {
     parts.join(" ").to_lowercase()
 }
 
+fn normalized_palette_query(query: &str) -> String {
+    query.trim().to_lowercase()
+}
+
+fn inactive_pane_matches_query(pane_name: &str, query: &str) -> bool {
+    searchable_text(&[pane_name]).contains(query)
+}
+
 /// POSIX single-quote a shell argument: wrap in `'…'` and escape embedded
 /// single quotes as `'\''`. Command names are usually bare identifiers, but
 /// global script filenames may contain spaces.
@@ -210,11 +238,89 @@ fn shell_single_quote(s: &str) -> String {
 fn sort_palette_entries(entries: &mut [PaletteEntry], query: &str) {
     entries.sort_by_key(|entry| {
         (
-            entry.query_rank(query),
             entry.group_rank(),
+            entry.query_rank(query),
             entry.state_rank(),
         )
     });
+}
+
+/// Preserve the user's target across a live rebuild.  If that target was
+/// removed, deliberately leave no selection; clamping its former index would
+/// make Enter operate on a different row without the user's input.
+fn reconcile_palette_selection(
+    entries: &[PaletteEntry],
+    selected: &mut usize,
+    selected_key: &mut Option<String>,
+) {
+    match selected_key {
+        Some(key) => {
+            if let Some(index) = entries.iter().position(|entry| entry.selection_key() == *key) {
+                *selected = index;
+            } else {
+                // An empty key means a live result was removed. Keep that
+                // explicit no-selection state until the user navigates or
+                // changes the query, rather than selecting a replacement.
+                *selected_key = Some(String::new());
+            }
+        }
+        None if !entries.is_empty() => {
+            *selected = (*selected).min(entries.len() - 1);
+            *selected_key = Some(entries[*selected].selection_key());
+        }
+        None => {}
+    }
+}
+
+#[derive(Clone)]
+enum PaletteAction {
+    RunCommand(PaletteCommand),
+    JumpContext(usize, u64, Option<u64>),
+    JumpAgent {
+        window_id: u64,
+        pane_id: u64,
+        agent_name: String,
+    },
+    LaunchApp(String),
+    LaunchBuiltin(&'static str),
+    OpenNote(std::path::PathBuf),
+    RunUserCommand {
+        name: String,
+        scope: crate::cli::UserCommandScope,
+    },
+}
+
+fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
+    match entry {
+        PaletteEntry::Command { command, .. } => Some(PaletteAction::RunCommand(*command)),
+        PaletteEntry::Context {
+            ctx_idx,
+            context_id,
+            pane_id,
+            ..
+        } => Some(PaletteAction::JumpContext(*ctx_idx, *context_id, *pane_id)),
+        PaletteEntry::UnavailableContext { name, .. } => {
+            log::warn!("palette: parked context '{name}' has no live window to restore");
+            None
+        }
+        PaletteEntry::Agent {
+            window_id,
+            pane_id,
+            agent_name,
+            ..
+        } => Some(PaletteAction::JumpAgent {
+            window_id: *window_id,
+            pane_id: *pane_id,
+            agent_name: agent_name.clone(),
+        }),
+        PaletteEntry::App { id, .. } => Some(PaletteAction::LaunchApp(id.clone())),
+        PaletteEntry::Builtin { id, .. } => Some(PaletteAction::LaunchBuiltin(id)),
+        PaletteEntry::Note { path, .. } => Some(PaletteAction::OpenNote(path.clone())),
+        PaletteEntry::UserCommand { name, scope, .. } => Some(PaletteAction::RunUserCommand {
+            name: name.clone(),
+            scope: *scope,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -597,7 +703,7 @@ fn pane_row_identity(
 
 impl PlexiApp {
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
-        let query = self.palette_query.to_lowercase();
+        let query = normalized_palette_query(&self.palette_query);
         let colors = self.colors;
 
         // ── Window entries (active context first, then by visit recency) ──
@@ -783,9 +889,10 @@ impl PlexiApp {
                             if agent_pane_ids.contains(&row.pane_id) {
                                 continue;
                             }
-                            let search_text =
-                                searchable_text(&[row.name.as_str(), c.name.as_str()]);
-                            if search_text.contains(&query) {
+                            // A context-name match keeps this context collapsed.
+                            // Only the pane's own title pierces the collapse.
+                            let search_text = searchable_text(&[row.name.as_str()]);
+                            if inactive_pane_matches_query(&row.name, &query) {
                                 ctx_entries.push(PaletteEntry::Context {
                                     ctx_idx: row.win_idx,
                                     context_id: row.window_id,
@@ -821,6 +928,8 @@ impl PlexiApp {
                 row.agent_name.as_str(),
                 row.pane_title.as_str(),
                 row.context_name.as_str(),
+                agent_state_label(&row.state),
+                row.detail.as_deref().unwrap_or_default(),
             ]);
             if !query.is_empty() && !search_text.contains(&query) {
                 continue;
@@ -981,30 +1090,14 @@ impl PlexiApp {
         sort_palette_entries(&mut entries, &query);
 
         let total = entries.len();
-
-        if self.palette_selected >= total && total > 0 {
-            self.palette_selected = total - 1;
-        }
+        reconcile_palette_selection(
+            &entries,
+            &mut self.palette_selected,
+            &mut self.palette_selected_key,
+        );
 
         // ── Keyboard nav ───────────────────────────────────────────────────
-        #[derive(Clone)]
-        enum Action {
-            RunCommand(PaletteCommand),
-            JumpContext(usize, u64, Option<u64>),
-            JumpAgent {
-                window_id: u64,
-                pane_id: u64,
-                agent_name: String,
-            },
-            LaunchApp(String),
-            LaunchBuiltin(&'static str),
-            OpenNote(std::path::PathBuf),
-            RunUserCommand {
-                name: String,
-                scope: crate::cli::UserCommandScope,
-            },
-        }
-        let mut action: Option<Action> = None;
+        let mut action: Option<PaletteAction> = None;
         let prev_selected = self.palette_selected;
 
         // The toggle that opened the palette also dismisses it, so it is read
@@ -1025,119 +1118,27 @@ impl PlexiApp {
                 && self.palette_selected < total - 1
             {
                 self.palette_selected += 1;
+                self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
             }
             if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
                 || input.consume_key(egui::Modifiers::COMMAND, egui::Key::K))
                 && self.palette_selected > 0
             {
                 self.palette_selected -= 1;
+                self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                match entries.get(self.palette_selected) {
-                    Some(PaletteEntry::Command { command, .. }) => {
-                        action = Some(Action::RunCommand(*command));
-                    }
-                    Some(PaletteEntry::Context {
-                        ctx_idx,
-                        context_id,
-                        pane_id,
-                        ..
-                    }) => {
-                        action = Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
-                    }
-                    Some(PaletteEntry::UnavailableContext { name, .. }) => {
-                        log::warn!(
-                            "palette: parked context '{name}' has no live window to restore"
-                        );
-                    }
-                    Some(PaletteEntry::Agent {
-                        window_id,
-                        pane_id,
-                        agent_name,
-                        ..
-                    }) => {
-                        action = Some(Action::JumpAgent {
-                            window_id: *window_id,
-                            pane_id: *pane_id,
-                            agent_name: agent_name.clone(),
-                        });
-                    }
-                    Some(PaletteEntry::App { id, .. }) => {
-                        action = Some(Action::LaunchApp(id.clone()));
-                    }
-                    Some(PaletteEntry::Builtin { id, .. }) => {
-                        action = Some(Action::LaunchBuiltin(id));
-                    }
-                    Some(PaletteEntry::Note { path, .. }) => {
-                        action = Some(Action::OpenNote(path.clone()));
-                    }
-                    Some(PaletteEntry::UserCommand { name, scope, .. }) => {
-                        action = Some(Action::RunUserCommand {
-                            name: name.clone(),
-                            scope: *scope,
-                        });
-                    }
-                    None => {}
-                }
+                action = self
+                    .palette_selected_key
+                    .as_ref()
+                    .and_then(|key| entries.iter().find(|entry| entry.selection_key() == *key))
+                    .and_then(action_for_palette_entry);
             }
         });
 
-        match action {
-            Some(Action::RunCommand(command)) => {
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                self.run_palette_command(command);
-                return;
-            }
-            Some(Action::RunUserCommand { name, scope }) => {
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                self.run_user_command(&name, scope);
-                return;
-            }
-            Some(Action::JumpContext(ctx_idx, context_id, pane_id)) => {
-                self.jump_to_context(ctx_idx, context_id, pane_id);
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                return;
-            }
-            Some(Action::JumpAgent {
-                window_id,
-                pane_id,
-                agent_name,
-            }) => {
-                self.jump_to_agent_pane(window_id, pane_id, &agent_name);
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                return;
-            }
-            Some(Action::LaunchApp(id)) => {
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                self.launch_app_by_id(&id);
-                return;
-            }
-            Some(Action::LaunchBuiltin(id)) => {
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                self.launch_builtin_by_id(id);
-                return;
-            }
-            Some(Action::OpenNote(path)) => {
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                let path_str = path.display().to_string();
-                if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
-                    log::info!("palette: note already open in pane {pane_id}, navigating");
-                    self.pane_navigate(pane_id);
-                } else {
-                    log::info!("palette: opening note {:?} in new pane", path);
-                    let _ =
-                        self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
-                }
-                return;
-            }
-            None => {}
+        if let Some(action) = action {
+            self.run_palette_selection(action);
+            return;
         }
 
         if !self.show_command_palette {
@@ -1173,6 +1174,7 @@ impl PlexiApp {
                     .inner;
                 if te.changed() {
                     self.palette_selected = 0;
+                    self.palette_selected_key = None;
                 }
 
                 ui.add_space(style::SPACE_SM);
@@ -1185,7 +1187,7 @@ impl PlexiApp {
                     return;
                 }
 
-                let mut click_action: Option<Action> = None;
+                let mut click_action: Option<PaletteAction> = None;
                 let mut hover_select: Option<usize> = None;
                 let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
                 let should_scroll = self.palette_selected != prev_selected;
@@ -1214,11 +1216,11 @@ impl PlexiApp {
                     ui.set_width(ui.available_width());
 
                     for (i, entry) in entries.iter().enumerate() {
-                        let is_selected = i == self.palette_selected;
+                        let is_selected = self.palette_selected_key.as_deref()
+                            == Some(entries[i].selection_key().as_str());
 
                         match entry {
                             PaletteEntry::Command {
-                                command,
                                 name,
                                 description,
                                 ..
@@ -1242,20 +1244,17 @@ impl PlexiApp {
                                     row_response.scroll_into_view(ui, should_scroll);
                                 }
                                 if row_response.row_clicked() {
-                                    click_action = Some(Action::RunCommand(*command));
+                                    click_action = action_for_palette_entry(entry);
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
                                 }
                             }
                             PaletteEntry::Context {
-                                ctx_idx,
-                                context_id,
                                 name,
                                 workspace_name,
                                 metadata_chips,
                                 pane_pips,
-                                pane_id,
                                 ..
                             } => {
                                 if !shown_contexts_header {
@@ -1281,8 +1280,7 @@ impl PlexiApp {
                                 }
 
                                 if row_response.row_clicked() {
-                                    click_action =
-                                        Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
+                                    click_action = action_for_palette_entry(entry);
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
@@ -1311,8 +1309,6 @@ impl PlexiApp {
                                     .show(ui, &colors);
                             }
                             PaletteEntry::Agent {
-                                window_id,
-                                pane_id,
                                 agent_name,
                                 secondary,
                                 state,
@@ -1347,18 +1343,13 @@ impl PlexiApp {
                                     row_response.scroll_into_view(ui, should_scroll);
                                 }
                                 if row_response.row_clicked() {
-                                    click_action = Some(Action::JumpAgent {
-                                        window_id: *window_id,
-                                        pane_id: *pane_id,
-                                        agent_name: agent_name.clone(),
-                                    });
+                                    click_action = action_for_palette_entry(entry);
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
                                 }
                             }
                             PaletteEntry::App {
-                                id,
                                 name,
                                 description,
                                 running_in_background,
@@ -1390,14 +1381,13 @@ impl PlexiApp {
                                 }
 
                                 if row_response.row_clicked() {
-                                    click_action = Some(Action::LaunchApp(id.clone()));
+                                    click_action = action_for_palette_entry(entry);
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
                                 }
                             }
                             PaletteEntry::Builtin {
-                                id,
                                 name,
                                 description,
                                 ..
@@ -1423,14 +1413,13 @@ impl PlexiApp {
                                     row_response.scroll_into_view(ui, should_scroll);
                                 }
                                 if row_response.row_clicked() {
-                                    click_action = Some(Action::LaunchBuiltin(id));
+                                    click_action = action_for_palette_entry(entry);
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
                                 }
                             }
                             PaletteEntry::Note {
-                                path,
                                 title,
                                 preview,
                                 ..
@@ -1454,7 +1443,7 @@ impl PlexiApp {
                                     row_response.scroll_into_view(ui, should_scroll);
                                 }
                                 if row_response.row_clicked() {
-                                    click_action = Some(Action::OpenNote(path.clone()));
+                                    click_action = action_for_palette_entry(entry);
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
@@ -1489,10 +1478,7 @@ impl PlexiApp {
                                     row_response.scroll_into_view(ui, should_scroll);
                                 }
                                 if row_response.row_clicked() {
-                                    click_action = Some(Action::RunUserCommand {
-                                        name: name.clone(),
-                                        scope: *scope,
-                                    });
+                                    click_action = action_for_palette_entry(entry);
                                 }
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
@@ -1513,66 +1499,12 @@ impl PlexiApp {
                 if let Some(i) = hover_select {
                     if mouse_moved {
                         self.palette_selected = i;
+                        self.palette_selected_key = Some(entries[i].selection_key());
                     }
                 }
 
                 if let Some(act) = click_action {
-                    match act {
-                        Action::RunCommand(command) => {
-                            self.show_command_palette = false;
-                            self.palette_query.clear();
-                            self.run_palette_command(command);
-                        }
-                        Action::RunUserCommand { name, scope } => {
-                            self.show_command_palette = false;
-                            self.palette_query.clear();
-                            self.run_user_command(&name, scope);
-                        }
-                        Action::JumpContext(ctx_idx, context_id, pane_id) => {
-                            self.jump_to_context(ctx_idx, context_id, pane_id);
-                            self.show_command_palette = false;
-                            self.palette_query.clear();
-                        }
-                        Action::JumpAgent {
-                            window_id,
-                            pane_id,
-                            agent_name,
-                        } => {
-                            self.jump_to_agent_pane(window_id, pane_id, &agent_name);
-                            self.show_command_palette = false;
-                            self.palette_query.clear();
-                        }
-                        Action::LaunchApp(id) => {
-                            self.show_command_palette = false;
-                            self.palette_query.clear();
-                            self.launch_app_by_id(&id);
-                        }
-                        Action::LaunchBuiltin(id) => {
-                            self.show_command_palette = false;
-                            self.palette_query.clear();
-                            self.launch_builtin_by_id(id);
-                        }
-                        Action::OpenNote(path) => {
-                            self.show_command_palette = false;
-                            self.palette_query.clear();
-                            let path_str = path.display().to_string();
-                            if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path)
-                            {
-                                log::info!(
-                                    "palette: note already open in pane {pane_id}, navigating"
-                                );
-                                self.pane_navigate(pane_id);
-                            } else {
-                                log::info!("palette: opening note {:?} in new pane", path);
-                                let _ = self.launch_app_by_id_with_layout(
-                                    "text-editor",
-                                    None,
-                                    &[path_str],
-                                    None,
-                                );
-                            }
-                        }
-                    }
+                    self.run_palette_selection(act);
                 }
             });
 
@@ -1580,6 +1512,38 @@ impl PlexiApp {
             self.show_command_palette = false;
             self.palette_query.clear();
             self.palette_selected = 0;
+            self.palette_selected_key = None;
+        }
+    }
+
+    /// Execute a palette interaction after keyboard and mouse have resolved
+    /// the same stable entry action. Host-wide action unification remains
+    /// deliberately outside PAL-05.
+    fn run_palette_selection(&mut self, action: PaletteAction) {
+        self.show_command_palette = false;
+        self.palette_query.clear();
+        self.palette_selected_key = None;
+        match action {
+            PaletteAction::RunCommand(command) => self.run_palette_command(command),
+            PaletteAction::RunUserCommand { name, scope } => self.run_user_command(&name, scope),
+            PaletteAction::JumpContext(ctx_idx, context_id, pane_id) => {
+                self.jump_to_context(ctx_idx, context_id, pane_id)
+            }
+            PaletteAction::JumpAgent { window_id, pane_id, agent_name } => {
+                self.jump_to_agent_pane(window_id, pane_id, &agent_name)
+            }
+            PaletteAction::LaunchApp(id) => self.launch_app_by_id(&id),
+            PaletteAction::LaunchBuiltin(id) => self.launch_builtin_by_id(id),
+            PaletteAction::OpenNote(path) => {
+                let path_str = path.display().to_string();
+                if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
+                    log::info!("palette: note already open in pane {pane_id}, navigating");
+                    self.pane_navigate(pane_id);
+                } else {
+                    log::info!("palette: opening note {:?} in new pane", path);
+                    let _ = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
+                }
+            }
         }
     }
 
@@ -1886,7 +1850,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_palette_query_lets_commands_cut_through_group_order() {
+    fn typed_palette_query_keeps_groups_contiguous_for_their_headers() {
         let mut entries = vec![
             PaletteEntry::App {
                 id: "config-viewer".to_string(),
@@ -1906,7 +1870,8 @@ mod tests {
 
         sort_palette_entries(&mut entries, "open");
 
-        assert!(matches!(entries[0], PaletteEntry::Command { .. }));
+        assert!(matches!(entries[0], PaletteEntry::App { .. }));
+        assert!(matches!(entries[1], PaletteEntry::Command { .. }));
     }
 
     #[test]
@@ -1961,9 +1926,96 @@ mod tests {
             },
         ];
 
-        // Prefix match on the command name ranks it ahead of the substring app match.
+        // Groups stay contiguous; relevance ranks within each group.
         sort_palette_entries(&mut entries, "test");
-        assert!(matches!(entries[0], PaletteEntry::UserCommand { .. }));
+        assert!(matches!(entries[0], PaletteEntry::App { .. }));
+        assert!(matches!(entries[1], PaletteEntry::UserCommand { .. }));
+    }
+
+    #[test]
+    fn inactive_context_name_query_stays_collapsed_but_pane_name_pierces() {
+        assert!(
+            !inactive_pane_matches_query("build log", "squad-alpha"),
+            "a context-name match must leave its inactive context collapsed"
+        );
+        assert!(inactive_pane_matches_query("build log", "build log"));
+    }
+
+    #[test]
+    fn palette_query_trims_outer_whitespace() {
+        assert_eq!(normalized_palette_query("  Blocked  "), "blocked");
+    }
+
+    #[test]
+    fn agent_search_includes_state_and_active_tool() {
+        use crate::protocol::AgentState;
+
+        let search = searchable_text(&[
+            "implementer",
+            "build pane",
+            "squad-alpha",
+            agent_state_label(&AgentState::Blocked),
+            "Bash",
+        ]);
+        assert!(search.contains("blocked"));
+        assert!(search.contains("bash"));
+    }
+
+    #[test]
+    fn palette_selection_survives_reorder_and_clears_on_removal() {
+        let app = PaletteEntry::App {
+            id: "alpha".to_string(),
+            name: "Alpha".to_string(),
+            description: String::new(),
+            running_in_background: false,
+            is_workspace_local: false,
+            search_text: "alpha".to_string(),
+        };
+        let command = PaletteEntry::Command {
+            command: PaletteCommand::OpenConfig,
+            name: "Open config",
+            description: "Edit config",
+            search_text: "open config",
+        };
+        let mut selected = 1;
+        let mut key = Some(command.selection_key());
+        let reordered = vec![command, app];
+
+        reconcile_palette_selection(&reordered, &mut selected, &mut key);
+        assert_eq!(selected, 0);
+        assert_eq!(key.as_deref(), Some("command:OpenConfig"));
+
+        reconcile_palette_selection(&reordered[1..], &mut selected, &mut key);
+        assert_eq!(key.as_deref(), Some(""));
+        assert!(key
+            .as_ref()
+            .and_then(|key| reordered[1..]
+                .iter()
+                .find(|entry| entry.selection_key() == *key))
+            .and_then(action_for_palette_entry)
+            .is_none());
+    }
+
+    #[test]
+    fn palette_mouse_and_enter_resolve_the_same_action() {
+        let entry = PaletteEntry::Agent {
+            window_id: 7,
+            pane_id: 42,
+            agent_name: "reviewer".to_string(),
+            secondary: String::new(),
+            state: crate::protocol::AgentState::Blocked,
+            focused: false,
+            search_text: "reviewer blocked".to_string(),
+        };
+        let click = action_for_palette_entry(&entry);
+        let enter = action_for_palette_entry(&entry);
+        assert!(matches!(
+            (click, enter),
+            (
+                Some(PaletteAction::JumpAgent { window_id: 7, pane_id: 42, .. }),
+                Some(PaletteAction::JumpAgent { window_id: 7, pane_id: 42, .. })
+            )
+        ));
     }
 
     #[test]
