@@ -1335,10 +1335,10 @@ fn open_config_file_at(path: &Path) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&path, CONFIG_TEMPLATE);
+        let _ = std::fs::write(path, CONFIG_TEMPLATE);
     }
 
-    if !open_file_with_fallback(&path) {
+    if !open_file_with_fallback(path) {
         log::error!(
             "open_config_file: could not open {} with any available editor",
             path.display()
