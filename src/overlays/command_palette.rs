@@ -216,6 +216,18 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         description: "Open a fresh scratch note editor",
         search_text: "scratch pad scratchpad note editor inbox memo",
     },
+    PaletteCommandEntry { action: crate::host::keys::Action::NewContext, name: "New context", description: "Create a new context", search_text: "new create open context workspace" },
+    PaletteCommandEntry { action: crate::host::keys::Action::RenameContext, name: "Rename context", description: "Rename the selected context", search_text: "rename context workspace" },
+    PaletteCommandEntry { action: crate::host::keys::Action::CloseContext, name: "Close context", description: "Close the selected context (confirmation required)", search_text: "close delete context workspace" },
+    PaletteCommandEntry { action: crate::host::keys::Action::ParkContext, name: "Park or unpark context", description: "Park or restore the selected context", search_text: "park unpark restore context workspace" },
+    PaletteCommandEntry { action: crate::host::keys::Action::ContextZoomOut, name: "Go to parent context", description: "Return to the parent context", search_text: "parent context zoom out back" },
+    PaletteCommandEntry { action: crate::host::keys::Action::NewTab, name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
+    PaletteCommandEntry { action: crate::host::keys::Action::NewPageRight, name: "New pane", description: "Create a new pane beside the selected pane", search_text: "new pane page window right" },
+    PaletteCommandEntry { action: crate::host::keys::Action::RenamePane, name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
+    PaletteCommandEntry { action: crate::host::keys::Action::ClosePane, name: "Close pane", description: "Close the selected pane", search_text: "close pane tab" },
+    PaletteCommandEntry { action: crate::host::keys::Action::HidePane, name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },
+    PaletteCommandEntry { action: crate::host::keys::Action::ToggleZoom, name: "Zoom pane", description: "Zoom or restore the selected pane", search_text: "zoom restore pane fullscreen" },
+    PaletteCommandEntry { action: crate::host::keys::Action::NavBackApp, name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
 ];
 
 fn searchable_text(parts: &[&str]) -> String {
@@ -1581,7 +1593,108 @@ impl PlexiApp {
             crate::host::keys::Action::OpenScratchpad => {
                 self.open_scratchpad();
             }
+            crate::host::keys::Action::NewContext => {
+                self.new_context();
+                self.mark_workspace_dirty();
+            }
+            crate::host::keys::Action::RenameContext => self.open_context_rename(self.router.active_idx()),
+            crate::host::keys::Action::ParkContext => self.toggle_park_active_context(),
+            crate::host::keys::Action::ContextZoomOut => self.zoom_out_of_context(),
+            crate::host::keys::Action::NewTab => {
+                self.new_tab(self.active_window, None, false, None);
+                self.mark_workspace_dirty();
+            }
+            crate::host::keys::Action::NewPageRight => {
+                if self.windows[self.active_window].panes.is_empty()
+                    || self.windows[self.active_window].tree.root.is_none()
+                {
+                    self.reset_active_context();
+                } else {
+                    self.new_page_right();
+                }
+                self.mark_workspace_dirty();
+            }
+            crate::host::keys::Action::RenamePane => self.open_rename_for_focused(),
+            crate::host::keys::Action::HidePane => self.toggle_palette_focused_pane_hidden(),
+            crate::host::keys::Action::ToggleZoom => self.toggle_palette_zoom(),
+            crate::host::keys::Action::NavBackApp => {
+                if !self.try_nav_back_focused() {
+                    self.step_focus_history_back();
+                }
+            }
+            crate::host::keys::Action::ClosePane => self.close_palette_focused_pane(),
+            crate::host::keys::Action::CloseContext => self.close_palette_active_context(),
             other => log::warn!("palette: unsupported host binding {other:?}"),
+        }
+    }
+
+    fn toggle_palette_focused_pane_hidden(&mut self) {
+        let win = &mut self.windows[self.active_window];
+        if let Some(tile) = win.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = win.tree.tiles.get(tile) {
+                if let Some(pane) = win.panes.get_mut(pane_id) {
+                    let hidden = !pane.is_hidden();
+                    pane.set_hidden(hidden);
+                    log::info!("palette: pane_hide pane={pane_id} hidden={hidden}");
+                    self.mark_workspace_dirty();
+                }
+            }
+        }
+    }
+
+    fn toggle_palette_zoom(&mut self) {
+        let (tile, portal_target) = {
+            let win = &self.windows[self.active_window];
+            let target = win
+                .focused_pane
+                .and_then(|tile_id| win.tree.tiles.get(tile_id))
+                .and_then(|entry| match entry {
+                    egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                    _ => None,
+                })
+                .and_then(|pane_id| win.panes.get(&pane_id))
+                .and_then(crate::host::pane::Pane::portal_target);
+            (win.focused_pane, target)
+        };
+        if let Some(child_context_id) = portal_target {
+            if let Some(context_idx) = self.router.position(|context| context.context_id == child_context_id) {
+                let current_context_id = self.router.active().context_id;
+                let current_window_id = self.windows[self.active_window].window_id;
+                self.router.push_depth(current_context_id, current_window_id, tile);
+                self.switch_workspace(context_idx);
+            }
+        } else if let Some(tile) = tile {
+            let win = &mut self.windows[self.active_window];
+            if win.zoomed_pane == Some(tile) {
+                win.clear_zoom();
+            } else {
+                win.zoom_to(tile);
+            }
+            log::info!("palette: zoom toggled window={} tile={tile:?}", win.window_id);
+        }
+    }
+
+    fn close_palette_focused_pane(&mut self) {
+        if self.confirm_close() {
+            self.pending_close = true;
+        } else if !self.execute_close_pane() {
+            self.mark_workspace_dirty();
+        }
+    }
+
+    fn close_palette_active_context(&mut self) {
+        let ctx_id = self.router.active().context_id;
+        if self.router.len() <= 1 {
+            log::info!("palette: refusing to close only context");
+            return;
+        }
+        let state = self.build_context_close_state(ctx_id);
+        if state.items.is_empty() || !self.config.confirm_context_close.unwrap_or(true) {
+            self.delete_context(self.router.active_idx());
+            self.mark_workspace_dirty();
+        } else {
+            log::info!("palette: close context={ctx_id} requires confirmation");
+            self.pending_context_close = Some(state);
         }
     }
 
