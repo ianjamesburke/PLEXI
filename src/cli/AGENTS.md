@@ -59,6 +59,8 @@ Any change to a CLI verb, flag, or agent-facing behavior updates this file **and
 
 ## Traps
 
+- **Windows detached launch must disable handle inheritance.** NUL stdio alone leaves inherited capture-pipe writers in a child, so the caller can wait for EOF after the CLI has exited. `host::windows_launch` owns the no-inheritance process boundary. Host readiness is a deadline-bounded application round trip; an open pipe alone is not readiness.
+
 - **Path-based app commands must not resolve a workspace.** `app validate <path>`, `app install <path>`, `app run <path>` operate on an explicit filesystem path. Never call `resolve_workspace_root` for that argument. Use `std::fs::canonicalize` directly. `resolve_workspace_root` is only legitimate in `AppRegistry::load` and `app init`.
 - **Profile reconciliation is narrowly scoped.** `app prune --dry-run` reports only positively identified retired first-party pre-v3 installs; never infer deletability from absence from the current core pack, because user and marketplace apps also live in the global profile.
 - **Building a `-c` command string:** use `cmd_from_args` (in `src/app/mod.rs`), not `shell_join` directly. A single-arg array is already a shell expression; `shell_join(["echo hello"])` yields `'echo hello'`.

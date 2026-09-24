@@ -270,7 +270,7 @@ impl TypedPipeRegistry {
                 "typed_pipes: binary allocation ready at {}",
                 allocation.socket_path
             );
-            return Ok(allocation);
+            Ok(allocation)
         }
 
         #[cfg(windows)]
