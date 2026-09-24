@@ -8519,3 +8519,22 @@ mod pane_lifecycle_events {
     }
 
 }
+#[test]
+fn test_host_removes_owned_scratch_on_drop() {
+    let h = HostHarness::new();
+    let workspace = h.app.windows[0].path.clone();
+    let permissions = h.app.permission_store_dir.clone();
+    assert!(workspace.is_dir());
+    assert!(permissions.is_dir());
+    drop(h);
+    assert!(
+        !workspace.exists(),
+        "test workspace leaked: {}",
+        workspace.display()
+    );
+    assert!(
+        !permissions.exists(),
+        "test permissions leaked: {}",
+        permissions.display()
+    );
+}
