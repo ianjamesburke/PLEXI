@@ -1319,16 +1319,26 @@ pub fn migrate_config(path: &Path) {
 }
 
 pub fn open_config_file() {
-    let path = config_path();
+    open_config_file_at(&config_path());
+}
+
+/// Open a configuration file, creating its parent and a commented template on
+/// first use. The caller supplies the scope-resolved path so global and
+/// workspace palette entries share the same editor handoff.
+pub fn open_workspace_config_file(workspace_root: &Path) {
+    open_config_file_at(&workspace_config_path(workspace_root));
+}
+
+fn open_config_file_at(path: &Path) {
 
     if !path.exists() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&path, CONFIG_TEMPLATE);
+        let _ = std::fs::write(path, CONFIG_TEMPLATE);
     }
 
-    if !open_file_with_fallback(&path) {
+    if !open_file_with_fallback(path) {
         log::error!(
             "open_config_file: could not open {} with any available editor",
             path.display()

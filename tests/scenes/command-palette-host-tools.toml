@@ -1,0 +1,16 @@
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+text = { target = "host", value = "browse notes" }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+assert_label = { target = "host", label = "Notes" }
+
+[[steps]]
+shot = "command-palette-host-tools.png"

@@ -12,7 +12,7 @@ use crate::ui::{
 
 enum PaletteEntry {
     Command {
-        command: crate::host::keys::Action,
+        command: PaletteCommand,
         name: &'static str,
         description: &'static str,
         search_text: &'static str,
@@ -178,8 +178,16 @@ struct PaletteFocusTarget {
     pane_id: Option<u64>,
 }
 
+/// Palette commands either dispatch the canonical host key action or perform
+/// the palette-only workspace-scoped config handoff.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PaletteCommand {
+    Host(crate::host::keys::Action),
+    OpenWorkspaceConfig,
+}
+
 struct PaletteCommandEntry {
-    action: crate::host::keys::Action,
+    command: PaletteCommand,
     name: &'static str,
     description: &'static str,
     search_text: &'static str,
@@ -187,47 +195,71 @@ struct PaletteCommandEntry {
 
 const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry {
-        action: crate::host::keys::Action::SplitRight,
+        command: PaletteCommand::Host(crate::host::keys::Action::SplitRight),
         name: "Split right",
         description: "Open a new terminal beside the focused pane",
         search_text: "split right new terminal shell console pane vsplit vertical",
     },
     PaletteCommandEntry {
-        action: crate::host::keys::Action::SplitDown,
+        command: PaletteCommand::Host(crate::host::keys::Action::SplitDown),
         name: "Split down",
         description: "Open a new terminal below the focused pane",
         search_text: "split down below new terminal shell console pane hsplit horizontal",
     },
     PaletteCommandEntry {
-        action: crate::host::keys::Action::OpenConfig,
-        name: "Open config",
-        description: "Edit the active Plexi config file",
-        search_text: "open config settings preferences config.toml configuration",
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+        name: "Open global config",
+        description: "Edit the channel-wide Plexi config file",
+        search_text: "open global config settings preferences config.toml configuration channel",
     },
     PaletteCommandEntry {
-        action: crate::host::keys::Action::OpenQuickNote,
+        command: PaletteCommand::OpenWorkspaceConfig,
+        name: "Open workspace config",
+        description: "Edit config for the active workspace scope",
+        search_text: "open workspace config settings preferences config.toml configuration scoped project local",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
+        name: "Reload configuration",
+        description: "Reload global and active-workspace configuration",
+        search_text: "reload config configuration settings global workspace scoped refresh",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker),
+        name: "Browse notes",
+        description: "Open the notes picker for global and context notes",
+        search_text: "browse notes note picker open find global context",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal),
+        name: "Review notifications",
+        description: "Open the pending notification review queue",
+        search_text: "review notifications notification queue alerts inbox pending",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote),
         name: "Quick Note",
         description: "Capture a note in the current context",
         search_text: "quick note capture inbox memo",
     },
     PaletteCommandEntry {
-        action: crate::host::keys::Action::OpenScratchpad,
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad),
         name: "Scratch Pad",
         description: "Open a fresh scratch note editor",
         search_text: "scratch pad scratchpad note editor inbox memo",
     },
-    PaletteCommandEntry { action: crate::host::keys::Action::NewContext, name: "New context", description: "Create a new context", search_text: "new create open context workspace" },
-    PaletteCommandEntry { action: crate::host::keys::Action::RenameContext, name: "Rename context", description: "Rename the selected context", search_text: "rename context workspace" },
-    PaletteCommandEntry { action: crate::host::keys::Action::CloseContext, name: "Close context", description: "Close the selected context (confirmation required)", search_text: "close delete context workspace" },
-    PaletteCommandEntry { action: crate::host::keys::Action::ParkContext, name: "Park or unpark context", description: "Park or restore the selected context", search_text: "park unpark restore context workspace" },
-    PaletteCommandEntry { action: crate::host::keys::Action::ContextZoomOut, name: "Go to parent context", description: "Return to the parent context", search_text: "parent context zoom out back" },
-    PaletteCommandEntry { action: crate::host::keys::Action::NewTab, name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
-    PaletteCommandEntry { action: crate::host::keys::Action::NewPageRight, name: "New pane", description: "Create a new pane beside the selected pane", search_text: "new pane page window right" },
-    PaletteCommandEntry { action: crate::host::keys::Action::RenamePane, name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
-    PaletteCommandEntry { action: crate::host::keys::Action::ClosePane, name: "Close pane", description: "Close the selected pane", search_text: "close pane tab" },
-    PaletteCommandEntry { action: crate::host::keys::Action::HidePane, name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },
-    PaletteCommandEntry { action: crate::host::keys::Action::ToggleZoom, name: "Zoom pane", description: "Zoom or restore the selected pane", search_text: "zoom restore pane fullscreen" },
-    PaletteCommandEntry { action: crate::host::keys::Action::NavBackApp, name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewContext), name: "New context", description: "Create a new context", search_text: "new create open context workspace" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenameContext), name: "Rename context", description: "Rename the selected context", search_text: "rename context workspace" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::CloseContext), name: "Close context", description: "Close the selected context (confirmation required)", search_text: "close delete context workspace" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ParkContext), name: "Park or unpark context", description: "Park or restore the selected context", search_text: "park unpark restore context workspace" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ContextZoomOut), name: "Go to parent context", description: "Return to the parent context", search_text: "parent context zoom out back" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewTab), name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New pane", description: "Create a new pane beside the selected pane", search_text: "new pane page window right" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenamePane), name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the selected pane", search_text: "close pane tab" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::HidePane), name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane", search_text: "zoom restore pane fullscreen" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NavBackApp), name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
 ];
 
 fn searchable_text(parts: &[&str]) -> String {
@@ -236,6 +268,26 @@ fn searchable_text(parts: &[&str]) -> String {
 
 fn normalized_palette_query(query: &str) -> String {
     query.trim().to_lowercase()
+}
+
+fn shortcut_label((modifiers, key): (egui::Modifiers, egui::Key)) -> String {
+    let mut parts = Vec::new();
+    if modifiers.command {
+        parts.push(if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" });
+    }
+    if modifiers.ctrl && !modifiers.command {
+        parts.push(if cfg!(target_os = "macos") { "⌃" } else { "Ctrl" });
+    }
+    if modifiers.alt {
+        parts.push(if cfg!(target_os = "macos") { "⌥" } else { "Alt" });
+    }
+    if modifiers.shift {
+        parts.push(if cfg!(target_os = "macos") { "⇧" } else { "Shift" });
+    }
+    let separator = if cfg!(target_os = "macos") { "" } else { "+" };
+    let prefix = parts.join(separator);
+    let key_separator = (!prefix.is_empty() && !cfg!(target_os = "macos")).then_some("+");
+    format!("{prefix}{}{}", key_separator.unwrap_or(""), key.name())
 }
 
 fn inactive_pane_matches_query(pane_name: &str, query: &str) -> bool {
@@ -288,7 +340,7 @@ fn reconcile_palette_selection(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PaletteAction {
-    RunHostBinding(crate::host::keys::Action),
+    RunCommand(PaletteCommand),
     Focus(PaletteFocusTarget),
     LaunchApp(String),
     LaunchBuiltin(&'static str),
@@ -301,7 +353,7 @@ enum PaletteAction {
 
 fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
     match entry {
-        PaletteEntry::Command { command, .. } => Some(PaletteAction::RunHostBinding(command.clone())),
+        PaletteEntry::Command { command, .. } => Some(PaletteAction::RunCommand(command.clone())),
         PaletteEntry::Context { target, .. } => Some(PaletteAction::Focus(*target)),
         PaletteEntry::UnavailableContext { name, .. } => {
             log::warn!("palette: parked context '{name}' has no live window to restore");
@@ -328,11 +380,11 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
 }
 
 #[cfg(test)]
-fn palette_command_matches(query: &str) -> Vec<crate::host::keys::Action> {
+fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
     PALETTE_COMMANDS
         .iter()
         .filter(|entry| query.is_empty() || entry.search_text.contains(query))
-        .map(|entry| entry.action.clone())
+        .map(|entry| entry.command.clone())
         .collect()
 }
 
@@ -706,6 +758,25 @@ fn pane_row_identity(
 }
 
 impl PlexiApp {
+    fn palette_shortcut(&self, command: &PaletteCommand) -> Option<String> {
+        let binding = match command {
+            PaletteCommand::Host(crate::host::keys::Action::OpenConfig) => self.key_bindings.open_config,
+            PaletteCommand::Host(crate::host::keys::Action::ReloadConfig) => self.key_bindings.reload_config,
+            PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker) => self.key_bindings.open_notes_picker,
+            PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal) => self.key_bindings.toggle_notification_modal,
+            PaletteCommand::Host(crate::host::keys::Action::SplitRight) => self.key_bindings.split_right,
+            PaletteCommand::Host(crate::host::keys::Action::SplitDown) => self.key_bindings.split_down,
+            PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote) => self.key_bindings.open_quick_note,
+            PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad) => self.key_bindings.open_scratchpad,
+            PaletteCommand::OpenWorkspaceConfig => return None,
+            PaletteCommand::Host(other) => {
+                log::warn!("palette: no shortcut label for host binding {other:?}");
+                return None;
+            }
+        };
+        Some(shortcut_label(binding))
+    }
+
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
         let query = normalized_palette_query(&self.palette_query);
         let colors = self.colors;
@@ -1065,7 +1136,7 @@ impl PlexiApp {
             PALETTE_COMMANDS
                 .iter()
                 .map(|entry| PaletteEntry::Command {
-                    command: entry.action.clone(),
+                    command: entry.command.clone(),
                     name: entry.name,
                     description: entry.description,
                     search_text: entry.search_text,
@@ -1232,6 +1303,7 @@ impl PlexiApp {
 
                         match entry {
                             PaletteEntry::Command {
+                                command,
                                 name,
                                 description,
                                 ..
@@ -1246,9 +1318,13 @@ impl PlexiApp {
                                     );
                                     ui.add_space(style::SPACE_XS);
                                 }
+                                let description = match self.palette_shortcut(command) {
+                                    Some(shortcut) => format!("{description} · {shortcut}"),
+                                    None => (*description).to_string(),
+                                };
                                 let row_response = ListRow::new(name)
                                     .metadata_chips(&["cmd"])
-                                    .secondary(description)
+                                    .secondary(&description)
                                     .selected(is_selected)
                                     .show(ui, &colors);
                                 if is_selected {
@@ -1535,7 +1611,7 @@ impl PlexiApp {
         self.palette_query.clear();
         self.palette_selected_key = None;
         match action {
-            PaletteAction::RunHostBinding(action) => self.run_palette_host_binding(action),
+            PaletteAction::RunCommand(command) => self.run_palette_command(command),
             PaletteAction::RunUserCommand { name, scope } => self.run_user_command(&name, scope),
             PaletteAction::Focus(target) => self.focus_palette_target(target),
             PaletteAction::LaunchApp(id) => self.launch_app_by_id(&id),
@@ -1571,6 +1647,17 @@ impl PlexiApp {
     /// Execute the subset of keyboard bindings intentionally surfaced by the
     /// palette. The descriptor is the host binding `Action`, so labels/search
     /// metadata cannot drift onto a private palette-only command enum.
+    fn run_palette_command(&mut self, command: PaletteCommand) {
+        match command {
+            PaletteCommand::Host(action) => self.run_palette_host_binding(action),
+            PaletteCommand::OpenWorkspaceConfig => {
+                let root = self.router.active().root.clone();
+                log::info!("palette: opening workspace config at {}", root.display());
+                crate::config::open_workspace_config_file(&root);
+            }
+        }
+    }
+
     fn run_palette_host_binding(&mut self, action: crate::host::keys::Action) {
         log::info!("palette: executing host binding {action:?}");
         match action {
@@ -1586,6 +1673,14 @@ impl PlexiApp {
             }
             crate::host::keys::Action::OpenConfig => {
                 crate::config::open_config_file();
+            }
+            crate::host::keys::Action::ReloadConfig => self.reload_config(),
+            crate::host::keys::Action::OpenNotesPicker => self.open_notes_picker(),
+            crate::host::keys::Action::ToggleNotificationModal => {
+                self.show_notification_modal = true;
+                if self.current_notify_id.is_none() {
+                    self.current_notify_id = self.select_next_notification();
+                }
             }
             crate::host::keys::Action::OpenQuickNote => {
                 self.open_quick_note_modal();
@@ -1802,27 +1897,45 @@ mod tests {
     fn palette_command_aliases_match_starter_synonyms() {
         assert_eq!(
             palette_command_matches("shell"),
-            vec![crate::host::keys::Action::SplitRight, crate::host::keys::Action::SplitDown]
+            vec![
+                PaletteCommand::Host(crate::host::keys::Action::SplitRight),
+                PaletteCommand::Host(crate::host::keys::Action::SplitDown),
+            ]
         );
         assert_eq!(
             palette_command_matches("console"),
-            vec![crate::host::keys::Action::SplitRight, crate::host::keys::Action::SplitDown]
+            vec![
+                PaletteCommand::Host(crate::host::keys::Action::SplitRight),
+                PaletteCommand::Host(crate::host::keys::Action::SplitDown),
+            ]
         );
         assert_eq!(
             palette_command_matches("hsplit"),
-            vec![crate::host::keys::Action::SplitDown]
+            vec![PaletteCommand::Host(crate::host::keys::Action::SplitDown)]
         );
         assert_eq!(
             palette_command_matches("config"),
-            vec![crate::host::keys::Action::OpenConfig]
+            vec![
+                PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+                PaletteCommand::OpenWorkspaceConfig,
+                PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
+            ]
+        );
+        assert_eq!(
+            palette_command_matches("notification"),
+            vec![PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal)]
+        );
+        assert_eq!(
+            palette_command_matches("picker"),
+            vec![PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker)]
         );
         assert_eq!(
             palette_command_matches("scratchpad"),
-            vec![crate::host::keys::Action::OpenScratchpad]
+            vec![PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad)]
         );
         assert_eq!(
             palette_command_matches("scratch pad"),
-            vec![crate::host::keys::Action::OpenScratchpad]
+            vec![PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad)]
         );
     }
 
@@ -1842,10 +1955,21 @@ mod tests {
     }
 
     #[test]
+    fn palette_shortcut_label_uses_platform_command_name_and_configured_key() {
+        let configured = (egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::F);
+        let expected = if cfg!(target_os = "macos") {
+            "⌘⇧F"
+        } else {
+            "Ctrl+Shift+F"
+        };
+        assert_eq!(shortcut_label(configured), expected);
+    }
+
+    #[test]
     fn empty_palette_puts_commands_after_apps() {
         let mut entries = vec![
             PaletteEntry::Command {
-                command: crate::host::keys::Action::OpenConfig,
+                command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config",
@@ -1966,7 +2090,7 @@ mod tests {
                 search_text: "demo config viewer".to_string(),
             },
             PaletteEntry::Command {
-                command: crate::host::keys::Action::OpenConfig,
+                command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config settings preferences",
@@ -1989,7 +2113,7 @@ mod tests {
                 search_text: "build cargo build run workspace ws".to_string(),
             },
             PaletteEntry::Command {
-                command: crate::host::keys::Action::OpenConfig,
+                command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config",
@@ -2077,7 +2201,7 @@ mod tests {
             search_text: "alpha".to_string(),
         };
         let command = PaletteEntry::Command {
-            command: crate::host::keys::Action::OpenConfig,
+            command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
             name: "Open config",
             description: "Edit config",
             search_text: "open config",
@@ -2088,7 +2212,7 @@ mod tests {
 
         reconcile_palette_selection(&reordered, &mut selected, &mut key);
         assert_eq!(selected, 0);
-        assert_eq!(key.as_deref(), Some("command:OpenConfig"));
+        assert_eq!(key.as_deref(), Some("command:Host(OpenConfig)"));
 
         reconcile_palette_selection(&reordered[1..], &mut selected, &mut key);
         assert_eq!(key.as_deref(), Some(""));
