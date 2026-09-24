@@ -299,7 +299,6 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
             context_id,
             window_id,
             pane_id,
-            agent_name: _,
             ..
         } => Some(PaletteAction::Focus(PaletteFocusTarget {
             context_id: *context_id,
