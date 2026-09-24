@@ -915,3 +915,41 @@ fn assistant_open_spawns_second_instance_in_other_context() {
         "each context must persist (and resume) its own conversation"
     );
 }
+
+/// `AppRequest::GetHostVersion` (stint 0596) must round-trip the harness's
+/// own `display_version` — the version this process was launched as, which
+/// `plexi host status`/`plexi doctor` use to detect skew against whatever is
+/// on disk right now.
+#[test]
+fn get_host_version_round_trips_display_version() {
+    let mut h = HostHarness::new();
+    let response_file = std::env::temp_dir().join("plexi_test_get_host_version_0596.json");
+    h.inject_ipc(crate::protocol::AppRequest::GetHostVersion {
+        response_file: response_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let json_str =
+        std::fs::read_to_string(&response_file).expect("GetHostVersion must write response file");
+    let value: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+    assert_eq!(value["version"], h.app.display_version);
+
+    let _ = std::fs::remove_file(&response_file);
+}
+
+/// `AppRequest::NotifyUpdateAvailable` (stint 0596) must set
+/// `update_available` so an externally-run `plexi update` (a separate
+/// process) surfaces the same consent-gated restart banner the host's own
+/// background self-updater already drives.
+#[test]
+fn notify_update_available_sets_update_available() {
+    let mut h = HostHarness::new();
+    assert_eq!(h.app.update_available, None);
+
+    h.inject_ipc(crate::protocol::AppRequest::NotifyUpdateAvailable {
+        version: "0.2.0".to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    assert_eq!(h.app.update_available, Some("0.2.0".to_string()));
+}

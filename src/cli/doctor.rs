@@ -6,6 +6,112 @@ struct DoctorReport {
     apps: Vec<AppReport>,
     llm_servers: Vec<LlmServerReport>,
     openrouter: OpenRouterReport,
+    version: VersionSkewReport,
+}
+
+/// Install/running-host version visibility (stint 0596): the on-disk bundle
+/// version vs. what a running host process was actually launched with, plus
+/// whether the last install skipped the CLI shim/completions.
+#[derive(Serialize)]
+struct VersionSkewReport {
+    /// `None` when `installed_tag` is missing/empty/unreadable — there is no
+    /// `CARGO_PKG_VERSION` fallback (that's the CLI shim's own compiled
+    /// version, not the bundle's; see `read_bundle_version`).
+    bundle_version: Option<String>,
+    host_version: Option<String>,
+    /// `true` when the running host is strictly older than the bundle
+    /// (restart would apply a newer version); `None` when no host is
+    /// running or either version failed to parse.
+    skewed: Option<bool>,
+    shim_updated: Option<bool>,
+    /// Human-readable status string for non-JSON output.
+    #[serde(skip)]
+    status: String,
+    /// Human-readable shim remedy line for non-JSON output, when the last
+    /// install skipped or could not confirm the shim install.
+    #[serde(skip)]
+    shim_note: Option<String>,
+}
+
+/// Build the version-skew report by reusing `src/cli/host.rs`'s
+/// read/query helpers rather than re-deriving profile paths here.
+fn check_version_skew() -> VersionSkewReport {
+    let channel = crate::config::build_channel();
+    let bundle_version = crate::cli::host::read_bundle_version(channel.as_deref());
+    let host_version = crate::cli::host::query_running_host_version(channel.as_deref());
+    let shim_status = crate::cli::host::read_shim_status(channel.as_deref());
+
+    let skew: Option<crate::cli::release_resolver::SkewStatus> = match &bundle_version {
+        Err(reason) => Some(crate::cli::release_resolver::SkewStatus::Unknown {
+            reason: reason.clone(),
+        }),
+        Ok(bundle) => host_version
+            .as_deref()
+            .map(|running| crate::cli::release_resolver::detect_version_skew(bundle, running)),
+    };
+
+    let (skewed, status) = match &skew {
+        Some(crate::cli::release_resolver::SkewStatus::InSync) => (
+            Some(false),
+            format!(
+                "{} (bundle and running host match)",
+                bundle_version.as_ref().unwrap().trim_start_matches('v')
+            ),
+        ),
+        Some(crate::cli::release_resolver::SkewStatus::Skewed { bundle, running }) => {
+            log::info!(
+                "cli:doctor: version skew detected — bundle={bundle} running_host={running}"
+            );
+            (
+                Some(true),
+                format!(
+                    "SKEW: bundle {} vs running host {} — restart Plexi to apply",
+                    bundle.trim_start_matches('v'),
+                    running.trim_start_matches('v')
+                ),
+            )
+        }
+        Some(crate::cli::release_resolver::SkewStatus::Unknown { reason }) => {
+            (None, format!("unknown ({reason})"))
+        }
+        None => (
+            None,
+            format!(
+                "{} (host not running)",
+                bundle_version.as_ref().unwrap().trim_start_matches('v')
+            ),
+        ),
+    };
+
+    let (shim_updated, shim_note) = match &shim_status {
+        crate::cli::host::ShimStatusInfo::Ok(s) if !s.shim_updated => {
+            let reason = s.reason.as_deref().unwrap_or("unknown reason");
+            (
+                Some(false),
+                Some(format!(
+                    "the last install did not update the CLI shim/completions ({reason}) — run 'plexi update' in a terminal to install the CLI shim"
+                )),
+            )
+        }
+        crate::cli::host::ShimStatusInfo::Ok(s) => (Some(s.shim_updated), None),
+        crate::cli::host::ShimStatusInfo::Malformed => (
+            None,
+            Some(
+                "shim install status is unknown (malformed shim_status.json) — run 'plexi update' in a terminal to install the CLI shim"
+                    .to_string(),
+            ),
+        ),
+        crate::cli::host::ShimStatusInfo::Absent => (None, None),
+    };
+
+    VersionSkewReport {
+        bundle_version: bundle_version.ok(),
+        host_version,
+        skewed,
+        shim_updated,
+        status,
+        shim_note,
+    }
 }
 
 #[derive(Serialize)]
@@ -214,15 +320,19 @@ pub fn doctor_cli(json: bool) -> i32 {
     // Probe for local LLM servers and OpenRouter before the app audit.
     let llm_servers = discover_llm_servers();
     let openrouter = check_openrouter();
+    let version = check_version_skew();
+    let version_healthy = version.skewed != Some(true);
 
     let installed = registry.list();
     if installed.is_empty() {
+        let healthy = version_healthy;
         if json {
             let report = DoctorReport {
-                healthy: true,
+                healthy,
                 apps: Vec::new(),
                 llm_servers,
                 openrouter,
+                version,
             };
             match serde_json::to_string_pretty(&report) {
                 Ok(s) => println!("{s}"),
@@ -235,8 +345,9 @@ pub fn doctor_cli(json: bool) -> i32 {
             println!("No apps installed.");
             print_llm_section(&llm_servers);
             print_openrouter_section(&openrouter);
+            print_version_section(&version);
         }
-        return 0;
+        return if healthy { 0 } else { 1 };
     }
 
     let mut sick_apps: Vec<AppReport> = Vec::new();
@@ -252,7 +363,7 @@ pub fn doctor_cli(json: bool) -> i32 {
         }
     }
 
-    let healthy = sick_apps.is_empty();
+    let healthy = sick_apps.is_empty() && version_healthy;
     let sick_count = sick_apps.len();
 
     if json {
@@ -261,6 +372,7 @@ pub fn doctor_cli(json: bool) -> i32 {
             apps: sick_apps,
             llm_servers,
             openrouter,
+            version,
         };
         match serde_json::to_string_pretty(&report) {
             Ok(s) => println!("{s}"),
@@ -302,6 +414,7 @@ pub fn doctor_cli(json: bool) -> i32 {
 
         print_llm_section(&llm_servers);
         print_openrouter_section(&openrouter);
+        print_version_section(&version);
     }
 
     log::info!("cli:doctor: audit complete -- {total} app(s), {sick_count} unhealthy");
@@ -319,6 +432,24 @@ fn print_openrouter_section(report: &OpenRouterReport) {
     println!("  {}", report.status);
     if !report.configured {
         println!("  --> run: plexi secret set OPENROUTER_API_KEY --global");
+    }
+}
+
+/// Print the version-skew section to stdout (stint 0596).
+fn print_version_section(report: &VersionSkewReport) {
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    let green = if no_color { "" } else { "\x1b[32m" };
+    let red = if no_color { "" } else { "\x1b[31m" };
+    let dim = if no_color { "" } else { "\x1b[2m" };
+    let reset = if no_color { "" } else { "\x1b[0m" };
+
+    println!("\nVersion:");
+    match report.skewed {
+        Some(true) => println!("  {red}\u{2717}{reset} {}", report.status),
+        _ => println!("  {green}\u{2713}{reset} {}", report.status),
+    }
+    if let Some(note) = &report.shim_note {
+        println!("  {dim}--> {note}{reset}");
     }
 }
 
