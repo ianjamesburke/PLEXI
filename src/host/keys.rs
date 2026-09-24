@@ -52,7 +52,7 @@ pub enum Direction {
     Down,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     SplitHorizontal,
     SplitVertical,
