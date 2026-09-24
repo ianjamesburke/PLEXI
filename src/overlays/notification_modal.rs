@@ -135,9 +135,19 @@ impl PlexiApp {
             notif.notify_id.clone()
         };
         if self.modal_state_notify_id != front_key {
+            if !self.modal_state_notify_id.is_empty() {
+                self.notification_input_drafts.insert(
+                    self.modal_state_notify_id.clone(),
+                    std::mem::take(&mut self.modal_input_buffer),
+                );
+            }
             self.modal_state_notify_id = front_key;
             self.modal_focused_option = 0;
-            self.modal_input_buffer.clear();
+            self.modal_input_buffer = self
+                .notification_input_drafts
+                .get(&self.modal_state_notify_id)
+                .cloned()
+                .unwrap_or_default();
         }
 
         // Resolve the image attachment (#74) once per frame, before borrowing
@@ -483,6 +493,34 @@ impl PlexiApp {
                         });
                         ui.add_space(style::SPACE_MD);
                     }
+
+                    // Escape is Later: it closes this review surface and
+                    // retains the request without answering the producer.
+                    // Cancel is the distinct, terminal outcome for prompts.
+                    if !matches!(notif.kind, NotifyKind::Message) {
+                        ui.vertical_centered(|ui| {
+                            let resp = chrome_button(
+                                ui,
+                                "Cancel",
+                                ButtonKind::Secondary,
+                                &self.colors,
+                                180.0,
+                            );
+                            if resp.clicked() {
+                                action_cmd = Some(AppCommand::DeliverNotifyAction {
+                                    pane_id: notif.sender_pane_id,
+                                    notify_id: notif.notify_id.clone(),
+                                    action_label: "cancel".to_string(),
+                                    value: Some(
+                                        crate::app::NOTIFY_OUTCOME_CANCELLED.to_string(),
+                                    ),
+                                    response_file: notif.response_file.clone(),
+                                    host_action: None,
+                                });
+                            }
+                        });
+                        ui.add_space(style::SPACE_MD);
+                    }
                 } // end !tombstoned
 
                 // Footer keyboard hints — separator + centered hint row per kind.
@@ -512,7 +550,7 @@ impl PlexiApp {
                                     &[&["Enter"], &["Space"]],
                                     "acknowledge",
                                 ),
-                                crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
+                                crate::ui::hints::HintGroup::new(&["Esc"], "later"),
                             ];
                             crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
                         }
@@ -539,7 +577,7 @@ impl PlexiApp {
                                     &[&["Enter"], &["1-9"]],
                                     "select",
                                 ),
-                                crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
+                                crate::ui::hints::HintGroup::new(&["Esc"], "later"),
                             ];
                             crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
                         }
@@ -560,7 +598,7 @@ impl PlexiApp {
                                     &["\u{2318}", "\u{21B5}"],
                                     "submit",
                                 ),
-                                crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
+                                crate::ui::hints::HintGroup::new(&["Esc"], "later"),
                             ];
                             crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
                         }
@@ -659,7 +697,7 @@ impl PlexiApp {
             );
         }
 
-        // Esc defers (not cancels) unless the notification is required.
+        // Esc means Later (not Cancel) unless the notification is required.
         //
         // Defer = close the modal but keep the notification in the queue.
         // Cmd+Shift+A will bring it back as the front-most on reopen.
@@ -671,8 +709,6 @@ impl PlexiApp {
         if action_cmd.is_none() && esc_pressed && !notif.required {
             self.show_notification_modal = false;
             self.modal_focused_option = 0;
-            self.modal_input_buffer.clear();
-            self.modal_state_notify_id.clear();
             // `current_notify_id` intentionally stays set so the same
             // notification is front-most on next reopen. No queue mutation,
             // no NotifyAction — that's what makes it defer, not cancel.
@@ -717,6 +753,7 @@ impl PlexiApp {
 
             self.modal_focused_option = 0;
             self.modal_input_buffer.clear();
+            self.notification_input_drafts.remove(&current_id);
             self.modal_state_notify_id.clear();
 
             if !is_snooze {

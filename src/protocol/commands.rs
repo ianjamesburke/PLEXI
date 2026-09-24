@@ -149,9 +149,10 @@ pub enum AppRequest {
         /// `on_dismiss` is None). Omit for notifications that should persist.
         #[serde(default)]
         timeout_secs: Option<u64>,
-        /// Payload delivered to the app when the notification is dismissed without
-        /// an explicit choice (timeout, Esc, or tombstone dismiss). Defaults to
-        /// "timeout" when omitted.
+        /// Payload delivered to the app when the notification reaches a terminal
+        /// non-answer outcome (timeout or source exit). Escape means Later and
+        /// deliberately sends no response; the modal Cancel action returns
+        /// `"cancelled"`. Defaults to "timeout" for timeouts when omitted.
         #[serde(default)]
         on_dismiss: Option<String>,
         /// CLI-only: path to a file the host writes the chosen key into when

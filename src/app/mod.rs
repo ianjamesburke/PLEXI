@@ -46,7 +46,9 @@ pub(crate) use focus::{
 pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
 pub(crate) use notifications::save_pending_notifications_to;
-pub(crate) use notifications::{load_pending_notifications_from, PendingNotification};
+pub(crate) use notifications::{
+    load_pending_notifications_from, PendingNotification, NOTIFY_OUTCOME_CANCELLED,
+};
 
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
 /// A single arg is used as-is (it's already a shell expression — CLI path).
@@ -287,6 +289,9 @@ pub struct PlexiApp {
     pub(crate) modal_focused_option: usize,
     /// Buffer for `kind = "input"` notifications.
     pub(crate) modal_input_buffer: String,
+    /// Input drafts keyed by notification id. Later and queue cycling are
+    /// non-terminal, so they must not discard text the user already entered.
+    pub(crate) notification_input_drafts: HashMap<String, String>,
     /// Text being composed in the quick note modal.
     pub(crate) quick_note_text: String,
     /// Local images staged by the QuickNote modal. They are copied into the
@@ -1656,6 +1661,7 @@ impl PlexiApp {
                     current_notify_id: None,
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
+                    notification_input_drafts: HashMap::new(),
                     quick_note_text: String::new(),
                     quick_note_attachments: Vec::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
@@ -1931,6 +1937,7 @@ impl PlexiApp {
             current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
+            notification_input_drafts: HashMap::new(),
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
             quick_note_ctx: QuickNoteCtx::default(),
@@ -2655,6 +2662,7 @@ impl PlexiApp {
                 current_notify_id: None,
                 modal_focused_option: 0,
                 modal_input_buffer: String::new(),
+                notification_input_drafts: HashMap::new(),
                 quick_note_text: String::new(),
                 quick_note_attachments: Vec::new(),
                 quick_note_ctx: QuickNoteCtx::default(),

@@ -2,6 +2,13 @@
 
 use super::PlexiApp;
 
+/// Stable terminal values returned to notification producers. These are values
+/// so CLI response files and app `NotifyAction` events share one contract.
+pub(crate) const NOTIFY_OUTCOME_CANCELLED: &str = "cancelled";
+pub(crate) const NOTIFY_OUTCOME_DISABLED: &str = "disabled";
+pub(crate) const NOTIFY_OUTCOME_INVALID: &str = "invalid_choice";
+pub(crate) const NOTIFY_OUTCOME_SOURCE_ENDED: &str = "source_ended";
+
 #[derive(Clone)]
 pub(crate) struct PendingNotification {
     pub notify_id: String,
@@ -468,6 +475,14 @@ impl PlexiApp {
                 source.as_str(),
                 notification.title
             );
+            self.deliver_notify_action(
+                notification.sender_pane_id,
+                notification.notify_id,
+                "disabled".to_string(),
+                Some(NOTIFY_OUTCOME_DISABLED.to_string()),
+                notification.response_file,
+                None,
+            );
             return false;
         }
 
@@ -772,18 +787,35 @@ impl PlexiApp {
         }
     }
 
-    /// Mark all pending notifications from `pane_id` as tombstoned. Called
-    /// when an app pane is closed. Tombstoned notifications remain in the queue
-    /// so the user can read them, but their action buttons are hidden.
+    /// Resolve interactive requests whose producer has exited. Informational
+    /// messages remain readable as tombstones; Choice/Input requests cannot
+    /// leave a producer contract or CLI response file pending after exit.
     pub(crate) fn tombstone_pane_notifications(&mut self, pane_id: crate::spatial::tiling::PaneId) {
+        let mut ended = Vec::new();
         for n in &mut self.pending_notifications {
             if n.sender_pane_id == pane_id {
                 n.tombstoned = true;
+                if !matches!(n.kind, crate::protocol::NotifyKind::Message) {
+                    ended.push(n.clone());
+                }
                 log::info!(
                     "notification '{}' tombstoned (pane {pane_id} closed)",
                     n.title
                 );
             }
+        }
+        self.pending_notifications.retain(|n| {
+            n.sender_pane_id != pane_id || matches!(n.kind, crate::protocol::NotifyKind::Message)
+        });
+        for n in ended {
+            self.deliver_notify_action(
+                n.sender_pane_id,
+                n.notify_id,
+                "source_ended".to_string(),
+                Some(NOTIFY_OUTCOME_SOURCE_ENDED.to_string()),
+                n.response_file,
+                None,
+            );
         }
         self.save_notifications();
     }
@@ -839,11 +871,9 @@ impl PlexiApp {
             .count()
     }
 
-    /// Auto-dismiss non-required notifications whose `sender_pane_id` matches
-    /// the currently focused pane. Called once per frame from `update_preamble`.
-    ///
-    /// Required notifications (interactive prompts that need an explicit
-    /// response) are exempt and must always be dismissed manually.
+    /// Auto-dismiss informational messages whose `sender_pane_id` matches the
+    /// focused pane. Interactive Choice/Input prompts are never dropped by
+    /// focus: they require Answer, Cancel, or Timeout.
     pub(crate) fn auto_dismiss_sender_focused_notifications(&mut self) {
         let win = &self.windows[self.active_window];
         let focused_pane_id = win
@@ -857,7 +887,11 @@ impl PlexiApp {
         let auto_dismiss_ids: Vec<String> = self
             .pending_notifications
             .iter()
-            .filter(|n| !n.required && n.sender_pane_id == focused_id)
+            .filter(|n| {
+                !n.required
+                    && matches!(n.kind, crate::protocol::NotifyKind::Message)
+                    && n.sender_pane_id == focused_id
+            })
             .map(|n| n.notify_id.clone())
             .collect();
 
