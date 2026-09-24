@@ -12,20 +12,17 @@ use crate::ui::{
 
 enum PaletteEntry {
     Command {
-        command: PaletteCommand,
+        command: crate::host::keys::Action,
         name: &'static str,
         description: &'static str,
         search_text: &'static str,
     },
     Context {
-        ctx_idx: usize,
-        context_id: u64,
+        target: PaletteFocusTarget,
         name: String,
         workspace_name: String,
         metadata_chips: Vec<&'static str>,
         pane_pips: Option<ListRowPips>,
-        /// If set, focus this specific pane after navigating to the window.
-        pane_id: Option<u64>,
         search_text: String,
     },
     /// A context persists without a live window. It remains discoverable, but
@@ -54,6 +51,7 @@ enum PaletteEntry {
     },
     /// A pane running an agent, anywhere in the host. Enter focuses it.
     Agent {
+        context_id: u64,
         window_id: u64,
         pane_id: u64,
         /// Hook-reported agent name (`PaneAgentState::agent`).
@@ -84,9 +82,12 @@ impl PaletteEntry {
     fn selection_key(&self) -> String {
         match self {
             PaletteEntry::Command { command, .. } => format!("command:{command:?}"),
-            PaletteEntry::Context {
-                context_id, pane_id, ..
-            } => format!("context:{context_id}:{}", pane_id.unwrap_or_default()),
+            PaletteEntry::Context { target, .. } => format!(
+                "context:{}:{}:{}",
+                target.context_id,
+                target.window_id,
+                target.pane_id.unwrap_or_default()
+            ),
             PaletteEntry::UnavailableContext { name, .. } => format!("unavailable:{name}"),
             PaletteEntry::Agent {
                 window_id, pane_id, ..
@@ -167,17 +168,18 @@ impl PaletteEntry {
     }
 }
 
+/// Stable navigation identity carried from collection through execution. Window
+/// ordering is display policy, never an address: a row must survive a sort or
+/// another window closing while the palette is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PaletteCommand {
-    SplitRight,
-    SplitDown,
-    OpenConfig,
-    OpenQuickNote,
-    OpenScratchpad,
+struct PaletteFocusTarget {
+    context_id: u64,
+    window_id: u64,
+    pane_id: Option<u64>,
 }
 
 struct PaletteCommandEntry {
-    command: PaletteCommand,
+    action: crate::host::keys::Action,
     name: &'static str,
     description: &'static str,
     search_text: &'static str,
@@ -185,31 +187,31 @@ struct PaletteCommandEntry {
 
 const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry {
-        command: PaletteCommand::SplitRight,
+        action: crate::host::keys::Action::SplitRight,
         name: "Split right",
         description: "Open a new terminal beside the focused pane",
         search_text: "split right new terminal shell console pane vsplit vertical",
     },
     PaletteCommandEntry {
-        command: PaletteCommand::SplitDown,
+        action: crate::host::keys::Action::SplitDown,
         name: "Split down",
         description: "Open a new terminal below the focused pane",
         search_text: "split down below new terminal shell console pane hsplit horizontal",
     },
     PaletteCommandEntry {
-        command: PaletteCommand::OpenConfig,
+        action: crate::host::keys::Action::OpenConfig,
         name: "Open config",
         description: "Edit the active Plexi config file",
         search_text: "open config settings preferences config.toml configuration",
     },
     PaletteCommandEntry {
-        command: PaletteCommand::OpenQuickNote,
+        action: crate::host::keys::Action::OpenQuickNote,
         name: "Quick Note",
         description: "Capture a note in the current context",
         search_text: "quick note capture inbox memo",
     },
     PaletteCommandEntry {
-        command: PaletteCommand::OpenScratchpad,
+        action: crate::host::keys::Action::OpenScratchpad,
         name: "Scratch Pad",
         description: "Open a fresh scratch note editor",
         search_text: "scratch pad scratchpad note editor inbox memo",
@@ -272,15 +274,10 @@ fn reconcile_palette_selection(
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum PaletteAction {
-    RunCommand(PaletteCommand),
-    JumpContext(usize, u64, Option<u64>),
-    JumpAgent {
-        window_id: u64,
-        pane_id: u64,
-        agent_name: String,
-    },
+    RunHostBinding(crate::host::keys::Action),
+    Focus(PaletteFocusTarget),
     LaunchApp(String),
     LaunchBuiltin(&'static str),
     OpenNote(std::path::PathBuf),
@@ -292,27 +289,22 @@ enum PaletteAction {
 
 fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
     match entry {
-        PaletteEntry::Command { command, .. } => Some(PaletteAction::RunCommand(*command)),
-        PaletteEntry::Context {
-            ctx_idx,
-            context_id,
-            pane_id,
-            ..
-        } => Some(PaletteAction::JumpContext(*ctx_idx, *context_id, *pane_id)),
+        PaletteEntry::Command { command, .. } => Some(PaletteAction::RunHostBinding(command.clone())),
+        PaletteEntry::Context { target, .. } => Some(PaletteAction::Focus(*target)),
         PaletteEntry::UnavailableContext { name, .. } => {
             log::warn!("palette: parked context '{name}' has no live window to restore");
             None
         }
         PaletteEntry::Agent {
+            context_id,
             window_id,
             pane_id,
-            agent_name,
             ..
-        } => Some(PaletteAction::JumpAgent {
+        } => Some(PaletteAction::Focus(PaletteFocusTarget {
+            context_id: *context_id,
             window_id: *window_id,
-            pane_id: *pane_id,
-            agent_name: agent_name.clone(),
-        }),
+            pane_id: Some(*pane_id),
+        })),
         PaletteEntry::App { id, .. } => Some(PaletteAction::LaunchApp(id.clone())),
         PaletteEntry::Builtin { id, .. } => Some(PaletteAction::LaunchBuiltin(id)),
         PaletteEntry::Note { path, .. } => Some(PaletteAction::OpenNote(path.clone())),
@@ -324,11 +316,11 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
 }
 
 #[cfg(test)]
-fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
+fn palette_command_matches(query: &str) -> Vec<crate::host::keys::Action> {
     PALETTE_COMMANDS
         .iter()
         .filter(|entry| query.is_empty() || entry.search_text.contains(query))
-        .map(|entry| entry.command)
+        .map(|entry| entry.action.clone())
         .collect()
 }
 
@@ -449,7 +441,6 @@ fn palette_pips_for_context(
 /// (and for query-pierced matches in collapsed contexts). Spatial order across
 /// the context's windows, matching the pip strip on the collapsed `ctx` row.
 struct PaneRow {
-    win_idx: usize,
     window_id: u64,
     pane_id: u64,
     name: String,
@@ -535,7 +526,6 @@ fn palette_pane_rows_for_context(
             };
             let (name, chip) = pane_row_identity(pane, context_names);
             rows.push(PaneRow {
-                win_idx,
                 window_id: win.window_id,
                 pane_id,
                 name,
@@ -570,6 +560,7 @@ fn palette_pane_rows_for_context(
 /// sourced from every window of every context — the fleet is addressable from
 /// wherever you happen to be standing.
 struct AgentRow {
+    context_id: u64,
     window_id: u64,
     pane_id: u64,
     /// One-based position among agent panes in the owning context. This keeps
@@ -649,6 +640,7 @@ fn palette_agent_rows(
                 agent.agent.clone()
             };
             rows.push(AgentRow {
+                context_id: win.context_id,
                 window_id: win.window_id,
                 pane_id,
                 context_agent_index: *context_agent_index,
@@ -807,7 +799,7 @@ impl PlexiApp {
 
             let mut ctx_entries: Vec<PaletteEntry> = Vec::new();
             for c in &contexts {
-                let Some((win_idx, window_id)) = c.resolved else {
+                let Some((_win_idx, window_id)) = c.resolved else {
                     let search_text = searchable_text(&[c.name.as_str(), "parked unavailable"]);
                     if query.is_empty() || search_text.contains(&query) {
                         ctx_entries.push(PaletteEntry::UnavailableContext {
@@ -834,13 +826,15 @@ impl PlexiApp {
                         let search_text = searchable_text(&[row.name.as_str(), c.name.as_str()]);
                         if query.is_empty() || search_text.contains(&query) {
                             ctx_entries.push(PaletteEntry::Context {
-                                ctx_idx: row.win_idx,
-                                context_id: row.window_id,
+                                target: PaletteFocusTarget {
+                                    context_id: c.ctx_id,
+                                    window_id: row.window_id,
+                                    pane_id: Some(row.pane_id),
+                                },
                                 name: row.name,
                                 workspace_name: c.name.clone(),
                                 metadata_chips: vec![row.chip],
                                 pane_pips: Some(row.pips),
-                                pane_id: Some(row.pane_id),
                                 search_text,
                             });
                         }
@@ -851,8 +845,11 @@ impl PlexiApp {
                     let search_text = searchable_text(&[c.name.as_str()]);
                     if query.is_empty() || search_text.contains(&query) {
                         ctx_entries.push(PaletteEntry::Context {
-                            ctx_idx: win_idx,
-                            context_id: window_id,
+                            target: PaletteFocusTarget {
+                                context_id: c.ctx_id,
+                                window_id,
+                                pane_id: None,
+                            },
                             name: c.name.clone(),
                             workspace_name: if c.parked {
                                 "Parked".to_string()
@@ -870,7 +867,6 @@ impl PlexiApp {
                                 c.ctx_id,
                                 Some(active_win_id),
                             ),
-                            pane_id: None,
                             search_text,
                         });
                     }
@@ -894,8 +890,11 @@ impl PlexiApp {
                             let search_text = searchable_text(&[row.name.as_str()]);
                             if inactive_pane_matches_query(&row.name, &query) {
                                 ctx_entries.push(PaletteEntry::Context {
-                                    ctx_idx: row.win_idx,
-                                    context_id: row.window_id,
+                                    target: PaletteFocusTarget {
+                                        context_id: c.ctx_id,
+                                        window_id: row.window_id,
+                                        pane_id: Some(row.pane_id),
+                                    },
                                     name: row.name,
                                     workspace_name: if c.parked {
                                         format!("Parked · {}", c.name)
@@ -908,7 +907,6 @@ impl PlexiApp {
                                         vec![row.chip]
                                     },
                                     pane_pips: Some(row.pips),
-                                    pane_id: Some(row.pane_id),
                                     search_text,
                                 });
                             }
@@ -935,6 +933,7 @@ impl PlexiApp {
                 continue;
             }
             entries.push(PaletteEntry::Agent {
+                context_id: row.context_id,
                 window_id: row.window_id,
                 pane_id: row.pane_id,
                 secondary: agent_row_secondary(
@@ -1054,7 +1053,7 @@ impl PlexiApp {
             PALETTE_COMMANDS
                 .iter()
                 .map(|entry| PaletteEntry::Command {
-                    command: entry.command,
+                    command: entry.action.clone(),
                     name: entry.name,
                     description: entry.description,
                     search_text: entry.search_text,
@@ -1524,14 +1523,9 @@ impl PlexiApp {
         self.palette_query.clear();
         self.palette_selected_key = None;
         match action {
-            PaletteAction::RunCommand(command) => self.run_palette_command(command),
+            PaletteAction::RunHostBinding(action) => self.run_palette_host_binding(action),
             PaletteAction::RunUserCommand { name, scope } => self.run_user_command(&name, scope),
-            PaletteAction::JumpContext(ctx_idx, context_id, pane_id) => {
-                self.jump_to_context(ctx_idx, context_id, pane_id)
-            }
-            PaletteAction::JumpAgent { window_id, pane_id, agent_name } => {
-                self.jump_to_agent_pane(window_id, pane_id, &agent_name)
-            }
+            PaletteAction::Focus(target) => self.focus_palette_target(target),
             PaletteAction::LaunchApp(id) => self.launch_app_by_id(&id),
             PaletteAction::LaunchBuiltin(id) => self.launch_builtin_by_id(id),
             PaletteAction::OpenNote(path) => {
@@ -1562,28 +1556,32 @@ impl PlexiApp {
         }
     }
 
-    fn run_palette_command(&mut self, command: PaletteCommand) {
-        log::info!("palette: running host command {command:?}");
-        match command {
-            PaletteCommand::SplitRight => {
+    /// Execute the subset of keyboard bindings intentionally surfaced by the
+    /// palette. The descriptor is the host binding `Action`, so labels/search
+    /// metadata cannot drift onto a private palette-only command enum.
+    fn run_palette_host_binding(&mut self, action: crate::host::keys::Action) {
+        log::info!("palette: executing host binding {action:?}");
+        match action {
+            crate::host::keys::Action::SplitRight => {
                 self.windows[self.active_window].clear_zoom();
                 self.split_focused(false, None, false, false, None);
                 self.mark_workspace_dirty();
             }
-            PaletteCommand::SplitDown => {
+            crate::host::keys::Action::SplitDown => {
                 self.windows[self.active_window].clear_zoom();
                 self.split_focused(true, None, false, false, None);
                 self.mark_workspace_dirty();
             }
-            PaletteCommand::OpenConfig => {
+            crate::host::keys::Action::OpenConfig => {
                 crate::config::open_config_file();
             }
-            PaletteCommand::OpenQuickNote => {
+            crate::host::keys::Action::OpenQuickNote => {
                 self.open_quick_note_modal();
             }
-            PaletteCommand::OpenScratchpad => {
+            crate::host::keys::Action::OpenScratchpad => {
                 self.open_scratchpad();
             }
+            other => log::warn!("palette: unsupported host binding {other:?}"),
         }
     }
 
@@ -1600,44 +1598,30 @@ impl PlexiApp {
         self.mark_workspace_dirty();
     }
 
-    /// Focus an agent pane selected in the palette. Routes through the same
-    /// explicit-target navigation the context rows use — the target window
-    /// window id and pane id are carried by the row, never read back out of
-    /// `active_window` or `router.active`.
-    fn jump_to_agent_pane(&mut self, window_id: u64, pane_id: u64, agent_name: &str) {
-        let Some(win_idx) = self.windows.iter().position(|win| {
-            win.window_id == window_id
-                && win
-                    .panes
-                    .get(&pane_id)
-                    .is_some_and(|pane| pane.agent().is_some())
-        }) else {
-            log::warn!(
-                "palette: agent pane {pane_id} (agent '{agent_name}') disappeared before focus"
-            );
-            return;
-        };
-        log::info!("palette: focusing agent pane {pane_id} (agent '{agent_name}')");
-        self.jump_to_context(win_idx, window_id, Some(pane_id));
-    }
-
-    /// Jump to a window by index, switching context if necessary.
-    /// If `pane_id` is provided, also focuses that specific pane in the window.
+    /// Resolve a stable palette target against current host state, then focus
+    /// it. Collection never leaks a mutable window index into execution.
     /// Sanctioned cross-context focus path (also used by the `[launch] on_launch`
     /// resolver, #0336) — it switches the sidebar context via `switch_workspace`
     /// rather than mutating `active_window` mid-spawn.
-    pub(crate) fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
-        let Some(target_window) = self
-            .windows
-            .get(ctx_idx)
-            .filter(|window| window.window_id == win_id)
+    fn focus_palette_target(&mut self, target: PaletteFocusTarget) {
+        let Some(ctx_idx) = self.windows.iter().position(|window| {
+            window.window_id == target.window_id && window.context_id == target.context_id
+        })
         else {
-            log::warn!("palette: target window {win_id} disappeared before context focus");
+            log::warn!(
+                "palette: target context={} window={} disappeared before focus",
+                target.context_id,
+                target.window_id
+            );
             return;
         };
-        let target_ctx_id = target_window.context_id;
-        log::info!("palette: jump to context {target_ctx_id} (window {win_id}, pane {pane_id:?})");
-        if let Some(ctx_idx_sidebar) = self.router.position(|c| c.context_id == target_ctx_id) {
+        log::info!(
+            "palette: focus target context={} window={} pane={:?}",
+            target.context_id,
+            target.window_id,
+            target.pane_id
+        );
+        if let Some(ctx_idx_sidebar) = self.router.position(|c| c.context_id == target.context_id) {
             if self.router.get(ctx_idx_sidebar).parked {
                 // Parking keeps windows alive. Reuse the established unpark
                 // transition before targeting this row's specific window/pane
@@ -1653,11 +1637,11 @@ impl PlexiApp {
         self.active_window = ctx_idx;
         self.windows[ctx_idx].zoomed_pane = None;
         let ctx_id = self.router.active().context_id;
-        self.context_active_window.insert(ctx_id, win_id);
-        self.record_context_visit(win_id);
+        self.context_active_window.insert(ctx_id, target.window_id);
+        self.record_context_visit(target.window_id);
 
         // Focus the specific pane if requested — find its TileId in the tree.
-        if let Some(pid) = pane_id {
+        if let Some(pid) = target.pane_id {
             let win = &mut self.windows[ctx_idx];
             if let Some(tile_id) = win.tree.tiles.iter().find_map(|(tid, tile)| {
                 if matches!(tile, egui_tiles::Tile::Pane(p) if *p == pid) {
@@ -1669,6 +1653,20 @@ impl PlexiApp {
                 win.focused_pane = Some(tile_id);
             }
         }
+    }
+
+    /// Compatibility adapter for non-palette callers that still resolve a
+    /// window by index. Palette rows must use `focus_palette_target` instead.
+    pub(crate) fn jump_to_context(&mut self, window_index: usize, window_id: u64, pane_id: Option<u64>) {
+        let Some(context_id) = self.windows.get(window_index).map(|window| window.context_id) else {
+            log::warn!("palette: window index {window_index} disappeared before context focus");
+            return;
+        };
+        self.focus_palette_target(PaletteFocusTarget {
+            context_id,
+            window_id,
+            pane_id,
+        });
     }
 }
 
@@ -1689,27 +1687,27 @@ mod tests {
     fn palette_command_aliases_match_starter_synonyms() {
         assert_eq!(
             palette_command_matches("shell"),
-            vec![PaletteCommand::SplitRight, PaletteCommand::SplitDown]
+            vec![crate::host::keys::Action::SplitRight, crate::host::keys::Action::SplitDown]
         );
         assert_eq!(
             palette_command_matches("console"),
-            vec![PaletteCommand::SplitRight, PaletteCommand::SplitDown]
+            vec![crate::host::keys::Action::SplitRight, crate::host::keys::Action::SplitDown]
         );
         assert_eq!(
             palette_command_matches("hsplit"),
-            vec![PaletteCommand::SplitDown]
+            vec![crate::host::keys::Action::SplitDown]
         );
         assert_eq!(
             palette_command_matches("config"),
-            vec![PaletteCommand::OpenConfig]
+            vec![crate::host::keys::Action::OpenConfig]
         );
         assert_eq!(
             palette_command_matches("scratchpad"),
-            vec![PaletteCommand::OpenScratchpad]
+            vec![crate::host::keys::Action::OpenScratchpad]
         );
         assert_eq!(
             palette_command_matches("scratch pad"),
-            vec![PaletteCommand::OpenScratchpad]
+            vec![crate::host::keys::Action::OpenScratchpad]
         );
     }
 
@@ -1732,7 +1730,7 @@ mod tests {
     fn empty_palette_puts_commands_after_apps() {
         let mut entries = vec![
             PaletteEntry::Command {
-                command: PaletteCommand::OpenConfig,
+                command: crate::host::keys::Action::OpenConfig,
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config",
@@ -1746,13 +1744,11 @@ mod tests {
                 search_text: "balls demo".to_string(),
             },
             PaletteEntry::Context {
-                ctx_idx: 0,
-                context_id: 1,
+                target: PaletteFocusTarget { context_id: 1, window_id: 1, pane_id: None },
                 name: "Workspace".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],
                 pane_pips: None,
-                pane_id: None,
                 search_text: "workspace".to_string(),
             },
         ];
@@ -1767,13 +1763,11 @@ mod tests {
     #[test]
     fn parked_and_windowless_context_entries_remain_searchable() {
         let parked = PaletteEntry::Context {
-            ctx_idx: 1,
-            context_id: 70,
+            target: PaletteFocusTarget { context_id: 7, window_id: 70, pane_id: None },
             name: "parked release work".to_string(),
             workspace_name: "Parked".to_string(),
             metadata_chips: vec!["ctx", "parked"],
             pane_pips: None,
-            pane_id: None,
             search_text: "parked release work".to_string(),
         };
         let unavailable = PaletteEntry::UnavailableContext {
@@ -1804,23 +1798,19 @@ mod tests {
                 search_text: "balls demo".to_string(),
             },
             PaletteEntry::Context {
-                ctx_idx: 0,
-                context_id: 1,
+                target: PaletteFocusTarget { context_id: 1, window_id: 1, pane_id: None },
                 name: "Workspace A".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],
                 pane_pips: None,
-                pane_id: None,
                 search_text: "workspace a".to_string(),
             },
             PaletteEntry::Context {
-                ctx_idx: 1,
-                context_id: 2,
+                target: PaletteFocusTarget { context_id: 2, window_id: 2, pane_id: None },
                 name: "Workspace B".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],
                 pane_pips: None,
-                pane_id: None,
                 search_text: "workspace b".to_string(),
             },
         ];
@@ -1861,7 +1851,7 @@ mod tests {
                 search_text: "demo config viewer".to_string(),
             },
             PaletteEntry::Command {
-                command: PaletteCommand::OpenConfig,
+                command: crate::host::keys::Action::OpenConfig,
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config settings preferences",
@@ -1884,7 +1874,7 @@ mod tests {
                 search_text: "build cargo build run workspace ws".to_string(),
             },
             PaletteEntry::Command {
-                command: PaletteCommand::OpenConfig,
+                command: crate::host::keys::Action::OpenConfig,
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config",
@@ -1972,7 +1962,7 @@ mod tests {
             search_text: "alpha".to_string(),
         };
         let command = PaletteEntry::Command {
-            command: PaletteCommand::OpenConfig,
+            command: crate::host::keys::Action::OpenConfig,
             name: "Open config",
             description: "Edit config",
             search_text: "open config",
@@ -1999,6 +1989,7 @@ mod tests {
     #[test]
     fn palette_mouse_and_enter_resolve_the_same_action() {
         let entry = PaletteEntry::Agent {
+            context_id: 7,
             window_id: 7,
             pane_id: 42,
             agent_name: "reviewer".to_string(),
@@ -2009,13 +2000,15 @@ mod tests {
         };
         let click = action_for_palette_entry(&entry);
         let enter = action_for_palette_entry(&entry);
-        assert!(matches!(
-            (click, enter),
-            (
-                Some(PaletteAction::JumpAgent { window_id: 7, pane_id: 42, .. }),
-                Some(PaletteAction::JumpAgent { window_id: 7, pane_id: 42, .. })
-            )
-        ));
+        assert_eq!(
+            click,
+            Some(PaletteAction::Focus(PaletteFocusTarget {
+                context_id: 7,
+                window_id: 7,
+                pane_id: Some(42),
+            }))
+        );
+        assert_eq!(click, enter);
     }
 
     #[test]
@@ -2298,6 +2291,7 @@ mod tests {
         use crate::protocol::AgentState;
 
         let agent = |agent_name: &str, state: AgentState| PaletteEntry::Agent {
+            context_id: 1,
             window_id: 1,
             pane_id: 10,
             agent_name: agent_name.to_string(),
@@ -2344,16 +2338,15 @@ mod tests {
         // same — state ordering is scoped to the agent group.
         let mut entries = vec![
             PaletteEntry::Context {
-                ctx_idx: 0,
-                context_id: 1,
+                target: PaletteFocusTarget { context_id: 1, window_id: 1, pane_id: None },
                 name: "claude-ctx".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],
                 pane_pips: None,
-                pane_id: None,
                 search_text: "claude-ctx".to_string(),
             },
             PaletteEntry::Agent {
+                context_id: 1,
                 window_id: 1,
                 pane_id: 10,
                 agent_name: "blocked-one".to_string(),
@@ -2436,7 +2429,11 @@ mod tests {
             parked: true,
         });
 
-        h.app.jump_to_agent_pane(70, 10, "claude-code");
+        h.app.focus_palette_target(PaletteFocusTarget {
+            context_id: 7,
+            window_id: 70,
+            pane_id: Some(10),
+        });
 
         assert_eq!(h.app.active_window, 1);
         assert_eq!(h.app.windows[h.app.active_window].context_id, 7);
@@ -2469,7 +2466,11 @@ mod tests {
             parked: true,
         });
 
-        h.app.jump_to_context(1, 70, Some(11));
+        h.app.focus_palette_target(PaletteFocusTarget {
+            context_id: 7,
+            window_id: 70,
+            pane_id: Some(11),
+        });
 
         assert!(
             !h.app.router.get(1).parked,
@@ -2492,7 +2493,12 @@ mod tests {
         let window_id = h.app.windows[h.app.active_window].window_id;
         h.app.router.get_mut(idx).parked = true;
 
-        h.app.jump_to_context(h.app.active_window, window_id, None);
+        let context_id = h.app.router.active().context_id;
+        h.app.focus_palette_target(PaletteFocusTarget {
+            context_id,
+            window_id,
+            pane_id: None,
+        });
 
         assert!(!h.app.router.get(idx).parked);
         assert_eq!(h.app.router.active_idx(), idx);
@@ -2519,7 +2525,11 @@ mod tests {
             parked: true,
         });
 
-        h.app.jump_to_context(1, 70, Some(10));
+        h.app.focus_palette_target(PaletteFocusTarget {
+            context_id: 7,
+            window_id: 70,
+            pane_id: Some(10),
+        });
 
         assert!(h.app.router.get(0).parked, "other parked work stays parked");
         assert!(!h.app.router.get(1).parked, "selected work is restored");
@@ -2535,7 +2545,11 @@ mod tests {
         let active_window = h.app.active_window;
         let active_context = h.app.router.active().context_id;
 
-        h.app.jump_to_agent_pane(999, 123, "gone");
+        h.app.focus_palette_target(PaletteFocusTarget {
+            context_id: 999,
+            window_id: 999,
+            pane_id: Some(123),
+        });
 
         assert_eq!(h.app.active_window, active_window);
         assert_eq!(h.app.router.active().context_id, active_context);
