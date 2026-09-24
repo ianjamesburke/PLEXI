@@ -8,4 +8,7 @@ seed_notification = { title = "Build complete", body = "The release candidate is
 assert_label = { target = "host", label = "Build complete" }
 
 [[steps]]
+assert_label = { target = "host", label = "Source: Command line  ·  Context: Context 0" }
+
+[[steps]]
 shot = "notification-modal-short.png"

@@ -145,6 +145,41 @@ impl PlexiApp {
         let image_state = notification_image::resolve(self, ctx, &notif);
 
         let notification_color = self.colors.accent;
+        let source_context = self
+            .router
+            .iter()
+            .find(|context| context.context_id == notif.source_context_id)
+            .map(|context| context.name.to_string())
+            .unwrap_or_else(|| format!("Context {}", notif.source_context_id));
+        let source_pane = self
+            .find_pane_in_any_window(notif.sender_pane_id)
+            .and_then(|(window_index, _)| {
+                self.windows[window_index].panes.get(&notif.sender_pane_id)
+            })
+            .map(|pane| match pane {
+                crate::host::pane::Pane::Terminal(terminal) => terminal
+                    .name
+                    .clone()
+                    .or_else(|| terminal.pty_title.clone())
+                    .unwrap_or_else(|| "terminal".to_string()),
+                crate::host::pane::Pane::App(app) => {
+                    if app.name.is_empty() {
+                        app.runtime.display_name()
+                    } else {
+                        app.name.clone()
+                    }
+                }
+                crate::host::pane::Pane::Portal(portal) => {
+                    format!("Context {}", portal.target_context_id)
+                }
+            })
+            .unwrap_or_else(|| {
+                if notif.sender_pane_id == 0 {
+                    "Command line".to_string()
+                } else {
+                    format!("Pane {}", notif.sender_pane_id)
+                }
+            });
 
         // Live position + total, recomputed every frame. Total reflects the
         // current queue size so if a new notification arrives while this
@@ -319,6 +354,15 @@ impl PlexiApp {
                 ui.add_space(style::SPACE_XL);
 
                 crate::ui::typography::modal_title_large(ui, &notif.title, &self.colors);
+
+                ui.add_space(style::SPACE_SM);
+                ui.label(
+                    RichText::new(format!(
+                        "Source: {source_pane}  ·  Context: {source_context}"
+                    ))
+                    .size(style::TEXT_CAPTION)
+                    .color(self.colors.text_dim),
+                );
 
                 if !notif.body.is_empty() {
                     ui.add_space(style::SPACE_MD);

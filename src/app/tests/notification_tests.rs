@@ -833,7 +833,7 @@ fn enqueue_notification_honours_master_switch() {
 }
 
 /// 0566: with the switch on, every surface reaches the queue through the one
-/// path that also persists, decides auto-open, and emits `NotificationPosted`.
+/// path that persists, updates badges, and emits `NotificationPosted`.
 #[test]
 fn enqueue_notification_queues_when_enabled() {
     let mut h = HostHarness::new();
@@ -847,15 +847,19 @@ fn enqueue_notification_queues_when_enabled() {
     assert!(queued, "enabled host must queue the notification");
     assert_eq!(h.app.pending_notifications.len(), 1);
     assert!(
-        h.app.show_notification_modal,
-        "a visible notification outside focus mode must auto-open"
+        !h.app.show_notification_modal,
+        "an informational notification must arrive quietly"
     );
-    assert_eq!(h.app.current_notify_id.as_deref(), Some("wasm-1"));
+    assert_eq!(
+        h.app.visible_notification_count(),
+        1,
+        "the review badge remains truthful"
+    );
 }
 
-/// Every visible notification uses the same interruption decision.
+/// Informational arrivals never take keyboard focus; decisions still do.
 #[test]
-fn enqueue_notification_interrupts_when_enabled() {
+fn enqueue_notification_only_interrupts_for_decisions() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
@@ -864,12 +868,44 @@ fn enqueue_notification_interrupts_when_enabled() {
         cue_test_notification("visible"),
     );
 
-    assert_eq!(h.app.pending_notifications.len(), 1, "notification is queued");
+    assert_eq!(
+        h.app.pending_notifications.len(),
+        1,
+        "notification is queued"
+    );
+    assert!(!h.app.show_notification_modal, "message must not auto-open");
+    assert_eq!(h.app.visible_notification_count(), 1);
+
+    let mut choice = cue_test_notification("decision");
+    choice.kind = crate::protocol::NotifyKind::Choice;
+    choice.options.push(crate::protocol::NotifyOption {
+        label: "Continue".into(),
+        value: "continue".into(),
+        shortcut: None,
+        host_action: None,
+    });
+    h.app
+        .enqueue_notification(crate::app::notifications::NotifySource::App, choice);
+
     assert!(
         h.app.show_notification_modal,
-        "visible notification must auto-open"
+        "choice must open the decision UI"
     );
-    assert_eq!(h.app.current_notify_id.as_deref(), Some("visible"));
+    assert_eq!(h.app.current_notify_id.as_deref(), Some("decision"));
+
+    let mut input = cue_test_notification("input-decision");
+    input.kind = crate::protocol::NotifyKind::Input;
+    assert!(
+        h.app.notification_may_interrupt(&input),
+        "input must retain the same intentional decision path"
+    );
+
+    let mut required_message = cue_test_notification("required-message");
+    required_message.required = true;
+    assert!(
+        h.app.notification_may_interrupt(&required_message),
+        "a required message is an explicit prompt, not quiet information"
+    );
 }
 
 /// 0566: no `[notifications] sound` configured → no cue requested.
@@ -949,8 +985,9 @@ fn cue_suppressed_for_invisible_notification() {
     );
 }
 
-/// A plain CLI notification is visible, opens the modal, and starts its cue
-/// when sound is configured. Focus mode shares the same gate and mutes both.
+/// A plain CLI notification arrives quietly but still starts its configured
+/// cue. Focus mode remains the global mute for both review interruption and
+/// sound.
 #[test]
 fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     let mut h = HostHarness::new();
@@ -960,7 +997,10 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     h.inject_ipc(cli_notify_request(None, None, None, None));
     h.run_frames(2);
 
-    assert!(h.app.show_notification_modal, "plain CLI notify interrupts");
+    assert!(
+        !h.app.show_notification_modal,
+        "plain CLI notify arrives quietly"
+    );
     assert!(
         h.app.notification_cue_playback.is_some(),
         "plain CLI notify starts the configured cue"
@@ -1622,8 +1662,9 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
 // an explicit dismissal while the pane stays in view is final, and it only
 // re-arms once the pane leaves view and returns.
 
-/// Build a Global-scope notification for resurface tests — scope stays out
-/// of the way so only `pane_is_in_view` gates visibility/interruption.
+/// Build a response-requiring Global-scope notification for resurface tests.
+/// Informational messages deliberately remain quiet (NOTIF-01); this fixture
+/// keeps the resurface contract focused on Choice/Input prompts.
 fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotification {
     PendingNotification {
         notify_id: id.into(),
@@ -1633,7 +1674,7 @@ fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotifica
         source_window_id: 0,
         title: "Resurface me".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: crate::protocol::NotifyKind::Choice,
         options: vec![],
         input_prompt: None,
         required: false,

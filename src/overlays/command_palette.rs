@@ -1676,12 +1676,6 @@ impl PlexiApp {
             }
             crate::host::keys::Action::ReloadConfig => self.reload_config(),
             crate::host::keys::Action::OpenNotesPicker => self.open_notes_picker(),
-            crate::host::keys::Action::ToggleNotificationModal => {
-                self.show_notification_modal = true;
-                if self.current_notify_id.is_none() {
-                    self.current_notify_id = self.select_next_notification();
-                }
-            }
             crate::host::keys::Action::OpenQuickNote => {
                 self.open_quick_note_modal();
             }
@@ -1721,6 +1715,23 @@ impl PlexiApp {
             }
             crate::host::keys::Action::ClosePane => self.close_palette_focused_pane(),
             crate::host::keys::Action::CloseContext => self.close_palette_active_context(),
+            // Palette selection is an explicit request to review, unlike the
+            // keyboard binding which toggles the panel. Keep queued messages
+            // discoverable without making a second selection close the panel.
+            crate::host::keys::Action::ToggleNotificationModal => {
+                self.show_notification_modal = true;
+                if self.current_notify_id.is_none() {
+                    self.current_notify_id = self.select_next_notification();
+                }
+                log::info!(
+                    "notify:review_opened source=palette visible={} pending_decisions={}",
+                    self.visible_notification_count(),
+                    self.pending_notifications
+                        .iter()
+                        .filter(|n| Self::notification_requires_response(n))
+                        .count()
+                );
+            }
             other => log::warn!("palette: unsupported host binding {other:?}"),
         }
     }
@@ -2173,6 +2184,16 @@ mod tests {
     #[test]
     fn palette_query_trims_outer_whitespace() {
         assert_eq!(normalized_palette_query("  Blocked  "), "blocked");
+    }
+
+    #[test]
+    fn palette_exposes_review_notifications() {
+        assert_eq!(
+            palette_command_matches("review notifications"),
+            vec![PaletteCommand::Host(
+                crate::host::keys::Action::ToggleNotificationModal
+            )]
+        );
     }
 
     #[test]
