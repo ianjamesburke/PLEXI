@@ -13,8 +13,12 @@ mod tests {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
     use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
 
     #[test]
     fn detached_host_does_not_keep_callers_capture_pipe_alive() {
@@ -51,10 +55,6 @@ mod tests {
         let write = unsafe { OwnedHandle::from_raw_handle(write.cast()) };
         let report = dir.path().join("report");
         let mut env: Vec<_> = std::env::vars().collect();
-        env.push((
-            "HOST01_CAPTURE_HANDLE".into(),
-            (write.as_raw_handle() as usize).to_string(),
-        ));
         env.push(("=C:".into(), dir.path().to_string_lossy().into_owned()));
         env.push((
             "HOST01_REPORT".into(),
@@ -62,13 +62,26 @@ mod tests {
         ));
         let pid = spawn(&binary, &env).unwrap();
         // Always release the stand-in, even if an assertion fails.
-        struct Stop(std::path::PathBuf);
+        // SAFETY: open only the newly launched test PID for wait/cleanup.
+        let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+        assert!(!raw.is_null(), "test child exited before startup");
+        let child = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+        struct Stop(std::path::PathBuf, OwnedHandle);
         impl Drop for Stop {
             fn drop(&mut self) {
                 let _ = std::fs::write(&self.0, "stop");
+                // SAFETY: the guard owns a live process handle through cleanup.
+                if unsafe { WaitForSingleObject(self.1.as_raw_handle().cast(), 5000) }
+                    == WAIT_TIMEOUT
+                {
+                    assert_ne!(
+                        unsafe { TerminateProcess(self.1.as_raw_handle().cast(), 1) },
+                        0
+                    );
+                }
             }
         }
-        let _stop = Stop(dir.path().join("report.stop"));
+        let stop = Stop(dir.path().join("report.stop"), child);
         drop(write);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -82,16 +95,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let result = std::fs::read_to_string(report).unwrap();
-        assert_eq!(
-            result,
-            format!("{pid}:false"),
-            "extra capture handle inherited"
-        );
+        assert_eq!(result, pid.to_string());
         assert_eq!(
             rx.recv_timeout(timeout)
                 .expect("EOF while host is alive")
                 .unwrap(),
             0
+        );
+        // EOF must not depend on the host exiting (the original Hand hang).
+        assert_eq!(
+            unsafe { WaitForSingleObject(stop.1.as_raw_handle().cast(), 0) },
+            WAIT_TIMEOUT
         );
     }
 }
