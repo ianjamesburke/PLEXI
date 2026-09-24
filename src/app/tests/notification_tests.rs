@@ -304,9 +304,10 @@ fn window_scoped_notification_visible_only_on_source_window() {
 
 // ── #1635: auto-dismiss when originating pane is focused ─────────────────────
 
-/// #1635: non-required notification from a focused pane must be auto-dismissed.
+/// Informational arrivals from a focused pane are already visible to the user,
+/// so they may be removed without a response contract.
 #[test]
-fn auto_dismiss_removes_non_required_notification_when_sender_focused() {
+fn auto_dismiss_removes_message_when_sender_focused() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
@@ -358,6 +359,85 @@ fn auto_dismiss_removes_non_required_notification_when_sender_focused() {
     assert!(
         h.app.current_notify_id.is_none(),
         "current_notify_id must be cleared after dismissal"
+    );
+}
+
+/// NOTIF-02: focus is not a terminal interaction. An unanswered choice must
+/// remain queued until the user answers, cancels, or it times out.
+#[test]
+fn auto_dismiss_does_not_drop_focused_choice_prompt() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+    h.app.pane_navigate(pane_id);
+    h.app.pending_notifications.push(PendingNotification {
+        notify_id: "focused-choice".into(),
+        sender_pane_id: pane_id,
+        source_context_id: h.app.router.active().context_id,
+        source_window_id: h.app.windows[h.app.active_window].window_id,
+        kind: crate::protocol::NotifyKind::Choice,
+        options: vec![crate::protocol::NotifyOption {
+            label: "Continue".into(),
+            value: "continue".into(),
+            shortcut: None,
+            host_action: None,
+        }],
+        ..Default::default()
+    });
+
+    h.app.auto_dismiss_sender_focused_notifications();
+
+    assert_eq!(h.app.pending_notifications.len(), 1);
+    assert_eq!(h.app.pending_notifications[0].notify_id, "focused-choice");
+}
+
+/// NOTIF-02: a disabled notification resolves its blocking CLI response
+/// immediately instead of leaving a caller polling an unreachable queue.
+#[test]
+fn disabled_notification_writes_explicit_terminal_outcome() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = false;
+    let response = tempfile::NamedTempFile::new().expect("response file");
+    let response_path = response.path().to_string_lossy().into_owned();
+    let queued = h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::Cli,
+        PendingNotification {
+            notify_id: "disabled-choice".into(),
+            kind: crate::protocol::NotifyKind::Choice,
+            response_file: Some(response_path.clone()),
+            ..Default::default()
+        },
+    );
+
+    assert!(!queued);
+    assert!(h.app.pending_notifications.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(response_path).expect("terminal response"),
+        crate::app::notifications::NOTIFY_OUTCOME_DISABLED
+    );
+}
+
+/// NOTIF-02: closing a prompt producer is terminal for its outstanding
+/// interactive request; it must not survive as an unanswered tombstone.
+#[test]
+fn source_exit_resolves_interactive_prompt() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+    let response = tempfile::NamedTempFile::new().expect("response file");
+    let response_path = response.path().to_string_lossy().into_owned();
+    h.app.pending_notifications.push(PendingNotification {
+        notify_id: "source-ended-choice".into(),
+        sender_pane_id: pane_id,
+        kind: crate::protocol::NotifyKind::Choice,
+        response_file: Some(response_path.clone()),
+        ..Default::default()
+    });
+
+    h.app.tombstone_pane_notifications(pane_id);
+
+    assert!(h.app.pending_notifications.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(response_path).expect("terminal response"),
+        crate::app::notifications::NOTIFY_OUTCOME_SOURCE_ENDED
     );
 }
 

@@ -1117,6 +1117,17 @@ impl PlexiApp {
                         }
                         opt
                     }).collect();
+                    if matches!(kind, crate::protocol::NotifyKind::Choice) && options.is_empty() {
+                        log::warn!("notify: invalid empty choice from pane {sender_pane_id}; resolving explicitly");
+                        self.deliver_notify_action(
+                            sender_pane_id,
+                            notify_id,
+                            "invalid_choice".to_string(),
+                            Some(crate::app::notifications::NOTIFY_OUTCOME_INVALID.to_string()),
+                            None,
+                            None,
+                        );
+                    } else {
                     self.enqueue_notification(
                         crate::app::notifications::NotifySource::App,
                         PendingNotification {
@@ -1138,6 +1149,7 @@ impl PlexiApp {
                             ..Default::default()
                         },
                     );
+                    }
                 }
                 AppCommand::DeliverNotifyAction {
                     pane_id,

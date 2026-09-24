@@ -2478,6 +2478,19 @@ impl PlexiApp {
                 // drives auto-dismiss-on-focus (`notifications.rs`), which
                 // CLI notifications opt out of on purpose.
                 let dismiss_owner_pane_id = resolved.map(|(pane_id, ..)| pane_id).unwrap_or(0);
+                let is_invalid_choice = matches!(kind, crate::protocol::NotifyKind::Choice)
+                    && options.is_empty();
+                if is_invalid_choice {
+                    log::warn!("pane_ipc: notify id={internal_id:?} has no choices; resolving explicitly");
+                    self.deliver_notify_action(
+                        0,
+                        internal_id,
+                        "invalid_choice".to_string(),
+                        Some(crate::app::notifications::NOTIFY_OUTCOME_INVALID.to_string()),
+                        response_file.clone(),
+                        None,
+                    );
+                } else {
                 self.enqueue_notification(
                     crate::app::notifications::NotifySource::Cli,
                     PendingNotification {
@@ -2502,6 +2515,7 @@ impl PlexiApp {
                         ..Default::default()
                     },
                 );
+                }
             }
             crate::protocol::AppRequest::DismissNotification {
                 notify_id,
