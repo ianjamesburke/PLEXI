@@ -788,8 +788,8 @@ pub fn host_stop_cli() -> i32 {
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
     let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
-    let pid = detect_pid(&socket_path);
     let pane_count = query_ready_status(&socket_path, &host_config_dir(channel.as_deref()), Instant::now() + crate::rpc::DEFAULT_TIMEOUT);
+    let pid = detect_pid(&socket_path);
     let ready = pane_count.is_some();
     log::info!(
         "host_status: channel={channel:?} pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}"
@@ -957,6 +957,14 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn status_pid_is_the_named_pipe_server() {
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\plexi-owner-{}", uuid::Uuid::new_v4()));
+        let _listener = crate::platform::ipc::IpcListener::bind(&endpoint).unwrap();
+        assert_eq!(detect_pid(&endpoint), Some(std::process::id()));
+    }
 
     #[test]
     fn readiness_zero_budget_does_not_connect() {

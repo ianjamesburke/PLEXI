@@ -2,14 +2,15 @@
 # wait semantics. Run both -LaunchMode Cli and Direct on an interactive desktop.
 [CmdletBinding()]
 param(
-    [string]$Binary = (Join-Path $env:LOCALAPPDATA 'Plexi\bin\plexi-alpha.exe'),
+    [Parameter(Mandatory=$true)][string]$Binary,
     [ValidateSet('Cli', 'Direct')][string]$LaunchMode = 'Cli',
     [ValidateRange(1, 100)][int]$Cycles = 20
 )
 $ErrorActionPreference = 'Stop'
+$processName = [IO.Path]::GetFileNameWithoutExtension($Binary)
 Set-StrictMode -Version 2
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$evidence = Join-Path $env:USERPROFILE "Documents\plexi-lead-evidence\host01-astra-$stamp-$LaunchMode"
+$evidence = Join-Path $env:USERPROFILE "Documents\plexi-test-evidence\host-start-$stamp-$LaunchMode"
 New-Item -ItemType Directory -Force $evidence | Out-Null
 $matrix = Join-Path $evidence 'matrix.log'
 $started = Get-Date
@@ -97,7 +98,7 @@ function Snapshot([string]$Label) {
     # Prefer CIM (CommandLine/ParentProcessId). Over SSH/WMI Access denied
     # (0x80041003), fall back to Get-Process so the diag can continue.
     try {
-        $cim = @(Get-CimInstance Win32_Process -Filter "Name='plexi-alpha.exe'" -ErrorAction Stop)
+        $cim = @(Get-CimInstance Win32_Process -Filter "Name='$processName.exe'" -ErrorAction Stop)
         $cim |
             Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine |
             ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $outPath
@@ -105,7 +106,7 @@ function Snapshot([string]$Label) {
     } catch {
         Log "WARN Snapshot CIM failed at=$Label ($($_.Exception.Message)); falling back to Get-Process"
     }
-    $procs = @(Get-Process -Name 'plexi-alpha' -ErrorAction SilentlyContinue)
+    $procs = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
     $rows = @(foreach ($p in $procs) {
         $pathProp = $null
         $startProp = $null
@@ -184,8 +185,8 @@ try {
         Copy-Item -LiteralPath $oldScript -Destination (Join-Path $evidence 'previous-host01-hand.ps1')
     }
     Snapshot 'before'
-    if (@(Get-Process -Name 'plexi-alpha' -ErrorAction SilentlyContinue).Count -gt 0) {
-        throw 'An alpha process is already running; refusing to alter its session.'
+    if (@(Get-Process -Name $processName -ErrorAction SilentlyContinue).Count -gt 0) {
+        throw 'A process for this binary is already running; refusing to alter its session.'
     }
     $version = Invoke-Cli 'version' @('--version')
     if (($version.Stdout + $version.Stderr) -notmatch 'plexi\s+\d+\.\d+\.\d+') {
@@ -201,7 +202,7 @@ try {
     } else {
         # Readiness must be an actual zero exit from the native process.
         $startReply = Invoke-Cli 'host-start' @('host','start','--ephemeral','--timeout-secs','15') $true
-        $newHosts = @(Get-Process -Name 'plexi-alpha' -ErrorAction SilentlyContinue)
+        $newHosts = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
         if ($newHosts.Count -eq 1) { $ownedHost = $newHosts[0] }
         Snapshot 'after-start'
         if ($startReply.ExitCode -ne 0) { throw 'Host start failed before any pane-new; this is not a post-spawn pipe drop.' }

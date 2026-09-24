@@ -37,18 +37,6 @@ pub fn gated_command() -> clap::Command {
     gate_command(Cli::command(), crate::release::feature_enabled)
 }
 
-/// `Cli::try_parse_from` over the gated command tree.
-pub fn parse_gated<I, T>(args: I) -> Result<Cli, clap::Error>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString> + Clone,
-{
-    use clap::FromArgMatches;
-    let mut cmd = gated_command();
-    let mut matches = cmd.try_get_matches_from_mut(args)?;
-    Cli::from_arg_matches_mut(&mut matches).map_err(|e| e.format(&mut cmd))
-}
-
 pub fn gate_command(cmd: clap::Command, enabled: impl Fn(ReleaseFeature) -> bool) -> clap::Command {
     let mut cmd = cmd;
     if !enabled(ReleaseFeature::Marketplace) {
