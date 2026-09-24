@@ -17,6 +17,13 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 
 ## Feature map
 
+- **Host launch** — `plexi host start --ephemeral --timeout-secs 15` waits for
+  application readiness within its startup budget. A timeout returns nonzero;
+  the spawned host may still be running, so inspect `plexi host status --json`
+  before retrying. Status reports `ready`, `pane_count`, `pid`, and `socket`;
+  on Windows the PID comes from the named-pipe owner. Capture process exit and
+  stdout/stderr EOF with a deadline when driving CLI commands from a script.
+
 - **Panes** — create terminals, control their input and focus, inspect them, and
   coordinate work: `plexi pane --help`. Running a command in another pane:
   `pane command <id> "<cmd>" --enter` is the host-confirmed submit for an
