@@ -239,6 +239,9 @@ pub struct PlexiApp {
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
+    /// Stable identity of the selected palette result. The numeric index is
+    /// only a rendering/navigation position and may change on live updates.
+    pub(crate) palette_selected_key: Option<String>,
     /// Cached workspace root for the focused pane at the moment the palette
     /// was opened. Resolved once on open, not per-frame, to avoid repeated
     /// filesystem traversal in the egui draw loop.
@@ -1634,6 +1637,7 @@ impl PlexiApp {
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
+                    palette_selected_key: None,
                     palette_workspace_root: None,
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
@@ -1908,6 +1912,7 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            palette_selected_key: None,
             palette_workspace_root: None,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
@@ -2627,6 +2632,7 @@ impl PlexiApp {
                 show_command_palette: false,
                 palette_query: String::new(),
                 palette_selected: 0,
+                palette_selected_key: None,
                 palette_workspace_root: None,
                 palette_notes: Vec::new(),
                 palette_commands: Vec::new(),
@@ -3753,6 +3759,7 @@ impl eframe::App for PlexiApp {
                     if self.show_command_palette {
                         self.palette_query.clear();
                         self.palette_selected = 0;
+                        self.palette_selected_key = None;
                         self.palette_scroll_reset = true;
                         // Resolve focused pane workspace once at open-time — not per draw-frame —
                         // to avoid filesystem traversal in the egui hot path.

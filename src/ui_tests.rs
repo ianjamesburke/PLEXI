@@ -3296,6 +3296,7 @@ mod tests {
         h.with_app_mut(|app| {
             app.palette_query = "squad-alpha".to_string();
             app.palette_selected = 0;
+            app.palette_selected_key = None;
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!("_context"))
@@ -3304,24 +3305,34 @@ mod tests {
         h.with_app_mut(|app| {
             app.palette_query = "build log".to_string();
             app.palette_selected = 0;
+            app.palette_selected_key = None;
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!("_pane"))
             .expect("render failed");
 
         h.with_app_mut(|app| {
-            app.palette_query = "claude".to_string();
+            app.palette_query = " blocked ".to_string();
             app.palette_selected = 0;
+            app.palette_selected_key = None;
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!("_agent"))
+            .expect("render failed");
+
+        // PAL-05 visual evidence uses the same seeded, live-agent corpus at
+        // both responsive extremes. The narrow pass catches clipped headings,
+        // chips, and search rows that a wide modal can hide.
+        h.harness().set_size(egui::vec2(520.0, 400.0));
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("_agent_narrow"))
             .expect("render failed");
 
         assert!(
             h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
             "the palette should be open over all four agent panes"
         );
-        println!("Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png");
+        println!("Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)");
     }
 
     #[test]
