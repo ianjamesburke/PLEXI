@@ -98,19 +98,7 @@ impl PlexiApp {
             }
             return cmds;
         }
-        if self
-            .current_notify_id
-            .as_ref()
-            .map(|id| {
-                !self
-                    .pending_notifications
-                    .iter()
-                    .any(|n| &n.notify_id == id)
-            })
-            .unwrap_or(true)
-        {
-            self.current_notify_id = self.select_next_notification();
-        }
+        self.revalidate_notification_selection();
         let Some(current_id) = self.current_notify_id.clone() else {
             self.show_notification_modal = false;
             return cmds;
@@ -511,9 +499,7 @@ impl PlexiApp {
                                     pane_id: notif.sender_pane_id,
                                     notify_id: notif.notify_id.clone(),
                                     action_label: "cancel".to_string(),
-                                    value: Some(
-                                        crate::app::NOTIFY_OUTCOME_CANCELLED.to_string(),
-                                    ),
+                                    value: Some(crate::app::NOTIFY_OUTCOME_CANCELLED.to_string()),
                                     response_file: notif.response_file.clone(),
                                     host_action: None,
                                 });

@@ -212,7 +212,11 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 .unwrap_or_else(std::time::Instant::now);
             Some(PendingNotification {
                 notify_id: p.notify_id,
-                sender_pane_id: p.sender_pane_id,
+                // A pane id is only meaningful for the lifetime of one host
+                // process. Never let a tombstone inherit it: a newly-created
+                // pane can reuse the numeric id and would otherwise receive a
+                // stale action or be auto-dismissed as its apparent sender.
+                sender_pane_id: 0,
                 // Forced to 0 (unowned) on restore, same reasoning as
                 // `tombstoned: true` below: pane ids are re-issued fresh each
                 // session, so a persisted owner id could otherwise
@@ -369,13 +373,12 @@ impl PlexiApp {
         if let Some(win_idx) = window_idx {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_app_mut() {
-                    app.runtime.queue_outbound_event(
-                        crate::protocol::PlexiEvent::NotifyAction {
+                    app.runtime
+                        .queue_outbound_event(crate::protocol::PlexiEvent::NotifyAction {
                             notify_id,
                             action_label,
                             value,
-                        },
-                    );
+                        });
                 }
             }
         }
@@ -548,8 +551,7 @@ impl PlexiApp {
     /// A notification that fails either gate still queues and only updates the
     /// badge.
     pub(crate) fn notification_may_interrupt(&self, n: &PendingNotification) -> bool {
-        self.notification_is_visible(n)
-            && !self.notifications_focus_mode
+        self.notification_is_visible(n) && !self.notifications_focus_mode
     }
 
     /// The audible cue to play for an arriving notification, or `None` to stay
@@ -629,10 +631,27 @@ impl PlexiApp {
 
     /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
-        if n.deliver_after
-            .is_some_and(|t| t > std::time::Instant::now())
-        {
+        if self.notification_is_snoozed(n) {
             return false;
+        }
+        // Persisted notifications retain their original scope for context,
+        // but an origin may no longer exist after a workspace restore. Keep
+        // those tombstones reviewable instead of stranding them behind an id
+        // the user can no longer navigate to. They remain tombstoned and have
+        // no sender/action route (restoration clears sender_pane_id).
+        let origin_exists = match n.scope {
+            crate::protocol::NotifyScope::Global => true,
+            crate::protocol::NotifyScope::Window => self
+                .windows
+                .iter()
+                .any(|window| window.window_id == n.source_window_id),
+            crate::protocol::NotifyScope::Context => self
+                .router
+                .iter()
+                .any(|context| context.context_id == n.source_context_id),
+        };
+        if n.tombstoned && !origin_exists {
+            return true;
         }
         notification_visible(
             n.scope,
@@ -641,6 +660,15 @@ impl PlexiApp {
             self.windows[self.active_window].window_id,
             self.router.active().context_id,
         )
+    }
+
+    /// Snoozes are session-only and hide work from every notification surface:
+    /// queue selection, active badge, context badges, and per-pane badges.
+    /// A restart clears `deliver_after`, deliberately restoring the tombstone
+    /// for read-only review rather than resuming an interactive request.
+    pub(crate) fn notification_is_snoozed(&self, n: &PendingNotification) -> bool {
+        n.deliver_after
+            .is_some_and(|deliver_after| deliver_after > std::time::Instant::now())
     }
 
     /// Return ids of all *visible* notifications (for the current context),
@@ -664,6 +692,21 @@ impl PlexiApp {
     /// Return the first *visible* notification by required then arrival order.
     pub(crate) fn select_next_notification(&self) -> Option<String> {
         self.sorted_notification_ids().into_iter().next()
+    }
+
+    /// Revalidate the pinned queue id whenever the modal is about to render.
+    /// A context/window switch can leave a still-existing id outside the
+    /// current visibility scope; existence alone is not a valid selection.
+    pub(crate) fn revalidate_notification_selection(&mut self) {
+        let current_is_visible = self.current_notify_id.as_ref().is_some_and(|id| {
+            self.pending_notifications
+                .iter()
+                .find(|notification| notification.notify_id == *id)
+                .is_some_and(|notification| self.notification_is_visible(notification))
+        });
+        if !current_is_visible {
+            self.current_notify_id = self.select_next_notification();
+        }
     }
 
     /// (1-based position-in-sort-order, total visible len) for the current
@@ -832,7 +875,10 @@ impl PlexiApp {
         let ctx_id = ctx.context_id;
         self.pending_notifications
             .iter()
-            .filter(|n| notification_counts_toward_context(n.scope, n.source_context_id, ctx_id))
+            .filter(|n| {
+                !self.notification_is_snoozed(n)
+                    && notification_counts_toward_context(n.scope, n.source_context_id, ctx_id)
+            })
             .count()
     }
 
@@ -851,7 +897,10 @@ impl PlexiApp {
         let direct = self
             .pending_notifications
             .iter()
-            .filter(|n| notification_counts_toward_context(n.scope, n.source_context_id, ctx_id))
+            .filter(|n| {
+                !self.notification_is_snoozed(n)
+                    && notification_counts_toward_context(n.scope, n.source_context_id, ctx_id)
+            })
             .count();
         direct
             + self
