@@ -1599,7 +1599,9 @@ impl PlexiApp {
             }
             crate::host::keys::Action::RenameContext => self.open_context_rename(self.router.active_idx()),
             crate::host::keys::Action::ParkContext => self.toggle_park_active_context(),
-            crate::host::keys::Action::ContextZoomOut => self.zoom_out_of_context(),
+            crate::host::keys::Action::ContextZoomOut => {
+                self.zoom_out_of_context();
+            }
             crate::host::keys::Action::NewTab => {
                 self.new_tab(self.active_window, None, false, None);
                 self.mark_workspace_dirty();
