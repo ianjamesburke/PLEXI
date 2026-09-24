@@ -3203,10 +3203,10 @@ mod tests {
                 context_id: squad_ctx_id,
                 parent_id: None,
                 depth: 0,
-                parked: false,
+                parked: true,
             });
 
-            let squad: Vec<(u64, Pane)> = [
+            let mut squad: Vec<(u64, Pane)> = [
                 (
                     "claude-code",
                     crate::protocol::AgentState::Working,
@@ -3222,6 +3222,28 @@ mod tests {
             .into_iter()
             .map(|(agent, state, detail)| agent_pane(app, "claude", agent, state, detail))
             .collect();
+            let ordinary_id = app.host.alloc_pane_id();
+            squad.push((
+                ordinary_id,
+                Pane::App(Box::new(AppPane {
+                    pip_status: None,
+                    id: ordinary_id,
+                    runtime: AppRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    )),
+                    workspace_root: browser_root.clone(),
+                    permissions: AppPermissions::builtin(),
+                    manifest_id: "file-browser".to_string(),
+                    name: "parked build log".to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    hidden: false,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                })),
+            ));
 
             let mut squad_panes = std::collections::HashMap::new();
             let mut squad_tiles = egui_tiles::Tiles::default();
@@ -3249,6 +3271,20 @@ mod tests {
             app.context_active_window
                 .insert(squad_ctx_id, squad_window_id);
 
+            // A stale parked context is still a discoverable palette record,
+            // but intentionally has no row action because there is no live
+            // window to restore without desynchronizing router focus.
+            app.router.push(crate::host::context::Context {
+                name: "archived-without-window".to_string().into(),
+                root: browser_root.clone(),
+                description: None,
+                context_id: app.next_window_id,
+                parent_id: None,
+                depth: 0,
+                parked: true,
+            });
+            app.next_window_id += 1;
+
             app.show_command_palette = true;
             app.palette_selected = 0;
             app.sync_command_palette_focus();
@@ -3258,11 +3294,28 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render failed");
 
         h.with_app_mut(|app| {
+            app.palette_query = "squad-alpha".to_string();
+            app.palette_selected = 0;
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("_context"))
+            .expect("render failed");
+
+        h.with_app_mut(|app| {
+            app.palette_query = "build log".to_string();
+            app.palette_selected = 0;
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("_pane"))
+            .expect("render failed");
+
+        h.with_app_mut(|app| {
             app.palette_query = "claude".to_string();
             app.palette_selected = 0;
         });
         h.run_steps(3);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
+        h.save_screenshot(&evidence_png!("_agent"))
+            .expect("render failed");
 
         assert!(
             h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),

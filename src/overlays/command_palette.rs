@@ -22,12 +22,15 @@ enum PaletteEntry {
         context_id: u64,
         name: String,
         workspace_name: String,
-        metadata_chip: &'static str,
+        metadata_chips: Vec<&'static str>,
         pane_pips: Option<ListRowPips>,
         /// If set, focus this specific pane after navigating to the window.
         pane_id: Option<u64>,
         search_text: String,
     },
+    /// A context persists without a live window. It remains discoverable, but
+    /// cannot be restored until something recreates a window for it.
+    UnavailableContext { name: String, search_text: String },
     App {
         id: String,
         name: String,
@@ -77,7 +80,7 @@ enum PaletteEntry {
 impl PaletteEntry {
     fn group_rank(&self) -> usize {
         match self {
-            PaletteEntry::Context { .. } => 0,
+            PaletteEntry::Context { .. } | PaletteEntry::UnavailableContext { .. } => 0,
             PaletteEntry::Agent { .. } => 1,
             PaletteEntry::Note { .. } => 2,
             PaletteEntry::App { .. } | PaletteEntry::Builtin { .. } => 3,
@@ -91,9 +94,7 @@ impl PaletteEntry {
     /// only state-aware ordering in the palette.
     fn state_rank(&self) -> usize {
         match self {
-            PaletteEntry::Agent { state, .. }
-                if *state == crate::protocol::AgentState::Blocked =>
-            {
+            PaletteEntry::Agent { state, .. } if *state == crate::protocol::AgentState::Blocked => {
                 0
             }
             _ => 1,
@@ -107,6 +108,7 @@ impl PaletteEntry {
         let search_text = match self {
             PaletteEntry::Command { search_text, .. } => *search_text,
             PaletteEntry::Context { search_text, .. }
+            | PaletteEntry::UnavailableContext { search_text, .. }
             | PaletteEntry::Agent { search_text, .. }
             | PaletteEntry::App { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
@@ -135,6 +137,7 @@ impl PaletteEntry {
         match self {
             PaletteEntry::Command { search_text, .. } => search_text.contains(query),
             PaletteEntry::Context { search_text, .. }
+            | PaletteEntry::UnavailableContext { search_text, .. }
             | PaletteEntry::Agent { search_text, .. }
             | PaletteEntry::App { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
@@ -655,20 +658,18 @@ impl PlexiApp {
             // A non-empty query pierces the collapse — matching pane names
             // surface from inactive contexts so the palette stays a global
             // jump tool.
-            // Non-parked contexts that own at least one window. The jump
-            // target is context_active_window when it still belongs to the
-            // context, else the context's first window.
+            // Every context stays addressable here, including parked contexts
+            // and metadata that outlived its last live window. A parked
+            // context is always collapsed, even in the all-parked case where
+            // it happens to be the active router context.
             struct CtxInfo {
                 ctx_id: u64,
                 name: String,
-                win_idx: usize,
-                window_id: u64,
+                parked: bool,
+                resolved: Option<(usize, u64)>,
             }
             let mut contexts: Vec<CtxInfo> = Vec::new();
             for ctx_meta in self.router.iter() {
-                if ctx_meta.parked {
-                    continue;
-                }
                 let resolved =
                     self.context_active_window
                         .get(&ctx_meta.context_id)
@@ -684,22 +685,33 @@ impl PlexiApp {
                                 .enumerate()
                                 .find(|(_, w)| w.context_id == ctx_meta.context_id)
                         });
-                let Some((win_idx, win)) = resolved else {
-                    continue;
-                };
                 contexts.push(CtxInfo {
                     ctx_id: ctx_meta.context_id,
                     name: ctx_meta.name.to_string(),
-                    win_idx,
-                    window_id: win.window_id,
+                    parked: ctx_meta.parked,
+                    resolved: resolved.map(|(win_idx, win)| (win_idx, win.window_id)),
                 });
             }
             // rank_of already tiers active-context windows first, then recency.
-            contexts.sort_by_key(|c| rank_of(c.window_id));
+            contexts.sort_by_key(|c| {
+                c.resolved
+                    .map(|(_, window_id)| rank_of(window_id))
+                    .unwrap_or((2, usize::MAX))
+            });
 
             let mut ctx_entries: Vec<PaletteEntry> = Vec::new();
             for c in &contexts {
-                if c.ctx_id == active_ctx_id {
+                let Some((win_idx, window_id)) = c.resolved else {
+                    let search_text = searchable_text(&[c.name.as_str(), "parked unavailable"]);
+                    if query.is_empty() || search_text.contains(&query) {
+                        ctx_entries.push(PaletteEntry::UnavailableContext {
+                            name: c.name.clone(),
+                            search_text,
+                        });
+                    }
+                    continue;
+                };
+                if c.ctx_id == active_ctx_id && !c.parked {
                     // Active context — unpack every pane, one pip each.
                     for row in palette_pane_rows_for_context(
                         &self.windows,
@@ -720,7 +732,7 @@ impl PlexiApp {
                                 context_id: row.window_id,
                                 name: row.name,
                                 workspace_name: c.name.clone(),
-                                metadata_chip: row.chip,
+                                metadata_chips: vec![row.chip],
                                 pane_pips: Some(row.pips),
                                 pane_id: Some(row.pane_id),
                                 search_text,
@@ -728,15 +740,24 @@ impl PlexiApp {
                         }
                     }
                 } else {
-                    // Inactive context — one collapsed row, full pip strip.
+                    // Inactive and parked contexts — one collapsed row, full
+                    // pip strip. Search still pierces the collapse below.
                     let search_text = searchable_text(&[c.name.as_str()]);
                     if query.is_empty() || search_text.contains(&query) {
                         ctx_entries.push(PaletteEntry::Context {
-                            ctx_idx: c.win_idx,
-                            context_id: c.window_id,
+                            ctx_idx: win_idx,
+                            context_id: window_id,
                             name: c.name.clone(),
-                            workspace_name: String::new(),
-                            metadata_chip: "ctx",
+                            workspace_name: if c.parked {
+                                "Parked".to_string()
+                            } else {
+                                String::new()
+                            },
+                            metadata_chips: if c.parked {
+                                vec!["ctx", "parked"]
+                            } else {
+                                vec!["ctx"]
+                            },
                             pane_pips: palette_pips_for_context(
                                 &self.windows,
                                 &self.context_active_window,
@@ -769,8 +790,16 @@ impl PlexiApp {
                                     ctx_idx: row.win_idx,
                                     context_id: row.window_id,
                                     name: row.name,
-                                    workspace_name: c.name.clone(),
-                                    metadata_chip: row.chip,
+                                    workspace_name: if c.parked {
+                                        format!("Parked · {}", c.name)
+                                    } else {
+                                        c.name.clone()
+                                    },
+                                    metadata_chips: if c.parked {
+                                        vec![row.chip, "parked"]
+                                    } else {
+                                        vec![row.chip]
+                                    },
                                     pane_pips: Some(row.pips),
                                     pane_id: Some(row.pane_id),
                                     search_text,
@@ -1016,6 +1045,11 @@ impl PlexiApp {
                     }) => {
                         action = Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
                     }
+                    Some(PaletteEntry::UnavailableContext { name, .. }) => {
+                        log::warn!(
+                            "palette: parked context '{name}' has no live window to restore"
+                        );
+                    }
                     Some(PaletteEntry::Agent {
                         window_id,
                         pane_id,
@@ -1219,7 +1253,7 @@ impl PlexiApp {
                                 context_id,
                                 name,
                                 workspace_name,
-                                metadata_chip,
+                                metadata_chips,
                                 pane_pips,
                                 pane_id,
                                 ..
@@ -1235,7 +1269,7 @@ impl PlexiApp {
                                     ui.add_space(style::SPACE_XS);
                                 }
                                 let mut row = ListRow::new(name.as_str())
-                                    .metadata_chips(std::slice::from_ref(metadata_chip))
+                                    .metadata_chips(metadata_chips)
                                     .secondary(workspace_name.as_str())
                                     .selected(is_selected);
                                 if let Some(pips) = pane_pips.clone() {
@@ -1253,6 +1287,28 @@ impl PlexiApp {
                                 if row_response.row_hovered() {
                                     hover_select = Some(i);
                                 }
+                            }
+                            PaletteEntry::UnavailableContext { name, .. } => {
+                                if !shown_contexts_header {
+                                    shown_contexts_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("CONTEXTS")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
+                                }
+                                // This is deliberately not a click target: there
+                                // is no window to focus, and switching the
+                                // router alone would leave it out of sync with
+                                // active_window. The row makes that state
+                                // explicit instead of silently losing it.
+                                ListRow::new(name.as_str())
+                                    .metadata_chips(&["ctx", "parked", "unavailable"])
+                                    .secondary("Parked · no live window to restore")
+                                    .selected(is_selected)
+                                    .show(ui, &colors);
                             }
                             PaletteEntry::Agent {
                                 window_id,
@@ -1607,10 +1663,23 @@ impl PlexiApp {
     /// resolver, #0336) — it switches the sidebar context via `switch_workspace`
     /// rather than mutating `active_window` mid-spawn.
     pub(crate) fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
-        let target_ctx_id = self.windows[ctx_idx].context_id;
+        let Some(target_window) = self
+            .windows
+            .get(ctx_idx)
+            .filter(|window| window.window_id == win_id)
+        else {
+            log::warn!("palette: target window {win_id} disappeared before context focus");
+            return;
+        };
+        let target_ctx_id = target_window.context_id;
         log::info!("palette: jump to context {target_ctx_id} (window {win_id}, pane {pane_id:?})");
         if let Some(ctx_idx_sidebar) = self.router.position(|c| c.context_id == target_ctx_id) {
-            if ctx_idx_sidebar != self.router.active_idx() {
+            if self.router.get(ctx_idx_sidebar).parked {
+                // Parking keeps windows alive. Reuse the established unpark
+                // transition before targeting this row's specific window/pane
+                // so agent and ordinary-pane results restore consistently.
+                self.unpark_context(ctx_idx_sidebar);
+            } else if ctx_idx_sidebar != self.router.active_idx() {
                 // switch_workspace → pick_active_context_from_workspace sets
                 // active_window based on context_active_window. We override it
                 // immediately below.
@@ -1717,7 +1786,7 @@ mod tests {
                 context_id: 1,
                 name: "Workspace".to_string(),
                 workspace_name: String::new(),
-                metadata_chip: "ctx",
+                metadata_chips: vec!["ctx"],
                 pane_pips: None,
                 pane_id: None,
                 search_text: "workspace".to_string(),
@@ -1729,6 +1798,29 @@ mod tests {
         assert!(matches!(entries[0], PaletteEntry::Context { .. }));
         assert!(matches!(entries[1], PaletteEntry::App { .. }));
         assert!(matches!(entries[2], PaletteEntry::Command { .. }));
+    }
+
+    #[test]
+    fn parked_and_windowless_context_entries_remain_searchable() {
+        let parked = PaletteEntry::Context {
+            ctx_idx: 1,
+            context_id: 70,
+            name: "parked release work".to_string(),
+            workspace_name: "Parked".to_string(),
+            metadata_chips: vec!["ctx", "parked"],
+            pane_pips: None,
+            pane_id: None,
+            search_text: "parked release work".to_string(),
+        };
+        let unavailable = PaletteEntry::UnavailableContext {
+            name: "parked without window".to_string(),
+            search_text: "parked without window unavailable".to_string(),
+        };
+
+        assert!(parked.matches_query("release"));
+        assert!(unavailable.matches_query("window"));
+        assert_eq!(parked.group_rank(), 0);
+        assert_eq!(unavailable.group_rank(), 0);
     }
 
     /// The render loop's `shown_contexts_header` flag prints CONTEXTS the
@@ -1752,7 +1844,7 @@ mod tests {
                 context_id: 1,
                 name: "Workspace A".to_string(),
                 workspace_name: String::new(),
-                metadata_chip: "ctx",
+                metadata_chips: vec!["ctx"],
                 pane_pips: None,
                 pane_id: None,
                 search_text: "workspace a".to_string(),
@@ -1762,7 +1854,7 @@ mod tests {
                 context_id: 2,
                 name: "Workspace B".to_string(),
                 workspace_name: String::new(),
-                metadata_chip: "ctx",
+                metadata_chips: vec!["ctx"],
                 pane_pips: None,
                 pane_id: None,
                 search_text: "workspace b".to_string(),
@@ -2204,7 +2296,7 @@ mod tests {
                 context_id: 1,
                 name: "claude-ctx".to_string(),
                 workspace_name: String::new(),
-                metadata_chip: "ctx",
+                metadata_chips: vec!["ctx"],
                 pane_pips: None,
                 pane_id: None,
                 search_text: "claude-ctx".to_string(),
@@ -2289,7 +2381,7 @@ mod tests {
             context_id: 7,
             parent_id: None,
             depth: 0,
-            parked: false,
+            parked: true,
         });
 
         h.app.jump_to_agent_pane(70, 10, "claude-code");
@@ -2302,6 +2394,85 @@ mod tests {
             .and_then(|tile| h.app.windows[1].tree.tiles.get(tile));
         assert!(matches!(focused, Some(egui_tiles::Tile::Pane(10))));
         assert_eq!(h.app.context_active_window.get(&7), Some(&70));
+        assert!(
+            !h.app.router.get(1).parked,
+            "agent selection restores parked work"
+        );
+    }
+
+    #[test]
+    fn palette_jump_unparks_and_focuses_a_parked_context_pane() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let target = test_window(7, 70, 1, 0, &[(10, false), (11, false)], 0);
+        h.app.windows.push(target);
+        h.app.router.push(crate::host::context::Context {
+            name: "parked-alpha".to_string().into(),
+            root: std::env::temp_dir(),
+            description: None,
+            context_id: 7,
+            parent_id: None,
+            depth: 0,
+            parked: true,
+        });
+
+        h.app.jump_to_context(1, 70, Some(11));
+
+        assert!(
+            !h.app.router.get(1).parked,
+            "selection restores the context"
+        );
+        assert_eq!(h.app.router.active().context_id, 7);
+        assert_eq!(h.app.active_window, 1);
+        let focused = h.app.windows[1]
+            .focused_pane
+            .and_then(|tile| h.app.windows[1].tree.tiles.get(tile));
+        assert!(matches!(focused, Some(egui_tiles::Tile::Pane(11))));
+    }
+
+    #[test]
+    fn palette_jump_restores_the_last_parked_context() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let idx = h.app.router.active_idx();
+        let window_id = h.app.windows[h.app.active_window].window_id;
+        h.app.router.get_mut(idx).parked = true;
+
+        h.app.jump_to_context(h.app.active_window, window_id, None);
+
+        assert!(!h.app.router.get(idx).parked);
+        assert_eq!(h.app.router.active_idx(), idx);
+        assert_eq!(h.app.active_window, 0);
+    }
+
+    #[test]
+    fn palette_jump_restores_the_selected_context_when_all_are_parked() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let first_idx = h.app.router.active_idx();
+        h.app.router.get_mut(first_idx).parked = true;
+        h.app
+            .windows
+            .push(test_window(7, 70, 1, 0, &[(10, false)], 0));
+        h.app.router.push(crate::host::context::Context {
+            name: "second-parked".to_string().into(),
+            root: std::env::temp_dir(),
+            description: None,
+            context_id: 7,
+            parent_id: None,
+            depth: 0,
+            parked: true,
+        });
+
+        h.app.jump_to_context(1, 70, Some(10));
+
+        assert!(h.app.router.get(0).parked, "other parked work stays parked");
+        assert!(!h.app.router.get(1).parked, "selected work is restored");
+        assert_eq!(h.app.router.active().context_id, 7);
+        assert_eq!(h.app.active_window, 1);
     }
 
     #[test]
