@@ -1039,6 +1039,7 @@ struct TextInputProbe {
 struct KeyBurstProbe {
     received: Vec<String>,
     released: Vec<String>,
+    text: Vec<String>,
 }
 
 impl crate::app::app_trait::App for KeyBurstProbe {
@@ -1076,6 +1077,9 @@ impl crate::app::app_trait::App for KeyBurstProbe {
                     self.released.push(name);
                 }
             }
+            if let egui::Event::Text(text) = event {
+                self.text.push(text.clone());
+            }
         }
         crate::app::app_trait::KeyDisposition::Consumed
     }
@@ -1084,6 +1088,7 @@ impl crate::app::app_trait::App for KeyBurstProbe {
         Some(serde_json::json!({
             "received": self.received,
             "released": self.released,
+            "text": self.text,
         }))
     }
 }
@@ -4158,6 +4163,34 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
         serde_json::json!([] as [&str; 0]),
         "keys typed during sidebar rename must not reach the focused app pane"
     );
+}
+
+#[test]
+fn notification_modal_keys_do_not_reach_focused_app_pane() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(Box::<KeyBurstProbe>::default(), AppPermissions::builtin(), tmp.path().to_path_buf(), None, Some("split_h"), None);
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.app.pending_notifications.push(crate::app::PendingNotification {
+        notify_id: "input-key-capture".into(),
+        kind: crate::protocol::NotifyKind::Input,
+        input_prompt: Some("Reply".into()),
+        scope: crate::protocol::NotifyScope::Global,
+        ..Default::default()
+    });
+    h.app.show_notification_modal = true;
+    h.app.current_notify_id = Some("input-key-capture".into());
+    h.run_frames(1);
+    frame_with_events(&mut h, vec![
+        egui::Event::Text("typed into modal".into()),
+        egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+        egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+    ]);
+    let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state()).expect("burst probe state");
+    assert_eq!(state["received"], serde_json::json!([] as [&str; 0]));
+    assert_eq!(state["text"], serde_json::json!([] as [&str; 0]));
 }
 
 // -- First-boot context seeding (stint 0436) ------------------------------

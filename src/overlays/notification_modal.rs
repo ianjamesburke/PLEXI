@@ -64,6 +64,16 @@ fn draw_notification_image(
 }
 
 impl PlexiApp {
+    /// Preserve an in-progress Input reply before a non-terminal transition.
+    pub(crate) fn stash_notification_draft(&mut self) {
+        if !self.modal_state_notify_id.is_empty() {
+            self.notification_input_drafts.insert(
+                self.modal_state_notify_id.clone(),
+                self.modal_input_buffer.clone(),
+            );
+        }
+    }
+
     pub(crate) fn draw_notification_modal(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         use crate::app::notification_image;
         use crate::protocol::NotifyKind;
@@ -124,10 +134,7 @@ impl PlexiApp {
         };
         if self.modal_state_notify_id != front_key {
             if !self.modal_state_notify_id.is_empty() {
-                self.notification_input_drafts.insert(
-                    self.modal_state_notify_id.clone(),
-                    std::mem::take(&mut self.modal_input_buffer),
-                );
+                self.stash_notification_draft();
             }
             self.modal_state_notify_id = front_key;
             self.modal_focused_option = 0;
@@ -180,6 +187,9 @@ impl PlexiApp {
                     format!("Pane {}", notif.sender_pane_id)
                 }
             });
+        let submit_modifier = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
+        let submit_keys = [submit_modifier, "\u{21B5}"];
+        let input_placeholder = format!("Type. Enter for newline, {submit_modifier}↵ to submit.");
 
         // Live position + total, recomputed every frame. Total reflects the
         // current queue size so if a new notification arrives while this
@@ -302,11 +312,12 @@ impl PlexiApp {
         // swallows clicks (no click-away — notifications are dismissed
         // explicitly) and Escape stays with the key logic above.
         let colors = self.colors;
+        let max_body_height = (ctx.content_rect().height() - 2.0 * style::SPACE_XL).max(0.0);
         crate::ui::overlay::ModalShell::centered("notification_modal")
             .width(style::MODAL_WIDTH_NOTIFY)
             .order(egui::Order::Tooltip)
             .click_away(false)
-            .show(ctx, &colors, |ui| {
+            .show_scroll_body(ctx, &colors, max_body_height, "notification_modal_body", |ui| {
                 // Header: notification dot + kind label · queue indicator.
                 ui.horizontal(|ui| {
                     let (dot_rect, _) =
@@ -327,23 +338,19 @@ impl PlexiApp {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if queue_len > 1 {
-                            // RTL layout: L first (rightmost), then H.
-                            crate::ui::shortcuts::key_chip(
-                                ui,
-                                "L",
-                                &self.colors,
-                                egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
-                            );
-                            ui.add_space(4.0);
-                            crate::ui::shortcuts::key_chip(
-                                ui,
-                                "H",
-                                &self.colors,
-                                egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
-                            );
-                            ui.add_space(8.0);
+                            let next = chrome_button(ui, "Next", ButtonKind::Secondary, &self.colors, 0.0);
+                            if next.clicked() {
+                                self.stash_notification_draft();
+                                self.cycle_notification(1);
+                            }
+                            let previous = chrome_button(ui, "Previous", ButtonKind::Secondary, &self.colors, 0.0);
+                            if previous.clicked() {
+                                self.stash_notification_draft();
+                                self.cycle_notification(-1);
+                            }
+                            ui.add_space(style::SPACE_SM);
                             ui.label(
-                                RichText::new(format!("{position_idx} of {queue_len}  ·  cycle"))
+                                RichText::new(format!("{position_idx} of {queue_len}"))
                                     .size(style::TEXT_HINT)
                                     .color(self.colors.text_dim),
                             );
@@ -480,7 +487,7 @@ impl PlexiApp {
                             // exceeds the visible row count.
                             crate::ui::text_field::TextArea::multiline(
                                 egui::Id::new("notification_modal_input"),
-                                "Type. Enter for newline, \u{2318}\u{21B5} to submit.",
+                                &input_placeholder,
                             )
                             .font(egui::FontId::proportional(16.0))
                             .rows(6)
@@ -615,7 +622,7 @@ impl PlexiApp {
                             let hints = [
                                 crate::ui::hints::HintGroup::new(&["Enter"], "newline"),
                                 crate::ui::hints::HintGroup::new(
-                                    &["\u{2318}", "\u{21B5}"],
+                                    &submit_keys,
                                     "submit",
                                 ),
                             ];
@@ -625,7 +632,7 @@ impl PlexiApp {
                             let hints = [
                                 crate::ui::hints::HintGroup::new(&["Enter"], "newline"),
                                 crate::ui::hints::HintGroup::new(
-                                    &["\u{2318}", "\u{21B5}"],
+                                    &submit_keys,
                                     "submit",
                                 ),
                                 crate::ui::hints::HintGroup::new(&["Esc"], "later"),
@@ -737,6 +744,7 @@ impl PlexiApp {
         // For required notifications, Esc does nothing: the user must
         // acknowledge or pick an option.
         if action_cmd.is_none() && esc_pressed && !notif.required {
+            self.stash_notification_draft();
             self.show_notification_modal = false;
             self.modal_focused_option = 0;
             // `current_notify_id` intentionally stays set so the same

@@ -420,6 +420,54 @@ fn stale_pinned_notification_is_replaced_after_context_switch() {
     assert_eq!(h.app.current_notify_id.as_deref(), Some("global"));
 }
 
+#[test]
+fn input_draft_survives_later_and_return() {
+    let mut h = HostHarness::new();
+    h.app.pending_notifications.push(PendingNotification {
+        notify_id: "input-later".into(),
+        kind: crate::protocol::NotifyKind::Input,
+        input_prompt: Some("Reply".into()),
+        scope: crate::protocol::NotifyScope::Global,
+        ..Default::default()
+    });
+    h.app.show_notification_modal = true;
+    h.app.current_notify_id = Some("input-later".into());
+    h.run_frames(1);
+    h.app.modal_input_buffer = "keep this reply".into();
+    h.app.stash_notification_draft();
+    h.app.show_notification_modal = false; // Later
+    h.run_frames(1);
+    h.app.show_notification_modal = true;
+    h.run_frames(1);
+    assert_eq!(h.app.modal_input_buffer, "keep this reply");
+}
+
+#[test]
+fn input_draft_survives_queue_navigation() {
+    let mut h = HostHarness::new();
+    for notify_id in ["input-first", "message-second"] {
+        h.app.pending_notifications.push(PendingNotification {
+            notify_id: notify_id.into(),
+            kind: if notify_id == "input-first" { crate::protocol::NotifyKind::Input } else { crate::protocol::NotifyKind::Message },
+            input_prompt: Some("Reply".into()),
+            scope: crate::protocol::NotifyScope::Global,
+            ..Default::default()
+        });
+    }
+    h.app.show_notification_modal = true;
+    h.app.current_notify_id = Some("input-first".into());
+    h.run_frames(1);
+    h.app.modal_input_buffer = "draft before reviewing".into();
+    h.app.stash_notification_draft();
+    h.app.cycle_notification(1);
+    h.run_frames(1);
+    assert_eq!(h.app.current_notify_id.as_deref(), Some("message-second"));
+    h.app.cycle_notification(-1);
+    h.run_frames(1);
+    assert_eq!(h.app.current_notify_id.as_deref(), Some("input-first"));
+    assert_eq!(h.app.modal_input_buffer, "draft before reviewing");
+}
+
 // ── #1635: auto-dismiss when originating pane is focused ─────────────────────
 
 /// Informational arrivals from a focused pane are already visible to the user,
