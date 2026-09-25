@@ -56,6 +56,9 @@ pub struct ViewState {
     /// Source-anchored scroll intent that `scroll_y` is resolved from every
     /// frame. See [`ScrollAnchor`].
     pub anchor: ScrollAnchor,
+    /// Explicit scrolling enters browsing mode until the next caret command.
+    /// A resize must not pull a reader back to an intentionally hidden caret.
+    pub follow_caret: bool,
 }
 
 impl Default for ViewState {
@@ -69,6 +72,7 @@ impl Default for ViewState {
             layout: DisplayLayout::default(),
             line_extras: Vec::new(),
             anchor: ScrollAnchor::default(),
+            follow_caret: true,
         }
     }
 }
@@ -180,7 +184,8 @@ impl ViewState {
     /// viewport height (0 when the content fits entirely).
     #[must_use]
     fn max_scroll(&self, line_count: usize) -> f32 {
-        (self.content_height(line_count) - self.viewport_height).max(0.0)
+        let bottom_space = (self.line_height * 4.0).min(self.viewport_height * 0.5);
+        (self.content_height(line_count) + bottom_space - self.viewport_height).max(0.0)
     }
 
     /// The [`ScrollAnchor`] naming the source position at content-space
@@ -228,7 +233,9 @@ impl ViewState {
         if self.layout.source_line_count() == line_count {
             if let Some(line_layout) = self.layout.line(line) {
                 let row_in_line = line_layout.row_for_source_column(self.anchor.cursor.column);
-                return self.line_top(line) + row_in_line as f32 * self.line_height + self.anchor.offset;
+                return self.line_top(line)
+                    + row_in_line as f32 * self.line_height
+                    + self.anchor.offset;
             }
         }
         self.line_top(line) + self.anchor.offset
@@ -241,6 +248,7 @@ impl ViewState {
     pub fn set_scroll_y(&mut self, y: f32, line_count: usize) {
         self.scroll_y = y.clamp(0.0, self.max_scroll(line_count));
         self.anchor = self.anchor_at(self.scroll_y, line_count);
+        self.follow_caret = false;
     }
 
     /// Re-derives `scroll_y` from `anchor` against the current viewport size
@@ -250,7 +258,9 @@ impl ViewState {
     /// same visible content instead of compounding a viewport-height clamp
     /// into permanent scroll loss (stint 0773).
     pub fn resolve_scroll(&mut self, line_count: usize) {
-        self.scroll_y = self.anchor_y(line_count).clamp(0.0, self.max_scroll(line_count));
+        self.scroll_y = self
+            .anchor_y(line_count)
+            .clamp(0.0, self.max_scroll(line_count));
     }
 
     /// Adjusts `scroll_x` minimally so a caret at horizontal offset `x`
@@ -285,21 +295,34 @@ impl ViewState {
     /// Adjusts `scroll_y` minimally so the cursor's display row is visible,
     /// then reanchors to the result.
     pub fn scroll_to_cursor(&mut self, cursor: Cursor, line_count: usize) {
+        let top = self.cursor_top(cursor, line_count);
+        let bottom = top + self.line_height;
+        let margin = (self.line_height * 2.0).min(self.viewport_height * 0.25);
+        let target = if top < self.scroll_y + margin {
+            top - margin
+        } else if bottom > self.scroll_y + self.viewport_height - margin {
+            bottom - self.viewport_height + margin
+        } else {
+            self.scroll_y
+        };
+        self.set_scroll_y(target, line_count);
+        self.follow_caret = true;
+    }
+
+    pub fn cursor_visible(&self, cursor: Cursor, line_count: usize) -> bool {
+        let top = self.cursor_top(cursor, line_count);
+        self.viewport_height > 0.0
+            && top >= self.scroll_y
+            && top + self.line_height <= self.scroll_y + self.viewport_height
+    }
+
+    fn cursor_top(&self, cursor: Cursor, line_count: usize) -> f32 {
         let display_row = if self.layout.source_line_count() == line_count {
             self.layout.display_row_for_cursor(cursor)
         } else {
             cursor.line
         };
-        let top = display_row as f32 * self.line_height + self.extra_before(cursor.line);
-        let bottom = top + self.line_height;
-        let target = if top < self.scroll_y {
-            top
-        } else if bottom > self.scroll_y + self.viewport_height {
-            bottom - self.viewport_height
-        } else {
-            self.scroll_y
-        };
-        self.set_scroll_y(target, line_count);
+        display_row as f32 * self.line_height + self.extra_before(cursor.line)
     }
 }
 
@@ -352,7 +375,7 @@ mod tests {
         v.set_scroll_y(-5.0, 50);
         assert_eq!(v.scroll_y, 0.0);
         v.set_scroll_y(1e9, 50);
-        assert_eq!(v.scroll_y, 400.0); // 500 content - 100 viewport
+        assert_eq!(v.scroll_y, 440.0); // includes four rows of bottom space
 
         // Content shorter than viewport pins to 0.
         v.set_scroll_y(1e9, 5);
@@ -414,8 +437,8 @@ mod tests {
         let mut v = view();
         v.scroll_to_line(20, 100);
         v.scroll_to_cursor(Cursor::new(3, 0), 100);
-        assert_eq!(v.scroll_y, 30.0);
-        assert_eq!(v.anchor.cursor, Cursor::new(3, 0));
+        assert_eq!(v.scroll_y, 10.0);
+        assert_eq!(v.anchor.cursor, Cursor::new(1, 0));
         assert_eq!(v.anchor.offset, 0.0);
     }
 
@@ -488,7 +511,7 @@ mod tests {
         v.scroll_y = 0.0;
         v.viewport_height = 10.0;
         v.scroll_to_cursor(Cursor::new(0, 7), 2);
-        assert_eq!(v.scroll_y, 20.0);
+        assert_eq!(v.scroll_y, 22.5);
     }
 
     #[test]
