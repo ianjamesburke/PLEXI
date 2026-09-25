@@ -538,19 +538,33 @@ impl PlexiApp {
         true
     }
 
-    /// The one interruption decision for a notification, consumed by every
-    /// surface that interrupts the user: the modal auto-open, the audible cue,
-    /// and the snooze-wake reopen. They all answer the same question — "may
-    /// this notification pull the user's attention right now?" — and splitting
-    /// that predicate is exactly how the cue once fired for notifications the
-    /// user could not even see. Gates, in order:
+    /// Whether this notification needs an intentional human response rather
+    /// than ordinary review. Choice and input notifications always need a path
+    /// back to their producer; a required message is an explicit prompt too.
+    pub(crate) fn notification_requires_response(n: &PendingNotification) -> bool {
+        n.required || !matches!(n.kind, crate::protocol::NotifyKind::Message)
+    }
+
+    /// The one decision-interruption policy for a notification. Informational
+    /// messages deliberately stay in the queue and update its badges; only
+    /// visible decisions open the review modal. Gates, in order:
     ///   1. Visibility — Global always; Window/Context only when the source
     ///      matches the active window/context (and the entry is not snoozed).
     ///   2. focus_mode off — the global mute gate.
+    ///   3. the notification requires a response.
     ///
     /// A notification that fails either gate still queues and only updates the
     /// badge.
     pub(crate) fn notification_may_interrupt(&self, n: &PendingNotification) -> bool {
+        self.notification_is_visible(n)
+            && !self.notifications_focus_mode
+            && Self::notification_requires_response(n)
+    }
+
+    /// Optional sound is an arrival cue, not a modal takeover. Visible
+    /// informational messages therefore remain audible when configured while
+    /// continuing to arrive quietly in the review queue.
+    fn notification_may_play_cue(&self, n: &PendingNotification) -> bool {
         self.notification_is_visible(n) && !self.notifications_focus_mode
     }
 
@@ -560,15 +574,13 @@ impl PlexiApp {
     /// audio device.
     ///
     /// Silent when no `[notifications] sound` is configured, and whenever
-    /// [`Self::notification_may_interrupt`] says the notification may not
-    /// interrupt — the cue never fires for a notification the modal would not
-    /// show. The `enabled = false` case never reaches here — the master switch
-    /// drops the notification first.
+    /// focus mode suppresses arrival cues. The `enabled = false` case never
+    /// reaches here — the master switch drops the notification first.
     pub(crate) fn notification_cue_request(
         &self,
         notification: &PendingNotification,
     ) -> Option<crate::media::audio::PlaybackRequest> {
-        if !self.notification_may_interrupt(notification) {
+        if !self.notification_may_play_cue(notification) {
             return None;
         }
         let source = self.notifications_sound.as_ref()?;
