@@ -820,11 +820,13 @@ impl<'a> EditorWidget<'a> {
         if reveal_after_resize {
             log::info!("editor: restoring visible caret after viewport resize");
         }
-        if let Some(cursor) = self.view.pending_reveal.take() {
-            self.view.scroll_to_cursor(cursor, line_count);
-        }
-        if edited || reveal_after_resize {
-            let caret = self.doc.cursor();
+        let pending_reveal = self.view.pending_reveal.take();
+        if edited || reveal_after_resize || pending_reveal.is_some() {
+            let caret = if edited {
+                self.doc.cursor()
+            } else {
+                pending_reveal.unwrap_or_else(|| self.doc.cursor())
+            };
             self.view.scroll_to_cursor(caret, line_count);
             if !soft_wrap {
                 self.view
@@ -927,6 +929,7 @@ impl<'a> EditorWidget<'a> {
                 && cache.pixels_per_point_bits == pixels_per_point_bits
                 && cache.soft_wrap == soft_wrap
                 && cache.font_id == *font_id
+                && self.view.layout.source_line_count() == self.doc.buffer().line_count()
             {
                 return cache.galleys;
             }
@@ -1755,6 +1758,18 @@ mod tests {
                 .as_ptr(),
             "scroll-only frames must reuse the document layout"
         );
+    }
+
+    #[test]
+    fn scroll_regression_fresh_view_rebuilds_cached_mapping() {
+        let mut h = harness(&"a wrapped paragraph ".repeat(100));
+        h.set_size(Vec2::new(120.0, 100.0));
+        h.run();
+        let rows = h.state().view.layout.display_row_count();
+        assert!(rows > 10);
+        h.state_mut().view = ViewState::default();
+        h.step();
+        assert_eq!(h.state().view.layout.display_row_count(), rows);
     }
 
     #[test]
