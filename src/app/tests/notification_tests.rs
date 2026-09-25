@@ -905,6 +905,46 @@ fn enqueue_notification_queues_when_enabled() {
     );
 }
 
+#[test]
+fn native_wasm_notification_contract_accepts_message_and_rejects_icon() {
+    assert_eq!(crate::app::dispatch::native_wasm_notification_contract_error(None), None);
+    assert_eq!(
+        crate::app::dispatch::native_wasm_notification_contract_error(Some("check")),
+        Some("native WASM notifications support title and body only; icon is unsupported")
+    );
+}
+
+#[test]
+fn enqueue_notification_rejects_when_live_queue_is_full() {
+    let mut h = HostHarness::new();
+    let limit = crate::app::notifications::MAX_PENDING_NOTIFICATIONS;
+    h.app.pending_notifications = (0..limit)
+        .map(|index| PendingNotification { notify_id: format!("already-queued-{index}"), ..Default::default() })
+        .collect();
+    assert!(!h.app.enqueue_notification(
+        crate::app::notifications::NotifySource::App,
+        PendingNotification { notify_id: "rejected-at-capacity".into(), ..Default::default() },
+    ));
+    assert_eq!(h.app.pending_notifications.len(), limit);
+    assert!(h.app.pending_notifications.iter().all(|n| n.notify_id != "rejected-at-capacity"));
+}
+
+#[test]
+fn notification_removal_prunes_image_cache() {
+    let mut h = HostHarness::new();
+    for index in 0..8 {
+        let notify_id = format!("attachment-{index}");
+        h.app.pending_notifications.push(PendingNotification {
+            notify_id: notify_id.clone(), dismiss_owner_pane_id: 41, ..Default::default()
+        });
+        h.app.notification_images.insert(notify_id.clone(), crate::app::NotificationImageState::Placeholder {
+            reason: "test attachment".into(),
+        });
+        h.app.dismiss_notification_from_sender(&notify_id, 41).expect("owner may dismiss its own notification");
+        assert!(h.app.notification_images.is_empty());
+    }
+}
+
 /// Informational arrivals never take keyboard focus; decisions still do.
 #[test]
 fn enqueue_notification_only_interrupts_for_decisions() {

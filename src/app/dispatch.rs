@@ -8,6 +8,10 @@ use super::{
     register_directed_pipe_on_target, PlexiApp,
 };
 
+pub(crate) fn native_wasm_notification_contract_error(icon: Option<&str>) -> Option<&'static str> {
+    icon.map(|_| "native WASM notifications support title and body only; icon is unsupported")
+}
+
 impl PlexiApp {
     /// Feed keyboard input to the focused app pane. Keys only go to the
     /// focused pane (that's the whole point of focus). Command drain
@@ -374,18 +378,23 @@ impl PlexiApp {
                         }
                         WasmHostEffect::Notify { title, body, icon } => {
                             if let Some(window_index) = source_window_index {
+                                if let Some(error) = native_wasm_notification_contract_error(icon.as_deref()) {
+                                    let error = error.to_string();
+                                    log::warn!("wasm effect: notify rejected pane_id={pane_id}: {error}");
+                                    Some(InputEvent::NotifyResult(Err(error)))
+                                } else {
                                 let source_context_id = self.windows[window_index].context_id;
                                 let source_window_id = self.windows[window_index].window_id;
                                 let notify_id = crate::app::notifications::new_notify_id(&format!(
                                     "wasm:{pane_id}"
                                 ));
                                 log::info!(
-                                    "wasm effect: notify pane_id={pane_id} context_id={source_context_id} icon={icon:?}"
+                                    "wasm effect: notify pane_id={pane_id} context_id={source_context_id}"
                                 );
                                 // `WasmHostEffect::Notify` carries no scope, so
                                 // a guest gets the shared default and cannot
                                 // request global; that needs a WIT change.
-                                self.enqueue_notification(
+                                let queued = self.enqueue_notification(
                                     crate::app::notifications::NotifySource::Wasm,
                                     PendingNotification {
                                         notify_id,
@@ -397,7 +406,10 @@ impl PlexiApp {
                                         ..Default::default()
                                     },
                                 );
-                                Some(InputEvent::NotifyResult(Ok(())))
+                                Some(InputEvent::NotifyResult(queued.then_some(()).ok_or_else(|| {
+                                    "notification was rejected because delivery is disabled or the queue is full".to_string()
+                                })))
+                                }
                             } else {
                                 let error = format!("source pane {pane_id} is closed");
                                 log::warn!("wasm effect: notify failed: {error}");

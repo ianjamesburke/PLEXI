@@ -286,6 +286,9 @@ interface types {
         repeat: bool,
     }
 
+    // Native WASM notification contract: informational title/body only. `icon`
+    // remains in this wire record for compatibility but a present value is
+    // rejected by the host; rich PGAP notification fields are unavailable.
     record notification-effect {
         title: string,
         body: string,

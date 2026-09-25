@@ -8,6 +8,14 @@ pub(crate) const NOTIFY_OUTCOME_CANCELLED: &str = "cancelled";
 pub(crate) const NOTIFY_OUTCOME_DISABLED: &str = "disabled";
 pub(crate) const NOTIFY_OUTCOME_INVALID: &str = "invalid_choice";
 pub(crate) const NOTIFY_OUTCOME_SOURCE_ENDED: &str = "source_ended";
+pub(crate) const NOTIFY_OUTCOME_QUEUE_FULL: &str = "queue_full";
+
+/// Live notifications are deliberately bounded. When this many entries are
+/// waiting, a new arrival is rejected instead of evicting unread work. A
+/// producer that supplied a response route receives `queue_full`; native WASM
+/// receives an error result. Persisted history is subject to the same bound on
+/// the next live arrival, rather than growing without limit for a session.
+pub(crate) const MAX_PENDING_NOTIFICATIONS: usize = 100;
 
 #[derive(Clone)]
 pub(crate) struct PendingNotification {
@@ -465,8 +473,9 @@ impl PlexiApp {
     /// of the above, and a fifth surface cannot skip the gate without deleting
     /// code here.
     ///
-    /// Returns `true` when the notification was queued, `false` when the master
-    /// switch dropped it.
+    /// Returns `true` when the notification was queued. `false` means the
+    /// master switch dropped it or the bounded live queue was full; in either
+    /// case a producer response route receives an explicit terminal outcome.
     pub(crate) fn enqueue_notification(
         &mut self,
         source: NotifySource,
@@ -483,6 +492,23 @@ impl PlexiApp {
                 notification.notify_id,
                 "disabled".to_string(),
                 Some(NOTIFY_OUTCOME_DISABLED.to_string()),
+                notification.response_file,
+                None,
+            );
+            return false;
+        }
+
+        if self.pending_notifications.len() >= MAX_PENDING_NOTIFICATIONS {
+            log::info!(
+                "notify: rejected source={} title={:?} — live queue is full (limit={MAX_PENDING_NOTIFICATIONS})",
+                source.as_str(),
+                notification.title
+            );
+            self.deliver_notify_action(
+                notification.sender_pane_id,
+                notification.notify_id,
+                "queue_full".to_string(),
+                Some(NOTIFY_OUTCOME_QUEUE_FULL.to_string()),
                 notification.response_file,
                 None,
             );
@@ -614,11 +640,31 @@ impl PlexiApp {
     }
 
     /// Persist current pending notifications to `config_dir()/notifications.json`.
-    pub(crate) fn save_notifications(&self) {
+    pub(crate) fn save_notifications(&mut self) {
+        self.prune_notification_images();
         save_pending_notifications_to(
             &self.pending_notifications,
             &crate::config::config_dir().join("notifications.json"),
         );
+    }
+
+    /// Drop decoded image state as soon as its notification leaves the live
+    /// queue. `TextureHandle` release is not enough on its own: the cache map
+    /// owned the handle, so a removal path that forgot this cleanup retained
+    /// every attachment for the rest of the host session.
+    fn prune_notification_images(&mut self) {
+        let queued_ids: std::collections::HashSet<&str> = self
+            .pending_notifications
+            .iter()
+            .map(|notification| notification.notify_id.as_str())
+            .collect();
+        let before = self.notification_images.len();
+        self.notification_images
+            .retain(|notify_id, _| queued_ids.contains(notify_id.as_str()));
+        let removed = before - self.notification_images.len();
+        if removed > 0 {
+            log::info!("notify:image-cache: pruned {removed} detached image(s)");
+        }
     }
 
     // ── Notification-queue helpers ──────────────────────────────────────────

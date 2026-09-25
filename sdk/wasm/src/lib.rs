@@ -233,6 +233,9 @@ pub mod effects {
         Effect::ClipboardWrite(text.into())
     }
     #[must_use]
+    /// Post an informational host notification. Native WASM supports only the
+    /// `title` and `body` message subset and requires the `notify` capability;
+    /// rich PGAP notification fields are intentionally unavailable here.
     pub fn notify(title: impl Into<String>, body: impl Into<String>) -> Effect {
         Effect::Notify(NotificationEffect {
             title: title.into(),

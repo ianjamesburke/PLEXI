@@ -2954,7 +2954,8 @@ impl LivePythonPane {
             ),
             Some("status_summary") => {}
             _ => {
-                if let Some(command) = app_command_from_python_message(&message) {
+                match app_command_from_python_message(&message) {
+                    Ok(Some(command)) => {
                     if let Some(capability) = required_capability_for_python_app_command(&command) {
                         if !self.has_capability(capability) {
                             log::info!(
@@ -2966,11 +2967,17 @@ impl LivePythonPane {
                         }
                     }
                     self.pending_commands.push(command);
-                } else {
+                    }
+                    Ok(None) => {
                     log::warn!(
                         "app::{}: unhandled CPython WASM message: {message}",
                         self.app_id
                     );
+                    }
+                    Err(error) => log::warn!(
+                        "app::{}: rejected CPython WASM message: {error}",
+                        self.app_id
+                    ),
                 }
             }
         }
@@ -4718,7 +4725,7 @@ fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
     capabilities.iter().any(|item| item == capability)
 }
 
-fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_trait::AppCommand> {
+fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app::app_trait::AppCommand>, String> {
     use crate::app::app_trait::AppCommand;
     let text = |key: &str| {
         message
@@ -4727,7 +4734,22 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             .unwrap_or_default()
             .to_string()
     };
-    match message.get("type").and_then(Value::as_str)? {
+    let Some(message_type) = message.get("type").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if message_type == "show_notification" {
+        const UNSUPPORTED: &[&str] = &["kind", "options", "input_prompt", "required", "scope", "image_inline", "image_pipe_id", "timeout_secs", "on_dismiss"];
+        let rich_fields: Vec<&str> = UNSUPPORTED.iter().copied().filter(|field| {
+            message.as_object().is_some_and(|object| object.contains_key(*field))
+        }).collect();
+        if !rich_fields.is_empty() {
+            return Err(format!(
+                "show_notification supports title and body only; unsupported field(s): {}",
+                rich_fields.join(", ")
+            ));
+        }
+    }
+    let command = (|| match message_type {
         "expose_tools" => serde_json::from_value(message.get("tools")?.clone())
             .ok()
             .map(|tools| AppCommand::ExposeTools {
@@ -4948,7 +4970,8 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .unwrap_or_default(),
         }),
         _ => None,
-    }
+    })();
+    Ok(command)
 }
 
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
@@ -6137,6 +6160,8 @@ mod tests {
     fn python_bridge_protected_commands_require_capabilities() {
         let required = |message: Value| {
             app_command_from_python_message(&message)
+                .ok()
+                .flatten()
                 .and_then(|command| required_capability_for_python_app_command(&command))
         };
         assert_eq!(
@@ -6168,6 +6193,26 @@ mod tests {
         assert!(!manifest_declares(&[], "spawn.app"));
         assert!(manifest_declares(&["spawn.app".to_string()], "spawn.app"));
         assert!(!manifest_declares(&["spawn.app".to_string()], "notify"));
+    }
+
+    #[test]
+    fn python_bridge_notification_contract_rejects_rich_fields() {
+        let supported = app_command_from_python_message(&serde_json::json!({
+            "type": "show_notification", "title": "Saved", "body": "Done"
+        })).expect("message-only notification is supported").expect("message decodes");
+        assert!(matches!(supported, crate::app::app_trait::AppCommand::ShowNotification {
+            kind: crate::protocol::NotifyKind::Message, options, image_inline: None, ..
+        } if options.is_empty()));
+        let error = match app_command_from_python_message(&serde_json::json!({
+            "type": "show_notification", "title": "Ask", "body": "Continue?",
+            "kind": "choice", "options": [{"label": "yes"}]
+        })) {
+            Err(error) => error,
+            Ok(_) => panic!("the bridge must not silently discard rich fields"),
+        };
+        assert!(error.contains("supports title and body only"));
+        assert!(error.contains("kind"));
+        assert!(error.contains("options"));
     }
 
     #[test]
@@ -8244,6 +8289,7 @@ mod tests {
             "trigger_mode": "conversation",
             "resource_id": null,
         }))
+        .expect("subscribe decoding")
         .expect("subscribe command");
         assert!(matches!(
             subscribe,
@@ -8270,6 +8316,7 @@ mod tests {
             "payload_json": "{\"title\":\"Hello\"}",
             "changed_resources": ["note-1"],
         }))
+        .expect("emit decoding")
         .expect("emit command");
         assert!(matches!(
             emit,

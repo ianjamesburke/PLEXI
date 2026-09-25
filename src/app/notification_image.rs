@@ -23,10 +23,8 @@
 //! depend on the image arriving for correctness — it's purely informational.
 //!
 //! Decoded textures live in `PlexiApp::notification_images`, keyed by
-//! `notify_id`. The map is populated lazily on the first render of each
-//! notification; entries are not explicitly evicted on dismiss because
-//! egui's `TextureHandle` drop already releases the GPU resource and the
-//! steady-state count of concurrent visible notifications is small.
+//! `notify_id`. The map is populated lazily on the first render and pruned by
+//! `PlexiApp::save_notifications` whenever an entry leaves the live queue.
 
 use crate::app::{PendingNotification, PlexiApp};
 use crate::protocol::NotificationImage;
