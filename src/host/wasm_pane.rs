@@ -2512,9 +2512,7 @@ mod tests {
     };
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
-    use crate::host::wasm_app::{
-        KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp,
-    };
+    use crate::host::wasm_app::{KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2706,7 +2704,7 @@ mod tests {
             Effect::Notify(NotificationEffect {
                 title: "Saved".to_string(),
                 body: "Document saved".to_string(),
-                icon: Some("check".to_string()),
+                icon: None,
             }),
             0,
         );
@@ -2724,7 +2722,7 @@ mod tests {
                 WasmHostEffect::Notify {
                     title: "Saved".to_string(),
                     body: "Document saved".to_string(),
-                    icon: Some("check".to_string()),
+                    icon: None,
                 },
                 WasmHostEffect::Spawn {
                     app_id: "com.plexi.counter".to_string(),

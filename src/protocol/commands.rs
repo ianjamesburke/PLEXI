@@ -12,7 +12,9 @@ pub enum AgentState {
 }
 
 /// A reported blocking condition. Unknown preserves legacy reports without guessing.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(
+    Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentBlockedReason {
     PermissionPrompt,
@@ -108,7 +110,16 @@ pub enum AppRequest {
         run_id: String,
         result: serde_json::Value,
     },
-    /// Post a notification. All three action_types must dispatch correctly (no TODO).
+    /// Post a PGAP notification. PGAP is the rich producer contract: it
+    /// supports Message, Choice, and Input, plus options, scope, timeout, and
+    /// one image attachment. The host stamps caller provenance and enforces
+    /// ownership for dismissal; it never trusts caller-supplied identity.
+    ///
+    /// Native WASM and CPython-in-WASM are deliberately message-only
+    /// (`title` + `body`) contracts. They reject rich fields rather than
+    /// silently dropping them. The live queue is bounded; a full queue
+    /// resolves a response route with `queue_full` instead of evicting unread
+    /// notifications.
     Notify {
         title: String,
         body: String,
@@ -2450,9 +2461,7 @@ mod tests {
     #[test]
     fn notify_rejects_removed_priority_and_level_fields() {
         for removed in ["priority", "level"] {
-            let json = format!(
-                r#"{{"type":"notify","title":"T","body":"B","{removed}":1}}"#
-            );
+            let json = format!(r#"{{"type":"notify","title":"T","body":"B","{removed}":1}}"#);
             assert!(
                 serde_json::from_str::<AppRequest>(&json).is_err(),
                 "removed notification field {removed} must fail loudly"

@@ -124,7 +124,7 @@ Signal that a run the app owns has finished.
 
 ### `notify`
 
-Post a notification. All three action_types must dispatch correctly (no TODO).
+Post a PGAP notification. PGAP is the rich producer contract: it supports Message, Choice, and Input, plus options, s...
 
 | Field | Type | Required |
 |-------|------|----------|

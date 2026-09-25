@@ -540,7 +540,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Post a notification. All three action_types must dispatch correctly (no TODO).",
+          "description": "Post a PGAP notification. PGAP is the rich producer contract: it\nsupports Message, Choice, and Input, plus options, scope, timeout, and\none image attachment. The host stamps caller provenance and enforces\nownership for dismissal; it never trusts caller-supplied identity.\n\nNative WASM and CPython-in-WASM are deliberately message-only\n(`title` + `body`) contracts. They reject rich fields rather than\nsilently dropping them. The live queue is bounded; a full queue\nresolves a response route with `queue_full` instead of evicting unread\nnotifications.",
           "properties": {
             "actions": {
               "default": [],
