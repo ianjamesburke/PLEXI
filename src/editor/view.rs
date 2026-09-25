@@ -59,6 +59,9 @@ pub struct ViewState {
     /// Explicit scrolling enters browsing mode until the next caret command.
     /// A resize must not pull a reader back to an intentionally hidden caret.
     pub follow_caret: bool,
+    /// A source-space request from opening a note or selecting a find result.
+    /// The widget resolves it only after the current layout is available.
+    pub pending_reveal: Option<Cursor>,
 }
 
 impl Default for ViewState {
@@ -73,6 +76,7 @@ impl Default for ViewState {
             line_extras: Vec::new(),
             anchor: ScrollAnchor::default(),
             follow_caret: true,
+            pending_reveal: None,
         }
     }
 }
@@ -277,21 +281,6 @@ impl ViewState {
         }
     }
 
-    /// Adjusts `scroll_y` minimally so a source line is fully visible, then
-    /// reanchors to the result.
-    pub fn scroll_to_line(&mut self, line: usize, line_count: usize) {
-        let top = self.line_top(line);
-        let bottom = top + self.line_text_height(line) + self.line_extra(line);
-        let target = if top < self.scroll_y {
-            top
-        } else if bottom > self.scroll_y + self.viewport_height {
-            bottom - self.viewport_height
-        } else {
-            self.scroll_y
-        };
-        self.set_scroll_y(target, line_count);
-    }
-
     /// Adjusts `scroll_y` minimally so the cursor's display row is visible,
     /// then reanchors to the result.
     pub fn scroll_to_cursor(&mut self, cursor: Cursor, line_count: usize) {
@@ -435,7 +424,7 @@ mod tests {
     #[test]
     fn scroll_to_cursor_reanchors_to_the_new_position() {
         let mut v = view();
-        v.scroll_to_line(20, 100);
+        v.scroll_to_cursor(Cursor::new(20, 0), 100);
         v.scroll_to_cursor(Cursor::new(3, 0), 100);
         assert_eq!(v.scroll_y, 10.0);
         assert_eq!(v.anchor.cursor, Cursor::new(1, 0));
@@ -515,13 +504,13 @@ mod tests {
     }
 
     #[test]
-    fn scroll_to_line_moves_minimally() {
+    fn scroll_to_cursor_moves_minimally_with_margin() {
         let mut v = view();
-        v.scroll_to_line(5, 100); // already visible
+        v.scroll_to_cursor(Cursor::new(5, 0), 100); // already visible
         assert_eq!(v.scroll_y, 0.0);
-        v.scroll_to_line(20, 100); // below: bottom-align
-        assert_eq!(v.scroll_y, 110.0);
-        v.scroll_to_line(3, 100); // above: top-align
-        assert_eq!(v.scroll_y, 30.0);
+        v.scroll_to_cursor(Cursor::new(20, 0), 100);
+        assert_eq!(v.scroll_y, 130.0);
+        v.scroll_to_cursor(Cursor::new(3, 0), 100);
+        assert_eq!(v.scroll_y, 10.0);
     }
 }

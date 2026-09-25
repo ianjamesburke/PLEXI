@@ -410,8 +410,7 @@ impl TextEditorApp {
         let end = movement::char_to_cursor(self.doc.buffer(), range.1);
         self.doc.apply(EditorCommand::SetCursor(start));
         self.doc.apply(EditorCommand::ExtendTo(end));
-        let line_count = self.doc.buffer().line_count();
-        self.view.scroll_to_line(end.line, line_count);
+        self.view.pending_reveal = Some(end);
     }
 
     /// Replaces the current match with the bar's replacement text through the
@@ -805,12 +804,11 @@ fn detect_mode(path: &Path, is_note: bool) -> EditorMode {
 /// one started in the Quick Note editor): land the caret at the end of the
 /// document with the viewport anchored to the tail, rather than offset 0.
 fn position_caret_at_end(doc: &mut Document, view: &mut ViewState) {
-    let line_count = doc.buffer().line_count();
     doc.apply(EditorCommand::Move {
         movement: crate::editor::commands::Movement::DocEnd,
         extend: false,
     });
-    view.scroll_to_line(doc.cursor().line, line_count);
+    view.pending_reveal = Some(doc.cursor());
 }
 
 fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {

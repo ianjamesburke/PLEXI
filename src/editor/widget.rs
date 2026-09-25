@@ -820,6 +820,9 @@ impl<'a> EditorWidget<'a> {
         if reveal_after_resize {
             log::info!("editor: restoring visible caret after viewport resize");
         }
+        if let Some(cursor) = self.view.pending_reveal.take() {
+            self.view.scroll_to_cursor(cursor, line_count);
+        }
         if edited || reveal_after_resize {
             let caret = self.doc.cursor();
             self.view.scroll_to_cursor(caret, line_count);
@@ -1806,6 +1809,24 @@ mod tests {
             gap >= view.line_height,
             "last line needs bottom space, got {gap}"
         );
+    }
+
+    #[test]
+    fn scroll_regression_anchor_round_trips_inside_wrapped_tokens() {
+        let mut h = harness(&"abcdefghij".repeat(200));
+        h.set_size(Vec2::new(120.0, 100.0));
+        h.run();
+        let view = &mut h.state_mut().view;
+        for row in 1..30 {
+            let y = row as f32 * view.line_height + 0.5;
+            view.set_scroll_y(y, 1);
+            view.resolve_scroll(1);
+            assert!(
+                (view.scroll_y - y).abs() < 0.01,
+                "anchor moved scroll from {y} to {} at wrapped row {row}",
+                view.scroll_y
+            );
+        }
     }
 
     #[test]

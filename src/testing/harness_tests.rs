@@ -5374,6 +5374,33 @@ fn zoom_round_trip_restores_note_editor_scroll_and_focus() {
     );
 }
 
+#[test]
+fn scroll_regression_open_wrapped_note_reveals_end_caret() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let body = "A long paragraph which continues onto many display rows. ".repeat(150);
+    let notes_dir = crate::notes::context_notes_dir(tmp.path());
+    std::fs::create_dir_all(&notes_dir).expect("create note tier");
+    let path = notes_dir.join("long-note.md");
+    std::fs::write(&path, &body).expect("seed note");
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new(path)),
+        crate::app::permissions::AppPermissions::builtin(),
+        notes_dir,
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane = *h.app.windows[0].panes.keys().next().expect("note pane");
+    h.focus_pane(pane);
+    h.run_frames(3);
+    let sem = note_semantics(&h, pane);
+    let view = h.text_editor_mut(pane).test_view();
+    let caret = crate::editor::cursor::Cursor::new(0, body.chars().count());
+    assert_eq!(sem["caret"].as_u64(), Some(body.chars().count() as u64));
+    assert!(view.cursor_visible(caret, 1), "opened note caret must be visible after wrapping");
+}
+
 /// A wrapped note's rewrap on zoom (viewport width changes with a side-by-side
 /// sibling) must not shift which source line sits at the top of the viewport.
 /// Root cause: the same points-based `scroll_y` that a viewport-height clamp
