@@ -5131,23 +5131,44 @@ fn editor_chords_do_not_hijack_focused_terminal() {
 
 // -- stint 0506: notes/editor UX regressions ------------------------------
 
-/// Open a focused, settled text-editor note pane holding `body`. Returns its
-/// pane id after the reconciler has granted the editor egui focus.
-fn open_focused_note(h: &mut HostHarness, dir: &std::path::Path, body: &str) -> PaneId {
+/// Open a focused, settled text-editor note pane holding `body`, split into
+/// the window with `layout` (e.g. `"split_h"` for side-by-side, constraining
+/// width; `"split_below"` for stacked, constraining height). Returns its pane
+/// id after the reconciler has granted the editor egui focus. Finds the new
+/// pane by diffing the window's pane ids before/after the open, not
+/// `h.state().open_panes[0]` — that index breaks once a sibling pane exists.
+fn open_focused_note_with_layout(
+    h: &mut HostHarness,
+    dir: &std::path::Path,
+    body: &str,
+    layout: &str,
+) -> PaneId {
     let note = dir.join("note.md");
     std::fs::write(&note, body).expect("seed note");
+    let before: std::collections::HashSet<PaneId> =
+        h.app.windows[0].panes.keys().copied().collect();
     h.app.open_builtin_app_pane(
         Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
         crate::app::permissions::AppPermissions::builtin(),
         dir.to_path_buf(),
         None,
-        Some("split_h"),
+        Some(layout),
         None,
     );
-    let pane_id = h.state().open_panes[0];
+    let pane_id = *h.app.windows[0]
+        .panes
+        .keys()
+        .find(|id| !before.contains(id))
+        .expect("new note pane must have been inserted");
     h.focus_pane(pane_id);
     h.run_frames(3);
     pane_id
+}
+
+/// Open a focused, settled text-editor note pane holding `body`. Returns its
+/// pane id after the reconciler has granted the editor egui focus.
+fn open_focused_note(h: &mut HostHarness, dir: &std::path::Path, body: &str) -> PaneId {
+    open_focused_note_with_layout(h, dir, body, "split_h")
 }
 
 fn note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
@@ -5243,6 +5264,181 @@ fn fullscreen_input_conjunction_fullscreen_editor_updates_body() {
         note_semantics(&h, editor)["source_text"],
         "x",
         "fullscreen editor must consume the same printable-key RawInput"
+    );
+}
+
+// -- stint 0773: zoom round trip must not destroy note editor scroll/focus --
+
+/// Toggling zoom OFF on a Notes/editor pane must restore the caret's scroll
+/// position and egui keyboard focus, not jump to the top of the document.
+/// Root cause: `clamp_scroll` (pre-fix) clamped `scroll_y` in points against
+/// the CURRENT frame's viewport height every frame — zoom drastically changes
+/// that viewport, and once the zoomed content fits the screen the stored
+/// offset is clamped to 0 with no way back after zoom turns off.
+#[test]
+fn zoom_round_trip_restores_note_editor_scroll_and_focus() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    // Focus the sibling BEFORE opening the note: `place_app_pane` only splits
+    // an existing tile when a pane is already focused — with no focused pane
+    // it installs the new pane as the sole root, discarding the split.
+    let sibling = h.add_test_pane();
+    h.focus_pane(sibling);
+
+    let body = (1..=30)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // "split_below" stacks the note under the sibling, constraining its
+    // viewport HEIGHT so the 30-line body overflows and needs real scroll.
+    let pane = open_focused_note_with_layout(&mut h, tmp.path(), &body, "split_below");
+
+    let lh = h.text_editor_mut(pane).test_view_line_height();
+    let line_count = h.text_editor_mut(pane).test_line_count();
+    h.text_editor_mut(pane).test_set_scroll_y(5.5 * lh);
+    h.run_frames(2);
+
+    let before = h.text_editor_mut(pane).test_view().clone();
+    assert!(
+        before.content_height(line_count) > before.viewport_height,
+        "sanity: the tiled note must overflow its viewport (content={}, viewport={})",
+        before.content_height(line_count),
+        before.viewport_height
+    );
+    assert!(
+        (before.scroll_y - 5.5 * lh).abs() < 0.5,
+        "sanity: scroll_y must not already be clamped to 0 while tiled; scroll_y={}",
+        before.scroll_y
+    );
+    let top_line_before = before.visible_lines(line_count).start;
+
+    let focus_id = h.text_editor_mut(pane).test_content_focus_id();
+    assert_eq!(
+        note_semantics(&h, pane)["focused"],
+        true,
+        "editor must hold semantic focus before zoom"
+    );
+    assert_eq!(
+        h.ctx.memory(|m| m.has_focus(focus_id)),
+        true,
+        "editor must hold egui focus before zoom"
+    );
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom on
+    h.run_frames(2);
+    assert!(h.app.windows[0].zoomed_pane.is_some(), "zoom must be on");
+
+    let zoomed = h.text_editor_mut(pane).test_view().clone();
+    assert!(
+        zoomed.content_height(line_count) <= zoomed.viewport_height + 1.0,
+        "sanity: the zoomed (fullscreen) viewport must fit the whole note, \
+         exercising the clamp path (content={}, viewport={})",
+        zoomed.content_height(line_count),
+        zoomed.viewport_height
+    );
+    assert_eq!(
+        note_semantics(&h, pane)["focused"],
+        true,
+        "editor must keep semantic focus through zoom on"
+    );
+    assert!(
+        zoomed.visible_lines(line_count).contains(&top_line_before),
+        "zoomed viewport (which fits everything) must still include the pre-zoom top line"
+    );
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom off
+    h.run_frames(2);
+    assert!(h.app.windows[0].zoomed_pane.is_none(), "zoom must be off");
+
+    let after = h.text_editor_mut(pane).test_view().clone();
+    assert!(
+        (after.scroll_y - before.scroll_y).abs() < 0.01,
+        "zoom off must restore the pre-zoom scroll offset; before={} after={}",
+        before.scroll_y,
+        after.scroll_y
+    );
+    assert_eq!(
+        after.visible_lines(line_count).start,
+        top_line_before,
+        "zoom off must restore the pre-zoom top visible line"
+    );
+    assert_eq!(
+        note_semantics(&h, pane)["focused"],
+        true,
+        "editor must keep semantic focus after zoom off"
+    );
+    assert_eq!(
+        h.ctx.memory(|m| m.has_focus(focus_id)),
+        true,
+        "editor must keep egui focus after zoom off"
+    );
+}
+
+/// A wrapped note's rewrap on zoom (viewport width changes with a side-by-side
+/// sibling) must not shift which source line sits at the top of the viewport.
+/// Root cause: the same points-based `scroll_y` that a viewport-height clamp
+/// destroys can also land on a different source line after a rewrap changes
+/// row breaks, even when the height clamp itself does not fire.
+#[test]
+fn zoom_preserves_wrapped_note_top_line_across_rewrap() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let sibling = h.add_test_pane();
+    h.focus_pane(sibling);
+
+    // 60 long paragraphs: at a narrower (tiled) width they wrap into more
+    // display rows than at a wider (zoomed) width, so zoom actually rewraps.
+    let body = (0..60)
+        .map(|n| format!("paragraph {n} {}", "word ".repeat(60)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    // "split_h" places the note beside the sibling, constraining its viewport
+    // WIDTH so zoom (full window width) triggers a rewrap.
+    let pane = open_focused_note_with_layout(&mut h, tmp.path(), &body, "split_h");
+
+    let line_count = h.text_editor_mut(pane).test_line_count();
+    let target_line = 20;
+    let target_top = h.text_editor_mut(pane).test_view().line_top(target_line);
+    h.text_editor_mut(pane).test_set_scroll_y(target_top);
+    h.run_frames(2);
+
+    let before = h.text_editor_mut(pane).test_view().clone();
+    assert!(
+        before.content_height(line_count) > before.viewport_height,
+        "sanity: the wrapped note must overflow its side-by-side viewport"
+    );
+    let rows_before = before.layout.display_row_count();
+    let top_line_before = before.visible_lines(line_count).start;
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom on
+    h.run_frames(2);
+
+    let zoomed = h.text_editor_mut(pane).test_view().clone();
+    assert_ne!(
+        zoomed.layout.display_row_count(),
+        rows_before,
+        "sanity: the wider zoomed viewport must actually rewrap the note"
+    );
+    assert_eq!(
+        zoomed.visible_lines(line_count).start,
+        top_line_before,
+        "zoom on must keep the same top source line despite the rewrap"
+    );
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND); // zoom off
+    h.run_frames(2);
+
+    let after = h.text_editor_mut(pane).test_view().clone();
+    assert!(
+        (after.scroll_y - before.scroll_y).abs() < 0.01,
+        "zoom off must restore the pre-zoom scroll offset; before={} after={}",
+        before.scroll_y,
+        after.scroll_y
+    );
+    assert_eq!(
+        after.visible_lines(line_count).start,
+        top_line_before,
+        "zoom off must restore the pre-zoom top source line"
     );
 }
 

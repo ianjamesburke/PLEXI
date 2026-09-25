@@ -545,6 +545,7 @@ impl<'a> EditorWidget<'a> {
         let mut line_galleys =
             self.cached_geometry_galleys(ui, &font_id, soft_wrap, geometry_cache_id);
         self.update_display_layout(&line_galleys);
+        self.view.resolve_scroll(self.doc.buffer().line_count());
         let page_rows = ((rect.height() / line_height).floor().max(1.0)) as usize;
 
         let mut commands: Vec<EditorCommand> = Vec::new();
@@ -791,18 +792,20 @@ impl<'a> EditorWidget<'a> {
         let image_rows = self.update_image_extras(ui.ctx(), md_active.as_ref());
 
         // Scrolling: wheel when hovered, then keep the caret visible after
-        // any command.
+        // any command. Re-resolve first: geometry may have changed since the
+        // widget's first resolve this frame (edits, rewrap, image extras).
         let line_count = self.doc.buffer().line_count();
+        self.view.resolve_scroll(line_count);
         if response.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta);
             if scroll != egui::Vec2::ZERO {
-                self.view.scroll_y -= scroll.y;
+                self.view
+                    .set_scroll_y(self.view.scroll_y - scroll.y, line_count);
                 if !soft_wrap {
                     self.view.scroll_x = (self.view.scroll_x - scroll.x).max(0.0);
                 }
             }
         }
-        self.view.clamp_scroll(line_count);
         if edited {
             let caret = self.doc.cursor();
             self.view.scroll_to_cursor(caret, line_count);

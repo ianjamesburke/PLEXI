@@ -229,7 +229,27 @@ impl TextEditorApp {
     /// would push painted rows off the physical pixel grid (stint 0529).
     #[cfg(test)]
     pub(crate) fn test_set_scroll_y(&mut self, y: f32) {
-        self.view.scroll_y = y;
+        let line_count = self.doc.buffer().line_count();
+        self.view.set_scroll_y(y, line_count);
+    }
+
+    /// Test accessor: the editor's [`ViewState`] for scroll/focus assertions.
+    #[cfg(test)]
+    pub(crate) fn test_view(&self) -> &ViewState {
+        &self.view
+    }
+
+    /// Test accessor: the document's current source line count.
+    #[cfg(test)]
+    pub(crate) fn test_line_count(&self) -> usize {
+        self.doc.buffer().line_count()
+    }
+
+    /// Test accessor: the egui focus id for this pane's editor content
+    /// surface, matching the id `show()` checks focus against.
+    #[cfg(test)]
+    pub(crate) fn test_content_focus_id(&self) -> egui::Id {
+        egui::Id::new("text_editor_content").with(&self.path)
     }
 
     /// Flips Markdown presentation between Live Preview and source mode.
@@ -2302,7 +2322,7 @@ mod tests {
 
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(2, 1)));
         app.doc.apply(EditorCommand::ExtendTo(Cursor::new(2, 4)));
-        app.view.scroll_y = 12.5;
+        app.view.set_scroll_y(12.5, app.doc.buffer().line_count());
         let before = app.doc.semantic_state(app.view.scroll_y);
 
         app.toggle_preview_mode();

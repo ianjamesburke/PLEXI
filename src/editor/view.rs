@@ -15,10 +15,28 @@ use super::layout::DisplayLayout;
 /// paint fully during scroll.
 const OVERSCAN_LINES: usize = 1;
 
+/// A source-anchored scroll intent: the document position that should sit at
+/// the top of the viewport, independent of the current viewport geometry.
+/// `cursor` names the source line/column at the top visible display row;
+/// `offset` is the remaining point offset into that row (0 when the row's top
+/// is exactly at the viewport top). Re-resolving this against a changed
+/// viewport size or a changed wrap width recovers the same visible content —
+/// unlike a raw `scroll_y` in points, which a viewport-height clamp destroys
+/// irrecoverably (stint 0773).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScrollAnchor {
+    pub cursor: Cursor,
+    pub offset: f32,
+}
+
 /// Scroll/viewport state for a uniform-display-row-height document view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewState {
-    /// Vertical scroll offset in points (0 = top).
+    /// Vertical scroll offset in points (0 = top). This is a *resolved*
+    /// per-frame projection of `anchor` onto the current viewport/layout
+    /// geometry. Write it only through [`Self::set_scroll_y`],
+    /// [`Self::resolve_scroll`], or the `scroll_to_*` helpers — a direct
+    /// assignment is overwritten the next time `resolve_scroll` runs.
     pub scroll_y: f32,
     /// Horizontal scroll offset in points (0 = left). Wrapped note modes pin
     /// this to zero; code mode uses it for unwrapped long lines.
@@ -35,6 +53,9 @@ pub struct ViewState {
     /// duplicates): reserved for inline attachment strips rendered under the
     /// line's text. Set each frame by the widget; empty for uniform layout.
     pub line_extras: Vec<(usize, f32)>,
+    /// Source-anchored scroll intent that `scroll_y` is resolved from every
+    /// frame. See [`ScrollAnchor`].
+    pub anchor: ScrollAnchor,
 }
 
 impl Default for ViewState {
@@ -47,6 +68,7 @@ impl Default for ViewState {
             line_height: 16.0,
             layout: DisplayLayout::default(),
             line_extras: Vec::new(),
+            anchor: ScrollAnchor::default(),
         }
     }
 }
@@ -154,10 +176,81 @@ impl ViewState {
         rows as f32 * self.line_height
     }
 
-    /// Clamps `scroll_y` to the scrollable range for `line_count` lines.
-    pub fn clamp_scroll(&mut self, line_count: usize) {
-        let max = (self.content_height(line_count) - self.viewport_height).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, max);
+    /// Maximum scrollable offset for `line_count` lines given the current
+    /// viewport height (0 when the content fits entirely).
+    #[must_use]
+    fn max_scroll(&self, line_count: usize) -> f32 {
+        (self.content_height(line_count) - self.viewport_height).max(0.0)
+    }
+
+    /// The [`ScrollAnchor`] naming the source position at content-space
+    /// offset `y` (a display row's top, plus the remaining point offset into
+    /// it). Uses the current [`DisplayLayout`] when it covers `line_count`
+    /// lines; falls back to a whole-line anchor (`column` 0) otherwise, since
+    /// a stale layout cannot be trusted to resolve row boundaries.
+    fn anchor_at(&self, y: f32, line_count: usize) -> ScrollAnchor {
+        if self.line_height <= 0.0 || line_count == 0 {
+            return ScrollAnchor::default();
+        }
+        let line = self.line_at_y(y, line_count);
+        if self.layout.source_line_count() == line_count {
+            if let Some(line_layout) = self.layout.line(line) {
+                let line_top = self.line_top(line);
+                let text_height = self.line_text_height(line);
+                let within = (y - line_top).clamp(0.0, (text_height - f32::EPSILON).max(0.0));
+                let row_in_line = ((within / self.line_height).floor() as usize)
+                    .min(line_layout.rows.len().saturating_sub(1));
+                let row_top = line_top + row_in_line as f32 * self.line_height;
+                let source_column = line_layout
+                    .rows
+                    .get(row_in_line)
+                    .map_or(0, |row| row.source.start);
+                return ScrollAnchor {
+                    cursor: Cursor::new(line, source_column),
+                    offset: y - row_top,
+                };
+            }
+        }
+        ScrollAnchor {
+            cursor: Cursor::new(line, 0),
+            offset: y - self.line_top(line),
+        }
+    }
+
+    /// Projects `anchor` back to a content-space y offset given the current
+    /// [`DisplayLayout`]. The anchor's source line is clamped to
+    /// `line_count - 1` since edits can delete lines out from under it.
+    fn anchor_y(&self, line_count: usize) -> f32 {
+        if line_count == 0 {
+            return 0.0;
+        }
+        let line = self.anchor.cursor.line.min(line_count - 1);
+        if self.layout.source_line_count() == line_count {
+            if let Some(line_layout) = self.layout.line(line) {
+                let row_in_line = line_layout.row_for_source_column(self.anchor.cursor.column);
+                return self.line_top(line) + row_in_line as f32 * self.line_height + self.anchor.offset;
+            }
+        }
+        self.line_top(line) + self.anchor.offset
+    }
+
+    /// Sets `scroll_y` to `y` (clamped to the scrollable range) and re-derives
+    /// `anchor` from the result. Use this for any scroll caused by direct
+    /// user input (wheel, drag) — anything that should redefine "what's
+    /// anchored at the top" rather than merely re-projecting it.
+    pub fn set_scroll_y(&mut self, y: f32, line_count: usize) {
+        self.scroll_y = y.clamp(0.0, self.max_scroll(line_count));
+        self.anchor = self.anchor_at(self.scroll_y, line_count);
+    }
+
+    /// Re-derives `scroll_y` from `anchor` against the current viewport size
+    /// and [`DisplayLayout`]. Idempotent and non-destructive: `anchor` itself
+    /// is never modified, so calling this repeatedly (every frame, before and
+    /// after a zoom toggle, before and after a rewrap) always recovers the
+    /// same visible content instead of compounding a viewport-height clamp
+    /// into permanent scroll loss (stint 0773).
+    pub fn resolve_scroll(&mut self, line_count: usize) {
+        self.scroll_y = self.anchor_y(line_count).clamp(0.0, self.max_scroll(line_count));
     }
 
     /// Adjusts `scroll_x` minimally so a caret at horizontal offset `x`
@@ -174,19 +267,23 @@ impl ViewState {
         }
     }
 
-    /// Adjusts `scroll_y` minimally so a source line is fully visible.
+    /// Adjusts `scroll_y` minimally so a source line is fully visible, then
+    /// reanchors to the result.
     pub fn scroll_to_line(&mut self, line: usize, line_count: usize) {
         let top = self.line_top(line);
         let bottom = top + self.line_text_height(line) + self.line_extra(line);
-        if top < self.scroll_y {
-            self.scroll_y = top;
+        let target = if top < self.scroll_y {
+            top
         } else if bottom > self.scroll_y + self.viewport_height {
-            self.scroll_y = bottom - self.viewport_height;
-        }
-        self.clamp_scroll(line_count);
+            bottom - self.viewport_height
+        } else {
+            self.scroll_y
+        };
+        self.set_scroll_y(target, line_count);
     }
 
-    /// Adjusts `scroll_y` minimally so the cursor's display row is visible.
+    /// Adjusts `scroll_y` minimally so the cursor's display row is visible,
+    /// then reanchors to the result.
     pub fn scroll_to_cursor(&mut self, cursor: Cursor, line_count: usize) {
         let display_row = if self.layout.source_line_count() == line_count {
             self.layout.display_row_for_cursor(cursor)
@@ -195,12 +292,14 @@ impl ViewState {
         };
         let top = display_row as f32 * self.line_height + self.extra_before(cursor.line);
         let bottom = top + self.line_height;
-        if top < self.scroll_y {
-            self.scroll_y = top;
+        let target = if top < self.scroll_y {
+            top
         } else if bottom > self.scroll_y + self.viewport_height {
-            self.scroll_y = bottom - self.viewport_height;
-        }
-        self.clamp_scroll(line_count);
+            bottom - self.viewport_height
+        } else {
+            self.scroll_y
+        };
+        self.set_scroll_y(target, line_count);
     }
 }
 
@@ -248,18 +347,89 @@ mod tests {
     }
 
     #[test]
-    fn clamp_scroll_bounds() {
+    fn set_scroll_y_clamps_to_content_bounds() {
         let mut v = view();
-        v.scroll_y = -5.0;
-        v.clamp_scroll(50);
+        v.set_scroll_y(-5.0, 50);
         assert_eq!(v.scroll_y, 0.0);
-        v.scroll_y = 1e9;
-        v.clamp_scroll(50);
+        v.set_scroll_y(1e9, 50);
         assert_eq!(v.scroll_y, 400.0); // 500 content - 100 viewport
 
         // Content shorter than viewport pins to 0.
-        v.clamp_scroll(5);
+        v.set_scroll_y(1e9, 5);
         assert_eq!(v.scroll_y, 0.0);
+    }
+
+    #[test]
+    fn resolve_scroll_reprojects_anchor_without_mutating_it() {
+        let mut v = view(); // viewport_height 100, line_height 10
+        let line_count = 1000;
+        v.set_scroll_y(500.0, line_count); // anchors at line 50
+        let anchor = v.anchor;
+
+        // Zoom on: viewport shrinks drastically.
+        v.viewport_height = 30.0;
+        v.resolve_scroll(line_count);
+        assert_eq!(v.anchor, anchor, "resolve_scroll never mutates the anchor");
+        assert_eq!(
+            v.scroll_y, 500.0,
+            "anchor round-trips to the same offset regardless of viewport size"
+        );
+
+        // Zoom off: viewport grows back.
+        v.viewport_height = 900.0;
+        v.resolve_scroll(line_count);
+        assert_eq!(v.scroll_y, 500.0);
+    }
+
+    #[test]
+    fn anchor_survives_rewrap_that_changes_row_count() {
+        let mut v = view();
+        v.layout = DisplayLayout::new(vec![
+            LineLayout::identity(0, "abcdefgh".into(), &[8]), // one row, pre-rewrap
+            LineLayout::identity(1, "xy".into(), &[2]),
+        ]);
+        v.set_scroll_y(0.0, 2);
+        let anchor_line = v.anchor.cursor.line;
+        assert_eq!(anchor_line, 0);
+
+        // Rewrap: line 0 now spans three rows at a narrower width.
+        v.layout = DisplayLayout::new(vec![
+            LineLayout::identity(0, "abcdefgh".into(), &[3, 3, 2]),
+            LineLayout::identity(1, "xy".into(), &[2]),
+        ]);
+        v.resolve_scroll(2);
+        assert_eq!(
+            v.anchor.cursor.line, anchor_line,
+            "anchor stays pinned to its source line across rewrap"
+        );
+        assert_eq!(
+            v.line_at_y(v.scroll_y, 2),
+            0,
+            "resolved scroll still shows the same top source line"
+        );
+    }
+
+    #[test]
+    fn scroll_to_cursor_reanchors_to_the_new_position() {
+        let mut v = view();
+        v.scroll_to_line(20, 100);
+        v.scroll_to_cursor(Cursor::new(3, 0), 100);
+        assert_eq!(v.scroll_y, 30.0);
+        assert_eq!(v.anchor.cursor, Cursor::new(3, 0));
+        assert_eq!(v.anchor.offset, 0.0);
+    }
+
+    #[test]
+    fn anchor_clamps_when_its_source_line_is_deleted() {
+        let mut v = view();
+        v.set_scroll_y(500.0, 1000); // anchors at line 50
+        assert_eq!(v.anchor.cursor.line, 50);
+
+        // Document shrinks to 30 lines; the anchor's line no longer exists.
+        v.resolve_scroll(30);
+        let max = v.max_scroll(30);
+        assert!(max > 0.0, "sanity: content still taller than viewport");
+        assert_eq!(v.scroll_y, max, "clamped to the new document's max scroll");
     }
 
     #[test]

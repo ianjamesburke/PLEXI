@@ -403,6 +403,27 @@ impl HostHarness {
             .expect("pane is not an AssistantApp")
     }
 
+    /// Mutable access to a text-editor pane's concrete app for scroll/focus
+    /// assertions. Searches every window, matching [`Self::assistant_mut`].
+    pub fn text_editor_mut(
+        &mut self,
+        pane_id: PaneId,
+    ) -> &mut crate::app::text_editor_app::TextEditorApp {
+        let pane = self
+            .app
+            .windows
+            .iter_mut()
+            .find_map(|window| window.panes.get_mut(&pane_id))
+            .expect("text editor pane not found");
+        let AppRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
+        else {
+            panic!("pane {pane_id} is not a builtin app");
+        };
+        app.as_any_mut()
+            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+            .expect("pane is not a TextEditorApp")
+    }
+
     // ── Frame pump ───────────────────────────────────────────────────────────
 
     /// Run one egui frame with the given raw input.
