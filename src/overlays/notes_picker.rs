@@ -697,9 +697,26 @@ mod tests {
             Some(note_body.len() as u64),
             "caret should land at doc end, not offset 0"
         );
-        assert!(
-            semantic["scroll"]["y"].as_f64().unwrap_or(0.0) > 0.0,
-            "viewport should scroll to anchor the tail, not stay pinned at the top"
+        // No viewport has rendered yet. The scroll target must stay in source
+        // coordinates until wrapping is known; the host-level wrapped-note
+        // regression checks visibility after the first rendered frames.
+        let runtime = &mut app.windows[0]
+            .panes
+            .get_mut(&focused_pane)
+            .expect("focused pane")
+            .as_app_mut()
+            .expect("editor app")
+            .runtime;
+        let AppRuntime::Builtin(editor) = runtime else {
+            panic!("expected builtin editor")
+        };
+        let editor = editor
+            .as_any_mut()
+            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+            .expect("text editor");
+        assert_eq!(
+            editor.test_view().pending_reveal,
+            Some(crate::editor::cursor::Cursor::new(2, "third line".len()))
         );
 
         let _ = std::fs::remove_dir_all(&profile);

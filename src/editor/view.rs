@@ -286,7 +286,9 @@ impl ViewState {
     pub fn scroll_to_cursor(&mut self, cursor: Cursor, line_count: usize) {
         let top = self.cursor_top(cursor, line_count);
         let bottom = top + self.line_height;
-        let margin = (self.line_height * 2.0).min(self.viewport_height * 0.25);
+        let margin = (self.line_height * 2.0)
+            .min(self.viewport_height * 0.25)
+            .min((self.viewport_height - self.line_height).max(0.0) * 0.5);
         let target = if top < self.scroll_y + margin {
             top - margin
         } else if bottom > self.scroll_y + self.viewport_height - margin {
@@ -500,7 +502,8 @@ mod tests {
         v.scroll_y = 0.0;
         v.viewport_height = 10.0;
         v.scroll_to_cursor(Cursor::new(0, 7), 2);
-        assert_eq!(v.scroll_y, 22.5);
+        assert_eq!(v.scroll_y, 20.0);
+        assert!(v.cursor_visible(Cursor::new(0, 7), 2));
     }
 
     #[test]

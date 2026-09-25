@@ -8,10 +8,13 @@ open = { kind = "builtin", id = "text-editor", as = "notes", args = ["{tmp}/note
 focus = "notes"
 
 [[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
 paste = { target = "notes", value = "# Editor field notes\n\nScrolling should remain steady while reading. A long paragraph wraps naturally when the pane is narrow, and the caret stays reachable when the available space changes.\n\n## Things to check\n\n- Read a note without being pulled back to the caret.\n- Move down through wrapped paragraphs using the keyboard.\n- Enter and leave full screen while writing.\n- Keep some empty space below the final line.\n\nThe document uses one source of truth for text, selections, and undo. Layout translates source positions into display rows, and scrolling should reuse that geometry until the document or its width changes.\n\nUnicode remains editable: café, 日本語, and 👨‍👩‍👧. Links remain readable: [Plexi](https://plexiapp.com).\n\nFinal line: room to keep writing." }
 
 [[steps]]
-key = { target = "notes", value = "cmd+end" }
+key = { target = "notes", value = "cmd+down" }
 
 [[steps]]
 expect = { target = "notes", focused = true, source_text_contains = "Final line: room to keep writing." }
@@ -20,10 +23,10 @@ expect = { target = "notes", focused = true, source_text_contains = "Final line:
 shot = "notes-scroll-end.png"
 
 [[steps]]
-key = { target = "host", value = "cmd+enter" }
+key = { target = "notes", value = "pageup" }
 
 [[steps]]
-key = { target = "host", value = "cmd+enter" }
+key = { target = "notes", value = "cmd+down" }
 
 [[steps]]
 text = { target = "notes", value = " More thoughts." }
@@ -32,7 +35,7 @@ text = { target = "notes", value = " More thoughts." }
 expect = { target = "notes", focused = true, source_text_contains = "Final line: room to keep writing. More thoughts." }
 
 [[steps]]
-shot = "notes-scroll-after-zoom.png"
+shot = "notes-scroll-after-navigation.png"
 
 [[steps]]
 close = "notes"
