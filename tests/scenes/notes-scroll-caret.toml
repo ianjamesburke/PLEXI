@@ -23,7 +23,7 @@ expect = { target = "notes", focused = true, source_text_contains = "Final line:
 shot = "notes-scroll-end.png"
 
 [[steps]]
-key = { target = "notes", value = "pageup" }
+key = { target = "notes", value = "cmd+up" }
 
 [[steps]]
 key = { target = "notes", value = "cmd+down" }
