@@ -21,6 +21,7 @@ use super::preview::{is_bare_http_url, LinkTarget, MarkdownLayoutCache, MdStyle}
 use super::view::ViewState;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -89,7 +90,7 @@ struct GeometryCache {
     pixels_per_point_bits: u32,
     soft_wrap: bool,
     font_id: egui::FontId,
-    galleys: Vec<DisplayGalley>,
+    galleys: Arc<[DisplayGalley]>,
 }
 
 fn prepared_display_text(
@@ -523,6 +524,12 @@ impl<'a> EditorWidget<'a> {
         let response = ui.interact(rect, id, Sense::click_and_drag());
 
         let gutter_width = self.gutter_width(ui, &font_id, self.doc.buffer().line_count());
+        let caret_was_visible = self
+            .view
+            .cursor_visible(self.doc.cursor(), self.doc.buffer().line_count());
+        let rewrapped = self.view.viewport_width != rect.width() - gutter_width
+            || self.view.line_height != line_height;
+        let resized = rewrapped || self.view.viewport_height != rect.height();
         self.view.line_height = line_height;
         self.view.viewport_height = rect.height();
         self.view.viewport_width = rect.width() - gutter_width;
@@ -544,7 +551,7 @@ impl<'a> EditorWidget<'a> {
         let geometry_cache_id = id.with("display_geometry");
         let mut line_galleys =
             self.cached_geometry_galleys(ui, &font_id, soft_wrap, geometry_cache_id);
-        self.update_display_layout(&line_galleys);
+        self.view.resolve_scroll(self.doc.buffer().line_count());
         let page_rows = ((rect.height() / line_height).floor().max(1.0)) as usize;
 
         let mut commands: Vec<EditorCommand> = Vec::new();
@@ -677,6 +684,14 @@ impl<'a> EditorWidget<'a> {
         let edited = !commands.is_empty();
         let visual_goal_id = id.with("visual_goal_x");
         let visual_row_id = id.with("visual_row");
+        // Visual row affinity belongs to one layout. Source cursors survive a
+        // rewrap, but a remembered display-row index does not.
+        if rewrapped {
+            ui.memory_mut(|memory| {
+                memory.data.remove::<usize>(visual_row_id);
+                memory.data.remove::<f32>(visual_goal_id);
+            });
+        }
         let mut visual_goal_x = ui.memory(|memory| memory.data.get_temp::<f32>(visual_goal_id));
         let mut visual_row = ui.memory(|memory| memory.data.get_temp::<usize>(visual_row_id));
         for command in commands {
@@ -764,15 +779,7 @@ impl<'a> EditorWidget<'a> {
         // Edits can change row breaks. Rebuild before viewport/caret geometry
         // and painting; source remains authoritative throughout.
         if self.doc.revision() != revision_before_commands {
-            line_galleys = self.geometry_galleys(ui, &font_id, soft_wrap);
-            self.store_geometry_cache(
-                ui,
-                &font_id,
-                soft_wrap,
-                geometry_cache_id,
-                line_galleys.clone(),
-            );
-            self.update_display_layout(&line_galleys);
+            line_galleys = self.cached_geometry_galleys(ui, &font_id, soft_wrap, geometry_cache_id);
         }
 
         // Live Preview: the blocks intersecting the selection reveal raw
@@ -791,20 +798,35 @@ impl<'a> EditorWidget<'a> {
         let image_rows = self.update_image_extras(ui.ctx(), md_active.as_ref());
 
         // Scrolling: wheel when hovered, then keep the caret visible after
-        // any command.
+        // any command. Re-resolve first: geometry may have changed since the
+        // widget's first resolve this frame (edits, rewrap, image extras).
         let line_count = self.doc.buffer().line_count();
+        self.view.resolve_scroll(line_count);
         if response.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta);
             if scroll != egui::Vec2::ZERO {
-                self.view.scroll_y -= scroll.y;
+                self.view
+                    .set_scroll_y(self.view.scroll_y - scroll.y, line_count);
                 if !soft_wrap {
                     self.view.scroll_x = (self.view.scroll_x - scroll.x).max(0.0);
                 }
             }
         }
-        self.view.clamp_scroll(line_count);
-        if edited {
-            let caret = self.doc.cursor();
+        let reveal_after_resize = resized
+            && self.active
+            && self.view.follow_caret
+            && caret_was_visible
+            && !self.view.cursor_visible(self.doc.cursor(), line_count);
+        if reveal_after_resize {
+            log::info!("editor: restoring visible caret after viewport resize");
+        }
+        let pending_reveal = self.view.pending_reveal.take();
+        if edited || reveal_after_resize || pending_reveal.is_some() {
+            let caret = if edited {
+                self.doc.cursor()
+            } else {
+                pending_reveal.unwrap_or_else(|| self.doc.cursor())
+            };
             self.view.scroll_to_cursor(caret, line_count);
             if !soft_wrap {
                 self.view
@@ -892,12 +914,12 @@ impl<'a> EditorWidget<'a> {
     }
 
     fn cached_geometry_galleys(
-        &self,
+        &mut self,
         ui: &Ui,
         font_id: &egui::FontId,
         soft_wrap: bool,
         cache_id: egui::Id,
-    ) -> Vec<DisplayGalley> {
+    ) -> Arc<[DisplayGalley]> {
         let revision = self.doc.revision();
         let width_bits = self.view.viewport_width.to_bits();
         let pixels_per_point_bits = ui.ctx().pixels_per_point().to_bits();
@@ -907,12 +929,14 @@ impl<'a> EditorWidget<'a> {
                 && cache.pixels_per_point_bits == pixels_per_point_bits
                 && cache.soft_wrap == soft_wrap
                 && cache.font_id == *font_id
+                && self.view.layout.source_line_count() == self.doc.buffer().line_count()
             {
                 return cache.galleys;
             }
         }
-        let galleys = self.geometry_galleys(ui, font_id, soft_wrap);
-        self.store_geometry_cache(ui, font_id, soft_wrap, cache_id, galleys.clone());
+        let galleys: Arc<[DisplayGalley]> = self.geometry_galleys(ui, font_id, soft_wrap).into();
+        self.update_display_layout(&galleys);
+        self.store_geometry_cache(ui, font_id, soft_wrap, cache_id, Arc::clone(&galleys));
         galleys
     }
 
@@ -922,7 +946,7 @@ impl<'a> EditorWidget<'a> {
         font_id: &egui::FontId,
         soft_wrap: bool,
         cache_id: egui::Id,
-        galleys: Vec<DisplayGalley>,
+        galleys: Arc<[DisplayGalley]>,
     ) {
         let pixels_per_point_bits = ui.ctx().pixels_per_point().to_bits();
         ui.memory_mut(|memory| {
@@ -1708,6 +1732,144 @@ mod tests {
 
     fn semantic(h: &egui_kittest::Harness<'static, TestState>) -> EditorSemanticState {
         h.state().doc.semantic_state(h.state().view.scroll_y)
+    }
+
+    #[test]
+    fn scroll_regression_repaint_reuses_source_row_mapping() {
+        let mut h = harness(&"A paragraph with enough words to wrap. ".repeat(200));
+        h.run();
+        let mapping = h
+            .state()
+            .view
+            .layout
+            .line(0)
+            .unwrap()
+            .display_to_source
+            .as_ptr();
+        h.step();
+        assert_eq!(
+            mapping,
+            h.state()
+                .view
+                .layout
+                .line(0)
+                .unwrap()
+                .display_to_source
+                .as_ptr(),
+            "scroll-only frames must reuse the document layout"
+        );
+    }
+
+    #[test]
+    fn scroll_regression_fresh_view_rebuilds_cached_mapping() {
+        let mut h = harness(&"a wrapped paragraph ".repeat(100));
+        h.set_size(Vec2::new(120.0, 100.0));
+        h.run();
+        let rows = h.state().view.layout.display_row_count();
+        assert!(rows > 10);
+        h.state_mut().view = ViewState::default();
+        h.step();
+        assert_eq!(h.state().view.layout.display_row_count(), rows);
+    }
+
+    #[test]
+    fn scroll_regression_resize_keeps_visible_caret_accessible() {
+        let mut h = harness(&"one line\n".repeat(200));
+        h.set_size(Vec2::new(400.0, 400.0));
+        h.run();
+        h.key_press(Key::End);
+        h.key_press(Key::PageDown);
+        h.run();
+        let caret = h.state().doc.cursor();
+        h.set_size(Vec2::new(400.0, 100.0));
+        h.run();
+        let view = &h.state().view;
+        let bottom = view.line_top(caret.line) + view.line_height;
+        assert!(
+            bottom <= view.scroll_y + view.viewport_height,
+            "caret bottom {bottom} below viewport {:?}",
+            view.scroll_y..view.scroll_y + view.viewport_height
+        );
+    }
+
+    #[test]
+    fn scroll_regression_browsing_survives_grow_shrink_round_trip() {
+        let mut h = harness(&"one line\n".repeat(30));
+        h.set_size(Vec2::new(400.0, 100.0));
+        h.run();
+        let count = h.state().doc.buffer().line_count();
+        h.state_mut().view.set_scroll_y(140.5, count);
+        h.step();
+        let before = h.state().view.scroll_y;
+        h.set_size(Vec2::new(400.0, 1000.0));
+        h.run();
+        h.set_size(Vec2::new(400.0, 100.0));
+        h.run();
+        assert_eq!(h.state().view.scroll_y, before);
+    }
+
+    #[test]
+    fn scroll_regression_document_end_has_breathing_room() {
+        let mut h = harness(&"one line\n".repeat(100));
+        h.set_size(Vec2::new(400.0, 200.0));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
+        h.run();
+        let view = &h.state().view;
+        let caret = h.state().doc.cursor();
+        assert_eq!(caret.line, 100);
+        let gap =
+            view.scroll_y + view.viewport_height - view.line_top(caret.line) - view.line_height;
+        assert!(
+            gap >= view.line_height,
+            "last line needs bottom space, got {gap}"
+        );
+    }
+
+    #[test]
+    fn scroll_regression_anchor_round_trips_inside_wrapped_tokens() {
+        let mut h = harness(&"abcdefghij".repeat(200));
+        h.set_size(Vec2::new(120.0, 100.0));
+        h.run();
+        let view = &mut h.state_mut().view;
+        for row in 1..30 {
+            let y = row as f32 * view.line_height + 0.5;
+            view.set_scroll_y(y, 1);
+            view.resolve_scroll(1);
+            assert!(
+                (view.scroll_y - y).abs() < 0.01,
+                "anchor moved scroll from {y} to {} at wrapped row {row}",
+                view.scroll_y
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_regression_wrapped_galley_matches_view_row_metrics() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut doc = Document::new(&"wrapped paragraph words ".repeat(150));
+            let mut view = ViewState {
+                viewport_width: 180.0,
+                ..Default::default()
+            };
+            let font = egui::FontId::monospace(13.0);
+            view.line_height = ui
+                .fonts_mut(|f| f.row_height(&font))
+                .round_to_pixels(ui.ctx().pixels_per_point());
+            let height = view.line_height;
+            let widget = EditorWidget::new(&mut doc, &mut view);
+            let galleys = widget.geometry_galleys(ui, &font, true);
+            assert!(galleys[0].galley.rows.len() > 20);
+            for (index, row) in galleys[0].galley.rows.iter().enumerate() {
+                assert!(
+                    (row.rect().top() - index as f32 * height).abs() < 0.1,
+                    "painted row {index} top {} disagrees with scroll geometry {}",
+                    row.rect().top(),
+                    index as f32 * height
+                );
+            }
+        });
     }
 
     #[test]
