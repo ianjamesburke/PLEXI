@@ -192,6 +192,7 @@ EOF
   if [[ "$had_destination" == 1 ]] && ! mv "$destination" "$previous_destination"; then
     echo "error: could not prepare the existing install for replacement" >&2; exit 1
   fi
+  mkdir -p "$(dirname "$destination")"
   replacement_started=1
   if ! mv "$staged_destination" "$destination"; then
     echo "error: could not activate the staged install; restoring the previous install" >&2

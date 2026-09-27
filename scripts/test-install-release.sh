@@ -39,7 +39,7 @@ case "${INSTALL_FIXTURE:-}" in
       printf 'not a gzip archive' > "$output"
     fi
     ;;
-  activation-failure)
+  activation-failure|success)
     if [[ "$url" == *.sha256 ]]; then
       sha256sum "$INSTALL_ARCHIVE" | sed 's#  .*#  plexi-linux-x64.tar.gz#' > "$output"
     else
@@ -166,5 +166,23 @@ run_installer activation-failure --channel alpha --tag v0.0.2-alpha.1
 [[ $(<"$work/home/.plexi-alpha/installed_tag") == 'v0.0.1-alpha.1' ]]
 rg -q 'restoring the previous install' "$work/output"
 echo 'case: interrupted activation rolls back prior install: PASS'
+
+# A genuinely fresh machine has no $PLEXI_INSTALL_DIR at all (not even the
+# parent directory). Activation must create it rather than relying on `mv` to
+# do so — see #2665.
+fresh_root="$work/fresh-install-root/nested"
+rm -rf "$work/fresh-install-root"
+set +e
+INSTALL_FIXTURE=success INSTALL_ARCHIVE="$work/release.tar.gz" PATH="$fake_bin:$PATH" HOME="$work/fresh-home" \
+  PLEXI_INSTALL_DIR="$fresh_root" PLEXI_BIN_DIR="$work/fresh-bin-install" \
+  PLEXI_RELEASE_BASE_URL="https://fixture.invalid/releases" \
+  bash "$repo_root/scripts/install.sh" --channel alpha --tag v0.0.2-alpha.1 >"$work/output" 2>&1
+fresh_status=$?
+set -e
+[[ $fresh_status -eq 0 ]] || { echo "fresh install failed to activate" >&2; cat "$work/output" >&2; exit 1; }
+rg -q '^Installed ' "$work/output" || { echo "fresh install did not report success" >&2; cat "$work/output" >&2; exit 1; }
+[[ -x "$fresh_root/alpha/plexi" ]] || { echo "expected payload at $fresh_root/alpha/plexi" >&2; exit 1; }
+[[ -x "$work/fresh-bin-install/plexi-alpha" ]] || { echo "expected command at $work/fresh-bin-install/plexi-alpha" >&2; exit 1; }
+echo 'case: fresh machine with no install root creates it and activates: PASS'
 
 echo "release installer failure harness: PASS"
