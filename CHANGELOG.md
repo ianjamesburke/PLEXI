@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.2] — 2026-09-27
+
+### Changes
+- fix(infra/build): create install root parent dir before activation mv (#2666)
 ## [0.3.1] — 2026-09-21
 
 ### Changes
