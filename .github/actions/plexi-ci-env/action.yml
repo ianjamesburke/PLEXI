@@ -35,6 +35,23 @@ runs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
+    # A cold Cargo cache recompiles the full plexi crate graph, including
+    # rodio -> alsa-sys, whose build script shells out to pkg-config. Without
+    # these system packages the build fails before any job logic runs.
+    # release.yml installs the same list for its own Linux build leg.
+    - name: Install Linux system libraries
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential pkg-config cmake libssl-dev \
+          libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+          libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+          libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-3-dev \
+          libudev-dev libegl1-mesa-dev libgles2-mesa-dev \
+          mesa-vulkan-drivers libgl1-mesa-dri vulkan-tools python3-dev
+
     - name: Install just
       if: inputs.just == 'true'
       uses: taiki-e/install-action@v2.85.6
