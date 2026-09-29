@@ -258,14 +258,17 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
         run_logged_command(&mut install, &log_path, "binary install")?
     };
 
-    if !status.success() {
-        return Err(format!(
-            "binary installer exited {status} (the release may predate v1 assets) — see {}",
-            log_path.display()
-        ));
-    }
+    #[cfg(not(windows))]
+    {
+        if !status.success() {
+            return Err(format!(
+                "binary installer exited {status} (the release may predate v1 assets) — see {}",
+                log_path.display()
+            ));
+        }
 
-    log::info!("background_build: install complete for {tag}");
+        log::info!("background_build: install complete for {tag}");
+    }
     Ok(())
 }
 
