@@ -694,6 +694,11 @@ fn run_self_update() -> Result<String, String> {
     println!("Downloading v{latest_version} release asset...");
     run_binary_asset_install(&channel, &tag_name)?;
 
+    #[cfg(windows)]
+    return Ok(format!(
+        "Update to v{latest_version} is downloading. It will install after Plexi exits."
+    ));
+    #[cfg(not(windows))]
     Ok(format!(
         "Installed v{latest_version}. Restart Plexi to apply."
     ))
@@ -704,37 +709,10 @@ fn run_self_update() -> Result<String, String> {
 pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let script_url = format!(
-            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install-windows.ps1"
-        );
-        // Build the PowerShell command without nesting format args that fight Rust.
-        let ps = format!(
-            concat!(
-                "$ErrorActionPreference='Stop'; ",
-                "$script = Join-Path $env:TEMP ('plexi-install-' + [guid]::NewGuid().ToString() + '.ps1'); ",
-                "Invoke-WebRequest -UseBasicParsing -Uri '{0}' -OutFile $script; ",
-                "& $script -Channel '{1}' -Tag '{2}'; ",
-                "Remove-Item -Force $script -ErrorAction SilentlyContinue"
-            ),
-            script_url, channel, tag_name
-        );
-        let status = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &ps,
-            ])
-            .env("PLEXI_INSTALL_TAG", tag_name)
-            .status()
-            .map_err(|e| format!("error: failed to run Windows install script: {e}"))?;
-        if !status.success() {
-            return Err(
-                "error: binary install failed — this release may predate Windows assets; use scripts/install-windows.ps1 -Tag <tag> or a current v0.3.1-windows.N cut"
-                    .to_string(),
-            );
-        }
+        spawn_windows_binary_asset_install(channel, tag_name, std::process::id(), None)
+            .map_err(|e| format!("error: failed to start Windows install script: {e}"))?;
+        // The installer waits for this CLI process before copying the new exe.
+        // Returning now releases the lock Windows holds on the running binary.
         return Ok(());
     }
     #[cfg(not(windows))]
@@ -761,6 +739,84 @@ pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<
     }
 }
 
+/// Resolve PowerShell without consulting PATH. Some desktop launch contexts
+/// have an intentionally restricted PATH, which makes `Command::new("powershell")`
+/// fail in CreateProcess before the installer has a chance to run.
+#[cfg(any(windows, test))]
+fn windows_powershell_path(system_root: Option<&std::path::Path>) -> std::path::PathBuf {
+    system_root
+        .unwrap_or_else(|| std::path::Path::new(r"C:\Windows"))
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+}
+
+#[cfg(windows)]
+fn ps_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+/// Start the Windows asset installer independently of the binary it replaces.
+/// The downloaded script waits for `wait_for_pid` immediately before mutation,
+/// allowing it to download while Plexi remains open and copy only after exit.
+#[cfg(windows)]
+pub(crate) fn spawn_windows_binary_asset_install(
+    channel: &str,
+    tag_name: &str,
+    wait_for_pid: u32,
+    log_path: Option<&std::path::Path>,
+) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    let script_url = format!(
+        "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install-windows.ps1"
+    );
+    let ps = format!(
+        concat!(
+            "$ErrorActionPreference='Stop'; ",
+            "$script = Join-Path $env:TEMP ('plexi-install-' + [guid]::NewGuid().ToString() + '.ps1'); ",
+            "try {{ Invoke-WebRequest -UseBasicParsing -Uri '{0}' -OutFile $script; ",
+            "& $script -Channel '{1}' -Tag '{2}' -WaitForPid {3}; }} ",
+            "finally {{ Remove-Item -Force $script -ErrorAction SilentlyContinue }}"
+        ),
+        ps_single_quote(&script_url),
+        ps_single_quote(channel),
+        ps_single_quote(tag_name),
+        wait_for_pid,
+    );
+    let system_root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
+    let mut install = Command::new(windows_powershell_path(system_root.as_deref()));
+    install
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .env("PLEXI_INSTALL_TAG", tag_name)
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    if let Some(log_path) = log_path {
+        let stdout = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        install
+            .stdout(Stdio::from(stdout.try_clone()?))
+            .stderr(Stdio::from(stdout));
+    } else {
+        install.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let child = install.spawn()?;
+    log::info!(
+        "windows binary installer started: pid={} wait_for_pid={} tag={} powershell=System32",
+        child.id(),
+        wait_for_pid,
+        tag_name
+    );
+    Ok(())
+}
+
 /// `plexi update` — thin CLI wrapper around `run_self_update`.
 pub fn self_update_cli() -> i32 {
     match run_self_update() {
@@ -778,6 +834,7 @@ pub fn self_update_cli() -> i32 {
 #[cfg(test)]
 mod channel_bundle_cap_tests {
     use super::channel_bundle_cap;
+    use super::windows_powershell_path;
 
     #[test]
     fn main_channel_has_no_cap() {
@@ -803,5 +860,17 @@ mod channel_bundle_cap_tests {
     fn arbitrary_named_channel_is_title_cased() {
         assert_eq!(channel_bundle_cap(Some("gpui")), " Gpui");
         assert_eq!(channel_bundle_cap(Some("foo")), " Foo");
+    }
+
+    #[test]
+    fn windows_installer_uses_system32_powershell_path() {
+        let root = std::path::Path::new(r"C:\Windows");
+        assert_eq!(
+            windows_powershell_path(Some(root)),
+            root.join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        );
     }
 }

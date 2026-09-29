@@ -229,26 +229,19 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
 
     log::info!("background_build: downloading binary asset for {tag} channel={channel}");
     #[cfg(windows)]
-    let status = {
-        let script_url = format!(
-            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag}/scripts/install-windows.ps1"
+    {
+        crate::cli::install::spawn_windows_binary_asset_install(
+            &channel,
+            tag,
+            std::process::id(),
+            Some(&log_path),
+        )
+        .map_err(|e| format!("start Windows binary installer: {e}"))?;
+        log::info!(
+            "background_build: Windows installer staged for {tag}; it will replace the executable after Plexi exits"
         );
-        let ps = format!(
-            concat!(
-                "$ErrorActionPreference='Stop'; ",
-                "$script = Join-Path $env:TEMP ('plexi-install-' + [guid]::NewGuid().ToString() + '.ps1'); ",
-                "Invoke-WebRequest -UseBasicParsing -Uri '{0}' -OutFile $script; ",
-                "& $script -Channel '{1}' -Tag '{2}'; ",
-                "Remove-Item -Force $script -ErrorAction SilentlyContinue"
-            ),
-            script_url, channel, tag
-        );
-        let mut install = Command::new("powershell");
-        install
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
-            .env("PLEXI_INSTALL_TAG", tag);
-        run_logged_command(&mut install, &log_path, "binary install")?
-    };
+        return Ok(());
+    }
     #[cfg(not(windows))]
     let status = {
         let installer = format!(
@@ -265,14 +258,17 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
         run_logged_command(&mut install, &log_path, "binary install")?
     };
 
-    if !status.success() {
-        return Err(format!(
-            "binary installer exited {status} (the release may predate v1 assets) — see {}",
-            log_path.display()
-        ));
-    }
+    #[cfg(not(windows))]
+    {
+        if !status.success() {
+            return Err(format!(
+                "binary installer exited {status} (the release may predate v1 assets) — see {}",
+                log_path.display()
+            ));
+        }
 
-    log::info!("background_build: install complete for {tag}");
+        log::info!("background_build: install complete for {tag}");
+    }
     Ok(())
 }
 

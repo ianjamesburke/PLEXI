@@ -17,6 +17,10 @@ param(
 
   [string]$Tag = '',
 
+  # When launched by `plexi update`, defer the replacement until its running
+  # executable has exited. The archive is still downloaded and unpacked first.
+  [uint32]$WaitForPid = 0,
+
   [switch]$DryRun
 )
 
@@ -69,6 +73,14 @@ try {
   Expand-Archive -Force -Path $archive -DestinationPath $unpack
   $source = Get-ChildItem -Path $unpack -Filter 'plexi.exe' -Recurse -File | Select-Object -First 1
   if (-not $source) { throw "Release asset did not contain plexi.exe" }
+
+  if ($WaitForPid -ne 0) {
+    $running = Get-Process -Id $WaitForPid -ErrorAction SilentlyContinue
+    if ($running) {
+      Write-Host "Waiting for Plexi process $WaitForPid to exit before replacing binaries..."
+      Wait-Process -Id $WaitForPid
+    }
+  }
 
   if (Test-Path $Destination) { Remove-Item -Recurse -Force $Destination }
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
