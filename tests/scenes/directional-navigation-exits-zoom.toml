@@ -1,0 +1,28 @@
+# Directional navigation leaves pane fullscreen so the destination's tiled
+# layout is visible again. The Rust regression covers cross-page and boundary
+# state; this scene keeps the rendered host surface under review.
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
+
+[[steps]]
+open = { kind = "builtin", id = "assistant", as = "assistant" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+focus = "files"
+
+[[steps]]
+key = { target = "files", value = "cmd+enter" }
+
+[[steps]]
+key = { target = "files", value = "cmd+j" }
+
+[[steps]]
+assert = { target = "assistant", focused = true, pane_count = 2 }
+
+[[steps]]
+shot = "directional-navigation-exits-zoom.png"

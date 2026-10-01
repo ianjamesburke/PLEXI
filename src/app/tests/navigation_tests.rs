@@ -295,6 +295,79 @@ fn navigate_left_at_horizontal_boundary_still_page_navigates() {
     );
 }
 
+#[test]
+fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first).run_frames(1);
+    let second = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("split must create a neighboring pane");
+    h.run_frames(2).focus_pane(first);
+
+    let first_tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&first)
+        .expect("first pane must have a tile");
+    let second_tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&second)
+        .expect("second pane must have a tile");
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.windows[0].zoomed_pane, Some(first_tile));
+
+    h.press_key(egui::Key::L, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.windows[0].focused_pane, Some(second_tile));
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "moving within a page must exit zoom"
+    );
+
+    let mut other_page = same_workspace_window_below(2, 9910);
+    let other_page_tile = other_page.tree.root.expect("other page must have a tile");
+    other_page.zoom_to(other_page_tile);
+    h.app.windows.push(other_page);
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.windows[0].zoomed_pane, Some(second_tile));
+    h.press_key(egui::Key::J, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_window, 1);
+    assert!(h.app.windows[0].zoomed_pane.is_none());
+    assert!(
+        h.app.windows[1].zoomed_pane.is_none(),
+        "the destination page must be shown tiled"
+    );
+
+    h.press_key(egui::Key::K, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_window, 0);
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "returning to the old page must not restore stale zoom"
+    );
+
+    let mut boundary = HostHarness::new();
+    let only = boundary.add_test_pane();
+    boundary.focus_pane(only).run_frames(1);
+    let only_tile = boundary.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&only)
+        .expect("only pane must have a tile");
+    boundary.app.windows[0].zoom_to(only_tile);
+    boundary.press_key(egui::Key::H, egui::Modifiers::COMMAND);
+    assert_eq!(boundary.app.active_window, 0);
+    assert_eq!(boundary.app.windows[0].focused_pane, Some(only_tile));
+    assert_eq!(
+        boundary.app.windows[0].zoomed_pane,
+        Some(only_tile),
+        "a boundary no-op must preserve zoom"
+    );
+}
+
 /// GetPreviousPaneInfo returns the last live entry from pane_focus_history.
 #[test]
 fn get_previous_pane_info_returns_previous_pane() {

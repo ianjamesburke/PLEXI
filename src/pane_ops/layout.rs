@@ -943,7 +943,8 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn navigate(&mut self, dir: Direction) {
+    /// Move focus or active page in `dir`, returning whether navigation succeeded.
+    pub(crate) fn navigate(&mut self, dir: Direction) -> bool {
         let effects = self.submit(HostAction::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
 
@@ -963,6 +964,7 @@ impl PlexiApp {
             self.windows[self.active_window].navigate_to(target);
             // Signal the newly-focused pane so render_text_inputs auto-focuses
             // the first TextInput on the next frame.
+            true
         } else if dy != 0 {
             // Vertical boundary: jump to the first or last window in the current
             // workspace (the minimap list). Down at bottom → last window;
@@ -1025,11 +1027,18 @@ impl PlexiApp {
                         log::info!("navigate({:?}): focused_pane → leftmost {:?}", dir, tile_id);
                         self.windows[idx].navigate_to(tile_id);
                     }
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
             }
         } else {
             log::info!("navigate({:?}): falling through to page navigation", dir);
+            let old_active_window = self.active_window;
             self.navigate_page(dx, dy);
+            self.active_window != old_active_window
         }
     }
 
