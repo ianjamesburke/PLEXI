@@ -7,6 +7,15 @@ size = [1280.0, 800.0]
 open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
 
 [[steps]]
+key = { target = "files", value = "cmd+enter" }
+
+[[steps]]
+assert = { target = "files", focused = true, pane_count = 1 }
+
+[[steps]]
+shot = "single-pane-does-not-zoom.png"
+
+[[steps]]
 open = { kind = "builtin", id = "assistant", as = "assistant" }
 
 [[steps]]

@@ -5187,6 +5187,13 @@ fn note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
 fn zoom_focused_pane_through_shortcut(h: &mut HostHarness, pane_id: PaneId) {
     h.focus_pane(pane_id);
     h.run_frames(2);
+    if h.pane_count() == 1 {
+        h.app
+            .split_focused(false, None, false, false, None)
+            .expect("fullscreen input setup must create a sibling pane");
+        h.focus_pane(pane_id);
+        h.run_frames(2);
+    }
     h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
     h.run_frames(2);
 

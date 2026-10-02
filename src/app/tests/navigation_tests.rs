@@ -368,6 +368,37 @@ fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
     );
 }
 
+#[test]
+fn toggle_zoom_requires_a_sibling_pane_in_the_active_window() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first).run_frames(1);
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "zoom must be ignored when the active window has only one pane"
+    );
+
+    let second = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("split must create a sibling pane");
+    h.run_frames(2).focus_pane(second);
+    let second_tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&second)
+        .expect("second pane must have a tile");
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    assert_eq!(
+        h.app.windows[0].zoomed_pane,
+        Some(second_tile),
+        "zoom must remain available once the active window has a sibling pane"
+    );
+}
+
 /// GetPreviousPaneInfo returns the last live entry from pane_focus_history.
 #[test]
 fn get_previous_pane_info_returns_previous_pane() {

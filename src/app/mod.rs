@@ -3722,6 +3722,11 @@ impl eframe::App for PlexiApp {
                             if ctx.zoomed_pane == Some(focused) {
                                 ctx.clear_zoom();
                                 log::info!("zoom: toggle off — pane={focused:?}");
+                            } else if ctx.panes.len() <= 1 {
+                                log::info!(
+                                    "zoom: toggle ignored — pane={focused:?} is the only pane in window={}",
+                                    ctx.window_id,
+                                );
                             } else {
                                 ctx.zoom_to(focused);
                                 log::info!("zoom: toggle on — pane={focused:?}");
