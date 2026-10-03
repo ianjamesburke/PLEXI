@@ -191,9 +191,9 @@ impl PlexiApp {
         }
         let started = Instant::now();
         let layout = if action.placement == "down" {
-            "split_h"
+            "split_down"
         } else {
-            "split_v"
+            "split_right"
         };
         let pane = self.spawn_host_pane(
             utterance.origin.pane,
@@ -399,6 +399,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn voice_placement_matches_rendered_right_and_below_geometry() {
+        for placement in ["right", "down"] {
+            let mut harness = crate::testing::HostHarness::new();
+            let pane = harness.add_test_pane();
+            harness.app.pane_navigate(pane);
+            let origin = harness.app.voice_origin().unwrap();
+            harness.app.voice.session.start();
+            let utterance = Utterance {
+                generation: 1,
+                id: 1,
+                origin,
+                text: "Open Notes".into(),
+                started: Instant::now(),
+                finalized: Instant::now(),
+            };
+            harness
+                .app
+                .execute_voice(
+                    &utterance,
+                    &Action {
+                        app: "text-editor".into(),
+                        name: "Notes".into(),
+                        placement,
+                    },
+                )
+                .unwrap();
+            harness.run_frames(2);
+            let (window, tile) = harness.app.find_pane_in_any_window(pane).unwrap();
+            let state = &harness.app.windows[window];
+            let origin_rect = state.tree.tiles.rect(tile).unwrap();
+            let new_tile = state
+                .tree
+                .tiles
+                .iter()
+                .find_map(|(id, tile)| {
+                    matches!(tile, egui_tiles::Tile::Pane(id) if *id != pane).then_some(*id)
+                })
+                .unwrap();
+            let new_rect = state.tree.tiles.rect(new_tile).unwrap();
+            if placement == "right" {
+                assert!(
+                    new_rect.left() >= origin_rect.right(),
+                    "right: origin={origin_rect:?}, new={new_rect:?}"
+                );
+                assert!((new_rect.top() - origin_rect.top()).abs() < 1.0);
+            } else {
+                assert!(
+                    new_rect.top() >= origin_rect.bottom(),
+                    "below: origin={origin_rect:?}, new={new_rect:?}"
+                );
+                assert!((new_rect.left() - origin_rect.left()).abs() < 1.0);
+            }
+        }
+    }
+
+    #[test]
     fn voice_completion_dispatches_without_a_visible_frame() {
         let mut harness = crate::testing::HostHarness::new();
         let pane = harness.add_test_pane();
@@ -477,10 +533,19 @@ mod tests {
         let mut stale = origin.clone();
         stale.pane += 1000;
         for (id, origin) in [(1, stale), (2, origin)] {
-            harness.app.voice.session.enqueue(Utterance {
-                generation: 1, id, origin, text: "Open Notes".into(),
-                started: Instant::now(), finalized: Instant::now(),
-            }).unwrap();
+            harness
+                .app
+                .voice
+                .session
+                .enqueue(Utterance {
+                    generation: 1,
+                    id,
+                    origin,
+                    text: "Open Notes".into(),
+                    started: Instant::now(),
+                    finalized: Instant::now(),
+                })
+                .unwrap();
         }
         harness.hidden_frame();
         assert_eq!(harness.app.voice.session.status.queued, 1);

@@ -38,6 +38,7 @@ plexi config reset
 | `pane_title_font_size` | float | 11.0 | Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0]. |
 | `osc_pane_title` | bool | true | Apply OSC 0/1/2 title sequences from terminal processes as pane names. Defaults to true; set false to keep terminal pane names manual-only. |
 | `theme_preset` | string | — | — |
+| `voice` | VoiceConfig | — | — |
 | `confirm_quit` | bool | true | Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true). |
 | `confirm_close` | bool | true | Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true). |
 | `confirm_context_close` | bool | true | Set to false to close contexts immediately on Cmd+Shift+W without a confirmation dialog (default: true). |
@@ -310,6 +311,16 @@ ghost_opacity = 0.75
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+
+# Voice mode starts OFF. Explicitly enable from the palette or host voice start.
+# Audio stays local; finalized speech goes to OpenRouter and commands run automatically.
+[voice]
+apps = ["text-editor"]         # Notes; add installed app IDs here (terminal is always available)
+input_preferences = []
+fallback_to_default = true
+# model_path = "/absolute/path/parakeet-tdt-0.6b-v3-int8"
+silence_ms = 700
+confidence_threshold = 0.65
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
