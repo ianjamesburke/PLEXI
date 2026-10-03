@@ -25,6 +25,8 @@ pub(crate) struct Voice {
     worker: Option<Worker>,
     retired: Vec<Worker>,
     decision: Option<mpsc::Receiver<DecisionResult>>,
+    decision_thread: Option<std::thread::JoinHandle<()>>,
+    retired_decisions: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl PlexiApp {
@@ -77,7 +79,10 @@ impl PlexiApp {
         self.voice
             .retired
             .retain(|worker| !worker.thread.is_finished());
-        if !self.voice.retired.is_empty() {
+        self.voice
+            .retired_decisions
+            .retain(|worker| !worker.is_finished());
+        if !self.voice.retired.is_empty() || !self.voice.retired_decisions.is_empty() {
             return Err("Previous voice model is still stopping; try again shortly".into());
         }
         self.config.voice.validate()?;
@@ -89,8 +94,13 @@ impl PlexiApp {
         let origin = self
             .voice_origin()
             .ok_or("Open a pane before enabling voice mode")?;
-        self.voice_candidates(&origin)?;
+        let candidates = self.voice_candidates(&origin)?;
         self.voice.session.start();
+        self.voice.session.status.supported_apps = candidates
+            .iter()
+            .filter(|c| c.action.placement == "right")
+            .map(|c| (c.action.app.clone(), c.action.name.clone()))
+            .collect();
         match Worker::spawn(
             self.config.voice.clone(),
             self.voice.session.generation,
@@ -111,6 +121,9 @@ impl PlexiApp {
     pub(crate) fn stop_voice(&mut self) {
         self.voice.session.stop();
         self.voice.decision = None;
+        if let Some(worker) = self.voice.decision_thread.take() {
+            self.voice.retired_decisions.push(worker);
+        }
         if let Some(worker) = self.voice.worker.take() {
             worker.cancel.store(true, Ordering::Release);
             self.voice.retired.push(worker);
@@ -124,14 +137,20 @@ impl PlexiApp {
             return Err("Voice origin pane/context no longer exists".into());
         }
         let registry = self.registries.view_for_root(&origin.workspace);
-        let mut apps: Vec<_> = registry
-            .list()
-            .into_iter()
-            .filter(|app| app.source != crate::app::registry::RegistrySource::LocalAgent)
-            .map(|app| (app.manifest.id.clone(), app.manifest.name.clone()))
-            .collect();
-        // Native Notes is the host's text-editor factory, not an installed app.
-        apps.push(("text-editor".into(), "Notes".into()));
+        let mut apps = Vec::new();
+        for id in &self.config.voice.apps {
+            if id == "text-editor" {
+                apps.push((id.clone(), "Notes".into()));
+            } else {
+                let app = registry.get(id).ok_or_else(|| {
+                    format!("Configured voice app '{id}' is unavailable in this context")
+                })?;
+                if app.source == crate::app::registry::RegistrySource::LocalAgent {
+                    return Err(format!("Voice cannot launch agent '{id}'"));
+                }
+                apps.push((id.clone(), app.manifest.name.clone()));
+            }
+        }
         voice::decisions::candidates(apps)
     }
 
@@ -206,12 +225,18 @@ impl PlexiApp {
         self.voice
             .retired
             .retain(|worker| !worker.thread.is_finished());
+        self.voice
+            .retired_decisions
+            .retain(|worker| !worker.is_finished());
         let origin = self.voice_origin();
         if let Some(worker) = &self.voice.worker {
             if let Ok(mut shared) = worker.mailbox.try_lock() {
                 // Origin is sampled at VAD onset against the latest host pass.
                 shared.origin = origin;
                 let status = &mut self.voice.session.status;
+                if shared.listening && !status.listening {
+                    status.outcome = "Listening for one command at a time".into();
+                }
                 status.listening = shared.listening;
                 status.microphone = shared.microphone.clone();
                 status.partial.clone_from(&shared.partial);
@@ -224,6 +249,9 @@ impl PlexiApp {
                         self.voice.session.status.outcome = error.into();
                     }
                 }
+            } else {
+                self.ctx
+                    .request_repaint_after(std::time::Duration::from_millis(1));
             }
         }
         if self
@@ -281,6 +309,8 @@ impl PlexiApp {
                     self.voice
                         .session
                         .complete(utterance.generation, utterance.id, error);
+                    self.ctx
+                        .request_repaint_after(std::time::Duration::from_millis(1));
                     return;
                 }
             };
@@ -318,13 +348,18 @@ impl PlexiApp {
                     let _ = sender.send(DecisionResult { utterance, result });
                     wake.request_repaint();
                 }) {
-                Ok(_) => self.voice.decision = Some(receiver),
+                Ok(worker) => {
+                    self.voice.decision = Some(receiver);
+                    self.voice.decision_thread = Some(worker);
+                }
                 Err(error) => {
                     self.voice.session.complete(
                         generation,
                         id,
                         format!("Start Jev worker: {error}"),
                     );
+                    self.ctx
+                        .request_repaint_after(std::time::Duration::from_millis(1));
                 }
             }
         }
@@ -341,7 +376,8 @@ impl PlexiApp {
                 crate::ui::typography::body_strong(ui, if status.listening { "Voice · Listening" } else if status.enabled { "Voice · Starting" } else { "Voice · Off" }, &self.colors);
                 if status.processing.is_some() { crate::ui::typography::body(ui, "Interpreting", &self.colors); }
                 if status.queued > 0 { crate::ui::typography::caption(ui, format!("{} queued", status.queued), &self.colors); }
-                if status.enabled { stop = crate::ui::button::chrome_button(ui, "Stop listening", crate::ui::button::ButtonKind::Secondary, &self.colors, 0.0).clicked(); }
+                if let Some(input) = &status.microphone { crate::ui::typography::caption(ui, input, &self.colors); }
+                if status.enabled { stop = crate::ui::button::chrome_button(ui, "Stop listening", crate::ui::button::ButtonKind::Primary, &self.colors, 0.0).clicked(); }
                 else if crate::ui::button::chrome_button(ui, "Dismiss", crate::ui::button::ButtonKind::Secondary, &self.colors, 0.0).clicked() { stop = true; }
             });
             if !status.partial.is_empty() { crate::ui::typography::body(ui, &status.partial, &self.colors); }
@@ -429,6 +465,27 @@ mod tests {
         assert!(harness.app.start_voice().is_ok());
         assert_eq!(harness.app.voice.session.generation, 1);
         assert_eq!(harness.app.voice.session.status.processing, Some(7));
+    }
+
+    #[test]
+    fn stale_queued_origin_schedules_progress_for_the_next_command() {
+        let mut harness = crate::testing::HostHarness::new();
+        let pane = harness.add_test_pane();
+        harness.app.pane_navigate(pane);
+        let origin = harness.app.voice_origin().unwrap();
+        harness.app.voice.session.start();
+        let mut stale = origin.clone();
+        stale.pane += 1000;
+        for (id, origin) in [(1, stale), (2, origin)] {
+            harness.app.voice.session.enqueue(Utterance {
+                generation: 1, id, origin, text: "Open Notes".into(),
+                started: Instant::now(), finalized: Instant::now(),
+            }).unwrap();
+        }
+        harness.hidden_frame();
+        assert_eq!(harness.app.voice.session.status.queued, 1);
+        assert!(harness.app.ctx.has_requested_repaint());
+        assert_eq!(harness.app.voice.session.next().unwrap().id, 2);
     }
 
     #[test]

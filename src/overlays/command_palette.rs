@@ -200,13 +200,13 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         command: PaletteCommand::StartVoice,
         name: "Enable voice mode",
         description: "Listen continuously; send finalized speech to OpenRouter and automatically open panes/apps",
-        search_text: "enable start voice mode microphone listen speech",
+        search_text: "enable voice mode start voice mode microphone listen speech",
     },
     PaletteCommandEntry {
         command: PaletteCommand::StopVoice,
         name: "Disable voice mode",
         description: "Stop listening and cancel queued voice commands",
-        search_text: "disable stop voice mode microphone listen speech",
+        search_text: "disable voice mode stop voice mode microphone listen speech",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::SplitRight),

@@ -40,6 +40,7 @@ pub(crate) struct Status {
     pub queued: usize,
     pub outcome: String,
     pub rejected: u64,
+    pub supported_apps: Vec<(String, String)>,
 }
 
 #[derive(Default)]

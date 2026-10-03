@@ -89,7 +89,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
-const KNOWN_VOICE: &[&str] = &["input_preferences", "fallback_to_default", "model_path", "silence_ms", "confidence_threshold"];
+const KNOWN_VOICE: &[&str] = &["apps", "input_preferences", "fallback_to_default", "model_path", "silence_ms", "confidence_threshold"];
 const KNOWN_THEME: &[&str] = &[
     "preset",
     "bg_darkest",
@@ -517,6 +517,8 @@ pub struct PlexiConfig {
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct VoiceConfig {
+    /// Explicit supported app IDs; terminal opening is always available.
+    pub apps: Vec<String>,
     pub input_preferences: Vec<String>,
     pub fallback_to_default: bool,
     /// Explicit directory containing Parakeet v3 int8 ONNX files.
@@ -527,7 +529,7 @@ pub struct VoiceConfig {
 
 impl Default for VoiceConfig {
     fn default() -> Self {
-        Self { input_preferences: Vec::new(), fallback_to_default: true, model_path: None, silence_ms: 700, confidence_threshold: 0.65 }
+        Self { apps: vec!["text-editor".into()], input_preferences: Vec::new(), fallback_to_default: true, model_path: None, silence_ms: 700, confidence_threshold: 0.65 }
     }
 }
 
@@ -542,6 +544,7 @@ impl VoiceConfig {
         if self.input_preferences.len() > 32 {
             return Err("voice.input_preferences may contain at most 32 devices".into());
         }
+        if self.apps.len() > 30 { return Err("voice.apps supports at most 30 explicitly selected apps".into()); }
         Ok(())
     }
 }

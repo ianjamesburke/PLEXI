@@ -88,6 +88,21 @@ fn listen(
     mailbox: &Arc<Mutex<Mailbox>>,
     wake: &egui::Context,
 ) -> Result<(), String> {
+    let capture_config = config.clone();
+    let capture_cancel = cancel.clone();
+    listen_with_input(config, generation, cancel, mailbox, wake, move || {
+        capture::spawn(capture_config, capture_cancel)
+    })
+}
+
+fn listen_with_input(
+    config: crate::config::VoiceConfig,
+    generation: u64,
+    cancel: &Arc<AtomicBool>,
+    mailbox: &Arc<Mutex<Mailbox>>,
+    wake: &egui::Context,
+    input: impl FnOnce() -> Result<capture::CaptureWorker, String>,
+) -> Result<(), String> {
     let started = Instant::now();
     let model_path = config
         .model_path
@@ -102,7 +117,7 @@ fn listen(
     if cancel.load(Ordering::Acquire) {
         return Ok(());
     }
-    let (_capture_thread, receiver) = capture::spawn(config.clone(), cancel.clone())?;
+    let (_capture_thread, receiver) = input()?;
     let mut input = loop {
         if cancel.load(Ordering::Acquire) {
             return Ok(());
@@ -132,8 +147,11 @@ fn listen(
     let mut origin = None;
     let mut onset = Instant::now();
     while !cancel.load(Ordering::Acquire) {
-        if input.failed.load(Ordering::Acquire) {
-            return Err("Microphone disconnected or input failed; voice mode stopped".into());
+        if let Ok(error) = input.errors.pop() {
+            return Err(format!(
+                "Microphone input failed: {}",
+                error.to_string().chars().take(256).collect::<String>()
+            ));
         }
         if input.overflow.swap(0, Ordering::AcqRel) != 0 {
             while input.samples.pop().is_ok() {}
@@ -194,8 +212,12 @@ fn listen(
                 "voice: finalized generation={generation} utterance={id} final_decode_ms={}",
                 finalized.elapsed().as_millis()
             );
-            if !text.trim().is_empty() && text.len() <= MAX_TEXT {
-                let mut shared = mailbox.lock().map_err(|_| "Voice mailbox unavailable")?;
+            let mut shared = mailbox.lock().map_err(|_| "Voice mailbox unavailable")?;
+            shared.partial.clear();
+            if text.len() > MAX_TEXT {
+                shared.rejected += 1;
+                shared.error = Some("Transcription exceeded text limit; utterance rejected".into());
+            } else if !text.trim().is_empty() {
                 if let Some(origin) = origin.take() {
                     shared.finalize(Utterance {
                         generation,
@@ -210,6 +232,7 @@ fn listen(
                     shared.rejected += 1;
                 }
             }
+            drop(shared);
             wake.request_repaint();
         } else if segmenter.active && segmenter.samples.len() >= next_partial {
             next_partial = segmenter.samples.len() + 16000;
@@ -227,4 +250,119 @@ fn listen(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires explicit local model and generated command WAV fixtures"]
+    fn local_model_replays_continuous_command_audio_while_decision_is_blocked() {
+        let model_path =
+            PathBuf::from(std::env::var("PLEXI_VOICE_MODEL_PATH").expect("model directory"));
+        let fixture_dir =
+            PathBuf::from(std::env::var("PLEXI_VOICE_FIXTURE_DIR").expect("command WAV directory"));
+        let mut audio = vec![0.0; 16000];
+        for name in ["open-terminal.wav", "open-notes.wav"] {
+            audio.extend(transcribe_rs::audio::read_wav_samples(&fixture_dir.join(name)).unwrap());
+            audio.extend(std::iter::repeat_n(0.0, 16000));
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mailbox = Arc::new(Mutex::new(Mailbox {
+            origin: Some(Origin {
+                window: 1,
+                context: 1,
+                pane: 1,
+                workspace: fixture_dir,
+            }),
+            ..Default::default()
+        }));
+        let worker_mailbox = mailbox.clone();
+        let worker_cancel = cancel.clone();
+        let (release, decision) = std::sync::mpsc::sync_channel::<()>(1);
+        let decision_thread = std::thread::spawn(move || decision.recv().unwrap());
+        let started = Instant::now();
+        let speech_thread = std::thread::spawn(move || {
+            let capture_cancel = worker_cancel.clone();
+            listen_with_input(
+                crate::config::VoiceConfig {
+                    model_path: Some(model_path),
+                    ..Default::default()
+                },
+                1,
+                &worker_cancel,
+                &worker_mailbox,
+                &egui::Context::default(),
+                move || {
+                    let (mut producer, consumer) = rtrb::RingBuffer::new(3 * 16000);
+                    let (_errors_tx, errors) = rtrb::RingBuffer::new(2);
+                    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                    sender
+                        .send(Ok(capture::AudioInput {
+                            samples: consumer,
+                            rate: 16000,
+                            channels: 1,
+                            microphone: "WAV replay".into(),
+                            overflow: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                            errors,
+                        }))
+                        .unwrap();
+                    let thread = std::thread::spawn(move || {
+                        for sample in audio {
+                            while producer.is_full() && !capture_cancel.load(Ordering::Acquire) {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                            if capture_cancel.load(Ordering::Acquire) {
+                                return;
+                            }
+                            producer.push(sample).unwrap();
+                        }
+                    });
+                    Ok((thread, receiver))
+                },
+            )
+        });
+        let deadline =
+            Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(30));
+        let mut partial_seen = false;
+        loop {
+            let shared = mailbox.lock().unwrap();
+            partial_seen |= !shared.partial.is_empty();
+            if shared.finals.len() == 2 {
+                break;
+            }
+            drop(shared);
+            if speech_thread.is_finished() || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        cancel.store(true, Ordering::Release);
+        speech_thread.join().unwrap().unwrap();
+        let shared = mailbox.lock().unwrap();
+        let texts: Vec<_> = shared
+            .finals
+            .iter()
+            .map(|u| u.text.to_lowercase())
+            .collect();
+        eprintln!(
+            "local replay elapsed_ms={} partial_seen={} finals={texts:?}",
+            started.elapsed().as_millis(),
+            partial_seen
+        );
+        assert_eq!(texts.len(), 2);
+        assert!(texts[0].contains("terminal"));
+        assert!(texts[1].contains("notes"));
+        assert!(
+            partial_seen,
+            "A provisional transcript must be emitted before finalization"
+        );
+        assert!(
+            !decision_thread.is_finished(),
+            "Speech must finish while the decision is blocked"
+        );
+        release.send(()).unwrap();
+        decision_thread.join().unwrap();
+    }
 }

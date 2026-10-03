@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 /// Static registry of all known config keys: (dotted_key, type_name, description).
 pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
+    ("voice.apps", "array", "Supported installed app IDs (default text-editor/Notes; terminal is always available)"),
     ("voice.input_preferences", "array", "Ordered microphone IDs or names (host profile only)"),
     ("voice.fallback_to_default", "bool", "Allow the system default input when no preference is available"),
     ("voice.model_path", "string", "Extracted local Parakeet v3 int8 model directory"),
@@ -690,6 +691,12 @@ fn resolve_dotted_key<'a, 'k>(
 /// Parse a string value into the correct TOML edit value based on the key's declared type.
 fn parse_value_for_type(raw: &str, type_name: Option<&str>) -> Result<toml_edit::Value, String> {
     match type_name {
+        Some("array") => {
+            let value = raw.parse::<toml_edit::Value>().map_err(|e| format!("expected TOML string array: {e}"))?;
+            if value.as_array().is_some_and(|array| array.iter().all(|item| item.as_str().is_some())) {
+                Ok(value)
+            } else { Err("expected an array of strings".into()) }
+        }
         Some("bool") => raw
             .parse::<bool>()
             .map(toml_edit::Value::from)
@@ -735,6 +742,11 @@ fn toml_edit_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn voice_config_arrays_remain_arrays() {
+        assert!(parse_value_for_type("['text-editor']", Some("array")).unwrap().is_array());
+        assert!(parse_value_for_type("[1]", Some("array")).is_err());
+    }
 
     #[test]
     fn config_set_marketplace_urls_keeps_default_config_parseable() {

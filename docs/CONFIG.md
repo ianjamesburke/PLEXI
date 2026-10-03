@@ -59,6 +59,7 @@ Workspace config cannot override microphone, model, or voice thresholds:
 
 ```toml
 [voice]
+apps = ["text-editor"]
 input_preferences = ["CoreAudio:your-device-id", "USB Microphone"]
 fallback_to_default = true
 model_path = "/absolute/path/parakeet-tdt-0.6b-v3-int8"
@@ -67,6 +68,9 @@ confidence_threshold = 0.65
 ```
 
 `plexi host voice inputs` returns device IDs, names, and the current default.
+Voice initially supports Terminal and Notes. Add installed app IDs to
+`voice.apps` to enable them; unavailable configured apps fail visibly.
+`host voice status` lists the session's supported IDs and names.
 The first available preference wins; duplicate names require an ID.
 Disconnection stops listening and reports an error; there is no silent device
 switch. `plexi host voice status` exposes listening, interpretation, queue depth,

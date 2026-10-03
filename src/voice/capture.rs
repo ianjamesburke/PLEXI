@@ -64,21 +64,17 @@ pub(crate) struct AudioInput {
     pub channels: usize,
     pub microphone: String,
     pub overflow: Arc<AtomicU64>,
-    pub failed: Arc<AtomicBool>,
+    pub errors: rtrb::Consumer<cpal::StreamError>,
 }
 
 /// Creates the stream on its owning worker. Cancellation drops it independently
 /// of a slow model decode; the inference worker never owns the microphone.
-pub(crate) fn spawn(
-    config: VoiceConfig,
-    cancel: Arc<AtomicBool>,
-) -> Result<
-    (
-        std::thread::JoinHandle<()>,
-        mpsc::Receiver<Result<AudioInput, String>>,
-    ),
-    String,
-> {
+pub(crate) type CaptureWorker = (
+    std::thread::JoinHandle<()>,
+    mpsc::Receiver<Result<AudioInput, String>>,
+);
+
+pub(crate) fn spawn(config: VoiceConfig, cancel: Arc<AtomicBool>) -> Result<CaptureWorker, String> {
     let (tx, rx) = mpsc::sync_channel(1);
     let handle = std::thread::Builder::new()
         .name("plexi-voice-microphone".into())
@@ -104,28 +100,28 @@ pub(crate) fn spawn(
                 }
                 let (producer, consumer) = rtrb::RingBuffer::new(rate as usize * channels * 3);
                 let overflow = Arc::new(AtomicU64::new(0));
-                let failed = Arc::new(AtomicBool::new(false));
+                let (errors_tx, errors) = rtrb::RingBuffer::new(2);
                 let stream = match supported.sample_format() {
                     cpal::SampleFormat::F32 => stream::<f32>(
                         &device,
                         &stream_config,
                         producer,
                         overflow.clone(),
-                        failed.clone(),
+                        errors_tx,
                     ),
                     cpal::SampleFormat::I16 => stream::<i16>(
                         &device,
                         &stream_config,
                         producer,
                         overflow.clone(),
-                        failed.clone(),
+                        errors_tx,
                     ),
                     cpal::SampleFormat::U16 => stream::<u16>(
                         &device,
                         &stream_config,
                         producer,
                         overflow.clone(),
-                        failed.clone(),
+                        errors_tx,
                     ),
                     format => {
                         return Err(format!("Unsupported microphone sample format: {format}"))
@@ -142,7 +138,7 @@ pub(crate) fn spawn(
                         channels,
                         microphone: selected.name.clone(),
                         overflow,
-                        failed,
+                        errors,
                     },
                 ))
             };
@@ -171,7 +167,7 @@ fn stream<T: cpal::SizedSample + Copy>(
     config: &cpal::StreamConfig,
     mut producer: rtrb::Producer<f32>,
     overflow: Arc<AtomicU64>,
-    failed: Arc<AtomicBool>,
+    mut errors: rtrb::Producer<cpal::StreamError>,
 ) -> Result<cpal::Stream, String>
 where
     f32: cpal::FromSample<T>,
@@ -196,8 +192,8 @@ where
                     }
                 }
             },
-            move |_| {
-                failed.store(true, Ordering::Release);
+            move |error| {
+                let _ = errors.push(error);
             },
             None,
         )

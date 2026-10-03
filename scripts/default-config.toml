@@ -40,6 +40,7 @@ backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (Ope
 # Voice mode starts OFF. Explicitly enable from the palette or host voice start.
 # Audio stays local; finalized speech goes to OpenRouter and commands run automatically.
 [voice]
+apps = ["text-editor"]         # Notes; add installed app IDs here (terminal is always available)
 input_preferences = []
 fallback_to_default = true
 # model_path = "/absolute/path/parakeet-tdt-0.6b-v3-int8"
