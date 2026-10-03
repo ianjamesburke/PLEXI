@@ -192,7 +192,7 @@ impl PlexiApp {
     pub(crate) fn draw_cli_setup_modal(&mut self, ctx: &egui::Context) {
         let cli_name = crate::cli::setup::cli_name();
         let colors = self.colors;
-        let cmd = crate::cli::setup::INSTALL_COMMAND;
+        let cmd = crate::cli::setup::install_command();
 
         let title = format!("Install `{cli_name}`");
         // No scrim — this prompt floats over the welcome screen at startup
@@ -225,8 +225,7 @@ impl PlexiApp {
                             ui.add_space(style::SPACE_MD);
                             ui.label(
                                 RichText::new(
-                                    "Open Terminal and run this command.\n\
-                                     You'll be asked for your password."
+                                    "Open a terminal and run this command."
                                 )
                                 .size(style::TEXT_CAPTION)
                                 .color(colors.text_dim),
@@ -243,7 +242,7 @@ impl PlexiApp {
                             crate::ui::surface::copyable_command(
                                 ui,
                                 egui::Id::new("cli_setup_copy"),
-                                cmd,
+                                &cmd,
                                 &colors,
                             );
 
@@ -310,7 +309,7 @@ impl PlexiApp {
             return;
         }
         let colors = self.colors;
-        let cmd = crate::cli::setup::INSTALL_COMMAND;
+        let cmd = crate::cli::setup::completions_command();
 
         crate::ui::toast::ToastShell::bottom("completions_banner")
             .offset(egui::vec2(0.0, -20.0))
@@ -318,13 +317,13 @@ impl PlexiApp {
                 ui.horizontal(|ui| {
                     crate::ui::toast::toast_caption(
                         ui,
-                        "Shell completions aren't set up.",
+                        "Generate shell completions:",
                         &colors,
                     );
                     crate::ui::surface::compact_copyable_command(
                         ui,
                         egui::Id::new("completions_banner_copy"),
-                        cmd,
+                        &cmd,
                         &colors,
                     );
                     if crate::ui::button::chrome_button_sized(

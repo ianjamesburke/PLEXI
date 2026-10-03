@@ -61,7 +61,6 @@ use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicU64, Arc};
-use std::time::Duration;
 
 mod timeout;
 pub(crate) use timeout::load_aware_timeout;

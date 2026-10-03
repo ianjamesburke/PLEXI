@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native transaction tests. Host fixtures isolate installation from rendering."""
 import argparse
+from contextlib import ExitStack
 import hashlib
 import http.server
 import json
@@ -76,7 +77,7 @@ fn main() {
 
 
 def main(args):
-    with tempfile.TemporaryDirectory(prefix='plexi distribution tests ') as directory:
+    with tempfile.TemporaryDirectory(prefix='plexi distribution tests ') as directory, ExitStack() as cleanup:
         root = Path(directory)
         home = root / 'home with spaces'
         home.mkdir()
@@ -88,6 +89,14 @@ def main(args):
         env['PLEXI_BIN_DIR'] = str(root / 'command bin')
         apps = home / 'Applications'
         installer = args.installer.resolve()
+        def remove_test_installations():
+            # Windows Known Folders and user PATH are account-scoped even when
+            # HOME/APPDATA are overridden. Remove all receipt-owned integrations
+            # before deleting the temporary registry and payloads.
+            for receipt in json.loads(run([installer, 'list'], env).stdout):
+                run([installer, 'remove', '--receipt', receipt['root']], env)
+            assert json.loads(run([installer, 'list'], env).stdout) == []
+        cleanup.callback(remove_test_installations)
         old = package(root, installer, args.platform, 'stable', 'old')
         new = package(root, installer, args.platform, 'stable', 'new')
         alpha = package(root, installer, args.platform, 'alpha', 'new')

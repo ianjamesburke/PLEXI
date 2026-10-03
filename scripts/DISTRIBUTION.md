@@ -135,6 +135,8 @@ launches a native host, drives terminal I/O and Calculator, captures through
 `host screenshot`, restarts and removes the channel. Inspect the resulting PNG.
 `PLEXI_DISTRIBUTION_HOME` isolates the installation registry for disposable test
 runs; it is separate from the package's persisted installation root.
+Windows GUI tests require a disposable OS user, as Windows Known Folders and
+user PATH registration remain account-scoped despite HOME environment overrides.
 
 Linux support is x86_64 under X11, with Ubuntu 22.04 as the package build floor.
 The host depends on the system X11, ALSA and graphics libraries installed by

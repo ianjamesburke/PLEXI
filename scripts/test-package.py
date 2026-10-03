@@ -36,6 +36,9 @@ def main(args):
             if result.returncode:
                 raise RuntimeError(f'{command}: {result.stderr[-4000:]}')
             return result.stdout
+        # Windows Known Folders do not follow HOME/USERPROFILE overrides; native
+        # Windows runs use the disposable runner account's real profile.
+        profile_home = Path(run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('UserProfile')"]).strip()) if os.name == 'nt' else home
         installer = package / ('plexi-installer.exe' if os.name == 'nt' else 'plexi-installer')
         auto_started = False
         tag, channel = manifest['tag'], manifest['channel']
@@ -133,7 +136,7 @@ def main(args):
                 assert restarted['ready'] and restarted['running']['pid'] != status['running']['pid']
                 assert restarted['running']['build_id'] == manifest['build_id']
             finally:
-                profile = home / ('.plexi' if manifest['channel'] == 'stable' else '.plexi-' + manifest['channel'])
+                profile = profile_home / ('.plexi' if manifest['channel'] == 'stable' else '.plexi-' + manifest['channel'])
                 for log in profile.glob('*.log'):
                     shutil.copy2(log, args.output / log.name)
                 if started:

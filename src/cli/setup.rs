@@ -114,8 +114,39 @@ pub fn mark_prompted() {
     let _ = std::fs::write(sentinel_path(), "");
 }
 
-/// The install command shown in the CLI setup modal.
-pub const INSTALL_COMMAND: &str = "curl -fsSL https://plexiapp.com/install | sh";
+/// Install this channel without trying to launch a second host.
+pub fn install_command() -> String {
+    install_command_for(
+        crate::config::build_channel()
+            .as_deref()
+            .unwrap_or("stable"),
+        cfg!(windows),
+    )
+}
+
+fn install_command_for(channel: &str, windows: bool) -> String {
+    if windows {
+        format!(
+            "& ([scriptblock]::Create((irm https://plexiapp.com/install.ps1))) -Channel {channel} -InstallOnly"
+        )
+    } else {
+        format!(
+            "curl -fsSL https://plexiapp.com/install | bash -s -- --channel {channel} --install-only"
+        )
+    }
+}
+
+pub fn completions_command() -> String {
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let shell = if shell.contains("fish") {
+        "fish"
+    } else if shell.contains("bash") {
+        "bash"
+    } else {
+        "zsh"
+    };
+    format!("{} completions {shell}", cli_name())
+}
 
 /// Shows every launch until the CLI is verified installed.
 /// "Not now" and Escape dismiss for the session only.
@@ -150,25 +181,59 @@ pub fn should_prompt() -> bool {
     true
 }
 
-/// Checks whether the CLI binary is reachable: first at the canonical
-/// `/usr/local/bin/<name>` path, then anywhere on `$PATH`. This handles
-/// installs into `/opt/homebrew/bin`, `~/.local/bin`, etc.
-///
-/// Note: `just pr-install` always creates `/usr/local/bin/plexi-pr-<N>` as
-/// part of its setup, so this returns `true` in every PR build. To test the
-/// CLI setup modal in a PR build, first remove that symlink manually.
+/// Managed installs use the receipt's owned launcher, including custom paths.
+/// Unmanaged legacy installs retain PATH discovery.
 pub fn is_installed() -> bool {
+    match crate::distribution::installed() {
+        Ok(Some(receipt)) => {
+            let name = if cfg!(windows) {
+                format!(
+                    "{}.exe",
+                    plexi_distribution::release::command_name(&receipt.channel)
+                )
+            } else {
+                plexi_distribution::release::command_name(&receipt.channel)
+            };
+            let launcher = receipt.bin_dir.join(name);
+            return receipt.integrations.iter().any(|owned| {
+                owned.path == launcher
+                    && match owned.matches() {
+                        Ok(matches) => matches,
+                        Err(error) => {
+                            log::error!("cli_setup: launcher verification failed: {error}");
+                            false
+                        }
+                    }
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log::error!("cli_setup: installation receipt failed: {error}");
+            return false;
+        }
+    }
     if install_path().exists() {
         return true;
     }
     let name = cli_name();
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| dir.join(&name).exists())
-    })
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(&name).exists()))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn install_instructions_preserve_channel_and_do_not_launch_again() {
+        for channel in ["stable", "beta", "alpha"] {
+            let unix = super::install_command_for(channel, false);
+            assert!(unix.contains(&format!("--channel {channel} --install-only")));
+            assert!(unix.contains("| bash -s --"));
+            let windows = super::install_command_for(channel, true);
+            assert!(windows.contains("install.ps1"));
+            assert!(windows.ends_with(&format!("-Channel {channel} -InstallOnly")));
+        }
+    }
+
     #[test]
     fn pr_builds_skip_completions_prompt() {
         let tmp = tempfile::tempdir().expect("tempdir");

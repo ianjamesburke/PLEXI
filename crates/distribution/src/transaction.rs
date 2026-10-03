@@ -35,7 +35,7 @@ pub struct OwnedPath {
     pub link_target: Option<PathBuf>,
 }
 impl OwnedPath {
-    fn matches(&self) -> Result<bool> {
+    pub fn matches(&self) -> Result<bool> {
         if let Some(target) = &self.link_target {
             return Ok(self.path.is_symlink()
                 && fs::read_link(&self.path).context("read owned symlink")? == *target);
