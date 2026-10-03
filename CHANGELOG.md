@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.3] — 2026-10-03
+
+### Changes
+- fix(host/navigation): directional move exits pane fullscreen (#2670)
+- fix(infra/build): install Linux system libs in shared plexi-ci-env action (#2668)
 ## [0.3.2] — 2026-09-27
 
 ### Changes
