@@ -260,7 +260,7 @@ codesign-setup:
 
 # Derives channel from git branch (main/alpha/beta). Alias for: just channel-install
 # Run from repo root or any worktree: just install
-install: fetch-python-runtime regen-if-stale
+install: regen-if-stale
     bash scripts/install.sh --from-source
 
 # Editable install of plexi-sdk into your virtual environment for local development.
@@ -368,7 +368,7 @@ pr-install number:
 #   just channel-install gpui     — install as plexi-gpui channel
 #   just channel-install pr-123   — install as PR build
 #   just channel-install rc-010   — install a stable-tier local release candidate
-channel-install channel="": fetch-python-runtime regen-if-stale
+channel-install channel="": regen-if-stale
     bash scripts/install.sh --from-source {{channel}}
 
 # Remove a channel: app bundle, CLI binary, and profile directory.

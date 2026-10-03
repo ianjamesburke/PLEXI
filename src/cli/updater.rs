@@ -14,6 +14,14 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, mailbox: UiMailbox<Stri
     std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || {
+            if let Ok(Some(receipt)) = crate::distribution::installed() {
+                if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
+                    log::info!("update check: running and installed builds differ; restart available");
+                    let _ = mailbox.send(receipt.active.tag.trim_start_matches('v').to_string());
+                    return;
+                }
+            }
+            if crate::config::build_channel().is_some_and(|c| c != "alpha" && c != "beta") { return; }
             let channel = detect_channel();
             let cache_path = cache_dir.join("update_cache.json");
             let current_raw = installed_version();

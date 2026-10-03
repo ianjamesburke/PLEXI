@@ -1,0 +1,97 @@
+name: Package installation gates
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+  pull_request:
+    paths:
+      - 'crates/distribution/**'
+      - 'src/**'
+      - 'scripts/*install*'
+      - 'scripts/*package*'
+      - 'scripts/test-distribution.py'
+      - 'Cargo.*'
+      - 'build.rs'
+      - 'install.sh'
+      - '.github/workflows/distribution.yml'
+      - '.github/workflows/release.yml'
+
+jobs:
+  package:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, platform: macos-arm64, optional: false }
+          - { os: ubuntu-22.04, platform: linux-x64, optional: false }
+          - { os: windows-latest, platform: windows-x64, optional: false }
+          - { os: macos-15-intel, platform: macos-x64, optional: true }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    env:
+      PLEXI_BUILD_TAG: ${{ inputs.tag }}
+      PLEXI_CPYTHON_BUNDLE_DIR: ${{ github.workspace }}/target/distribution-runtime
+      PLEXI_SDK_PATH: ${{ github.workspace }}/sdk/python
+      PLEXI_SCENE_TIMEOUT_SCALE: '4'
+      CARGO_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/plexi-ci-env
+        with:
+          cache-key: distribution-${{ matrix.platform }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Fetch the verified package runtime
+        shell: bash
+        run: uv run --no-project python -c 'from pathlib import Path; from scripts.package import runtime; runtime(Path("target/distribution-runtime"))'
+      - name: Test and build host and installer
+        shell: bash
+        run: |
+          cargo test -p plexi-distribution
+          cargo test --bin plexi
+          cargo clippy --bin plexi -- -D warnings
+          cargo clippy -p plexi-distribution --all-targets -- -D warnings
+          RUSTFLAGS="-D warnings" cargo build --release --bin plexi
+          RUSTFLAGS="-D warnings" cargo build --release -p plexi-distribution --bin plexi-installer
+      - name: Exercise the native transaction and bootstrap
+        shell: bash
+        run: |
+          suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
+          uv run --no-project python scripts/test-distribution.py --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}'
+      - name: Install Linux display dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y xvfb xauth
+      - name: Assemble and exercise every consumer channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
+          for channel in stable beta alpha; do
+            uv run --no-project python scripts/package.py --binary "target/release/plexi$suffix" --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}' --channel "$channel" --output dist
+            command=(uv run --no-project python scripts/test-package.py --package "dist/package-${{ matrix.platform }}-$channel" --output "evidence/$channel" --gui)
+            if [[ '${{ runner.os }}' == Linux ]]; then xvfb-run -a "${command[@]}"; else "${command[@]}"; fi
+          done
+          cp "target/release/plexi-installer$suffix" "dist/plexi-installer-${{ matrix.platform }}$suffix"
+          uv run --no-project python -c 'from pathlib import Path; from scripts.package import digest; [p.with_name(p.name+".sha256").write_text(digest(p)+"  "+p.name+"\n") for p in Path("dist").glob("plexi-installer-*") if not p.name.endswith(".sha256")]'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: distribution-evidence-${{ matrix.platform }}
+          path: evidence/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/plexi-installer-*

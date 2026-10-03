@@ -300,6 +300,9 @@ pub fn plexi_uninstall_cli(_keep_data: bool, assume_yes: bool) -> i32 {
             io::stdin().read_line(&mut answer).map_err(|e| format!("read confirmation: {e}"))?;
             if !matches!(answer.trim(), "y" | "Y" | "yes") { return Err("Uninstall cancelled.".into()); }
         }
+        if super::host::running_build_info().is_some() && super::host::host_stop_cli() != 0 {
+            return Err("could not stop the channel host before uninstall".into());
+        }
         #[cfg(not(windows))]
         plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
         #[cfg(windows)]
@@ -529,17 +532,22 @@ pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<
     if !release::accepts(channel, tag_name, tag_name.contains('-')) {
         return Err(format!("release {tag_name} is not accepted by {channel}"));
     }
+    let current = crate::distribution::installed()?;
+    let expected_build = current.as_ref().map(|r| r.active.build_id.clone());
     let temp = tempfile::tempdir().map_err(|e| format!("stage update: {e}"))?;
     let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(15)).build();
     let platform = release::platform().map_err(|e| e.to_string())?;
     release::download_package(&agent, release::DOWNLOAD_URL, tag_name, &platform, channel, temp.path()).map_err(|e| e.to_string())?;
     let package = Package::load(&temp.path().join("package")).map_err(|e| e.to_string())?;
     if package.manifest.tag != tag_name { return Err("downloaded package tag differs from requested update".into()); }
-    let options = match crate::distribution::installed()? {
+    let options = match current {
         Some(r) => transaction::InstallOptions { channel: r.channel, root: r.root, bin_dir: r.bin_dir, applications_dir: r.applications_dir },
         None => transaction::InstallOptions::for_channel(channel).map_err(|e| e.to_string())?,
     };
-    let receipt = transaction::install(&package, options).map_err(|e| e.to_string())?;
+    let receipt = match expected_build {
+        Some(expected) => transaction::update(&package, options, &expected),
+        None => transaction::install(&package, options),
+    }.map_err(|e| e.to_string())?;
     log::info!("update: verified installed build={} tag={}", receipt.active.build_id, receipt.active.tag);
     Ok(())
 }

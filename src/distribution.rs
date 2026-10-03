@@ -42,3 +42,62 @@ pub fn check_runtime() -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Seed package-owned definitions by build while retaining user settings/data.
+pub fn seed_profile() -> Result<(), String> {
+    let Some(resources) = resources()? else {
+        return Ok(());
+    };
+    let profile = crate::config::config_dir();
+    let stamp = profile.join(".package_definitions_build");
+    if std::fs::read_to_string(&stamp).is_ok_and(|s| s == env!("PLEXI_BUILD_ID")) {
+        return Ok(());
+    }
+    fn copy_tree(
+        source: &std::path::Path,
+        target: &std::path::Path,
+        overwrite: bool,
+    ) -> Result<(), String> {
+        if !source.is_dir() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(target).map_err(|e| format!("create {}: {e}", target.display()))?;
+        for entry in
+            std::fs::read_dir(source).map_err(|e| format!("read {}: {e}", source.display()))?
+        {
+            let entry = entry.map_err(|e| format!("read package resource: {e}"))?;
+            let destination = target.join(entry.file_name());
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                copy_tree(&entry.path(), &destination, overwrite)?;
+            } else if overwrite || !destination.exists() {
+                std::fs::copy(entry.path(), &destination)
+                    .map_err(|e| format!("seed {}: {e}", destination.display()))?;
+            }
+        }
+        Ok(())
+    }
+    let config = profile.join("config.toml");
+    if !config.exists() || crate::config::build_channel().as_deref() == Some("alpha") {
+        std::fs::copy(resources.join("default-config.toml"), &config)
+            .map_err(|e| format!("seed config: {e}"))?;
+    }
+    copy_tree(&resources.join("scripts"), &profile.join("scripts"), false)?;
+    copy_tree(&resources.join("agents"), &profile.join("agents"), false)?;
+    copy_tree(
+        &resources.join("skills"),
+        &profile.join(".agents/skills"),
+        true,
+    )?;
+    copy_tree(
+        &resources.join("maintained-apps"),
+        &profile.join("apps"),
+        true,
+    )?;
+    std::fs::write(stamp, env!("PLEXI_BUILD_ID"))
+        .map_err(|e| format!("record package definitions: {e}"))?;
+    log::info!(
+        "distribution: seeded package definitions build={}",
+        env!("PLEXI_BUILD_ID")
+    );
+    Ok(())
+}

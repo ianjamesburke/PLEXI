@@ -6,6 +6,8 @@
 //! subprocess path when the CPython WASM bundle is unavailable.
 
 use std::collections::{HashMap, VecDeque};
+#[cfg(test)]
+use std::process::Command;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 #[cfg(test)]
@@ -737,11 +739,8 @@ impl WasmPythonRuntime {
         let sdk = if let Some(resources) = crate::distribution::resources()
             .map_err(WasmPythonError::RuntimeStart)? {
             resources.join("sdk")
-        } else if let Some(path) = std::env::var_os("PLEXI_SDK_PATH") {
-            PathBuf::from(path)
         } else {
-            crate::config::ensure_profile_initialized();
-            crate::config::config_dir().join("sdk")
+            unbundled_python_sdk()
         };
         if !sdk.join("plexi_sdk/_v3_process.py").is_file() {
             return Err(WasmPythonError::RuntimeStart(format!("Python SDK missing at {}", sdk.display())));
@@ -4983,6 +4982,16 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
         _ => None,
     })();
     Ok(command)
+}
+
+#[cfg(test)]
+fn unbundled_python_sdk() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python")
+}
+#[cfg(not(test))]
+fn unbundled_python_sdk() -> PathBuf {
+    std::env::var_os("PLEXI_SDK_PATH").map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::config_dir().join("sdk"))
 }
 
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {

@@ -240,7 +240,7 @@ pub fn doctor_cli(json: bool) -> i32 {
             print_llm_section(&llm_servers);
             print_openrouter_section(&openrouter);
         }
-        return 0;
+        return if installation_healthy { 0 } else { 1 };
     }
 
     let mut sick_apps: Vec<AppReport> = Vec::new();

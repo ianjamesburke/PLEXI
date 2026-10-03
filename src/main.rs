@@ -92,6 +92,10 @@ fn main() -> eframe::Result {
 
     let profile = parse_profile_flag(&raw_args);
     crate::config::set_profile(profile);
+    let profile_init_lock = crate::config::lock_profile_initialization().unwrap_or_else(|error| {
+        eprintln!("profile initialization: {error}");
+        std::process::exit(1);
+    });
     let is_first_launch = crate::config::ensure_profile_initialized();
 
     {
@@ -152,6 +156,12 @@ fn main() -> eframe::Result {
             }
         }
     }
+    if let Err(error) = crate::distribution::seed_profile() {
+        eprintln!("package profile initialization: {error}");
+        std::process::exit(1);
+    }
+    drop(profile_init_lock);
+
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
     // If the path has no `.plexi/` ancestor, an adopted context path is set

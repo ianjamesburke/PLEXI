@@ -51,7 +51,7 @@ fn main() {
             let count: usize = fs::read_to_string(&path).unwrap_or_default().parse().unwrap_or(0);
             fs::write(&path,(count+1).to_string()).unwrap();
             if count >= 1 {
-                fs::write(path.with_extension("ready"), "ready").unwrap();
+                fs::write(path.with_extension("ready"), std::process::id().to_string()).unwrap();
                 loop { thread::sleep(Duration::from_millis(100)); }
             }
         }
@@ -77,7 +77,9 @@ def main(args):
         home = root / 'home with spaces'
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith('PLEXI_')}
+        env.pop('ZDOTDIR', None)
         env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'))
+        env['PLEXI_DISTRIBUTION_HOME'] = str(home / 'distribution')
         env['PLEXI_INSTALL_DIR'] = str(root / 'custom install')
         env['PLEXI_BIN_DIR'] = str(root / 'command bin')
         apps = home / 'Applications'
@@ -126,7 +128,7 @@ def main(args):
                 finally:
                     if proc.poll() is None: proc.kill(); proc.wait()
             # The transaction's worker is a fixture process; release it too.
-            subprocess.run(['pkill', '-f', str(receipt_path.parent / 'generations')], capture_output=True)
+            os.kill(int(gate.with_suffix('.ready').read_text()), 9)
             launcher = root / 'command bin/plexi'
             result = run([launcher, '--build-info'], env)
             assert json.loads(result.stdout)['build_id'] == 'old'

@@ -62,6 +62,8 @@ pub struct Receipt {
     pub integrations: Vec<OwnedPath>,
     #[serde(default)]
     pub path_edits: Vec<PathEdit>,
+    #[serde(default)]
+    pub windows_path_added: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,9 +82,19 @@ struct Journal {
     before: Option<Receipt>,
     after: Receipt,
     changes: Vec<Change>,
+    #[serde(default)]
+    windows_path: Option<WindowsPathChange>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct WindowsPathChange {
+    before: String,
+    after: String,
 }
 
 pub fn default_root() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("PLEXI_DISTRIBUTION_HOME") {
+        return Ok(PathBuf::from(path));
+    }
     #[cfg(windows)]
     let base = dirs::data_local_dir().map(|p| p.join("Plexi"));
     #[cfg(not(windows))]
@@ -193,6 +205,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .ok_or_else(|| Error::Invalid("destination has no parent".into()))?;
     fs::create_dir_all(parent).context(format!("create {}", parent.display()))?;
     let mut file = tempfile::NamedTempFile::new_in(parent).context("stage atomic write")?;
+    if let Ok(metadata) = fs::metadata(path) {
+        file.as_file()
+            .set_permissions(metadata.permissions())
+            .context("preserve destination permissions")?;
+    }
     file.write_all(bytes).context("write staged file")?;
     file.as_file().sync_all().context("sync staged file")?;
     file.persist(path).map_err(|e| Error::Io {
@@ -212,13 +229,33 @@ fn sync_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 fn remove_if_present(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
+    #[cfg(windows)]
+    let deadline = Instant::now() + Duration::from_secs(10);
+    #[cfg(not(windows))]
+    return match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(Error::Io {
             action: format!("remove {}", path.display()),
             source,
         }),
+    };
+    #[cfg(windows)]
+    loop {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            #[cfg(windows)]
+            Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
+            Err(source) => {
+                return Err(Error::Io {
+                    action: format!("remove {}", path.display()),
+                    source,
+                });
+            }
+        }
     }
 }
 
@@ -273,11 +310,11 @@ fn apply_changes(changes: &[Change]) -> Result<()> {
         if let Some(target) = &change.link_target {
             atomic_link(&change.path, target)?;
         } else {
-            atomic_write(
-                &change.path,
-                &fs::read(&change.staged).context("read staged integration")?,
-            )?;
-            executable_permission(&change.path)?;
+            let bytes = fs::read(&change.staged).context("read staged integration")?;
+            atomic_write(&change.path, &bytes)?;
+            if bytes.starts_with(b"#!/bin/sh\n") {
+                executable_permission(&change.path)?;
+            }
         }
     }
     Ok(())
@@ -314,10 +351,15 @@ pub fn recover(root: &Path) -> Result<()> {
                     &change.path,
                     &fs::read(before).context("read integration backup")?,
                 )?;
-                executable_permission(&change.path)?;
             } else {
                 remove_if_present(&change.path)?;
             }
+        }
+    }
+    #[cfg(windows)]
+    if let Some(change) = &journal.windows_path {
+        if read_windows_path()? == change.after {
+            write_windows_path(&change.before)?;
         }
     }
     if let Some(before) = journal.before {
@@ -382,7 +424,20 @@ fn copy_package(package: &Package, destination: &Path) -> Result<()> {
             .sync_all()
             .context("sync package file")?;
     }
-    sync_dir(destination)
+    fn sync_tree(dir: &Path) -> Result<()> {
+        for entry in fs::read_dir(dir).context("read package directories for sync")? {
+            let entry = entry.context("read package directory")?;
+            if entry
+                .file_type()
+                .context("inspect package directory")?
+                .is_dir()
+            {
+                sync_tree(&entry.path())?;
+            }
+        }
+        sync_dir(dir)
+    }
+    sync_tree(destination)
 }
 
 fn verify_target(generation: &Generation) -> Result<()> {
@@ -414,6 +469,7 @@ pub fn clean_environment(command: &mut Command) {
         }
     }
 }
+#[cfg(unix)]
 fn quote_shell(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
@@ -436,6 +492,17 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
         let launcher = receipt.bin_dir.join(format!("{name}.exe"));
         // This is the schema-1 launcher, not another host executable. It remains
         // stable while versioned application executables can be running.
+        if launcher.exists()
+            && !receipt
+                .integrations
+                .iter()
+                .any(|p| p.path == launcher && p.matches().unwrap_or(false))
+        {
+            return Err(Error::Invalid(format!(
+                "refusing to use unowned Windows launcher {}",
+                launcher.display()
+            )));
+        }
         if !launcher.exists() {
             files.push((
                 launcher,
@@ -473,6 +540,42 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
     Ok(files)
 }
 
+/// Recognize only the old release installer's duplicated command: its bytes
+/// must match a host at the exact historical payload path for this channel.
+fn legacy_release_command(path: &Path, receipt: &Receipt) -> Result<bool> {
+    let name = release::command_name(&receipt.channel);
+    let expected = receipt.bin_dir.join(if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name
+    });
+    if path != expected || path.is_symlink() || !path.is_file() {
+        return Ok(false);
+    }
+    let parent = receipt
+        .root
+        .parent()
+        .ok_or_else(|| Error::Invalid("installation root has no parent".into()))?;
+    let legacy = parent.join(if receipt.channel == "stable" && !cfg!(windows) {
+        "main"
+    } else {
+        &receipt.channel
+    });
+    let checksum = hash_file(path)?;
+    for relative in ["plexi", "plexi.exe", "Plexi.app/Contents/MacOS/plexi"] {
+        let payload = legacy.join(relative);
+        if payload.is_file() && !payload.is_symlink() && hash_file(&payload)? == checksum {
+            log::info!(
+                "distribution: adopting verified legacy release command {}; retaining legacy payload at {}",
+                path.display(),
+                legacy.display()
+            );
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn display_name(channel: &str) -> String {
     match channel {
         "stable" | "main" => "Plexi".into(),
@@ -484,6 +587,20 @@ pub fn display_name(channel: &str) -> String {
 }
 
 pub fn install(package: &Package, options: InstallOptions) -> Result<Receipt> {
+    install_checked(package, options, None)
+}
+
+/// Refuse an update if another installer or rollback changed the selected base
+/// while the release was downloading. The comparison runs under the channel lock.
+pub fn update(package: &Package, options: InstallOptions, expected_build: &str) -> Result<Receipt> {
+    install_checked(package, options, Some(expected_build))
+}
+
+fn install_checked(
+    package: &Package,
+    options: InstallOptions,
+    expected_build: Option<&str>,
+) -> Result<Receipt> {
     package.validate()?;
     if package.manifest.channel != options.channel
         || package.manifest.platform != release::platform()?
@@ -500,12 +617,16 @@ pub fn install(package: &Package, options: InstallOptions) -> Result<Receipt> {
             .context("resolve integration directory")?;
     }
     let _lock = lock(&options.root)?;
+    let _integration_lock = lock(&default_root()?.join("integration-lock"))?;
     let root = options
         .root
         .canonicalize()
         .context("canonicalize installation root")?;
     recover(&root)?;
     let before = read_receipt(&root)?;
+    if let Some(expected) = expected_build {
+        check_update_base(before.as_ref(), expected)?;
+    }
     let generations = root.join("generations");
     fs::create_dir_all(&generations).context("create generations directory")?;
     let digest = hash_file(&package.root.join("package.json"))?;
@@ -549,6 +670,7 @@ pub fn install(package: &Package, options: InstallOptions) -> Result<Receipt> {
             .map(|r| r.integrations.clone())
             .unwrap_or_default(),
         path_edits: vec![],
+        windows_path_added: before.as_ref().is_some_and(|r| r.windows_path_added),
     };
     let files = integration_files(&installed, &receipt)?;
     let mut changes = Vec::new();
@@ -559,7 +681,7 @@ pub fn install(package: &Package, options: InstallOptions) -> Result<Receipt> {
                     .iter()
                     .any(|p| p.path == path && p.matches().unwrap_or(false))
             });
-            if !owned {
+            if !owned && !legacy_release_command(&path, &receipt)? {
                 return Err(Error::Invalid(format!(
                     "refusing to overwrite unowned integration {}",
                     path.display()
@@ -619,16 +741,20 @@ pub fn install(package: &Package, options: InstallOptions) -> Result<Receipt> {
     }
     #[cfg(unix)]
     prepare_path_registration(&mut receipt, &mut changes)?;
+    let windows_path = prepare_windows_integration(&mut receipt, &mut changes)?;
     let journal = Journal {
         before,
         after: receipt.clone(),
         changes,
+        windows_path,
     };
     write_json(&root.join("transaction.json"), &journal)?;
     let result = (|| {
         apply_changes(&journal.changes)?;
         #[cfg(windows)]
-        windows_integrate(&receipt)?;
+        if let Some(change) = &journal.windows_path {
+            write_windows_path(&change.after)?;
+        }
         write_json(&root.join(RECEIPT), &receipt)?;
         verify_target(&receipt.active)?;
         remove_if_present(&root.join("transaction.json"))?;
@@ -645,6 +771,16 @@ pub fn install(package: &Package, options: InstallOptions) -> Result<Receipt> {
         root.display()
     );
     Ok(receipt)
+}
+
+fn check_update_base(receipt: Option<&Receipt>, expected: &str) -> Result<()> {
+    if receipt.is_some_and(|r| r.active.build_id == expected) {
+        Ok(())
+    } else {
+        Err(Error::Invalid(
+            "installation changed while downloading; run update again".into(),
+        ))
+    }
 }
 
 fn atomic_link(path: &Path, target: &Path) -> Result<()> {
@@ -782,6 +918,7 @@ fn remove_path_registration(receipt: &Receipt) -> Result<()> {
 
 pub fn uninstall(root: &Path) -> Result<()> {
     let _lock = lock(root)?;
+    let _integration_lock = lock(&default_root()?.join("integration-lock"))?;
     recover(root)?;
     let receipt = read_receipt(root)?
         .ok_or_else(|| Error::Invalid("no managed installation found; no files removed".into()))?;
@@ -847,14 +984,14 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
         Error::Invalid("installation is incomplete; run the installer again".into())
     })?;
     // Contextual bare-command routing is limited to an actual Plexi pane.
-    if receipt.channel == "stable" && std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        if let Ok(channel) = std::env::var("PLEXI_CHANNEL") {
-            if channel != "stable" && channel != "main" {
-                if let Some(other) = find_installation(&channel)? {
-                    return launch(&other.root, args);
-                }
-            }
-        }
+    if receipt.channel == "stable"
+        && std::env::var("PLEXI_RUNNING").as_deref() == Ok("1")
+        && let Ok(channel) = std::env::var("PLEXI_CHANNEL")
+        && channel != "stable"
+        && channel != "main"
+        && let Some(other) = find_installation(&channel)?
+    {
+        return launch(&other.root, args);
     }
     let mut command = Command::new(receipt.active.executable());
     command.args(args);
@@ -914,10 +1051,10 @@ fn process_alive(pid: u32) -> bool {
 fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
-        System::Threading::{OpenProcess, SYNCHRONIZE, WaitForSingleObject},
+        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
     };
     unsafe {
-        let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if handle.is_null() {
             return false;
         }
@@ -949,39 +1086,142 @@ pub fn schedule_restart(receipt: &Receipt, pid: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn prepare_windows_integration(
+    _receipt: &mut Receipt,
+    _changes: &mut Vec<Change>,
+) -> Result<Option<WindowsPathChange>> {
+    Ok(None)
+}
+
 #[cfg(windows)]
-fn windows_integrate(receipt: &Receipt) -> Result<()> {
+fn powershell(script: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<std::process::Output> {
     let mut command = Command::new("powershell");
-    command.args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; $bin=$env:PLEXI_INTEGRATE_BIN; $parts=@([Environment]::GetEnvironmentVariable('Path','User') -split ';' | Where-Object { $_ -and $_ -ne $bin }); [Environment]::SetEnvironmentVariable('Path', (($bin) + ';' + ($parts -join ';')), 'User'); $w=New-Object -ComObject WScript.Shell; $shortcut=$w.CreateShortcut($env:PLEXI_INTEGRATE_LINK); $shortcut.TargetPath=$env:PLEXI_INTEGRATE_EXE; $shortcut.Arguments='host start'; $shortcut.Save()"]);
-    let start = dirs::data_dir()
-        .ok_or_else(|| Error::Invalid("no Start Menu directory".into()))?
-        .join("Microsoft/Windows/Start Menu/Programs")
-        .join(format!("{}.lnk", display_name(&receipt.channel)));
-    command
-        .env("PLEXI_INTEGRATE_BIN", &receipt.bin_dir)
-        .env("PLEXI_INTEGRATE_LINK", start)
-        .env(
-            "PLEXI_INTEGRATE_EXE",
-            receipt
-                .bin_dir
-                .join(format!("{}.exe", release::command_name(&receipt.channel))),
-        );
-    if !command
-        .status()
-        .context("register Windows PATH and Start Menu")?
-        .success()
-    {
-        return Err(Error::Invalid("Windows integration failed".into()));
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    for (key, value) in env {
+        command.env(key, value);
     }
+    let output = command.output().context("run Windows integration")?;
+    if !output.status.success() {
+        return Err(Error::Invalid(format!(
+            "Windows integration failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(output)
+}
+#[cfg(windows)]
+fn read_windows_path() -> Result<String> {
+    let output = powershell(
+        "$ErrorActionPreference='Stop'; ConvertTo-Json -Compress -InputObject ([string][Environment]::GetEnvironmentVariable('Path','User'))",
+        &[],
+    )?;
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+#[cfg(windows)]
+fn write_windows_path(path: &str) -> Result<()> {
+    powershell(
+        "$ErrorActionPreference='Stop'; [Environment]::SetEnvironmentVariable('Path',$env:PLEXI_REGISTER_PATH,'User')",
+        &[("PLEXI_REGISTER_PATH", std::ffi::OsStr::new(path))],
+    )?;
     Ok(())
 }
 #[cfg(windows)]
-fn windows_remove(receipt: &Receipt) -> Result<()> {
-    let start = dirs::data_dir()
+fn prepare_windows_integration(
+    receipt: &mut Receipt,
+    changes: &mut Vec<Change>,
+) -> Result<Option<WindowsPathChange>> {
+    let before = read_windows_path()?;
+    let bin = receipt.bin_dir.to_string_lossy();
+    let exists = before.split(';').any(|p| p.eq_ignore_ascii_case(&bin));
+    receipt.windows_path_added |= !exists;
+    let registry = default_root()?.join("installations");
+    if registry.is_dir() {
+        for entry in fs::read_dir(registry).context("list shared PATH owners")? {
+            let entry = entry.context("read shared PATH owner")?;
+            if entry.path().extension().is_some_and(|e| e == "json") {
+                let root: PathBuf = serde_json::from_slice(
+                    &fs::read(entry.path()).context("read shared installation")?,
+                )?;
+                if read_receipt(&root)?
+                    .is_some_and(|r| r.bin_dir == receipt.bin_dir && r.windows_path_added)
+                {
+                    receipt.windows_path_added = true;
+                }
+            }
+        }
+    }
+    let after = if exists {
+        before.clone()
+    } else {
+        format!("{bin};{before}")
+    };
+    let menu = dirs::data_dir()
         .ok_or_else(|| Error::Invalid("no Start Menu directory".into()))?
-        .join("Microsoft/Windows/Start Menu/Programs")
-        .join(format!("{}.lnk", display_name(&receipt.channel)));
-    remove_if_present(&start)
+        .join("Microsoft/Windows/Start Menu/Programs");
+    let path = menu.join(format!("{}.lnk", display_name(&receipt.channel)));
+    if path.exists()
+        && !receipt
+            .integrations
+            .iter()
+            .any(|p| p.path == path && p.matches().unwrap_or(false))
+    {
+        return Err(Error::Invalid(format!(
+            "unowned Start Menu shortcut {}",
+            path.display()
+        )));
+    }
+    let stage = receipt.root.join("transaction/menu.lnk");
+    let launcher = receipt
+        .bin_dir
+        .join(format!("{}.exe", release::command_name(&receipt.channel)));
+    powershell(
+        "$ErrorActionPreference='Stop'; $w=New-Object -ComObject WScript.Shell; $s=$w.CreateShortcut($env:PLEXI_REGISTER_LINK); $s.TargetPath=$env:PLEXI_REGISTER_EXE; $s.Arguments='host start'; $s.Save()",
+        &[
+            ("PLEXI_REGISTER_LINK", stage.as_os_str()),
+            ("PLEXI_REGISTER_EXE", launcher.as_os_str()),
+        ],
+    )?;
+    let change = prepare_file(
+        &receipt.root,
+        &path,
+        &fs::read(&stage).context("read staged shortcut")?,
+        changes.len(),
+    )?;
+    receipt.integrations.retain(|p| p.path != path);
+    receipt.integrations.push(OwnedPath {
+        path,
+        sha256: change.after_hash.clone(),
+        link_target: None,
+    });
+    changes.push(change);
+    Ok(Some(WindowsPathChange { before, after }))
+}
+#[cfg(windows)]
+fn windows_remove(receipt: &Receipt) -> Result<()> {
+    if !receipt.windows_path_added {
+        return Ok(());
+    }
+    if fs::read_dir(&receipt.bin_dir)
+        .context("list shared Windows launchers")?
+        .any(|e| {
+            e.is_ok_and(|e| {
+                e.path().extension().is_some_and(|x| x == "json")
+                    && e.file_name()
+                        != format!("{}.install.json", release::command_name(&receipt.channel))
+                            .as_str()
+            })
+        })
+    {
+        return Ok(());
+    }
+    let before = read_windows_path()?;
+    let after = before
+        .split(';')
+        .filter(|p| !p.eq_ignore_ascii_case(&receipt.bin_dir.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(";");
+    write_windows_path(&after)
 }
 
 #[cfg(test)]
@@ -1006,6 +1246,7 @@ mod tests {
             before: None,
             after: fixture_receipt(dir.path()),
             changes: vec![change],
+            windows_path: None,
         };
         write_json(&dir.path().join("transaction.json"), &journal).unwrap();
         apply_changes(&journal.changes).unwrap();
@@ -1030,6 +1271,31 @@ mod tests {
         assert!(path.exists());
     }
 
+    #[test]
+    fn updates_cannot_overwrite_a_concurrent_upgrade_or_rollback() {
+        let receipt = fixture_receipt(Path::new("/unused"));
+        assert!(check_update_base(Some(&receipt), "new").is_ok());
+        assert!(check_update_base(Some(&receipt), "old").is_err());
+        assert!(check_update_base(None, "new").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_integration_changes_preserve_private_dotfile_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".zshrc");
+        fs::write(&path, b"user shell configuration").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let change =
+            prepare_file(dir.path(), &path, b"user shell configuration plus PATH", 0).unwrap();
+        apply_changes(&[change]).unwrap();
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     fn fixture_receipt(root: &Path) -> Receipt {
         Receipt {
             schema: 1,
@@ -1046,6 +1312,7 @@ mod tests {
             previous: None,
             integrations: vec![],
             path_edits: vec![],
+            windows_path_added: false,
         }
     }
 }

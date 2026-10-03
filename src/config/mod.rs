@@ -835,6 +835,15 @@ pub fn set_profile(name: Option<String>) {
 /// The embedded SDK is extracted only when missing or when the binary version
 /// changed since the last extract, so manual edits and symlinks in the profile
 /// SDK dir survive normal app launches.
+pub fn lock_profile_initialization() -> Result<std::fs::File, String> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        .open(dir.join("initialization.lock")).map_err(|e| format!("open profile initialization lock: {e}"))?;
+    lock.lock().map_err(|e| format!("lock profile initialization: {e}"))?;
+    Ok(lock)
+}
+
 pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
     // Install metadata may have created the profile before the first app launch.

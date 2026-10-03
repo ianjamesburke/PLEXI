@@ -3,13 +3,13 @@ import Layout from '../layouts/Layout.astro';
 import Newsletter from '../components/Newsletter.astro';
 
 const UNIX_INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | bash';
-const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex';
+const WINDOWS_INSTALL_CMD = 'irm https://plexiapp.com/install.ps1 | iex';
 ---
 <Layout title="Download Plexi" description="Install the Plexi tiling terminal host and CLI on macOS Apple Silicon, Linux x64, or Windows x64.">
   <header class="dl-hero">
     <div class="wrap">
       <h1>Install Plexi</h1>
-      <p class="tagline">Install the tiling terminal host, CLI, and shell completions.</p>
+      <p class="tagline">Install the tiling terminal host and CLI.</p>
     </div>
   </header>
 
@@ -18,7 +18,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
       <div class="install-intro">
         <p class="eyebrow">Current release channel</p>
         <h2>Choose your platform</h2>
-        <p>Each command installs the current Plexi alpha release for its supported platform.</p>
+        <p>Each command installs the current Plexi stable release for its supported platform.</p>
       </div>
 
       <div class="install-list">
@@ -35,7 +35,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
           </button>
         </div>
         <p class="install-note">
-          Downloads the matching current macOS alpha release. Requires <code>bash</code>,
+          Downloads the matching current macOS stable release. Requires <code>bash</code>,
           <code>curl</code>, <code>tar</code>, and <code>shasum</code>; it does not need Rust,
           Git, or administrator access. The installer selects your architecture; Intel works when
           that release publishes its x64 archive and otherwise reports the missing asset clearly.
@@ -55,7 +55,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
           </button>
         </div>
         <p class="install-note">
-          Downloads the current Linux x64 alpha release. Requires <code>bash</code>,
+          Downloads the current Linux x64 stable release. Requires <code>bash</code>,
           <code>curl</code>, <code>tar</code>, and <code>sha256sum</code> (or <code>shasum</code>).
           Plexi supports X11 sessions; Wayland is not supported. This is a download install,
           not an apt, AUR, Flatpak, AppImage, <code>.deb</code>, or <code>.rpm</code> package.
@@ -75,7 +75,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
           </button>
         </div>
         <p class="install-note">
-          Run in Windows PowerShell 5.1 or later. It downloads the current Windows x64 alpha
+          Run in Windows PowerShell 5.1 or later. It downloads the current Windows x64 stable
           release and verifies its SHA-256 checksum; it does not build from source. Windows shell
           completions are TBD. The Unix <code>curl | bash</code> command is not a Windows installer.
         </p>
@@ -83,10 +83,10 @@ const WINDOWS_INSTALL_CMD = 'irm https://raw.githubusercontent.com/ianjamesburke
       </div>
 
       <p class="install-note trust-note">
-        Alpha builds are unsigned and not notarized. Before bypassing an operating-system warning,
+        Stable, alpha and beta builds are unsigned and not notarized. Before bypassing an operating-system warning,
         read the <a href="https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md">unsigned-build opening guide</a>.
         From a macOS or Linux checkout, <code>scripts/install.sh --from-source alpha</code> is
-        the explicit source-build path and requires Rust plus Python 3; Windows has no equivalent
+        the explicit source-build path and requires Rust, just, uv and Python 3.11; Windows has no equivalent
         source-install script.
       </p>
 

@@ -143,7 +143,13 @@ impl Package {
             relative(path)?;
         }
         let resources = relative(&m.resources)?;
+        let installer = if m.platform.starts_with("windows-") {
+            "plexi-installer.exe"
+        } else {
+            "plexi-installer"
+        };
         for required in [
+            PathBuf::from(installer),
             relative(&m.executable)?.to_path_buf(),
             resources.join(WASI_FILE),
             resources.join(STDLIB_FILE),

@@ -118,6 +118,13 @@ def assemble(args):
     shutil.copytree(runtime(args.runtime_cache), resources / "wasm-bundles" / f"cpython-{WASI_VERSION}", ignore=ignore)
     shutil.copytree(REPO / "apps/calc", resources / "smoke-app", ignore=ignore)
     shutil.copy2(REPO / "assets/app-icon.png", resources)
+    shutil.copy2(REPO / "scripts/default-config.toml", resources / "default-config.toml")
+    for source, destination in [("agents", "agents"), ("skills", "skills"), ("scripts/default-scripts", "scripts")]:
+        shutil.copytree(REPO / source, resources / destination, ignore=ignore)
+    if channel == "alpha" or channel.startswith("pr-"):
+        for manifest in (REPO / "apps").glob("*/manifest.toml"):
+            shutil.copytree(manifest.parent, resources / "maintained-apps" / manifest.parent.name, ignore=ignore)
+
     if args.platform.startswith("macos-"):
         # All channel mutations precede signing. Stable archives consumed by
         # alpha/beta carry separately assembled variants; installers never patch them.
@@ -136,7 +143,7 @@ def assemble(args):
                 if path.is_file():
                     output.write(path, path.relative_to(root).as_posix())
     else:
-        with tarfile.open(archive, "w:gz", format=tarfile.USTAR_FORMAT) as output:
+        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as output:
             for path in sorted(root.iterdir()):
                 output.add(path, path.name)
     archive.with_name(archive.name + ".sha256").write_text(f"{digest(archive)}  {archive.name}\n")

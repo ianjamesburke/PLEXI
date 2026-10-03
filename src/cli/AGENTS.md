@@ -63,6 +63,14 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 Any change to a CLI verb, flag, or agent-facing behavior updates this file **and** `skills/plexi-cli/SKILL.md` in the same PR. Edit the skill through the real `skills/` path — `.agents/skills/plexi-cli` is a symlink and some editors do not write through it. Shell completions are generated from the clap tree (`completions_cli`), so a new flag needs no hand-written block; verify with `plexi completions zsh | grep <flag>`.
 
+## Distribution commands
+
+Host launch, restart, updates, doctor and uninstall resolve the native distribution
+receipt. `host status --json` reports compiled CLI and running-host identities
+separately from the installed generation. `update --rollback` restores the retained
+generation. Uninstall retains user data and removes only recorded ownership.
+The package and activation contract is `scripts/DISTRIBUTION.md`.
+
 ## Traps
 
 - **Path-based app commands must not resolve a workspace.** `app validate <path>`, `app install <path>`, `app run <path>` operate on an explicit filesystem path. Never call `resolve_workspace_root` for that argument. Use `std::fs::canonicalize` directly. `resolve_workspace_root` is only legitimate in `AppRegistry::load` and `app init`.
