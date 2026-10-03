@@ -16,6 +16,7 @@ mod broker;
 mod cli;
 
 mod config;
+mod distribution;
 mod editor;
 mod features;
 mod file_browser;
@@ -46,6 +47,18 @@ mod ui_tests;
 mod workspace;
 
 fn main() -> eframe::Result {
+    if let Some(flag) = std::env::args().nth(1) {
+        if flag == "--build-info" || flag == "--distribution-check" {
+            if flag == "--distribution-check" {
+                if let Err(error) = distribution::check_runtime() {
+                    eprintln!("package runtime check: {error}");
+                    std::process::exit(1);
+                }
+            }
+            println!("{}", distribution::build_info());
+            std::process::exit(0);
+        }
+    }
     let boot_state = crate::workspace::consume_host_boot_state();
 
     fn exit_if_feature_disabled(feature: crate::release::ReleaseFeature) {
@@ -673,7 +686,7 @@ fn main() -> eframe::Result {
                     Commands::Uninstall { keep_data, yes } => {
                         std::process::exit(cli::plexi_uninstall_cli(keep_data, yes))
                     }
-                    Commands::Update => std::process::exit(cli::self_update_cli()),
+                    Commands::Update { rollback } => std::process::exit(cli::self_update_cli(rollback)),
                     Commands::Host { cmd } => match cmd {
                         HostCmd::Start {
                             layout,

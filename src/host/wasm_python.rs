@@ -8,7 +8,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::process::Command;
 #[cfg(test)]
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -735,7 +734,19 @@ impl WasmPythonRuntime {
                 WasmPythonError::RuntimeStart("CPython bundle has no parent".to_string())
             })?
             .join("Lib");
-        let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+        let sdk = if let Some(resources) = crate::distribution::resources()
+            .map_err(WasmPythonError::RuntimeStart)? {
+            resources.join("sdk")
+        } else if let Some(path) = std::env::var_os("PLEXI_SDK_PATH") {
+            PathBuf::from(path)
+        } else {
+            crate::config::ensure_profile_initialized();
+            crate::config::config_dir().join("sdk")
+        };
+        if !sdk.join("plexi_sdk/_v3_process.py").is_file() {
+            return Err(WasmPythonError::RuntimeStart(format!("Python SDK missing at {}", sdk.display())));
+        }
+        log::info!("python_compat: using SDK at {}", sdk.display());
         let stdin = AppendableStdin::default();
         let stdout = DrainableOutput::default();
         let stderr = DrainableOutput::default();
@@ -4975,32 +4986,16 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
 }
 
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
+    if let Some(resources) = crate::distribution::resources()
+        .map_err(WasmPythonError::RuntimeStart)? {
+        return resolve_cpython_bundle(resources.join("wasm-bundles"));
+    }
     let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(shared_wasm_bundle_dir);
-    match resolve_cpython_bundle(cache_dir.clone()) {
-        Ok(path) => Ok(path),
-        Err(WasmPythonError::MissingBundle { .. }) => {
-            let script =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/fetch-cpython-bundle.sh");
-            log::info!("python_compat: fetching verified CPython WASI bundle");
-            let status = Command::new("bash")
-                .arg(script)
-                .env(CPYTHON_BUNDLE_CACHE_ENV, &cache_dir)
-                .status()
-                .map_err(|source| WasmPythonError::ReadBundle {
-                    path: cache_dir.clone(),
-                    source,
-                })?;
-            if !status.success() {
-                return Err(WasmPythonError::RuntimeStart(
-                    "fetch verified CPython WASI bundle failed".to_string(),
-                ));
-            }
-            resolve_cpython_bundle(cache_dir)
-        }
-        Err(error) => Err(error),
-    }
+    // Development caches are fetched explicitly by the build/test scripts.
+    // Runtime execution must never invoke a script from a build checkout.
+    resolve_cpython_bundle(cache_dir)
 }
 
 fn shared_wasm_bundle_dir() -> PathBuf {

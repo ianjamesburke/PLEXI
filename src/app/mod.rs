@@ -4168,14 +4168,7 @@ impl eframe::App for PlexiApp {
 }
 
 fn read_display_version() -> String {
-    let tag_path = crate::config::config_dir().join("installed_tag");
-    if let Ok(tag) = std::fs::read_to_string(&tag_path) {
-        let trimmed = tag.trim().to_string();
-        if !trimmed.is_empty() {
-            return trimmed.trim_start_matches('v').to_string();
-        }
-    }
-    env!("CARGO_PKG_VERSION").to_string()
+    crate::distribution::build_tag().trim_start_matches('v').to_string()
 }
 
 impl PlexiApp {

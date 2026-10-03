@@ -208,52 +208,22 @@ fn host_config_dir(channel: Option<&str>) -> PathBuf {
         .join(format!(".plexi{suffix}"))
 }
 
-/// Resolve the app bundle + binary-inside-bundle paths for the *running CLI
-/// binary's own channel* (never `PLEXI_CHANNEL` — that env var is exactly
-/// what must be stripped from the launched child).
-#[cfg(target_os = "macos")]
+/// Resolve the canonical installed target, falling back only to this executable
+/// for an unpacked package or development build.
 fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
     let channel = crate::config::build_channel();
-    let cap = crate::cli::install::channel_bundle_cap(channel.as_deref());
-    let bundle_path = PathBuf::from(format!("/Applications/Plexi{cap}.app"));
-    let suffix = channel
-        .as_deref()
-        .map(|c| format!("-{c}"))
-        .unwrap_or_default();
-    let binary_path = bundle_path
-        .join("Contents/MacOS")
-        .join(format!("plexi{suffix}"));
-    log::info!(
-        "host: resolved channel={channel:?} cap={cap:?} bundle={bundle_path:?} binary={binary_path:?}"
-    );
-    (channel, bundle_path, binary_path)
-}
-
-/// Linux has no app bundle — packaging is a v0 non-goal (see
-/// `docs/linux-support-plan.md`) and the same executable is both the CLI and
-/// the host. So the host to launch is *this* binary, resolved through
-/// `current_exe` rather than a well-known install path: a build-from-source
-/// tree is the only supported layout, and hardcoding one would break the
-/// moment the tree moved.
-///
-/// Both returned paths are that executable. `host_start_cli` existence-checks
-/// them separately (bundle, then binary-inside-bundle); pointing both at the
-/// real binary keeps those checks meaningful instead of vacuous.
-#[cfg(not(target_os = "macos"))]
-fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
-    let channel = crate::config::build_channel();
-    let binary_path = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(e) => {
-            // An empty path fails the existence check in `host_start_cli`
-            // with a message naming the channel, which is the honest outcome:
-            // we cannot name a host to launch.
-            log::error!("host: current_exe() failed: {e} — cannot resolve a host binary to launch");
+    let binary = match crate::distribution::installed() {
+        Ok(Some(receipt)) => receipt.active.executable(),
+        Ok(None) => std::env::current_exe().unwrap_or_default(),
+        Err(error) => {
+            log::error!("host: installation record failed: {error}");
             PathBuf::new()
         }
     };
-    log::info!("host: resolved channel={channel:?} binary={binary_path:?} (no bundle on this platform)");
-    (channel, binary_path.clone(), binary_path)
+    let bundle = binary.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(Path::to_path_buf).unwrap_or_else(|| binary.clone());
+    log::info!("host: resolved channel={channel:?} bundle={bundle:?} binary={binary:?}");
+    (channel, bundle, binary)
 }
 
 /// Best-effort pid lookup for the process holding `notify.sock` open. No
@@ -778,6 +748,20 @@ pub fn host_stop_cli() -> i32 {
     }
 }
 
+/// Query the running host independently of its profile markers or installed package.
+pub(crate) fn running_build_info() -> Option<serde_json::Value> {
+    let channel = crate::config::build_channel();
+    let profile = host_config_dir(channel.as_deref());
+    let socket = ipc::endpoint_in(&profile);
+    let mut stream = IpcStream::connect(socket).ok()?;
+    let response_file = crate::rpc::response_file_in(&profile, "host-build", "json");
+    let request = crate::protocol::AppRequest::GetBuildInfo { response_file: response_file.clone() };
+    let line = serde_json::to_string(&request).ok()?;
+    stream.write_all(format!("{line}\n").as_bytes()).ok()?;
+    let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
@@ -792,6 +776,9 @@ pub fn host_status_cli(json: bool) -> i32 {
     if json {
         let payload = serde_json::json!({
             "ready": ready,
+            "cli": crate::distribution::build_info(),
+            "running": running_build_info(),
+            "installed": crate::distribution::installed().ok().flatten(),
             "pane_count": pane_count,
             "pid": pid,
             "socket": socket_path.to_string_lossy(),

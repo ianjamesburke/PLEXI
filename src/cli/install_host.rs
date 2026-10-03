@@ -773,7 +773,16 @@ pub fn apply_core_pack_always(cloner: &dyn Cloner, target_root: &Path) -> Vec<In
         "install: core pack reseed={:?}",
         pack.reseed.as_deref().unwrap_or("once")
     );
-    apply_pack(cloner, &pack, target_root, false)
+    let stamp = target_root.join(".core_build");
+    let build = env!("PLEXI_BUILD_ID");
+    let refresh = std::fs::read_to_string(&stamp).map_or(true, |s| s != build);
+    let outcomes = apply_pack(cloner, &pack, target_root, refresh);
+    if outcomes.iter().all(|o| !matches!(o.status, InstallStatus::Failed(_))) {
+        if let Err(error) = std::fs::write(&stamp, build) {
+            log::warn!("core pack: record build identity: {error}");
+        }
+    }
+    outcomes
 }
 
 /// Apply the bundled examples pack into `target_root` only if `target_root` is

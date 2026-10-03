@@ -3,6 +3,7 @@ use serde::Serialize;
 #[derive(Serialize)]
 struct DoctorReport {
     healthy: bool,
+    installation: serde_json::Value,
     apps: Vec<AppReport>,
     llm_servers: Vec<LlmServerReport>,
     openrouter: OpenRouterReport,
@@ -205,6 +206,8 @@ fn discover_llm_servers() -> Vec<LlmServerReport> {
 pub fn doctor_cli(json: bool) -> i32 {
     log::info!("cli:doctor: starting capability audit (json={json})");
 
+    let (installation, installation_healthy) = installation_report();
+    if !json { println!("Installation: {}", installation); }
     let cwd = std::env::current_dir().unwrap_or_default();
     let registry = crate::app::registry::AppRegistry::load(&cwd);
     let config = crate::config::PlexiConfig::load_with_workspace(
@@ -219,7 +222,8 @@ pub fn doctor_cli(json: bool) -> i32 {
     if installed.is_empty() {
         if json {
             let report = DoctorReport {
-                healthy: true,
+                healthy: installation_healthy,
+                installation,
                 apps: Vec::new(),
                 llm_servers,
                 openrouter,
@@ -252,12 +256,13 @@ pub fn doctor_cli(json: bool) -> i32 {
         }
     }
 
-    let healthy = sick_apps.is_empty();
+    let healthy = sick_apps.is_empty() && installation_healthy;
     let sick_count = sick_apps.len();
 
     if json {
         let report = DoctorReport {
             healthy,
+            installation,
             apps: sick_apps,
             llm_servers,
             openrouter,
@@ -339,5 +344,22 @@ fn print_llm_section(servers: &[LlmServerReport]) {
             };
             println!("  {} ({}) -- {}", s.name, s.url, model_summary);
         }
+    }
+}
+
+fn installation_report() -> (serde_json::Value, bool) {
+    let cli = crate::distribution::build_info();
+    let running = super::host::running_build_info();
+    match crate::distribution::installed() {
+        Ok(Some(receipt)) => {
+            let package_error = plexi_distribution::package::Package::load(&receipt.active.path)
+                .and_then(|p| p.validate()).err().map(|e| e.to_string());
+            let cli_matches = cli["build_id"].as_str() == Some(&receipt.active.build_id);
+            let running_matches = running.as_ref().and_then(|v| v["build_id"].as_str()).map(|id| id == receipt.active.build_id);
+            let healthy = package_error.is_none() && cli_matches && running_matches != Some(false);
+            (serde_json::json!({ "cli": cli, "installed": receipt, "running": running, "cli_matches_installed": cli_matches, "running_matches_installed": running_matches, "package_error": package_error }), healthy)
+        }
+        Ok(None) => (serde_json::json!({ "cli": cli, "running": running, "managed": false }), true),
+        Err(error) => (serde_json::json!({ "cli": cli, "running": running, "error": error }), false),
     }
 }

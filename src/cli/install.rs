@@ -289,195 +289,33 @@ pub fn install_workspace_pack_cli() -> i32 {
     }
 }
 
-/// Maps a release channel (as returned by `config::build_channel()`, e.g.
-/// `None` for the main channel, `Some("alpha")`, `Some("pr-2357")`, or an
-/// arbitrary named channel) to the capitalized bundle-name suffix used for
-/// `/Applications/Plexi<cap>.app`.
-///
-/// `None` → `""`, `Some("alpha")` → `" Alpha"`, `Some("beta")` → `" Beta"`,
-/// `Some("pr-2357")` → `" PR2357"`, `Some("foo")` → `" Foo"` (title-cased).
-///
-/// The Rust-side source of truth: the uninstaller and
-/// `plexi host start/stop/status` (`src/cli/host.rs`) both call this, so bundle
-/// path resolution never drifts between them.
-///
-/// The install scripts run before any Plexi binary exists, so they carry their
-/// own bash implementations of the same mapping: `scripts/install.sh`,
-/// `scripts/channel-clean.sh`, and `_channel_cap` in `scripts/uninstall.sh`.
-/// A change here has to be mirrored in all three.
-pub(crate) fn channel_bundle_cap(channel: Option<&str>) -> String {
-    match channel {
-        None => String::new(),
-        Some(c) => {
-            if let Some(n) = c.strip_prefix("pr-") {
-                format!(" PR{n}")
-            } else {
-                match c {
-                    "alpha" => " Alpha".to_string(),
-                    "beta" => " Beta".to_string(),
-                    other => {
-                        let mut chars = other.chars();
-                        match chars.next() {
-                            Some(first) => {
-                                format!(" {}{}", first.to_uppercase(), chars.as_str())
-                            }
-                            None => String::new(),
-                        }
-                    }
-                }
-            }
+pub fn plexi_uninstall_cli(_keep_data: bool, assume_yes: bool) -> i32 {
+    let result = (|| -> Result<(), String> {
+        let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
+        println!("Remove Plexi channel {} from {}. User data will be retained.", receipt.channel, receipt.root.display());
+        if !assume_yes {
+            eprint!("Continue? [y/N]: ");
+            io::stderr().flush().map_err(|e| format!("write confirmation: {e}"))?;
+            let mut answer = String::new();
+            io::stdin().read_line(&mut answer).map_err(|e| format!("read confirmation: {e}"))?;
+            if !matches!(answer.trim(), "y" | "Y" | "yes") { return Err("Uninstall cancelled.".into()); }
         }
-    }
-}
-
-/// `plexi uninstall [--keep-data] [--yes]` — remove Plexi itself from the Mac.
-pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
-    // Channel of the running binary (`plexi-alpha` → `-alpha`, `plexi` → ``).
-    let channel = crate::config::build_channel();
-    let suffix = channel
-        .as_deref()
-        .map(|c| format!("-{c}"))
-        .unwrap_or_default();
-    let cap_owned = channel_bundle_cap(channel.as_deref());
-    let cap = cap_owned.as_str();
-
-    let profile_dir = dirs::home_dir().unwrap().join(format!(".plexi{suffix}"));
-    let app_bundle = std::path::PathBuf::from(format!("/Applications/Plexi{cap}.app"));
-    let cli_binary = std::path::PathBuf::from(format!("/usr/local/bin/plexi{suffix}"));
-
-    // Single confirmation prompt: keep data or remove everything?
-    // Resolved before the banner so the preview accurately reflects the outcome.
-    let keep_data = if keep_data || !profile_dir.exists() {
-        log::info!(
-            "uninstall: keep_data=flag({keep_data}) profile_exists={}",
-            profile_dir.exists()
-        );
-        keep_data
-    } else if assume_yes {
-        log::info!("uninstall: keep_data=false (assume_yes, no --keep-data)");
-        false
-    } else {
-        eprint!("Keep your ~/.plexi{suffix} data for future installs? [y/n, Enter=abort]: ");
-        let _ = io::stderr().flush();
-        let mut answer = String::new();
-        if let Err(e) = io::stdin().read_line(&mut answer) {
-            log::warn!("uninstall: failed to read keep-data confirmation: {e}");
-            eprintln!("error: failed to read: {e}");
-            return 1;
+        #[cfg(not(windows))]
+        plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        {
+            let helper = std::env::temp_dir().join(format!("plexi-uninstall-{}.exe", uuid::Uuid::new_v4()));
+            std::fs::copy(receipt.active.path.join("plexi-installer.exe"), &helper).map_err(|e| format!("stage removal helper: {e}"))?;
+            let log = std::fs::File::create(receipt.root.join("uninstall.log")).map_err(|e| format!("create uninstall log: {e}"))?;
+            let stderr = log.try_clone().map_err(|e| format!("clone uninstall log: {e}"))?;
+            std::process::Command::new(helper).arg("remove").arg("--receipt").arg(&receipt.root).arg("--wait-pid").arg(std::process::id().to_string())
+                .stdin(std::process::Stdio::null()).stdout(log).stderr(stderr).spawn().map_err(|e| format!("schedule uninstall: {e}"))?;
+            println!("Removal will finish after this command exits; details: {}", receipt.root.join("uninstall.log").display());
         }
-        match answer.trim().to_lowercase().as_str() {
-            "y" | "yes" => {
-                log::info!("uninstall: keep_data=true (user chose y)");
-                true
-            }
-            "n" | "no" => {
-                log::info!("uninstall: keep_data=false (user chose n)");
-                eprintln!("Removing everything.");
-                false
-            }
-            other => {
-                log::info!("uninstall: aborted (user input {:?})", other);
-                eprintln!("Aborted.");
-                return 0;
-            }
-        }
-    };
-
-    // Print what will be removed (after keep_data is resolved so the preview is accurate)
-    println!("This will remove:");
-    if app_bundle.exists() {
-        println!("  \u{2022} {}", app_bundle.display());
-    }
-    if cli_binary.exists() {
-        println!("  \u{2022} {}", cli_binary.display());
-    }
-    if !keep_data && profile_dir.exists() {
-        println!(
-            "  \u{2022} {}  (settings, secrets, app configs)",
-            profile_dir.display()
-        );
-    } else if profile_dir.exists() {
-        println!("  \u{2022} {} will be kept", profile_dir.display());
-    }
-
-    let mut removed = false;
-
-    // Archive backlog before potentially deleting profile dir
-    if !keep_data {
-        let backlog = profile_dir.join("backlog");
-        if backlog.exists() {
-            let ts = crate::platform::clock::now_secs();
-            let archive = dirs::home_dir()
-                .unwrap()
-                .join(format!("plexi-backlog-archive/plexi{suffix}-backlog-{ts}"));
-            if let Some(parent) = archive.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if std::fs::rename(&backlog, &archive).is_ok() {
-                println!("Archived backlog \u{2192} {}", archive.display());
-            }
-        }
-    }
-
-    // Remove app bundle
-    if app_bundle.exists() {
-        match std::fs::remove_dir_all(&app_bundle) {
-            Ok(()) => {
-                println!("Removed {}", app_bundle.display());
-                removed = true;
-            }
-            Err(e) => eprintln!("warning: could not remove {}: {e}", app_bundle.display()),
-        }
-    }
-
-    // Remove CLI binary
-    if cli_binary.exists() || cli_binary.is_symlink() {
-        match std::fs::remove_file(&cli_binary) {
-            Ok(()) => {
-                println!("Removed {}", cli_binary.display());
-                removed = true;
-            }
-            Err(e) => eprintln!("warning: could not remove {}: {e}", cli_binary.display()),
-        }
-    }
-
-    // Remove completions (only for main uninstall)
-    if suffix.is_empty() {
-        let brew_prefix = std::process::Command::new("brew")
-            .arg("--prefix")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string());
-        if let Some(prefix) = brew_prefix {
-            let zsh_comp = std::path::PathBuf::from(prefix).join("share/zsh/site-functions/_plexi");
-            if zsh_comp.exists() {
-                let _ = std::fs::remove_file(&zsh_comp);
-                println!("Removed {}", zsh_comp.display());
-            }
-        }
-    }
-
-    // Remove profile dir
-    if !keep_data && profile_dir.exists() {
-        match std::fs::remove_dir_all(&profile_dir) {
-            Ok(()) => {
-                println!("Removed {}", profile_dir.display());
-                removed = true;
-            }
-            Err(e) => eprintln!("warning: could not remove {}: {e}", profile_dir.display()),
-        }
-    }
-
-    if removed {
-        println!(
-            "\nDone. Plexi{} has been removed.",
-            if cap.is_empty() { "" } else { cap }
-        );
-    } else {
-        println!("\nNothing found to remove.");
-    }
-    0
+        log::info!("uninstall: managed removal requested for {}", receipt.channel);
+        Ok(())
+    })();
+    match result { Ok(()) => { println!("User data retained."); 0 }, Err(error) => { eprintln!("error: {error}"); 1 } }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -648,29 +486,13 @@ fn run_self_update() -> Result<String, String> {
 
     log::info!("cli: self-update channel={channel} suffix={suffix}");
 
-    if let Ok(pty_channel) = std::env::var("PLEXI_CHANNEL") {
-        if !pty_channel.is_empty() && pty_channel != channel {
-            return Err(format!(
-                "error: PLEXI_CHANNEL={pty_channel} but this binary is '{binary_name}' (channel {channel}).\nRun the matching channel binary to self-update."
-            ));
-        }
-    }
-
     let update_channel = release_resolver::UpdateChannel::from_binary_name(binary_name);
     log::info!(
         "cli: self-update input channel={channel} update_channel={update_channel:?} install_target={channel}"
     );
 
-    let profile_dir = dirs::home_dir()
-        .unwrap_or_default()
-        .join(format!(".plexi{suffix}"));
-    let current_version_raw = std::fs::read_to_string(profile_dir.join("installed_tag"))
-        .ok()
-        .and_then(|s| {
-            let t = s.trim().to_string();
-            release_resolver::ReleaseTag::parse(&t).map(|_| t)
-        })
-        .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")));
+    let current_version_raw = crate::distribution::installed()?
+        .map(|receipt| receipt.active.tag).unwrap_or_else(crate::distribution::build_tag);
     println!("Checking for updates...");
     println!("Current: {current_version_raw}");
 
@@ -702,68 +524,34 @@ fn run_self_update() -> Result<String, String> {
 /// Prefer the platform installer that downloads the release zip/tarball.
 /// Never falls back to a cargo source build from this path (BIN-07).
 pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let script_url = format!(
-            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install-windows.ps1"
-        );
-        // Build the PowerShell command without nesting format args that fight Rust.
-        let ps = format!(
-            concat!(
-                "$ErrorActionPreference='Stop'; ",
-                "$script = Join-Path $env:TEMP ('plexi-install-' + [guid]::NewGuid().ToString() + '.ps1'); ",
-                "Invoke-WebRequest -UseBasicParsing -Uri '{0}' -OutFile $script; ",
-                "& $script -Channel '{1}' -Tag '{2}'; ",
-                "Remove-Item -Force $script -ErrorAction SilentlyContinue"
-            ),
-            script_url, channel, tag_name
-        );
-        let status = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &ps,
-            ])
-            .env("PLEXI_INSTALL_TAG", tag_name)
-            .status()
-            .map_err(|e| format!("error: failed to run Windows install script: {e}"))?;
-        if !status.success() {
-            return Err(
-                "error: binary install failed — this release may predate Windows assets; use scripts/install-windows.ps1 -Tag <tag> or a current v0.3.1-windows.N cut"
-                    .to_string(),
-            );
-        }
-        return Ok(());
+    use plexi_distribution::{package::Package, release, transaction};
+    let channel = release::normalized_channel(channel);
+    if !release::accepts(channel, tag_name, tag_name.contains('-')) {
+        return Err(format!("release {tag_name} is not accepted by {channel}"));
     }
-    #[cfg(not(windows))]
-    {
-        let script_url = format!(
-            "https://raw.githubusercontent.com/ianjamesburke/PLEXI/{tag_name}/scripts/install.sh"
-        );
-        let install = std::process::Command::new("bash")
-            .args([
-                "-c",
-                "curl -fsSL \"$1\" | bash -s -- --channel \"$2\" --tag \"$3\"",
-                "plexi-update",
-                &script_url,
-                channel,
-                tag_name,
-            ])
-            .env("PLEXI_INSTALL_TAG", tag_name)
-            .status()
-            .map_err(|e| format!("error: failed to run install script: {e}"))?;
-        if !install.success() {
-            return Err("error: binary install failed — this release may predate binary assets; use a current v1 release or build a checkout with scripts/install.sh --from-source".to_string());
-        }
-        Ok(())
-    }
+    let temp = tempfile::tempdir().map_err(|e| format!("stage update: {e}"))?;
+    let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(15)).build();
+    let platform = release::platform().map_err(|e| e.to_string())?;
+    release::download_package(&agent, release::DOWNLOAD_URL, tag_name, &platform, channel, temp.path()).map_err(|e| e.to_string())?;
+    let package = Package::load(&temp.path().join("package")).map_err(|e| e.to_string())?;
+    if package.manifest.tag != tag_name { return Err("downloaded package tag differs from requested update".into()); }
+    let options = match crate::distribution::installed()? {
+        Some(r) => transaction::InstallOptions { channel: r.channel, root: r.root, bin_dir: r.bin_dir, applications_dir: r.applications_dir },
+        None => transaction::InstallOptions::for_channel(channel).map_err(|e| e.to_string())?,
+    };
+    let receipt = transaction::install(&package, options).map_err(|e| e.to_string())?;
+    log::info!("update: verified installed build={} tag={}", receipt.active.build_id, receipt.active.tag);
+    Ok(())
 }
 
 /// `plexi update` — thin CLI wrapper around `run_self_update`.
-pub fn self_update_cli() -> i32 {
-    match run_self_update() {
+pub fn self_update_cli(rollback: bool) -> i32 {
+    let result = if rollback {
+        crate::distribution::installed().and_then(|r| r.ok_or_else(|| "no managed installation".to_string()))
+            .and_then(|r| plexi_distribution::transaction::rollback(&r.root).map_err(|e| e.to_string()))
+            .map(|r| format!("Restored {}. Restart Plexi to apply.", r.active.tag))
+    } else { run_self_update() };
+    match result {
         Ok(msg) => {
             println!("{msg}");
             0
@@ -772,36 +560,5 @@ pub fn self_update_cli() -> i32 {
             eprintln!("{msg}");
             1
         }
-    }
-}
-
-#[cfg(test)]
-mod channel_bundle_cap_tests {
-    use super::channel_bundle_cap;
-
-    #[test]
-    fn main_channel_has_no_cap() {
-        assert_eq!(channel_bundle_cap(None), "");
-    }
-
-    #[test]
-    fn alpha_channel() {
-        assert_eq!(channel_bundle_cap(Some("alpha")), " Alpha");
-    }
-
-    #[test]
-    fn beta_channel() {
-        assert_eq!(channel_bundle_cap(Some("beta")), " Beta");
-    }
-
-    #[test]
-    fn pr_channel() {
-        assert_eq!(channel_bundle_cap(Some("pr-2357")), " PR2357");
-    }
-
-    #[test]
-    fn arbitrary_named_channel_is_title_cased() {
-        assert_eq!(channel_bundle_cap(Some("gpui")), " Gpui");
-        assert_eq!(channel_bundle_cap(Some("foo")), " Foo");
     }
 }
