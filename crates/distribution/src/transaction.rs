@@ -1174,12 +1174,33 @@ fn write_windows_path(path: &str) -> Result<()> {
     Ok(())
 }
 #[cfg(windows)]
+fn windows_shell_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Component, Prefix};
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return path.to_path_buf();
+    };
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    match prefix.kind() {
+        Prefix::VerbatimDisk(_) => PathBuf::from(OsString::from_wide(&wide[4..])),
+        Prefix::VerbatimUNC(_, _) => {
+            let mut ordinary = vec![b'\\' as u16, b'\\' as u16];
+            ordinary.extend_from_slice(&wide[8..]);
+            PathBuf::from(OsString::from_wide(&ordinary))
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+#[cfg(windows)]
 fn prepare_windows_integration(
     receipt: &mut Receipt,
     changes: &mut Vec<Change>,
 ) -> Result<Option<WindowsPathChange>> {
     let before = read_windows_path()?;
-    let bin = receipt.bin_dir.to_string_lossy();
+    let shell_bin = windows_shell_path(&receipt.bin_dir);
+    let bin = shell_bin.to_string_lossy();
     let exists = before.split(';').any(|p| p.eq_ignore_ascii_case(&bin));
     receipt.windows_path_added |= !exists;
     let registry = default_root()?.join("installations");
@@ -1222,11 +1243,13 @@ fn prepare_windows_integration(
     let launcher = receipt
         .bin_dir
         .join(format!("{}.exe", release::command_name(&receipt.channel)));
+    let shell_stage = windows_shell_path(&stage);
+    let shell_launcher = windows_shell_path(&launcher);
     powershell(
         "$ErrorActionPreference='Stop'; $w=New-Object -ComObject WScript.Shell; $s=$w.CreateShortcut($env:PLEXI_REGISTER_LINK); $s.TargetPath=$env:PLEXI_REGISTER_EXE; $s.Arguments='host start'; $s.Save()",
         &[
-            ("PLEXI_REGISTER_LINK", stage.as_os_str()),
-            ("PLEXI_REGISTER_EXE", launcher.as_os_str()),
+            ("PLEXI_REGISTER_LINK", shell_stage.as_os_str()),
+            ("PLEXI_REGISTER_EXE", shell_launcher.as_os_str()),
         ],
     )?;
     let change = prepare_file(
@@ -1263,9 +1286,10 @@ fn windows_remove(receipt: &Receipt) -> Result<()> {
         return Ok(());
     }
     let before = read_windows_path()?;
+    let shell_bin = windows_shell_path(&receipt.bin_dir);
     let after = before
         .split(';')
-        .filter(|p| !p.eq_ignore_ascii_case(&receipt.bin_dir.to_string_lossy()))
+        .filter(|p| !p.eq_ignore_ascii_case(&shell_bin.to_string_lossy()))
         .collect::<Vec<_>>()
         .join(";");
     write_windows_path(&after)
@@ -1274,6 +1298,21 @@ fn windows_remove(receipt: &Receipt) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_paths_remove_verbatim_namespaces_without_losing_spaces_or_unc() {
+        for (input, expected) in [
+            (r"\\?\C:\Users\Plexi User\bin", r"C:\Users\Plexi User\bin"),
+            (
+                r"\\?\UNC\server\share\Plexi User",
+                r"\\server\share\Plexi User",
+            ),
+            (r"C:\Users\Plexi User\bin", r"C:\Users\Plexi User\bin"),
+        ] {
+            assert_eq!(windows_shell_path(Path::new(input)), Path::new(expected));
+        }
+    }
 
     #[test]
     fn a_second_installer_cannot_lock_the_same_channel() {
