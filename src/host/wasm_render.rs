@@ -667,7 +667,9 @@ fn render_node(
         UiNodeData::Empty => {}
 
         UiNodeData::Text(t) => {
-            let mut rich = RichText::new(&t.text).size(t.size.unwrap_or(style::TEXT_BODY));
+            let mut rich = RichText::new(&t.text)
+                .size(t.size.unwrap_or(style::TEXT_BODY))
+                .color(colors.text_primary);
             if t.bold {
                 rich = rich.strong();
             }
@@ -1264,6 +1266,51 @@ mod tests {
         FooterKeysNode, RowNode, SpaceNode, SurfaceNode, TextInputNode, TextNode,
     };
     use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
+
+    #[test]
+    fn plain_text_uses_host_theme_when_egui_visuals_differ() {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::light());
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![node(0, UiNodeData::Text(TextNode {
+                text: "Calculator".into(),
+                size: None,
+                bold: false,
+                color: None,
+                truncate: false,
+                align: Alignment::Start,
+            }))],
+        };
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+        });
+        let text = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Calculator" => Some(text),
+            _ => None,
+        }).expect("painted Calculator text");
+        let color = text.galley.job.sections[0].format.color;
+        let color = if color == Color32::PLACEHOLDER { text.fallback_color } else { color };
+        assert_eq!(color, colors.text_primary, "app text must follow the host palette");
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(420.0, 160.0))
+            .with_theme(egui::Theme::Light)
+            .build_ui(move |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(colors.bg_darkest))
+                    .show_inside(ui, |ui| {
+                        let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+                    });
+            });
+        harness.run();
+        harness.render().expect("theme regression render")
+            .save("/tmp/plexi-distribution-text-theme.png").expect("theme screenshot");
+    }
 
     /// Stint 0456: the declarative TextInput renders through the styled
     /// host field (`crate::ui::text_field`) — bg_active fill, border
