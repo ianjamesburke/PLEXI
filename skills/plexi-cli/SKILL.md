@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.
-skill_version: "5.0.3"
+skill_version: "5.0.4"
 plexi_version: "0.3.4"
-last_verified: "2026-09-16"
+last_verified: "2026-10-03"
 ---
 
 # Plexi CLI
@@ -16,6 +16,13 @@ and connection are supplied automatically. For app state and host state, use the
 CLI or app SDK; do not inspect Plexi profile files directly.
 
 ## Feature map
+
+- **Voice control** — `plexi host voice inputs` lists microphone IDs;
+  `plexi host voice start` enables continuous local transcription and automatic
+  single pane/app commands. Finalized speech goes to OpenRouter. Configure
+  `voice.model_path` in global config first; see [configuration](https://plexiapp.com/docs/config).
+  `plexi host voice status` reports listening, processing, queue and errors.
+  `plexi host voice stop` stops capture and cancels pending commands.
 
 - **Panes** — create terminals, control their input and focus, inspect them, and
   coordinate work: `plexi pane --help`. Running a command in another pane:

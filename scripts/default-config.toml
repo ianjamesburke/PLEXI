@@ -37,6 +37,15 @@ ghost_opacity = 0.75
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
 
+# Voice mode starts OFF. Explicitly enable from the palette or host voice start.
+# Audio stays local; finalized speech goes to OpenRouter and commands run automatically.
+[voice]
+input_preferences = []
+fallback_to_default = true
+# model_path = "/absolute/path/parakeet-tdt-0.6b-v3-int8"
+silence_ms = 700
+confidence_threshold = 0.65
+
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
 model_low    = "qwen/qwen3.6-flash"

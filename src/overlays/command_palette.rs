@@ -184,6 +184,8 @@ struct PaletteFocusTarget {
 enum PaletteCommand {
     Host(crate::host::keys::Action),
     OpenWorkspaceConfig,
+    StartVoice,
+    StopVoice,
 }
 
 struct PaletteCommandEntry {
@@ -194,6 +196,18 @@ struct PaletteCommandEntry {
 }
 
 const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
+    PaletteCommandEntry {
+        command: PaletteCommand::StartVoice,
+        name: "Enable voice mode",
+        description: "Listen continuously; send finalized speech to OpenRouter and automatically open panes/apps",
+        search_text: "enable start voice mode microphone listen speech",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::StopVoice,
+        name: "Disable voice mode",
+        description: "Stop listening and cancel queued voice commands",
+        search_text: "disable stop voice mode microphone listen speech",
+    },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::SplitRight),
         name: "Split right",
@@ -768,7 +782,7 @@ impl PlexiApp {
             PaletteCommand::Host(crate::host::keys::Action::SplitDown) => self.key_bindings.split_down,
             PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote) => self.key_bindings.open_quick_note,
             PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad) => self.key_bindings.open_scratchpad,
-            PaletteCommand::OpenWorkspaceConfig => return None,
+            PaletteCommand::OpenWorkspaceConfig | PaletteCommand::StartVoice | PaletteCommand::StopVoice => return None,
             PaletteCommand::Host(other) => {
                 log::warn!("palette: no shortcut label for host binding {other:?}");
                 return None;
@@ -1650,6 +1664,13 @@ impl PlexiApp {
     fn run_palette_command(&mut self, command: PaletteCommand) {
         match command {
             PaletteCommand::Host(action) => self.run_palette_host_binding(action),
+            PaletteCommand::StartVoice => {
+                if let Err(error) = self.start_voice() {
+                    log::warn!("voice: enable failed: {error}");
+                    self.voice.session.status.outcome = error;
+                }
+            }
+            PaletteCommand::StopVoice => self.stop_voice(),
             PaletteCommand::OpenWorkspaceConfig => {
                 let root = self.router.active().root.clone();
                 log::info!("palette: opening workspace config at {}", root.display());

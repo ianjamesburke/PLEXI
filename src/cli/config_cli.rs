@@ -3,6 +3,11 @@ use std::path::PathBuf;
 
 /// Static registry of all known config keys: (dotted_key, type_name, description).
 pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
+    ("voice.input_preferences", "array", "Ordered microphone IDs or names (host profile only)"),
+    ("voice.fallback_to_default", "bool", "Allow the system default input when no preference is available"),
+    ("voice.model_path", "string", "Extracted local Parakeet v3 int8 model directory"),
+    ("voice.silence_ms", "integer", "Utterance-ending silence in milliseconds (200–3000; default 700)"),
+    ("voice.confidence_threshold", "float", "Minimum selected Jev probability (0.5–1; default 0.65)"),
     (
         "config_version",
         "integer",

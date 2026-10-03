@@ -667,6 +667,9 @@ pub enum AppRequest {
     /// Derive one auditable working/idle/blocked verdict from the pane's agent
     /// detector, TUI status bar, and trailing terminal buffer.
     PaneStatus { pane_id: u64, response_file: String },
+    /// Session-only continuous voice control. Starting explicitly authorizes
+    /// finalized transcripts to OpenRouter and narrow pane/app open operations.
+    VoiceControl { operation: String, response_file: String },
 
     /// Query the last-rendered UI state of a pane. Sent by `plexi pane state`.
     /// For app panes: host writes a versioned `semantic` tree for every runtime.

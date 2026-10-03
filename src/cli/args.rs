@@ -794,6 +794,11 @@ pub enum AppCmd {
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
 #[derive(Subcommand)]
 pub enum HostCmd {
+    /// Continuous local speech recognition and automatic single-command control.
+    Voice {
+        #[command(subcommand)]
+        cmd: VoiceCmd,
+    },
     /// Launch this channel's app bundle detached and wait for readiness.
     ///
     /// Errors if a host for this channel is already running. Seeds any
@@ -861,6 +866,20 @@ pub enum HostCmd {
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
+}
+
+/// `plexi account <cmd>` — marketplace account management.
+#[derive(Subcommand)]
+pub enum VoiceCmd {
+    /// Listen continuously. Finalized text goes to OpenRouter; pane/app commands
+    /// execute automatically. Configure [voice] model_path before starting.
+    Start,
+    /// Stop the microphone and cancel pending voice commands.
+    Stop,
+    /// JSON listening, processing, queue and outcome state.
+    Status,
+    /// List local input devices with stable IDs and readable names as JSON.
+    Inputs,
 }
 
 /// `plexi account <cmd>` — marketplace account management.

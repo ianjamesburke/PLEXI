@@ -40,6 +40,58 @@ Available presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tok
 
 Known color keys: bg_darkest, bg_sidebar, bg_toolbar, terminal_bg, bg_hover, bg_sidebar_hover, bg_active, text_primary, text_dim, text_section, accent, border, foreground, background, black, red, green, yellow, blue, magenta, cyan, white, bright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white, bright_foreground.
 
+## Voice
+
+Voice is an experimental, session-only listener. Enable it with the command
+palette's **Enable voice mode** or `plexi host voice start`; stop it with
+**Disable voice mode** or `plexi host voice stop`. It never starts automatically.
+Each completed utterance can open one terminal or app, to the right or below the
+pane where speech began. Notes opens the native editor. Multiple operations in
+one sentence are unsupported.
+
+Audio stays on this device. While enabled, finalized transcripts go to
+OpenRouter's Jev Decisions API and accepted commands execute automatically.
+Partial text is provisional and never executes. Existing OpenRouter secret
+resolution and `ai.openrouter.api_key_env` apply.
+
+Set these preferences in the channel-global config (`plexi config edit --global`).
+Workspace config cannot override microphone, model, or voice thresholds:
+
+```toml
+[voice]
+input_preferences = ["CoreAudio:your-device-id", "USB Microphone"]
+fallback_to_default = true
+model_path = "/absolute/path/parakeet-tdt-0.6b-v3-int8"
+silence_ms = 700
+confidence_threshold = 0.65
+```
+
+`plexi host voice inputs` returns device IDs, names, and the current default.
+The first available preference wins; duplicate names require an ID.
+Disconnection stops listening and reports an error; there is no silent device
+switch. `plexi host voice status` exposes listening, interpretation, queue depth,
+partial text, rejections, and the last outcome. Preference edits apply next time
+voice mode starts.
+
+The local model must be downloaded explicitly. Choose a model directory, download
+[Handy's Parakeet v3 int8 archive](https://blob.handy.computer/parakeet-v3-int8.tar.gz),
+and extract it there with `tar -xzf parakeet-v3-int8.tar.gz`. Point
+`model_path` at the extracted directory containing `encoder-model.int8.onnx`,
+`decoder_joint-model.int8.onnx`, `nemo128.onnx`, and `vocab.txt`. Plexi does
+not download models or keep recordings. The weights are NVIDIA Parakeet
+([CC BY 4.0 model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)),
+converted to ONNX by istupakov and distributed by Handy. The Rust engine,
+`transcribe-rs`, is MIT; ONNX Runtime is MIT and links into the host build.
+The native runtime increases build/download size; no Tauri or Handy application
+framework is embedded.
+
+Listening continues while earlier commands are interpreted and executed in FIFO
+order. Silence duration is configurable; there is no total listening timeout.
+An uninterrupted utterance exceeding the bounded recognition window is rejected
+in full until a pause. Audio/command overload is visible and rejects whole
+utterances. Stop cancels pending commands; completed actions remain completed.
+No raw audio or transcript is logged by default.
+
 ## AI
 
 OpenRouter is the default cloud backend. Store the key in the global Plexi secret store:

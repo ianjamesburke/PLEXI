@@ -778,6 +778,28 @@ pub fn host_stop_cli() -> i32 {
     }
 }
 
+pub fn host_voice_cli(cmd: super::args::VoiceCmd) -> i32 {
+    let operation = match cmd {
+        super::args::VoiceCmd::Start => "start",
+        super::args::VoiceCmd::Stop => "stop",
+        super::args::VoiceCmd::Status => "status",
+        super::args::VoiceCmd::Inputs => {
+            return match crate::voice::capture::devices() {
+                Ok(devices) => { println!("{}", serde_json::json!(devices)); 0 }
+                Err(error) => { log::error!("voice inputs: {error}"); eprintln!("error: {error}"); 1 }
+            };
+        }
+    };
+    match super::request(serde_json::json!({"type":"voice_control", "operation":operation}), "voice-response", "host voice") {
+        Ok(reply) => {
+            if let Some(error) = super::reply_error(&reply) { eprintln!("error: {error}"); return 1; }
+            println!("{reply}");
+            0
+        }
+        Err(code) => code,
+    }
+}
+
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();

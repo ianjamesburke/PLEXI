@@ -216,6 +216,19 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
+            crate::protocol::AppRequest::VoiceControl { operation, response_file } => {
+                let result = match operation.as_str() {
+                    "start" => self.start_voice(),
+                    "stop" => { self.stop_voice(); Ok(()) },
+                    "status" => Ok(()),
+                    _ => Err("Unknown voice operation".into()),
+                };
+                let response = match result {
+                    Ok(()) => serde_json::json!(self.voice.session.status),
+                    Err(error) => serde_json::json!({"error":error}),
+                };
+                write_json_response(response_file, response);
+            }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;

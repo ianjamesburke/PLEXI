@@ -2536,6 +2536,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn screenshot_voice_listening_while_interpreting() {
+        let mut harness = PlexiUiHarness::new_sized(900.0, 600.0);
+        harness.with_app_mut(|app| {
+            app.voice.session.start();
+            let status = &mut app.voice.session.status;
+            status.listening = true;
+            status.microphone = Some("USB Microphone".into());
+            status.partial = "Open Notes below this terminal".into();
+            status.processing = Some(1);
+            status.queued = 2;
+            status.outcome = "Opened Terminal".into();
+        });
+        harness.run_steps(3);
+        harness.save_screenshot(&evidence_png!()).unwrap();
+    }
+
     /// Stint 0467, never-frozen rule: while a turn is in flight the
     /// transcript always shows an animated element. Two screenshots: (1) the
     /// model streamed a sentence and is now generating a tool call — the
