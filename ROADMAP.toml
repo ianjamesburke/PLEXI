@@ -780,7 +780,8 @@ title = "Video editor — timeline UI, frame-accurate preview, export"
 status = "red"
 deps = ["media-io"]
 evidence = []
-stints = ["0522", "0524", "0525", "0526"]
+stints = ["0521", "0522", "0776", "0524", "0526", "0777", "0525"]
+note = "Scope and release targets live in docs/xml-video-editor.md. The existing pure edit model does not qualify XML round trips, multicam preview, or export."
 
 # ---------------------------------------------------------------------------
 # Not started

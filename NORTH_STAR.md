@@ -14,7 +14,9 @@ Plexi is a mini-OS, not an app: a tiling, terminal-native personal computing env
 
 ---
 
-## The Ten Commandments
+## The Commandments
+
+Evaluate every proposed feature against these commandments before adding it to the plan.
 
 1. **All data lives in portable, open formats — markdown, JSON, TOML.** App state, permission logs, agent transcripts: plain files on your disk that will still open in 100 years. If Plexi disappeared tomorrow, everything you made would still work. That is the founding constraint, not a feature.
 
@@ -35,6 +37,10 @@ Plexi is a mini-OS, not an app: a tiling, terminal-native personal computing env
 9. **Local-first. Cloud is an option, never a dependency.** Sync, hosting, and the portable server instance are opt-in conveniences on the same architecture. Nothing required to run what you own lives on someone else's computer.
 
 10. **Apps never get ambient authority.** Every capability is declared in a manifest, granted with explicit scoped consent, and logged to an append-only audit trail. The host owns rendering and enforcement; apps own state and intent. Security by construction, not by policy.
+
+11. **Make the last 20% easy.** When a workflow needs human judgment, Plexi puts the relevant material and the means to change it directly in the person's hands. Their choices become durable, machine-readable changes that automation can continue from. Every handoff preserves context, makes the result immediately perceptible, and supports correction and undo.
+
+    Ask of every human-in-the-loop feature: **Which human decision does this make easier, and can the agent continue from that decision without asking the person to translate it back into instructions?** If the person must describe a change they already made, the handoff is incomplete.
 
 ---
 

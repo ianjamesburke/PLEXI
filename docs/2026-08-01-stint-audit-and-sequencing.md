@@ -116,9 +116,11 @@ Older PRs — **#1604, #2316, #2318, #2323, #2353** — predate this audit's win
 
 ### 6c. V2 / V3
 
+Video-editor sequencing is superseded by [xml-video-editor.md](xml-video-editor.md#release-scope); its owning stint tasks carry the current dependencies.
+
 **V2** — browser cluster (0480→0483→0486→0487→0489, 0484, 0485, 0488), terminal ergonomics (0258, 0259 — both dispatchable now, see §7), consent-UI test infra (0592→0593), CI hardening (0269, 0270, sequenced after 0710), secrets follow-ons, process hygiene (0560+0689), 0673, 0671, 0651/0652.
 
-**V3** — all monetization (0322, 0341, 0344, 0286, 0323, 0354, 0356, 0352, 0353), the video-editor suite (0521, 0524, 0525, 0526), 0622, 0609, 0623, 0248, 0251, 0265, 0406, 0360, 0287, 0550, 0551.
+**V3** — all monetization (0322, 0341, 0344, 0286, 0323, 0354, 0356, 0352, 0353), 0622, 0609, 0623, 0248, 0251, 0265, 0406, 0360, 0287, 0550, 0551. Video-editor scope follows the linked plan.
 
 **Drop list for V1: 9 marketplace/payments tasks, 4 video-editor tasks, and the external-project demo.** Third-party monetization was already deferred post-v1 by the team's own 2026-07-24 decision.
 
