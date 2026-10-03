@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.4] — 2026-10-03
+
+### Changes
+- fix(infra/build): pass Rust 1.99 Clippy release gate
 ## [0.3.3] — 2026-10-03
 
 ### Changes
