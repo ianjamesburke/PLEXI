@@ -194,6 +194,30 @@ fn run(args: Args) -> Result<i32> {
         "Command directory: {} (open a new shell to refresh PATH)",
         receipt.bin_dir.display()
     );
+    let name = release::command_name(&receipt.channel);
+    let command_name = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name
+    };
+    if let Some(existing) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|p| p.join(&command_name))
+            .find(|p| p.is_file())
+    }) {
+        let managed = receipt.bin_dir.join(command_name);
+        if existing.canonicalize().ok() != managed.canonicalize().ok() {
+            println!(
+                "Current PATH resolves to {}. Open a new shell or use the PATH command below to select this installation.",
+                existing.display()
+            );
+        }
+    }
+    #[cfg(windows)]
+    println!(
+        "For this PowerShell session: $env:Path = '{};' + $env:Path",
+        receipt.bin_dir.to_string_lossy().replace('\'', "''")
+    );
     #[cfg(unix)]
     println!(
         "For this shell: export PATH='{}':\"$PATH\"",

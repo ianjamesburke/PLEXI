@@ -1103,6 +1103,24 @@
         },
         {
           "additionalProperties": false,
+          "description": "Return the running executable's immutable build identity.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "get_build_info",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.",
           "properties": {
             "context_id": {

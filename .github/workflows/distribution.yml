@@ -49,6 +49,8 @@ jobs:
         with:
           cache-key: distribution-${{ matrix.platform }}
       - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
       - name: Fetch the verified package runtime
         shell: bash
         run: uv run --no-project python -c 'from pathlib import Path; from scripts.package import runtime; runtime(Path("target/distribution-runtime"))'

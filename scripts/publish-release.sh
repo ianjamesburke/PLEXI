@@ -12,7 +12,11 @@ for platform in "${platforms[@]}"; do
   names=("plexi-$platform.$ext" "plexi-$platform-alpha.$ext" "plexi-$platform-beta.$ext" "plexi-installer-$platform$exe")
   for name in "${names[@]}"; do
     [[ -s "$dist/$name" && -s "$dist/$name.sha256" ]] || { echo "Required artifact missing: $name or checksum" >&2; exit 1; }
-    (cd "$dist" && sha256sum --check "$name.sha256")
+    if command -v sha256sum >/dev/null 2>&1; then
+      (cd "$dist" && sha256sum --check "$name.sha256")
+    else
+      (cd "$dist" && shasum -a 256 --check "$name.sha256")
+    fi
     assets+=("$dist/$name" "$dist/$name.sha256")
   done
 done

@@ -45,6 +45,10 @@ def package(root, installer, platform, channel, build):
     literal = json.dumps(json.dumps(identity))
     source.write_text('''use std::{env,fs,path::PathBuf,thread,time::Duration};
 fn main() {
+    if env::args().nth(1).as_deref() == Some("--hold") {
+        fs::write(env::var("DISTRIBUTION_TEST_HOLD").unwrap(), "ready").unwrap();
+        loop { thread::sleep(Duration::from_millis(100)); }
+    }
     if env::args().nth(1).as_deref() == Some("--distribution-check") {
         if let Ok(gate) = env::var("DISTRIBUTION_TEST_GATE") {
             let path = PathBuf::from(&gate);
@@ -94,11 +98,33 @@ def main(args):
         def active(): return json.loads(receipt_path.read_text())['active']['build_id']
         install(old)
         assert active() == 'old'
+        if os.name != 'nt':
+            # Ordinary interactive shells must discover the owned command even
+            # when an older unrelated command precedes it in the inherited PATH.
+            stale = root / 'stale system bin'
+            stale.mkdir()
+            shadow = stale / 'plexi'
+            shadow.write_text('#!/bin/sh\necho stale\n')
+            shadow.chmod(0o755)
+            shell_env = env | {'PATH': str(stale) + os.pathsep + env['PATH']}
+            output = run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', 'plexi --build-info'], shell_env)
+            assert json.loads(output.stdout)['build_id'] == 'old'
+            assert shadow.read_text().endswith('echo stale\n')
         install(alpha)
         retained = home / '.plexi/user-document.txt'
         retained.parent.mkdir(exist_ok=True)
         retained.write_text('keep me')
-        install(new)
+        generation = json.loads(receipt_path.read_text())['active']
+        held = subprocess.Popen([str(Path(generation['path']) / generation['executable']), '--hold'], env=env | {'DISTRIBUTION_TEST_HOLD': str(root / 'held')}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 10
+            while not (root / 'held').exists():
+                if time.monotonic() > deadline: raise TimeoutError('running executable fixture')
+                time.sleep(.05)
+            install(new)
+            assert held.poll() is None, 'upgrade replaced or terminated the running generation'
+        finally:
+            held.kill(); held.wait(timeout=10)
         assert active() == 'new'
         assert json.loads(receipt_path.read_text())['previous']['build_id'] == 'old'
         run([installer, 'rollback', '--receipt', receipt_path.parent], env)
@@ -111,29 +137,28 @@ def main(args):
         assert active() == 'old'
         payload.write_bytes(original)
         print('PASS: corrupted payload preserves active generation')
-        if os.name != 'nt':
-            gate = root / 'check-gate'
-            interrupted = env | {'DISTRIBUTION_TEST_GATE': str(gate)}
-            with (root / 'interrupt.log').open('w') as log:
-                proc = subprocess.Popen([str(installer), '--package', str(new), '--install-only'], env=interrupted, cwd=home, stdout=log, stderr=log)
-                try:
-                    deadline = time.monotonic() + 30
-                    while not gate.with_suffix('.ready').exists():
-                        if proc.poll() is not None: raise AssertionError((root / 'interrupt.log').read_text())
-                        if time.monotonic() > deadline: raise TimeoutError('activation gate')
-                        time.sleep(.05)
-                    install(new, False)
-                    proc.kill()
-                    proc.wait(timeout=10)
-                finally:
-                    if proc.poll() is None: proc.kill(); proc.wait()
-            # The transaction's worker is a fixture process; release it too.
-            os.kill(int(gate.with_suffix('.ready').read_text()), 9)
-            launcher = root / 'command bin/plexi'
-            result = run([launcher, '--build-info'], env)
-            assert json.loads(result.stdout)['build_id'] == 'old'
-            assert active() == 'old'
-            print('PASS: simultaneous installer refusal and SIGKILL recovery through launcher')
+        gate = root / 'check-gate'
+        interrupted = env | {'DISTRIBUTION_TEST_GATE': str(gate)}
+        with (root / 'interrupt.log').open('w') as log:
+            proc = subprocess.Popen([str(installer), '--package', str(new), '--install-only'], env=interrupted, cwd=home, stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 30
+                while not gate.with_suffix('.ready').exists():
+                    if proc.poll() is not None: raise AssertionError((root / 'interrupt.log').read_text())
+                    if time.monotonic() > deadline: raise TimeoutError('activation gate')
+                    time.sleep(.05)
+                install(new, False)
+                proc.kill()
+                proc.wait(timeout=10)
+            finally:
+                if proc.poll() is None: proc.kill(); proc.wait()
+        # The transaction's worker is a fixture process; release it too.
+        os.kill(int(gate.with_suffix('.ready').read_text()), 9)
+        launcher = root / ('command bin/plexi.exe' if os.name == 'nt' else 'command bin/plexi')
+        result = run([launcher, '--build-info'], env)
+        assert json.loads(result.stdout)['build_id'] == 'old'
+        assert active() == 'old'
+        print('PASS: simultaneous installer refusal and SIGKILL recovery through launcher')
         # Retained data and an unrelated command survive channel removal.
         outsider = root / 'command bin/plexi-development'
         outsider.write_text('user-owned')

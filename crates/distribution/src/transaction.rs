@@ -272,7 +272,10 @@ fn prepare_file(root: &Path, path: &Path, bytes: &[u8], index: usize) -> Result<
     let before = if path.exists() {
         let backup = work.join(format!("{index}.before"));
         fs::copy(path, &backup).context("back up integration")?;
-        File::open(&backup)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&backup)
             .context("open integration backup")?
             .sync_all()
             .context("sync integration backup")?;
@@ -419,7 +422,10 @@ fn copy_package(package: &Package, destination: &Path) -> Result<()> {
         )
         .context("create package directory")?;
         fs::copy(package.root.join(name), &path).context(format!("copy package file {name}"))?;
-        File::open(&path)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
             .context("open package file for sync")?
             .sync_all()
             .context("sync package file")?;
@@ -463,7 +469,19 @@ fn verify_target(generation: &Generation) -> Result<()> {
 }
 
 pub fn clean_environment(command: &mut Command) {
-    for (key, _) in std::env::vars_os() {
+    clean_environment_from(command, std::env::vars_os());
+}
+
+fn clean_environment_from(
+    command: &mut Command,
+    variables: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    for (key, value) in variables {
+        // A bootstrap invoked from a Plexi terminal must restore the user's
+        // original zsh directory before dropping the pane's integration marker.
+        if key == "PLEXI_ORIG_ZDOTDIR" {
+            command.env("ZDOTDIR", value);
+        }
         if key.to_string_lossy().starts_with("PLEXI_") {
             command.env_remove(key);
         }
@@ -1294,6 +1312,55 @@ mod tests {
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn launch_environment_restores_original_zsh_configuration() {
+        let mut command = Command::new("unused");
+        clean_environment_from(
+            &mut command,
+            [
+                ("PLEXI_ORIG_ZDOTDIR".into(), "/user/zsh".into()),
+                (
+                    "ZDOTDIR".into(),
+                    "/user/.plexi-beta/shell-integration/zsh".into(),
+                ),
+                ("PLEXI_CHANNEL".into(), "beta".into()),
+            ]
+            .into_iter(),
+        );
+        let edits: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            edits[std::ffi::OsStr::new("ZDOTDIR")],
+            Some(std::ffi::OsStr::new("/user/zsh"))
+        );
+        assert_eq!(edits[std::ffi::OsStr::new("PLEXI_ORIG_ZDOTDIR")], None);
+        assert_eq!(edits[std::ffi::OsStr::new("PLEXI_CHANNEL")], None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn interrupted_windows_path_registration_restores_previous_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = read_windows_path().unwrap();
+        let after = format!("{};{before}", dir.path().display());
+        let journal = Journal {
+            before: None,
+            after: fixture_receipt(dir.path()),
+            changes: vec![],
+            windows_path: Some(WindowsPathChange {
+                before: before.clone(),
+                after: after.clone(),
+            }),
+        };
+        write_json(&dir.path().join("transaction.json"), &journal).unwrap();
+        write_windows_path(&after).unwrap();
+        let result = recover(dir.path());
+        // Restore even if the assertion below needs to report a failure.
+        let observed = read_windows_path().unwrap();
+        write_windows_path(&before).unwrap();
+        result.unwrap();
+        assert_eq!(observed, before);
     }
 
     fn fixture_receipt(root: &Path) -> Receipt {
