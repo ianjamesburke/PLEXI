@@ -433,14 +433,7 @@ fn detect_pid_via_proc(socket_path: &Path) -> Option<u32> {
     // Columns: Num RefCount Protocol Flags Type St Inode Path
     let inodes: Vec<String> = unix_table
         .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let inode = fields.nth(6)?;
-            // The path is the remainder; a bound path never contains spaces
-            // here because the kernel prints it verbatim and Plexi's socket
-            // path never has any.
-            (fields.next()? == target).then(|| inode.to_string())
-        })
+        .filter_map(|line| unix_socket_inode(line, target).map(str::to_owned))
         .collect();
     if inodes.is_empty() {
         return None;
@@ -486,6 +479,24 @@ fn detect_pid_via_proc(socket_path: &Path) -> Option<u32> {
         }
     }
     None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn unix_socket_inode<'a>(line: &'a str, target: &str) -> Option<&'a str> {
+    let mut rest = line;
+    let mut inode = "";
+    for _ in 0..7 {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        inode = &rest[..end];
+        rest = &rest[end..];
+    }
+    // Only the table columns are whitespace-delimited. The remaining path
+    // is verbatim and may contain repeated spaces.
+    (rest.trim_start() == target).then_some(inode)
 }
 
 /// Launches this channel's app bundle detached (survives the CLI process
@@ -659,10 +670,26 @@ fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io
     windows_launch::spawn(binary, child_env)
 }
 
+fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
+    if let Some(pid) = pid {
+        // A restart can bind the same endpoint before this caller polls again.
+        // Confirm this process's exit without unlinking its replacement's socket.
+        return !plexi_distribution::transaction::process_alive(pid);
+    }
+    matches!(
+        super::send_line_to_socket(socket_path, b"", Duration::from_millis(100)),
+        Err(super::SocketTransportError::Connect(error))
+            if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)
+    )
+}
+
 pub fn host_stop_cli() -> i32 {
     let channel = crate::config::build_channel();
     let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
-    let pid = detect_pid(&socket_path);
+    let pid = running_build_info()
+        .as_ref()
+        .and_then(reported_pid)
+        .or_else(|| detect_pid(&socket_path));
     log::info!("host_stop: channel={channel:?} socket={socket_path:?} pid={pid:?}");
 
     match IpcStream::connect(&socket_path) {
@@ -672,36 +699,12 @@ pub fn host_stop_cli() -> i32 {
             match stream.write_all(format!("{payload}\n").as_bytes()) {
                 Ok(()) => {
                     log::info!("host_stop: shutdown request sent, waiting for process exit");
-                    // The socket *file* is only unlinked by the next process's
-                    // startup cleanup (`spawn_socket_listener` in src/app/mod.rs),
-                    // never on exit — so `socket_path.exists()` never turns false
-                    // here and cannot be used as an exit signal. Instead, poll a
-                    // fresh connect attempt: once the listening process has
-                    // actually exited, the OS answers new connects to the
-                    // now-unheld socket path with `ConnectionRefused` (the same
-                    // stale-socket idiom `probe_notify_socket` uses).
                     let deadline = Instant::now() + Duration::from_secs(5);
                     loop {
-                        match IpcStream::connect(&socket_path) {
-                            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                                log::info!(
-                                    "host_stop: method=socket pid={pid:?} — clean shutdown confirmed"
-                                );
-                                ipc::remove_stale_endpoint(&socket_path);
-                                println!("Plexi host stopped (clean shutdown).");
-                                return 0;
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                log::info!(
-                                    "host_stop: method=socket pid={pid:?} — clean shutdown confirmed (socket removed)"
-                                );
-                                println!("Plexi host stopped (clean shutdown).");
-                                return 0;
-                            }
-                            _ => {
-                                // Still connectable (or a transient error) — host
-                                // hasn't exited yet, keep polling.
-                            }
+                        if shutdown_complete(pid, &socket_path) {
+                            log::info!("host_stop: original pid={pid:?} stopped");
+                            println!("Plexi host stopped (clean shutdown).");
+                            return 0;
                         }
                         if Instant::now() >= deadline {
                             break;
@@ -709,19 +712,19 @@ pub fn host_stop_cli() -> i32 {
                         std::thread::sleep(Duration::from_millis(200));
                     }
                     log::warn!(
-                        "host_stop: clean shutdown did not complete within timeout — falling back to SIGTERM"
+                        "host_stop: clean shutdown did not complete within timeout — requesting termination"
                     );
                 }
                 Err(e) => {
                     log::error!(
-                        "host_stop: could not send shutdown request: {e} — falling back to SIGTERM"
+                        "host_stop: could not send shutdown request: {e} — requesting termination"
                     );
                 }
             }
         }
         Err(e) => {
             log::warn!(
-                "host_stop: could not connect to {socket_path:?}: {e} — falling back to SIGTERM"
+                "host_stop: could not connect to {socket_path:?}: {e} — requesting termination"
             );
         }
     }
@@ -731,27 +734,56 @@ pub fn host_stop_cli() -> i32 {
         eprintln!("error: no Plexi host is running for this channel");
         return 1;
     };
-    match std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .status()
-    {
-        Ok(status) if status.success() => {
-            log::info!("host_stop: method=sigterm pid={pid}");
-            println!("Plexi host stopped (SIGTERM sent to pid {pid}).");
+    if shutdown_complete(Some(pid), &socket_path) {
+        println!("Plexi host stopped.");
+        return 0;
+    }
+    match terminate_host_process(pid) {
+        Ok(()) => {
+            log::info!("host_stop: termination requested pid={pid}");
+            println!("Termination requested for Plexi host (pid {pid}).");
             0
         }
-        Ok(status) => {
-            log::error!("host_stop: kill -TERM pid={pid} failed with status {status:?}");
-            eprintln!("error: could not stop process {pid} (kill exited with {status:?})");
-            1
-        }
         Err(e) => {
-            log::error!("host_stop: could not run kill -TERM pid={pid}: {e}");
-            eprintln!("error: could not run kill: {e}");
+            log::error!("host_stop: could not terminate pid={pid}: {e}");
+            eprintln!("error: could not terminate process {pid}: {e}");
             1
         }
     }
+}
+
+#[cfg(unix)]
+fn terminate_host_process(pid: u32) -> std::io::Result<()> {
+    // SAFETY: pid came from this channel's host and SIGTERM requests clean exit.
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn terminate_host_process(pid: u32) -> std::io::Result<()> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    // SAFETY: scalar inputs and checked handle; only the recorded host is targeted.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcess returned a distinct owned handle, closed on every path.
+    let _owned = unsafe { OwnedHandle::from_raw_handle(handle.cast()) };
+    // SAFETY: the owned handle remains valid for the operation.
+    if unsafe { TerminateProcess(handle, 1) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn reported_pid(info: &serde_json::Value) -> Option<u32> {
+    let pid = u32::try_from(info.get("pid")?.as_u64()?).ok()?;
+    (pid != 0).then_some(pid)
 }
 
 /// Query the running host independently of its profile markers or installed package.
@@ -759,11 +791,10 @@ pub(crate) fn running_build_info() -> Option<serde_json::Value> {
     let channel = crate::config::build_channel();
     let profile = host_config_dir(channel.as_deref());
     let socket = ipc::endpoint_in(&profile);
-    let mut stream = IpcStream::connect(socket).ok()?;
     let response_file = crate::rpc::response_file_in(&profile, "host-build", "json");
     let request = crate::protocol::AppRequest::GetBuildInfo { response_file: response_file.clone() };
     let line = serde_json::to_string(&request).ok()?;
-    stream.write_all(format!("{line}\n").as_bytes()).ok()?;
+    super::send_line_to_socket(&socket, format!("{line}\n").as_bytes(), crate::rpc::DEFAULT_TIMEOUT).ok()?;
     let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
     serde_json::from_str(&content).ok()
 }
@@ -773,7 +804,8 @@ pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
     let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
     let pane_count = query_ready_status(&socket_path, &host_config_dir(channel.as_deref()), Instant::now() + crate::rpc::DEFAULT_TIMEOUT);
-    let pid = detect_pid(&socket_path);
+    let running = running_build_info();
+    let pid = running.as_ref().and_then(reported_pid).or_else(|| detect_pid(&socket_path));
     let ready = pane_count.is_some();
     log::info!(
         "host_status: channel={channel:?} pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}"
@@ -783,7 +815,7 @@ pub fn host_status_cli(json: bool) -> i32 {
         let payload = serde_json::json!({
             "ready": ready,
             "cli": crate::distribution::build_info(),
-            "running": running_build_info(),
+            "running": running,
             "installed": crate::distribution::installed().ok().flatten(),
             "pane_count": pane_count,
             "pid": pid,
@@ -919,6 +951,29 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn distribution_socket_inode_preserves_spaces_in_the_path() {
+        let path = "/tmp/Plexi home with  spaces/.plexi/notify.sock";
+        let line = format!("000000: 00000002 00000000 00010000 0001 01 4711 {path}");
+        assert_eq!(super::unix_socket_inode(&line, path), Some("4711"));
+        assert_eq!(super::unix_socket_inode(&line, "/tmp/Plexi"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn distribution_shutdown_confirms_original_exit_with_replacement_socket_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("notify.sock");
+        let _replacement = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let mut original = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = original.id();
+        original.kill().unwrap();
+        original.wait().unwrap();
+        assert!(super::shutdown_complete(Some(pid), &socket));
+        assert!(socket.exists(), "the replacement endpoint must be retained");
+        assert!(!super::shutdown_complete(Some(std::process::id()), &socket));
+    }
+
     #[test]
     fn readiness_rejects_reply_after_start_deadline() {
         use crate::platform::ipc::IpcListener;

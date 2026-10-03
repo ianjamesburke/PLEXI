@@ -1086,7 +1086,7 @@ pub fn wait_for_parent(pid: u32) -> Result<()> {
     Ok(())
 }
 #[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
+pub fn process_alive(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stdout(Stdio::null())
@@ -1095,7 +1095,7 @@ fn process_alive(pid: u32) -> bool {
         .is_ok_and(|s| s.success())
 }
 #[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
+pub fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
         System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
