@@ -45,9 +45,12 @@ Known color keys: bg_darkest, bg_sidebar, bg_toolbar, terminal_bg, bg_hover, bg_
 Voice is an experimental, session-only listener. Enable it with the command
 palette's **Enable voice mode** or `plexi host voice start`; stop it with
 **Disable voice mode** or `plexi host voice stop`. It never starts automatically.
-Each completed utterance can open one terminal or app, to the right or below the
-pane where speech began. Notes opens the native editor. Multiple operations in
-one sentence are unsupported.
+Each completed utterance can open one terminal or configured app to the right,
+below, left, above, in a tab, or in a new window. It can also focus or close a
+named pane in the context where speech began. Notes opens the native editor.
+For example, say “open Notes below”, “open a terminal in a new tab”, “focus
+pane 7”, or “close this pane”. Pause between commands; multiple operations in
+one sentence are unsupported. Closing a pane can discard unsaved work.
 
 Audio stays on this device. While enabled, finalized transcripts go to
 OpenRouter's Jev Decisions API and accepted commands execute automatically.
@@ -70,6 +73,8 @@ confidence_threshold = 0.65
 `plexi host voice inputs` returns device IDs, names, and the current default.
 Voice initially supports Terminal and Notes. Add installed app IDs to
 `voice.apps` to enable them; unavailable configured apps fail visibly.
+At most 30 pane targets from the origin context are offered to Jev for each
+utterance. If several panes share a name, say the pane ID to distinguish them.
 `host voice status` lists the session's supported IDs and names.
 The first available preference wins; duplicate names require an ID.
 Disconnection stops listening and reports an error; there is no silent device

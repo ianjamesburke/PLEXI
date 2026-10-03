@@ -1,4 +1,4 @@
-//! Host-owned voice session. Enable grants only the enumerated pane/app opens;
+//! Host-owned voice session. Enable grants only the enumerated pane actions;
 //! Jev has no ambient Assistant identity or executable command surface.
 use super::PlexiApp;
 use crate::voice::{
@@ -98,8 +98,14 @@ impl PlexiApp {
         self.voice.session.start();
         self.voice.session.status.supported_apps = candidates
             .iter()
-            .filter(|c| c.action.placement == "right")
-            .map(|c| (c.action.app.clone(), c.action.name.clone()))
+            .filter_map(|c| match &c.action {
+                Action::Open {
+                    app,
+                    name,
+                    placement: "right",
+                } => Some((app.clone(), name.clone())),
+                _ => None,
+            })
             .collect();
         match Worker::spawn(
             self.config.voice.clone(),
@@ -151,7 +157,26 @@ impl PlexiApp {
                 apps.push((id.clone(), app.manifest.name.clone()));
             }
         }
-        voice::decisions::candidates(apps)
+        let mut panes = self
+            .windows
+            .iter()
+            .filter(|window| window.context_id == origin.context)
+            .flat_map(|window| {
+                window.panes.iter().filter_map(|(id, pane)| {
+                    window.tree.tiles.find_pane(id)?;
+                    let title = match pane {
+                        crate::host::pane::Pane::Terminal(terminal) => {
+                            terminal.name.clone().unwrap_or_else(|| "Terminal".into())
+                        }
+                        crate::host::pane::Pane::App(app) => app.name.clone(),
+                        crate::host::pane::Pane::Portal(_) => return None,
+                    };
+                    Some((*id, title))
+                })
+            })
+            .collect::<Vec<_>>();
+        panes.sort_by_key(|(id, _)| (*id != origin.pane, *id));
+        voice::decisions::candidates(apps, panes, origin.pane)
     }
 
     fn execute_voice(&mut self, utterance: &Utterance, action: &Action) -> Result<String, String> {
@@ -165,58 +190,91 @@ impl PlexiApp {
             .iter()
             .any(|c| c.action == *action)
         {
-            return Err("App is no longer available in the origin context".into());
+            return Err("Voice action is no longer available in the origin context".into());
         }
         use crate::broker::{
             ActorType, Decision, GrantStore, PermissionPosture, PermissionRequest, TargetType,
+        };
+        let capability = match action {
+            Action::Open { .. } => "host.panes.open",
+            Action::Focus { .. } => "host.panes.focus",
+            Action::Close { .. } => "host.panes.close",
         };
         let request = PermissionRequest::new(
             ActorType::System,
             "voice",
             TargetType::HostTool,
-            "host.panes.open",
+            capability,
             Some(&utterance.origin.workspace),
         );
         // The explicit enable action supplies a session posture only. Persisted
         // user/managed deny/ask records still win; nothing is saved as a grant.
         let posture = PermissionPosture {
             default_posture: Decision::Deny,
-            allow: vec!["host.panes.open".into()],
+            allow: vec![
+                "host.panes.open".into(),
+                "host.panes.focus".into(),
+                "host.panes.close".into(),
+            ],
             ask: vec![],
             deny: vec![],
         };
         let grants = GrantStore::load_or_default(&self.permission_store_dir);
         if grants.evaluate(&request, Some(&posture)) != Decision::Allow {
-            return Err("Voice pane opening is blocked by permission policy".into());
+            return Err(format!(
+                "Voice {capability} is blocked by permission policy"
+            ));
         }
         let started = Instant::now();
-        let layout = if action.placement == "down" {
-            "split_down"
-        } else {
-            "split_right"
+        let (outcome, pane, operation) = match action {
+            Action::Open {
+                app,
+                name,
+                placement,
+            } => {
+                let layout = match *placement {
+                    "down" => "split_down",
+                    "left" => "split_left",
+                    "up" => "split_above",
+                    "tab" => "tab",
+                    "window" => "new_window",
+                    _ => "split_right",
+                };
+                let pane = self.spawn_host_pane(
+                    utterance.origin.pane,
+                    utterance.origin.context,
+                    app,
+                    Some(layout.into()),
+                    vec![],
+                    Some(utterance.origin.workspace.clone()),
+                    None,
+                )?;
+                let name = if app == "terminal" {
+                    "Terminal".to_string()
+                } else {
+                    name.clone()
+                };
+                self.handle_pane_ipc_request(crate::protocol::AppRequest::SetPaneTitle {
+                    pane_id: pane,
+                    name: name.clone(),
+                });
+                (format!("Opened {name}"), pane, "open")
+            }
+            Action::Focus { pane, title } => {
+                if !self.pane_navigate(*pane) {
+                    return Err(format!("Pane {pane} is no longer available"));
+                }
+                (format!("Focused {title}"), *pane, "focus")
+            }
+            Action::Close { pane, title } => {
+                self.close_pane_by_id(*pane);
+                (format!("Closed {title}"), *pane, "close")
+            }
         };
-        let pane = self.spawn_host_pane(
-            utterance.origin.pane,
-            utterance.origin.context,
-            &action.app,
-            Some(layout.into()),
-            vec![],
-            Some(utterance.origin.workspace.clone()),
-            None,
-        )?;
-        let name = if action.app == "terminal" {
-            "Terminal".to_string()
-        } else {
-            action.name.clone()
-        };
-        self.handle_pane_ipc_request(crate::protocol::AppRequest::SetPaneTitle {
-            pane_id: pane,
-            name: name.clone(),
-        });
         log::info!("voice: executed generation={} utterance={} pane={} action={} placement={} host_ms={} end_to_action_ms={} utterance_age_ms={}",
-            utterance.generation, utterance.id, pane, action.app, action.placement, started.elapsed().as_millis(),
+            utterance.generation, utterance.id, pane, operation, match action { Action::Open { placement, .. } => *placement, _ => "none" }, started.elapsed().as_millis(),
             utterance.finalized.elapsed().as_millis(), utterance.started.elapsed().as_millis());
-        Ok(format!("Opened {name}"))
+        Ok(outcome)
     }
 
     /// Called from the off-paint preamble. No model, audio-device, or HTTP work
@@ -399,8 +457,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn voice_placement_matches_rendered_right_and_below_geometry() {
-        for placement in ["right", "down"] {
+    fn voice_placement_matches_rendered_split_geometry() {
+        for placement in ["right", "down", "left", "up"] {
             let mut harness = crate::testing::HostHarness::new();
             let pane = harness.add_test_pane();
             harness.app.pane_navigate(pane);
@@ -418,7 +476,7 @@ mod tests {
                 .app
                 .execute_voice(
                     &utterance,
-                    &Action {
+                    &Action::Open {
                         app: "text-editor".into(),
                         name: "Notes".into(),
                         placement,
@@ -438,18 +496,12 @@ mod tests {
                 })
                 .unwrap();
             let new_rect = state.tree.tiles.rect(new_tile).unwrap();
-            if placement == "right" {
-                assert!(
-                    new_rect.left() >= origin_rect.right(),
-                    "right: origin={origin_rect:?}, new={new_rect:?}"
-                );
-                assert!((new_rect.top() - origin_rect.top()).abs() < 1.0);
-            } else {
-                assert!(
-                    new_rect.top() >= origin_rect.bottom(),
-                    "below: origin={origin_rect:?}, new={new_rect:?}"
-                );
-                assert!((new_rect.left() - origin_rect.left()).abs() < 1.0);
+            match placement {
+                "right" => assert!(new_rect.left() >= origin_rect.right()),
+                "down" => assert!(new_rect.top() >= origin_rect.bottom()),
+                "left" => assert!(new_rect.right() <= origin_rect.left()),
+                "up" => assert!(new_rect.bottom() <= origin_rect.top()),
+                _ => unreachable!(),
             }
         }
     }
@@ -475,7 +527,7 @@ mod tests {
         sender
             .send(DecisionResult {
                 utterance,
-                result: Ok(Some(Action {
+                result: Ok(Some(Action::Open {
                     app: "text-editor".into(),
                     name: "Notes".into(),
                     placement: "right",
@@ -485,6 +537,43 @@ mod tests {
         harness.hidden_frame();
         assert!(harness.app.voice.session.status.processing.is_none());
         assert_eq!(harness.app.voice.session.status.outcome, "Opened Notes");
+    }
+
+    #[test]
+    fn voice_focus_and_close_use_the_captured_context_and_pane() {
+        let mut harness = crate::testing::HostHarness::new();
+        let origin_pane = harness.add_test_pane();
+        let target_pane = harness.add_test_pane();
+        harness.app.pane_navigate(origin_pane);
+        let origin = harness.app.voice_origin().unwrap();
+        harness.app.voice.session.start();
+        let utterance = Utterance {
+            generation: 1,
+            id: 1,
+            origin,
+            text: "Focus pane".into(),
+            started: Instant::now(),
+            finalized: Instant::now(),
+        };
+        let actions = harness.app.voice_candidates(&utterance.origin).unwrap();
+        let focus = actions.iter().find(|candidate| matches!(candidate.action, Action::Focus { pane, .. } if pane == target_pane)).unwrap();
+        assert!(harness
+            .app
+            .execute_voice(&utterance, &focus.action)
+            .unwrap()
+            .starts_with("Focused"));
+        assert_eq!(harness.app.voice_origin().unwrap().pane, target_pane);
+        let close = actions.iter().find(|candidate| matches!(candidate.action, Action::Close { pane, .. } if pane == target_pane)).unwrap();
+        assert!(harness
+            .app
+            .execute_voice(&utterance, &close.action)
+            .unwrap()
+            .starts_with("Closed"));
+        assert!(harness.app.find_pane_in_any_window(target_pane).is_none());
+        assert!(harness
+            .app
+            .execute_voice(&utterance, &close.action)
+            .is_err());
     }
 
     #[test]
@@ -503,7 +592,7 @@ mod tests {
             started: Instant::now(),
             finalized: Instant::now(),
         };
-        let action = Action {
+        let action = Action::Open {
             app: "text-editor".into(),
             name: "Notes".into(),
             placement: "right",
