@@ -3534,19 +3534,21 @@ impl eframe::App for PlexiApp {
                     self.mark_workspace_dirty();
                 }
                 Action::Navigate(dir) => {
-                    let was_zoomed = self.windows[self.active_window].zoomed_pane.is_some();
+                    let old_active_window = self.active_window;
                     let old_focus = self.windows[self.active_window].focused_pane;
                     let old_window_id = self.windows[self.active_window].window_id;
-                    self.navigate(dir);
-                    if was_zoomed {
-                        let new_pane = self.windows[self.active_window].focused_pane;
-                        if let Some(tile) = new_pane {
-                            self.windows[self.active_window].zoom_to(tile);
-                        }
-                        log::info!("zoom: navigate — new zoomed pane={new_pane:?}");
-                    }
+                    let navigated = self.navigate(dir);
                     let new_window_id = self.windows[self.active_window].window_id;
                     let new_focus = self.windows[self.active_window].focused_pane;
+                    if navigated {
+                        self.windows[old_active_window].clear_zoom();
+                        self.windows[self.active_window].clear_zoom();
+                        log::info!(
+                            "zoom: directional navigate exited fullscreen source_window={} destination_window={} focused_pane={new_focus:?}",
+                            old_window_id,
+                            new_window_id,
+                        );
+                    }
                     if new_window_id != old_window_id || new_focus != old_focus {
                         self.push_focus_history(old_window_id, old_focus);
                     }
@@ -3720,6 +3722,11 @@ impl eframe::App for PlexiApp {
                             if ctx.zoomed_pane == Some(focused) {
                                 ctx.clear_zoom();
                                 log::info!("zoom: toggle off — pane={focused:?}");
+                            } else if ctx.panes.len() <= 1 {
+                                log::info!(
+                                    "zoom: toggle ignored — pane={focused:?} is the only pane in window={}",
+                                    ctx.window_id,
+                                );
                             } else {
                                 ctx.zoom_to(focused);
                                 log::info!("zoom: toggle on — pane={focused:?}");
