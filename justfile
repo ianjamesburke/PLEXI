@@ -280,7 +280,7 @@ sdk-smoke:
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Resolves the PR head via gh and builds THAT tree — run from anywhere inside
 # the repo: just pr-install 123
-# Always cleans the previous PR build first for a fully fresh install.
+# Removes the previous managed PR installation first; user data is retained.
 pr-install number:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -356,7 +356,7 @@ pr-install number:
       ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
     fi
     # Provenance trace: which head this channel is actually running. Written
-    # after install.sh (pr-clean wipes the profile dir); path matches
+    # after install.sh; path matches
     # install.sh's profile_dir for channel pr-{{number}}.
     _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
     mkdir -p "$HOME/.plexi-pr-{{number}}"
@@ -371,7 +371,7 @@ pr-install number:
 channel-install channel="": regen-if-stale
     bash scripts/install.sh --from-source {{channel}}
 
-# Remove a channel: app bundle, CLI binary, and profile directory.
+# Remove a channel through its receipt, retaining user data.
 # Works for any channel name: main, alpha, beta, pr-123, gpui, etc.
 #   just channel-clean gpui       — remove plexi-gpui artifacts
 #   just channel-clean pr-123     — remove PR 123 artifacts

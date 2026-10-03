@@ -18,9 +18,12 @@ if [[ "$channel" == pr-* ]]; then export PLEXI_BUILD_TEST_CHANNEL="$channel"; el
 just build
 bash scripts/cargo-with-lease.sh cargo build --release -p plexi-distribution --bin plexi-installer
 metadata="$(cargo metadata --format-version=1 --no-deps)"
-target="$(printf '%s' "$metadata" | uv run --no-project python -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
+target="$(printf '%s' "$metadata" | uv run --no-project --python 3.11 python -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/plexi-source-package.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
-uv run --no-project python scripts/package.py --binary "$target/release/plexi" --installer "$target/release/plexi-installer" --platform "$os-$arch" --channel "$channel" --output "$stage"
+if [[ "$os" == macos && -z "${PLEXI_SIGN_IDENTITY:-}" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -q 'Plexi Dev'; then
+  export PLEXI_SIGN_IDENTITY='Plexi Dev'
+fi
+uv run --no-project --python 3.11 python scripts/package.py --binary "$target/release/plexi" --installer "$target/release/plexi-installer" --platform "$os-$arch" --channel "$channel" --output "$stage"
 normalized="$channel"; [[ "$normalized" != main ]] || normalized=stable
 "$target/release/plexi-installer" --package "$stage/package-$os-$arch-$normalized" --channel "$normalized" --install-only

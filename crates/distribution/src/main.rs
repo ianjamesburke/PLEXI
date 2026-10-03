@@ -31,6 +31,13 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Print recorded installations as JSON.
+    List,
+    /// Print the owned host path; exit 2 when this channel is not managed.
+    Locate {
+        #[arg(long, default_value = "stable")]
+        channel: String,
+    },
     Launch {
         #[arg(long)]
         receipt: PathBuf,
@@ -74,6 +81,22 @@ static LOGGER: Logger = Logger;
 
 fn run(args: Args) -> Result<i32> {
     match args.command {
+        Some(Action::List) => {
+            log::info!("distribution: listing recorded installations");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&transaction::installations()?)?
+            );
+            return Ok(0);
+        }
+        Some(Action::Locate { channel }) => {
+            log::info!("distribution: locating channel={channel}");
+            let Some(receipt) = transaction::find_installation(&channel)? else {
+                return Ok(2);
+            };
+            println!("{}", receipt.active.executable().display());
+            return Ok(0);
+        }
         Some(Action::Launch { receipt, args }) => return transaction::launch(&receipt, &args),
         Some(Action::Restart { receipt, wait_pid }) => {
             transaction::wait_for_parent(wait_pid)?;

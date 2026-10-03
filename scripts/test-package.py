@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import threading
@@ -79,7 +80,11 @@ def main(args):
         receipt_path = root / 'install' / manifest['channel'] / 'installation.json'
         receipt = json.loads(receipt_path.read_text())
         executable = Path(receipt['active']['path']) / receipt['active']['executable']
-        identity = json.loads(run([executable, '--distribution-check']))
+        check = [executable, '--distribution-check']
+        if sys.platform == 'darwin':
+            profile = '(version 1) (allow default) (deny network*) (deny file-read* (subpath ' + json.dumps(str(REPO)) + '))'
+            check = ['/usr/bin/sandbox-exec', '-p', profile] + check
+        identity = json.loads(run(check))
         assert identity['build_id'] == manifest['build_id']
         if args.gui:
             started = False
@@ -117,7 +122,7 @@ def main(args):
                 # Exercise the same helper used by the restart badge: schedule
                 # before shutdown, wait for that exact process, then launch the receipt.
                 with (args.output / 'restart.log').open('w') as restart_log:
-                    helper = subprocess.Popen([str(installer), 'restart', '--receipt', str(receipt_path.parent), '--wait-pid', str(status['pid'])], cwd=home, env=env, stdout=restart_log, stderr=restart_log)
+                    helper = subprocess.Popen([str(installer), 'restart', '--receipt', str(receipt_path.parent), '--wait-pid', str(status['running']['pid'])], cwd=home, env=env, stdout=restart_log, stderr=restart_log)
                     try:
                         run([executable, 'host', 'stop'])
                         env.pop('PLEXI_SOCKET', None)
@@ -125,7 +130,7 @@ def main(args):
                     finally:
                         if helper.poll() is None: helper.kill(); helper.wait()
                 restarted = json.loads(run([executable, 'host', 'status', '--json']))
-                assert restarted['ready'] and restarted['pid'] != status['pid']
+                assert restarted['ready'] and restarted['running']['pid'] != status['running']['pid']
                 assert restarted['running']['build_id'] == manifest['build_id']
             finally:
                 profile = home / ('.plexi' if manifest['channel'] == 'stable' else '.plexi-' + manifest['channel'])

@@ -81,7 +81,11 @@ Removal deletes recorded integrations and validated package generations and
 retains user data. Changed files and unowned development commands cause an error
 or remain outside the removal set. Legacy installations without receipts must
 be identified before adoption; discovery on PATH alone never establishes ownership.
-Shared WASI caches from older installations are retained.
+Shared WASI caches from older installations are retained. A legacy release's
+duplicated Unix command can be adopted only when its bytes match the payload at
+the exact historical channel path; the legacy payload itself is retained.
+Repository channel-list, cleanup and smoke tools query the native installer's
+`list`/`locate` commands, including installations at custom destinations.
 
 ## Transaction
 

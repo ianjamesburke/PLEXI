@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Removal is receipt-scoped and retains user data.
+# Removal is receipt-scoped and retains user data; exit 2 means not managed.
 set -euo pipefail
 channel="${1:-stable}"
-case "$channel" in stable|main) binary=plexi ;; *) binary="plexi-$channel" ;; esac
-if ! command -v "$binary" >/dev/null 2>&1; then
-  echo "No $binary command found. Use the absolute installed executable with 'uninstall --yes'." >&2
-  exit 1
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if binary="$(bash "$script_dir/distribution-tool.sh" locate --channel "$channel")"; then
+  exec env -u PLEXI_CHANNEL -u PLEXI_RUNNING -u PLEXI_SOCKET "$binary" uninstall --yes
+else
+  result=$?
+  [[ "$result" != 2 ]] || echo "No managed installation for $channel; legacy files and user data retained."
+  exit "$result"
 fi
-exec env -u PLEXI_CHANNEL -u PLEXI_RUNNING -u PLEXI_SOCKET "$binary" uninstall --yes

@@ -111,6 +111,10 @@ def main(args):
             assert json.loads(output.stdout)['build_id'] == 'old'
             assert shadow.read_text().endswith('echo stale\n')
         install(alpha)
+        listed = json.loads(run([installer, 'list'], env).stdout)
+        assert {r['channel'] for r in listed} == {'stable', 'alpha'}
+        assert Path(run([installer, 'locate', '--channel', 'stable'], env).stdout.strip()).is_file()
+        assert run([installer, 'locate', '--channel', 'pr-999'], env, False).returncode == 2
         retained = home / '.plexi/user-document.txt'
         retained.parent.mkdir(exist_ok=True)
         retained.write_text('keep me')

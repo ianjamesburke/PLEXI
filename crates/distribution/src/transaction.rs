@@ -73,6 +73,8 @@ struct Change {
     staged: PathBuf,
     after_hash: String,
     #[serde(default)]
+    executable: bool,
+    #[serde(default)]
     link_target: Option<PathBuf>,
     #[serde(default)]
     before_link: Option<PathBuf>,
@@ -159,6 +161,27 @@ pub fn find_installation(channel: &str) -> Result<Option<Receipt>> {
             source,
         }),
     }
+}
+
+pub fn installations() -> Result<Vec<Receipt>> {
+    let registry = default_root()?.join("installations");
+    if !registry.exists() {
+        return Ok(vec![]);
+    }
+    let mut receipts = Vec::new();
+    for entry in fs::read_dir(registry).context("list installation registry")? {
+        let entry = entry.context("read installation registry entry")?;
+        if entry.path().extension().is_some_and(|e| e == "json") {
+            let root: PathBuf = serde_json::from_slice(
+                &fs::read(entry.path()).context("read installation registration")?,
+            )?;
+            if let Some(receipt) = read_receipt(&root)? {
+                receipts.push(receipt);
+            }
+        }
+    }
+    receipts.sort_by(|a, b| a.channel.cmp(&b.channel));
+    Ok(receipts)
 }
 
 pub fn installed_for_executable(exe: &Path) -> Result<Option<Receipt>> {
@@ -291,6 +314,7 @@ fn prepare_file(root: &Path, path: &Path, bytes: &[u8], index: usize) -> Result<
         before,
         staged,
         after_hash,
+        executable: false,
         link_target: None,
         before_link: None,
     })
@@ -315,7 +339,7 @@ fn apply_changes(changes: &[Change]) -> Result<()> {
         } else {
             let bytes = fs::read(&change.staged).context("read staged integration")?;
             atomic_write(&change.path, &bytes)?;
-            if bytes.starts_with(b"#!/bin/sh\n") {
+            if change.executable {
                 executable_permission(&change.path)?;
             }
         }
@@ -706,7 +730,11 @@ fn install_checked(
                 )));
             }
         }
-        let change = prepare_file(&root, &path, &bytes, changes.len())?;
+        let mut change = prepare_file(&root, &path, &bytes, changes.len())?;
+        change.executable = path
+            == receipt
+                .bin_dir
+                .join(release::command_name(&receipt.channel));
         receipt.integrations.retain(|p| p.path != path);
         receipt.integrations.push(OwnedPath {
             path,
@@ -747,6 +775,7 @@ fn install_checked(
             before: None,
             staged: PathBuf::new(),
             after_hash: String::new(),
+            executable: false,
             link_target: Some(bundle.clone()),
             before_link,
         });
@@ -1303,10 +1332,15 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".zshrc");
-        fs::write(&path, b"user shell configuration").unwrap();
+        fs::write(&path, b"#!/bin/sh\nuser shell configuration").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        let change =
-            prepare_file(dir.path(), &path, b"user shell configuration plus PATH", 0).unwrap();
+        let change = prepare_file(
+            dir.path(),
+            &path,
+            b"#!/bin/sh\nuser shell configuration plus PATH",
+            0,
+        )
+        .unwrap();
         apply_changes(&[change]).unwrap();
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
