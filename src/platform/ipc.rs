@@ -429,8 +429,8 @@ mod windows_impl {
             // already have on Unix.
             // SAFETY: `handle` is live; both out-params point at locals.
             unsafe {
-                let mut mode = PIPE_READMODE_BYTE | PIPE_WAIT;
-                SetNamedPipeHandleState(raw, &mut mode, std::ptr::null_mut(), std::ptr::null_mut());
+                let mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+                SetNamedPipeHandleState(raw, &mode, std::ptr::null_mut(), std::ptr::null_mut());
             }
             // SAFETY: re-wrapping the handle we still exclusively own.
             let owned = unsafe { OwnedHandle::from_raw_handle(handle.into_raw_handle()) };

@@ -506,7 +506,7 @@ pub enum WasmPythonError {
     #[error("parse manifest at {path}: {source}")]
     ParseManifest {
         path: PathBuf,
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("runtime.python_compat requires a .py or .pyc entry, got '{entry}'")]
     InvalidEntry { entry: String },
@@ -620,7 +620,7 @@ impl PythonLaunchConfig {
         let manifest: AppManifest =
             toml::from_str(&raw).map_err(|source| WasmPythonError::ParseManifest {
                 path: manifest_path,
-                source,
+                source: Box::new(source),
             })?;
 
         if manifest.runtime.execution != RuntimeExecution::Local {

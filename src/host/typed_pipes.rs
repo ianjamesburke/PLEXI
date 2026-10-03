@@ -405,7 +405,7 @@ impl TypedPipeRegistry {
                 "typed_pipes: binary allocation ready at {}",
                 allocation.socket_path
             );
-            return Ok(allocation);
+            Ok(allocation)
         }
 
         #[cfg(not(any(unix, windows)))]
@@ -568,8 +568,10 @@ fn win32_await_client(
         return false;
     }
 
-    let mut overlapped = OVERLAPPED::default();
-    overlapped.hEvent = event;
+    let mut overlapped = OVERLAPPED {
+        hEvent: event,
+        ..Default::default()
+    };
 
     // SAFETY: `overlapped` lives until this function returns, and any still-
     // pending I/O is cancelled with `CancelIoEx` before that happens — the
@@ -669,8 +671,10 @@ fn win32_write_all(
     let mut offset = 0usize;
     while offset < buf.len() {
         let remaining = (buf.len() - offset).min(u32::MAX as usize) as u32;
-        let mut overlapped = OVERLAPPED::default();
-        overlapped.hEvent = event;
+        let mut overlapped = OVERLAPPED {
+            hEvent: event,
+            ..Default::default()
+        };
 
         // SAFETY: `buf` is valid for `remaining` bytes from `offset`, and
         // `overlapped` outlives the blocking GetOverlappedResult below.
