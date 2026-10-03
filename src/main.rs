@@ -22,6 +22,7 @@ mod file_browser;
 mod host;
 mod mcp_http;
 mod media;
+mod voice;
 mod notes;
 mod overlays;
 mod pane_ops;
@@ -675,6 +676,7 @@ fn main() -> eframe::Result {
                     }
                     Commands::Update => std::process::exit(cli::self_update_cli()),
                     Commands::Host { cmd } => match cmd {
+                        HostCmd::Voice { cmd } => std::process::exit(cli::host_voice_cli(cmd)),
                         HostCmd::Start {
                             layout,
                             panes,

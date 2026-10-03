@@ -34,6 +34,7 @@ pub(crate) mod render;
 pub(crate) mod screenshot;
 pub mod secrets_app;
 mod sync;
+pub(crate) mod voice;
 pub mod text_editor_app;
 pub(crate) mod ui_mailbox;
 pub mod video_player_app;
@@ -150,6 +151,7 @@ pub(crate) struct PaneHeartbeat {
 }
 
 pub struct PlexiApp {
+    pub(crate) voice: voice::Voice,
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     pub(crate) last_notify_poll: std::time::Instant,
@@ -1616,6 +1618,7 @@ impl PlexiApp {
                     welcome_delete_press_count: 0,
                     welcome_delete_last_press: None,
                     config: config.clone(),
+                    voice: voice::Voice::default(),
                     key_bindings: key_bindings.clone(),
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     claimed_host_key_releases: HashSet::new(),
@@ -1844,6 +1847,7 @@ impl PlexiApp {
             }
         }
         let mut app = Self {
+            voice: voice::Voice::default(),
             pty_event_rx: rx,
             pty_event_tx: tx,
             theme: theme::terminal_theme(&theme_cfg),
@@ -2608,6 +2612,7 @@ impl PlexiApp {
                 welcome_delete_press_count: 0,
                 welcome_delete_last_press: None,
                 config,
+                voice: voice::Voice::default(),
                 binding_table: crate::host::keys::build_binding_table(&key_bindings),
                 claimed_host_key_releases: HashSet::new(),
                 key_bindings,

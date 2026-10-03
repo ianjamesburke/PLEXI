@@ -194,8 +194,9 @@ impl PlexiApp {
             crate::platform::logging::UiPhase::PreambleSnapshot,
         );
         crate::platform::logging::time_drain("update_pane_context_snapshot", || {
-            self.update_pane_context_snapshot()
+        self.update_pane_context_snapshot()
         });
+        self.service_voice();
 
         // Auto-dismiss notifications from the focused pane before reconciling
         // the focus stack so modal state is already correct this frame.
@@ -288,6 +289,7 @@ impl PlexiApp {
         }
 
         // Central panel — terminal tiles (or welcome screen when context is empty)
+        self.draw_voice_status(ui);
         egui::CentralPanel::default()
             .frame(egui::Frame {
                 fill: self.colors.bg_darkest,

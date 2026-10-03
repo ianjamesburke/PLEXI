@@ -73,6 +73,9 @@ regex = "1"
 libc = "0.2"
 # CoreAudio capture + device enumeration (#277). Cross-platform PCM I/O.
 cpal = "0.17"
+transcribe-rs = { version = "=0.3.12", features = ["onnx"] }
+earshot = "1.2.2"
+rtrb = "0.3"
 # Host-owned audio playback (#341). Decoder-agnostic; MP3/FLAC/OGG/WAV via default symphonia features.
 rodio = "0.22"
 # Hot reload (#83). Cross-platform fs watcher; on macOS uses FSEvents.

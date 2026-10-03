@@ -74,6 +74,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "log",
     "notifications",
     "ai",
+    "voice",
     "confirm_quit",
     "confirm_close",
     "confirm_context_close",
@@ -88,6 +89,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
+const KNOWN_VOICE: &[&str] = &["apps", "input_preferences", "fallback_to_default", "model_path", "silence_ms", "confidence_threshold"];
 const KNOWN_THEME: &[&str] = &[
     "preset",
     "bg_darkest",
@@ -232,6 +234,11 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
         });
         return diags;
     }
+    if let Ok(config) = toml::from_str::<PlexiConfig>(&data) {
+        if let Err(error) = config.voice.validate() {
+            diags.push(ConfigDiagnostic::ParseError { path: path_str.clone(), error });
+        }
+    }
 
     if let Ok(value) = toml::from_str::<toml::Value>(&data) {
         if let Some(table) = value.as_table() {
@@ -275,6 +282,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("keybindings") {
                 check_unknown_keys(t, "keybindings", KNOWN_KEYBINDINGS, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("voice") {
+                check_unknown_keys(t, "voice", KNOWN_VOICE, &path_str, &mut diags);
             }
             if let Some(toml::Value::Table(t)) = table.get("agents") {
                 check_unknown_keys(t, "agents", KNOWN_AGENTS, &path_str, &mut diags);
@@ -478,6 +488,8 @@ pub struct PlexiConfig {
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
     pub ai: Option<AiConfig>,
+    #[serde(default)]
+    pub voice: VoiceConfig,
     /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
@@ -499,6 +511,42 @@ pub struct PlexiConfig {
     /// Unmapped extensions fall through to manifest associations, then builtin
     /// media players, then the OS default.
     pub file_handlers: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Local continuous speech preferences. Listening is session-only.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default, deny_unknown_fields)]
+pub struct VoiceConfig {
+    /// Explicit supported app IDs; terminal opening is always available.
+    pub apps: Vec<String>,
+    pub input_preferences: Vec<String>,
+    pub fallback_to_default: bool,
+    /// Explicit directory containing Parakeet v3 int8 ONNX files.
+    pub model_path: Option<PathBuf>,
+    pub silence_ms: u64,
+    pub confidence_threshold: f64,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self { apps: vec!["text-editor".into()], input_preferences: Vec::new(), fallback_to_default: true, model_path: None, silence_ms: 700, confidence_threshold: 0.65 }
+    }
+}
+
+impl VoiceConfig {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !(200..=3000).contains(&self.silence_ms) {
+            return Err("voice.silence_ms must be between 200 and 3000".into());
+        }
+        if !self.confidence_threshold.is_finite() || !(0.5..=1.0).contains(&self.confidence_threshold) {
+            return Err("voice.confidence_threshold must be between 0.5 and 1.0".into());
+        }
+        if self.input_preferences.len() > 32 {
+            return Err("voice.input_preferences may contain at most 32 devices".into());
+        }
+        if self.apps.len() > 30 { return Err("voice.apps supports at most 30 explicitly selected apps".into()); }
+        Ok(())
+    }
 }
 
 /// CLI behavior configuration.
@@ -1777,6 +1825,20 @@ pub fn active_workspace_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn voice_preferences_are_host_profile_only_and_validate_bounds() {
+        let mut base: PlexiConfig = toml::from_str("[voice]\nsilence_ms = 900\ninput_preferences = ['USB']").unwrap();
+        let incoming: PlexiConfig = toml::from_str("[voice]\nsilence_ms = 200\ninput_preferences = ['Other']").unwrap();
+        base.overlay(incoming);
+        assert_eq!(base.voice.silence_ms, 900);
+        assert_eq!(base.voice.input_preferences, ["USB"]);
+        base.overlay(PlexiConfig::default());
+        assert_eq!(base.voice.silence_ms, 900);
+        assert!(base.voice.validate().is_ok());
+        base.voice.silence_ms = 0;
+        assert!(base.voice.validate().is_err());
+    }
 
     /// Fix round 1 defect 3: a workspace overlay setting `[notifications]
     /// sound` must override the global value, not be silently discarded.

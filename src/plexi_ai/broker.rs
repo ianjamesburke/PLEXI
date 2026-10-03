@@ -356,7 +356,7 @@ fn test_channel_api_key_if(
     lookup(TEST_CHANNEL_API_KEY_ENV).filter(|v| !v.is_empty())
 }
 
-fn resolve_openrouter_api_key(
+pub(crate) fn resolve_openrouter_api_key(
     api_key_env: &str,
     workspace_root: Option<&std::path::Path>,
 ) -> Result<String, String> {

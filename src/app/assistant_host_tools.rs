@@ -252,7 +252,7 @@ impl PlexiApp {
                     })
                     .unwrap_or_default();
                 let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
-                match self.assistant_spawn_pane(
+                match self.spawn_host_pane(
                     origin_pane_id,
                     origin_context_id,
                     type_id,
@@ -310,7 +310,7 @@ impl PlexiApp {
                     })
                     .unwrap_or_default();
                 let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
-                match self.assistant_spawn_pane(
+                match self.spawn_host_pane(
                     origin_pane_id,
                     origin_context_id,
                     app,
@@ -334,7 +334,7 @@ impl PlexiApp {
                     .get("cwd")
                     .and_then(serde_json::Value::as_str)
                     .map(std::path::PathBuf::from);
-                match self.assistant_spawn_pane(
+                match self.spawn_host_pane(
                     origin_pane_id,
                     origin_context_id,
                     "terminal",
@@ -619,7 +619,7 @@ impl PlexiApp {
     /// under the id the new pane launched with.
     // Arg-struct refactor is a design change tracked in stint 0661.
     #[allow(clippy::too_many_arguments)]
-    fn assistant_spawn_pane(
+    pub(super) fn spawn_host_pane(
         &mut self,
         origin_pane_id: u64,
         origin_context_id: u64,

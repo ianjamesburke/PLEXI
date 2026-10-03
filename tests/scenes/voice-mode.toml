@@ -1,0 +1,38 @@
+sizes = [[620.0, 480.0], [1168.0, 720.0]]
+voice_fixture = true
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+text = { target = "host", value = "enable voice mode" }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Voice · Listening" }
+
+[[steps]]
+assert_label = { target = "host", label = "Stop listening" }
+
+[[steps]]
+shot = "voice-mode.png"
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+text = { target = "host", value = "disable voice mode" }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Voice · Off" }

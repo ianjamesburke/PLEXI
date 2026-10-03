@@ -249,6 +249,9 @@ pub struct Scene {
     /// scripts its picker through `PLEXI_PICKER_SCRIPT` at host launch.
     #[serde(default)]
     pub picker_script: Option<Vec<PickerScriptEntry>>,
+    /// Deterministic voice session without microphone/model/network (headless only).
+    #[serde(default)]
+    pub voice_fixture: bool,
     pub steps: Vec<Step>,
 }
 
@@ -947,6 +950,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             .map(|_| format!("[{}x{}] ", size[0] as i64, size[1] as i64))
             .unwrap_or_default();
         let mut h = PlexiUiHarness::new_sized(size[0], size[1]);
+        h.with_app_mut(|app| app.voice.fixture = scene.voice_fixture);
         h.step();
         let pass = runner.insert(HeadlessBackend {
             h,
@@ -2135,13 +2139,13 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             )
         }
     };
-    if scene.picker_script.is_some() {
+    if scene.picker_script.is_some() || scene.voice_fixture {
         return live_failed_report(
             scene_name,
             std::env::var("PLEXI_SCENE_CHANNEL").ok(),
             SceneError::new(
                 "unsupported_live_verb",
-                "picker_script is headless-only; script a live host's picker by launching it with PLEXI_PICKER_SCRIPT",
+                "picker_script and voice_fixture are headless-only",
             ),
         );
     }

@@ -1427,11 +1427,39 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
 | Subcommand | Description |
 |---|---|
+| `voice` | Continuous local speech recognition and automatic single-command control |
 | `start` | Launch this channel's app bundle detached and wait for readiness |
 | `stop` | Stop the running host for this channel |
 | `log` | Write one info-level marker line into the running host's channel log |
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
+
+### `plexi host voice`
+
+Continuous local speech recognition and automatic single-command control
+
+| Subcommand | Description |
+|---|---|
+| `start` | Listen continuously. Finalized text goes to OpenRouter; pane/app commands execute automatically. Configure [voice] model_path before starting |
+| `stop` | Stop the microphone and cancel pending voice commands |
+| `status` | JSON listening, processing, queue and outcome state |
+| `inputs` | List local input devices with stable IDs and readable names as JSON |
+
+#### `plexi host voice start`
+
+Listen continuously. Finalized text goes to OpenRouter; pane/app commands execute automatically. Configure [voice] model_path before starting
+
+#### `plexi host voice stop`
+
+Stop the microphone and cancel pending voice commands
+
+#### `plexi host voice status`
+
+JSON listening, processing, queue and outcome state
+
+#### `plexi host voice inputs`
+
+List local input devices with stable IDs and readable names as JSON
 
 ### `plexi host start`
 
