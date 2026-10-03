@@ -183,6 +183,53 @@ pub fn resolve_best(
         .max()
 }
 
+/// Result of comparing the on-disk bundle version against a running host's
+/// version (stint 0596). `Unknown` means either string failed to parse as a
+/// `ReleaseTag` — never silently treated as in-sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkewStatus {
+    /// Running host version matches or is newer than the on-disk bundle.
+    InSync,
+    /// Running host is older than the on-disk bundle — a restart would pick
+    /// up a newer version.
+    Skewed { bundle: String, running: String },
+    /// One or both versions could not be parsed as a `ReleaseTag`.
+    Unknown { reason: String },
+}
+
+/// Real-SemVer comparison (via `ReleaseTag::Ord`, which orders prereleases
+/// correctly per SemVer §11) between the version installed on disk
+/// (`bundle_raw`) and the version a running host process was launched with
+/// (`running_raw`). A running host that is *newer* than the on-disk bundle
+/// (e.g. mid-update) is not an error state — only `running < bundle` is
+/// `Skewed`.
+pub fn detect_version_skew(bundle_raw: &str, running_raw: &str) -> SkewStatus {
+    let bundle = match ReleaseTag::parse(bundle_raw) {
+        Some(t) => t,
+        None => {
+            return SkewStatus::Unknown {
+                reason: format!("could not parse bundle version {bundle_raw:?}"),
+            }
+        }
+    };
+    let running = match ReleaseTag::parse(running_raw) {
+        Some(t) => t,
+        None => {
+            return SkewStatus::Unknown {
+                reason: format!("could not parse running host version {running_raw:?}"),
+            }
+        }
+    };
+    if running < bundle {
+        SkewStatus::Skewed {
+            bundle: bundle_raw.to_string(),
+            running: running_raw.to_string(),
+        }
+    } else {
+        SkewStatus::InSync
+    }
+}
+
 /// Fetch all releases from the GitHub releases list endpoint.
 pub fn fetch_releases(agent: &ureq::Agent) -> Result<Vec<GithubRelease>, String> {
     let body = agent
@@ -417,5 +464,80 @@ mod tests {
         let current = tag("v0.1.12");
         let best = resolve_best(&releases, UpdateChannel::Beta, &current).unwrap();
         assert_eq!(best.raw, "v0.1.13-beta.1");
+    }
+
+    #[test]
+    fn skew_in_sync_when_equal() {
+        assert_eq!(detect_version_skew("v0.2.0", "v0.2.0"), SkewStatus::InSync);
+    }
+
+    #[test]
+    fn skew_in_sync_when_running_is_newer() {
+        // Transient state (mid-update) is not an error.
+        assert_eq!(detect_version_skew("v0.2.0", "v0.2.1"), SkewStatus::InSync);
+    }
+
+    #[test]
+    fn skew_detected_on_patch_behind() {
+        assert_eq!(
+            detect_version_skew("v0.2.1", "v0.2.0"),
+            SkewStatus::Skewed {
+                bundle: "v0.2.1".to_string(),
+                running: "v0.2.0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn skew_detected_on_major_minor_behind() {
+        assert_eq!(
+            detect_version_skew("v0.2.0", "v0.1.16"),
+            SkewStatus::Skewed {
+                bundle: "v0.2.0".to_string(),
+                running: "v0.1.16".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn skew_detected_running_old_prerelease_bundle_final() {
+        assert_eq!(
+            detect_version_skew("v0.2.0", "v0.2.0-alpha.1"),
+            SkewStatus::Skewed {
+                bundle: "v0.2.0".to_string(),
+                running: "v0.2.0-alpha.1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn skew_detected_running_old_prerelease_bundle_newer_prerelease() {
+        assert_eq!(
+            detect_version_skew("v0.2.0-alpha.2", "v0.2.0-alpha.1"),
+            SkewStatus::Skewed {
+                bundle: "v0.2.0-alpha.2".to_string(),
+                running: "v0.2.0-alpha.1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn skew_unknown_on_unparseable_bundle() {
+        match detect_version_skew("not-a-version", "v0.2.0") {
+            SkewStatus::Unknown { reason } => {
+                assert!(reason.contains("bundle"), "reason was: {reason}");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skew_unknown_on_unparseable_running() {
+        match detect_version_skew("v0.2.0", "not-a-version") {
+            SkewStatus::Unknown { reason } => {
+                assert!(reason.contains("running"), "reason was: {reason}");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
     }
 }

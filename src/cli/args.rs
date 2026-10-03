@@ -843,7 +843,10 @@ pub enum HostCmd {
         source: String,
     },
     /// Report whether this channel's host is running, its pid, socket path,
-    /// and pane count.
+    /// pane count, and version skew between the on-disk bundle and the
+    /// running host process (restart to apply a version installed after the
+    /// host started; also flags when the last install skipped the CLI
+    /// shim/completions).
     Status {
         /// Output as JSON
         #[arg(long)]
