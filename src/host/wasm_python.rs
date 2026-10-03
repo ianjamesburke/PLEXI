@@ -83,7 +83,7 @@ static NEXT_LOW_WATER_IDENTITY: std::sync::atomic::AtomicU64 =
 
 fn next_low_water_identity() -> Option<std::num::NonZeroU64> {
     let raw = NEXT_LOW_WATER_IDENTITY
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |current| current.checked_add(1),

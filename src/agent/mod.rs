@@ -234,9 +234,9 @@ impl AgentDefinition {
             subscriptions.push(AgentSubscriptionRequest {
                 app: sub.app.clone(),
                 events: sub.events.clone(),
-                payload: parse_enum::<PayloadMode>("payload", &sub.payload).map_err(&ctx)?,
-                trigger: parse_enum::<TriggerMode>("trigger", &sub.trigger).map_err(&ctx)?,
-                default: parse_enum::<Decision>("default", &sub.default).map_err(&ctx)?,
+                payload: parse_enum::<PayloadMode>("payload", &sub.payload).map_err(ctx)?,
+                trigger: parse_enum::<TriggerMode>("trigger", &sub.trigger).map_err(ctx)?,
+                default: parse_enum::<Decision>("default", &sub.default).map_err(ctx)?,
             });
         }
         Ok(Self {
