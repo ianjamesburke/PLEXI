@@ -105,8 +105,14 @@ def main(args):
             return run([installer, '--package', path, '--channel', channel, '--applications-dir', apps, '--install-only'], custom_env, success)
         receipt_path = root / 'custom install/stable/installation.json'
         def active(): return json.loads(receipt_path.read_text())['active']['build_id']
-        install(old)
+        initial = install(old)
         assert active() == 'old'
+        if os.name == 'nt':
+            path_command = next(line.split(': ', 1)[1] for line in initial.stdout.splitlines() if line.startswith('For this PowerShell session:'))
+            output = run(['powershell', '-NoProfile', '-Command', path_command + '; plexi --build-info'], env)
+            assert json.loads(output.stdout)['build_id'] == 'old'
+            launch_command = next(line.split(': ', 1)[1] for line in initial.stdout.splitlines() if line.startswith('Launch:'))
+            assert json.loads(run(['powershell', '-NoProfile', '-Command', launch_command], env).stdout)['build_id'] == 'old'
         if os.name != 'nt':
             # Ordinary interactive shells must discover the owned command even
             # when an older unrelated command precedes it in the inherited PATH.

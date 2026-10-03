@@ -209,13 +209,29 @@ fn run(args: Args) -> Result<i32> {
         "Installed {} ({})",
         receipt.active.tag, receipt.active.build_id
     );
+    #[cfg(windows)]
     println!(
-        "Launch: \"{}\" host start",
-        receipt.active.executable().display()
+        "Launch: & '{}' host start",
+        transaction::windows_shell_path(&receipt.active.executable())
+            .to_string_lossy()
+            .replace('\'', "''")
     );
+    #[cfg(unix)]
+    println!(
+        "Launch: '{}' host start",
+        receipt
+            .active
+            .executable()
+            .to_string_lossy()
+            .replace('\'', "'\\''")
+    );
+    #[cfg(windows)]
+    let command_directory = transaction::windows_shell_path(&receipt.bin_dir);
+    #[cfg(unix)]
+    let command_directory = receipt.bin_dir.clone();
     println!(
         "Command directory: {} (open a new shell to refresh PATH)",
-        receipt.bin_dir.display()
+        command_directory.display()
     );
     let name = release::command_name(&receipt.channel);
     let command_name = if cfg!(windows) {
@@ -239,7 +255,7 @@ fn run(args: Args) -> Result<i32> {
     #[cfg(windows)]
     println!(
         "For this PowerShell session: $env:Path = '{};' + $env:Path",
-        receipt.bin_dir.to_string_lossy().replace('\'', "''")
+        command_directory.to_string_lossy().replace('\'', "''")
     );
     #[cfg(unix)]
     println!(

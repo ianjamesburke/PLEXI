@@ -1174,7 +1174,7 @@ fn write_windows_path(path: &str) -> Result<()> {
     Ok(())
 }
 #[cfg(windows)]
-fn windows_shell_path(path: &Path) -> PathBuf {
+pub fn windows_shell_path(path: &Path) -> PathBuf {
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::path::{Component, Prefix};
