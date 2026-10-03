@@ -48,26 +48,41 @@ jobs:
       - uses: ./.github/actions/plexi-ci-env
         with:
           cache-key: distribution-${{ matrix.platform }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.11"
       - name: Fetch the verified package runtime
         shell: bash
         run: uv run --no-project python -c 'from pathlib import Path; from scripts.package import runtime; runtime(Path("target/distribution-runtime"))'
-      - name: Test and build host and installer
+      - name: Test and build the native installer
         shell: bash
         run: |
           cargo test -p plexi-distribution
-          cargo test --bin plexi
-          cargo clippy --bin plexi -- -D warnings
           cargo clippy -p plexi-distribution --all-targets -- -D warnings
-          RUSTFLAGS="-D warnings" cargo build --release --bin plexi
           RUSTFLAGS="-D warnings" cargo build --release -p plexi-distribution --bin plexi-installer
       - name: Exercise the native transaction and bootstrap
         shell: bash
         run: |
           suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
           uv run --no-project python scripts/test-distribution.py --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}'
+      - name: Test and lint the host
+        shell: bash
+        run: |
+          if [[ '${{ runner.os }}' == Windows ]]; then
+            # The owner branch supplies this native regression because the host
+            # bin test target contains Unix-only socket/permission fixtures.
+            cargo test --test windows_host_launch
+          else
+            cargo test --bin plexi
+          fi
+          cargo clippy --bin plexi -- -D warnings
+      - name: Build the release host
+        shell: bash
+        run: |
+          RUSTFLAGS="-D warnings" cargo build --release --bin plexi
       - name: Install Linux display dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb xauth

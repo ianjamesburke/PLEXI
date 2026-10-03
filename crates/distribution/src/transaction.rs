@@ -384,10 +384,10 @@ pub fn recover(root: &Path) -> Result<()> {
         }
     }
     #[cfg(windows)]
-    if let Some(change) = &journal.windows_path {
-        if read_windows_path()? == change.after {
-            write_windows_path(&change.before)?;
-        }
+    if let Some(change) = &journal.windows_path
+        && read_windows_path()? == change.after
+    {
+        write_windows_path(&change.before)?;
     }
     if let Some(before) = journal.before {
         write_json(&root.join(RECEIPT), &before)?;
