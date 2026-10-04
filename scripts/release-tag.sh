@@ -59,25 +59,24 @@ if [[ "$channel" == "beta" ]]; then
     git -C "$tree" tag "$tag" "$local_head"
     git -C "$tree" push origin "$tag"
     echo ""
-    echo "Published $tag for binary-asset updates."
+    echo "Pushed $tag; package installation gates must pass before publication."
 else
     tag="v$version"
     if git -C "$tree" tag -l "$tag" | grep -q "$tag"; then
         tagged_commit=$(git -C "$tree" rev-list -n 1 "$tag")
         if [[ "$tagged_commit" != "$local_head" ]]; then
-            echo "info: tag $tag points at an older commit — re-tagging at main HEAD..."
-            git -C "$tree" tag -f "$tag" "$local_head"
+            die "tag $tag already identifies another commit; cut a new version instead of moving it"
         fi
     else
         echo "Creating tag $tag at main HEAD..."
         git -C "$tree" tag "$tag" "$local_head"
     fi
     echo "Publishing tag $tag for binary-asset updates..."
-    git -C "$tree" push origin "$tag" --force
+    git -C "$tree" push origin "$tag"
     echo ""
     echo "REMINDER: republish the agent-skill mirror from this release tree —"
     echo "          copy $tree/skills/plexi-cli/SKILL.md to ianjamesburke/plexi-skills,"
     echo "          push main, tag $tag. Steps: skills/AGENTS.md."
 fi
 
-echo "$tag is live."
+echo "$tag is queued for validation. It becomes available only after the release workflow publishes its complete assets."

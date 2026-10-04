@@ -5,8 +5,8 @@
 # alpha. This job compiles `plexi.exe` on a real `windows-latest` runner and
 # is the proof-of-concept gate for the Windows v1 port.
 #
-# Scope is deliberately the binary only — no installer, no tests. Terminal
-# host + CLI is the v1 cut; the GUI itself still needs a human on Windows.
+# The isolated launch regression needs no desktop/GPU. The GUI and ConPTY
+# lifecycle still require the interactive Windows diagnostic.
 name: Build (Windows)
 
 on:
@@ -21,6 +21,8 @@ on:
       - 'build.rs'
       - 'src/**'
       - 'deps/**'
+      - 'tests/windows_host_launch.rs'
+      - 'tests/fixtures/host_detached_probe.rs'
       - '.github/workflows/build-windows.yml'
 
 # A second push to the same branch supersedes the first; these builds are long
@@ -63,6 +65,9 @@ jobs:
 
       - name: Build
         run: cargo build --bin plexi
+
+      - name: Detached launch regression
+        run: cargo test --test windows_host_launch
 
       - name: Show binary
         shell: pwsh

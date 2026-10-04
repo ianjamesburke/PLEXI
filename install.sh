@@ -1,50 +1,33 @@
 #!/usr/bin/env bash
-# Usage:
-#   curl -fsSL https://plexiapp.com/install | bash
-#   curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
-#   curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
+# Versioned binary bootstrap. The release installer owns selection and activation.
 set -euo pipefail
-
-# `/install` is the public Unix entrypoint. Detect Git Bash before fetching the
-# delegated script so Windows users receive the supported command immediately.
 case "$(uname -s)" in
-  Darwin|Linux) ;;
-  MINGW*|MSYS*|CYGWIN*)
-    echo "error: curl | bash is not a Windows installer. Run this in Windows PowerShell instead:" >&2
-    echo "  irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex" >&2
-    exit 1
-    ;;
-  *)
-    echo "error: unsupported operating system: $(uname -s)" >&2
-    exit 1
-    ;;
+  Darwin) os=macos ;;
+  Linux) os=linux ;;
+  *) echo 'Use https://plexiapp.com/install.ps1 from PowerShell on Windows.' >&2; exit 1 ;;
 esac
-
-# Keep the served file small and delegate to the alpha binary installer. Until
-# main publishes binary assets, the public command honestly defaults to alpha.
-# The delegated script downloads a release asset; this wrapper never clones or
-# builds the Plexi source tree.
-has_channel=0
-from_source=0
-for arg in "$@"; do
-  case "$arg" in
-    --channel|-c|--channel=*|-c=*) has_channel=1 ;;
-    --from-source) from_source=1 ;;
-  esac
-done
-
-args=("$@")
-if [[ "$from_source" == 1 ]]; then
-  # The source-install compatibility path in scripts/install.sh keys off $1.
-  args=(--from-source)
-  for arg in "$@"; do
-    [[ "$arg" == --from-source ]] || args+=("$arg")
-  done
-elif [[ "$has_channel" == 0 ]]; then
-  args+=(--channel alpha)
+case "$(uname -m)" in
+  arm64|aarch64) arch=arm64 ;;
+  x86_64|amd64) arch=x64 ;;
+  *) echo 'Unsupported processor architecture.' >&2; exit 1 ;;
+esac
+base="${PLEXI_RELEASE_BASE_URL:-https://github.com/ianjamesburke/PLEXI/releases/download}"
+# Resolve once, then pin both executable and checksum to the same released tag.
+tag="${PLEXI_BOOTSTRAP_TAG:-}"
+if [[ -z "$tag" ]]; then
+  metadata="$(curl -fsSL --connect-timeout 15 "${PLEXI_RELEASES_URL:-https://api.github.com/repos/ianjamesburke/PLEXI/releases}/latest")"
+  tag="$(printf '%s' "$metadata" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' | head -1)"
 fi
-
-installer="$(mktemp)"
-trap 'rm -f "$installer"' EXIT
-curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install.sh -o "$installer"
-bash "$installer" "${args[@]}"
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$ ]] || { echo 'No valid released installer tag was found.' >&2; exit 1; }
+asset="plexi-installer-${os}-${arch}"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+curl -fL --retry 3 --connect-timeout 15 "$base/$tag/$asset" -o "$work/$asset"
+curl -fL --retry 3 --connect-timeout 15 "$base/$tag/$asset.sha256" -o "$work/checksum"
+expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name {print $1}' "$work/checksum")"
+[[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Malformed installer checksum.' >&2; exit 1; }
+if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$work/$asset" | awk '{print $1}')"
+else actual="$(shasum -a 256 "$work/$asset" | awk '{print $1}')"; fi
+[[ "$actual" == "$expected" ]] || { echo 'Installer checksum mismatch.' >&2; exit 1; }
+chmod 755 "$work/$asset"
+"$work/$asset" "$@"

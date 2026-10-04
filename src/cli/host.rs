@@ -18,6 +18,9 @@
 //! adopt an inherited `PLEXI_CHANNEL`, which would let `host start/stop/status`
 //! silently target the wrong channel's profile when invoked from inside a pane.
 
+#[cfg(windows)]
+mod windows_launch;
+
 use serde::Deserialize;
 use std::io::Write;
 use crate::platform::ipc::{self, IpcStream};
@@ -208,52 +211,22 @@ fn host_config_dir(channel: Option<&str>) -> PathBuf {
         .join(format!(".plexi{suffix}"))
 }
 
-/// Resolve the app bundle + binary-inside-bundle paths for the *running CLI
-/// binary's own channel* (never `PLEXI_CHANNEL` — that env var is exactly
-/// what must be stripped from the launched child).
-#[cfg(target_os = "macos")]
+/// Resolve the canonical installed target, falling back only to this executable
+/// for an unpacked package or development build.
 fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
     let channel = crate::config::build_channel();
-    let cap = crate::cli::install::channel_bundle_cap(channel.as_deref());
-    let bundle_path = PathBuf::from(format!("/Applications/Plexi{cap}.app"));
-    let suffix = channel
-        .as_deref()
-        .map(|c| format!("-{c}"))
-        .unwrap_or_default();
-    let binary_path = bundle_path
-        .join("Contents/MacOS")
-        .join(format!("plexi{suffix}"));
-    log::info!(
-        "host: resolved channel={channel:?} cap={cap:?} bundle={bundle_path:?} binary={binary_path:?}"
-    );
-    (channel, bundle_path, binary_path)
-}
-
-/// Linux has no app bundle — packaging is a v0 non-goal (see
-/// `docs/linux-support-plan.md`) and the same executable is both the CLI and
-/// the host. So the host to launch is *this* binary, resolved through
-/// `current_exe` rather than a well-known install path: a build-from-source
-/// tree is the only supported layout, and hardcoding one would break the
-/// moment the tree moved.
-///
-/// Both returned paths are that executable. `host_start_cli` existence-checks
-/// them separately (bundle, then binary-inside-bundle); pointing both at the
-/// real binary keeps those checks meaningful instead of vacuous.
-#[cfg(not(target_os = "macos"))]
-fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
-    let channel = crate::config::build_channel();
-    let binary_path = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(e) => {
-            // An empty path fails the existence check in `host_start_cli`
-            // with a message naming the channel, which is the honest outcome:
-            // we cannot name a host to launch.
-            log::error!("host: current_exe() failed: {e} — cannot resolve a host binary to launch");
+    let binary = match crate::distribution::installed() {
+        Ok(Some(receipt)) => receipt.active.executable(),
+        Ok(None) => std::env::current_exe().unwrap_or_default(),
+        Err(error) => {
+            log::error!("host: installation record failed: {error}");
             PathBuf::new()
         }
     };
-    log::info!("host: resolved channel={channel:?} binary={binary_path:?} (no bundle on this platform)");
-    (channel, binary_path.clone(), binary_path)
+    let bundle = binary.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(Path::to_path_buf).unwrap_or_else(|| binary.clone());
+    log::info!("host: resolved channel={channel:?} bundle={bundle:?} binary={binary:?}");
+    (channel, bundle, binary)
 }
 
 /// Best-effort pid lookup for the process holding `notify.sock` open. No
@@ -261,6 +234,22 @@ fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
 /// and `src/config/` have no precedent), so this shells out to `lsof -t` as a
 /// diagnostic only — failure here never blocks the caller, it just means pid
 /// is reported as unknown.
+#[cfg(windows)]
+fn detect_pid(socket_path: &Path) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+    let stream = ipc::connect_timeout(socket_path, Duration::from_millis(100)).ok()?;
+    let mut pid = 0;
+    // SAFETY: a live client pipe handle and a writable PID out-parameter.
+    if unsafe { GetNamedPipeServerProcessId(stream.as_raw_handle().cast(), &mut pid) } == 0 {
+        log::warn!("host: pipe owner lookup failed for {socket_path:?}: {}", std::io::Error::last_os_error());
+        None
+    } else {
+        Some(pid)
+    }
+}
+
+#[cfg(unix)]
 fn detect_pid(socket_path: &Path) -> Option<u32> {
     // `lsof` is not installed by default on a minimal Linux, and without a pid
     // `host stop`'s SIGTERM fallback has nothing to signal. /proc answers the
@@ -302,75 +291,73 @@ enum RunningState {
 /// stale-socket cleanup idiom as `src/cli/mod.rs`'s `send_to_socket`:
 /// `ConnectionRefused` means the socket file is stale (owning process died
 /// without cleanup) — remove it and treat as not-running.
-fn probe_notify_socket(socket_path: &Path) -> RunningState {
-    match IpcStream::connect(socket_path) {
-        Ok(_) => RunningState::Running,
-        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-            log::info!("host: stale socket at {socket_path:?} (connection refused) — removing");
-            ipc::remove_stale_endpoint(socket_path);
-            RunningState::NotRunning
-        }
+fn probe_notify_socket(socket_path: &Path, timeout: Duration) -> RunningState {
+    // An empty transport frame only probes the connection. It uses the same
+    // bounded connect path as commands, including a saturated Unix backlog.
+    match super::send_line_to_socket(socket_path, b"", timeout) {
+        Ok(()) | Err(super::SocketTransportError::ConnectTimeout) => RunningState::Running,
+        Err(super::SocketTransportError::Connect(e))
+            if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                log::info!("host: removing stale endpoint {socket_path:?}");
+                ipc::remove_stale_endpoint(socket_path);
+                RunningState::NotRunning
+            }
         Err(e) => {
-            log::info!(
-                "host: notify.sock not reachable at {socket_path:?}: {e} — treating as not running"
-            );
+            log::info!("host: endpoint {socket_path:?} not reachable: {e:?}");
             RunningState::NotRunning
         }
     }
 }
 
-/// One-shot readiness/pane-count query: connect to `notify.sock`, send
-/// `AppRequest::ListPanes`, and wait up to 5s for the JSON array response.
-/// `None` means either the socket is not reachable (host not running) or the
-/// round trip did not complete in time. `channel` picks the response-file
-/// directory via `host_config_dir` — never the (possibly env-shadowed)
-/// `config::config_dir()`.
-fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize> {
-    let mut stream = IpcStream::connect(socket_path).ok()?;
-    let response_file =
-        crate::rpc::response_file_in(&host_config_dir(channel), "host-status", "json");
+/// Readiness is an application-dispatched ListPanes round trip, not just an
+/// open pipe. Every phase spends the same deadline; late replies cannot turn
+/// a timed-out startup into success.
+fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant) -> Option<usize> {
+    if Instant::now() >= deadline {
+        return None;
+    }
+    let response_file = crate::rpc::response_file_in(profile_dir, "host-status", "json");
     let request = crate::protocol::AppRequest::ListPanes {
         response_file: response_file.clone(),
         context_id: None,
     };
-    let line = serde_json::to_string(&request).ok()?;
-    stream.write_all(format!("{line}\n").as_bytes()).ok()?;
-    let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
-    serde_json::from_str::<Vec<serde_json::Value>>(&content)
-        .ok()
-        .map(|v| v.len())
+    let line = format!("{}\n", serde_json::to_string(&request).ok()?);
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return None;
+    }
+    if let Err(e) = super::send_line_to_socket(socket_path, line.as_bytes(), remaining) {
+        log::debug!("host: readiness transport failed for {socket_path:?}: {e:?}");
+        return None;
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let content = match crate::rpc::poll_string(&response_file, Some(remaining)) {
+        Ok(content) => content,
+        Err(e) => {
+            log::debug!("host: readiness response failed for {socket_path:?}: {e}");
+            return None;
+        }
+    };
+    if Instant::now() >= deadline {
+        return None;
+    }
+    serde_json::from_str::<Vec<serde_json::Value>>(&content).ok().map(|v| v.len())
 }
 
-/// Retry `query_ready_status` until it answers or `timeout` elapses. Used
-/// after spawning the bundle process — the socket listener thread may not be
-/// bound yet on the first attempt.
-fn wait_for_ready(
-    socket_path: &Path,
-    timeout: Duration,
-    channel: Option<&str>,
-) -> Result<usize, String> {
+fn wait_for_ready(socket_path: &Path, timeout: Duration, profile_dir: &Path) -> Result<usize, String> {
     let start = Instant::now();
     let deadline = start + timeout;
     log::info!("host_start: readiness poll start socket={socket_path:?} timeout={timeout:?}");
-    loop {
-        if let Some(count) = query_ready_status(socket_path, channel) {
-            log::info!(
-                "host_start: readiness poll end — ready in {:?}, pane_count={count}",
-                start.elapsed()
-            );
+    while Instant::now() < deadline {
+        let probe_deadline = deadline.min(Instant::now() + crate::rpc::DEFAULT_TIMEOUT);
+        if let Some(count) = query_ready_status(socket_path, profile_dir, probe_deadline) {
+            log::info!("host_start: ready in {:?}, pane_count={count}", start.elapsed());
             return Ok(count);
         }
-        if Instant::now() >= deadline {
-            log::error!(
-                "host_start: readiness poll end — timeout after {:?}",
-                start.elapsed()
-            );
-            return Err(format!(
-                "timed out after {timeout:?} waiting for Plexi host to become ready"
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(200).min(deadline.saturating_duration_since(Instant::now())));
     }
+    log::error!("host_start: readiness timeout after {:?}", start.elapsed());
+    Err(format!("timed out after {timeout:?} waiting for Plexi host to become ready"))
 }
 
 /// Write one spawn-queue JSON file for `spec`, matching the schema
@@ -446,14 +433,7 @@ fn detect_pid_via_proc(socket_path: &Path) -> Option<u32> {
     // Columns: Num RefCount Protocol Flags Type St Inode Path
     let inodes: Vec<String> = unix_table
         .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let inode = fields.nth(6)?;
-            // The path is the remainder; a bound path never contains spaces
-            // here because the kernel prints it verbatim and Plexi's socket
-            // path never has any.
-            (fields.next()? == target).then(|| inode.to_string())
-        })
+        .filter_map(|line| unix_socket_inode(line, target).map(str::to_owned))
         .collect();
     if inodes.is_empty() {
         return None;
@@ -501,6 +481,24 @@ fn detect_pid_via_proc(socket_path: &Path) -> Option<u32> {
     None
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn unix_socket_inode<'a>(line: &'a str, target: &str) -> Option<&'a str> {
+    let mut rest = line;
+    let mut inode = "";
+    for _ in 0..7 {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        inode = &rest[..end];
+        rest = &rest[end..];
+    }
+    // Only the table columns are whitespace-delimited. The remaining path
+    // is verbatim and may contain repeated spaces.
+    (rest.trim_start() == target).then_some(inode)
+}
+
 /// Launches this channel's app bundle detached (survives the CLI process
 /// exiting), seeds any declared panes via the spawn-queue before launch, and
 /// blocks until a `notify.sock` round trip confirms the host is ready (or the
@@ -513,6 +511,7 @@ pub fn host_start_cli(
     ephemeral: bool,
     background: bool,
 ) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs.unwrap_or(15));
     let specs = match collect_pane_specs(layout_file, panes) {
         Ok(s) => s,
         Err(e) => {
@@ -542,19 +541,9 @@ pub fn host_start_cli(
         specs.len()
     );
 
-    if matches!(probe_notify_socket(&socket_path), RunningState::Running) {
-        let pid = detect_pid(&socket_path);
-        log::warn!("host_start: already running — pid={pid:?} socket={socket_path:?}");
-        match pid {
-            Some(p) => eprintln!(
-                "error: a Plexi host for this channel is already running (pid {p}, socket {})",
-                socket_path.display()
-            ),
-            None => eprintln!(
-                "error: a Plexi host for this channel is already running (pid unknown, socket {})",
-                socket_path.display()
-            ),
-        }
+    if matches!(probe_notify_socket(&socket_path, deadline.saturating_duration_since(Instant::now())), RunningState::Running) {
+        log::warn!("host_start: endpoint already held socket={socket_path:?}");
+        eprintln!("error: a Plexi host for this channel is already running or busy (socket {})", socket_path.display());
         return 1;
     }
 
@@ -611,32 +600,25 @@ pub fn host_start_cli(
         channel
     );
 
-    let mut cmd = std::process::Command::new(&binary_path);
-    cmd.env_clear()
-        .envs(child_env)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    detach_from_terminal(&mut cmd);
-    let child = match cmd.spawn() {
-        Ok(c) => c,
+    if Instant::now() >= deadline {
+        eprintln!("error: host start deadline expired before launch");
+        return 1;
+    }
+    let pid = match spawn_detached_host(&binary_path, &child_env) {
+        Ok(pid) => pid,
         Err(e) => {
             log::error!("host_start: spawn failed for {binary_path:?}: {e}");
             eprintln!("error: could not launch Plexi: {e}");
             return 1;
         }
     };
-    log::info!(
-        "host_start: process spawned pid={} detached=true",
-        child.id()
-    );
-
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(15));
-    match wait_for_ready(&socket_path, timeout, channel.as_deref()) {
+    log::info!("host_start: process spawned pid={pid} detached=true");
+    let timeout = deadline.saturating_duration_since(Instant::now());
+    match wait_for_ready(&socket_path, timeout, &host_config_dir(channel.as_deref())) {
         Ok(count) => {
             println!(
                 "Plexi host started (pid {}), {count} pane(s) ready.",
-                child.id()
+                pid
             );
             0
         }
@@ -672,21 +654,42 @@ fn detach_from_terminal(cmd: &mut std::process::Command) {
     }
 }
 
-/// Windows has no fork, so the same effect is requested up front through
-/// creation flags: `DETACHED_PROCESS` drops the console the parent owns (the
-/// analogue of losing the controlling terminal) and `CREATE_NEW_PROCESS_GROUP`
-/// keeps a Ctrl-C in the launching console from reaching the host.
+#[cfg(unix)]
+fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io::Result<u32> {
+    let mut cmd = std::process::Command::new(binary);
+    cmd.env_clear().envs(child_env.iter().cloned())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    detach_from_terminal(&mut cmd);
+    cmd.spawn().map(|child| child.id())
+}
+
 #[cfg(windows)]
-fn detach_from_terminal(cmd: &mut std::process::Command) {
-    use std::os::windows::process::CommandExt as _;
-    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
-    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io::Result<u32> {
+    windows_launch::spawn(binary, child_env)
+}
+
+fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
+    if let Some(pid) = pid {
+        // A restart can bind the same endpoint before this caller polls again.
+        // Confirm this process's exit without unlinking its replacement's socket.
+        return !plexi_distribution::transaction::process_alive(pid);
+    }
+    matches!(
+        super::send_line_to_socket(socket_path, b"", Duration::from_millis(100)),
+        Err(super::SocketTransportError::Connect(error))
+            if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)
+    )
 }
 
 pub fn host_stop_cli() -> i32 {
     let channel = crate::config::build_channel();
     let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
-    let pid = detect_pid(&socket_path);
+    let pid = running_build_info()
+        .as_ref()
+        .and_then(reported_pid)
+        .or_else(|| detect_pid(&socket_path));
     log::info!("host_stop: channel={channel:?} socket={socket_path:?} pid={pid:?}");
 
     match IpcStream::connect(&socket_path) {
@@ -696,36 +699,12 @@ pub fn host_stop_cli() -> i32 {
             match stream.write_all(format!("{payload}\n").as_bytes()) {
                 Ok(()) => {
                     log::info!("host_stop: shutdown request sent, waiting for process exit");
-                    // The socket *file* is only unlinked by the next process's
-                    // startup cleanup (`spawn_socket_listener` in src/app/mod.rs),
-                    // never on exit — so `socket_path.exists()` never turns false
-                    // here and cannot be used as an exit signal. Instead, poll a
-                    // fresh connect attempt: once the listening process has
-                    // actually exited, the OS answers new connects to the
-                    // now-unheld socket path with `ConnectionRefused` (the same
-                    // stale-socket idiom `probe_notify_socket` uses).
                     let deadline = Instant::now() + Duration::from_secs(5);
                     loop {
-                        match IpcStream::connect(&socket_path) {
-                            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                                log::info!(
-                                    "host_stop: method=socket pid={pid:?} — clean shutdown confirmed"
-                                );
-                                ipc::remove_stale_endpoint(&socket_path);
-                                println!("Plexi host stopped (clean shutdown).");
-                                return 0;
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                log::info!(
-                                    "host_stop: method=socket pid={pid:?} — clean shutdown confirmed (socket removed)"
-                                );
-                                println!("Plexi host stopped (clean shutdown).");
-                                return 0;
-                            }
-                            _ => {
-                                // Still connectable (or a transient error) — host
-                                // hasn't exited yet, keep polling.
-                            }
+                        if shutdown_complete(pid, &socket_path) {
+                            log::info!("host_stop: original pid={pid:?} stopped");
+                            println!("Plexi host stopped (clean shutdown).");
+                            return 0;
                         }
                         if Instant::now() >= deadline {
                             break;
@@ -733,19 +712,19 @@ pub fn host_stop_cli() -> i32 {
                         std::thread::sleep(Duration::from_millis(200));
                     }
                     log::warn!(
-                        "host_stop: clean shutdown did not complete within timeout — falling back to SIGTERM"
+                        "host_stop: clean shutdown did not complete within timeout — requesting termination"
                     );
                 }
                 Err(e) => {
                     log::error!(
-                        "host_stop: could not send shutdown request: {e} — falling back to SIGTERM"
+                        "host_stop: could not send shutdown request: {e} — requesting termination"
                     );
                 }
             }
         }
         Err(e) => {
             log::warn!(
-                "host_stop: could not connect to {socket_path:?}: {e} — falling back to SIGTERM"
+                "host_stop: could not connect to {socket_path:?}: {e} — requesting termination"
             );
         }
     }
@@ -755,35 +734,78 @@ pub fn host_stop_cli() -> i32 {
         eprintln!("error: no Plexi host is running for this channel");
         return 1;
     };
-    match std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .status()
-    {
-        Ok(status) if status.success() => {
-            log::info!("host_stop: method=sigterm pid={pid}");
-            println!("Plexi host stopped (SIGTERM sent to pid {pid}).");
+    if shutdown_complete(Some(pid), &socket_path) {
+        println!("Plexi host stopped.");
+        return 0;
+    }
+    match terminate_host_process(pid) {
+        Ok(()) => {
+            log::info!("host_stop: termination requested pid={pid}");
+            println!("Termination requested for Plexi host (pid {pid}).");
             0
         }
-        Ok(status) => {
-            log::error!("host_stop: kill -TERM pid={pid} failed with status {status:?}");
-            eprintln!("error: could not stop process {pid} (kill exited with {status:?})");
-            1
-        }
         Err(e) => {
-            log::error!("host_stop: could not run kill -TERM pid={pid}: {e}");
-            eprintln!("error: could not run kill: {e}");
+            log::error!("host_stop: could not terminate pid={pid}: {e}");
+            eprintln!("error: could not terminate process {pid}: {e}");
             1
         }
     }
+}
+
+#[cfg(unix)]
+fn terminate_host_process(pid: u32) -> std::io::Result<()> {
+    // SAFETY: pid came from this channel's host and SIGTERM requests clean exit.
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn terminate_host_process(pid: u32) -> std::io::Result<()> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    // SAFETY: scalar inputs and checked handle; only the recorded host is targeted.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcess returned a distinct owned handle, closed on every path.
+    let _owned = unsafe { OwnedHandle::from_raw_handle(handle.cast()) };
+    // SAFETY: the owned handle remains valid for the operation.
+    if unsafe { TerminateProcess(handle, 1) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn reported_pid(info: &serde_json::Value) -> Option<u32> {
+    let pid = u32::try_from(info.get("pid")?.as_u64()?).ok()?;
+    (pid != 0).then_some(pid)
+}
+
+/// Query the running host independently of its profile markers or installed package.
+pub(crate) fn running_build_info() -> Option<serde_json::Value> {
+    let channel = crate::config::build_channel();
+    let profile = host_config_dir(channel.as_deref());
+    let socket = ipc::endpoint_in(&profile);
+    let response_file = crate::rpc::response_file_in(&profile, "host-build", "json");
+    let request = crate::protocol::AppRequest::GetBuildInfo { response_file: response_file.clone() };
+    let line = serde_json::to_string(&request).ok()?;
+    super::send_line_to_socket(&socket, format!("{line}\n").as_bytes(), crate::rpc::DEFAULT_TIMEOUT).ok()?;
+    let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
+    serde_json::from_str(&content).ok()
 }
 
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
     let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
-    let pid = detect_pid(&socket_path);
-    let pane_count = query_ready_status(&socket_path, channel.as_deref());
+    let pane_count = query_ready_status(&socket_path, &host_config_dir(channel.as_deref()), Instant::now() + crate::rpc::DEFAULT_TIMEOUT);
+    let running = running_build_info();
+    let pid = running.as_ref().and_then(reported_pid).or_else(|| detect_pid(&socket_path));
     let ready = pane_count.is_some();
     log::info!(
         "host_status: channel={channel:?} pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}"
@@ -792,6 +814,9 @@ pub fn host_status_cli(json: bool) -> i32 {
     if json {
         let payload = serde_json::json!({
             "ready": ready,
+            "cli": crate::distribution::build_info(),
+            "running": running,
+            "installed": crate::distribution::installed().ok().flatten(),
             "pane_count": pane_count,
             "pid": pid,
             "socket": socket_path.to_string_lossy(),
@@ -926,7 +951,121 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn distribution_socket_inode_preserves_spaces_in_the_path() {
+        let path = "/tmp/Plexi home with  spaces/.plexi/notify.sock";
+        let line = format!("000000: 00000002 00000000 00010000 0001 01 4711 {path}");
+        assert_eq!(super::unix_socket_inode(&line, path), Some("4711"));
+        assert_eq!(super::unix_socket_inode(&line, "/tmp/Plexi"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn distribution_shutdown_confirms_original_exit_with_replacement_socket_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("notify.sock");
+        let _replacement = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let mut original = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = original.id();
+        original.kill().unwrap();
+        original.wait().unwrap();
+        assert!(super::shutdown_complete(Some(pid), &socket));
+        assert!(socket.exists(), "the replacement endpoint must be retained");
+        assert!(!super::shutdown_complete(Some(std::process::id()), &socket));
+    }
+
+    #[test]
+    fn readiness_rejects_reply_after_start_deadline() {
+        use crate::platform::ipc::IpcListener;
+        use std::io::{BufRead, BufReader};
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let endpoint = dir.path().join("late.sock");
+        #[cfg(windows)]
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\plexi-late-{}", uuid::Uuid::new_v4()));
+        let listener = IpcListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            let stream = listener.incoming().next().unwrap().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            let response = request["response_file"].as_str().unwrap();
+            crate::rpc::write_json_response(response, serde_json::json!([{"id": 1}]));
+        });
+        let result = wait_for_ready(&endpoint, Duration::from_millis(40), dir.path());
+        server.join().unwrap();
+        assert!(result.is_err(), "a reply after the startup deadline must not mean ready");
+    }
+
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn status_pid_is_the_named_pipe_server() {
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\plexi-owner-{}", uuid::Uuid::new_v4()));
+        let _listener = crate::platform::ipc::IpcListener::bind(&endpoint).unwrap();
+        assert_eq!(detect_pid(&endpoint), Some(std::process::id()));
+    }
+
+    #[test]
+    fn readiness_zero_budget_does_not_connect() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(wait_for_ready(&dir.path().join("absent"), Duration::ZERO, dir.path()).is_err());
+        assert!(!dir.path().join("rpc").exists());
+    }
+
+    /// Actual framed IPC -> HostHarness application dispatch -> response file.
+    /// Complements pane-lifecycle.toml: repeated fresh transports must survive
+    /// readiness, spawn, focus, list, close and list, without a paint pass.
+    #[test]
+    fn readiness_then_pane_new_focus_close_burst() {
+        use crate::platform::ipc::IpcListener;
+        use std::io::{BufRead, BufReader};
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let endpoint = dir.path().join("burst.sock");
+        #[cfg(windows)]
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\plexi-burst-{}", uuid::Uuid::new_v4()));
+        let listener = IpcListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut host = crate::testing::HostHarness::new();
+            host.add_test_pane();
+            loop {
+                let stream = listener.incoming().next().unwrap().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).unwrap();
+                if line.trim() == "stop" { break; }
+                host.inject_ipc(serde_json::from_str(&line).unwrap());
+                host.hidden_frame();
+            }
+        });
+        let timeout = crate::testing::load_aware_timeout(Duration::from_secs(5));
+        wait_for_ready(&endpoint, timeout, dir.path()).expect("application ready");
+        let send = |request: serde_json::Value| {
+            super::super::send_line_to_socket(&endpoint, format!("{request}\n").as_bytes(), timeout).unwrap();
+        };
+        let list = || {
+            let response = crate::rpc::response_file_in(dir.path(), "list", "json");
+            send(serde_json::json!({"type":"list_panes", "response_file": response}));
+            serde_json::from_str::<Vec<serde_json::Value>>(
+                &crate::rpc::poll_string(&response, Some(timeout)).unwrap_or_else(|e| panic!("{e}"))).unwrap()
+        };
+        for cycle in 0..20 {
+            let response = crate::rpc::response_file_in(dir.path(), "spawn", "json");
+            send(serde_json::json!({"type":"spawn_pane", "type_id":"file_browser",
+                "name": format!("host01-{cycle}"), "response_file": response}));
+            let reply = crate::rpc::poll_string(&response, Some(timeout)).unwrap_or_else(|e| panic!("{e}"));
+            let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            let id = reply["pane_id"].as_u64().expect("spawn pane id");
+            send(serde_json::json!({"type":"focus_pane", "pane_id":id}));
+            assert!(list().iter().any(|p| p["id"] == id && p["focused"] == true));
+            send(serde_json::json!({"type":"close_pane", "pane_id":id}));
+            assert!(list().iter().all(|p| p["id"] != id));
+        }
+        super::super::send_line_to_socket(&endpoint, b"stop\n", timeout).unwrap();
+        server.join().unwrap();
+    }
 
     // ── parse_pane_flag ─────────────────────────────────────────────────
 

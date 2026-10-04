@@ -835,23 +835,23 @@ pub fn set_profile(name: Option<String>) {
 /// The embedded SDK is extracted only when missing or when the binary version
 /// changed since the last extract, so manual edits and symlinks in the profile
 /// SDK dir survive normal app launches.
+pub fn lock_profile_initialization() -> Result<std::fs::File, String> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        .open(dir.join("initialization.lock")).map_err(|e| format!("open profile initialization lock: {e}"))?;
+    lock.lock().map_err(|e| format!("lock profile initialization: {e}"))?;
+    Ok(lock)
+}
+
 pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
-    let is_new = if !dir.exists() {
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("profile init: failed to create {}: {e}", dir.display());
-            return false;
-        }
-        let apps_dir = dir.join("apps");
-        if let Err(e) = std::fs::create_dir_all(&apps_dir) {
-            eprintln!("profile init: failed to create apps dir: {e}");
-            return false;
-        }
-        log::info!("profile init: created new profile at {}", dir.display());
-        true
-    } else {
-        false
-    };
+    // Install metadata may have created the profile before the first app launch.
+    let is_new = !dir.join("apps").is_dir();
+    if let Err(e) = std::fs::create_dir_all(dir.join("apps")) {
+        eprintln!("profile init: failed to create apps directory: {e}");
+        return false;
+    }
 
     // Only re-extract when the embedded SDK version differs from what was last written.
     // This preserves manual edits and symlinks placed in the profile SDK dir during
@@ -859,7 +859,7 @@ pub fn ensure_profile_initialized() -> bool {
     let sdk_dir = dir.join("sdk");
     let sdk_dest = sdk_dir.join("plexi_sdk");
     let stamp_path = sdk_dir.join(".sdk_version");
-    let current_version = env!("CARGO_PKG_VERSION");
+    let current_version = env!("PLEXI_BUILD_ID");
     let needs_extract = !sdk_dest.exists()
         || !sdk_dir.join("pyproject.toml").is_file()
         || std::fs::read_to_string(&stamp_path)
@@ -2426,5 +2426,18 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod distribution_profile_tests {
+    #[test]
+    fn installer_metadata_does_not_suppress_first_launch_seeding() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("installed_tag"), "v0.3.4").unwrap();
+        assert!(super::ensure_profile_initialized());
+        assert!(!super::ensure_profile_initialized());
+        assert_eq!(std::fs::read_to_string(dir.path().join("sdk/.sdk_version")).unwrap(), env!("PLEXI_BUILD_ID"));
     }
 }

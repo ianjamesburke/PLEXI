@@ -31,7 +31,7 @@ If you run into any issues, don't hesitate to reach out directly: adhdisntreal@g
 
 ### macOS (Apple Silicon; Intel when published)
 
-Downloads the matching current macOS alpha release. Requires `bash`, `curl`,
+Downloads the matching current macOS stable release. Requires `bash`, `curl`,
 `tar`, and `shasum`, not Git, Rust, a package manager, or administrator access.
 
 ```bash
@@ -40,12 +40,12 @@ curl -fsSL https://plexiapp.com/install | bash
 
 The installer selects the matching macOS archive. If the selected channel has
 no Intel archive, it stops with a clear missing-asset error; from a checkout,
-build with Rust and Python 3 using `scripts/install.sh --from-source alpha`.
+build with Rust, just, uv and Python 3.11 using `scripts/install.sh --from-source alpha`.
 It verifies the release archive's SHA-256 checksum before installing it.
 
 ### Linux (x86_64, X11)
 
-Downloads the current Linux x64 alpha release. Requires `bash`, `curl`, `tar`,
+Downloads the current Linux x64 stable release. Requires `bash`, `curl`, `tar`,
 and `sha256sum` (or `shasum`); it installs into user-owned directories.
 
 ```bash
@@ -62,21 +62,20 @@ implemented. See [Linux support](docs/linux-support-plan.md) for limitations.
 ### Windows (x64)
 
 Run this in Windows PowerShell 5.1 or later. It downloads the current Windows
-x64 alpha release and verifies its SHA-256 checksum; it does not build from
+x64 stable release and verifies its SHA-256 checksum; it does not build from
 source.
 
 ```powershell
-irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex
+irm https://plexiapp.com/install.ps1 | iex
 ```
 
 The Unix `curl | bash` command is not a Windows installer. Windows has no
-equivalent source-install script. The installer writes the selected release tag
-to `%USERPROFILE%\.plexi[-alpha|-beta]\installed_tag`, adds its per-user command
-directory to the user `PATH`, and currently has no Windows shell completions.
+equivalent source-install script. The installer records package ownership separately from your profile, adds its
+per-user launcher directory to PATH and starts that installation.
 
-### Unsigned alpha builds
+### Unsigned builds
 
-Alpha builds are unsigned and not notarized. Follow [Opening an unsigned Plexi
+Stable, alpha and beta builds are unsigned and not notarized. Follow [Opening an unsigned Plexi
 build](docs/unsigned-install.md) before bypassing a macOS Gatekeeper or Windows
 SmartScreen warning. Linux users who unpack an archive manually may need
 `chmod +x plexi`.

@@ -62,12 +62,11 @@ fn pid_is_alive(pid: u32) -> bool {
     let mut exit_code: u32 = 0;
     // SAFETY: `handle` is live until the CloseHandle below; `exit_code` is a
     // local out-param.
-    let alive = unsafe {
+    unsafe {
         let ok = GetExitCodeProcess(handle, &mut exit_code);
         CloseHandle(handle);
         ok != 0 && exit_code == STILL_ACTIVE as u32
-    };
-    alive
+    }
 }
 
 /// Direct children of `pid`, via `pgrep -P` — never `proc_listchildpids`,

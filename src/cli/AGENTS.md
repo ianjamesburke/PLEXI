@@ -63,7 +63,17 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 Any change to a CLI verb, flag, or agent-facing behavior updates this file **and** `skills/plexi-cli/SKILL.md` in the same PR. Edit the skill through the real `skills/` path — `.agents/skills/plexi-cli` is a symlink and some editors do not write through it. Shell completions are generated from the clap tree (`completions_cli`), so a new flag needs no hand-written block; verify with `plexi completions zsh | grep <flag>`.
 
+## Distribution commands
+
+Host launch, restart, updates, doctor and uninstall resolve the native distribution
+receipt. `host status --json` reports compiled CLI and running-host identities
+separately from the installed generation. `update --rollback` restores the retained
+generation. Uninstall retains user data and removes only recorded ownership.
+The package and activation contract is `scripts/DISTRIBUTION.md`.
+
 ## Traps
+
+- **Windows detached launch must disable handle inheritance.** NUL stdio alone leaves inherited capture-pipe writers in a child, so the caller can wait for EOF after the CLI has exited. `host::windows_launch` owns the no-inheritance process boundary. Host readiness is a deadline-bounded application round trip; an open pipe alone is not readiness.
 
 - **Path-based app commands must not resolve a workspace.** `app validate <path>`, `app install <path>`, `app run <path>` operate on an explicit filesystem path. Never call `resolve_workspace_root` for that argument. Use `std::fs::canonicalize` directly. `resolve_workspace_root` is only legitimate in `AppRegistry::load` and `app init`.
 - **Profile reconciliation is narrowly scoped.** `app prune --dry-run` reports only positively identified retired first-party pre-v3 installs; never infer deletability from absence from the current core pack, because user and marketplace apps also live in the global profile.

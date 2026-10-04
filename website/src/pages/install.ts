@@ -1,11 +1,8 @@
-export const prerender = false;
+import bootstrap from '../../../install.sh?raw';
 
+export const prerender = false;
 export async function GET() {
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location:
-        "https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/install.sh",
-    },
+  return new Response(bootstrap, {
+    headers: { 'Content-Type': 'text/x-shellscript; charset=utf-8', 'Cache-Control': 'no-cache' },
   });
 }

@@ -77,7 +77,7 @@ pub enum PackageError {
     ManifestParse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("manifest schema_version {found} is newer than supported (max {max}) in {path}")]
     UnsupportedSchemaVersion { found: u32, max: u32, path: PathBuf },
@@ -122,7 +122,7 @@ pub enum PackageError {
     PackageTomlParse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("PACKAGE.toml schema_version {found} is newer than supported (max {max})")]
     UnsupportedPackageSchema { found: u32, max: u32 },
@@ -418,7 +418,7 @@ fn read_manifest(app_dir: &Path) -> Result<AppManifest, PackageError> {
     let raw = fs::read_to_string(&manifest_path).map_err(|e| io_err("read", &manifest_path, e))?;
     let manifest: AppManifest = toml::from_str(&raw).map_err(|e| PackageError::ManifestParse {
         path: manifest_path.clone(),
-        source: e,
+        source: Box::new(e),
     })?;
 
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
@@ -1000,7 +1000,7 @@ fn validate_package_inner(
     let descriptor: PackageToml =
         toml::from_str(&raw).map_err(|e| PackageError::PackageTomlParse {
             path: file.to_path_buf(),
-            source: e,
+            source: Box::new(e),
         })?;
     if descriptor.schema_version > PACKAGE_SCHEMA_VERSION {
         return Err(PackageError::UnsupportedPackageSchema {

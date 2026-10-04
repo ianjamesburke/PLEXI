@@ -162,24 +162,19 @@ impl PlexiApp {
             self.workspace_dirty = false;
             log::info!("workspace: synchronous save (shutdown/update-quit)");
             log::info!("ui: restarting for update");
-            if let Some(bundle) = std::env::current_exe().ok().and_then(|p| {
-                p.ancestors()
-                    .find(|a| a.extension().is_some_and(|e| e == "app"))
-                    .map(|b| b.to_path_buf())
-            }) {
-                let script = format!(
-                    "while kill -0 {} 2>/dev/null; do sleep 0.2; done; open '{}'",
-                    std::process::id(),
-                    bundle.display(),
-                );
-                let _ = std::process::Command::new("bash")
-                    .args(["-c", &script])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+            let result = crate::distribution::installed()
+                .and_then(|r| r.ok_or_else(|| "no managed installation available for restart".to_string()))
+                .and_then(|r| plexi_distribution::transaction::schedule_restart(&r, std::process::id()).map_err(|e| e.to_string()));
+            match result {
+                Ok(()) => {
+                    self.bank_final_focus_segment();
+                    crate::app::quit::exit_host("update restart");
+                }
+                Err(error) => {
+                    self.update_quit_pending = false;
+                    log::error!("update restart failed: {error}");
+                }
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,

@@ -279,6 +279,14 @@ Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
 | `name` | `string` | yes |
 | `pane_id` | `integer` | yes |
 
+### `get_build_info`
+
+Return the running executable's immutable build identity.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
 ### `list_panes`
 
 List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.

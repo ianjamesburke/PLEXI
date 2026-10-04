@@ -675,12 +675,20 @@ fn spawn_socket_listener(
     log::info!("pane_ipc: listening on {:?}", path);
     // Teardown removes exactly this socket, so it has to know which one it is.
     quit::record_notify_socket(&path);
+    let listener_path = path.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let stream = match stream {
                 Ok(s) => s,
                 Err(e) => {
-                    log::warn!("pane_ipc: accept error: {e}");
+                    // A Windows named-pipe instance can fail to replenish
+                    // transiently. `incoming` remains live and the listener
+                    // retains its old spare, so keep retrying rather than
+                    // abandoning the host's only CLI endpoint.
+                    log::warn!(
+                        "pane_ipc: accept failed on {:?}; retaining listener and retrying: {e}",
+                        listener_path
+                    );
                     continue;
                 }
             };
@@ -4168,14 +4176,7 @@ impl eframe::App for PlexiApp {
 }
 
 fn read_display_version() -> String {
-    let tag_path = crate::config::config_dir().join("installed_tag");
-    if let Ok(tag) = std::fs::read_to_string(&tag_path) {
-        let trimmed = tag.trim().to_string();
-        if !trimmed.is_empty() {
-            return trimmed.trim_start_matches('v').to_string();
-        }
-    }
-    env!("CARGO_PKG_VERSION").to_string()
+    crate::distribution::build_tag().trim_start_matches('v').to_string()
 }
 
 impl PlexiApp {

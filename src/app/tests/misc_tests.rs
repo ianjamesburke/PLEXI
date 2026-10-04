@@ -919,3 +919,16 @@ fn socket_line_parse_error_does_not_wake() {
     assert!(rx.try_recv().is_err(), "malformed line must not queue");
     assert_eq!(*woke.lock().unwrap(), 0, "malformed line must not wake");
 }
+
+#[test]
+fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
+    let mut h = crate::testing::HostHarness::new();
+    std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let reply = dir.path().join("build.json");
+    h.inject_ipc(crate::protocol::AppRequest::GetBuildInfo { response_file: reply.to_string_lossy().into_owned() });
+    h.hidden_frame();
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));
+    assert_ne!(value["tag"], "v999.0.0");
+}

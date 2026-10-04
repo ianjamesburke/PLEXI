@@ -277,6 +277,12 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"ok": true}));
                 }
             }
+            crate::protocol::AppRequest::GetBuildInfo { response_file } => {
+                log::info!("host: reporting running build identity {}", env!("PLEXI_BUILD_ID"));
+                let mut value = crate::distribution::build_info();
+                value["pid"] = serde_json::json!(std::process::id());
+                write_json_response(response_file, value);
+            }
             crate::protocol::AppRequest::ListPanes {
                 response_file,
                 context_id: filter_context_id,

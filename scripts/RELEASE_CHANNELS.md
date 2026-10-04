@@ -44,14 +44,7 @@ plexi-rc-010 --version
 just channel-list
 ```
 
-This creates:
-
-- `/Applications/Plexi Rc-010.app`
-- `/usr/local/bin/plexi-rc-010`
-- `~/.plexi-rc-010/`
-
-RC installs also install shell completions for the channel binary, for example
-`_plexi-rc-010` for zsh.
+Installation destinations and ownership are defined in [Distribution contract](DISTRIBUTION.md).
 
 After installing a new or updated channel, open a fresh Plexi pane before testing
 completion behavior. Existing zsh sessions may keep an old completion cache; if
@@ -73,54 +66,15 @@ my-project/.plexi-rc-010/config.toml
 That config affects preferences only. It does not change release tier. The
 running binary name decides release-gated feature availability.
 
-## Bare CLI Shim
+## CLI launchers
 
-On macOS, `/usr/local/bin/plexi` is a contextual shim, not a direct symlink to
-the stable app-bundle binary. The real stable binary remains:
-
-```text
-/Applications/Plexi.app/Contents/MacOS/plexi
-```
-
-When `PLEXI_CHANNEL` is set inside a Plexi PTY and the matching
-`/usr/local/bin/plexi-$PLEXI_CHANNEL` binary exists, the shim delegates to that
-channel binary with the original arguments. Otherwise it falls back to the
-stable app-bundle binary.
-
-Examples:
-
-```sh
-# inside a beta PTY
-plexi app browse      # runs plexi-beta app browse
-
-# inside an rc-010 PTY
-plexi app browse      # runs plexi-rc-010 app browse, stable-tier gates apply
-
-# outside Plexi
-plexi app browse      # runs stable Plexi
-```
-
-Host commands that use `PLEXI_SOCKET`, such as `plexi pane info`, route to the
-running instance. Binary-local behavior, such as config paths, workspace paths,
-update/install behavior, and release gates, comes from whichever binary the
-shim executes.
+The contextual bare command and channel-scoped launchers are defined in
+[Distribution contract](DISTRIBUTION.md).
 
 ## Release Tags
 
-Three lanes publish GitHub releases with downloadable binary assets. For v1,
-each release requires `plexi-linux-x64.tar.gz`, `plexi-macos-arm64.tar.gz`, and
-`plexi-windows-x64.zip`, each with a matching SHA-256 sidecar.
-`plexi-macos-x64.tar.gz` is a best-effort optional asset: do not describe it as
-published unless it is present on that release. The release workflow builds the
-archives and publishes the assets for the tag; installers and self-update use
-the matching asset rather than building the tagged source locally. See
-[v1 binary install](../docs/v1-binary-install.md) and
-[Release artifacts](../docs/release-artifacts.md) for the install and artifact
-contracts.
-
-Alpha assets are intentionally unsigned and not notarized. Their archive
-checksums provide install-time integrity verification; the OS warning flow is
-documented in [Opening an unsigned Plexi build](../docs/unsigned-install.md).
+The package requirements, unsigned policy and publication gates live in
+[Distribution contract](DISTRIBUTION.md).
 
 | Lane | Tag scheme | Branch tagged from |
 |---|---|---|
@@ -176,21 +130,5 @@ just promote main install
 
 ## Channel Update Policy
 
-A binary updates only to releases its channel accepts. The policy lives in
-`UpdateChannel::accepts` (`src/cli/release_resolver.rs`); the table below mirrors
-it.
-
-| Binary channel | Accepts |
-|---|---|
-| `plexi` (stable) | stable only |
-| `plexi-beta` | beta + stable |
-| `plexi-alpha`, `plexi-pr-*` | alpha + beta + stable |
-
-`plexi update` lists all published tags (not just `/latest`), filters by the running
-binary's channel, picks the highest SemVer candidate newer than the current
-version, and installs that release's matching verified binary asset. The install
-target channel is always the running binary's channel — updating `plexi-alpha`
-to a stable tag still installs as `alpha`.
-
-Do not use `plexi-beta update` to test unreleased alpha work — beta never
-accepts alpha tags.
+Release selection, channel acceptance, immutable identity and rollback are
+defined in [Distribution contract](DISTRIBUTION.md).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: scripts/channel-clean-merged.sh
-# Removes app bundle, CLI binary, and profile directory for any PR build
+# Removes recorded installation files and retains user data for any PR build
 # whose GitHub PR is no longer open. Reports orphaned worktrees. Requires gh CLI.
 set -euo pipefail
 
@@ -9,47 +9,18 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 
 command -v gh >/dev/null 2>&1 || { echo "error: gh CLI is required for merged channel cleanup"; exit 1; }
 
-found=0
-for profile in "$HOME"/.plexi-pr-*/; do
-    [[ -d "$profile" ]] || continue
-    num=$(basename "$profile" | sed 's/\.plexi-pr-//')
-    if [[ ! "$num" =~ ^[0-9]+$ ]]; then
-        echo "Skipping invalid PR directory: $profile"
-        continue
-    fi
-    state=$(gh pr view "$num" --json state -q '.state' 2>/dev/null || echo "NOTFOUND")
-    if [[ "$state" != "OPEN" ]]; then
-        found=1
-        echo "PR #$num ($state) — cleaning..."
-        "$SCRIPT_DIR/channel-clean.sh" "pr-${num}"
-    else
-        echo "PR #$num (OPEN) — skipping"
-    fi
-done
-
-if [[ $found -eq 0 ]]; then
-    echo "Nothing to clean"
-fi
-
-# Clean orphaned bin symlinks (profile dir may already be gone)
-for bin in /usr/local/bin/plexi-pr-*; do
-    [[ -L "$bin" ]] || continue
-    if [[ ! -e "$bin" ]]; then
-        rm -f "$bin"
-        echo "Removed dead symlink: $bin"
-    fi
-done
-
-# Clean orphaned app bundles
-for app in /Applications/Plexi\ PR*.app; do
-    [[ -d "$app" ]] || continue
-    num=$(echo "$app" | sed 's|.*/Plexi PR\([0-9]*\)\.app|\1|')
-    state=$(gh pr view "$num" --json state -q '.state' 2>/dev/null || echo "NOTFOUND")
-    if [[ "$state" != "OPEN" ]]; then
-        "$SCRIPT_DIR/channel-clean.sh" "pr-${num}"
-        echo "Removed orphaned app: $app"
-    fi
-done
+installed="$(bash "$SCRIPT_DIR/distribution-tool.sh" list)"
+channels="$(printf '%s' "$installed" | uv run --no-project --python 3.11 python -c 'import json,sys; print("\n".join(r["channel"] for r in json.load(sys.stdin) if r["channel"].startswith("pr-")))')"
+while IFS= read -r channel; do
+    [[ "$channel" =~ ^pr-[0-9]+$ ]] || continue
+    num="${channel#pr-}"
+    state=$(gh pr view "$num" --json state -q '.state')
+    case "$state" in
+        CLOSED|MERGED) bash "$SCRIPT_DIR/channel-clean.sh" "$channel" ;;
+        OPEN) echo "PR #$num (OPEN) — skipping" ;;
+        *) echo "Unknown state for PR #$num; retained." >&2; exit 1 ;;
+    esac
+done <<< "$channels"
 
 # Remove orphaned feature/fix worktrees with no open PR
 echo ""

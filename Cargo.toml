@@ -1,5 +1,5 @@
 [workspace]
-members = ["tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-bundle", "crates/daw-tools", "crates/video-model"]
+members = ["crates/distribution", "tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-bundle", "crates/daw-tools", "crates/video-model"]
 exclude = ["apps/wasm-poc"]
 resolver = "2"
 
@@ -18,13 +18,15 @@ osx_minimum_system_version = "12.0"
 # `cpal::Stream::play()` call. Without this string the prompt is suppressed
 # and capture silently records zeros (#277).
 osx_info_plist_exts = ["assets/Info.plist.fragment"]
-resources = ["sdk/python/plexi_sdk", "assets/python"]
+resources = ["sdk/python/plexi_sdk"]
 
 [[bin]]
 name = "plexi"
 path = "src/main.rs"
 
 [dependencies]
+tempfile = "3"
+plexi-distribution = { path = "crates/distribution" }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 # Keep the core egui crates on one patch generation; their renderer and test
@@ -188,7 +190,6 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [dev-dependencies]
-tempfile = "3"
 # DAW release gate (stint 0519): the host test build drives the pure-model
 # fuzzer (via the `gate` feature) and the offline render engine, so
 # `cargo test --bin plexi` covers every tier. Neither ships in the host binary.
@@ -202,3 +203,6 @@ accesskit_consumer = { path = "deps/accesskit_consumer-0.38.0" }
 # Vendored because upstream 0.23 still hardcodes egui's compact TextEdit margin,
 # always shows a transparent copy button over code, and omits link underlines.
 egui_commonmark_backend = { path = "deps/egui_commonmark_backend-0.23.0" }
+
+[build-dependencies]
+sha2 = "0.10"

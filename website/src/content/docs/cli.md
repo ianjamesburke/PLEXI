@@ -1404,20 +1404,22 @@ Walk through macOS pane controls inside a live pane. Requires macOS and a Plexi 
 
 ## `plexi update`
 
-Update the Plexi binary for this channel
-
-## `plexi uninstall`
-
-Uninstalls the app, CLI, and optionally your profile data.
-
-Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi), and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets, and app configurations — you will be asked whether to keep it.
-
-Example: plexi uninstall
+Update this channel's managed package, or restore its previous generation
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
-| `--yes` / `-y` | flag | no | Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set) |
+| `--rollback` | flag | no | Restore the retained previous package through the installation transaction |
+
+## `plexi uninstall`
+
+Remove this channel's recorded package and launchers. User data is retained.
+
+Files outside the installation receipt, including development binaries and other channels, are preserved.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--keep-data` | flag | no | Retain user data (the default; accepted for compatibility) |
+| `--yes` / `-y` | flag | no | Remove this channel without a confirmation prompt |
 
 ## `plexi host`
 

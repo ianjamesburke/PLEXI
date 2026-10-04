@@ -390,6 +390,9 @@ pub enum AppRequest {
     /// over PLEXI_SOCKET.
     SetPaneTitle { pane_id: u64, name: String },
 
+    /// Return the running executable's immutable build identity.
+    GetBuildInfo { response_file: String },
+
     /// List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.
     ListPanes {
         response_file: String,

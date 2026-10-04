@@ -205,20 +205,21 @@ pub enum Commands {
     /// Walk through macOS pane controls inside a live pane.
     /// Requires macOS and a Plexi pane (PLEXI_PANE_ID must be set).
     Demo,
-    /// Update the Plexi binary for this channel.
-    Update,
-    /// Uninstalls the app, CLI, and optionally your profile data.
+    /// Update this channel's managed package, or restore its previous generation.
+    Update {
+        /// Restore the retained previous package through the installation transaction
+        #[arg(long)]
+        rollback: bool,
+    },
+    /// Remove this channel's recorded package and launchers. User data is retained.
     ///
-    /// Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi),
-    /// and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets,
-    /// and app configurations — you will be asked whether to keep it.
-    ///
-    /// Example: plexi uninstall
+    /// Files outside the installation receipt, including development binaries
+    /// and other channels, are preserved.
     Uninstall {
-        /// Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk
+        /// Retain user data (the default; accepted for compatibility)
         #[arg(long = "keep-data")]
         keep_data: bool,
-        /// Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set)
+        /// Remove this channel without a confirmation prompt
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },

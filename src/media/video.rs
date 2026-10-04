@@ -1080,15 +1080,13 @@ mod tests {
         handle
             .set_state(VideoState::Play)
             .expect("play must succeed");
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let resumed = {
-            let mut n = 0;
-            while ring.pop().is_some() {
-                n += 1;
-            }
-            n
-        };
-        assert!(resumed > 0, "after resume frames must flow again");
+        // Worker scheduling is asynchronous: observe delivery with a bounded
+        // deadline rather than assuming a loaded CI runner schedules it in 120 ms.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while ring.pop().is_none() {
+            assert!(std::time::Instant::now() < deadline, "after resume frames must flow again");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
 
         // Seek anywhere — must not error.
         handle

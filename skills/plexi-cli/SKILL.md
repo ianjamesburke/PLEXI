@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.
-skill_version: "5.0.3"
+skill_version: "5.0.4"
 plexi_version: "0.3.4"
-last_verified: "2026-09-16"
+last_verified: "2026-10-03"
 ---
 
 # Plexi CLI
@@ -16,6 +16,13 @@ and connection are supplied automatically. For app state and host state, use the
 CLI or app SDK; do not inspect Plexi profile files directly.
 
 ## Feature map
+
+- **Host launch** — `plexi host start --ephemeral --timeout-secs 15` waits for
+  application readiness within its startup budget. A timeout returns nonzero;
+  the spawned host may still be running, so inspect `plexi host status --json`
+  before retrying. Status reports `ready`, `pane_count`, `pid`, and `socket`;
+  on Windows the PID comes from the named-pipe owner. Capture process exit and
+  stdout/stderr EOF with a deadline when driving CLI commands from a script.
 
 - **Panes** — create terminals, control their input and focus, inspect them, and
   coordinate work: `plexi pane --help`. Running a command in another pane:
@@ -211,3 +218,20 @@ NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to insp
   --scope context --timeout 30)
 plexi notify dismiss "$NOTICE"
 ```
+
+## Installation health
+
+`plexi host status --json` distinguishes the invoking CLI, installed package and
+running host by build identity. `plexi doctor --json` reports package validation
+and identity mismatches, including a running host newer than a rolled-back install.
+
+```bash
+plexi update
+plexi update --rollback
+plexi uninstall --yes
+```
+
+Updates preserve the installation channel and custom destination. Rollback restores
+the retained previous package; restart the host to use it. Uninstall removes this
+channel's recorded package and launchers and retains user data. It preserves other
+channels and unrelated development binaries.

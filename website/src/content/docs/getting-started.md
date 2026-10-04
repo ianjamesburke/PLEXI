@@ -27,7 +27,7 @@ checkout instead.
 curl -fsSL https://plexiapp.com/install | bash
 ```
 
-This downloads the current Linux x64 alpha release. It requires `bash`, `curl`,
+This downloads the current Linux x64 stable release. It requires `bash`, `curl`,
 `tar`, and `sha256sum` (or `shasum`), and installs into user-owned directories.
 Plexi supports X11 sessions; Wayland is not supported. This is not an apt, yay,
 AUR, Flatpak, AppImage, `.deb`, or `.rpm` package.
@@ -40,10 +40,10 @@ keyring. Hardware video decoding is not implemented on Linux.
 Run this in Windows PowerShell 5.1 or later:
 
 ```powershell
-irm https://raw.githubusercontent.com/ianjamesburke/PLEXI/alpha/scripts/install-windows.ps1 | iex
+irm https://plexiapp.com/install.ps1 | iex
 ```
 
-This downloads the current Windows x64 alpha release, verifies its SHA-256
+This downloads the current Windows x64 stable release, verifies its SHA-256
 checksum, and does not require Rust or Visual Studio. It does not build from
 source. The installer adds its user-owned command directory to the user `PATH`
 and records the installed tag; Windows shell completions are TBD. The Unix
@@ -52,7 +52,7 @@ and records the installed tag; Windows shell completions are TBD. The Unix
 ### Source builds and unsigned releases
 
 From a macOS or Linux checkout, use `scripts/install.sh --from-source alpha` to
-build and install from source; it requires Rust and Python 3. Windows has no
+build and install from source; it requires Rust, just, uv and Python 3.11. Windows has no
 equivalent source-install script. All alpha builds are unsigned and not
 notarized. Follow the [unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md)
 before bypassing a Gatekeeper or SmartScreen warning. Linux users who unpack an
