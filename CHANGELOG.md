@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.5] — 2026-10-04
+
+### Changes
+- fix(release): prepare versions without publishing or updating dependencies
+- fix(distribution): make packages runnable and installations recoverable (#2672)
 ## [0.3.4] — 2026-10-03
 
 ### Changes
