@@ -88,7 +88,7 @@ fi
 # ── bump Cargo.toml ───────────────────────────────────────────────────────────
 
 sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$TREE/Cargo.toml"
-(cd "$TREE" && cargo generate-lockfile --quiet 2>/dev/null || cargo generate-lockfile)
+(cd "$TREE" && cargo update --workspace)
 
 # ── bump Python SDK ───────────────────────────────────────────────────────────
 
@@ -122,7 +122,8 @@ echo "Generating changelog..."
 # ── update generated docs ─────────────────────────────────────────────────────
 
 echo "Regenerating CLI docs..."
-(cd "$TREE" && just gen-cli-docs)
+(cd "$TREE" && bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- \
+    bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs)
 
 # ── commit ────────────────────────────────────────────────────────────────────
 
