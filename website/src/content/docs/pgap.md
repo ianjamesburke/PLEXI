@@ -520,6 +520,15 @@ Derive one auditable working/idle/blocked verdict from the pane's agent detector
 | `pane_id` | `integer` | yes |
 | `response_file` | `string` | yes |
 
+### `voice_control`
+
+Session-only continuous voice control. Starting explicitly authorizes finalized transcripts to OpenRouter and narrow ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `operation` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `get_pane_state`
 
 Query the last-rendered UI state of a pane. Sent by `plexi pane state`. For app panes: host writes a versioned `seman...
