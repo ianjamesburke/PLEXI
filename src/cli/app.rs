@@ -1930,24 +1930,29 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
 
 /// Submit one turn to the host Assistant and print its terminal JSON envelope.
 pub fn assistant_send_cli(
-    text: &str,
+    text: Option<&str>,
     request_id: Option<&str>,
     pane_id: Option<u64>,
     context_id: Option<u64>,
     conversation: Option<&str>,
     join_desktop: bool,
+    status_for: Option<&str>,
 ) -> i32 {
     let request_id = request_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
+    if let Some(turn_id) = status_for {
+        log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
+    }
     let payload = serde_json::json!({
         "type": "submit_assistant_turn",
-        "text": text,
+        "text": text.unwrap_or(""),
         "request_id": request_id,
         "response_file": response_file,
         "pane_id": pane_id,
         "context_id": context_id,
         "conversation_id": conversation,
         "join_desktop": join_desktop,
+        "status_for": status_for,
     });
     let content = match super::request_with(payload, "assistant-send", "assistant send", std::time::Duration::from_secs(120)) { Ok(content) => content, Err(code) => return code };
     println!("{content}");

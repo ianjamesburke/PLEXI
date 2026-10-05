@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.8"
+skill_version: "5.0.9"
 plexi_version: "0.3.5"
 last_verified: "2026-10-05"
 ---
@@ -66,8 +66,9 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `--desktop` to join the desktop conversation. A desktop turn that finishes
   while the command is in flight is not attributed to it. When a permission
   sheet is already pending, the JSON state is `waiting_for_permission` with
-  `status` and `pending_request_id`, returned immediately. Approval stays on
-  the desktop.
+  `status` and `pending_request_id` (the turn that owns the sheet), returned
+  immediately. Approval stays on the desktop. `--status-for <turn-id>` reads
+  the finished status of that pending turn and does not submit a new prompt.
 - **App tools** — call a tool a running app exposes and get its JSON result:
   `plexi app call <app_id> <tool> --input '<json object>'`. It uses the same
   dispatcher as the Assistant, scoped to your pane's context. The app sees
@@ -136,7 +137,7 @@ registry
 note
 notes
 assistant send
-  --text --request-id --pane-id --context-id --json --conversation --desktop
+  --text --request-id --pane-id --context-id --json --conversation --desktop --status-for
 ```
 
 ### Test a desktop OAuth connector against the local stub issuer

@@ -339,6 +339,7 @@ pub trait App: Send {
         _response_file: String,
         _conversation_id: Option<String>,
         _join_desktop: bool,
+        _status_for: Option<String>,
     ) -> Result<(), String> {
         Err("this app does not accept external turns".to_string())
     }

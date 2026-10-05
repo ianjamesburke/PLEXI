@@ -75,24 +75,32 @@ impl AiBroker for GatedBroker {
     }
 }
 
-/// Asks for a non-read-only host tool so the real permission sheet opens,
-/// then returns a reply the phone must not receive.
+/// Asks for a non-read-only host tool so the real permission sheet opens.
+/// A denial becomes the turn error. An approval returns a reply the desktop
+/// transcript must not receive.
 struct AskingBroker;
 
 impl AiBroker for AskingBroker {
     fn dispatch(
         &self,
         request: AiBrokerRequest,
-        _on_delta: &mut dyn FnMut(TurnDelta<'_>),
+        on_delta: &mut dyn FnMut(TurnDelta<'_>),
     ) -> AiBrokerResponse {
         if let Some(dispatcher) = &request.tool_dispatcher {
-            let _ = dispatcher.dispatch_call(
+            let result = dispatcher.dispatch_call(
                 "call-1".to_string(),
                 "host.files.write",
                 r#"{"path":"x","content":"y"}"#.to_string(),
             );
+            if let Some(error) = result.error {
+                if error.contains("denied") {
+                    return AiBrokerResponse::err(error);
+                }
+            }
         }
-        AiBrokerResponse::ok("should-not-reach-phone".to_string(), 1, 1)
+        let reply = "approved-reply";
+        on_delta(TurnDelta::Text(reply));
+        AiBrokerResponse::ok(reply.to_string(), 1, 1)
     }
 }
 
@@ -122,6 +130,20 @@ fn submit_to(
         context_id: None,
         conversation_id: conversation_id.map(str::to_string),
         join_desktop,
+        status_for: None,
+    });
+}
+
+fn status_for(h: &HostHarness, path: &Path, request_id: &str, turn_id: &str) {
+    h.inject_ipc(AppRequest::SubmitAssistantTurn {
+        text: String::new(),
+        request_id: request_id.to_string(),
+        response_file: path.to_string_lossy().into_owned(),
+        pane_id: None,
+        context_id: None,
+        conversation_id: None,
+        join_desktop: false,
+        status_for: Some(turn_id.to_string()),
     });
 }
 
@@ -252,6 +274,7 @@ fn assistant_send_returns_pending_permission_without_hanging() {
             tool: "host.files.write".to_string(),
             input_summary: "path=x".to_string(),
             selected: 0,
+            source: None,
         });
     }
     let (_dir, path) = response_path();
@@ -288,18 +311,100 @@ fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
         "the desktop sheet stays up"
     );
 
+    let prompt = h
+        .assistant_mut(pane)
+        .model
+        .pending_permission
+        .as_ref()
+        .unwrap()
+        .prompt_line();
+    assert!(
+        prompt.contains("requested from a phone/CLI turn"),
+        "{prompt}"
+    );
+
+    let (_dir, next_path) = response_path();
+    submit(&h, &next_path, "phone-next", "while the sheet is up");
+    let next = pump_until_file(&mut h, &next_path);
+    let next: serde_json::Value = serde_json::from_str(&next).unwrap();
+    assert_eq!(next["request_id"], "phone-next");
+    assert_eq!(next["state"], "waiting_for_permission");
+    assert_eq!(next["pending_request_id"], turn_id);
+    assert_ne!(next["pending_request_id"], "phone-next");
+
     h.assistant_mut(pane).resolve_permission(PermissionChoice::Deny);
-    let started = Instant::now();
-    while h.assistant_mut(pane).model.streaming.in_flight {
-        h.hidden_frame();
-        assert!(started.elapsed() < Duration::from_secs(5), "turn did not finish after deny");
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    h.hidden_frame();
+    let outcome = poll_until_settled(&mut h, &turn_id);
+    assert_eq!(outcome["state"], "failed");
+    assert!(
+        outcome["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("denied"),
+        "{outcome}"
+    );
     let after = std::fs::read_to_string(&path).unwrap();
     let after: serde_json::Value = serde_json::from_str(&after).unwrap();
     assert_eq!(after["state"], "waiting_for_permission");
     assert!(after.get("reply").is_none());
+    let assistant = h.assistant_mut(pane);
+    assert!(
+        assistant
+            .model
+            .turns
+            .iter()
+            .all(|turn| !turn.text.contains("denied by user")),
+        "a phone denial must not land in the desktop transcript"
+    );
+    let side = assistant
+        .side_transcripts
+        .get("phone-session")
+        .expect("phone conversation");
+    assert!(
+        side.iter().any(|turn| turn.text.contains("denied by user")),
+        "the deny row belongs in the phone conversation: {side:?}"
+    );
+}
+
+fn poll_until_settled(h: &mut HostHarness, turn_id: &str) -> serde_json::Value {
+    let started = Instant::now();
+    loop {
+        let (_dir, path) = response_path();
+        status_for(h, &path, "poll", turn_id);
+        let body = pump_until_file(h, &path);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if value["state"] != "waiting_for_permission" {
+            return value;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "permission outcome never left waiting"
+        );
+        h.hidden_frame();
+    }
+}
+
+#[test]
+fn assistant_send_status_poll_returns_the_reply_after_desktop_approval() {
+    let mut h = HostHarness::new();
+    let pane = h.add_assistant_pane_with_broker(0, Arc::new(AskingBroker));
+    let (_dir, path) = response_path();
+    submit(&h, &path, "phone-allow", "write a file");
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let turn_id = value["turn_id"].as_str().unwrap().to_string();
+    assert_eq!(value["pending_request_id"], turn_id);
+
+    h.assistant_mut(pane).resolve_permission(PermissionChoice::AllowOnce);
+    let outcome = poll_until_settled(&mut h, &turn_id);
+    assert_eq!(outcome["state"], "succeeded");
+    assert_eq!(outcome["reply"], "approved-reply");
+    assert_eq!(outcome["turn_id"], turn_id);
+    assert!(h
+        .assistant_mut(pane)
+        .model
+        .turns
+        .iter()
+        .all(|turn| !turn.text.contains("approved-reply")));
 }
 
 struct HistoryBroker {

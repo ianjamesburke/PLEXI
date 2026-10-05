@@ -90,6 +90,9 @@ use crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH;
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
 const ASSISTANT_ACTOR_ID: &str = "assistant";
 
+/// Shown on the desktop permission sheet when the ask came from a phone or CLI turn.
+const PHONE_TURN_SOURCE: &str = "phone/CLI";
+
 /// Outcome of one completed Assistant turn, sent back from the worker thread.
 struct TurnOutcome {
     conversation_id: String,
@@ -104,6 +107,12 @@ struct TurnOutcome {
 struct ExternalWait {
     request_id: String,
     response_file: String,
+    conversation_id: String,
+}
+
+/// Isolated phone/CLI turn that opened the desktop permission sheet.
+struct IsolatedPermissionOwner {
+    turn_id: String,
     conversation_id: String,
 }
 
@@ -580,6 +589,18 @@ pub struct AssistantApp {
     side_flow_rx: Receiver<ToolFlowEvent>,
     /// Turn id of the isolated turn currently in the broker, if any.
     side_in_flight: Option<String>,
+    /// Conversation id of `side_in_flight`.
+    side_conversation: Option<String>,
+    /// Phone/CLI turn that owns the open permission sheet, when the desktop
+    /// conversation did not open it.
+    permission_owner: Option<IsolatedPermissionOwner>,
+    /// Set for the duration of one isolated `handle_host_call` so a subscribe
+    /// ask is labeled as a phone/CLI turn without a second dispatcher.
+    host_call_from_isolated: bool,
+    /// Turn ids a caller was told are `waiting_for_permission`. The finished
+    /// turn's JSON is kept under `external_outcomes` for a later status poll.
+    outcome_interest: HashSet<String>,
+    external_outcomes: HashMap<String, serde_json::Value>,
     side_queue: VecDeque<QueuedIsolated>,
     /// Live deltas from the in-flight turn's worker thread.
     delta_rx: Option<Receiver<StreamDelta>>,
@@ -741,6 +762,11 @@ impl AssistantApp {
             side_flow_tx,
             side_flow_rx,
             side_in_flight: None,
+            side_conversation: None,
+            permission_owner: None,
+            host_call_from_isolated: false,
+            outcome_interest: HashSet::new(),
+            external_outcomes: HashMap::new(),
             side_queue: VecDeque::new(),
             delta_rx: None,
             flow_tx,
@@ -934,6 +960,7 @@ impl AssistantApp {
                     for turn_id in stranded {
                         self.deliver_external_turn(
                             &turn_id,
+                            None,
                             &Err(
                                 "cancelled: the conversation was cleared mid-turn".to_string(),
                             ),
@@ -1527,6 +1554,8 @@ impl AssistantApp {
         input_json: &str,
         reply: SyncSender<ToolCallResult>,
     ) {
+        let from_isolated = self.host_call_from_isolated;
+        self.host_call_from_isolated = false;
         if tool == HOST_TOOL_BUILD_RUN {
             self.handle_build_run(input_json, reply);
             return;
@@ -1616,8 +1645,13 @@ impl AssistantApp {
                     }
                     Decision::Ask => {
                         log::info!("assistant: permission sheet shown for stream '{target}'");
-                        self.model
-                            .permission_requested(HOST_TOOL_SUBSCRIBE, &target);
+                        if from_isolated {
+                            self.open_isolated_permission_sheet(HOST_TOOL_SUBSCRIBE, &target);
+                        } else {
+                            self.permission_owner = None;
+                            self.model
+                                .permission_requested(HOST_TOOL_SUBSCRIBE, &target);
+                        }
                         self.pending_subscribe = Some(PendingSubscribe {
                             app,
                             event,
@@ -1664,6 +1698,7 @@ impl AssistantApp {
         let isolated = isolated_messages.is_some();
         if isolated {
             self.side_in_flight = Some(turn_id.clone());
+            self.side_conversation = Some(conversation_id.clone());
         } else {
             self.model.active_turn_id = Some(turn_id.clone());
         }
@@ -1689,6 +1724,7 @@ impl AssistantApp {
             log::error!("assistant: no active or default agent available for dispatch");
             if isolated {
                 self.side_in_flight = None;
+                self.side_conversation = None;
             }
             self.fail_turn_before_dispatch(
                 &conversation_id,
@@ -1847,6 +1883,7 @@ impl AssistantApp {
             log::error!("assistant: failed to spawn turn thread: {e}");
             if isolated {
                 self.side_in_flight = None;
+                self.side_conversation = None;
             }
             self.fail_turn_before_dispatch(
                 &conversation_id,
@@ -1858,16 +1895,104 @@ impl AssistantApp {
 
     /// Answer an external wait and close the turn without a worker outcome.
     fn fail_turn_before_dispatch(&mut self, conversation_id: &str, turn_id: &str, error: String) {
-        self.deliver_external_turn(turn_id, &Err(error.clone()));
+        self.deliver_external_turn(turn_id, Some(conversation_id), &Err(error.clone()));
         let effects = self.model.finish_turn(conversation_id, Err(error));
         self.execute_effects(effects);
     }
 
-    /// Write the JSON envelope for every external caller registered on `turn_id`.
-    fn deliver_external_turn(&mut self, turn_id: &str, result: &Result<String, String>) {
-        let Some(waiters) = self.external_replies.remove(turn_id) else {
+    /// Turn id the open permission sheet belongs to. A phone/CLI sheet wins
+    /// over a desktop turn that happens to still be in flight.
+    fn pending_sheet_turn_id(&self) -> Option<String> {
+        self.permission_owner
+            .as_ref()
+            .map(|owner| owner.turn_id.clone())
+            .or_else(|| self.model.active_turn_id.clone())
+    }
+
+    /// Remember that a caller is waiting on `turn_id` so a later poll can
+    /// read the finished status instead of staying at `waiting`.
+    fn note_permission_wait(&mut self, turn_id: &str) {
+        if turn_id.is_empty() {
             return;
+        }
+        self.outcome_interest.insert(turn_id.to_string());
+    }
+
+    fn remember_external_outcome(
+        &mut self,
+        turn_id: &str,
+        conversation_id: Option<&str>,
+        result: &Result<String, String>,
+    ) {
+        if !self.outcome_interest.remove(turn_id) {
+            return;
+        }
+        let mut body = match result {
+            Ok(text) => serde_json::json!({
+                "turn_id": turn_id,
+                "state": "succeeded",
+                "reply": text,
+            }),
+            Err(error) => serde_json::json!({
+                "turn_id": turn_id,
+                "state": "failed",
+                "error": error,
+            }),
         };
+        if let Some(conversation_id) = conversation_id {
+            body["conversation_id"] = serde_json::Value::String(conversation_id.to_string());
+        }
+        log::info!(
+            "assistant: recorded external permission outcome turn_id={turn_id} state={}",
+            body["state"].as_str().unwrap_or("")
+        );
+        self.external_outcomes.insert(turn_id.to_string(), body);
+    }
+
+    /// Answer a later poll for a turn that already returned `waiting_for_permission`.
+    fn reply_external_status(&mut self, request_id: &str, response_file: &str, turn_id: &str) {
+        let body = if let Some(outcome) = self.external_outcomes.get(turn_id) {
+            let mut body = outcome.clone();
+            body["request_id"] = serde_json::Value::String(request_id.to_string());
+            log::info!(
+                "assistant: external status poll turn_id={turn_id} state={}",
+                body["state"].as_str().unwrap_or("")
+            );
+            body
+        } else if self.outcome_interest.contains(turn_id)
+            || self
+                .permission_owner
+                .as_ref()
+                .is_some_and(|owner| owner.turn_id == turn_id)
+            || self.model.active_turn_id.as_deref() == Some(turn_id)
+            || self.side_in_flight.as_deref() == Some(turn_id)
+        {
+            log::info!("assistant: external status poll still waiting turn_id={turn_id}");
+            waiting_for_permission_json(request_id, Some(turn_id), turn_id)
+        } else {
+            log::info!("assistant: external status poll unknown turn_id={turn_id}");
+            serde_json::json!({
+                "request_id": request_id,
+                "turn_id": turn_id,
+                "state": "failed",
+                "error": format!("no pending request {turn_id}"),
+            })
+        };
+        crate::rpc::write_json_response(response_file, body);
+    }
+
+    /// Write the JSON envelope for every external caller registered on `turn_id`.
+    fn deliver_external_turn(
+        &mut self,
+        turn_id: &str,
+        conversation_id: Option<&str>,
+        result: &Result<String, String>,
+    ) {
+        let waiters = self.external_replies.remove(turn_id).unwrap_or_default();
+        let conversation_id = conversation_id
+            .map(str::to_string)
+            .or_else(|| waiters.first().map(|waiter| waiter.conversation_id.clone()));
+        self.remember_external_outcome(turn_id, conversation_id.as_deref(), result);
         for waiter in waiters {
             let body = match result {
                 Ok(text) => serde_json::json!({
@@ -1897,13 +2022,14 @@ impl AssistantApp {
     /// A permission sheet is up. External callers would otherwise sit in the
     /// CLI timeout until someone answers on the desktop.
     fn release_external_waiters_for_pending_permission(&mut self) {
-        let Some(turn_id) = self.model.active_turn_id.clone() else {
+        let Some(turn_id) = self.pending_sheet_turn_id() else {
             return;
         };
         self.release_external_waiters_for_turn(&turn_id);
     }
 
     fn release_external_waiters_for_turn(&mut self, turn_id: &str) {
+        self.note_permission_wait(turn_id);
         let Some(waiters) = self.external_replies.remove(turn_id) else {
             return;
         };
@@ -1975,7 +2101,7 @@ impl AssistantApp {
                 (None, Some(error)) => Err(error),
                 (None, None) => Err("broker returned neither content nor error".to_string()),
             };
-            self.deliver_external_turn(&outcome.turn_id, &result);
+            self.deliver_external_turn(&outcome.turn_id, Some(&outcome.conversation_id), &result);
             let effects = self.model.finish_turn(&outcome.conversation_id, result);
             self.execute_effects(effects);
         }
@@ -2063,6 +2189,7 @@ impl AssistantApp {
                 reply,
             } => {
                 log::info!("assistant: permission sheet shown for '{tool}'");
+                self.permission_owner = None;
                 self.model
                     .permission_requested(&tool, &summarize_input(&input_json));
                 self.pending_reply = Some(reply);
@@ -2281,8 +2408,62 @@ impl AssistantApp {
             ),
         }
         self.pending_connector_actor = None;
+        self.commit_permission_sheet(choice, &pending.tool);
+    }
+
+    /// Clear the sheet. A phone/CLI denial is recorded on that conversation,
+    /// not on the desktop transcript.
+    fn commit_permission_sheet(&mut self, choice: PermissionChoice, tool: &str) {
+        let owner = self.permission_owner.take();
         let effects = self.model.permission_resolved(choice);
         self.execute_effects(effects);
+        if let Some(owner) = owner.filter(|_| choice == PermissionChoice::Deny) {
+            self.append_isolated_deny(&owner, tool);
+        }
+    }
+
+    fn open_isolated_permission_sheet(&mut self, tool: &str, input_summary: &str) {
+        let turn_id = self.side_in_flight.clone().unwrap_or_default();
+        let conversation_id = self.side_conversation.clone().unwrap_or_default();
+        log::info!(
+            "assistant: permission sheet for phone/CLI turn '{tool}' turn_id={turn_id} conversation_id={conversation_id}"
+        );
+        self.model
+            .permission_requested_with_source(tool, input_summary, Some(PHONE_TURN_SOURCE));
+        if !turn_id.is_empty() {
+            self.permission_owner = Some(IsolatedPermissionOwner {
+                turn_id,
+                conversation_id,
+            });
+        }
+    }
+
+    fn append_isolated_deny(&mut self, owner: &IsolatedPermissionOwner, tool: &str) {
+        let text = format!("{tool} — denied by user");
+        log::info!(
+            "assistant: phone/CLI deny row conversation_id={} turn_id={} tool={tool}",
+            owner.conversation_id, owner.turn_id
+        );
+        if !self.side_transcripts.contains_key(&owner.conversation_id) {
+            let loaded = self.store.load_turns(&owner.conversation_id);
+            self.side_transcripts
+                .insert(owner.conversation_id.clone(), loaded);
+        }
+        let turns = self
+            .side_transcripts
+            .get_mut(&owner.conversation_id)
+            .expect("phone conversation inserted");
+        turns.push(model::Turn::tool(text, model::ToolStatus::Failed));
+        let snapshot = turns.clone();
+        if let Err(error) = self
+            .store
+            .write_turns(&owner.conversation_id, &snapshot)
+        {
+            log::error!(
+                "assistant: failed to persist phone/CLI deny row conversation_id={}: {error}",
+                owner.conversation_id
+            );
+        }
     }
 
     /// Apply the user's permission-sheet decision for an ask-gated
@@ -2341,8 +2522,7 @@ impl AssistantApp {
             )
         };
         let _ = reply.send(result);
-        let effects = self.model.permission_resolved(choice);
-        self.execute_effects(effects);
+        self.commit_permission_sheet(choice, HOST_TOOL_SUBSCRIBE);
     }
 
     fn record_connector_grant(
@@ -3699,13 +3879,16 @@ impl AssistantApp {
                 );
             }
             ToolFlowEvent::HostCall { tool, input_json, reply } => {
+                self.host_call_from_isolated = true;
                 self.handle_host_call(&tool, &input_json, reply);
             }
             ToolFlowEvent::Ask { tool, input_json, actor_id, actor_scope, reply } => {
                 let turn_id = self.side_in_flight.clone().unwrap_or_default();
-                log::info!("assistant: isolated turn permission sheet for '{tool}' turn_id={turn_id}");
-                if self.model.pending_permission.is_none() && self.pending_reply.is_none() {
-                    self.model.permission_requested(&tool, &summarize_input(&input_json));
+                if self.model.pending_permission.is_none()
+                    && self.pending_reply.is_none()
+                    && self.pending_subscribe.is_none()
+                {
+                    self.open_isolated_permission_sheet(&tool, &summarize_input(&input_json));
                     self.pending_reply = Some(reply);
                     self.pending_connector_actor = Some((actor_id, actor_scope));
                 } else {
@@ -3721,12 +3904,13 @@ impl AssistantApp {
 
     fn finish_isolated_turn(&mut self, outcome: TurnOutcome) {
         self.side_in_flight = None;
+        self.side_conversation = None;
         let result = match (outcome.text, outcome.error) {
             (Some(text), _) => Ok(text),
             (None, Some(error)) => Err(error),
             (None, None) => Err("broker returned neither content nor error".to_string()),
         };
-        self.deliver_external_turn(&outcome.turn_id, &result);
+        self.deliver_external_turn(&outcome.turn_id, Some(&outcome.conversation_id), &result);
         let mut turns = self.side_transcripts.remove(&outcome.conversation_id).unwrap_or_default();
         match &result {
             Ok(text) if !text.trim().is_empty() => {
@@ -3770,7 +3954,12 @@ impl App for AssistantApp {
         response_file: String,
         conversation_id: Option<String>,
         join_desktop: bool,
+        status_for: Option<String>,
     ) -> Result<(), String> {
+        if let Some(turn_id) = status_for.as_deref() {
+            self.reply_external_status(&request_id, &response_file, turn_id);
+            return Ok(());
+        }
         if text.trim().is_empty() {
             return Err("text must not be empty".to_string());
         }
@@ -3779,10 +3968,9 @@ impl App for AssistantApp {
         }
         if self.model.pending_permission.is_some() || self.pending_subscribe.is_some() {
             let pending_request_id = self
-                .model
-                .active_turn_id
-                .clone()
+                .pending_sheet_turn_id()
                 .unwrap_or_else(|| request_id.clone());
+            self.note_permission_wait(&pending_request_id);
             log::info!(
                 "assistant: external turn waiting for desktop approval request_id={request_id} pending_request_id={pending_request_id}"
             );

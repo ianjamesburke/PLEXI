@@ -203,6 +203,35 @@ class StubServerTest(unittest.TestCase):
             self.assertEqual(receipt["status"], "waiting for approval on desktop (turn-desk)")
             self.assertNotIn("error", receipt)
 
+    def test_host_backend_polls_until_the_desktop_decision_lands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$arg\" = \"--status-for\" ]; then\n"
+                "    printf '%s\\n' '{\"request_id\":\"host-wait\",\"turn_id\":\"turn-desk\",\"state\":\"succeeded\",\"reply\":\"desktop said yes\"}'\n"
+                "    exit 0\n"
+                "  fi\n"
+                "done\n"
+                "printf '%s\\n' '{\"request_id\":\"host-wait\",\"state\":\"waiting_for_permission\","
+                "\"status\":\"waiting for approval on desktop\",\"pending_request_id\":\"turn-desk\"}'\n"
+            )
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-wait", "hello"))
+            deadline = time.time() + 3
+            reply = None
+            while time.time() < deadline:
+                reply = next((event for event in store.events if event.get("kind") == "assistant_reply"), None)
+                if reply:
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(reply)
+            self.assertEqual(reply["text"], "desktop said yes")
+            self.assertEqual(reply["turn_id"], "turn-desk")
+            self.assertEqual(store.receipts["host-wait"]["state"], "succeeded")
+
 
 class AddressDiscoveryTest(unittest.TestCase):
     def test_select_urls_prefers_default_wifi_then_tailscale(self) -> None:

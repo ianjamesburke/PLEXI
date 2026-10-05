@@ -127,6 +127,23 @@ pub struct PendingPermission {
     /// Keyboard cursor over `PermissionChoice::ORDER`, so Tab/arrow nav can
     /// move it and Enter can activate whatever it lands on.
     pub selected: usize,
+    /// Set when a phone or CLI turn opened the sheet. Desktop asks leave this
+    /// empty so the sheet copy stays the desktop sentence.
+    pub source: Option<String>,
+}
+
+impl PendingPermission {
+    /// Sentence the desktop sheet shows for this ask.
+    pub fn prompt_line(&self) -> String {
+        let base = format!(
+            "assistant (medium) wants to run the app tool '{}'",
+            self.tool
+        );
+        match &self.source {
+            Some(source) => format!("{base} — requested from a {source} turn"),
+            None => base,
+        }
+    }
 }
 
 /// What the user chose on the permission sheet.
@@ -1022,10 +1039,22 @@ impl AssistantModel {
     /// The cursor starts on `Deny` (`ORDER`'s last slot) — the safe default
     /// if the user reflexively hits Enter without looking.
     pub fn permission_requested(&mut self, tool: &str, input_summary: &str) {
+        self.permission_requested_with_source(tool, input_summary, None);
+    }
+
+    /// `source` is the visible origin, such as `phone/CLI`, when the ask did
+    /// not come from the desktop conversation.
+    pub fn permission_requested_with_source(
+        &mut self,
+        tool: &str,
+        input_summary: &str,
+        source: Option<&str>,
+    ) {
         self.pending_permission = Some(PendingPermission {
             tool: tool.to_string(),
             input_summary: input_summary.to_string(),
             selected: PermissionChoice::ORDER.len() - 1,
+            source: source.map(str::to_string),
         });
     }
 
@@ -1061,6 +1090,9 @@ impl AssistantModel {
             return Vec::new();
         };
         match choice {
+            // A phone/CLI ask records its deny row on that conversation.
+            // The desktop transcript stays untouched.
+            PermissionChoice::Deny if pending.source.is_some() => Vec::new(),
             PermissionChoice::Deny => {
                 self.push_flight_turn(Turn::tool(
                     format!("{} — denied by user", pending.tool),
@@ -1844,6 +1876,24 @@ mod tests {
 
         // Resolving with no pending sheet is a no-op.
         assert!(m.permission_resolved(PermissionChoice::Deny).is_empty());
+    }
+
+    #[test]
+    fn permission_prompt_names_a_phone_turn_and_keeps_its_deny_off_the_desktop() {
+        let mut m = AssistantModel::fresh();
+        m.permission_requested("host.files.write", "path=x");
+        let desktop = m.pending_permission.as_ref().unwrap().prompt_line();
+        assert!(desktop.contains("host.files.write"));
+        assert!(!desktop.contains("phone"));
+
+        let before = m.turns.len();
+        m.permission_requested_with_source("host.files.write", "path=x", Some("phone/CLI"));
+        let phone = m.pending_permission.as_ref().unwrap().prompt_line();
+        assert!(phone.contains("requested from a phone/CLI turn"));
+        let effects = m.permission_resolved(PermissionChoice::Deny);
+        assert!(effects.is_empty());
+        assert_eq!(m.turns.len(), before);
+        assert!(m.turns.iter().all(|turn| !turn.text.contains("denied by user")));
     }
 
     #[test]

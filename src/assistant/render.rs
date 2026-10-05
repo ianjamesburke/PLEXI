@@ -654,12 +654,9 @@ impl AssistantRenderer {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.set_max_width(ui.available_width());
                     ui.label(
-                        RichText::new(format!(
-                            "assistant (medium) wants to run the app tool '{}'",
-                            pending.tool
-                        ))
-                        .size(style::TEXT_BODY)
-                        .color(colors.text_primary),
+                        RichText::new(pending.prompt_line())
+                            .size(style::TEXT_BODY)
+                            .color(colors.text_primary),
                     );
                 });
                 if !pending.input_summary.is_empty() {

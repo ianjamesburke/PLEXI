@@ -290,8 +290,8 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, conversation.as_deref(), desktop))
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, status_for, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(text.as_deref(), request_id.as_deref(), pane_id, context_id, conversation.as_deref(), desktop, status_for.as_deref()))
                         }
                     },
                     Commands::Run {

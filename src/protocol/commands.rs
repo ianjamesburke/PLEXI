@@ -97,6 +97,10 @@ pub enum AppRequest {
         /// Opt in to the desktop Assistant transcript. Default is a separate conversation.
         #[serde(default)]
         join_desktop: bool,
+        /// Read the finished status of a turn that already returned
+        /// `waiting_for_permission`. Does not submit a new prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_for: Option<String>,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
