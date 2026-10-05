@@ -214,6 +214,7 @@ pub mod app_check;
 pub mod app_state;
 pub mod completions;
 pub mod config_cli;
+pub mod connector;
 pub mod context_cli;
 pub mod demo;
 pub mod descriptor;
@@ -1261,6 +1262,7 @@ pub use app::{
     app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
+pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,

@@ -16,6 +16,7 @@ mod broker;
 mod cli;
 
 mod config;
+mod connectors;
 mod distribution;
 mod editor;
 mod features;
@@ -271,7 +272,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -403,6 +404,30 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::workspace_secret_delete(&friendly_name, global))
                         }
                     },
+                    Commands::Connector { cmd } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Connectors);
+                        std::process::exit(match cmd {
+                            ConnectorCmd::Login {
+                                connector,
+                                issuer,
+                                no_browser,
+                                timeout,
+                                surface,
+                            } => cli::connector_login_cli(
+                                &connector,
+                                issuer.as_deref(),
+                                no_browser,
+                                timeout,
+                                surface,
+                            ),
+                            ConnectorCmd::Status { connector, surface } => {
+                                cli::connector_status_cli(&connector, surface)
+                            }
+                            ConnectorCmd::Revoke { connector, surface } => {
+                                cli::connector_revoke_cli(&connector, surface)
+                            }
+                        })
+                    }
                     Commands::App { cmd } => {
                         match cmd {
                             AppCmd::Open {
