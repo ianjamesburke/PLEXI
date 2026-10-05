@@ -128,6 +128,9 @@ else
 fi
 
 export PLEXI_RELAY_URL="$URL"
+# A previous run leaves a code in this file. Redeeming it against a fresh
+# relay is a 404, and curl -f hides the body.
+rm -f "$PROFILE/relay-status.json"
 "$BIN" relay connect --url "$URL" >"$LOG.connect" 2>&1 &
 CONNECT_PID=$!
 STATUS="$PROFILE/relay-status.json"
@@ -143,8 +146,8 @@ for _ in $(seq 1 80); do
 done
 if [[ -n "$CODE" ]]; then pass "pairing code"; else fail "pairing code" "status never showed a code"; fi
 
-REDEEM="$(curl -sf -X POST "$BASE/api/pair" -H 'content-type: application/json' -d "{\"code\":\"$CODE\",\"label\":\"curl-phone\"}" || true)"
-if python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("status")=="pending_desktop" else 1)' "$REDEEM"; then
+REDEEM="$(curl -s -X POST "$BASE/api/pair" -H 'content-type: application/json' -d "{\"code\":\"$CODE\",\"label\":\"curl-phone\"}" || true)"
+if [[ -n "$REDEEM" ]] && python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("status")=="pending_desktop" else 1)' "$REDEEM"; then
   pass "phone redeem"
 else
   fail "phone redeem" "$REDEEM"
@@ -182,6 +185,7 @@ post_turn() {
 
 saw_reply() {
   local page="$1" id="$2" needle="$3"
+  [[ -n "$page" ]] || return 1
   python3 -c 'import json,sys; page=json.loads(sys.argv[1]); rid, needle = sys.argv[2], sys.argv[3];
 raise SystemExit(0 if any(e.get("kind")=="assistant_reply" and e.get("request_id")==rid and needle in (e.get("text") or "") for e in page.get("events") or []) else 1)' "$page" "$id" "$needle"
 }
@@ -201,7 +205,7 @@ if [[ "$CODE_TOOL" == "202" ]]; then pass "approval turn accepted"; else fail "a
 WAIT_OK=""
 for _ in $(seq 1 160); do
   PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"
-  if python3 -c 'import json,sys; page=json.loads(sys.argv[1]);
+  if [[ -n "$PAGE" ]] && python3 -c 'import json,sys; page=json.loads(sys.argv[1]);
 raise SystemExit(0 if any(e.get("request_id")=="req-approve" and e.get("state")=="waiting_for_permission" and "waiting on desktop" in (e.get("status") or "") for e in page.get("events") or []) else 1)' "$PAGE"; then
     WAIT_OK=1
     break
@@ -249,6 +253,7 @@ if [[ -n "$EXPIRED" ]]; then pass "ttl purge"; else fail "ttl purge" "held turn 
 # Desktop is back only so revoke can be sent on the socket.
 "$BIN" host start --pane 'cwd=/tmp' --timeout-secs 30 >"$LOG.host2" 2>&1 || true
 "$BIN" app open assistant >"$LOG.open2" 2>&1 || true
+rm -f "$STATUS"
 "$BIN" relay connect --url "$URL" >"$LOG.connect2" 2>&1 &
 CONNECT_PID=$!
 READY=""
