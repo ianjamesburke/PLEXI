@@ -21,6 +21,7 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `assistant-agent-mesh.md` | Per-context head agents, central memory drain, derived capability-card registry + `ask_question` routing, per-head testability, `plexi assistant` + picker + inter-agent receipts, MCP Apps pane + Tasks adoption | none yet |
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
 | `assistant-host-app.md` | Host assistant app spec | see file |
+| `cloud-assistant.md` | Intake envelope, receipts, chess tool contract, local simulated intake | none yet |
 | `browser-surface.md` | Native browser App pane, profiles, context binding, automation, and live validation | see file |
 | `context-root-uniqueness-and-rollup.md` | Duplicate-root hard stop + parent-dir todo rollup — design brief awaiting a ruling | 0679 |
 | `context-state-persistence-audit.md` | Why context-scoped app state does not survive a restart — findings and evidence | 0678 |

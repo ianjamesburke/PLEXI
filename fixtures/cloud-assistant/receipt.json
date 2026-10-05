@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "request_id": "req-fixture-e4",
+  "owner_id": "tenant-fixture",
+  "phase": "queued",
+  "conversation_id": "conversation-fixture"
+}

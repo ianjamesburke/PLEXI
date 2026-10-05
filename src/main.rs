@@ -14,6 +14,7 @@ mod app;
 mod assistant;
 mod broker;
 mod cli;
+mod cloud_assistant;
 
 mod config;
 mod distribution;
@@ -205,6 +206,7 @@ fn main() -> eframe::Result {
         .skip(1)
         .any(|a| !a.starts_with('-') && known_subcommands().contains(a.as_str()));
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    crate::cloud_assistant::log_contract();
     let frame_tick = crate::platform::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat

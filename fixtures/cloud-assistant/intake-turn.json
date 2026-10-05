@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "req-fixture-e4",
+  "host_id": "host-fixture",
+  "agent_id": "assistant-fixture",
+  "conversation_id": "conversation-fixture",
+  "expires_at": "2030-01-01T00:01:00Z",
+  "content": [{ "type": "text", "text": "In this game, play e2e4 as White, then let Black answer once." }],
+  "target": { "resource_id": "game-fixture", "expected_revision": 0 }
+}

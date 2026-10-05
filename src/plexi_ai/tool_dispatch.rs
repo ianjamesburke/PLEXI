@@ -39,18 +39,23 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::protocol::{AiTool, PlexiEvent};
 use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
+use crate::protocol::{AiTool, PlexiEvent};
 
 // ── AppEventSender ──────────────────────────────────────────────────────────
 
 /// Thin wrapper that lets external code send `PlexiEvent`s into a pane's
 /// stdin channel without exposing the `StdinItem` enum publicly.
+pub(crate) type InProcessHandler = Arc<dyn Fn(&PlexiEvent) -> Result<(), String> + Send + Sync>;
+
 pub(crate) enum AppEventSender {
     #[cfg(test)]
     Channel(std::sync::mpsc::Sender<String>),
     Python(crate::host::wasm_python::AppendableStdin),
     Wasm(crate::host::wasm_pane::WasmInputSender),
+    /// In-process provider. Invoked on the `dispatch_call` thread while the
+    /// registry mutex is held, so the handler must not re-enter registration.
+    InProcess(InProcessHandler),
 }
 
 impl AppEventSender {
@@ -100,6 +105,7 @@ impl AppEventSender {
                     caller_id.clone(),
                 )
             }
+            Self::InProcess(handler) => handler(event),
         }
     }
 }

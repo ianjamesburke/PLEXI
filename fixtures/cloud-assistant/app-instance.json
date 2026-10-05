@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "instance_id": "chess-instance-fixture",
+  "app_id": "chess",
+  "resource_id": "game-fixture",
+  "background_policy": "continue",
+  "view": { "state": "attached", "device": "desktop", "observed_at": "2030-01-01T00:00:00Z" }
+}
