@@ -77,7 +77,10 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Agents** — install workspace definitions and report or inspect agent state:
   `plexi agent --help`. `agent report --event` preserves a provider lifecycle
   event separately from its UI state; `--blocked-reason` supplies a typed reason.
-  Read `agent report --help` before using these optional fields.
+  Read `agent report --help` before using these optional fields. When a managed
+  Pi hook is installed, Pi's built-in MCP client automatically receives the
+  pane-scoped host MCP endpoint, so context-reachable app tools are available as
+  Pi MCP tools without configuring a second tool protocol.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
