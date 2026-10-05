@@ -101,6 +101,12 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   the singleton host MCP config for this pane's scoped credential (exposes event
   tools and `<app_id>__<tool>` for live apps in the pane's workspace):
   `plexi events --help`.
+- **Phone relay** — pair a phone with this desktop through the relay service
+  and route phone turns into `assistant send` on conversation `phone-<host>`:
+  `plexi relay --help`. The phone never approves irreversible actions.
+- **Assistant turns** — submit a prompt and wait for the reply:
+  `plexi assistant send --help`. `--conversation-id` keeps a phone turn off the
+  desktop conversation.
 
 The release gate verifies these feature-map entry points:
 
@@ -125,6 +131,12 @@ account
 registry
 note
 notes
+relay
+relay connect [--url <relay>]
+relay confirm [pairing-id]
+relay revoke <device-id>
+relay status
+assistant send --text <prompt> [--request-id <id>] [--conversation-id <id>] [--json]
 ```
 
 ### Test a desktop OAuth connector against the local stub issuer

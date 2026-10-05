@@ -10,6 +10,7 @@ The request body loosely follows the proposed turn envelope
 need reshaping when the real intake contract lands.
 
 Run: python3 clients/phone-web/server.py [--host 127.0.0.1] [--port 8787]
+     python3 clients/phone-web/server.py --tailscale [--port 8787]
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import socket
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -162,6 +164,90 @@ def select_urls(primary: str | None, interfaces: list[tuple[str, str]]) -> list[
 
     add("this machine only", "127.0.0.1")
     return chosen
+
+
+class TailscaleUnavailable(RuntimeError):
+    """`tailscale ip -4` could not provide a bind address."""
+
+
+def select_tailscale_ipv4(output: str) -> str:
+    """First Tailscale IPv4 in `tailscale ip -4` stdout. No I/O."""
+    for line in output.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            parsed = ipaddress.IPv4Address(text)
+        except ipaddress.AddressValueError:
+            continue
+        if _is_tailscale(str(parsed)):
+            return str(parsed)
+    raise TailscaleUnavailable(
+        "`tailscale ip -4` did not return a Tailscale IPv4 (100.64.0.0/10). "
+        "Start the Tailscale app, then retry --tailscale."
+    )
+
+
+def magicdns_name_from_status(output: str) -> str | None:
+    """MagicDNS hostname from `tailscale status --json`, or None."""
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    self_info = payload.get("Self") if isinstance(payload, dict) else None
+    if not isinstance(self_info, dict):
+        return None
+    name = self_info.get("DNSName")
+    if not isinstance(name, str):
+        return None
+    cleaned = name.strip().rstrip(".")
+    if not re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+",
+        cleaned,
+    ):
+        return None
+    return cleaned
+
+
+def resolve_tailscale_endpoint(run: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> tuple[str, str | None]:
+    """Return (Tailscale IPv4, MagicDNS name or None).
+
+    The address always comes from `tailscale ip -4`. MagicDNS is read from
+    `tailscale status --json` when that command succeeds. `run` is injectable
+    and defaults to subprocess.run.
+    """
+    invoke = run or subprocess.run
+    try:
+        ip_result = invoke(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5, check=False)
+    except FileNotFoundError as exc:
+        raise TailscaleUnavailable(
+            "Tailscale is not available (`tailscale` was not found). "
+            "Install Tailscale, start it, then retry --tailscale."
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TailscaleUnavailable(
+            "Tailscale is not available (`tailscale ip -4` could not be run). "
+            "Start the Tailscale app, then retry --tailscale."
+        ) from exc
+    if ip_result.returncode != 0:
+        detail = (ip_result.stderr or ip_result.stdout or "").strip()
+        message = "Tailscale is not running (`tailscale ip -4` failed)."
+        if detail:
+            message += f" {detail}"
+        message += " Start the Tailscale app, then retry --tailscale."
+        raise TailscaleUnavailable(message)
+    address = select_tailscale_ipv4(ip_result.stdout or "")
+    return address, _magicdns_name(invoke)
+
+
+def _magicdns_name(invoke: Callable[..., subprocess.CompletedProcess[str]]) -> str | None:
+    try:
+        status = invoke(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if status.returncode != 0:
+        return None
+    return magicdns_name_from_status(status.stdout or "")
 
 
 def now() -> str:
@@ -406,15 +492,39 @@ def main() -> None:
     parser.add_argument("--backend", choices=("stub", "host"), default=os.getenv("PLEXI_PHONE_BACKEND", "stub"))
     parser.add_argument("--plexi-bin", default=os.getenv("PLEXI_BIN", "plexi"))
     parser.add_argument("--lan", action="store_true", default=os.getenv("PLEXI_PHONE_LAN") == "1")
+    parser.add_argument("--tailscale", action="store_true", default=os.getenv("PLEXI_PHONE_TAILSCALE") == "1",
+                        help="bind to this machine's Tailscale IPv4 (tailscale ip -4); optional alternative to the relay")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    host = "0.0.0.0" if args.lan else args.host
-    require_token = args.backend == "host" or host not in ("127.0.0.1", "::1", "localhost")
+    if args.tailscale and args.lan:
+        log.error("phone shell: use either --tailscale or --lan, not both")
+        sys.exit(2)
+    magicdns: str | None = None
+    if args.tailscale:
+        try:
+            host, magicdns = resolve_tailscale_endpoint()
+        except TailscaleUnavailable as exc:
+            log.error("phone shell Tailscale bind failed: %s", exc)
+            sys.exit(1)
+        log.info("phone shell binding to Tailscale IPv4 %s", host)
+    else:
+        host = "0.0.0.0" if args.lan else args.host
+    require_token = args.backend == "host" or args.tailscale or host not in ("127.0.0.1", "::1", "localhost")
     token = os.getenv("PLEXI_PHONE_TOKEN") or (secrets.token_urlsafe(32) if require_token else None)
     store = HostStore(args.plexi_bin) if args.backend == "host" else StubStore()
-    server = build_server(host, args.port, store, token)
+    try:
+        server = build_server(host, args.port, store, token)
+    except OSError as exc:
+        log.error("phone shell failed to bind %s:%d: %s", host, args.port, exc)
+        sys.exit(1)
     suffix = f"/?token={token}" if token else "/"
-    if host in ("127.0.0.1", "::1", "localhost"):
+    if args.tailscale:
+        urls = [("Tailscale", host)]
+        if magicdns:
+            urls.append(("MagicDNS", magicdns))
+        else:
+            log.info("phone shell MagicDNS name unavailable")
+    elif host in ("127.0.0.1", "::1", "localhost"):
         urls = [("this machine only", "127.0.0.1")]
     else:
         urls = select_urls(primary_ipv4(), interface_ipv4s())

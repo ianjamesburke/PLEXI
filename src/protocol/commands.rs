@@ -90,6 +90,10 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// When set, the turn runs in this conversation instead of whatever
+        /// the desktop currently has open. The phone relay uses `phone-<host>`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {

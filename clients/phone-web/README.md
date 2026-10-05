@@ -23,4 +23,6 @@ Host mode runs `plexi assistant send` locally and requires a bearer token even o
 
 With `--lan`, open the first URL labelled as the default-route LAN address on the phone. Bridge, VPN, and other virtual-interface addresses are skipped (except a Tailscale address when available).
 
-Not claimed: HTTPS, a relay, third-party logins, persistence, install prompts over LAN, or protection from observers on a plain HTTP LAN (the token is visible on that network).
+The default phone path is the relay (`services/relay/`), which serves this same page. `--tailscale` is an optional direct alternative: it binds to the address from `tailscale ip -4` and prints that URL (plus MagicDNS when `tailscale status --json` provides one).
+
+Not claimed: HTTPS on the local stub, third-party logins, persistence, install prompts over LAN, or protection from observers on a plain HTTP LAN (the token is visible on that network).

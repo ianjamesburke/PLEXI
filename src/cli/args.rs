@@ -46,6 +46,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
+    /// Pair a phone through the Plexi relay and deliver its messages to this desktop.
+    Relay {
+        #[command(subcommand)]
+        cmd: RelayCmd,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -279,9 +284,34 @@ pub enum AssistantCmd {
         pane_id: Option<u64>,
         #[arg(long)]
         context_id: Option<u64>,
+        /// Conversation to run the turn in. The phone relay passes its own id.
+        #[arg(long)]
+        conversation_id: Option<String>,
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum RelayCmd {
+    /// Connect outbound to a phone relay and forward paired messages to the Assistant.
+    Connect {
+        /// Relay websocket URL (`ws://` locally, `wss://` in production).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Confirm a phone that redeemed the pairing code shown by `relay connect`.
+    Confirm {
+        /// Pairing id. Omit to confirm the phone currently waiting.
+        pairing_id: Option<String>,
+    },
+    /// Revoke a paired phone. It must pair again and be confirmed.
+    Revoke {
+        /// Device id printed when the phone was confirmed.
+        device_id: String,
+    },
+    /// Print the desktop's relay status.
+    Status,
 }
 
 #[derive(Subcommand)]

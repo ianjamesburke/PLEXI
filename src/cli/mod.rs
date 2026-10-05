@@ -231,6 +231,8 @@ pub mod notify;
 pub mod open;
 pub mod pane;
 pub mod registry_watch;
+pub mod relay;
+mod relay_ws;
 pub mod release_resolver;
 pub mod routine;
 pub mod run;
@@ -1262,6 +1264,7 @@ pub use app::{
     app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
+pub use relay::{relay_confirm_cli, relay_connect_cli, relay_revoke_cli, relay_status_cli};
 pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{

@@ -95,6 +95,16 @@ struct TurnOutcome {
     error: Option<String>,
 }
 
+/// One external caller (`plexi assistant send`, including the phone relay)
+/// waiting for the turn that runs in `conversation_id`. A finished turn answers
+/// the oldest waiter for that conversation only, so a desktop turn cannot be
+/// written into a phone response file.
+struct ExternalWait {
+    request_id: String,
+    response_file: String,
+    conversation_id: String,
+}
+
 /// The worker's answer channel for one ask-gated tool call.
 enum PermissionReply {
     /// Run the call. `remember` lets the in-turn gate skip re-asking for the
@@ -495,7 +505,7 @@ pub struct AssistantApp {
     audit: AuditLog,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
-    external_replies: VecDeque<(String, String)>,
+    external_replies: VecDeque<ExternalWait>,
     /// Live deltas from the in-flight turn's worker thread.
     delta_rx: Option<Receiver<StreamDelta>>,
     flow_tx: Sender<ToolFlowEvent>,
@@ -1766,12 +1776,23 @@ impl AssistantApp {
                 (None, Some(error)) => Err(error),
                 (None, None) => Err("broker returned neither content nor error".to_string()),
             };
-            if let Some((request_id, response_file)) = self.external_replies.pop_front() {
+            let finished = outcome.conversation_id.clone();
+            if let Some(index) = self
+                .external_replies
+                .iter()
+                .position(|wait| wait.conversation_id == finished)
+            {
+                let wait = self.external_replies.remove(index).expect("waiter index");
+                let state = if result.is_ok() { "succeeded" } else { "failed" };
                 let reply = match &result {
-                    Ok(text) => serde_json::json!({"request_id": request_id, "state": "succeeded", "reply": text}),
-                    Err(error) => serde_json::json!({"request_id": request_id, "state": "failed", "error": error}),
+                    Ok(text) => serde_json::json!({"request_id": wait.request_id, "conversation_id": wait.conversation_id, "state": "succeeded", "reply": text}),
+                    Err(error) => serde_json::json!({"request_id": wait.request_id, "conversation_id": wait.conversation_id, "state": "failed", "error": error}),
                 };
-                crate::rpc::write_json_response(&response_file, reply);
+                crate::rpc::write_json_response(&wait.response_file, reply);
+                log::info!(
+                    "assistant: external turn reply request_id={} conversation_id={} state={state}",
+                    wait.request_id, wait.conversation_id
+                );
             }
             let effects = self.model.finish_turn(&outcome.conversation_id, result);
             self.execute_effects(effects);
@@ -3422,11 +3443,52 @@ impl App for AssistantApp {
     }
 
     fn submit_external_turn(&mut self, text: String, request_id: String, response_file: String) -> Result<(), String> {
+        self.submit_external_turn_in_conversation(text, request_id, response_file, None)
+    }
+
+    fn submit_external_turn_in_conversation(
+        &mut self,
+        text: String,
+        request_id: String,
+        response_file: String,
+        conversation_id: Option<String>,
+    ) -> Result<(), String> {
         if text.trim().is_empty() {
             return Err("text must not be empty".to_string());
         }
-        self.external_replies.push_back((request_id.clone(), response_file));
-        log::info!("assistant: external turn accepted request_id={request_id}");
+        if let Some(id) = conversation_id {
+            if self.model.conversation_id != id {
+                if self.model.streaming.in_flight {
+                    log::info!(
+                        "assistant: phone turn refused request_id={request_id} conversation_id={id} outcome=assistant_busy"
+                    );
+                    return Err("assistant_busy".to_string());
+                }
+                let previous = self.model.conversation_id.clone();
+                if let Err(error) = self.store.write_turns(&previous, &self.model.turns) {
+                    log::error!(
+                        "assistant: failed to save conversation {previous} before phone switch: {error}"
+                    );
+                    return Err("conversation_switch_failed".to_string());
+                }
+                let turns = self.store.load_turns(&id);
+                let effects = self.model.switch_conversation(id.clone(), turns);
+                self.execute_effects(effects);
+                log::info!(
+                    "assistant: phone conversation selected conversation_id={id} prior={previous} request_id={request_id}"
+                );
+            }
+        }
+        let conversation_id = self.model.conversation_id.clone();
+        self.external_replies.push_back(ExternalWait {
+            request_id: request_id.clone(),
+            response_file,
+            conversation_id: conversation_id.clone(),
+        });
+        log::info!(
+            "assistant: external turn accepted request_id={request_id} conversation_id={conversation_id} bytes={}",
+            text.len()
+        );
         let effects = self.model.submit_prompt(text);
         self.execute_effects(effects);
         Ok(())
@@ -3653,6 +3715,53 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn phone_turn_uses_its_own_conversation() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let desktop = app.model.conversation_id.clone();
+        app.model.turns.push(model::Turn::now(TurnRole::User, "desktop only"));
+        let response = ws.path().join("reply.json");
+        app.submit_external_turn_in_conversation(
+            "from the phone".into(),
+            "req-phone".into(),
+            response.display().to_string(),
+            Some("phone-host-1".into()),
+        )
+        .unwrap();
+        assert_eq!(app.model.conversation_id, "phone-host-1");
+        assert!(app.model.turns.iter().any(|turn| turn.text == "from the phone"));
+        assert!(!app.model.turns.iter().any(|turn| turn.text == "desktop only"));
+        let saved = app.store.load_turns(&desktop);
+        assert!(saved.iter().any(|turn| turn.text == "desktop only"));
+        wait_for_turn(&mut app);
+        let reply: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&response).unwrap()).unwrap();
+        assert_eq!(reply["request_id"], "req-phone");
+        assert_eq!(reply["conversation_id"], "phone-host-1");
+        assert_eq!(reply["state"], "succeeded");
+        assert_eq!(reply["reply"], "echo: ok");
+    }
+
+    #[test]
+    fn phone_turn_does_not_enter_an_in_flight_desktop_conversation() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let desktop = app.model.conversation_id.clone();
+        app.model.streaming.in_flight = true;
+        let error = app
+            .submit_external_turn_in_conversation(
+                "from the phone".into(),
+                "req-busy".into(),
+                ws.path().join("busy.json").display().to_string(),
+                Some("phone-host-1".into()),
+            )
+            .unwrap_err();
+        assert_eq!(error, "assistant_busy");
+        assert_eq!(app.model.conversation_id, desktop);
+        assert!(app.external_replies.is_empty());
     }
 
     /// Regression for the 0422 gate-fix follow-up: a tester's real build

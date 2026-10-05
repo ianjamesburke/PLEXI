@@ -22,6 +22,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 ## CLI Design Rules
 
 - **Namespace design:** verify a new command belongs in the right namespace. Place it where the noun already lives, not at top level.
+- **Phone relay is its own noun.** `plexi relay connect` is the outbound desktop client for `services/relay/`. Phone turns use `assistant send --conversation-id phone-<host>` and never share the desktop conversation. `--tailscale` on the local phone shell stays the optional direct path.
 - **Clap docs describe the command, not its history.** Do not put ticket or stint identifiers in clap doc comments.
 - **Pane naming:** always name panes after spawning them. Every `plexi pane new`, `plexi app open`, split, or new window should be followed by `plexi pane name <id> "descriptive name"`.
 - **Tips:** use `print_tip()` from `src/cli/mod.rs`. Never raw `eprintln!`. Respects `config.cli.tips` and `NO_COLOR`.

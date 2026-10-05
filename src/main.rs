@@ -274,7 +274,7 @@ fn main() -> eframe::Result {
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -287,9 +287,15 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation_id, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, conversation_id.as_deref()))
                         }
+                    },
+                    Commands::Relay { cmd } => match cmd {
+                        RelayCmd::Connect { url } => std::process::exit(cli::relay_connect_cli(url)),
+                        RelayCmd::Confirm { pairing_id } => std::process::exit(cli::relay_confirm_cli(pairing_id)),
+                        RelayCmd::Revoke { device_id } => std::process::exit(cli::relay_revoke_cli(&device_id)),
+                        RelayCmd::Status => std::process::exit(cli::relay_status_cli()),
                     },
                     Commands::Run {
                         command,

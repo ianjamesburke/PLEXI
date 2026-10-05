@@ -1928,14 +1928,65 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     }
 }
 
-/// Submit one turn to the host Assistant and print its terminal JSON envelope.
-pub fn assistant_send_cli(text: &str, request_id: Option<&str>, pane_id: Option<u64>, context_id: Option<u64>) -> i32 {
-    let request_id = request_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+/// Submit one turn to the host Assistant and return its JSON envelope.
+///
+/// `conversation_id` selects the phone relay's own conversation when set.
+/// The returned object includes `request_id` and, when the host has one,
+/// `turn_id`. Callers correlate on `request_id`.
+pub fn assistant_send_result(
+    text: &str,
+    request_id: Option<&str>,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    conversation_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let request_id = request_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
-    let payload = serde_json::json!({"type":"submit_assistant_turn","text":text,"request_id":request_id,"response_file":response_file,"pane_id":pane_id,"context_id":context_id});
-    let content = match super::request_with(payload, "assistant-send", "assistant send", std::time::Duration::from_secs(120)) { Ok(content) => content, Err(code) => return code };
-    println!("{content}");
-    match serde_json::from_str::<serde_json::Value>(&content) { Ok(value) if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") => 0, Ok(_) => 2, Err(_) => 1 }
+    let mut payload = serde_json::json!({
+        "type": "submit_assistant_turn",
+        "text": text,
+        "request_id": request_id,
+        "response_file": response_file,
+        "pane_id": pane_id,
+        "context_id": context_id,
+    });
+    if let Some(conversation_id) = conversation_id {
+        payload["conversation_id"] = serde_json::Value::String(conversation_id.to_string());
+    }
+    let content = super::request_with(
+        payload,
+        "assistant-send",
+        "assistant send",
+        std::time::Duration::from_secs(120),
+    )
+    .map_err(|code| format!("assistant_send_exit_{code}"))?;
+    serde_json::from_str(&content).map_err(|_| "assistant_send_bad_json".to_string())
+}
+
+/// Submit one turn to the host Assistant and print its terminal JSON envelope.
+pub fn assistant_send_cli(
+    text: &str,
+    request_id: Option<&str>,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    conversation_id: Option<&str>,
+) -> i32 {
+    match assistant_send_result(text, request_id, pane_id, context_id, conversation_id) {
+        Ok(value) => {
+            println!("{value}");
+            if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") {
+                0
+            } else {
+                2
+            }
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            1
+        }
+    }
 }
 
 #[cfg(test)]

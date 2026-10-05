@@ -175,5 +175,29 @@ class AddressDiscoveryTest(unittest.TestCase):
         self.assertEqual(server.parse_ip_o_ipv4(output), [("en0", "192.168.1.67"), ("lo", "127.0.0.1")])
 
 
+class TailscaleBindTests(unittest.TestCase):
+    def test_selects_first_tailscale_ipv4(self) -> None:
+        self.assertEqual(server.select_tailscale_ipv4("100.100.1.2\n"), "100.100.1.2")
+
+    def test_rejects_missing_tailscale_address(self) -> None:
+        with self.assertRaises(server.TailscaleUnavailable):
+            server.select_tailscale_ipv4("192.168.1.67\n")
+
+    def test_magicdns_from_status(self) -> None:
+        name = server.magicdns_name_from_status(json.dumps({"Self": {"DNSName": "mac.example.ts.net."}}))
+        self.assertEqual(name, "mac.example.ts.net")
+
+    def test_resolve_uses_injected_runner(self) -> None:
+        def run(argv, **_kwargs):
+            class Result:
+                returncode = 0
+                stdout = "100.64.0.8\n" if argv[:3] == ["tailscale", "ip", "-4"] else json.dumps({"Self": {"DNSName": "host.tail.ts.net."}})
+                stderr = ""
+            return Result()
+        address, name = server.resolve_tailscale_endpoint(run)
+        self.assertEqual(address, "100.64.0.8")
+        self.assertEqual(name, "host.tail.ts.net")
+
+
 if __name__ == "__main__":
     unittest.main()
