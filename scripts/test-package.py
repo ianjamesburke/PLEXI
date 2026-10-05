@@ -123,6 +123,16 @@ def main(args):
                     if re.search(r'^\s*PLEXI_DISTRIBUTION_OK\s*$', capture, re.M): break
                     if time.monotonic() > deadline: raise AssertionError('terminal never produced the expected output')
                     time.sleep(.2)
+                if os.name != 'nt' and not channel.startswith('pr-'):
+                    run([executable, 'pane', 'send', str(terminal), name + ' hos'])
+                    run([executable, 'pane', 'key', str(terminal), 'tab'])
+                    deadline = time.monotonic() + 15
+                    while True:
+                        capture = run([executable, 'pane', 'capture', str(terminal), '--plain'])
+                        if name + ' host' in capture: break
+                        if time.monotonic() > deadline: raise AssertionError('Tab did not complete the host subcommand')
+                        time.sleep(.2)
+                    run([executable, 'pane', 'key', str(terminal), 'ctrl+u'])
                 run([executable, 'app', 'open', 'calc'])
                 deadline = time.monotonic() + 60
                 while True:
