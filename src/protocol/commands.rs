@@ -80,6 +80,17 @@ pub struct PaneAgentState {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AppRequest {
+    /// Submit one text turn to an existing Assistant pane. The pane owns the
+    /// normal composer/model/grant path and writes the terminal JSON reply.
+    SubmitAssistantTurn {
+        text: String,
+        request_id: String,
+        response_file: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_id: Option<u64>,
+    },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
         request_id: String,
@@ -714,6 +725,23 @@ pub enum AppRequest {
         /// Optional extra arguments forwarded from the CLI.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
+    /// Call an app-exposed tool through the host tool dispatcher. Sent by
+    /// `plexi app call`. The host resolves the viewer context from
+    /// `caller_pane_id` (the active window's context when absent), stamps the
+    /// caller identity (`pane:<id>` or `user`), and writes
+    /// `{"ok":true,"output":<json>}` or `{"error":"..."}` to `response_file`
+    /// from a worker thread once the app answers or the host deadline passes.
+    CallAppTool {
+        app_id: String,
+        tool: String,
+        /// Tool input, a JSON object serialized as a string.
+        input_json: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },

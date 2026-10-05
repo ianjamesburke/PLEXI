@@ -16,6 +16,7 @@ mod broker;
 mod cli;
 
 mod config;
+mod connectors;
 mod distribution;
 mod editor;
 mod features;
@@ -271,7 +272,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -285,6 +286,11 @@ fn main() -> eframe::Result {
             }
             if let Some(cmd) = cli.command {
                 match cmd {
+                    Commands::Assistant { cmd } => match cmd {
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        }
+                    },
                     Commands::Run {
                         command,
                         extra_args,
@@ -403,6 +409,30 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::workspace_secret_delete(&friendly_name, global))
                         }
                     },
+                    Commands::Connector { cmd } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Connectors);
+                        std::process::exit(match cmd {
+                            ConnectorCmd::Login {
+                                connector,
+                                issuer,
+                                no_browser,
+                                timeout,
+                                surface,
+                            } => cli::connector_login_cli(
+                                &connector,
+                                issuer.as_deref(),
+                                no_browser,
+                                timeout,
+                                surface,
+                            ),
+                            ConnectorCmd::Status { connector, surface } => {
+                                cli::connector_status_cli(&connector, surface)
+                            }
+                            ConnectorCmd::Revoke { connector, surface } => {
+                                cli::connector_revoke_cli(&connector, surface)
+                            }
+                        })
+                    }
                     Commands::App { cmd } => {
                         match cmd {
                             AppCmd::Open {
@@ -691,6 +721,11 @@ fn main() -> eframe::Result {
                                 log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
                                 std::process::exit(cli::app_action_cli(pane_id, &action, &args));
                             }
+                            AppCmd::Call {
+                                app_id,
+                                tool,
+                                input,
+                            } => std::process::exit(cli::app_call_cli(&app_id, &tool, &input)),
                         }
                     }
                     Commands::Uninstall { keep_data, yes } => {

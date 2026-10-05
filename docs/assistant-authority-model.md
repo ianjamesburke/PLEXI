@@ -3,7 +3,7 @@
 Status: active.
 Stint: `0554`.
 Parent: [`assistant-host-app.md`](assistant-host-app.md).
-Last updated: 2026-07-27.
+Last updated: 2026-10-04.
 
 This is the authoritative threat model and capability design for the host Assistant. [`assistant-host-app.md`](assistant-host-app.md) owns the Assistant's product surface — agents, skills, slash commands, settings, UI, marketplace. This document owns the authority plane underneath it: what the Assistant is trusted to do, who decides, what a grant binds to, and what must be true before any new Assistant power ships.
 
@@ -227,3 +227,5 @@ Everything above is decided. The decisions below are provisional and are worth e
 **Destructive-command classes always ask, with no grant able to suppress the prompt.** This is a deliberate hole in the grant model: it makes some approvals unrepeatable by design. A user running a destructive command in a loop will feel it. The judgment call is whether the classifier's scope is drawn tightly enough that this is rare.
 
 **Terminal reads lose unprompted access.** Making terminal scrollback ask-gated is correct because injected secrets live in that environment, but it changes the feel of the Assistant noticeably — reading a terminal is currently free and frequent. A narrower alternative is unprompted reads only for terminals in the origin context that hold no injected secrets, which preserves most of the convenience and is meaningfully harder to reason about.
+
+**An out-of-process loop backend (Pi) under the same monitor.** The Runtime Boundary Decision keeps the loop in-process. [`assistant-host-app.md`](assistant-host-app.md) (*Backends, Tools, And MCP*) allows Pi as an additional backend whose tool calls cross the host MCP edge. Authority does not move: every call is evaluated in the host, with the same gated snapshot the in-process loop uses, and prompts render in the host. The trade is a serialized tool-call surface, which already exists for external agents, in exchange for Pi's loop. The ruling needed is whether that surface is acceptable for the first-party Assistant, and only after the gating-parity seam that document lists exists.

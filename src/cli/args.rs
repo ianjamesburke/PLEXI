@@ -41,6 +41,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Submit a text turn to the running host Assistant.
+    Assistant {
+        #[command(subcommand)]
+        cmd: AssistantCmd,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -73,6 +78,15 @@ pub enum Commands {
     Secret {
         #[command(subcommand)]
         cmd: SecretCmd,
+    },
+    /// Connect third-party services over OAuth.
+    ///
+    /// Sign-in runs in your browser; the resulting token is kept in the platform
+    /// secret store and is never printed — commands report only a credential
+    /// reference. Revoke removes it locally and at the issuer.
+    Connector {
+        #[command(subcommand)]
+        cmd: ConnectorCmd,
     },
     /// Manage workspace routines — scheduled shell commands.
     ///
@@ -251,6 +265,23 @@ pub enum Commands {
     /// List run completions (hidden, used by shell completions)
     #[command(hide = true, name = "_complete-run")]
     CompleteRun,
+}
+
+#[derive(Subcommand)]
+pub enum AssistantCmd {
+    /// Submit through the same composer, model, and permission path as the desktop Assistant.
+    Send {
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        request_id: Option<String>,
+        #[arg(long)]
+        pane_id: Option<u64>,
+        #[arg(long)]
+        context_id: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -473,6 +504,54 @@ pub enum SecretCmd {
         /// Delete from the global store instead of the project-scoped store
         #[arg(long)]
         global: bool,
+    },
+}
+
+/// Which host surface runs a connector sign-in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ConnectorSurface {
+    #[default]
+    Desktop,
+    /// Not yet supported: every operation reports so.
+    Mobile,
+}
+
+#[derive(Subcommand)]
+pub enum ConnectorCmd {
+    /// Sign in to a connector and store its credential.
+    ///
+    /// Opens the issuer's sign-in page in your browser and waits for it to redirect
+    /// back to a one-time loopback address. Prints the stored credential reference
+    /// as JSON. Exit 0 connected, 2 timed out, 1 denied or failed.
+    Login {
+        /// Connector id (currently only `stub`, a local test issuer)
+        connector: String,
+        /// Base URL of the stub issuer; must be a loopback address
+        #[arg(long)]
+        issuer: Option<String>,
+        /// Print the sign-in URL instead of opening a browser
+        #[arg(long)]
+        no_browser: bool,
+        /// Seconds to wait for the browser to redirect back
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
+    },
+    /// Show a connector's stored credential reference as JSON (never the token).
+    Status {
+        connector: String,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
+    },
+    /// Revoke a connector's credential at the issuer and delete it locally.
+    ///
+    /// The local credential is deleted even when the issuer cannot be reached;
+    /// that case exits 1 and says so.
+    Revoke {
+        connector: String,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
     },
 }
 
@@ -789,6 +868,26 @@ pub enum AppCmd {
         /// Optional arguments forwarded to the action handler
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Call a tool an app exposes and print its JSON result.
+    ///
+    /// Runs through the same tool dispatcher the Assistant uses, scoped to the
+    /// calling pane's context (the active context when run outside a pane).
+    /// The host stamps the caller identity: `pane:<id>` inside a pane, `user`
+    /// outside one. The app sees that identity, never one taken from the input.
+    /// Exits 1 with `error: <message>` when the tool or the app rejects the call.
+    ///
+    /// Example: plexi app call chess chess.state
+    /// Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
+    #[command(name = "call")]
+    Call {
+        /// App id that exposes the tool (from `plexi app info`)
+        app_id: String,
+        /// Tool name as the app declares it (e.g. `chess.state`)
+        tool: String,
+        /// Tool input as a JSON object
+        #[arg(long, default_value = "{}")]
+        input: String,
     },
 }
 

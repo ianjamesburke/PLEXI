@@ -862,6 +862,173 @@ mod tests {
         assert_eq!(status, 401, "closed-pane credentials must be revoked");
     }
 
+    /// A real Pi session reaches a context app tool through the Plexi-managed
+    /// Pi extension and this server — no second protocol. Pi's model is its
+    /// scripted `faux` provider, so the run needs no API key; the tool call
+    /// still crosses Pi's MCP client, the pane-scoped bearer, and
+    /// `ToolDispatcher` into the provider pane.
+    ///
+    /// Needs a Pi install (not in CI):
+    /// `PLEXI_PI_CLI=<pi-coding-agent>/dist/bundle/cli.js PLEXI_PI_PROBE_DIR=<dir with
+    /// node_modules/@earendil-works/pi-coding-agent> cargo test --bin plexi
+    /// pi_session_calls_context_app_tool -- --ignored`. `PLEXI_PI_RUNTIME`
+    /// defaults to `bun` (Pi's bundle needs Node >= 22.8 otherwise).
+    #[test]
+    #[ignore = "requires a Pi install; see doc comment"]
+    fn pi_session_calls_context_app_tool_through_host_mcp() {
+        use crate::protocol::{AiTool, PlexiEvent};
+        use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+        use std::process::{Command, Stdio};
+
+        let pi_cli = std::env::var("PLEXI_PI_CLI").expect("set PLEXI_PI_CLI to Pi's cli.js");
+        let probe_dir = PathBuf::from(
+            std::env::var("PLEXI_PI_PROBE_DIR")
+                .expect("set PLEXI_PI_PROBE_DIR to a dir whose node_modules has Pi"),
+        );
+        let runtime = std::env::var("PLEXI_PI_RUNTIME").unwrap_or_else(|_| "bun".to_string());
+
+        let (port, _test_token) = start_test_server(None);
+        let context = 300u64;
+        let caller_pane = 7_101u64;
+        let token = register_pane_credential(
+            caller_pane,
+            context,
+            PathBuf::from("/workspace/host-mcp-pi"),
+        );
+        let (provider_tx, provider_rx) = std::sync::mpsc::channel();
+        let (other_tx, _other_rx) = std::sync::mpsc::channel();
+        let tool = |name: &str| AiTool {
+            name: name.to_string(),
+            description: format!("probe tool {name}"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"square": {"type": "string"}},
+            }),
+            output_schema: serde_json::json!({"type": "object"}),
+            timeout_ms: Some(5_000),
+            read_only: false,
+        };
+        tool_dispatch::register(
+            7_102,
+            "pi-probe".to_string(),
+            vec![tool("move")],
+            AppEventSender::Channel(provider_tx),
+            test_provider_origin(context, 7_102),
+        );
+        tool_dispatch::register(
+            7_103,
+            "pi-other".to_string(),
+            vec![tool("secret")],
+            AppEventSender::Channel(other_tx),
+            test_provider_origin(context + 1, 7_103),
+        );
+
+        // Pi's MCP client will make this same request on startup. Assert the
+        // host boundary first so the real-session half below proves the call
+        // crosses that already-scoped boundary rather than a parallel path.
+        let (status, body) = post(
+            port,
+            Some(&token),
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        assert_eq!(status, 200);
+        let listed_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let listed: Vec<&str> = listed_json["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(listed.contains(&"pi-probe__move"));
+        assert!(!listed.contains(&"pi-other__secret"));
+
+        let responder = std::thread::spawn(move || {
+            let line = provider_rx
+                .recv_timeout(Duration::from_secs(60))
+                .expect("provider pane receives ToolCall from Pi");
+            let event: PlexiEvent = serde_json::from_str(line.trim()).unwrap();
+            let PlexiEvent::ToolCall {
+                call_id,
+                name,
+                input_json,
+                caller_id,
+            } = event
+            else {
+                panic!("expected ToolCall");
+            };
+            tool_dispatch::resolve_pending(
+                &call_id,
+                ToolCallResult::ok(r#"{"moved":"e4","revision":2}"#),
+            );
+            (name, input_json, caller_id)
+        });
+
+        let dir = tempfile::tempdir_in(&probe_dir).unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let plexi_ext = dir.path().join("plexi.ts");
+        std::fs::write(&plexi_ext, crate::cli::agent::pi_extension_script("true")).unwrap();
+        let faux_ext = dir.path().join("faux.ts");
+        std::fs::write(
+            &faux_ext,
+            r#"import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+
+export default function (pi: ExtensionAPI) {
+  const faux = fauxProvider({ provider: "plexi-probe", models: [{ id: "probe" }] });
+  faux.setResponses([
+    (context) => {
+      return fauxAssistantMessage(
+        [fauxToolCall("mcp__plexi__pi_probe__move", { square: "e4" })],
+        { stopReason: "toolUse" },
+      );
+    },
+    (context) => {
+      const result = [...context.messages].reverse().find((m: any) => m.role === "toolResult") as any;
+      const text = result?.content?.map((c: any) => c.text ?? "").join("") ?? "<none>";
+      return fauxAssistantMessage(`PROBE_RESULT ${result?.isError ? "error" : "ok"} ${text}`);
+    },
+  ]);
+  pi.registerProvider(faux.provider);
+}
+"#,
+        )
+        .unwrap();
+
+        let output = Command::new(&runtime)
+            .arg(&pi_cli)
+            .args(["-p", "--no-session", "--offline", "-ne", "-e", "builtin:mcp", "-e"])
+            .arg(&plexi_ext)
+            .arg("-e")
+            .arg(&faux_ext)
+            .args(["--provider", "plexi-probe", "--model", "probe", "move e4"])
+            .current_dir(dir.path())
+            .env("HOME", &home)
+            .env("PLEXI_HOST_MCP_PORT", port.to_string())
+            .env("PLEXI_HOST_MCP_TOKEN", &token)
+            .env_remove("PLEXI_SOCKET")
+            .env_remove("PLEXI_PANE_ID")
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn Pi");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "pi failed\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+        let (name, input_json, caller_id) = responder.join().unwrap();
+        assert_eq!(name, "move");
+        assert_eq!(input_json, r#"{"square":"e4"}"#);
+        assert_eq!(caller_id, format!("mcp:pane:{caller_pane}"));
+        assert!(
+            stdout.contains(r#"PROBE_RESULT ok {"moved":"e4","revision":2}"#),
+            "tool result must reach Pi's model: {stdout}\n{stderr}"
+        );
+
+        tool_dispatch::unregister(7_102);
+        tool_dispatch::unregister(7_103);
+        revoke_pane_credentials(caller_pane);
+    }
+
     /// End-to-end proof the MCP adapter is wired, not just that a host test can
     /// route in-process: subscribe via the tool, emit on the timeline, and the
     /// tool returns the event.

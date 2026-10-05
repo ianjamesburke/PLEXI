@@ -216,6 +216,24 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
+            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id } => {
+                let mut submitted = false;
+                let mut failure = None;
+                for window in &mut self.windows {
+                    if context_id.is_some_and(|id| window.context_id != id) { continue; }
+                    for (id, pane) in &mut window.panes {
+                        if pane_id.is_some_and(|wanted| wanted != *id) { continue; }
+                        let Some(app) = pane.as_app_mut() else { continue; };
+                        if app.runtime.type_id() != "assistant" { continue; }
+                        submitted = true;
+                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone()) { failure = Some(error); }
+                        break;
+                    }
+                    if submitted { break; }
+                }
+                if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
+                else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
+            }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;
@@ -2283,6 +2301,21 @@ impl PlexiApp {
                     };
                     write_response(rf, json.as_bytes());
                 }
+            }
+            crate::protocol::AppRequest::CallAppTool {
+                app_id,
+                tool,
+                input_json,
+                caller_pane_id,
+                response_file,
+            } => {
+                self.call_app_tool(
+                    app_id.clone(),
+                    tool.clone(),
+                    input_json.clone(),
+                    *caller_pane_id,
+                    response_file.clone(),
+                );
             }
             crate::protocol::AppRequest::SetAgentState {
                 pane_id,

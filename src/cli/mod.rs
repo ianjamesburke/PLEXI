@@ -214,6 +214,7 @@ pub mod app_check;
 pub mod app_state;
 pub mod completions;
 pub mod config_cli;
+pub mod connector;
 pub mod context_cli;
 pub mod demo;
 pub mod descriptor;
@@ -1256,11 +1257,12 @@ pub use agent::{
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_info, app_init, app_inspect_cli, app_install_package, app_install_with_pin,
+    app_action_cli, app_call_cli, assistant_send_cli, app_info, app_init, app_inspect_cli, app_install_package, app_install_with_pin,
     app_list, app_package_cli, app_prune_cli, app_render, app_test_cli, app_uninstall,
     app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
+pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,
