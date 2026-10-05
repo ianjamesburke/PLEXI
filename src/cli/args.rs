@@ -279,6 +279,13 @@ pub enum AssistantCmd {
         pane_id: Option<u64>,
         #[arg(long)]
         context_id: Option<u64>,
+        /// Caller-owned conversation. A phone session passes one stable id.
+        /// Omit to start a new conversation that is not the desktop transcript.
+        #[arg(long, conflicts_with = "desktop")]
+        conversation: Option<String>,
+        /// Append this turn to the desktop Assistant conversation.
+        #[arg(long, conflicts_with = "conversation")]
+        desktop: bool,
         #[arg(long)]
         json: bool,
     },

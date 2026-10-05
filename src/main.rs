@@ -1,4 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Window disposal proves `Send` for a type that owns both the Assistant pane
+// and wgpu resources. That check exceeds the default recursion limit.
+#![recursion_limit = "256"]
 // Ship-time panic-path protection. `todo!()` / `unimplemented!()` compile clean
 // but panic at runtime — e.g. 2026-04-18, the audio capture entry point was
 // `todo!()` and froze the GUI when a recorder app sent AudioCapture without
@@ -287,8 +290,8 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, conversation.as_deref(), desktop))
                         }
                     },
                     Commands::Run {

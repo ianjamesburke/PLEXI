@@ -248,19 +248,30 @@ fn probe_ollama() -> (bool, Vec<String>) {
     (true, models)
 }
 
+fn openrouter_env_name_from(ai: Option<&crate::config::AiConfig>) -> String {
+    ai.and_then(|ai| ai.openrouter.as_ref())
+        .and_then(|openrouter| openrouter.api_key_env.as_deref())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("OPENROUTER_API_KEY")
+        .to_string()
+}
+
+/// Same sources the broker uses to actually send a reply: the configured env
+/// var, workspace secrets, then the user keychain (canonical and legacy names).
 fn check_openrouter_configured() -> bool {
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        use crate::workspace::secrets::{keychain_user_name, system_store};
-        let store = system_store();
-        ["OPENROUTER_API_KEY", "openrouter-api-key"]
-            .iter()
-            .any(|name| store.get(&keychain_user_name(name)).is_some())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        false
-    }
+    let env_name = openrouter_env_name_from(crate::config::PlexiConfig::load().ai.as_ref());
+    let workspace = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::app::registry::resolve_workspace_root(&cwd));
+    let configured = crate::plexi_ai::broker::resolve_openrouter_api_key(&env_name, workspace.as_deref()).is_ok();
+    log::info!(
+        "cli:ai:doctor: openrouter env={env_name} configured={configured} workspace={}",
+        workspace
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    configured
 }
 
 // ── Model recommendation ──────────────────────────────────────────────────────
@@ -888,5 +899,19 @@ mod tests {
 
         assert!(guide.contains("ollama pull llama3.2:3b"));
         assert!(!guide.contains("ollama pull openrouter/"));
+    }
+
+    #[test]
+    fn openrouter_doctor_reads_the_configured_api_key_env() {
+        use crate::config::{AiConfig, OpenRouterBackendConfig};
+        assert_eq!(super::openrouter_env_name_from(None), "OPENROUTER_API_KEY");
+        let ai = AiConfig {
+            openrouter: Some(OpenRouterBackendConfig {
+                api_key_env: Some("MERIDIAN_API_KEY".to_string()),
+                ..OpenRouterBackendConfig::default()
+            }),
+            ..AiConfig::default()
+        };
+        assert_eq!(super::openrouter_env_name_from(Some(&ai)), "MERIDIAN_API_KEY");
     }
 }

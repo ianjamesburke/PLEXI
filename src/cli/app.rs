@@ -1929,10 +1929,26 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
 }
 
 /// Submit one turn to the host Assistant and print its terminal JSON envelope.
-pub fn assistant_send_cli(text: &str, request_id: Option<&str>, pane_id: Option<u64>, context_id: Option<u64>) -> i32 {
+pub fn assistant_send_cli(
+    text: &str,
+    request_id: Option<&str>,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+) -> i32 {
     let request_id = request_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
-    let payload = serde_json::json!({"type":"submit_assistant_turn","text":text,"request_id":request_id,"response_file":response_file,"pane_id":pane_id,"context_id":context_id});
+    let payload = serde_json::json!({
+        "type": "submit_assistant_turn",
+        "text": text,
+        "request_id": request_id,
+        "response_file": response_file,
+        "pane_id": pane_id,
+        "context_id": context_id,
+        "conversation_id": conversation,
+        "join_desktop": join_desktop,
+    });
     let content = match super::request_with(payload, "assistant-send", "assistant send", std::time::Duration::from_secs(120)) { Ok(content) => content, Err(code) => return code };
     println!("{content}");
     match serde_json::from_str::<serde_json::Value>(&content) { Ok(value) if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") => 0, Ok(_) => 2, Err(_) => 1 }

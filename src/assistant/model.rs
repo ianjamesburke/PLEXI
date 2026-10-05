@@ -294,7 +294,7 @@ pub enum AssistantOverlay {
     },
 }
 
-fn new_conversation_id() -> String {
+pub(crate) fn new_conversation_id() -> String {
     format!("conv-{}", uuid::Uuid::new_v4())
 }
 

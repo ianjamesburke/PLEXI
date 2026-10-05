@@ -216,7 +216,7 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id } => {
+            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, conversation_id, join_desktop } => {
                 let mut submitted = false;
                 let mut failure = None;
                 for window in &mut self.windows {
@@ -226,7 +226,7 @@ impl PlexiApp {
                         let Some(app) = pane.as_app_mut() else { continue; };
                         if app.runtime.type_id() != "assistant" { continue; }
                         submitted = true;
-                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone()) { failure = Some(error); }
+                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone(), conversation_id.clone(), *join_desktop) { failure = Some(error); }
                         break;
                     }
                     if submitted { break; }

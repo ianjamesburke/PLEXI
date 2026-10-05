@@ -28,6 +28,7 @@ import socket
 import subprocess
 import sys
 import threading
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -320,6 +321,8 @@ class HostStore(StubStore):
     def __init__(self, plexi_bin: str) -> None:
         super().__init__()
         self.plexi_bin = plexi_bin
+        # Stable for this server process, and not the desktop Assistant transcript.
+        self.conversation_id = f"phone-{uuid.uuid4()}"
 
     def submit(self, envelope: dict) -> tuple[int, dict]:
         status, receipt = super().submit(envelope)
@@ -338,7 +341,11 @@ class HostStore(StubStore):
         turn_id = None
         status = None
         try:
-            proc = subprocess.run([self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id, "--json"], capture_output=True, text=True, timeout=120, check=False)
+            proc = subprocess.run(
+                [self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id,
+                 "--conversation", self.conversation_id, "--json"],
+                capture_output=True, text=True, timeout=120, check=False,
+            )
             if not proc.stdout.strip():
                 raise RuntimeError("no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
             payload = json.loads(proc.stdout.strip())

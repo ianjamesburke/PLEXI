@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use super::model::{PendingPermission, PermissionChoice};
+use super::model::{PendingPermission, PermissionChoice, Turn, TurnRole};
 use super::AssistantApp;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use crate::plexi_ai::turn_loop::TurnDelta;
@@ -103,12 +103,25 @@ fn response_path() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 fn submit(h: &HostHarness, path: &Path, request_id: &str, text: &str) {
+    submit_to(h, path, request_id, text, Some("phone-session"), false);
+}
+
+fn submit_to(
+    h: &HostHarness,
+    path: &Path,
+    request_id: &str,
+    text: &str,
+    conversation_id: Option<&str>,
+    join_desktop: bool,
+) {
     h.inject_ipc(AppRequest::SubmitAssistantTurn {
         text: text.to_string(),
         request_id: request_id.to_string(),
         response_file: path.to_string_lossy().into_owned(),
         pane_id: None,
         context_id: None,
+        conversation_id: conversation_id.map(str::to_string),
+        join_desktop,
     });
 }
 
@@ -185,18 +198,16 @@ fn assistant_send_does_not_attribute_a_concurrent_desktop_turn() {
 
     let (_dir, path) = response_path();
     submit(&h, &path, "phone-1", "from the phone");
-    h.hidden_frame();
-    assert!(
-        !path.exists(),
-        "phone must not be answered by the desktop turn still in flight"
-    );
-
-    {
-        let mut ready = gate.ready.lock().unwrap();
-        *ready = true;
-        gate.cv.notify_all();
-    }
     let body = pump_until_file(&mut h, &path);
+    assert!(
+        !*gate.ready.lock().unwrap(),
+        "the phone reply must not wait for the desktop turn"
+    );
+    assert_eq!(
+        h.assistant_mut(pane).model.active_turn_id.as_deref(),
+        Some(desktop_turn_id.as_str()),
+        "the desktop turn stays in flight"
+    );
     let value: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(value["request_id"], "phone-1");
     assert_eq!(value["state"], "succeeded");
@@ -289,4 +300,78 @@ fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
     let after: serde_json::Value = serde_json::from_str(&after).unwrap();
     assert_eq!(after["state"], "waiting_for_permission");
     assert!(after.get("reply").is_none());
+}
+
+struct HistoryBroker {
+    seen: Mutex<Vec<Vec<String>>>,
+}
+
+impl AiBroker for HistoryBroker {
+    fn dispatch(
+        &self,
+        request: AiBrokerRequest,
+        on_delta: &mut dyn FnMut(TurnDelta<'_>),
+    ) -> AiBrokerResponse {
+        let contents: Vec<String> = request.messages.iter().map(|message| message.content.clone()).collect();
+        let last = contents.last().cloned().unwrap_or_default();
+        self.seen.lock().unwrap().push(contents);
+        let reply = format!("echo:{last}");
+        on_delta(TurnDelta::Text(&reply));
+        AiBrokerResponse::ok(reply, 1, 1)
+    }
+}
+
+#[test]
+fn assistant_send_keeps_phone_turns_out_of_the_desktop_transcript() {
+    let broker = Arc::new(HistoryBroker { seen: Mutex::new(Vec::new()) });
+    let mut h = HostHarness::new();
+    let pane = h.add_assistant_pane_with_broker(0, broker.clone());
+    {
+        let assistant = h.assistant_mut(pane);
+        assistant.model.turns.push(Turn::now(TurnRole::User, "chess move e4".to_string()));
+        assistant.model.turns.push(Turn::now(TurnRole::Assistant, "played e4".to_string()));
+    }
+
+    let (_dir, path) = response_path();
+    submit_to(&h, &path, "phone-pong", "reply PONG", Some("phone-session"), false);
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["state"], "succeeded");
+    assert_eq!(value["reply"], "echo:reply PONG");
+    assert_eq!(value["conversation_id"], "phone-session");
+    let first = broker.seen.lock().unwrap()[0].join("\n");
+    assert!(!first.contains("chess"), "{first}");
+    assert!(!first.contains("e4"), "{first}");
+    assert!(h.assistant_mut(pane).model.turns.iter().all(|turn| !turn.text.contains("PONG")));
+
+    let (_dir, path) = response_path();
+    submit_to(&h, &path, "phone-next", "what did I say", Some("phone-session"), false);
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["conversation_id"], "phone-session");
+    let second = broker.seen.lock().unwrap()[1].join("\n");
+    assert!(second.contains("echo:reply PONG"), "{second}");
+    assert!(second.contains("what did I say"), "{second}");
+    assert!(!second.contains("chess"), "{second}");
+}
+
+#[test]
+fn assistant_send_desktop_opt_in_uses_the_desktop_transcript() {
+    let broker = Arc::new(HistoryBroker { seen: Mutex::new(Vec::new()) });
+    let mut h = HostHarness::new();
+    let pane = h.add_assistant_pane_with_broker(0, broker.clone());
+    {
+        let assistant = h.assistant_mut(pane);
+        assistant.model.turns.push(Turn::now(TurnRole::User, "chess move e4".to_string()));
+        assistant.model.turns.push(Turn::now(TurnRole::Assistant, "played e4".to_string()));
+    }
+    let (_dir, path) = response_path();
+    submit_to(&h, &path, "phone-join", "reply PONG", None, true);
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["reply"], "echo:reply PONG");
+    let seen = broker.seen.lock().unwrap()[0].join("\n");
+    assert!(seen.contains("chess move e4"), "{seen}");
+    assert!(seen.contains("reply PONG"), "{seen}");
+    assert!(h.assistant_mut(pane).model.turns.iter().any(|turn| turn.text.contains("reply PONG")));
 }

@@ -90,6 +90,13 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// Caller-owned conversation. Absent means the host mints one.
+        /// Ignored when `join_desktop` is true.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+        /// Opt in to the desktop Assistant transcript. Default is a separate conversation.
+        #[serde(default)]
+        join_desktop: bool,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {

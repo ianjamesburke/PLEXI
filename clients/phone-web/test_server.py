@@ -115,6 +115,27 @@ class StubServerTest(unittest.TestCase):
             self.assertEqual(reply["turn_id"], "turn-host-r1")
             self.assertEqual(reply["request_id"], "host-r1")
 
+    def test_host_backend_passes_one_stable_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            argv_log = Path(temp) / "argv"
+            fake = Path(temp) / "plexi"
+            quoted = str(argv_log).replace("'", "'\\''")
+            fake.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >> '{quoted}'\n"
+                "printf '%s\\n' '{\"turn_id\":\"turn-x\",\"state\":\"succeeded\",\"reply\":\"ok\"}'\n"
+            )
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            self.assertTrue(store.conversation_id.startswith("phone-"))
+            store.submit(envelope("a", "one"))
+            store.submit(envelope("b", "two"))
+            time.sleep(0.3)
+            lines = argv_log.read_text().splitlines()
+            self.assertEqual(len(lines), 2)
+            needle = f"--conversation {store.conversation_id}"
+            self.assertTrue(all(needle in line and "--desktop" not in line for line in lines))
+
     def test_host_backend_appends_error_to_failed_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             fake = Path(temp) / "plexi"
