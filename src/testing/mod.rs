@@ -294,7 +294,16 @@ impl HostHarness {
                 }
             }
         }
+        self.add_assistant_pane_with_broker(win_idx, Arc::new(InertBroker))
+    }
 
+    /// Like [`Self::add_assistant_pane_in_window`] with a caller-supplied broker,
+    /// so a host-command test can stub the model without a network provider.
+    pub fn add_assistant_pane_with_broker(
+        &mut self,
+        win_idx: usize,
+        broker: Arc<dyn crate::plexi_ai::broker::AiBroker>,
+    ) -> PaneId {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
         let workspace_root = self._workspace_dir.path().to_path_buf();
@@ -304,7 +313,7 @@ impl HostHarness {
         let context_id = self.app.windows[win_idx].context_id;
         let assistant = crate::assistant::AssistantApp::new(
             workspace_root.clone(),
-            Arc::new(InertBroker),
+            broker,
             &crate::config::config_dir(),
             context_id,
         );

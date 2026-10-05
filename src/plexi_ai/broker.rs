@@ -356,7 +356,7 @@ fn test_channel_api_key_if(
     lookup(TEST_CHANNEL_API_KEY_ENV).filter(|v| !v.is_empty())
 }
 
-fn resolve_openrouter_api_key(
+pub(crate) fn resolve_openrouter_api_key(
     api_key_env: &str,
     workspace_root: Option<&std::path::Path>,
 ) -> Result<String, String> {
@@ -2357,5 +2357,44 @@ mod tests {
             (parsed - 9.075e-05).abs() < 1e-12,
             "float total_cost must parse to 9.075e-05"
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[test]
+    fn openrouter_detection_treats_process_env_as_configured_without_a_keychain_item() {
+        use crate::workspace::secrets::InMemoryKeychain;
+        let store = InMemoryKeychain::new();
+        let found = resolve_openrouter_api_key_from_store(
+            "OPENROUTER_API_KEY",
+            None,
+            Some("sk-from-env"),
+            &store,
+        )
+        .expect("env lookup");
+        assert_eq!(found.as_deref(), Some("sk-from-env"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[test]
+    fn openrouter_detection_sees_the_legacy_keychain_name() {
+        use crate::workspace::secrets::{keychain_user_name, InMemoryKeychain, SecretStore};
+        let store = InMemoryKeychain::new();
+        store
+            .set(&keychain_user_name("openrouter-api-key"), "sk-legacy")
+            .expect("store");
+        let found = resolve_openrouter_api_key_from_store("OPENROUTER_API_KEY", None, None, &store)
+            .expect("legacy lookup");
+        assert_eq!(found.as_deref(), Some("sk-legacy"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[test]
+    fn openrouter_detection_is_absent_when_env_and_keychain_are_empty() {
+        use crate::workspace::secrets::InMemoryKeychain;
+        let store = InMemoryKeychain::new();
+        let found =
+            resolve_openrouter_api_key_from_store("OPENROUTER_API_KEY", None, None, &store)
+                .expect("empty lookup");
+        assert!(found.is_none());
     }
 }

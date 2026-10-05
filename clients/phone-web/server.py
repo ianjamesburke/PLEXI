@@ -10,6 +10,7 @@ The request body loosely follows the proposed turn envelope
 need reshaping when the real intake contract lands.
 
 Run: python3 clients/phone-web/server.py [--host 127.0.0.1] [--port 8787]
+     python3 clients/phone-web/server.py --tailscale [--port 8787]
 """
 
 from __future__ import annotations
@@ -27,6 +28,9 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -164,6 +168,90 @@ def select_urls(primary: str | None, interfaces: list[tuple[str, str]]) -> list[
     return chosen
 
 
+class TailscaleUnavailable(RuntimeError):
+    """`tailscale ip -4` could not provide a bind address."""
+
+
+def select_tailscale_ipv4(output: str) -> str:
+    """First Tailscale IPv4 in `tailscale ip -4` stdout. No I/O."""
+    for line in output.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            parsed = ipaddress.IPv4Address(text)
+        except ipaddress.AddressValueError:
+            continue
+        if _is_tailscale(str(parsed)):
+            return str(parsed)
+    raise TailscaleUnavailable(
+        "`tailscale ip -4` did not return a Tailscale IPv4 (100.64.0.0/10). "
+        "Start the Tailscale app, then retry --tailscale."
+    )
+
+
+def magicdns_name_from_status(output: str) -> str | None:
+    """MagicDNS hostname from `tailscale status --json`, or None."""
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    self_info = payload.get("Self") if isinstance(payload, dict) else None
+    if not isinstance(self_info, dict):
+        return None
+    name = self_info.get("DNSName")
+    if not isinstance(name, str):
+        return None
+    cleaned = name.strip().rstrip(".")
+    if not re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+",
+        cleaned,
+    ):
+        return None
+    return cleaned
+
+
+def resolve_tailscale_endpoint(run: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> tuple[str, str | None]:
+    """Return (Tailscale IPv4, MagicDNS name or None).
+
+    The address always comes from `tailscale ip -4`. MagicDNS is read from
+    `tailscale status --json` when that command succeeds. `run` is injectable
+    and defaults to subprocess.run.
+    """
+    invoke = run or subprocess.run
+    try:
+        ip_result = invoke(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5, check=False)
+    except FileNotFoundError as exc:
+        raise TailscaleUnavailable(
+            "Tailscale is not available (`tailscale` was not found). "
+            "Install Tailscale, start it, then retry --tailscale."
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TailscaleUnavailable(
+            "Tailscale is not available (`tailscale ip -4` could not be run). "
+            "Start the Tailscale app, then retry --tailscale."
+        ) from exc
+    if ip_result.returncode != 0:
+        detail = (ip_result.stderr or ip_result.stdout or "").strip()
+        message = "Tailscale is not running (`tailscale ip -4` failed)."
+        if detail:
+            message += f" {detail}"
+        message += " Start the Tailscale app, then retry --tailscale."
+        raise TailscaleUnavailable(message)
+    address = select_tailscale_ipv4(ip_result.stdout or "")
+    return address, _magicdns_name(invoke)
+
+
+def _magicdns_name(invoke: Callable[..., subprocess.CompletedProcess[str]]) -> str | None:
+    try:
+        status = invoke(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if status.returncode != 0:
+        return None
+    return magicdns_name_from_status(status.stdout or "")
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -234,6 +322,8 @@ class HostStore(StubStore):
     def __init__(self, plexi_bin: str) -> None:
         super().__init__()
         self.plexi_bin = plexi_bin
+        # Stable for this server process, and not the desktop Assistant transcript.
+        self.conversation_id = f"phone-{uuid.uuid4()}"
 
     def submit(self, envelope: dict) -> tuple[int, dict]:
         status, receipt = super().submit(envelope)
@@ -249,33 +339,116 @@ class HostStore(StubStore):
         with self.lock:
             self.receipts[request_id].update(state="running", updated_at=now())
             self._append({"kind": "receipt", "request_id": request_id, "state": "running"})
+        turn_id = None
+        status = None
+        pending = None
         try:
-            proc = subprocess.run([self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id, "--json"], capture_output=True, text=True, timeout=120, check=False)
+            proc = subprocess.run(
+                [self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id,
+                 "--conversation", self.conversation_id, "--json"],
+                capture_output=True, text=True, timeout=120, check=False,
+            )
             if not proc.stdout.strip():
                 raise RuntimeError("no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
             payload = json.loads(proc.stdout.strip())
+            # The host names the turn it created. This subprocess's stdout is
+            # that turn's reply; nothing here is matched by arrival order.
+            returned_request = payload.get("request_id")
+            if returned_request and returned_request != request_id:
+                raise RuntimeError(f"host reply was for request {returned_request}, not {request_id}")
             state = payload.get("state", "failed")
             reply = payload.get("reply")
+            turn_id = payload.get("turn_id")
             error = payload.get("error") or proc.stderr.strip()
-            if state != "succeeded" and not error:
+            if state == "succeeded" and not turn_id:
+                raise RuntimeError("host reply missing turn_id")
+            if state == "waiting_for_permission":
+                status = payload.get("status") or "waiting for approval on desktop"
+                pending = payload.get("pending_request_id")
+                if pending:
+                    status = f"{status} ({pending})"
+                error = ""
+            elif state != "succeeded" and not error:
                 error = f"host turn ended in {state}"
         except subprocess.TimeoutExpired:
-            state, reply, error = "failed", None, "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)"
+            state, reply, turn_id, error, status, pending = (
+                "failed", None, None,
+                "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)",
+                None, None,
+            )
         except (OSError, RuntimeError, json.JSONDecodeError) as exc:
-            state, reply, error = "failed", None, str(exc)
+            state, reply, turn_id, error, status, pending = "failed", None, None, str(exc), None, None
+        if not self._commit_host_result(request_id, state, reply, turn_id, error, status):
+            return
+        if state == "waiting_for_permission" and pending:
+            self._poll_permission_outcome(request_id, pending)
+
+    def _commit_host_result(self, request_id, state, reply, turn_id, error, status) -> bool:
         with self.lock:
-            receipt = self.receipts[request_id]
-            if receipt["state"] == "cancelled":
-                return
+            receipt = self.receipts.get(request_id)
+            if receipt is None or receipt["state"] == "cancelled":
+                return False
             receipt.update(state=state, updated_at=now())
+            if turn_id:
+                receipt["turn_id"] = turn_id
             if reply:
-                self._append({"kind": "assistant_reply", "request_id": request_id, "text": reply})
+                event = {"kind": "assistant_reply", "request_id": request_id, "text": reply}
+                if turn_id:
+                    event["turn_id"] = turn_id
+                self._append(event)
             if error:
                 receipt["error"] = error
+            elif "error" in receipt and state == "succeeded":
+                receipt.pop("error", None)
+            if status:
+                receipt["status"] = status
             event = {"kind": "receipt", "request_id": request_id, "state": state}
-            if state != "succeeded" and error:
+            if turn_id:
+                event["turn_id"] = turn_id
+            if status:
+                event["status"] = status
+            elif state != "succeeded" and error:
                 event["error"] = error
             self._append(event)
+            log.info("turn host request_id=%s turn_id=%s state=%s", request_id, turn_id, state)
+            return True
+
+    def _poll_permission_outcome(self, request_id: str, pending_request_id: str) -> None:
+        """Ask the host again until the desktop approval has a final status."""
+        log.info(
+            "phone permission poll request_id=%s pending_request_id=%s",
+            request_id, pending_request_id,
+        )
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            time.sleep(0.25)
+            with self.lock:
+                receipt = self.receipts.get(request_id)
+                if receipt is None or receipt["state"] != "waiting_for_permission":
+                    return
+            try:
+                proc = subprocess.run(
+                    [self.plexi_bin, "assistant", "send", "--status-for", pending_request_id,
+                     "--request-id", request_id, "--json"],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                if not proc.stdout.strip():
+                    continue
+                payload = json.loads(proc.stdout.strip())
+            except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+                log.info("phone permission poll failed request_id=%s error=%s", request_id, exc)
+                continue
+            state = payload.get("state", "failed")
+            if state == "waiting_for_permission":
+                continue
+            reply = payload.get("reply")
+            turn_id = payload.get("turn_id") or pending_request_id
+            error = payload.get("error") or proc.stderr.strip()
+            status = payload.get("status")
+            if state != "succeeded" and not error:
+                error = f"host turn ended in {state}"
+            self._commit_host_result(request_id, state, reply, turn_id, error, status)
+            return
 
 
 def validate_envelope(body: object) -> str | None:
@@ -406,15 +579,39 @@ def main() -> None:
     parser.add_argument("--backend", choices=("stub", "host"), default=os.getenv("PLEXI_PHONE_BACKEND", "stub"))
     parser.add_argument("--plexi-bin", default=os.getenv("PLEXI_BIN", "plexi"))
     parser.add_argument("--lan", action="store_true", default=os.getenv("PLEXI_PHONE_LAN") == "1")
+    parser.add_argument("--tailscale", action="store_true", default=os.getenv("PLEXI_PHONE_TAILSCALE") == "1",
+                        help="bind to this machine's Tailscale IPv4 (tailscale ip -4)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    host = "0.0.0.0" if args.lan else args.host
-    require_token = args.backend == "host" or host not in ("127.0.0.1", "::1", "localhost")
+    if args.tailscale and args.lan:
+        log.error("phone shell: use either --tailscale or --lan, not both")
+        sys.exit(2)
+    magicdns: str | None = None
+    if args.tailscale:
+        try:
+            host, magicdns = resolve_tailscale_endpoint()
+        except TailscaleUnavailable as exc:
+            log.error("phone shell Tailscale bind failed: %s", exc)
+            sys.exit(1)
+        log.info("phone shell binding to Tailscale IPv4 %s", host)
+    else:
+        host = "0.0.0.0" if args.lan else args.host
+    require_token = args.backend == "host" or args.tailscale or host not in ("127.0.0.1", "::1", "localhost")
     token = os.getenv("PLEXI_PHONE_TOKEN") or (secrets.token_urlsafe(32) if require_token else None)
     store = HostStore(args.plexi_bin) if args.backend == "host" else StubStore()
-    server = build_server(host, args.port, store, token)
+    try:
+        server = build_server(host, args.port, store, token)
+    except OSError as exc:
+        log.error("phone shell failed to bind %s:%d: %s", host, args.port, exc)
+        sys.exit(1)
     suffix = f"/?token={token}" if token else "/"
-    if host in ("127.0.0.1", "::1", "localhost"):
+    if args.tailscale:
+        urls = [("Tailscale", host)]
+        if magicdns:
+            urls.append(("MagicDNS", magicdns))
+        else:
+            log.info("phone shell MagicDNS name unavailable")
+    elif host in ("127.0.0.1", "::1", "localhost"):
         urls = [("this machine only", "127.0.0.1")]
     else:
         urls = select_urls(primary_ipv4(), interface_ipv4s())

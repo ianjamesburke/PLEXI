@@ -38,14 +38,22 @@ struct LlmServerReport {
 fn check_openrouter() -> OpenRouterReport {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        use crate::workspace::secrets::{keychain_user_name, system_store};
-        let store = system_store();
-        let key = ["OPENROUTER_API_KEY", "openrouter-api-key"]
-            .iter()
-            .find_map(|name| store.get(&keychain_user_name(name)));
+        let env_name = crate::config::PlexiConfig::load()
+            .ai
+            .as_ref()
+            .and_then(|ai| ai.openrouter.as_ref())
+            .and_then(|openrouter| openrouter.api_key_env.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "OPENROUTER_API_KEY".to_string());
+        let workspace = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| crate::app::registry::resolve_workspace_root(&cwd));
+        let key = crate::plexi_ai::broker::resolve_openrouter_api_key(&env_name, workspace.as_deref()).ok();
         match key {
             None => {
-                log::info!("cli:doctor: OPENROUTER_API_KEY not found in keychain");
+                log::info!(
+                    "cli:doctor: {env_name} not found in process env, workspace secrets, or user keychain"
+                );
                 OpenRouterReport {
                     configured: false,
                     model_count: None,
