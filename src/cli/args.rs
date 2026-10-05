@@ -847,6 +847,26 @@ pub enum AppCmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Call a tool an app exposes and print its JSON result.
+    ///
+    /// Runs through the same tool dispatcher the Assistant uses, scoped to the
+    /// calling pane's context (the active context when run outside a pane).
+    /// The host stamps the caller identity: `pane:<id>` inside a pane, `user`
+    /// outside one. The app sees that identity, never one taken from the input.
+    /// Exits 1 with `error: <message>` when the tool or the app rejects the call.
+    ///
+    /// Example: plexi app call chess chess.state
+    /// Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
+    #[command(name = "call")]
+    Call {
+        /// App id that exposes the tool (from `plexi app info`)
+        app_id: String,
+        /// Tool name as the app declares it (e.g. `chess.state`)
+        tool: String,
+        /// Tool input as a JSON object
+        #[arg(long, default_value = "{}")]
+        input: String,
+    },
 }
 
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.

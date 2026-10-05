@@ -718,6 +718,23 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
 
+    /// Call an app-exposed tool through the host tool dispatcher. Sent by
+    /// `plexi app call`. The host resolves the viewer context from
+    /// `caller_pane_id` (the active window's context when absent), stamps the
+    /// caller identity (`pane:<id>` or `user`), and writes
+    /// `{"ok":true,"output":<json>}` or `{"error":"..."}` to `response_file`
+    /// from a worker thread once the app answers or the host deadline passes.
+    CallAppTool {
+        app_id: String,
+        tool: String,
+        /// Tool input, a JSON object serialized as a string.
+        input_json: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_pane_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
     CreateContext {
         #[serde(default, skip_serializing_if = "Option::is_none")]

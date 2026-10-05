@@ -716,6 +716,11 @@ fn main() -> eframe::Result {
                                 log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
                                 std::process::exit(cli::app_action_cli(pane_id, &action, &args));
                             }
+                            AppCmd::Call {
+                                app_id,
+                                tool,
+                                input,
+                            } => std::process::exit(cli::app_call_cli(&app_id, &tool, &input)),
                         }
                     }
                     Commands::Uninstall { keep_data, yes } => {

@@ -573,6 +573,29 @@ impl HostHarness {
         pane_id
     }
 
+    /// Launch the real process app at `<repo>/<rel_dir>` with launch `args`,
+    /// rooted in the harness's scratch workspace (so any `PersistState` lands
+    /// in a tempdir, never the checkout), and wait for its first render.
+    pub fn launch_repo_app(&mut self, rel_dir: &str, args: &[String]) -> PaneId {
+        let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir);
+        let workspace = self._workspace_dir.path().to_path_buf();
+        self.app
+            .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, Some(workspace), args)
+            .unwrap_or_else(|e| panic!("launch {rel_dir}: {e}"));
+        let pane_id = *self
+            .state()
+            .open_panes
+            .last()
+            .unwrap_or_else(|| panic!("a pane appears after launching {rel_dir}"));
+        self.wait_for_first_render(pane_id);
+        pane_id
+    }
+
+    /// The harness's scratch workspace root.
+    pub fn workspace_root(&self) -> std::path::PathBuf {
+        self._workspace_dir.path().to_path_buf()
+    }
+
     /// Poll frames until the Python guest backing `pane_id` has committed its
     /// first rendered tree, then run two idle frames so the tile tree's
     /// layout settles. Panics naming the app's manifest id on timeout.
@@ -765,6 +788,8 @@ mod daw_gate;
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
+#[cfg(test)]
+mod cloud_assistant_tests;
 
 #[cfg(test)]
 mod profile_isolation_tests {

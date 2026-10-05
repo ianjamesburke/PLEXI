@@ -112,6 +112,19 @@ def test_tool_dispatch_returns_result_and_the_tools_own_effects() -> None:
         assert isinstance(persisted, PersistState) and persisted.data == {"value": 7}
 
 
+def test_caller_tool_receives_the_host_stamped_identity_not_an_argument() -> None:
+    with _ToolFixture():
+        @tools.tool("app.whoami", "Report the caller.", caller=True)
+        def _whoami(caller_id: str) -> dict:
+            return {"caller": caller_id}
+
+        # A caller-supplied `caller_id` argument must not override the host's.
+        (result,) = _dispatch("app.whoami", caller_id="agent:forged")
+        assert json.loads(result.output_json or "") == {"caller": "assistant"}
+        (decl,) = tools.declarations()
+        assert "caller_id" not in decl.input_schema["properties"]
+
+
 def test_dispatch_ignores_events_that_are_not_tool_calls() -> None:
     with _ToolFixture():
         assert tools.dispatch(KeyEvent("a")) is None
