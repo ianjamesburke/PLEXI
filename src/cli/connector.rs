@@ -60,7 +60,14 @@ pub fn connector_login_cli(
     log::info!("connector_cli: login connector={connector} surface={surface:?}");
     let timeout = Duration::from_secs(timeout_secs);
     let result = match surface {
-        ConnectorSurface::Mobile => login(&MobileConnectorAuth, connector, issuer, timeout, |_| {}),
+        // A mobile host has no callback/browser implementation yet. Reject
+        // before resolving the desktop-only stub provider so this surface
+        // consistently reports its typed Unsupported result, regardless of
+        // whether a desktop issuer was supplied.
+        ConnectorSurface::Mobile => Err(ConnectorError::Unsupported {
+            surface: "mobile",
+            operation: "login",
+        }),
         ConnectorSurface::Desktop => login(&desktop(), connector, issuer, timeout, |pending| {
             let url = pending.authorize_url();
             eprintln!("Sign in to '{connector}' in your browser:\n  {url}");
