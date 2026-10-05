@@ -1,0 +1,1030 @@
+started_utc=2026-10-05T22:28:19Z
+stint_bin=/workspace/target/release/stint
+stint 0.3.17
+stint_rev=d1aadc7665f0ae5ddb2d204b97a340181fc73639
+uname=Linux 6.12.94+ x86_64
+
+######## 01-concurrent-same-task.sh ########
+
+===== binary =====
+stint 0.3.17
+rev=d1aadc7665f0ae5ddb2d204b97a340181fc73639 N=32 rounds=5 body_bytes=2097152
+
+===== explicit claim of one task =====
+initialized: /tmp/stint-stress.1HFCOb/.stint
+/tmp/stint-stress.1HFCOb/.stint/tasks/0001-contended.md
+
+-- round 1 repo /tmp/stint-stress.1HFCOb --
+successes=8 failures=24
+stderr kinds:
+      3 error: parse /tmp/stint-stress.1HFCOb/.stint/tasks/0001-contended.md: missing frontmatter opening delimiter '---'
+     21 error: task 0001 already has started_at; use --restart to replace it
+stdout kinds:
+      8 {
+      8 }
+      8   "claimed": "0001",
+      8   "path": "REPO/.stint/tasks/0001-contended.md"
+status_line=status: in-progress
+started_at_line=started_at: "2026-10-05T22:28:19Z"
+one worker stdout:
+one worker stderr:
+error: task 0001 already has started_at; use --restart to replace it
+a failing stderr, if any:
+error: task 0001 already has started_at; use --restart to replace it
+initialized: /tmp/stint-stress.CUVWqN/.stint
+/tmp/stint-stress.CUVWqN/.stint/tasks/0001-contended.md
+
+-- round 2 repo /tmp/stint-stress.CUVWqN --
+successes=8 failures=24
+stderr kinds:
+     23 error: parse /tmp/stint-stress.CUVWqN/.stint/tasks/0001-contended.md: missing frontmatter opening delimiter '---'
+      1 error: task 0001 already has started_at; use --restart to replace it
+stdout kinds:
+      8 {
+      8 }
+      8   "claimed": "0001",
+      8   "path": "REPO/.stint/tasks/0001-contended.md"
+status_line=status: in-progress
+started_at_line=started_at: "2026-10-05T22:28:20Z"
+one worker stdout:
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.CUVWqN/.stint/tasks/0001-contended.md"
+}
+one worker stderr:
+a failing stderr, if any:
+error: parse /tmp/stint-stress.CUVWqN/.stint/tasks/0001-contended.md: missing frontmatter opening delimiter '---'
+initialized: /tmp/stint-stress.j8NnjG/.stint
+/tmp/stint-stress.j8NnjG/.stint/tasks/0001-contended.md
+
+-- round 3 repo /tmp/stint-stress.j8NnjG --
+successes=8 failures=24
+stderr kinds:
+      3 error: parse /tmp/stint-stress.j8NnjG/.stint/tasks/0001-contended.md: missing frontmatter opening delimiter '---'
+     21 error: task 0001 already has started_at; use --restart to replace it
+stdout kinds:
+      8 {
+      8 }
+      8   "claimed": "0001",
+      8   "path": "REPO/.stint/tasks/0001-contended.md"
+status_line=status: in-progress
+started_at_line=started_at: "2026-10-05T22:28:20Z"
+one worker stdout:
+one worker stderr:
+error: task 0001 already has started_at; use --restart to replace it
+a failing stderr, if any:
+error: task 0001 already has started_at; use --restart to replace it
+initialized: /tmp/stint-stress.3uTGXh/.stint
+/tmp/stint-stress.3uTGXh/.stint/tasks/0001-contended.md
+
+-- round 4 repo /tmp/stint-stress.3uTGXh --
+successes=9 failures=23
+stderr kinds:
+      7 error: parse /tmp/stint-stress.3uTGXh/.stint/tasks/0001-contended.md: missing frontmatter opening delimiter '---'
+     16 error: task 0001 already has started_at; use --restart to replace it
+stdout kinds:
+      9 {
+      9 }
+      9   "claimed": "0001",
+      9   "path": "REPO/.stint/tasks/0001-contended.md"
+status_line=status: in-progress
+started_at_line=started_at: "2026-10-05T22:28:21Z"
+one worker stdout:
+one worker stderr:
+error: task 0001 already has started_at; use --restart to replace it
+a failing stderr, if any:
+error: task 0001 already has started_at; use --restart to replace it
+initialized: /tmp/stint-stress.Y8ZVWF/.stint
+/tmp/stint-stress.Y8ZVWF/.stint/tasks/0001-contended.md
+
+-- round 5 repo /tmp/stint-stress.Y8ZVWF --
+successes=8 failures=24
+stderr kinds:
+     24 error: task 0001 already has started_at; use --restart to replace it
+stdout kinds:
+      8 {
+      8 }
+      8   "claimed": "0001",
+      8   "path": "REPO/.stint/tasks/0001-contended.md"
+status_line=status: in-progress
+started_at_line=started_at: "2026-10-05T22:28:21Z"
+one worker stdout:
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.Y8ZVWF/.stint/tasks/0001-contended.md"
+}
+one worker stderr:
+a failing stderr, if any:
+error: task 0001 already has started_at; use --restart to replace it
+RESULT explicit_claim any_round_with_multiple_successes=1
+
+===== auto-claim of distinct tasks (control) =====
+initialized: /tmp/stint-stress.gO5cyD/.stint
+repo=/tmp/stint-stress.gO5cyD
+successes=8 failures=0
+stderr kinds:
+  (none)
+stdout kinds:
+      8 {
+      8 }
+      1   "claimed": "0001",
+      1   "claimed": "0002",
+      1   "claimed": "0003",
+      1   "claimed": "0004",
+      1   "claimed": "0005",
+      1   "claimed": "0006",
+      1   "claimed": "0007",
+      1   "claimed": "0008",
+      1   "path": "REPO/.stint/tasks/0001-lane-1.md"
+      1   "path": "REPO/.stint/tasks/0002-lane-2.md"
+      1   "path": "REPO/.stint/tasks/0003-lane-3.md"
+      1   "path": "REPO/.stint/tasks/0004-lane-4.md"
+      1   "path": "REPO/.stint/tasks/0005-lane-5.md"
+      1   "path": "REPO/.stint/tasks/0006-lane-6.md"
+      1   "path": "REPO/.stint/tasks/0007-lane-7.md"
+      1   "path": "REPO/.stint/tasks/0008-lane-8.md"
+claimed ids:
+  worker 1 exit=0 claimed=0001
+  worker 2 exit=0 claimed=0008
+  worker 3 exit=0 claimed=0006
+  worker 4 exit=0 claimed=0007
+  worker 5 exit=0 claimed=0002
+  worker 6 exit=0 claimed=0005
+  worker 7 exit=0 claimed=0004
+  worker 8 exit=0 claimed=0003
+distinct=8 nonempty=8
+
+===== concurrent stint add =====
+initialized: /tmp/stint-stress.6iZOrk/.stint
+repo=/tmp/stint-stress.6iZOrk
+successes=16 failures=0
+stderr kinds:
+  (none)
+stdout kinds:
+      1 REPO/.stint/tasks/0001-added-2.md
+      1 REPO/.stint/tasks/0002-added-11.md
+      1 REPO/.stint/tasks/0003-added-3.md
+      1 REPO/.stint/tasks/0004-added-5.md
+      1 REPO/.stint/tasks/0005-added-15.md
+      1 REPO/.stint/tasks/0006-added-6.md
+      1 REPO/.stint/tasks/0007-added-12.md
+      1 REPO/.stint/tasks/0008-added-13.md
+      1 REPO/.stint/tasks/0009-added-14.md
+      1 REPO/.stint/tasks/0010-added-9.md
+      1 REPO/.stint/tasks/0011-added-1.md
+      1 REPO/.stint/tasks/0012-added-7.md
+      1 REPO/.stint/tasks/0013-added-10.md
+      1 REPO/.stint/tasks/0014-added-8.md
+      1 REPO/.stint/tasks/0015-added-4.md
+      1 REPO/.stint/tasks/0016-added-16.md
+task files:
+0001-added-2.md
+0002-added-11.md
+0003-added-3.md
+0004-added-5.md
+0005-added-15.md
+0006-added-6.md
+0007-added-12.md
+0008-added-13.md
+0009-added-14.md
+0010-added-9.md
+0011-added-1.md
+0012-added-7.md
+0013-added-10.md
+0014-added-8.md
+0015-added-4.md
+0016-added-16.md
+id fields:
+/tmp/stint-stress.6iZOrk/.stint/tasks/0001-added-2.md:id: "0001"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0002-added-11.md:id: "0002"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0003-added-3.md:id: "0003"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0004-added-5.md:id: "0004"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0005-added-15.md:id: "0005"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0006-added-6.md:id: "0006"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0007-added-12.md:id: "0007"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0008-added-13.md:id: "0008"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0009-added-14.md:id: "0009"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0010-added-9.md:id: "0010"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0011-added-1.md:id: "0011"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0012-added-7.md:id: "0012"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0013-added-10.md:id: "0013"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0014-added-8.md:id: "0014"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0015-added-4.md:id: "0015"
+/tmp/stint-stress.6iZOrk/.stint/tasks/0016-added-16.md:id: "0016"
+SCRIPT_EXIT 01-concurrent-same-task.sh 0
+
+######## 02-retry-same-claimer.sh ########
+
+===== binary =====
+stint 0.3.17
+
+===== second claim of the same task =====
+initialized: /tmp/stint-stress.DoWMQ6/.stint
+
+-- first claim --
+$ /workspace/target/release/stint claim 0001 --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.DoWMQ6/.stint/tasks/0001-retry-me.md"
+}
+exit=0
+file=0001-retry-me.md
+status: in-progress
+started_at: "2026-10-05T22:28:22Z"
+(missing completed_at)
+
+-- second claim, same id, no --restart --
+$ /workspace/target/release/stint claim 0001 --json
+error: task 0001 already has started_at; use --restart to replace it
+exit=1
+file=0001-retry-me.md
+status: in-progress
+started_at: "2026-10-05T22:28:22Z"
+(missing completed_at)
+started_at_unchanged=yes
+
+-- claim --restart --
+$ /workspace/target/release/stint claim 0001 --restart --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.DoWMQ6/.stint/tasks/0001-retry-me.md"
+}
+exit=0
+file=0001-retry-me.md
+status: in-progress
+started_at: "2026-10-05T22:28:23Z"
+(missing completed_at)
+
+===== claim of a blocked task by explicit id =====
+initialized: /tmp/stint-stress.B2dO3O/.stint
+
+-- next before claim --
+$ /workspace/target/release/stint next
+Ready (1)
+  0001 [p1][s]  blocker
+exit=0
+
+-- claim the blocked task --
+$ /workspace/target/release/stint claim 0002 --json
+{
+  "claimed": "0002",
+  "path": "/tmp/stint-stress.B2dO3O/.stint/tasks/0002-blocked.md"
+}
+exit=0
+
+-- check after that claim --
+$ /workspace/target/release/stint check
+task 0002: status 'in-progress' but blocked by unresolved task(s) ["0001"]; only backlog/todo tasks may have active blockers
+exit=1
+
+===== claim reopens a done task that has no started_at =====
+initialized: /tmp/stint-stress.oQc4V7/.stint
+
+-- done --actual without a prior claim --
+$ /workspace/target/release/stint done 0001 --actual 1h
+done: /tmp/stint-stress.oQc4V7/.stint/tasks/0001-finish-first.md
+exit=0
+file=0001-finish-first.md
+status: done
+(missing started_at)
+completed_at: "2026-10-05T22:28:23Z"
+
+-- claim the done task --
+$ /workspace/target/release/stint claim 0001 --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.oQc4V7/.stint/tasks/0001-finish-first.md"
+}
+exit=0
+file=0001-finish-first.md
+status: in-progress
+started_at: "2026-10-05T22:28:23Z"
+completed_at: "2026-10-05T22:28:23Z"
+
+===== claim reopens an archived task =====
+initialized: /tmp/stint-stress.wQrwRd/.stint
+$ /workspace/target/release/stint archive 0001
+archived: /tmp/stint-stress.wQrwRd/.stint/tasks/0001-archived-work.md
+exit=0
+file=0001-archived-work.md
+status: archived
+(missing started_at)
+(missing completed_at)
+
+-- claim the archived task --
+$ /workspace/target/release/stint claim 0001 --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.wQrwRd/.stint/tasks/0001-archived-work.md"
+}
+exit=0
+file=0001-archived-work.md
+status: in-progress
+started_at: "2026-10-05T22:28:23Z"
+(missing completed_at)
+
+===== claim of a backlog task skips ready =====
+initialized: /tmp/stint-stress.abQnM1/.stint
+
+-- next (backlog is not scheduled) --
+$ /workspace/target/release/stint next
+Ready (none)
+exit=0
+
+-- explicit claim --
+$ /workspace/target/release/stint claim 0001 --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.abQnM1/.stint/tasks/0001-icebox.md"
+}
+exit=0
+file=0001-icebox.md
+status: in-progress
+started_at: "2026-10-05T22:28:23Z"
+(missing completed_at)
+
+===== unclaim then claim mints a new started_at =====
+initialized: /tmp/stint-stress.2eCKRy/.stint
+$ /workspace/target/release/stint claim 0001
+claimed: 0001
+exit=0
+$ /workspace/target/release/stint unclaim 0001
+unclaimed: /tmp/stint-stress.2eCKRy/.stint/tasks/0001-abandon.md
+exit=0
+file=0001-abandon.md
+status: todo
+(missing started_at)
+(missing completed_at)
+$ /workspace/target/release/stint claim 0001
+claimed: 0001
+exit=0
+first=started_at: "2026-10-05T22:28:23Z"
+second=started_at: "2026-10-05T22:28:24Z"
+SCRIPT_EXIT 02-retry-same-claimer.sh 0
+
+######## 03-crash-and-stale-lock.sh ########
+
+===== binary =====
+stint 0.3.17
+
+===== commands related to recovery =====
+Git-tracked sprint planning and task tracking
+
+Usage: stint [COMMAND]
+
+Commands:
+  init         Create a .stint workspace in the current directory
+  add          Create a new task and open $EDITOR for the body
+  list         List tasks, optionally filtered
+  show         Print a full task (frontmatter + body)
+  edit         Open a task file in $EDITOR
+  set          Update an existing task's metadata or body without opening $EDITOR
+  remove       Remove one or more task files
+  claim        Mark a task in-progress. Without an ID, claims the top ready task (lock-protected)
+  unclaim      Revert an in-progress task to todo, clearing started_at (inverse of claim)
+  done         Mark a task done and optionally record actual time
+  log          Add time to a task's actual field (accumulates)
+  archive      Set a task's status to archived
+  next         Show the next claimable tasks, derived from blockers, sprint order, and area conflicts
+  ready        Promote backlog tasks to todo (move out of icebox into the ready pool)
+  defer        Send todo tasks back to backlog (move into icebox)
+  sprint       Sprint management sub-commands
+  check        Validate the task graph, or one task by ID; exit 1 if errors are found
+  status       Show a summary: open tasks, blocked tasks, current sprint progress
+  update       Update stint from crates.io through cargo install
+  completions  Print shell completion script to stdout
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+
+-- claim help --
+Mark a task in-progress. Without an ID, claims the top ready task (lock-protected)
+
+Usage: stint claim [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Task ID. Omit to auto-claim the top ready task
+
+Options:
+      --sprint <SPRINT>          Sprint filter for auto-claim (e.g. s12)
+      --restart                  Replace an existing started_at and clear completion fields
+      --started-at <STARTED_AT>  Start timestamp, UTC RFC3339 preferred. Defaults to now
+      --json                     Output as JSON for agent/orchestrator consumption
+  -h, --help                     Print help
+
+===== pre-created claim.lock, no holder =====
+initialized: /tmp/stint-stress.0W2zcw/.stint
+lock_is_dir=yes
+
+-- auto-claim while the directory lock exists --
+/workspace/scripts/stint-stress/03-crash-and-stale-lock.sh: line 26: /usr/bin/time: No such file or directory
+exit=127
+lock_still_there=yes
+
+-- explicit claim of 0001 while the directory lock exists --
+/workspace/scripts/stint-stress/03-crash-and-stale-lock.sh: line 30: /usr/bin/time: No such file or directory
+exit=127
+
+===== kill -9 while auto-claim holds claim.lock =====
+initialized: /tmp/stint-stress.PgRosN/.stint
+seeded 400
+saw_lock_before_kill=yes
+lock_remains=yes
+in_progress_files=0
+
+-- auto-claim after the killed holder --
+/workspace/scripts/stint-stress/03-crash-and-stale-lock.sh: line 81: /usr/bin/time: No such file or directory
+exit=127
+
+-- manual rmdir, then auto-claim --
+$ /workspace/target/release/stint claim --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.PgRosN/.stint/tasks/0001-fat.md"
+}
+exit=0
+in_progress_files_after=1
+
+===== explicit claim killed during the truncating write =====
+initialized: /tmp/stint-stress.zkudqH/.stint
+bytes_before=192
+saw_empty_file_before_kill=yes
+bytes_after=0
+file_bytes:
+(empty)
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.zkudqH/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.zkudqH/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+(no tasks)
+exit=0
+
+-- show --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.zkudqH/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- claim again --
+$ /workspace/target/release/stint claim 0001 --json
+error: parse /tmp/stint-stress.zkudqH/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+exit=1
+
+===== stale in-progress is not reaped, and unclaim is unauthenticated =====
+initialized: /tmp/stint-stress.l4fwR9/.stint
+claimed: 0001
+
+-- next, with a years-old claim still in progress --
+$ /workspace/target/release/stint next
+Ready (none)
+exit=0
+
+-- second explicit claim --
+$ /workspace/target/release/stint claim 0001 --json
+error: task 0001 already has started_at; use --restart to replace it
+exit=1
+
+-- a different process unclaims and claims --
+$ /workspace/target/release/stint unclaim 0001
+unclaimed: /tmp/stint-stress.l4fwR9/.stint/tasks/0001-old-claim.md
+exit=0
+$ /workspace/target/release/stint claim 0001 --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.l4fwR9/.stint/tasks/0001-old-claim.md"
+}
+exit=0
+
+-- auto-claim while 0001 is in progress in the same area --
+$ /workspace/target/release/stint claim --json
+{"claimed": null}
+exit=0
+
+-- next --include-area-conflicts --
+$ /workspace/target/release/stint next --include-area-conflicts
+Ready (1)
+  0002 [p0][s]  same area
+        host/pane
+        - area busy: 0001 in progress
+exit=0
+SCRIPT_EXIT 03-crash-and-stale-lock.sh 0
+
+######## 04-partial-and-corrupt.sh ########
+
+===== binary =====
+stint 0.3.17
+
+===== reference: healthy file =====
+initialized: /tmp/stint-stress.SWizQh/.stint
+
+===== healthy file =====
+files:
+total 12
+drwxr-xr-x 2 ubuntu ubuntu 4096 Oct  5 22:28 .
+drwxr-xr-x 4 ubuntu ubuntu 4096 Oct  5 22:28 ..
+-rw-r--r-- 1 ubuntu ubuntu  189 Oct  5 22:28 0001-healthy.md
+
+-- check --
+$ /workspace/target/release/stint check
+ok
+exit=0
+
+-- list --
+$ /workspace/target/release/stint list
+ID     STATE     PRI  SIZE ESTIMATE SPRINT TITLE
+0001   ready     p1   s    -        -      healthy
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+Ready (1)
+  0001 [p1][s]  healthy
+exit=0
+
+-- show 0001 --
+$ /workspace/target/release/stint show 0001
+ID:          0001
+Title:       healthy
+Status:      todo
+Priority:    p1
+Size:        s
+
+## Why
+
+
+## Gotchas
+
+
+## References
+
+exit=0
+initialized: /tmp/stint-stress.VtjreI/.stint
+
+===== empty file =====
+files:
+total 8
+drwxr-xr-x 2 ubuntu ubuntu 4096 Oct  5 22:28 .
+drwxr-xr-x 4 ubuntu ubuntu 4096 Oct  5 22:28 ..
+-rw-r--r-- 1 ubuntu ubuntu    0 Oct  5 22:28 0001-empty.md
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.VtjreI/.stint/tasks/0001-empty.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.VtjreI/.stint/tasks/0001-empty.md: missing frontmatter opening delimiter '---'
+(no tasks)
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+warning: skip /tmp/stint-stress.VtjreI/.stint/tasks/0001-empty.md: missing frontmatter opening delimiter '---'
+Ready (none)
+exit=0
+
+-- show 0001 --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.VtjreI/.stint/tasks/0001-empty.md: missing frontmatter opening delimiter '---'
+exit=1
+initialized: /tmp/stint-stress.yA4Xzw/.stint
+
+===== frontmatter cut off before the closing delimiter =====
+files:
+total 12
+drwxr-xr-x 2 ubuntu ubuntu 4096 Oct  5 22:28 .
+drwxr-xr-x 4 ubuntu ubuntu 4096 Oct  5 22:28 ..
+-rw-r--r-- 1 ubuntu ubuntu   40 Oct  5 22:28 0001-truncated.md
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.yA4Xzw/.stint/tasks/0001-truncated.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.yA4Xzw/.stint/tasks/0001-truncated.md: missing frontmatter opening delimiter '---'
+(no tasks)
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+warning: skip /tmp/stint-stress.yA4Xzw/.stint/tasks/0001-truncated.md: missing frontmatter opening delimiter '---'
+Ready (none)
+exit=0
+
+-- show 0001 --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.yA4Xzw/.stint/tasks/0001-truncated.md: missing frontmatter opening delimiter '---'
+exit=1
+prefix_len 40 full_len 189
+b'---\nid: "0001"\ntitle: "healthy"\nstatus: '
+initialized: /tmp/stint-stress.2QdCis/.stint
+
+===== first 40 bytes of a healthy file =====
+files:
+total 12
+drwxr-xr-x 2 ubuntu ubuntu 4096 Oct  5 22:28 .
+drwxr-xr-x 4 ubuntu ubuntu 4096 Oct  5 22:28 ..
+-rw-r--r-- 1 ubuntu ubuntu   40 Oct  5 22:28 0001-prefix.md
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.2QdCis/.stint/tasks/0001-prefix.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.2QdCis/.stint/tasks/0001-prefix.md: missing frontmatter opening delimiter '---'
+(no tasks)
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+warning: skip /tmp/stint-stress.2QdCis/.stint/tasks/0001-prefix.md: missing frontmatter opening delimiter '---'
+Ready (none)
+exit=0
+
+-- show 0001 --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.2QdCis/.stint/tasks/0001-prefix.md: missing frontmatter opening delimiter '---'
+exit=1
+initialized: /tmp/stint-stress.zx1aXc/.stint
+
+===== git conflict markers inside the task file =====
+files:
+total 12
+drwxr-xr-x 2 ubuntu ubuntu 4096 Oct  5 22:28 .
+drwxr-xr-x 4 ubuntu ubuntu 4096 Oct  5 22:28 ..
+-rw-r--r-- 1 ubuntu ubuntu  196 Oct  5 22:28 0001-conflict.md
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.zx1aXc/.stint/tasks/0001-conflict.md: yaml parse error: could not find expected ':' at line 4 column 1, while scanning a simple key at line 3 column 1
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.zx1aXc/.stint/tasks/0001-conflict.md: yaml parse error: could not find expected ':' at line 4 column 1, while scanning a simple key at line 3 column 1
+(no tasks)
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+warning: skip /tmp/stint-stress.zx1aXc/.stint/tasks/0001-conflict.md: yaml parse error: could not find expected ':' at line 4 column 1, while scanning a simple key at line 3 column 1
+Ready (none)
+exit=0
+
+-- show 0001 --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.zx1aXc/.stint/tasks/0001-conflict.md: yaml parse error: could not find expected ':' at line 4 column 1, while scanning a simple key at line 3 column 1
+exit=1
+initialized: /tmp/stint-stress.kVqSAA/.stint
+
+===== status: running =====
+files:
+total 12
+drwxr-xr-x 2 ubuntu ubuntu 4096 Oct  5 22:28 .
+drwxr-xr-x 4 ubuntu ubuntu 4096 Oct  5 22:28 ..
+-rw-r--r-- 1 ubuntu ubuntu   75 Oct  5 22:28 0001-bad-status.md
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.kVqSAA/.stint/tasks/0001-bad-status.md: invalid field 'status': unknown status "running"; expected one of backlog, todo, in-progress, done, archived
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.kVqSAA/.stint/tasks/0001-bad-status.md: invalid field 'status': unknown status "running"; expected one of backlog, todo, in-progress, done, archived
+(no tasks)
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+warning: skip /tmp/stint-stress.kVqSAA/.stint/tasks/0001-bad-status.md: invalid field 'status': unknown status "running"; expected one of backlog, todo, in-progress, done, archived
+Ready (none)
+exit=0
+
+-- show 0001 --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.kVqSAA/.stint/tasks/0001-bad-status.md: invalid field 'status': unknown status "running"; expected one of backlog, todo, in-progress, done, archived
+exit=1
+initialized: /tmp/stint-stress.W65rbD/.stint
+
+===== valid frontmatter, body missing =====
+files:
+total 12
+drwxr-xr-x 2 ubuntu ubuntu 4096 Oct  5 22:28 .
+drwxr-xr-x 4 ubuntu ubuntu 4096 Oct  5 22:28 ..
+-rw-r--r-- 1 ubuntu ubuntu  106 Oct  5 22:28 0001-body-gone.md
+
+-- check --
+$ /workspace/target/release/stint check
+ok
+exit=0
+
+-- list --
+$ /workspace/target/release/stint list
+ID     STATE     PRI  SIZE ESTIMATE SPRINT TITLE
+0001   active    p1   -    -        -      body gone
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+Ready (none)
+exit=0
+
+-- show 0001 --
+$ /workspace/target/release/stint show 0001
+ID:          0001
+Title:       body gone
+Status:      in-progress
+Priority:    p1
+Started at:  2026-10-05T00:00:00Z
+exit=0
+
+===== one corrupt file beside two healthy tasks =====
+initialized: /tmp/stint-stress.yHIZVw/.stint
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.yHIZVw/.stint/tasks/0003-garbage.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.yHIZVw/.stint/tasks/0003-garbage.md: missing frontmatter opening delimiter '---'
+ID     STATE     PRI  SIZE ESTIMATE SPRINT TITLE
+0001   ready     p1   s    -        -      alpha
+0002   ready     p0   s    -        -      beta
+exit=0
+
+-- next --
+$ /workspace/target/release/stint next
+warning: skip /tmp/stint-stress.yHIZVw/.stint/tasks/0003-garbage.md: missing frontmatter opening delimiter '---'
+Ready (2)
+  0002 [p0][s]  beta
+  0001 [p1][s]  alpha
+exit=0
+
+-- show 0003 --
+$ /workspace/target/release/stint show 0003
+error: parse /tmp/stint-stress.yHIZVw/.stint/tasks/0003-garbage.md: missing frontmatter opening delimiter '---'
+exit=1
+SCRIPT_EXIT 04-partial-and-corrupt.sh 0
+
+######## 05-large-ledger.sh ########
+
+===== binary =====
+stint 0.3.17
+count=10000
+initialized: /tmp/stint-stress.muoJGE/.stint
+repo=/tmp/stint-stress.muoJGE
+wrote 10000 files
+bytes=40M
+files=10000
+/workspace/scripts/stint-stress/05-large-ledger.sh: line 45: /usr/bin/time: No such file or directory
+
+-- check --
+exit=127
+stdout_lines=0 stdout_bytes=0
+stdout:
+/workspace/scripts/stint-stress/05-large-ledger.sh: line 45: /usr/bin/time: No such file or directory
+
+-- status --
+exit=127
+stdout_lines=0 stdout_bytes=0
+stdout:
+/workspace/scripts/stint-stress/05-large-ledger.sh: line 45: /usr/bin/time: No such file or directory
+
+-- next --
+exit=127
+stdout_lines=0 stdout_bytes=0
+stdout:
+/workspace/scripts/stint-stress/05-large-ledger.sh: line 45: /usr/bin/time: No such file or directory
+
+-- list_p0 --
+exit=127
+stdout_lines=0 stdout_bytes=0
+stdout:
+/workspace/scripts/stint-stress/05-large-ledger.sh: line 45: /usr/bin/time: No such file or directory
+
+-- claim_5000 --
+exit=127
+stdout_lines=0 stdout_bytes=0
+stdout:
+/workspace/scripts/stint-stress/05-large-ledger.sh: line 45: /usr/bin/time: No such file or directory
+
+-- show_5000 --
+exit=127
+stdout_lines=0 stdout_bytes=0
+stdout:
+/workspace/scripts/stint-stress/05-large-ledger.sh: line 45: /usr/bin/time: No such file or directory
+
+-- add_one --
+exit=127
+stdout_lines=0 stdout_bytes=0
+stdout:
+
+-- id order among equal created_at, same priority --
+same priority p0, equal created_at; string order is not numeric
+positions {'10000': 200, '9995': 1999}
+10000_before_9995 True
+first five ids ['0005', '0010', '0015', '0020', '0025']
+last five ids ['9975', '9980', '9985', '9990', '9995']
+SCRIPT_EXIT 05-large-ledger.sh 0
+
+######## 06-git-merge.sh ########
+
+===== binary =====
+stint 0.3.17
+initialized: /tmp/stint-stress.XVmCls/.stint
+repo=/tmp/stint-stress.XVmCls
+
+===== two branches edit the same task file =====
+Switched to a new branch 'lane-a'
+Switched to branch 'main'
+Switched to a new branch 'lane-b'
+
+id: "0001"
+title: "shared task"
+status: done
+priority: p1
+size: m
+created_at: "2026-10-05T22:28:25Z"
+blocked_by: []
+gh_issue: []
+area: []
+tags: []
+
+Switched to branch 'lane-a'
+$ git merge --no-edit lane-b
+exit=1
+Auto-merging .stint/tasks/0001-shared-task.md
+CONFLICT (content): Merge conflict in .stint/tasks/0001-shared-task.md
+Automatic merge failed; fix conflicts and then commit the result.
+
+-- conflicted file --
+---
+id: "0001"
+title: "shared task"
+<<<<<<< HEAD
+status: in-progress
+=======
+status: done
+>>>>>>> lane-b
+priority: p1
+size: m
+created_at: "2026-10-05T22:28:25Z"
+started_at: "2026-10-05T00:00:00Z"
+blocked_by: []
+gh_issue: []
+area: []
+tags: []
+---
+
+## Why
+
+lane-b rewrote the body and marked the task done in prose only.
+The status change is applied with stint set by rewriting the file below.
+
+-- stint check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.XVmCls/.stint/tasks/0001-shared-task.md: yaml parse error: could not find expected ':' at line 4 column 1, while scanning a simple key at line 3 column 1
+exit=1
+
+-- stint list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.XVmCls/.stint/tasks/0001-shared-task.md: yaml parse error: could not find expected ':' at line 4 column 1, while scanning a simple key at line 3 column 1
+(no tasks)
+exit=0
+
+-- stint show 0001 --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.XVmCls/.stint/tasks/0001-shared-task.md: yaml parse error: could not find expected ':' at line 4 column 1, while scanning a simple key at line 3 column 1
+exit=1
+
+===== divergent adds allocate the same id =====
+Switched to branch 'main'
+Switched to a new branch 'add-left'
+left files:
+0001-shared-task.md
+0002-left-only.md
+Switched to branch 'main'
+Switched to a new branch 'add-right'
+right files:
+0001-shared-task.md
+0002-right-only.md
+Switched to branch 'add-left'
+
+$ git merge --no-edit add-right
+exit=0
+Merge made by the 'ort' strategy.
+ .stint/tasks/0002-right-only.md | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+ create mode 100644 .stint/tasks/0002-right-only.md
+files after merge:
+0001-shared-task.md
+0002-left-only.md
+0002-right-only.md
+
+-- stint check --
+$ /workspace/target/release/stint check
+duplicate task id "0002" found in "0002-right-only.md" and "0002-left-only.md"
+exit=1
+
+-- stint list --
+$ /workspace/target/release/stint list
+ID     STATE     PRI  SIZE ESTIMATE SPRINT TITLE
+0001   ready     p1   m    -        -      shared task
+0002   ready     p3   s    -        -      right only
+0002   ready     p2   s    -        -      left only
+exit=0
+
+-- stint next --json --
+$ /workspace/target/release/stint next --json
+{
+  "blocked": [],
+  "ready": [
+    {
+      "area": [],
+      "blockers": [],
+      "gh_issue": [],
+      "id": "0001",
+      "path": ".stint/tasks/0001-shared-task.md",
+      "priority": "p1",
+      "size": "m",
+      "sprint": null,
+      "status": "todo",
+      "title": "shared task"
+    },
+    {
+      "area": [],
+      "blockers": [],
+      "gh_issue": [],
+      "id": "0002",
+      "path": ".stint/tasks/0002-right-only.md",
+      "priority": "p3",
+      "size": "s",
+      "sprint": null,
+      "status": "todo",
+      "title": "right only"
+    }
+  ]
+}
+exit=0
+
+-- stint show 0002 --
+$ /workspace/target/release/stint show 0002
+error: ambiguous id "0002": multiple matches
+exit=1
+
+===== sprint file is a single shared index =====
+Switched to branch 'main'
+Switched to a new branch 'sprint-left'
+added left sprint task as 0002
+Switched to branch 'main'
+Switched to a new branch 'sprint-right'
+added right sprint task as 0002
+Switched to branch 'sprint-left'
+$ git merge --no-edit sprint-right
+exit=1
+Auto-merging .stint/sprints/s1.md
+CONFLICT (content): Merge conflict in .stint/sprints/s1.md
+Automatic merge failed; fix conflicts and then commit the result.
+
+-- sprint file --
+# Sprint 1 · Oct 5 · goal: index
+- [0001](../tasks/0001-shared-task.md)
+<<<<<<< HEAD
+- [0002](../tasks/0002-left-sprint-task.md)
+=======
+- [0002](../tasks/0002-right-sprint-task.md)
+>>>>>>> sprint-right
+
+-- stint sprint show s1 --
+$ /workspace/target/release/stint sprint show s1
+Sprint: s1
+Range:  Oct 5
+Goal:   index
+
+ID     STATUS      ESTIMATE TITLE
+------------------------------------------------------------------------------
+0001   todo -        shared task
+0002   todo -        left sprint task
+0002   todo -        left sprint task
+exit=0
+
+-- stint check --
+$ /workspace/target/release/stint check
+duplicate task id "0002" found in "0002-left-sprint-task.md" and "0002-right-sprint-task.md"
+exit=1
+SCRIPT_EXIT 06-git-merge.sh 0
+finished_utc=2026-10-05T22:28:25Z

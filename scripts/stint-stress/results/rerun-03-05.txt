@@ -1,0 +1,275 @@
+===== RERUN 03 2026-10-05T22:29:16Z =====
+
+===== binary =====
+stint 0.3.17
+
+===== commands related to recovery =====
+Git-tracked sprint planning and task tracking
+
+Usage: stint [COMMAND]
+
+Commands:
+  init         Create a .stint workspace in the current directory
+  add          Create a new task and open $EDITOR for the body
+  list         List tasks, optionally filtered
+  show         Print a full task (frontmatter + body)
+  edit         Open a task file in $EDITOR
+  set          Update an existing task's metadata or body without opening $EDITOR
+  remove       Remove one or more task files
+  claim        Mark a task in-progress. Without an ID, claims the top ready task (lock-protected)
+  unclaim      Revert an in-progress task to todo, clearing started_at (inverse of claim)
+  done         Mark a task done and optionally record actual time
+  log          Add time to a task's actual field (accumulates)
+  archive      Set a task's status to archived
+  next         Show the next claimable tasks, derived from blockers, sprint order, and area conflicts
+  ready        Promote backlog tasks to todo (move out of icebox into the ready pool)
+  defer        Send todo tasks back to backlog (move into icebox)
+  sprint       Sprint management sub-commands
+  check        Validate the task graph, or one task by ID; exit 1 if errors are found
+  status       Show a summary: open tasks, blocked tasks, current sprint progress
+  update       Update stint from crates.io through cargo install
+  completions  Print shell completion script to stdout
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+
+-- claim help --
+Mark a task in-progress. Without an ID, claims the top ready task (lock-protected)
+
+Usage: stint claim [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Task ID. Omit to auto-claim the top ready task
+
+Options:
+      --sprint <SPRINT>          Sprint filter for auto-claim (e.g. s12)
+      --restart                  Replace an existing started_at and clear completion fields
+      --started-at <STARTED_AT>  Start timestamp, UTC RFC3339 preferred. Defaults to now
+      --json                     Output as JSON for agent/orchestrator consumption
+  -h, --help                     Print help
+
+===== pre-created claim.lock, no holder =====
+initialized: /tmp/stint-stress.jaTBVQ/.stint
+lock_is_dir=yes
+
+-- auto-claim while the directory lock exists --
+error: claim lock held after 21 retries; remove .stint/claim.lock to reset
+elapsed_sec 1.004 max_rss_kb 11648
+exit=1
+lock_still_there=yes
+
+-- explicit claim of 0001 while the directory lock exists --
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.jaTBVQ/.stint/tasks/0001-waiting.md"
+}
+elapsed_sec 0.002 max_rss_kb 11644
+exit=0
+
+===== kill -9 while auto-claim holds claim.lock =====
+initialized: /tmp/stint-stress.orRc91/.stint
+seeded 400
+saw_lock_before_kill=yes
+lock_remains=yes
+in_progress_files=0
+
+-- auto-claim after the killed holder --
+error: claim lock held after 21 retries; remove .stint/claim.lock to reset
+elapsed_sec 1.003 max_rss_kb 11776
+exit=1
+
+-- manual rmdir, then auto-claim --
+$ /workspace/target/release/stint claim --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.orRc91/.stint/tasks/0001-fat.md"
+}
+exit=0
+in_progress_files_after=1
+
+===== explicit claim killed during the truncating write =====
+initialized: /tmp/stint-stress.xD6xTG/.stint
+bytes_before=192
+saw_empty_file_before_kill=yes
+bytes_after=0
+file_bytes:
+(empty)
+
+-- check --
+$ /workspace/target/release/stint check
+/tmp/stint-stress.xD6xTG/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- list --
+$ /workspace/target/release/stint list
+warning: skip /tmp/stint-stress.xD6xTG/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+(no tasks)
+exit=0
+
+-- show --
+$ /workspace/target/release/stint show 0001
+error: parse /tmp/stint-stress.xD6xTG/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+exit=1
+
+-- claim again --
+$ /workspace/target/release/stint claim 0001 --json
+error: parse /tmp/stint-stress.xD6xTG/.stint/tasks/0001-torn-write.md: missing frontmatter opening delimiter '---'
+exit=1
+
+===== stale in-progress is not reaped, and unclaim is unauthenticated =====
+initialized: /tmp/stint-stress.DU3q4R/.stint
+claimed: 0001
+
+-- next, with a years-old claim still in progress --
+$ /workspace/target/release/stint next
+Ready (none)
+exit=0
+
+-- second explicit claim --
+$ /workspace/target/release/stint claim 0001 --json
+error: task 0001 already has started_at; use --restart to replace it
+exit=1
+
+-- a different process unclaims and claims --
+$ /workspace/target/release/stint unclaim 0001
+unclaimed: /tmp/stint-stress.DU3q4R/.stint/tasks/0001-old-claim.md
+exit=0
+$ /workspace/target/release/stint claim 0001 --json
+{
+  "claimed": "0001",
+  "path": "/tmp/stint-stress.DU3q4R/.stint/tasks/0001-old-claim.md"
+}
+exit=0
+
+-- auto-claim while 0001 is in progress in the same area --
+$ /workspace/target/release/stint claim --json
+{"claimed": null}
+exit=0
+
+-- next --include-area-conflicts --
+$ /workspace/target/release/stint next --include-area-conflicts
+Ready (1)
+  0002 [p0][s]  same area
+        host/pane
+        - area busy: 0001 in progress
+exit=0
+===== RERUN 05 2026-10-05T22:29:19Z =====
+
+===== binary =====
+stint 0.3.17
+count=10000
+initialized: /tmp/stint-stress.CCtHZ8/.stint
+repo=/tmp/stint-stress.CCtHZ8
+wrote 10000 files
+bytes=40M
+files=10000
+
+-- check --
+exit=0
+elapsed_sec 0.095
+max_rss_kb 11756
+stderr_bytes=0
+stdout_lines=1 stdout_bytes=3
+stdout:
+ok
+
+-- status --
+exit=0
+elapsed_sec 0.082
+max_rss_kb 11764
+stderr_bytes=0
+stdout_lines=3 stdout_bytes=71
+stdout:
+Active:  10000 (todo/in-progress)
+Backlog: 0 (icebox)
+Blocked:    none
+
+-- next --
+exit=0
+elapsed_sec 0.086
+max_rss_kb 13360
+stderr_bytes=0
+stdout_lines=10001 stdout_bytes=260016
+stdout head:
+Ready (10000)
+  0005 [p0][s]  task 0005
+  0010 [p0][s]  task 0010
+  0015 [p0][s]  task 0015
+  0020 [p0][s]  task 0020
+  0025 [p0][s]  task 0025
+  0030 [p0][s]  task 0030
+  0035 [p0][s]  task 0035
+stdout tail:
+  9984 [p4][s]  task 9984
+  9989 [p4][s]  task 9989
+  9994 [p4][s]  task 9994
+  9999 [p4][s]  task 9999
+
+-- list_p0 --
+exit=0
+elapsed_sec 0.082
+max_rss_kb 11744
+stderr_bytes=0
+stdout_lines=2001 stdout_bytes=106050
+stdout head:
+ID     STATE     PRI  SIZE ESTIMATE SPRINT TITLE
+0005   ready     p0   s    -        -      task 0005
+0010   ready     p0   s    -        -      task 0010
+0015   ready     p0   s    -        -      task 0015
+0020   ready     p0   s    -        -      task 0020
+0025   ready     p0   s    -        -      task 0025
+0030   ready     p0   s    -        -      task 0030
+0035   ready     p0   s    -        -      task 0035
+stdout tail:
+9980   ready     p0   s    -        -      task 9980
+9985   ready     p0   s    -        -      task 9985
+9990   ready     p0   s    -        -      task 9990
+9995   ready     p0   s    -        -      task 9995
+
+-- claim_5000 --
+exit=0
+elapsed_sec 0.004
+max_rss_kb 11764
+stderr_bytes=0
+stdout_lines=4 stdout_bytes=88
+stdout:
+{
+  "claimed": "5000",
+  "path": "/tmp/stint-stress.CCtHZ8/.stint/tasks/5000-task.md"
+}
+
+-- show_5000 --
+exit=0
+elapsed_sec 0.117
+max_rss_kb 11772
+stderr_bytes=0
+stdout_lines=10 stdout_bytes=150
+stdout:
+ID:          5000
+Title:       task 5000
+Status:      in-progress
+Priority:    p0
+Size:        s
+Started at:  2026-10-05T22:29:19Z
+
+## Why
+
+seed 5000
+
+-- add_one --
+exit=0
+elapsed_sec 0.074
+max_rss_kb 11780
+stderr_bytes=0
+stdout_lines=1 stdout_bytes=56
+stdout:
+/tmp/stint-stress.CCtHZ8/.stint/tasks/10001-one-more.md
+
+-- id order among equal created_at, same priority --
+same priority p0, equal created_at; string order is not numeric
+positions {'10000': 200, '9995': 1999}
+10000_before_9995 True
+first five ids ['0005', '0010', '0015', '0020', '0025']
+last five ids ['9975', '9980', '9985', '9990', '9995']
