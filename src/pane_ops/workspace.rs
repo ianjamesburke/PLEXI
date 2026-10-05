@@ -2119,6 +2119,20 @@ impl PlexiApp {
                         launch: None,
                     });
                 } else if let Some(a) = pane.as_app() {
+                    // A headless Assistant is hidden and absent from the tile
+                    // tree. Saving it would restore a layout-less pane on the
+                    // next launch. Conversation state is already per context.
+                    if a.hidden
+                        && a.manifest_id == "assistant"
+                        && !win.tree.tiles.iter().any(|(_, tile)| {
+                            matches!(tile, egui_tiles::Tile::Pane(pid) if *pid == id)
+                        })
+                    {
+                        log::info!(
+                            "assistant: skipping headless pane {id} in workspace save"
+                        );
+                        continue;
+                    }
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
                         kind: crate::workspace::SavedPaneKind::App,

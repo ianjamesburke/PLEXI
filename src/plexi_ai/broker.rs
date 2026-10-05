@@ -756,6 +756,7 @@ fn run_turn_and_respond(
     // look free in the ledger.
     let mut total_tokens_in: Option<u32> = None;
     let mut total_tokens_out: Option<u32> = None;
+    let mut turn_cost = TurnCost::default();
     let mut last_generation_id: Option<String> = None;
     let mut final_text = String::new();
 
@@ -791,6 +792,8 @@ fn run_turn_and_respond(
                 &request.cancel,
                 &mut total_tokens_in,
                 &mut total_tokens_out,
+                &mut turn_cost,
+                &mut last_generation_id,
                 &mut *on_delta,
             );
             break;
@@ -834,8 +837,9 @@ fn run_turn_and_respond(
             Ok(result) => {
                 add_reported_tokens(&mut total_tokens_in, result.input_tokens);
                 add_reported_tokens(&mut total_tokens_out, result.output_tokens);
+                turn_cost.note(result.cost_usd);
                 if result.generation_id.is_some() {
-                    last_generation_id = result.generation_id.clone();
+                    last_generation_id = result.generation_id;
                 }
 
                 // Cancelled while this round streamed: commit whatever text the
@@ -928,117 +932,19 @@ fn run_turn_and_respond(
         }
     }
 
-    // If we have a generation ID and an API key, fetch authoritative metrics
-    // on a detached background thread and return immediately. The generation
-    // record appears several seconds after stream completion, and blocking
-    // dispatch() on it holds the caller's whole turn open — the assistant
-    // pane sat "in flight" for 10-15s after every visible reply doing exactly
-    // that. The thread writes the ledger row and AgentTurn event. Stream
-    // usage (the final chunk) is what the row records when the generation
-    // endpoint has no positive token counts; a 0/0 generation row must not
-    // overwrite it. The response carries stream counts (apps see them in
-    // AiResponse — billing always reads the ledger).
-    if let Some(gen_id) = last_generation_id {
-        if !api_key.is_empty() {
-            let app_id = request.app_id.clone();
-            let backend_name = backend.name().to_string();
-            let model_id_bg = model_id.clone();
-            // Capture the finish timestamp before spawning — the background thread
-            // sleeps while waiting for the generation record, so generating the
-            // timestamp inside the thread would report a delayed time that doesn't
-            // represent when the AI turn actually completed.
-            let finish_ts = event_log::now_timestamp();
-            let wall_ms = Some(elapsed_ms(started));
-            let tags = RunTags {
-                client: request.client.clone(),
-                kind: request.kind.unwrap_or(RunKind::Output),
-            };
-            log::info!(
-                "ai_broker[{}]: fetching background metrics for gen_id={} client={:?} kind={} wall_ms={wall_ms:?}",
-                request.app_id,
-                gen_id,
-                tags.client,
-                tags.kind.as_str(),
-            );
-            let spawn_result = std::thread::Builder::new()
-                .name("plexi-ai-metrics".to_string())
-                .spawn(move || {
-                    let metrics = fetch_generation_metrics(&gen_id, &api_key);
-                    let (tokens_in, tokens_out, cost_usd) = match metrics {
-                        Some(m) if generation_metrics_usable(&m) => {
-                            let ti = m.prompt_tokens.or(total_tokens_in);
-                            let to = m.completion_tokens.or(total_tokens_out);
-                            log::info!(
-                                "ai_broker[{app_id}]: background usage prompt={ti:?} completion={to:?} cached={:?} reasoning={:?} cost_usd={:?}",
-                                m.cached_tokens, m.reasoning_tokens, m.cost_usd,
-                            );
-                            (ti, to, m.cost_usd)
-                        }
-                        other => {
-                            let cost_usd = other.and_then(|m| m.cost_usd);
-                            log::info!(
-                                "ai_broker[{app_id}]: generation token counts unavailable; recording stream usage prompt={total_tokens_in:?} completion={total_tokens_out:?} cost_usd={cost_usd:?}",
-                            );
-                            (total_tokens_in, total_tokens_out, cost_usd)
-                        }
-                    };
-                    let cost_cents = cost_usd
-                        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
-                        .unwrap_or(0);
-                    let row = LedgerRow::with_attribution(
-                        &backend_name,
-                        billing,
-                        Some(app_id),
-                        Some(model_id_bg),
-                        tokens_in,
-                        tokens_out,
-                        cost_usd,
-                    )
-                    .tagged(tags, wall_ms);
-                    ledger::append(&row);
-                    // Runs on a spawned background thread with no `PlexiApp`
-                    // access and `pane_id: None` already — no origin is
-                    // resolvable here without a new ambient lookup.
-                    event_log::emit_scoped(
-                        HostEvent::AgentTurn {
-                            pane_id: None,
-                            tokens_in: tokens_in.unwrap_or(0),
-                            tokens_out: tokens_out.unwrap_or(0),
-                            cost_cents,
-                            timestamp: finish_ts,
-                        },
-                        None,
-                    );
-                });
-            match spawn_result {
-                Ok(_) => {
-                    return AiBrokerResponse::ok(
-                        final_text,
-                        total_tokens_in.unwrap_or(0),
-                        total_tokens_out.unwrap_or(0),
-                    );
-                }
-                Err(e) => {
-                    // Thread spawn failed — fall through to synchronous path so
-                    // billing records are never silently lost.
-                    log::error!(
-                        "ai_broker[{}]: failed to spawn metrics thread: {e} — writing ledger synchronously",
-                        request.app_id,
-                    );
-                }
-            }
-        }
-    }
-
-    // No generation ID (non-OpenRouter) or no API key — write ledger and event
-    // synchronously using stream token counts. Absent counts stay null.
+    // Write the ledger row before returning. The generation record appears
+    // several seconds after the stream ends; waiting for it (or writing the
+    // row on that background thread) drops the row when the host stops in
+    // the gap. Stream `usage.cost` is the cost. The generation lookup only
+    // fills a still-null cost afterwards and does not touch tokens.
+    let cost_usd = turn_cost.total();
     let wall_ms = Some(elapsed_ms(started));
     let tags = RunTags {
         client: request.client.clone(),
         kind: request.kind.unwrap_or(RunKind::Output),
     };
     log::info!(
-        "ai_broker[{}]: recording ledger usage prompt={:?} completion={:?} client={:?} kind={} wall_ms={wall_ms:?}",
+        "ai_broker[{}]: recording ledger usage prompt={:?} completion={:?} cost_usd={cost_usd:?} client={:?} kind={} wall_ms={wall_ms:?}",
         request.app_id,
         total_tokens_in,
         total_tokens_out,
@@ -1048,31 +954,131 @@ fn run_turn_and_respond(
     let row = LedgerRow::with_attribution(
         backend.name(),
         billing,
-        Some(request.app_id),
+        Some(request.app_id.clone()),
         Some(model_id),
         total_tokens_in,
         total_tokens_out,
-        None,
+        cost_usd,
     )
     .tagged(tags, wall_ms);
+    let row_ts = row.ts.clone();
     ledger::append(&row);
+    let cost_cents = cost_cents(cost_usd);
     // Free function with no `PlexiApp`/router access and `pane_id: None`
     // already — no origin is resolvable here without a new ambient lookup.
+    // Billing reads the ledger, so a later cost patch does not emit again.
     event_log::emit_scoped(
         HostEvent::AgentTurn {
             pane_id: None,
             tokens_in: total_tokens_in.unwrap_or(0),
             tokens_out: total_tokens_out.unwrap_or(0),
-            cost_cents: 0,
+            cost_cents,
             timestamp: event_log::now_timestamp(),
         },
         None,
     );
+    if let Some(gen_id) = generation_cost_fallback(cost_usd, &last_generation_id, &api_key) {
+        // Capture the ledger path on this thread. `config_dir()` is
+        // thread-local under test, so the worker must not look it up itself.
+        let ledger_path = ledger::ledger_path();
+        let app_id = request.app_id.clone();
+        let fill_ts = row_ts.clone();
+        log::info!(
+            "ai_broker[{app_id}]: usage had no cost; generation lookup will fill row ts={row_ts} gen_id={gen_id}"
+        );
+        let spawn_result = std::thread::Builder::new()
+            .name("plexi-ai-metrics".to_string())
+            .spawn(move || {
+                match fetch_generation_metrics(&gen_id, &api_key) {
+                    Some(metrics) => match metrics.cost_usd {
+                        Some(cost) => {
+                            log::info!(
+                                "ai_broker[{app_id}]: generation {gen_id} cost_usd={cost} cached={:?} reasoning={:?}",
+                                metrics.cached_tokens,
+                                metrics.reasoning_tokens,
+                            );
+                            if ledger::fill_cost(&ledger_path, &fill_ts, cost) {
+                                log::info!(
+                                    "ai_broker[{app_id}]: filled ledger cost_usd={cost} from generation {gen_id} on row ts={fill_ts}"
+                                );
+                            }
+                        }
+                        None => {
+                            let tokens_usable = generation_metrics_usable(&metrics);
+                            log::info!(
+                                "ai_broker[{app_id}]: generation {gen_id} returned no cost (tokens_usable={tokens_usable}); row ts={fill_ts} stays unknown"
+                            );
+                        }
+                    },
+                    None => {
+                        log::info!(
+                            "ai_broker[{app_id}]: generation {gen_id} lookup failed; row ts={fill_ts} stays unknown"
+                        );
+                    }
+                }
+            });
+        if let Err(e) = spawn_result {
+            log::error!(
+                "ai_broker[{}]: failed to spawn generation cost lookup: {e} — row ts={row_ts} keeps a null cost",
+                request.app_id,
+            );
+        }
+    }
     AiBrokerResponse::ok(
         final_text,
         total_tokens_in.unwrap_or(0),
         total_tokens_out.unwrap_or(0),
     )
+}
+
+/// Running USD cost across tool rounds. The total is `Some` only when every
+/// completed round reported a cost, so a partial sum is never stored as the
+/// whole turn. No completed rounds stays unknown.
+#[derive(Default)]
+struct TurnCost {
+    sum: f64,
+    incomplete: bool,
+    rounds: u32,
+}
+
+impl TurnCost {
+    fn note(&mut self, reported: Option<f64>) {
+        self.rounds += 1;
+        match reported {
+            Some(n) => self.sum += n,
+            None => self.incomplete = true,
+        }
+    }
+
+    fn total(&self) -> Option<f64> {
+        if self.rounds > 0 && !self.incomplete {
+            Some(self.sum)
+        } else {
+            None
+        }
+    }
+}
+
+fn cost_cents(cost_usd: Option<f64>) -> u64 {
+    cost_usd
+        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
+        .unwrap_or(0)
+}
+
+/// Generation id to look up, or `None` when the stream already carried a
+/// cost, the key is empty, or there is no id. `Some(0.0)` is a real cost.
+fn generation_cost_fallback(
+    cost_usd: Option<f64>,
+    generation_id: &Option<String>,
+    api_key: &str,
+) -> Option<String> {
+    if cost_usd.is_some() || api_key.is_empty() {
+        return None;
+    }
+    generation_id
+        .as_ref()
+        .filter(|id| !id.is_empty())
+        .cloned()
 }
 
 /// Add a provider-reported count into a running total. `None` (the provider
@@ -1104,6 +1110,8 @@ fn summarize_progress_on_pause(
     cancel: &CancelToken,
     total_tokens_in: &mut Option<u32>,
     total_tokens_out: &mut Option<u32>,
+    turn_cost: &mut TurnCost,
+    last_generation_id: &mut Option<String>,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> String {
     let fallback = || {
@@ -1136,6 +1144,10 @@ fn summarize_progress_on_pause(
         Ok(result) => {
             add_reported_tokens(total_tokens_in, result.input_tokens);
             add_reported_tokens(total_tokens_out, result.output_tokens);
+            turn_cost.note(result.cost_usd);
+            if result.generation_id.is_some() {
+                *last_generation_id = result.generation_id;
+            }
             if result.text.is_empty() {
                 fallback()
             } else {
@@ -1146,6 +1158,7 @@ fn summarize_progress_on_pause(
             log::warn!(
                 "ai_broker[{app_id}]: pause-summary turn failed: {e} — falling back to canned message",
             );
+            turn_cost.note(None);
             fallback()
         }
     }
@@ -1159,8 +1172,8 @@ fn generation_metrics_usable(metrics: &GenerationMetrics) -> bool {
     metrics.prompt_tokens.is_some_and(|n| n > 0) || metrics.completion_tokens.is_some_and(|n| n > 0)
 }
 
-/// Fetch the real USD cost for a completed generation from the OpenRouter
-/// generation endpoint.
+/// Fetch USD cost from the OpenRouter generation endpoint. Used only when
+/// the stream response omitted `usage.cost`.
 ///
 /// **Endpoint:** `GET {openrouter api root}/generation?id=<gen_id>`
 /// (`PLEXI_OPENROUTER_BASE_URL` replaces `https://openrouter.ai/api/v1`).
@@ -2073,6 +2086,7 @@ mod tests {
                     let _ = tx.send(StreamEvent::Done {
                         input_tokens: Some(10),
                         output_tokens: Some(5),
+                        cost_usd: None,
                         generation_id: None,
                     });
                 } else {
@@ -2080,6 +2094,7 @@ mod tests {
                     let _ = tx.send(StreamEvent::Done {
                         input_tokens: Some(20),
                         output_tokens: Some(8),
+                        cost_usd: None,
                         generation_id: None,
                     });
                 }
@@ -2204,6 +2219,7 @@ mod tests {
                     input_tokens: Some(1),
                     output_tokens: Some(1),
                     generation_id: None,
+                    cost_usd: None,
                 });
                 Ok(())
             }
@@ -2298,6 +2314,7 @@ mod tests {
                     input_tokens: None,
                     output_tokens: None,
                     generation_id: None,
+                    cost_usd: None,
                 });
                 Ok(())
             }
@@ -2382,6 +2399,7 @@ mod tests {
                     input_tokens: Some(3),
                     output_tokens: Some(2),
                     generation_id: None,
+                    cost_usd: None,
                 });
                 Ok(())
             }
@@ -2489,5 +2507,102 @@ mod tests {
             (parsed - 9.075e-05).abs() < 1e-12,
             "float total_cost must parse to 9.075e-05"
         );
+    }
+
+    /// A reported stream cost is the ledger cost. The generation id does not
+    /// delay the row or start a lookup.
+    #[test]
+    fn stream_cost_is_recorded_before_return_even_with_generation_id() {
+        use crate::plexi_ai::backend::{AiBackend, AiBackendError, AiBackendRequest, StreamEvent};
+        use std::sync::mpsc;
+
+        struct CostBackend;
+        impl AiBackend for CostBackend {
+            fn name(&self) -> &str {
+                "openrouter"
+            }
+            fn stream_to_channel(
+                &self,
+                _req: AiBackendRequest,
+                tx: mpsc::Sender<StreamEvent>,
+            ) -> Result<(), AiBackendError> {
+                let _ = tx.send(StreamEvent::Text("priced".to_string()));
+                let _ = tx.send(StreamEvent::Done {
+                    input_tokens: Some(3463),
+                    output_tokens: Some(14),
+                    cost_usd: Some(0.021),
+                    generation_id: Some("gen-priced".to_string()),
+                });
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::TempDir::new().expect("temp profile dir");
+        let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+        let request = AiBrokerRequest {
+            app_id: "assistant".to_string(),
+            model_tier: ModelTier::Low,
+            concrete_model: None,
+            reasoning_effort: None,
+            system: String::new(),
+            messages: vec![AiMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            }],
+            tools: vec![],
+            workspace_root: None,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+            cancel: CancelToken::new(),
+            max_tool_iterations: None,
+            client: Some("narrative".to_string()),
+            kind: Some(RunKind::Output),
+        };
+        let started = std::time::Instant::now();
+        let resp = run_turn_and_respond(
+            request,
+            &CostBackend,
+            BillingModel::Metered,
+            "xiaomi/mimo-v2.5".to_string(),
+            "sk-test".to_string(),
+            &mut |_| {},
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "recording the row must not wait on the generation endpoint"
+        );
+        assert_eq!(resp.content.as_deref(), Some("priced"));
+        assert_eq!(resp.tokens_in, 3463);
+        assert_eq!(resp.tokens_out, 14);
+        let body = std::fs::read_to_string(ledger::ledger_path()).unwrap_or_default();
+        assert!(
+            body.contains(r#""input_tokens":3463"#)
+                && body.contains(r#""output_tokens":14"#)
+                && body.contains(r#""cost_usd":0.021"#)
+                && body.contains(r#""client":"narrative""#),
+            "the row must be on disk before the turn returns: {body}"
+        );
+        assert!(
+            generation_cost_fallback(Some(0.021), &Some("gen-priced".to_string()), "sk-test")
+                .is_none(),
+            "a stream cost must not start a generation lookup"
+        );
+    }
+
+    #[test]
+    fn generation_lookup_runs_only_when_stream_cost_is_missing() {
+        let id = Some("gen-1".to_string());
+        assert_eq!(
+            generation_cost_fallback(None, &id, "sk-test").as_deref(),
+            Some("gen-1")
+        );
+        assert!(generation_cost_fallback(Some(0.021), &id, "sk-test").is_none());
+        assert!(
+            generation_cost_fallback(Some(0.0), &id, "sk-test").is_none(),
+            "a reported zero is a real cost"
+        );
+        assert!(generation_cost_fallback(None, &id, "").is_none());
+        assert!(generation_cost_fallback(None, &None, "sk-test").is_none());
+        assert!(generation_cost_fallback(None, &Some(String::new()), "sk-test").is_none());
     }
 }

@@ -217,6 +217,9 @@ impl PlexiApp {
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
             crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, client, kind } => {
+                if pane_id.is_none() {
+                    let _ = self.ensure_headless_assistant(*context_id);
+                }
                 let mut submitted = false;
                 let mut failure = None;
                 for window in &mut self.windows {
