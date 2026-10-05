@@ -500,11 +500,25 @@ impl ToolDispatcher {
     /// server. Definitions are namespaced `<app_id>__<tool>` while dispatch
     /// retains the provider's original tool name.
     pub(crate) fn from_namespaced_registry(caller_pane_id: u64, viewer_context_id: u64) -> Self {
-        let caller_app_id = format!("mcp:pane:{caller_pane_id}");
+        Self::namespaced_for(
+            caller_pane_id,
+            format!("mcp:pane:{caller_pane_id}"),
+            viewer_context_id,
+        )
+    }
+
+    /// The same namespaced, context-scoped snapshot for a host-identified
+    /// caller other than an MCP pane credential (`plexi app call`: `pane:<id>`
+    /// or `user`). The identity is stamped by the host, never by the caller.
+    pub(crate) fn namespaced_for(
+        caller_pane_id: u64,
+        caller_app_id: String,
+        viewer_context_id: u64,
+    ) -> Self {
         let registry = global_registry().lock().unwrap();
         let tools = registry.namespaced_snapshot_for_caller(viewer_context_id);
         log::info!(
-            "tool_dispatch: external MCP dispatcher caller={caller_app_id} viewer_context={viewer_context_id} — {} tool(s) visible",
+            "tool_dispatch: namespaced dispatcher caller={caller_app_id} viewer_context={viewer_context_id} — {} tool(s) visible",
             tools.len(),
         );
         Self {

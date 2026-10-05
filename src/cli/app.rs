@@ -1868,6 +1868,66 @@ pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
     0
 }
 
+/// Host deadline for a CLI tool call. Strictly below the CLI's poll window so
+/// the caller always sees the host's typed timeout, never a client timeout.
+pub(crate) const APP_CALL_HOST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `plexi app call <app_id> <tool> [--input JSON]` — invoke an app tool through
+/// the host's tool dispatcher and print its JSON output on stdout.
+pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
+    let input_value: serde_json::Value = match serde_json::from_str(input) {
+        Ok(value @ serde_json::Value::Object(_)) => value,
+        Ok(_) => {
+            eprintln!("error: --input must be a JSON object");
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("error: --input is not valid JSON: {error}");
+            return 1;
+        }
+    };
+    // Provenance, not authority: the host validates the pane id and resolves
+    // its live context; it never trusts an identity carried in `input`.
+    let caller_pane_id = std::env::var("PLEXI_PANE_ID")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok());
+    log::info!(
+        "app_call:cli: app={app_id:?} tool={tool:?} caller_pane={caller_pane_id:?}"
+    );
+    let mut payload = serde_json::json!({
+        "type": "call_app_tool",
+        "app_id": app_id,
+        "tool": tool,
+        "input_json": input_value.to_string(),
+    });
+    if let Some(pane_id) = caller_pane_id {
+        payload["caller_pane_id"] = serde_json::json!(pane_id);
+    }
+    let content = match super::request_with(
+        payload,
+        "app-call-response",
+        "app call",
+        APP_CALL_HOST_TIMEOUT + std::time::Duration::from_secs(5),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(reply) => {
+            let output = reply.get("output").cloned().unwrap_or(serde_json::Value::Null);
+            println!("{output}");
+            0
+        }
+        Err(error) => {
+            eprintln!("error: host reply is not JSON: {error}");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod app_install_workspace_tests {
     use super::{classify_app_install_spec, AppInstallSpecKind};

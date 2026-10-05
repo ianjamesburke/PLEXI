@@ -1,5 +1,6 @@
 pub mod account;
 pub mod app_trait;
+mod app_call;
 pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;

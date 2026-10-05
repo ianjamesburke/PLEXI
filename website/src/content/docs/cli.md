@@ -474,6 +474,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `search` | Search the public marketplace catalog |
 | `update` | Pull git-backed installed apps to their latest source revision |
 | `action` | Send a semantic action to a running app pane |
+| `call` | Call a tool an app exposes and print its JSON result |
 
 ### `plexi app open`
 
@@ -728,6 +729,20 @@ Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /s
 | `<pane_id>` | string | yes | Pane id of the target app pane (from `plexi pane list`) |
 | `<action>` | string | yes | Action name to invoke (e.g. "refresh", "navigate-to", "add-item") |
 | `<args>` | string (repeatable) | no | Optional arguments forwarded to the action handler |
+
+### `plexi app call`
+
+Call a tool an app exposes and print its JSON result.
+
+Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity: `pane:<id>` inside a pane, `user` outside one. The app sees that identity, never one taken from the input. Exits 1 with `error: <message>` when the tool or the app rejects the call.
+
+Example: plexi app call chess chess.state Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<app_id>` | string | yes | App id that exposes the tool (from `plexi app info`) |
+| `<tool>` | string | yes | Tool name as the app declares it (e.g. `chess.state`) |
+| `--input` | string | no | Tool input as a JSON object Default: `{}`. |
 
 ## `plexi account`
 
