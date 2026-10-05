@@ -34,11 +34,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode() or "{}")
         except json.JSONDecodeError:
             body = {}
-        text = ""
-        for message in body.get("messages") or []:
-            content = message.get("content")
-            if isinstance(content, str):
-                text += content
+        text = latest_user_text(body.get("messages") or [])
         if "HOLD-FOR-TTL" in text:
             time.sleep(HOLD_SECONDS)
             chunks = [text_chunk("held"), stop_chunk()]
@@ -61,6 +57,28 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+
+def latest_user_text(messages: list) -> str:
+    """The newest user turn only.
+
+    A prior APPROVAL-TOOL or HOLD-FOR-TTL line stays in the phone transcript.
+    Keying off the whole history would make the next ordinary turn look like
+    that scripted case.
+    """
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return "\n".join(parts)
+    return ""
 
 
 def text_chunk(text: str) -> bytes:
