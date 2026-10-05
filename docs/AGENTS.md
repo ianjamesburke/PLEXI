@@ -17,6 +17,7 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | File | Covers | Stint |
 |---|---|---|
 | `agent-run-orchestration.md` | Host primitives + durable run record behind the babysitter loop | see file |
+| `specs/agents-api-and-permission-gate.md` | Agents API, mandatory permission gate, scoped delegation, Desk, and Chess/text/video proofs (P1–P5) | none yet |
 | `app-framework-marketplace.md` | v1 app platform + marketplace | see file |
 | `assistant-agent-mesh.md` | Per-context head agents, central memory drain, derived capability-card registry + `ask_question` routing, per-head testability, `plexi assistant` + picker + inter-agent receipts, MCP Apps pane + Tasks adoption | none yet |
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
