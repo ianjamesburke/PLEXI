@@ -89,6 +89,12 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// Ledger client tag for this run. Absent uses `[ai] client`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
+        /// Ledger run kind: `system` or `output`. Absent means `output`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {

@@ -24,7 +24,7 @@ use crate::plexi_ai::backend::ollama::OllamaBackend;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
 use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
 pub use crate::plexi_ai::backend::{ConcreteModelRoute, ReasoningEffort};
-use crate::plexi_ai::ledger::{self, LedgerRow};
+use crate::plexi_ai::ledger::{self, LedgerRow, RunKind, RunTags};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
 use crate::plexi_ai::CancelToken;
@@ -100,6 +100,10 @@ pub struct AiBrokerRequest {
     /// turn pauses gracefully later instead of being cut short. `None` uses
     /// the default.
     pub max_tool_iterations: Option<usize>,
+    /// Ledger client tag. Blank or `None` uses `[ai] client`.
+    pub client: Option<String>,
+    /// Ledger run kind. `None` means `output`.
+    pub kind: Option<RunKind>,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
@@ -221,6 +225,14 @@ struct BackendDispatch<'a> {
     section: &'a str,
     tiers: &'a ModelTiers,
     billing: BillingModel,
+    /// `[ai] client`, applied when the request does not set one.
+    config_client: Option<&'a str>,
+}
+
+fn fill_run_tags(request: &mut AiBrokerRequest, config_client: Option<&str>) {
+    let tags = RunTags::resolve(request.client.as_deref(), request.kind, config_client);
+    request.client = tags.client;
+    request.kind = Some(tags.kind);
 }
 
 /// Shared dispatch path for every backend.
@@ -231,7 +243,7 @@ struct BackendDispatch<'a> {
 /// key used only by the OpenRouter cost fetch — empty for backends with no
 /// metered cost lookup.
 fn dispatch_backend(
-    request: AiBrokerRequest,
+    mut request: AiBrokerRequest,
     spec: BackendDispatch<'_>,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
     build: impl FnOnce(&AiBrokerRequest, &str) -> Result<(Box<dyn AiBackend>, String), AiBrokerResponse>,
@@ -266,6 +278,7 @@ fn dispatch_backend(
         Err(response) => return response,
     };
 
+    fill_run_tags(&mut request, spec.config_client);
     run_turn_and_respond(
         request,
         backend.as_ref(),
@@ -298,6 +311,7 @@ fn dispatch_openrouter(
             section: "[ai.openrouter]",
             tiers: &or_config.tiers,
             billing: BillingModel::Metered,
+            config_client: ai_config.client.as_deref(),
         },
         on_delta,
         |request, model_id| {
@@ -528,6 +542,7 @@ fn dispatch_ollama(
             section: "[ai.ollama]",
             tiers: &ollama_config.tiers,
             billing: BillingModel::Subscription,
+            config_client: ai_config.client.as_deref(),
         },
         on_delta,
         |_request, model_id| {
@@ -576,6 +591,7 @@ fn dispatch_local(
             section: "[ai.local]",
             tiers: &local_config.tiers,
             billing: BillingModel::Subscription,
+            config_client: ai_config.client.as_deref(),
         },
         on_delta,
         |request, model_id| {
@@ -690,6 +706,7 @@ fn run_turn_and_respond(
     api_key: String,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
+    let started = std::time::Instant::now();
     // Build effective system prompt (optionally prepend host context).
     // Wrap in `Arc<str>` immediately so each tool-loop iteration clones only
     // the pointer rather than the full string.
@@ -931,10 +948,17 @@ fn run_turn_and_respond(
             // timestamp inside the thread would report a delayed time that doesn't
             // represent when the AI turn actually completed.
             let finish_ts = event_log::now_timestamp();
+            let wall_ms = Some(elapsed_ms(started));
+            let tags = RunTags {
+                client: request.client.clone(),
+                kind: request.kind.unwrap_or(RunKind::Output),
+            };
             log::info!(
-                "ai_broker[{}]: fetching background metrics for gen_id={}",
+                "ai_broker[{}]: fetching background metrics for gen_id={} client={:?} kind={} wall_ms={wall_ms:?}",
                 request.app_id,
-                gen_id
+                gen_id,
+                tags.client,
+                tags.kind.as_str(),
             );
             let spawn_result = std::thread::Builder::new()
                 .name("plexi-ai-metrics".to_string())
@@ -969,7 +993,8 @@ fn run_turn_and_respond(
                         tokens_in,
                         tokens_out,
                         cost_usd,
-                    );
+                    )
+                    .tagged(tags, wall_ms);
                     ledger::append(&row);
                     // Runs on a spawned background thread with no `PlexiApp`
                     // access and `pane_id: None` already — no origin is
@@ -1007,11 +1032,18 @@ fn run_turn_and_respond(
 
     // No generation ID (non-OpenRouter) or no API key — write ledger and event
     // synchronously using stream token counts. Absent counts stay null.
+    let wall_ms = Some(elapsed_ms(started));
+    let tags = RunTags {
+        client: request.client.clone(),
+        kind: request.kind.unwrap_or(RunKind::Output),
+    };
     log::info!(
-        "ai_broker[{}]: recording ledger usage prompt={:?} completion={:?}",
+        "ai_broker[{}]: recording ledger usage prompt={:?} completion={:?} client={:?} kind={} wall_ms={wall_ms:?}",
         request.app_id,
         total_tokens_in,
         total_tokens_out,
+        tags.client,
+        tags.kind.as_str(),
     );
     let row = LedgerRow::with_attribution(
         backend.name(),
@@ -1021,7 +1053,8 @@ fn run_turn_and_respond(
         total_tokens_in,
         total_tokens_out,
         None,
-    );
+    )
+    .tagged(tags, wall_ms);
     ledger::append(&row);
     // Free function with no `PlexiApp`/router access and `pane_id: None`
     // already — no origin is resolvable here without a new ambient lookup.
@@ -1044,6 +1077,10 @@ fn run_turn_and_respond(
 
 /// Add a provider-reported count into a running total. `None` (the provider
 /// sent no usage) leaves the total unknown instead of adding zero.
+fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 fn add_reported_tokens(total: &mut Option<u32>, reported: Option<u32>) {
     if let Some(n) = reported {
         *total = Some(total.unwrap_or(0).saturating_add(n));
@@ -1364,6 +1401,8 @@ mod tests {
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
                 max_tool_iterations: None,
+                client: None,
+                kind: None,
             },
             &mut |_| {},
         );
@@ -1403,6 +1442,8 @@ mod tests {
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
                 max_tool_iterations: None,
+                client: None,
+                kind: None,
             },
             &mut |_| {},
         );
@@ -1774,6 +1815,8 @@ mod tests {
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
                 max_tool_iterations: None,
+                client: None,
+                kind: None,
             },
             &mut |_| {},
         );
@@ -1812,6 +1855,8 @@ mod tests {
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
                 max_tool_iterations: None,
+                client: None,
+                kind: None,
             },
             &mut |_| {},
         );
@@ -1840,6 +1885,8 @@ mod tests {
             tool_dispatcher: None,
             cancel: CancelToken::new(),
             max_tool_iterations: None,
+            client: None,
+            kind: None,
         }
     }
 
@@ -2073,6 +2120,8 @@ mod tests {
             tool_dispatcher: None,
             cancel: CancelToken::new(),
             max_tool_iterations: None,
+            client: None,
+            kind: None,
         };
 
         let billing = crate::plexi_ai::backend::BillingModel::Subscription;
@@ -2187,6 +2236,8 @@ mod tests {
             tool_dispatcher: None,
             cancel: CancelToken::new(),
             max_tool_iterations: Some(2),
+            client: None,
+            kind: None,
         };
 
         let resp = run_turn_and_respond(
@@ -2273,6 +2324,8 @@ mod tests {
             tool_dispatcher: None,
             cancel,
             max_tool_iterations: None,
+            client: None,
+            kind: None,
         };
         let resp = run_turn_and_respond(
             request,
@@ -2355,6 +2408,8 @@ mod tests {
             tool_dispatcher: None,
             cancel,
             max_tool_iterations: None,
+            client: None,
+            kind: None,
         };
         let resp = run_turn_and_respond(
             request,
