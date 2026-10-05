@@ -272,7 +272,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd, LedgerCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -287,8 +287,8 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, client, kind, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, client.as_deref(), kind.as_deref()))
                         }
                     },
                     Commands::Run {
@@ -1335,6 +1335,11 @@ fn main() -> eframe::Result {
                     Commands::Note { text } => {
                         std::process::exit(cli::notes::note_capture_cli(&text))
                     }
+                    Commands::Ledger { cmd } => match cmd {
+                        LedgerCmd::Summary { by, since, json } => std::process::exit(
+                            cli::ledger_summary_cli(by.as_deref(), since.as_deref(), json),
+                        ),
+                    },
                     Commands::Ai { cmd } => match cmd {
                         AiCmd::Onboard => std::process::exit(cli::ai_onboard_cli()),
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
