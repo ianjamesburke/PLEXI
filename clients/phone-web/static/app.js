@@ -16,7 +16,8 @@ const els = {
 let cursor = 0;
 let online = false;
 let sending = false;
-let activeRequestId = null;
+// Turns sent from this page that have not reached a terminal state, oldest first.
+const activeRequestIds = [];
 
 function requestId() {
   // crypto.randomUUID is only exposed in secure contexts; LAN http is not one.
@@ -34,7 +35,7 @@ function setConnection(state, label) {
 
 function syncControls() {
   els.send.disabled = !online || sending;
-  els.cancel.disabled = !online || activeRequestId === null;
+  els.cancel.disabled = !online || activeRequestIds.length === 0;
 }
 
 function render(event) {
@@ -50,9 +51,12 @@ function render(event) {
   const pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
   els.transcript.append(li);
   if (pinned) scroller.scrollTop = scroller.scrollHeight;
-  if (event.kind === "receipt" && event.request_id === activeRequestId && TERMINAL.has(event.state)) {
-    activeRequestId = null;
-    syncControls();
+  if (event.kind === "receipt" && TERMINAL.has(event.state)) {
+    const i = activeRequestIds.indexOf(event.request_id);
+    if (i !== -1) {
+      activeRequestIds.splice(i, 1);
+      syncControls();
+    }
   }
 }
 
@@ -97,7 +101,7 @@ els.form.addEventListener("submit", async (e) => {
     });
     const receipt = await res.json();
     if (!res.ok) throw new Error(receipt.error || `turn ${res.status}`);
-    activeRequestId = TERMINAL.has(receipt.state) ? null : id;
+    if (!TERMINAL.has(receipt.state) && !activeRequestIds.includes(id)) activeRequestIds.push(id);
     els.message.value = "";
   } catch (err) {
     console.warn("phone shell send failed", err);
@@ -116,8 +120,9 @@ els.message.addEventListener("keydown", (e) => {
 });
 
 els.cancel.addEventListener("click", async () => {
-  if (!activeRequestId) return;
-  const id = activeRequestId;
+  // Cancel addresses the newest unfinished turn by its exact request id.
+  const id = activeRequestIds.at(-1);
+  if (!id) return;
   try {
     const res = await fetch(`/api/turns/${encodeURIComponent(id)}/cancel`, { method: "POST" });
     if (!res.ok) throw new Error(`cancel ${res.status}`);

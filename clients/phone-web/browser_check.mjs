@@ -13,6 +13,7 @@ const base = process.argv[2] ?? "http://127.0.0.1:8787";
 const shotPath = process.argv[3];
 const chrome = process.env.CHROME ?? "google-chrome";
 const port = 9333;
+const nonce = Date.now().toString(36);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const browser = spawn(chrome, [
@@ -87,19 +88,29 @@ try {
   console.log("DOM", JSON.stringify(dom));
   if (!dom.composer) throw new Error("composer missing from DOM");
 
-  await typeAndSend("hello from the phone shell");
+  // Unique text per run so leftovers from earlier runs on the same server cannot satisfy a wait.
+  const hello = `hello from the phone shell ${nonce}`;
+  const doomed = `cancel this one ${nonce}`;
+  const idOf = (text) => `[...document.querySelectorAll("#transcript li.user")].find((li) => li.textContent === ${JSON.stringify(text)})?.dataset.requestId`;
+  const receiptFor = (text, state) => `[...document.querySelectorAll("#transcript li.receipt")]
+    .some((li) => li.dataset.requestId === ${idOf(text)} && li.textContent === ${JSON.stringify(state)})`;
+
+  await typeAndSend(hello);
   await waitFor(`document.getElementById("message").value === ""`, "draft cleared after accept");
   await waitFor(`[...document.querySelectorAll("#transcript li.stub_reply")]
-    .some((li) => li.textContent === "Stub echo: hello from the phone shell")`, "stub echo");
+    .some((li) => li.textContent === ${JSON.stringify("Stub echo: " + hello)})`, "stub echo");
+  await waitFor(receiptFor(hello, "succeeded"), "succeeded receipt");
+  await waitFor(`document.getElementById("cancel").disabled`, "cancel disabled once nothing is pending");
   console.log("AFTER SEND", JSON.stringify(await transcript()));
 
-  await typeAndSend("cancel this one");
+  await typeAndSend(doomed);
+  await waitFor(`!!(${idOf(doomed)})`, "second turn in transcript");
   await waitFor(`!document.getElementById("cancel").disabled`, "cancel enabled");
   await evaluate(`document.getElementById("cancel").click()`);
-  await waitFor(`[...document.querySelectorAll("#transcript li.receipt")].some((li) => li.textContent === "cancelled")`, "cancelled receipt");
+  await waitFor(receiptFor(doomed, "cancelled"), "cancelled receipt for the second turn");
   await sleep(2000);
   const final = await transcript();
-  if (final.some((line) => line.includes("Stub echo: cancel this one"))) throw new Error("cancelled turn was still echoed");
+  if (final.some((line) => line.includes("Stub echo: " + doomed))) throw new Error("cancelled turn was still echoed");
   console.log("AFTER CANCEL", JSON.stringify(final));
 
   if (shotPath) {
