@@ -15,6 +15,13 @@ const els = {
 
 let cursor = 0;
 let online = false;
+const urlToken = new URLSearchParams(location.search).get("token");
+if (urlToken) {
+  sessionStorage.setItem("plexiPhoneToken", urlToken);
+  history.replaceState({}, "", location.pathname + location.hash);
+}
+const token = sessionStorage.getItem("plexiPhoneToken");
+function apiHeaders(extra = {}) { return token ? { ...extra, Authorization: `Bearer ${token}` } : extra; }
 let sending = false;
 // Turns sent from this page that have not reached a terminal state, oldest first.
 const activeRequestIds = [];
@@ -63,12 +70,12 @@ function render(event) {
 async function poll() {
   try {
     if (!online) {
-      const status = await fetch("/api/status", { cache: "no-store" });
+      const status = await fetch("/api/status", { cache: "no-store", headers: apiHeaders() });
       if (!status.ok) throw new Error(`status ${status.status}`);
       const body = await status.json();
       setConnection("online", body.host === "not_connected" ? "Online · local stub, no host" : "Online");
     }
-    const res = await fetch(`/api/conversation?after=${cursor}`, { cache: "no-store" });
+    const res = await fetch(`/api/conversation?after=${cursor}`, { cache: "no-store", headers: apiHeaders() });
     if (!res.ok) throw new Error(`conversation ${res.status}`);
     const page = await res.json();
     page.events.forEach(render);
@@ -91,7 +98,7 @@ els.form.addEventListener("submit", async (e) => {
   try {
     const res = await fetch("/api/turns", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         schema_version: 1,
         request_id: id,
@@ -124,7 +131,7 @@ els.cancel.addEventListener("click", async () => {
   const id = activeRequestIds.at(-1);
   if (!id) return;
   try {
-    const res = await fetch(`/api/turns/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    const res = await fetch(`/api/turns/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: apiHeaders() });
     if (!res.ok) throw new Error(`cancel ${res.status}`);
   } catch (err) {
     console.warn("phone shell cancel failed", err);

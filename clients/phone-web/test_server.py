@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -83,6 +84,33 @@ class StubServerTest(unittest.TestCase):
     def test_static_path_traversal_blocked(self) -> None:
         status, _ = self.request("/../server.py")
         self.assertEqual(status, 404)
+
+    def test_token_blocks_api_but_not_page(self) -> None:
+        self.httpd.shutdown(); self.httpd.server_close()
+        self.httpd = server.build_server("127.0.0.1", 0, self.store, token="test-token")
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        status, _ = self.request("/api/status")
+        self.assertEqual(status, 401)
+        req = urllib.request.Request(self.base + "/api/status", headers={"Authorization": "Bearer test-token"})
+        with urllib.request.urlopen(req) as res:
+            self.assertEqual(res.status, 200)
+
+    def test_host_backend_uses_fake_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"state\":\"succeeded\",\"reply\":\"real-ish reply\"}'\n")
+            fake.chmod(0o755)
+            self.httpd.shutdown(); self.httpd.server_close()
+            self.httpd = server.build_server("127.0.0.1", 0, server.HostStore(str(fake)), token="test-token")
+            self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+            threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+            req = urllib.request.Request(self.base + "/api/turns", data=json.dumps(envelope("host-r1", "hello")).encode(), method="POST", headers={"Content-Type":"application/json", "Authorization":"Bearer test-token"})
+            with urllib.request.urlopen(req) as res: self.assertEqual(res.status, 202)
+            time.sleep(0.2)
+            req = urllib.request.Request(self.base + "/api/conversation?after=0", headers={"Authorization":"Bearer test-token"})
+            with urllib.request.urlopen(req) as res: page = json.loads(res.read())
+            self.assertIn("assistant_reply", [event["kind"] for event in page["events"]])
 
 
 if __name__ == "__main__":

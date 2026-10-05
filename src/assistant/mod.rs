@@ -18,7 +18,7 @@ pub mod settings;
 pub mod skills;
 pub mod store;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -495,6 +495,7 @@ pub struct AssistantApp {
     audit: AuditLog,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
+    external_replies: VecDeque<(String, String)>,
     /// Live deltas from the in-flight turn's worker thread.
     delta_rx: Option<Receiver<StreamDelta>>,
     flow_tx: Sender<ToolFlowEvent>,
@@ -646,6 +647,7 @@ impl AssistantApp {
             audit: AuditLog::new(profile_dir.join("audit.jsonl")),
             outcome_tx,
             outcome_rx,
+            external_replies: VecDeque::new(),
             delta_rx: None,
             flow_tx,
             flow_rx,
@@ -1764,6 +1766,13 @@ impl AssistantApp {
                 (None, Some(error)) => Err(error),
                 (None, None) => Err("broker returned neither content nor error".to_string()),
             };
+            if let Some((request_id, response_file)) = self.external_replies.pop_front() {
+                let reply = match &result {
+                    Ok(text) => serde_json::json!({"request_id": request_id, "state": "succeeded", "reply": text}),
+                    Err(error) => serde_json::json!({"request_id": request_id, "state": "failed", "error": error}),
+                };
+                crate::rpc::write_json_response(&response_file, reply);
+            }
             let effects = self.model.finish_turn(&outcome.conversation_id, result);
             self.execute_effects(effects);
         }
@@ -3410,6 +3419,17 @@ impl App for AssistantApp {
 
     fn type_id(&self) -> &'static str {
         "assistant"
+    }
+
+    fn submit_external_turn(&mut self, text: String, request_id: String, response_file: String) -> Result<(), String> {
+        if text.trim().is_empty() {
+            return Err("text must not be empty".to_string());
+        }
+        self.external_replies.push_back((request_id.clone(), response_file));
+        log::info!("assistant: external turn accepted request_id={request_id}");
+        let effects = self.model.submit_prompt(text);
+        self.execute_effects(effects);
+        Ok(())
     }
 
     fn display_name(&self) -> String {

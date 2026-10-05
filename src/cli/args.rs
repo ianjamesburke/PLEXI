@@ -41,6 +41,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Submit a text turn to the running host Assistant.
+    Assistant {
+        #[command(subcommand)]
+        cmd: AssistantCmd,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -260,6 +265,23 @@ pub enum Commands {
     /// List run completions (hidden, used by shell completions)
     #[command(hide = true, name = "_complete-run")]
     CompleteRun,
+}
+
+#[derive(Subcommand)]
+pub enum AssistantCmd {
+    /// Submit through the same composer, model, and permission path as the desktop Assistant.
+    Send {
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        request_id: Option<String>,
+        #[arg(long)]
+        pane_id: Option<u64>,
+        #[arg(long)]
+        context_id: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

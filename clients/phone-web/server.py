@@ -15,9 +15,14 @@ Run: python3 clients/phone-web/server.py [--host 127.0.0.1] [--port 8787]
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import mimetypes
+import os
+import secrets
+import socket
+import subprocess
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,7 +33,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 ECHO_DELAY_SECONDS = 1.5
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 8000
-TERMINAL_STATES = {"succeeded", "failed", "cancelled", "expired"}
+TERMINAL_STATES = {"succeeded", "failed", "cancelled", "expired", "waiting_for_permission"}
 
 log = logging.getLogger("plexi.phone_web")
 
@@ -101,6 +106,46 @@ class StubStore:
             return {"cursor": len(self.events), "events": [dict(e) for e in self.events[cursor:]]}
 
 
+class HostStore(StubStore):
+    """In-memory phone receipts backed by the installed host CLI."""
+    def __init__(self, plexi_bin: str) -> None:
+        super().__init__()
+        self.plexi_bin = plexi_bin
+
+    def submit(self, envelope: dict) -> tuple[int, dict]:
+        status, receipt = super().submit(envelope)
+        if status == 202:
+            threading.Thread(target=self._host_turn, args=(envelope["request_id"], envelope["content"][0]["text"]), daemon=True).start()
+        return status, receipt
+
+    def _echo(self, request_id: str, text: str) -> None:
+        # HostStore starts its own worker; the inherited timer is deliberately not used.
+        return
+
+    def _host_turn(self, request_id: str, text: str) -> None:
+        with self.lock:
+            self.receipts[request_id].update(state="running", updated_at=now())
+            self._append({"kind": "receipt", "request_id": request_id, "state": "running"})
+        try:
+            proc = subprocess.run([self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id, "--json"], capture_output=True, text=True, timeout=130, check=False)
+            payload = json.loads(proc.stdout.strip()) if proc.stdout.strip() else {}
+            state = payload.get("state", "failed")
+            reply = payload.get("reply")
+            error = payload.get("error") or proc.stderr.strip()
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            state, reply, error = "failed", None, str(exc)
+        with self.lock:
+            receipt = self.receipts[request_id]
+            if receipt["state"] == "cancelled":
+                return
+            receipt.update(state=state, updated_at=now())
+            if reply:
+                self._append({"kind": "assistant_reply", "request_id": request_id, "text": reply})
+            if error:
+                receipt["error"] = error
+            self._append({"kind": "receipt", "request_id": request_id, "state": state})
+
+
 def validate_envelope(body: object) -> str | None:
     if not isinstance(body, dict):
         return "body_must_be_object"
@@ -121,7 +166,7 @@ def validate_envelope(body: object) -> str | None:
     return None
 
 
-def make_handler(store: StubStore) -> type[BaseHTTPRequestHandler]:
+def make_handler(store: StubStore, token: str | None = None) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "PlexiPhoneShellStub/0"
 
@@ -137,10 +182,23 @@ def make_handler(store: StubStore) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        def _authorized(self) -> bool:
+            if token is None:
+                return True
+            supplied = self.headers.get("Authorization", "")
+            return hmac.compare_digest(supplied, f"Bearer {token}")
+
+        def _api_auth(self, path: str) -> bool:
+            if path.startswith("/api/") and not self._authorized():
+                self._json(401, {"error": "unauthorized"})
+                return False
+            return True
+
         def do_GET(self) -> None:  # noqa: N802
             url = urlparse(self.path)
+            if not self._api_auth(url.path): return
             if url.path == "/api/status":
-                self._json(200, {"mode": "local_stub", "host": "not_connected", "intake_contract": None})
+                self._json(200, {"mode": "host" if isinstance(store, HostStore) else "local_stub", "host": "configured" if isinstance(store, HostStore) else "not_connected", "intake_contract": None})
                 return
             if url.path == "/api/conversation":
                 try:
@@ -154,6 +212,7 @@ def make_handler(store: StubStore) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             url = urlparse(self.path)
+            if not self._api_auth(url.path): return
             parts = url.path.strip("/").split("/")
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -204,18 +263,29 @@ def make_handler(store: StubStore) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def build_server(host: str, port: int, store: StubStore | None = None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(store or StubStore()))
+def build_server(host: str, port: int, store: StubStore | None = None, token: str | None = None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), make_handler(store or StubStore(), token))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Plexi phone shell with a local stub turn API")
+    parser = argparse.ArgumentParser(description="Plexi phone shell")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--backend", choices=("stub", "host"), default=os.getenv("PLEXI_PHONE_BACKEND", "stub"))
+    parser.add_argument("--plexi-bin", default=os.getenv("PLEXI_BIN", "plexi"))
+    parser.add_argument("--lan", action="store_true", default=os.getenv("PLEXI_PHONE_LAN") == "1")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    server = build_server(args.host, args.port)
-    log.info("phone shell serving http://%s:%d (local stub, no intake contract)", args.host, args.port)
+    host = "0.0.0.0" if args.lan else args.host
+    require_token = args.backend == "host" or host not in ("127.0.0.1", "::1", "localhost")
+    token = os.getenv("PLEXI_PHONE_TOKEN") or (secrets.token_urlsafe(32) if require_token else None)
+    store = HostStore(args.plexi_bin) if args.backend == "host" else StubStore()
+    server = build_server(host, args.port, store, token)
+    ips = {"127.0.0.1"}
+    try: ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except socket.gaierror: pass
+    suffix = f"/?token={token}" if token else "/"
+    for ip in sorted(ips): log.info("phone shell URL: http://%s:%d%s", ip, args.port, suffix)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

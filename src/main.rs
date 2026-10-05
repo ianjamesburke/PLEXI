@@ -272,7 +272,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -286,6 +286,11 @@ fn main() -> eframe::Result {
             }
             if let Some(cmd) = cli.command {
                 match cmd {
+                    Commands::Assistant { cmd } => match cmd {
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        }
+                    },
                     Commands::Run {
                         command,
                         extra_args,
