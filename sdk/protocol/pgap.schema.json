@@ -1962,6 +1962,47 @@
         },
         {
           "additionalProperties": false,
+          "description": "Call an app-exposed tool through the host tool dispatcher. Sent by\n`plexi app call`. The host resolves the viewer context from\n`caller_pane_id` (the active window's context when absent), stamps the\ncaller identity (`pane:<id>` or `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the app answers or the host deadline passes.",
+          "properties": {
+            "app_id": {
+              "type": "string"
+            },
+            "caller_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "input_json": {
+              "description": "Tool input, a JSON object serialized as a string.",
+              "type": "string"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "type": {
+              "const": "call_app_tool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "app_id",
+            "tool",
+            "input_json"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
           "properties": {
             "anchor_pane": {

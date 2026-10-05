@@ -58,6 +58,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   declare a `[state]` section are addressable; the path is resolved from the
   manifest and the calling context, never passed in. A running app picks the
   write up on its own event loop.
+- **App tools** — call a tool a running app exposes and get its JSON result:
+  `plexi app call <app_id> <tool> --input '<json object>'`. It uses the same
+  dispatcher as the Assistant, scoped to your pane's context. The app sees
+  your identity as `pane:<id>` (or `user` outside a pane); identity fields in
+  `--input` are ignored. A tool or app rejection exits 1 with `error: …`.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

@@ -1,0 +1,23 @@
+schema_version = 1
+
+[app]
+id = "chess"
+type = "app"
+name = "Chess"
+version = "0.2.0"
+description = "One chess game that people and agents play through the same domain operations: chess.* tools, revision-checked moves with receipts, and chess.move_committed events."
+entry = "chess.py"
+
+[runtime]
+python_compat = true
+
+[state]
+scopes = ["context"]
+
+[app.capabilities]
+capabilities = []
+
+[marketplace]
+visibility = "public"
+price = "free"
+publisher = "plexi"

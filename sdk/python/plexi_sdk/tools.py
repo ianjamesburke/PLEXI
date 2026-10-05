@@ -64,6 +64,7 @@ class Reply:
 class _Registered:
     decl: AiTool
     fn: Callable[..., Any]
+    caller: bool = False
 
 
 _REGISTRY: "dict[str, _Registered]" = {}
@@ -94,6 +95,7 @@ def tool(
     returns: "dict[str, type] | None" = None,
     *,
     read_only: bool = False,
+    caller: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register the decorated function as the handler for tool ``name``.
 
@@ -102,6 +104,10 @@ def tool(
     listed key required. The function is called with the Assistant's arguments
     as keyword arguments and returns a :class:`Reply` (or a bare dict when it
     has no effects).
+
+    ``caller=True`` also passes ``caller_id``: the identity the host stamped on
+    the call (for example ``agent:assistant``). It is never taken from the
+    caller's arguments, so an app may use it for its own resource policy.
     """
     if not name:
         raise ValueError("tool name must be non-empty")
@@ -117,7 +123,7 @@ def tool(
     )
 
     def register(fn: Callable[..., Any]) -> Callable[..., Any]:
-        _REGISTRY[name] = _Registered(decl, fn)
+        _REGISTRY[name] = _Registered(decl, fn, caller)
         return fn
 
     return register
@@ -154,6 +160,9 @@ def dispatch(event: Any) -> Optional[list]:
             raise TypeError(
                 f"tool input must be a JSON object, got {type(arguments).__name__}"
             )
+        if entry.caller:
+            arguments.pop("caller_id", None)
+            arguments["caller_id"] = event.caller_id
         reply = entry.fn(**arguments)
     except Exception as exc:  # surfaced to the Assistant, never crashes the app
         return [ToolResult(event.call_id, error=f"{type(exc).__name__}: {exc}")]
