@@ -111,6 +111,22 @@ if ! "$BIN" app open assistant >"${PROFILE}/e2e-open-assistant.log" 2>&1; then
   cat "${PROFILE}/e2e-open-assistant.log" >&2 || true
   exit 1
 fi
+# The spawn queue is drained from the host logic loop, about once a second.
+# `app open` from outside a pane only queues the request.
+assistant_ready=0
+for _ in $(seq 1 30); do
+  if "$BIN" pane list 2>/dev/null | grep -q '"title": "Assistant"'; then
+    assistant_ready=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$assistant_ready" != 1 ]]; then
+  echo "FAIL: assistant pane did not appear" >&2
+  cat "${PROFILE}/e2e-open-assistant.log" >&2 || true
+  "$BIN" pane list >&2 || true
+  exit 1
+fi
 
 send() {
   local label="$1"
