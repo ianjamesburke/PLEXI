@@ -36,4 +36,4 @@ python3 -m unittest services/relay/test_relay.py
 bash services/relay/e2e_local.sh
 ```
 
-The container image is `services/relay/Dockerfile`. Staging notes that are not executed live in `DEPLOY.md`.
+The container image is `services/relay/Dockerfile`. Staging notes live in `DEPLOY.md`.

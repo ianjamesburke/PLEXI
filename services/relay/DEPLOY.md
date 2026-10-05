@@ -1,14 +1,15 @@
-# Railway staging note (not executed)
+# Railway staging
 
-This file is a note for a later operator. Nothing in this change deploys, and it does not touch Railway, Cloudflare, or Fly.
+Staging is https://plexi-relay-staging.up.railway.app. That host was deployed from outside this tree. This file does not deploy, and it does not touch Cloudflare or Fly.
 
-Target shape when someone does deploy staging:
+`railway.toml` at the repository root is what `railway up` from that root reads:
 
-- Platform: Railway.
-- Public hostname: a `*.up.railway.app` service URL.
-- Start command: `python3 -u services/relay/relay.py --host 0.0.0.0 --port $PORT` from a checkout that still contains `clients/phone-web/static`, or the `services/relay/Dockerfile` (build context is the repository root).
-- TLS: Railway terminates HTTPS and `wss://` at the edge. The process itself listens on plain HTTP/WebSocket inside the platform network. The desktop uses `plexi relay connect --url wss://<service>.up.railway.app`.
-- Storage: do not attach a volume. The relay keeps pairings and undelivered bodies in memory only.
-- Health: `GET /health` returns `{"ok":true}`.
+- `build.builder` is `DOCKERFILE`.
+- `build.dockerfilePath` is `services/relay/Dockerfile`.
+- Leave the service root directory at `/`, the repository. Railway uses that directory as the Docker build context, so the Dockerfile copies `services/relay/relay.py` and `clients/phone-web/static` in place. Do not set the root directory to `services/relay`, and do not flatten those files into a second context.
+- The image command is the Dockerfile `CMD`. The process listens on `$PORT`.
+- TLS: Railway terminates HTTPS and `wss://` at the edge. The process itself listens on plain HTTP and WebSocket. The desktop uses `plexi relay connect --url wss://plexi-relay-staging.up.railway.app`.
+- Storage: do not attach a volume. Pairings and undelivered bodies stay in memory.
+- Health: `GET /healthz` returns `{"ok":true}`. `deploy.healthcheckPath` in `railway.toml` is `/healthz`.
 
-Do not run `railway up` from this branch.
+The website service keeps its own config at `website/railway.json`. Do not run `railway up` from this change.
