@@ -231,7 +231,7 @@ fi
 OFFLINE=""
 for _ in $(seq 1 40); do
   STATUS_JSON="$(curl -sf "$BASE/api/status" -H "cookie: plexi_phone=$COOKIE" || true)"
-  if python3 -c 'import json,sys; body=json.loads(sys.argv[1]); raise SystemExit(0 if body.get("host")=="desktop_offline" and body.get("message")=="desktop offline" else 1)' "$STATUS_JSON"; then
+  if [[ -n "$STATUS_JSON" ]] && python3 -c 'import json,sys; body=json.loads(sys.argv[1]); raise SystemExit(0 if body.get("host")=="desktop_offline" and body.get("message")=="desktop offline" else 1)' "$STATUS_JSON"; then
     OFFLINE=1
     break
   fi
@@ -241,7 +241,7 @@ if [[ -n "$OFFLINE" ]]; then pass "desktop offline"; else fail "desktop offline"
 EXPIRED=""
 for _ in $(seq 1 40); do
   PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"
-  if python3 -c 'import json,sys; page=json.loads(sys.argv[1]);
+  if [[ -n "$PAGE" ]] && python3 -c 'import json,sys; page=json.loads(sys.argv[1]);
 raise SystemExit(0 if any(e.get("request_id")=="req-hold" and e.get("state")=="expired" for e in page.get("events") or []) else 1)' "$PAGE"; then
     EXPIRED=1
     break
