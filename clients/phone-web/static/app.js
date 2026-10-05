@@ -2,7 +2,7 @@
 // No credentials are stored; the draft stays in the composer until the server accepts it.
 
 const POLL_MS = 1000;
-const TERMINAL = new Set(["succeeded", "failed", "cancelled", "expired"]);
+const TERMINAL = new Set(["succeeded", "failed", "cancelled", "expired", "waiting_for_permission"]);
 
 const els = {
   connection: document.getElementById("connection"),
@@ -53,9 +53,10 @@ function render(event) {
     const state = document.createElement("div");
     state.textContent = event.state;
     li.append(state);
-    if (event.error) {
+    const note = event.status || event.error;
+    if (note) {
       const error = document.createElement("small");
-      error.textContent = event.error.slice(0, 240);
+      error.textContent = note.slice(0, 240);
       li.append(error);
     }
   } else {

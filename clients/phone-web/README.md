@@ -19,7 +19,7 @@ node --experimental-websocket clients/phone-web/browser_check.mjs http://127.0.0
 
 `browser_check.mjs` runs headless Chrome in a 390x844 mobile viewport. That is browser emulation, not a physical phone check.
 
-Host mode runs `plexi assistant send` locally and requires a bearer token even on loopback. The server prints a ready URL containing that token; the page stores it for the session and removes it from the address bar.
+Host mode runs `plexi assistant send --json` locally and requires a bearer token even on loopback. The server prints a ready URL containing that token; the page stores it for the session and removes it from the address bar. Each send is answered by the `turn_id` that command created. A desktop permission prompt returns `waiting_for_permission` immediately, with the pending request id, instead of waiting out the host timeout. Approval stays on the desktop.
 
 With `--lan`, open the first URL labelled as the default-route LAN address on the phone. Bridge, VPN, and other virtual-interface addresses are skipped (except a Tailscale address when available).
 

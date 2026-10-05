@@ -4,6 +4,8 @@
 //! streaming state. State transitions return `AssistantEffect`s; the pane
 //! shell (`AssistantApp`) executes them.
 
+use std::collections::VecDeque;
+
 use super::commands::{self, ParsedCommand};
 use crate::protocol::ModelTier;
 use crate::plexi_ai::broker::ReasoningEffort;
@@ -194,9 +196,12 @@ pub enum CompactionState {
 /// Side effects the model requests from the pane shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssistantEffect {
-    /// Run a model turn for `prompt` in `conversation_id`.
+    /// Run a model turn for `prompt` in `conversation_id`. `turn_id` is the
+    /// id of the user turn this dispatch answers, stable from submit until
+    /// the outcome returns.
     AiQuery {
         conversation_id: String,
+        turn_id: String,
         prompt: String,
     },
     /// Persist unwritten turns and the active conversation id to disk.
@@ -293,6 +298,12 @@ fn new_conversation_id() -> String {
     format!("conv-{}", uuid::Uuid::new_v4())
 }
 
+/// Id of one user turn that a model dispatch answers. External callers
+/// (`plexi assistant send`) correlate replies by this id.
+pub(crate) fn new_turn_id() -> String {
+    format!("turn-{}", uuid::Uuid::new_v4())
+}
+
 /// Pure Assistant state: one active conversation + composer + streaming.
 #[derive(Debug)]
 pub struct AssistantModel {
@@ -313,6 +324,13 @@ pub struct AssistantModel {
     /// appended to `turns`; this count tells the pump to dispatch one
     /// follow-up turn that folds them in.
     pub queued_user_turns: usize,
+    /// Id of the model turn currently in flight, when one has been dispatched.
+    pub active_turn_id: Option<String>,
+    /// Turn ids for user prompts waiting to be dispatched, oldest first.
+    /// Parallel to `queued_user_turns`.
+    pub queued_turn_ids: VecDeque<String>,
+    /// Turn id assigned by the most recent `submit_prompt`, dispatched or queued.
+    pub last_submitted_turn_id: Option<String>,
     /// Transcript index where the in-flight turn's rows belong: just after
     /// the user message that started it. Tool rows and the final reply
     /// insert here (advancing it), so output appended mid-turn — slash-view
@@ -347,6 +365,9 @@ impl AssistantModel {
             active_tools: Vec::new(),
             pending_permission: None,
             queued_user_turns: 0,
+            active_turn_id: None,
+            queued_turn_ids: VecDeque::new(),
+            last_submitted_turn_id: None,
             turn_anchor: None,
             show_thoughts: false,
             active_agent_id: "default".to_string(),
@@ -545,23 +566,27 @@ impl AssistantModel {
     /// Submit text as a user prompt without slash-command reparsing. Used
     /// after an installed skill command has already consumed its command name.
     pub fn submit_prompt(&mut self, input: String) -> Vec<AssistantEffect> {
+        let turn_id = new_turn_id();
+        self.last_submitted_turn_id = Some(turn_id.clone());
         if self.streaming.in_flight {
             log::info!(
-                "assistant[{}]: message queued — turn in flight ({} chars)",
+                "assistant[{}]: message queued — turn in flight ({} chars) turn_id={turn_id}",
                 self.conversation_id,
                 input.len()
             );
             self.turns.push(Turn::now(TurnRole::User, input));
             self.queued_user_turns += 1;
+            self.queued_turn_ids.push_back(turn_id);
             return vec![AssistantEffect::SessionWrite {
                 conversation_id: self.conversation_id.clone(),
             }];
         }
         log::info!(
-            "assistant[{}]: turn start ({} chars)",
+            "assistant[{}]: turn start ({} chars) turn_id={turn_id}",
             self.conversation_id,
             input.len()
         );
+        self.active_turn_id = Some(turn_id.clone());
         self.turns.push(Turn::now(TurnRole::User, input.clone()));
         self.turn_anchor = Some(self.turns.len());
         self.streaming = StreamingState {
@@ -574,6 +599,7 @@ impl AssistantModel {
             },
             AssistantEffect::AiQuery {
                 conversation_id: self.conversation_id.clone(),
+                turn_id,
                 prompt: input,
             },
         ]
@@ -633,6 +659,7 @@ impl AssistantModel {
         self.active_tools.clear();
         self.pending_permission = None;
         self.queued_user_turns = 0;
+        self.queued_turn_ids.clear();
         self.turn_anchor = None;
         vec![AssistantEffect::CancelTurn]
     }
@@ -1115,6 +1142,7 @@ impl AssistantModel {
         self.streaming = StreamingState::default();
         self.active_tools.clear();
         self.pending_permission = None;
+        self.active_turn_id = None;
         self.turn_anchor = None;
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
@@ -1201,8 +1229,8 @@ mod tests {
         assert_eq!(effects.len(), 2);
         assert!(matches!(effects[0], AssistantEffect::SessionWrite { .. }));
         assert!(
-            matches!(&effects[1], AssistantEffect::AiQuery { conversation_id, prompt }
-                if *conversation_id == m.conversation_id && prompt == "hello there")
+            matches!(&effects[1], AssistantEffect::AiQuery { conversation_id, turn_id, prompt }
+                if *conversation_id == m.conversation_id && prompt == "hello there" && !turn_id.is_empty())
         );
     }
 

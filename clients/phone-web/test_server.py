@@ -99,7 +99,7 @@ class StubServerTest(unittest.TestCase):
     def test_host_backend_uses_fake_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             fake = Path(temp) / "plexi"
-            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"state\":\"succeeded\",\"reply\":\"real-ish reply\"}'\n")
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"request_id\":\"host-r1\",\"turn_id\":\"turn-host-r1\",\"state\":\"succeeded\",\"reply\":\"real-ish reply\"}'\n")
             fake.chmod(0o755)
             self.httpd.shutdown(); self.httpd.server_close()
             self.httpd = server.build_server("127.0.0.1", 0, server.HostStore(str(fake)), token="test-token")
@@ -110,7 +110,9 @@ class StubServerTest(unittest.TestCase):
             time.sleep(0.2)
             req = urllib.request.Request(self.base + "/api/conversation?after=0", headers={"Authorization":"Bearer test-token"})
             with urllib.request.urlopen(req) as res: page = json.loads(res.read())
-            self.assertIn("assistant_reply", [event["kind"] for event in page["events"]])
+            reply = next(event for event in page["events"] if event["kind"] == "assistant_reply")
+            self.assertEqual(reply["turn_id"], "turn-host-r1")
+            self.assertEqual(reply["request_id"], "host-r1")
 
     def test_host_backend_appends_error_to_failed_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -135,6 +137,49 @@ class StubServerTest(unittest.TestCase):
             receipt = store.events[-1]
             self.assertEqual(receipt["state"], "failed")
             self.assertEqual(receipt["error"], "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
+
+    def test_host_backend_rejects_reply_without_turn_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"request_id\":\"host-noturn\",\"state\":\"succeeded\",\"reply\":\"orphan\"}'\n")
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-noturn", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertEqual(receipt["error"], "host reply missing turn_id")
+            self.assertNotIn("assistant_reply", [event["kind"] for event in store.events])
+
+    def test_host_backend_rejects_mismatched_request_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"request_id\":\"someone-else\",\"turn_id\":\"turn-x\",\"state\":\"succeeded\",\"reply\":\"wrong turn\"}'\n")
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-mine", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertIn("someone-else", receipt["error"])
+            self.assertNotIn("assistant_reply", [event["kind"] for event in store.events])
+
+    def test_host_backend_surfaces_pending_desktop_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text(
+                "#!/bin/sh\nprintf '%s\\n' "
+                "'{\"request_id\":\"host-wait\",\"state\":\"waiting_for_permission\","
+                "\"status\":\"waiting for approval on desktop\",\"pending_request_id\":\"turn-desk\"}'\n"
+            )
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-wait", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "waiting_for_permission")
+            self.assertEqual(receipt["status"], "waiting for approval on desktop (turn-desk)")
+            self.assertNotIn("error", receipt)
 
 
 class AddressDiscoveryTest(unittest.TestCase):

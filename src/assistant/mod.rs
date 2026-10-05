@@ -12,13 +12,15 @@ pub mod build_exec;
 pub mod commands;
 #[cfg(test)]
 pub mod harness;
+#[cfg(test)]
+mod send_tests;
 pub mod model;
 pub mod render;
 pub mod settings;
 pub mod skills;
 pub mod store;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -91,8 +93,34 @@ const ASSISTANT_ACTOR_ID: &str = "assistant";
 /// Outcome of one completed Assistant turn, sent back from the worker thread.
 struct TurnOutcome {
     conversation_id: String,
+    /// The user turn this outcome answers. External replies are delivered
+    /// only when this matches the turn `submit_external_turn` registered.
+    turn_id: String,
     text: Option<String>,
     error: Option<String>,
+}
+
+/// One `plexi assistant send` waiting on a specific turn.
+struct ExternalWait {
+    request_id: String,
+    response_file: String,
+}
+
+fn waiting_for_permission_json(
+    request_id: &str,
+    turn_id: Option<&str>,
+    pending_request_id: &str,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "request_id": request_id,
+        "state": "waiting_for_permission",
+        "status": "waiting for approval on desktop",
+        "pending_request_id": pending_request_id,
+    });
+    if let Some(turn_id) = turn_id {
+        body["turn_id"] = serde_json::Value::String(turn_id.to_string());
+    }
+    body
 }
 
 /// The worker's answer channel for one ask-gated tool call.
@@ -495,7 +523,8 @@ pub struct AssistantApp {
     audit: AuditLog,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
-    external_replies: VecDeque<(String, String)>,
+    /// External waits keyed by the turn id they must be answered by.
+    external_replies: HashMap<String, Vec<ExternalWait>>,
     /// Live deltas from the in-flight turn's worker thread.
     delta_rx: Option<Receiver<StreamDelta>>,
     flow_tx: Sender<ToolFlowEvent>,
@@ -647,7 +676,7 @@ impl AssistantApp {
             audit: AuditLog::new(profile_dir.join("audit.jsonl")),
             outcome_tx,
             outcome_rx,
-            external_replies: VecDeque::new(),
+            external_replies: HashMap::new(),
             delta_rx: None,
             flow_tx,
             flow_rx,
@@ -776,8 +805,9 @@ impl AssistantApp {
             match effect {
                 AssistantEffect::AiQuery {
                     conversation_id,
+                    turn_id,
                     prompt,
-                } => self.start_turn(conversation_id, prompt),
+                } => self.start_turn(conversation_id, turn_id, prompt),
                 AssistantEffect::SessionWrite { .. } => self.session_write(),
                 AssistantEffect::ListTools => self.cmd_list_tools(),
                 AssistantEffect::ListApps => self.cmd_list_apps(),
@@ -827,6 +857,23 @@ impl AssistantApp {
                     self.unblock_pending_workers(
                         "cancelled: the conversation was cleared mid-turn",
                     );
+                    // The in-flight turn still reports through its own outcome.
+                    // Queued turns will never be dispatched, so answer them now.
+                    let active = self.model.active_turn_id.clone();
+                    let stranded: Vec<String> = self
+                        .external_replies
+                        .keys()
+                        .filter(|id| Some((*id).as_str()) != active.as_deref())
+                        .cloned()
+                        .collect();
+                    for turn_id in stranded {
+                        self.deliver_external_turn(
+                            &turn_id,
+                            &Err(
+                                "cancelled: the conversation was cleared mid-turn".to_string(),
+                            ),
+                        );
+                    }
                     log::info!("assistant: in-flight turn cancelled by conversation switch");
                 }
             }
@@ -1551,6 +1598,7 @@ impl AssistantApp {
                             target,
                             reply,
                         });
+                        self.release_external_waiters_for_pending_permission();
                     }
                 }
             }
@@ -1575,7 +1623,8 @@ impl AssistantApp {
     }
 
     /// Run one model turn on a worker thread (the broker blocks on network).
-    fn start_turn(&mut self, conversation_id: String, prompt: String) {
+    fn start_turn(&mut self, conversation_id: String, turn_id: String, prompt: String) {
+        self.model.active_turn_id = Some(turn_id.clone());
         let (delta_tx, delta_rx) = std::sync::mpsc::channel();
         self.delta_rx = Some(delta_rx);
         // Fresh cancel token per turn — a clone goes to the worker/broker, the
@@ -1585,11 +1634,11 @@ impl AssistantApp {
         let dispatcher = self.gated_dispatcher();
         let Some(agent) = self.active_agent().cloned() else {
             log::error!("assistant: no active or default agent available for dispatch");
-            let effects = self.model.finish_turn(
+            self.fail_turn_before_dispatch(
                 &conversation_id,
-                Err("Assistant agent registry has no default agent.".to_string()),
+                &turn_id,
+                "Assistant agent registry has no default agent.".to_string(),
             );
-            self.execute_effects(effects);
             return;
         };
         let effort = self.model.effort_override.or(agent.effort);
@@ -1709,6 +1758,8 @@ impl AssistantApp {
         );
         let broker = Arc::clone(&self.broker);
         let outcome_tx = self.outcome_tx.clone();
+        let outcome_conversation = conversation_id.clone();
+        let outcome_turn_id = turn_id.clone();
         let spawn = std::thread::Builder::new()
             .name("assistant-turn".to_string())
             .spawn(move || {
@@ -1726,19 +1777,107 @@ impl AssistantApp {
                     let _ = delta_tx.send(owned);
                 });
                 let _ = outcome_tx.send(TurnOutcome {
-                    conversation_id,
+                    conversation_id: outcome_conversation,
+                    turn_id: outcome_turn_id,
                     text: resp.content,
                     error: resp.error,
                 });
             });
         if let Err(e) = spawn {
             log::error!("assistant: failed to spawn turn thread: {e}");
-            let effects = self.model.finish_turn(
-                &self.model.conversation_id.clone(),
-                Err(format!("failed to spawn turn thread: {e}")),
+            self.fail_turn_before_dispatch(
+                &conversation_id,
+                &turn_id,
+                format!("failed to spawn turn thread: {e}"),
             );
-            self.execute_effects(effects);
         }
+    }
+
+    /// Answer an external wait and close the turn without a worker outcome.
+    fn fail_turn_before_dispatch(&mut self, conversation_id: &str, turn_id: &str, error: String) {
+        self.deliver_external_turn(turn_id, &Err(error.clone()));
+        let effects = self.model.finish_turn(conversation_id, Err(error));
+        self.execute_effects(effects);
+    }
+
+    /// Write the JSON envelope for every external caller registered on `turn_id`.
+    fn deliver_external_turn(&mut self, turn_id: &str, result: &Result<String, String>) {
+        let Some(waiters) = self.external_replies.remove(turn_id) else {
+            return;
+        };
+        for waiter in waiters {
+            let body = match result {
+                Ok(text) => serde_json::json!({
+                    "request_id": waiter.request_id,
+                    "turn_id": turn_id,
+                    "state": "succeeded",
+                    "reply": text,
+                }),
+                Err(error) => serde_json::json!({
+                    "request_id": waiter.request_id,
+                    "turn_id": turn_id,
+                    "state": "failed",
+                    "error": error,
+                }),
+            };
+            let state = if result.is_ok() { "succeeded" } else { "failed" };
+            log::info!(
+                "assistant: external turn reply request_id={} turn_id={turn_id} state={state}",
+                waiter.request_id
+            );
+            crate::rpc::write_json_response(&waiter.response_file, body);
+        }
+    }
+
+    /// A permission sheet is up. External callers would otherwise sit in the
+    /// CLI timeout until someone answers on the desktop.
+    fn release_external_waiters_for_pending_permission(&mut self) {
+        let Some(turn_id) = self.model.active_turn_id.clone() else {
+            return;
+        };
+        let Some(waiters) = self.external_replies.remove(&turn_id) else {
+            return;
+        };
+        for waiter in waiters {
+            log::info!(
+                "assistant: external turn waiting for desktop approval request_id={} turn_id={turn_id} pending_request_id={turn_id}",
+                waiter.request_id
+            );
+            crate::rpc::write_json_response(
+                &waiter.response_file,
+                waiting_for_permission_json(&waiter.request_id, Some(&turn_id), &turn_id),
+            );
+        }
+    }
+
+    /// Pick the turn id a folded follow-up answers. An external wait is
+    /// preferred so a desktop turn that already finished cannot take its slot.
+    /// Other external ids folded into the same follow-up are re-keyed onto it.
+    fn claim_followup_turn_id(&mut self) -> String {
+        let queued: Vec<String> = self.model.queued_turn_ids.drain(..).collect();
+        let chosen = queued
+            .iter()
+            .find(|id| self.external_replies.contains_key(*id))
+            .cloned()
+            .or_else(|| queued.first().cloned())
+            .unwrap_or_else(model::new_turn_id);
+        let mut folded = Vec::new();
+        for id in queued {
+            if id == chosen {
+                continue;
+            }
+            if let Some(waiters) = self.external_replies.remove(&id) {
+                folded.extend(waiters);
+            }
+        }
+        if !folded.is_empty() {
+            log::info!("assistant: folded queued external turns into follow-up turn_id={chosen}");
+            self.external_replies
+                .entry(chosen.clone())
+                .or_default()
+                .extend(folded);
+        }
+        chosen
     }
 
     /// Per-frame pump: tool-flow events, live stream deltas, finished turns,
@@ -1766,13 +1905,7 @@ impl AssistantApp {
                 (None, Some(error)) => Err(error),
                 (None, None) => Err("broker returned neither content nor error".to_string()),
             };
-            if let Some((request_id, response_file)) = self.external_replies.pop_front() {
-                let reply = match &result {
-                    Ok(text) => serde_json::json!({"request_id": request_id, "state": "succeeded", "reply": text}),
-                    Err(error) => serde_json::json!({"request_id": request_id, "state": "failed", "error": error}),
-                };
-                crate::rpc::write_json_response(&response_file, reply);
-            }
+            self.deliver_external_turn(&outcome.turn_id, &result);
             let effects = self.model.finish_turn(&outcome.conversation_id, result);
             self.execute_effects(effects);
         }
@@ -1785,12 +1918,13 @@ impl AssistantApp {
         {
             let lines = std::mem::take(&mut self.queued_event_lines);
             let users = std::mem::take(&mut self.model.queued_user_turns);
+            let turn_id = self.claim_followup_turn_id();
             log::info!(
-                "assistant: dispatching follow-up turn ({} queued event line(s), {} queued user message(s))",
+                "assistant: dispatching follow-up turn ({} queued event line(s), {} queued user message(s)) turn_id={turn_id}",
                 lines.len(),
                 users
             );
-            self.start_event_turn(lines.len() + users);
+            self.start_event_turn(lines.len() + users, turn_id);
         }
     }
 
@@ -1863,6 +1997,7 @@ impl AssistantApp {
                     .permission_requested(&tool, &summarize_input(&input_json));
                 self.pending_reply = Some(reply);
                 self.pending_connector_actor = Some((actor_id, actor_scope));
+                self.release_external_waiters_for_pending_permission();
             }
             ToolFlowEvent::HostCall {
                 tool,
@@ -1943,14 +2078,16 @@ impl AssistantApp {
             self.queued_event_lines.extend(trigger_lines);
             self.turn_cancel.cancel();
         } else {
-            self.start_event_turn(trigger_lines.len());
+            self.start_event_turn(trigger_lines.len(), model::new_turn_id());
         }
     }
 
     /// Auto-dispatch a turn in response to delivered events. The event rows
     /// are already in the transcript, so the turn's history ends with them.
-    fn start_event_turn(&mut self, line_count: usize) {
-        log::info!("assistant: auto-starting turn for {line_count} delivered event(s)");
+    fn start_event_turn(&mut self, line_count: usize, turn_id: String) {
+        log::info!(
+            "assistant: auto-starting turn for {line_count} delivered event(s) turn_id={turn_id}"
+        );
         self.audit.append(&AuditEvent::now(
             "auto_turn",
             "app_events",
@@ -1965,7 +2102,7 @@ impl AssistantApp {
         // triggered it, same as a `submit()`-dispatched turn.
         self.model.turn_anchor = Some(self.model.turns.len());
         let conversation_id = self.model.conversation_id.clone();
-        self.start_turn(conversation_id, String::new());
+        self.start_turn(conversation_id, turn_id, String::new());
     }
 
     /// User pressed ESC during an in-flight turn. Stop generating, and if the
@@ -3425,9 +3562,33 @@ impl App for AssistantApp {
         if text.trim().is_empty() {
             return Err("text must not be empty".to_string());
         }
-        self.external_replies.push_back((request_id.clone(), response_file));
-        log::info!("assistant: external turn accepted request_id={request_id}");
+        if self.model.pending_permission.is_some() || self.pending_subscribe.is_some() {
+            let pending_request_id = self
+                .model
+                .active_turn_id
+                .clone()
+                .unwrap_or_else(|| request_id.clone());
+            log::info!(
+                "assistant: external turn waiting for desktop approval request_id={request_id} pending_request_id={pending_request_id}"
+            );
+            crate::rpc::write_json_response(
+                &response_file,
+                waiting_for_permission_json(&request_id, None, &pending_request_id),
+            );
+            return Ok(());
+        }
         let effects = self.model.submit_prompt(text);
+        let Some(turn_id) = self.model.last_submitted_turn_id.clone() else {
+            return Err("assistant did not assign a turn id".to_string());
+        };
+        self.external_replies
+            .entry(turn_id.clone())
+            .or_default()
+            .push(ExternalWait {
+                request_id: request_id.clone(),
+                response_file,
+            });
+        log::info!("assistant: external turn accepted request_id={request_id} turn_id={turn_id}");
         self.execute_effects(effects);
         Ok(())
     }

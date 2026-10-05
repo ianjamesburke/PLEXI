@@ -1,0 +1,292 @@
+//! Host-command tests for `plexi assistant send` (`SubmitAssistantTurn`).
+//!
+//! The command's JSON reply is the file the CLI prints for `--json`. A stub
+//! broker stands in for the model provider.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+use super::model::{PendingPermission, PermissionChoice};
+use super::AssistantApp;
+use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
+use crate::plexi_ai::turn_loop::TurnDelta;
+use crate::protocol::AppRequest;
+use crate::testing::HostHarness;
+
+struct ReplyBroker {
+    reply: String,
+    error: Option<String>,
+    calls: AtomicUsize,
+}
+
+impl AiBroker for ReplyBroker {
+    fn dispatch(
+        &self,
+        _request: AiBrokerRequest,
+        on_delta: &mut dyn FnMut(TurnDelta<'_>),
+    ) -> AiBrokerResponse {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = &self.error {
+            return AiBrokerResponse::err(error.clone());
+        }
+        on_delta(TurnDelta::Text(&self.reply));
+        AiBrokerResponse::ok(self.reply.clone(), 1, 1)
+    }
+}
+
+struct Gate {
+    ready: Mutex<bool>,
+    cv: Condvar,
+}
+
+struct GatedBroker {
+    gate: Arc<Gate>,
+    calls: AtomicUsize,
+}
+
+impl AiBroker for GatedBroker {
+    fn dispatch(
+        &self,
+        request: AiBrokerRequest,
+        on_delta: &mut dyn FnMut(TurnDelta<'_>),
+    ) -> AiBrokerResponse {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            let mut ready = self.gate.ready.lock().unwrap();
+            while !*ready {
+                ready = self.gate.cv.wait(ready).unwrap();
+            }
+            drop(ready);
+            on_delta(TurnDelta::Text("DESKTOP_REPLY"));
+            return AiBrokerResponse::ok("DESKTOP_REPLY".to_string(), 1, 1);
+        }
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        let reply = format!("PHONE:{last_user}");
+        on_delta(TurnDelta::Text(&reply));
+        AiBrokerResponse::ok(reply, 1, 1)
+    }
+}
+
+/// Asks for a non-read-only host tool so the real permission sheet opens,
+/// then returns a reply the phone must not receive.
+struct AskingBroker;
+
+impl AiBroker for AskingBroker {
+    fn dispatch(
+        &self,
+        request: AiBrokerRequest,
+        _on_delta: &mut dyn FnMut(TurnDelta<'_>),
+    ) -> AiBrokerResponse {
+        if let Some(dispatcher) = &request.tool_dispatcher {
+            let _ = dispatcher.dispatch_call(
+                "call-1".to_string(),
+                "host.files.write",
+                r#"{"path":"x","content":"y"}"#.to_string(),
+            );
+        }
+        AiBrokerResponse::ok("should-not-reach-phone".to_string(), 1, 1)
+    }
+}
+
+fn response_path() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("assistant-send.json");
+    (dir, path)
+}
+
+fn submit(h: &HostHarness, path: &Path, request_id: &str, text: &str) {
+    h.inject_ipc(AppRequest::SubmitAssistantTurn {
+        text: text.to_string(),
+        request_id: request_id.to_string(),
+        response_file: path.to_string_lossy().into_owned(),
+        pane_id: None,
+        context_id: None,
+    });
+}
+
+fn pump_until_file(h: &mut HostHarness, path: &Path) -> String {
+    let started = Instant::now();
+    loop {
+        if let Ok(body) = std::fs::read_to_string(path) {
+            if !body.is_empty() {
+                return body;
+            }
+        }
+        h.hidden_frame();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timed out waiting for assistant send JSON at {}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn submit_desktop(h: &mut HostHarness, pane: u64, text: &str) {
+    let assistant: &mut AssistantApp = h.assistant_mut(pane);
+    assistant.model.composer = text.to_string();
+    let effects = assistant.model.submit();
+    assistant.execute_effects(effects);
+}
+
+#[test]
+fn assistant_send_json_returns_turn_id_and_stub_reply() {
+    let broker = Arc::new(ReplyBroker {
+        reply: "stub-reply".to_string(),
+        error: None,
+        calls: AtomicUsize::new(0),
+    });
+    let mut h = HostHarness::new();
+    h.add_assistant_pane_with_broker(0, broker.clone());
+    let (_dir, path) = response_path();
+    submit(&h, &path, "phone-1", "hello from the phone");
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["request_id"], "phone-1");
+    assert_eq!(value["state"], "succeeded");
+    assert_eq!(value["reply"], "stub-reply");
+    let turn_id = value["turn_id"].as_str().expect("turn id");
+    assert!(turn_id.starts_with("turn-"), "{turn_id}");
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn assistant_send_does_not_attribute_a_concurrent_desktop_turn() {
+    let gate = Arc::new(Gate {
+        ready: Mutex::new(false),
+        cv: Condvar::new(),
+    });
+    let broker = Arc::new(GatedBroker {
+        gate: gate.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let mut h = HostHarness::new();
+    let pane = h.add_assistant_pane_with_broker(0, broker.clone());
+    submit_desktop(&mut h, pane, "typed on the desktop");
+    let started = Instant::now();
+    while broker.calls.load(Ordering::SeqCst) == 0 {
+        assert!(started.elapsed() < Duration::from_secs(5), "desktop turn never dispatched");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let desktop_turn_id = h
+        .assistant_mut(pane)
+        .model
+        .active_turn_id
+        .clone()
+        .expect("desktop turn id");
+
+    let (_dir, path) = response_path();
+    submit(&h, &path, "phone-1", "from the phone");
+    h.hidden_frame();
+    assert!(
+        !path.exists(),
+        "phone must not be answered by the desktop turn still in flight"
+    );
+
+    {
+        let mut ready = gate.ready.lock().unwrap();
+        *ready = true;
+        gate.cv.notify_all();
+    }
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["request_id"], "phone-1");
+    assert_eq!(value["state"], "succeeded");
+    assert_eq!(value["reply"], "PHONE:from the phone");
+    assert_ne!(value["reply"], "DESKTOP_REPLY");
+    assert_ne!(value["turn_id"], desktop_turn_id);
+    assert!(value["turn_id"].as_str().unwrap().starts_with("turn-"));
+}
+
+#[test]
+fn assistant_send_json_surfaces_provider_error() {
+    let broker = Arc::new(ReplyBroker {
+        reply: String::new(),
+        error: Some("provider rejected the prompt".to_string()),
+        calls: AtomicUsize::new(0),
+    });
+    let mut h = HostHarness::new();
+    h.add_assistant_pane_with_broker(0, broker);
+    let (_dir, path) = response_path();
+    submit(&h, &path, "phone-err", "hello");
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["request_id"], "phone-err");
+    assert_eq!(value["state"], "failed");
+    assert_eq!(value["error"], "provider rejected the prompt");
+    assert!(value["turn_id"].as_str().unwrap().starts_with("turn-"));
+}
+
+#[test]
+fn assistant_send_returns_pending_permission_without_hanging() {
+    let broker = Arc::new(ReplyBroker {
+        reply: "should-not-run".to_string(),
+        error: None,
+        calls: AtomicUsize::new(0),
+    });
+    let mut h = HostHarness::new();
+    let pane = h.add_assistant_pane_with_broker(0, broker.clone());
+    {
+        let assistant = h.assistant_mut(pane);
+        assistant.model.active_turn_id = Some("turn-desktop-blocked".to_string());
+        assistant.model.pending_permission = Some(PendingPermission {
+            tool: "host.files.write".to_string(),
+            input_summary: "path=x".to_string(),
+            selected: 0,
+        });
+    }
+    let (_dir, path) = response_path();
+    submit(&h, &path, "phone-wait", "please do the thing");
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["request_id"], "phone-wait");
+    assert_eq!(value["state"], "waiting_for_permission");
+    assert_eq!(value["status"], "waiting for approval on desktop");
+    assert_eq!(value["pending_request_id"], "turn-desktop-blocked");
+    assert!(value.get("turn_id").is_none());
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        h.assistant_mut(pane).model.pending_permission.is_some(),
+        "reading the pending sheet must not resolve it"
+    );
+}
+
+#[test]
+fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
+    let mut h = HostHarness::new();
+    let pane = h.add_assistant_pane_with_broker(0, Arc::new(AskingBroker));
+    let (_dir, path) = response_path();
+    submit(&h, &path, "phone-ask", "write a file");
+    let body = pump_until_file(&mut h, &path);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["state"], "waiting_for_permission");
+    assert_eq!(value["status"], "waiting for approval on desktop");
+    assert_eq!(value["request_id"], "phone-ask");
+    let turn_id = value["turn_id"].as_str().unwrap().to_string();
+    assert_eq!(value["pending_request_id"], turn_id);
+    assert!(
+        h.assistant_mut(pane).model.pending_permission.is_some(),
+        "the desktop sheet stays up"
+    );
+
+    h.assistant_mut(pane).resolve_permission(PermissionChoice::Deny);
+    let started = Instant::now();
+    while h.assistant_mut(pane).model.streaming.in_flight {
+        h.hidden_frame();
+        assert!(started.elapsed() < Duration::from_secs(5), "turn did not finish after deny");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    h.hidden_frame();
+    let after = std::fs::read_to_string(&path).unwrap();
+    let after: serde_json::Value = serde_json::from_str(&after).unwrap();
+    assert_eq!(after["state"], "waiting_for_permission");
+    assert!(after.get("reply").is_none());
+}

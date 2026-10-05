@@ -249,15 +249,31 @@ class HostStore(StubStore):
         with self.lock:
             self.receipts[request_id].update(state="running", updated_at=now())
             self._append({"kind": "receipt", "request_id": request_id, "state": "running"})
+        turn_id = None
+        status = None
         try:
             proc = subprocess.run([self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id, "--json"], capture_output=True, text=True, timeout=120, check=False)
             if not proc.stdout.strip():
                 raise RuntimeError("no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
             payload = json.loads(proc.stdout.strip())
+            # The host names the turn it created. This subprocess's stdout is
+            # that turn's reply; nothing here is matched by arrival order.
+            returned_request = payload.get("request_id")
+            if returned_request and returned_request != request_id:
+                raise RuntimeError(f"host reply was for request {returned_request}, not {request_id}")
             state = payload.get("state", "failed")
             reply = payload.get("reply")
+            turn_id = payload.get("turn_id")
             error = payload.get("error") or proc.stderr.strip()
-            if state != "succeeded" and not error:
+            if state == "succeeded" and not turn_id:
+                raise RuntimeError("host reply missing turn_id")
+            if state == "waiting_for_permission":
+                status = payload.get("status") or "waiting for approval on desktop"
+                pending = payload.get("pending_request_id")
+                if pending:
+                    status = f"{status} ({pending})"
+                error = ""
+            elif state != "succeeded" and not error:
                 error = f"host turn ended in {state}"
         except subprocess.TimeoutExpired:
             state, reply, error = "failed", None, "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)"
@@ -268,14 +284,26 @@ class HostStore(StubStore):
             if receipt["state"] == "cancelled":
                 return
             receipt.update(state=state, updated_at=now())
+            if turn_id:
+                receipt["turn_id"] = turn_id
             if reply:
-                self._append({"kind": "assistant_reply", "request_id": request_id, "text": reply})
+                event = {"kind": "assistant_reply", "request_id": request_id, "text": reply}
+                if turn_id:
+                    event["turn_id"] = turn_id
+                self._append(event)
             if error:
                 receipt["error"] = error
+            if status:
+                receipt["status"] = status
             event = {"kind": "receipt", "request_id": request_id, "state": state}
-            if state != "succeeded" and error:
+            if turn_id:
+                event["turn_id"] = turn_id
+            if status:
+                event["status"] = status
+            elif state != "succeeded" and error:
                 event["error"] = error
             self._append(event)
+            log.info("turn host request_id=%s turn_id=%s state=%s", request_id, turn_id, state)
 
 
 def validate_envelope(body: object) -> str | None:

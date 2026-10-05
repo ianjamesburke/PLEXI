@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.6"
+skill_version: "5.0.7"
 plexi_version: "0.3.5"
-last_verified: "2026-10-04"
+last_verified: "2026-10-05"
 ---
 
 # Plexi CLI
@@ -58,6 +58,13 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   declare a `[state]` section are addressable; the path is resolved from the
   manifest and the calling context, never passed in. A running app picks the
   write up on its own event loop.
+- **Assistant** — `plexi assistant send --text … --json` submits one turn through
+  the desktop Assistant and prints the JSON reply for the turn that command
+  created (`turn_id` plus `reply`, or `error`). A desktop turn that finishes
+  while the command is in flight is not attributed to it. When a permission
+  sheet is already pending, the JSON state is `waiting_for_permission` with
+  `status` and `pending_request_id`, returned immediately. Approval stays on
+  the desktop.
 - **App tools** — call a tool a running app exposes and get its JSON result:
   `plexi app call <app_id> <tool> --input '<json object>'`. It uses the same
   dispatcher as the Assistant, scoped to your pane's context. The app sees
@@ -125,6 +132,8 @@ account
 registry
 note
 notes
+assistant send
+  --text --request-id --pane-id --context-id --json
 ```
 
 ### Test a desktop OAuth connector against the local stub issuer
