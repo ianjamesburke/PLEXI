@@ -528,6 +528,24 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
             quote_shell(&receipt.root)
         );
         files.push((receipt.bin_dir.join(&name), script.into_bytes()));
+        if !receipt.channel.starts_with("pr-") {
+            for shell in ["zsh", "bash", "fish"] {
+                let mut command = Command::new(receipt.active.executable());
+                command.args(["completions", shell]);
+                clean_environment(&mut command);
+                let output = command
+                    .output()
+                    .context(format!("generate {shell} completions"))?;
+                if !output.status.success() || output.stdout.is_empty() {
+                    return Err(Error::Invalid(format!(
+                        "could not generate {shell} completions for {name}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    )));
+                }
+                files.push((completion_path(receipt, shell), output.stdout));
+            }
+            log::info!("distribution: generated shell completions for {name}");
+        }
     }
     #[cfg(windows)]
     {
@@ -870,6 +888,17 @@ pub fn remove_owned(owned: &OwnedPath) -> Result<()> {
 }
 
 #[cfg(unix)]
+fn completion_path(receipt: &Receipt, shell: &str) -> PathBuf {
+    let name = release::command_name(&receipt.channel);
+    let file = match shell {
+        "zsh" => format!("_{name}"),
+        "fish" => format!("{name}.fish"),
+        _ => name,
+    };
+    receipt.root.join("completions").join(shell).join(file)
+}
+
+#[cfg(unix)]
 fn prepare_path_registration(receipt: &mut Receipt, changes: &mut Vec<Change>) -> Result<()> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Invalid("no home for shell configuration".into()))?;
@@ -889,8 +918,43 @@ fn prepare_path_registration(receipt: &mut Receipt, changes: &mut Vec<Change>) -
     } else if home.join(".bash_login").exists() {
         paths.push(home.join(".bash_login"));
     }
-    for path in paths {
-        let existing = match fs::read_to_string(&path) {
+    let mut blocks: std::collections::BTreeMap<PathBuf, Vec<String>> = paths
+        .into_iter()
+        .map(|path| (path, vec![block.clone()]))
+        .collect();
+    if !receipt.channel.starts_with("pr-") {
+        let zsh_dir = std::env::var_os("PLEXI_ORIG_ZDOTDIR")
+            .or_else(|| std::env::var_os("ZDOTDIR"))
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.clone());
+        let fish_dir = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"))
+            .join("fish");
+        for (shell, path) in [
+            ("zsh", zsh_dir.join(".zshrc")),
+            ("bash", home.join(".bashrc")),
+            ("fish", fish_dir.join("config.fish")),
+        ] {
+            let completion = quote_shell(&completion_path(receipt, shell));
+            let source = match shell {
+                // Explicitly source after compinit, even with an old compdump:
+                // autoload can still refer to a removed legacy _plexi file.
+                "zsh" => format!(
+                    "if [[ -r {completion} ]]; then\n  if (( ! $+functions[compdef] )); then\n    autoload -Uz compinit\n    compinit\n  fi\n  source {completion}\nfi"
+                ),
+                "fish" => format!("if test -r {completion}\n  source {completion}\nend"),
+                _ => format!("if [ -r {completion} ]; then\n  . {completion}\nfi"),
+            };
+            blocks.entry(path).or_default().push(format!(
+                "\n# Plexi completions: {}\n{source}\n# End Plexi completions\n",
+                receipt.root.display()
+            ));
+        }
+    }
+    for (path, blocks) in blocks {
+        let mut existing = match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(source) => {
@@ -900,13 +964,24 @@ fn prepare_path_registration(receipt: &mut Receipt, changes: &mut Vec<Change>) -
                 });
             }
         };
-        if !existing.contains(&block) {
-            if existing.contains(&marker) {
-                return Err(Error::Invalid(format!(
-                    "Plexi PATH block was edited in {}; update it manually",
-                    path.display()
-                )));
+        let original = existing.clone();
+        for block in blocks {
+            if !existing.contains(&block) {
+                let marker = block.trim_start().lines().next().unwrap_or_default();
+                if existing.contains(marker) {
+                    return Err(Error::Invalid(format!(
+                        "Plexi shell block was edited in {}; update it manually",
+                        path.display()
+                    )));
+                }
+                existing.push_str(&block);
             }
+            receipt.path_edits.push(PathEdit {
+                path: path.clone(),
+                block,
+            });
+        }
+        if existing != original {
             // Follow a user's dotfile symlink to edit its contents atomically,
             // retaining the symlink itself and preserving all unrelated text.
             let destination = if path.is_symlink() {
@@ -917,20 +992,17 @@ fn prepare_path_registration(receipt: &mut Receipt, changes: &mut Vec<Change>) -
             changes.push(prepare_file(
                 &receipt.root,
                 &destination,
-                format!("{existing}{block}").as_bytes(),
+                existing.as_bytes(),
                 changes.len(),
             )?);
         }
-        receipt.path_edits.push(PathEdit {
-            path,
-            block: block.clone(),
-        });
     }
     Ok(())
 }
 
 #[cfg(unix)]
 fn remove_path_registration(receipt: &Receipt) -> Result<()> {
+    let mut shared_edits = Vec::new();
     let registry = default_root()?.join("installations");
     if registry.is_dir() {
         for entry in fs::read_dir(registry).context("list other installations")? {
@@ -940,14 +1012,20 @@ fn remove_path_registration(receipt: &Receipt) -> Result<()> {
                     &fs::read(entry.path()).context("read other installation")?,
                 )?;
                 if root != receipt.root
-                    && read_receipt(&root)?.is_some_and(|r| r.bin_dir == receipt.bin_dir)
+                    && let Some(other) = read_receipt(&root)?
                 {
-                    return Ok(());
+                    shared_edits.extend(other.path_edits);
                 }
             }
         }
     }
     for edit in &receipt.path_edits {
+        if shared_edits
+            .iter()
+            .any(|other| other.path == edit.path && other.block == edit.block)
+        {
+            continue;
+        }
         if !edit.path.exists() {
             continue;
         }
