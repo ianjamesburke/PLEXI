@@ -58,6 +58,12 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
   replacement chord until the host keymap defines one.
 - **Routines are post-v1.** `plexi routine` stays compiled for beta and
   worktree development but is release-gated and hidden from stable help.
+- **Connector OAuth keeps tokens host-side.** `plexi connector login stub
+  --issuer <loopback-url>` uses a browser loopback callback and prints only a
+  credential reference; `status` likewise never exposes tokens, and `revoke`
+  deletes the local credential even if remote revocation fails. `--surface
+  mobile` is deliberately a typed not-yet-supported stub until a mobile host
+  owns its system-browser callback and device-keystore integration.
 
 ## Documentation Rule for CLI Changes
 

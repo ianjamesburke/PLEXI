@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.5"
+skill_version: "5.0.6"
 plexi_version: "0.3.5"
 last_verified: "2026-10-04"
 ---
@@ -68,6 +68,12 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
   project secrets and routines: `plexi workspace --help`, `plexi run --help`,
   `plexi secret --help`, and `plexi routine --help`.
+- **Connectors** — connect a registered service with OAuth:
+  `plexi connector --help`. The current `stub` connector is a loopback-only
+  test issuer. Login prints a credential reference, never an access or refresh
+  token; `status` prints that same safe reference; and `revoke` removes the
+  local credential even if its remote revoke attempt fails. Mobile connector
+  operations explicitly report that they are not yet supported.
 - **Agents** — install workspace definitions and report or inspect agent state:
   `plexi agent --help`. `agent report --event` preserves a provider lifecycle
   event separately from its UI state; `--blocked-reason` supplies a typed reason.
@@ -99,6 +105,7 @@ notify
 workspace
 run
 secret
+connector
 routine
 events
 agent
@@ -110,6 +117,19 @@ account
 registry
 note
 notes
+```
+
+### Test a desktop OAuth connector against the local stub issuer
+
+With a loopback stub issuer already running, start sign-in. The issuer redirects
+the browser to a one-time loopback callback; pass `--no-browser` to copy the
+displayed URL into a browser yourself. The command prints only a credential
+reference. Revoke once the test is complete.
+
+```bash
+plexi connector login stub --issuer http://127.0.0.1:8765
+plexi connector status stub
+plexi connector revoke stub
 ```
 
 ## Worked examples
