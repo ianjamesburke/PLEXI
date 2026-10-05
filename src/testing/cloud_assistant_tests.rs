@@ -196,6 +196,14 @@ fn committed_events(op: &str) -> usize {
 #[test]
 fn chess_tool_path_commits_publishes_and_rejects_bad_mutations() {
     let mut h = HostHarness::new();
+    // Tool registration is process-global in the test binary. Give this
+    // integration fixture a harness-unique context as well as its already
+    // unique pane-id block, so another concurrently running app test cannot
+    // make the common `chess.*` names ambiguous in its snapshot.
+    let unique_context_id = h.add_test_pane();
+    h.app.windows[h.app.active_window].context_id = unique_context_id;
+    let active_context_idx = h.app.router.active_idx();
+    h.app.router.get_mut(active_context_idx).context_id = unique_context_id;
     let ctx_id = h.app.windows[h.app.active_window].context_id;
 
     // Black is a real AgentHost agent: broker-granted subscription, posture
