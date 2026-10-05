@@ -551,6 +551,10 @@ pub struct AiConfig {
     pub per_app_daily_usd: Option<f64>,
     /// Global daily spend cap across all apps in USD. Default $10.00.
     pub global_daily_usd: Option<f64>,
+    /// Default ledger client tag for Assistant and agent runs that do not set
+    /// one. Free-form (`narrative`, `du`, `personal`). A blank or missing
+    /// value leaves the row's client null.
+    pub client: Option<String>,
 }
 
 impl AiConfig {
@@ -643,6 +647,9 @@ impl AiConfig {
         }
         if other.global_daily_usd.is_some() {
             self.global_daily_usd = other.global_daily_usd;
+        }
+        if other.client.as_ref().is_some_and(|client| !client.trim().is_empty()) {
+            self.client = other.client;
         }
         match (self.openrouter.as_mut(), other.openrouter) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),

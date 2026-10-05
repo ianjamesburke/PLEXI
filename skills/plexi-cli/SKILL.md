@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.6"
+skill_version: "5.0.7"
 plexi_version: "0.3.5"
-last_verified: "2026-10-04"
+last_verified: "2026-10-05"
 ---
 
 # Plexi CLI
@@ -86,6 +86,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   Pi hook is installed, Pi's built-in MCP client automatically receives the
   pane-scoped host MCP endpoint, so context-reachable app tools are available as
   Pi MCP tools without configuring a second tool protocol.
+- **AI ledger** — totals for tokens, cost, runs, and wall time from this
+  channel's ledger, grouped by client or kind: `plexi ledger summary --help`.
+  The command reads the local ledger file and does not need a running host.
+  `assistant send --client` and `--kind` override the tags for one run;
+  omitted, the client comes from `[ai] client` and the kind is `output`.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
@@ -119,6 +124,7 @@ events
 agent
 config
 ai
+ledger
 doctor
 update
 account
@@ -245,6 +251,18 @@ severity or urgency flag.
 NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to inspect.' \
   --scope context --timeout 30)
 plexi notify dismiss "$NOTICE"
+```
+
+### Summarize AI ledger usage
+
+Group this channel's ledger by client. `--since` keeps rows at or after a
+date. Each group reports runs, input and output tokens, cost, and wall time
+(`null` when that field was not recorded). A client or kind that was never
+tagged is the null group.
+
+```bash
+plexi ledger summary --by client --since 2026-01-01 --json
+plexi assistant send --text "hello" --client narrative --kind output
 ```
 
 ## Installation health

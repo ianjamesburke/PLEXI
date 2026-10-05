@@ -93,12 +93,13 @@ model_medium = "claude-opus-5"
 model_high   = "claude-fable-5"
 ```
 
-Optional AI spend caps:
+Optional AI spend caps, and the default ledger client tag. A run can override `client`; when both are unset the ledger row stores null. `kind` is not a config key — it defaults to `output` per run.
 
 ```toml
 [ai]
 per_app_daily_usd = 1.00
 global_daily_usd  = 10.00
+# client = "personal"
 ```
 
 ## Keybindings
@@ -230,6 +231,7 @@ ghost_opacity = 0.75
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+# client = "personal"          # default AI ledger tag; a run can override it
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"

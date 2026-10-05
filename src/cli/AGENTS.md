@@ -58,6 +58,14 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **`plexi demo` is macOS-only until platform keymaps exist.** On Linux and
   Windows it refuses before teaching any shortcut; do not infer or document a
   replacement chord until the host keymap defines one.
+- **`plexi ledger summary` reads the local AI ledger.** It does not talk to
+  the host. `--by client` (used when `--by` is omitted) or `--by kind` groups
+  rows; `--since` is a `YYYY-MM-DD` or RFC3339 lower bound on each row's
+  timestamp. Rows written before run tags existed are migrated in place to
+  explicit null `client` and `kind` and still count. `--json` prints the
+  groups. `assistant send --client` and `--kind` are per-run overrides; an
+  omitted flag stays unset so the host can apply `[ai] client` and kind
+  `output`.
 - **Routines are post-v1.** `plexi routine` stays compiled for beta and
   worktree development but is release-gated and hidden from stable help.
 - **Connector OAuth keeps tokens host-side.** `plexi connector login stub

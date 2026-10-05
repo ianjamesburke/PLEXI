@@ -198,6 +198,10 @@ pub enum AssistantEffect {
     AiQuery {
         conversation_id: String,
         prompt: String,
+        /// Per-run ledger client. `None` uses the agent tag, then `[ai] client`.
+        client: Option<String>,
+        /// Per-run ledger kind (`system` or `output`). `None` uses the agent tag, then `output`.
+        kind: Option<String>,
     },
     /// Persist unwritten turns and the active conversation id to disk.
     SessionWrite {
@@ -313,6 +317,9 @@ pub struct AssistantModel {
     /// appended to `turns`; this count tells the pump to dispatch one
     /// follow-up turn that folds them in.
     pub queued_user_turns: usize,
+    /// Ledger tag overrides for user messages queued behind an in-flight turn,
+    /// in arrival order. A follow-up turn keeps the latest non-empty value.
+    queued_run_tags: Vec<(Option<String>, Option<String>)>,
     /// Transcript index where the in-flight turn's rows belong: just after
     /// the user message that started it. Tool rows and the final reply
     /// insert here (advancing it), so output appended mid-turn — slash-view
@@ -347,6 +354,7 @@ impl AssistantModel {
             active_tools: Vec::new(),
             pending_permission: None,
             queued_user_turns: 0,
+            queued_run_tags: Vec::new(),
             turn_anchor: None,
             show_thoughts: false,
             active_agent_id: "default".to_string(),
@@ -545,20 +553,33 @@ impl AssistantModel {
     /// Submit text as a user prompt without slash-command reparsing. Used
     /// after an installed skill command has already consumed its command name.
     pub fn submit_prompt(&mut self, input: String) -> Vec<AssistantEffect> {
+        self.submit_prompt_tagged(input, None, None)
+    }
+
+    /// [`submit_prompt`] with an optional per-run ledger client and kind.
+    pub fn submit_prompt_tagged(
+        &mut self,
+        input: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) -> Vec<AssistantEffect> {
         if self.streaming.in_flight {
             log::info!(
-                "assistant[{}]: message queued — turn in flight ({} chars)",
+                "assistant[{}]: message queued — turn in flight ({} chars) client={client:?} kind={kind:?}",
                 self.conversation_id,
                 input.len()
             );
             self.turns.push(Turn::now(TurnRole::User, input));
             self.queued_user_turns += 1;
+            if client.is_some() || kind.is_some() {
+                self.queued_run_tags.push((client, kind));
+            }
             return vec![AssistantEffect::SessionWrite {
                 conversation_id: self.conversation_id.clone(),
             }];
         }
         log::info!(
-            "assistant[{}]: turn start ({} chars)",
+            "assistant[{}]: turn start ({} chars) client={client:?} kind={kind:?}",
             self.conversation_id,
             input.len()
         );
@@ -575,8 +596,25 @@ impl AssistantModel {
             AssistantEffect::AiQuery {
                 conversation_id: self.conversation_id.clone(),
                 prompt: input,
+                client,
+                kind,
             },
         ]
+    }
+
+    /// Latest non-empty ledger tags queued behind the in-flight turn.
+    pub(crate) fn take_queued_run_tags(&mut self) -> (Option<String>, Option<String>) {
+        let mut client = None;
+        let mut kind = None;
+        for (queued_client, queued_kind) in self.queued_run_tags.drain(..) {
+            if queued_client.is_some() {
+                client = queued_client;
+            }
+            if queued_kind.is_some() {
+                kind = queued_kind;
+            }
+        }
+        (client, kind)
     }
 
     /// Recall previous user messages into the composer. The first Up starts
@@ -633,6 +671,7 @@ impl AssistantModel {
         self.active_tools.clear();
         self.pending_permission = None;
         self.queued_user_turns = 0;
+        self.queued_run_tags.clear();
         self.turn_anchor = None;
         vec![AssistantEffect::CancelTurn]
     }
@@ -1201,9 +1240,28 @@ mod tests {
         assert_eq!(effects.len(), 2);
         assert!(matches!(effects[0], AssistantEffect::SessionWrite { .. }));
         assert!(
-            matches!(&effects[1], AssistantEffect::AiQuery { conversation_id, prompt }
-                if *conversation_id == m.conversation_id && prompt == "hello there")
+            matches!(&effects[1], AssistantEffect::AiQuery { conversation_id, prompt, client, kind }
+                if *conversation_id == m.conversation_id && prompt == "hello there" && client.is_none() && kind.is_none())
         );
+    }
+
+    #[test]
+    fn tagged_submit_keeps_the_latest_queued_override() {
+        let mut m = AssistantModel::fresh();
+        let effects = m.submit_prompt_tagged(
+            "now".into(),
+            Some("narrative".into()),
+            Some("output".into()),
+        );
+        assert!(matches!(&effects[1], AssistantEffect::AiQuery { client, kind, .. }
+            if client.as_deref() == Some("narrative") && kind.as_deref() == Some("output")));
+        let queued = m.submit_prompt_tagged("later".into(), Some("du".into()), Some("system".into()));
+        assert!(matches!(queued[0], AssistantEffect::SessionWrite { .. }));
+        assert_eq!(queued.len(), 1);
+        let _ = m.submit_prompt_tagged("after".into(), Some("personal".into()), None);
+        let (client, kind) = m.take_queued_run_tags();
+        assert_eq!(client.as_deref(), Some("personal"));
+        assert_eq!(kind.as_deref(), Some("system"));
     }
 
     #[test]

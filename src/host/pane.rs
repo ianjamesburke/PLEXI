@@ -854,10 +854,21 @@ pub enum AppRuntime {
 }
 
 impl AppRuntime {
-    pub fn submit_external_turn(&mut self, text: String, request_id: String, response_file: String) -> Result<(), String> {
+    pub fn submit_tagged_turn(
+        &mut self,
+        text: String,
+        request_id: String,
+        response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) -> Result<(), String> {
         match self {
-            AppRuntime::Builtin(app) => app.submit_external_turn(text, request_id, response_file),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => Err("this app does not accept external turns".to_string()),
+            AppRuntime::Builtin(app) => {
+                app.submit_tagged_turn(text, request_id, response_file, client, kind)
+            }
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
+                Err("this app does not accept external turns".to_string())
+            }
         }
     }
 
