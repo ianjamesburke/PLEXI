@@ -96,7 +96,7 @@ def main(args):
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith('PLEXI_')}
         env.pop('ZDOTDIR', None)
-        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'))
+        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / '.config'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'))
         env['PLEXI_DISTRIBUTION_HOME'] = str(home / 'distribution')
         env['PLEXI_INSTALL_DIR'] = str(root / 'custom install')
         env['PLEXI_BIN_DIR'] = str(root / 'command bin')
@@ -137,6 +137,17 @@ def main(args):
         initial = install(old)
         assert active() == 'old'
         check_completions('old')
+        if os.name != 'nt' and shutil.which('zsh'):
+            zsh_dir = home / 'custom zsh'
+            zsh_dir.mkdir()
+            user_rc = home / 'linked-zshrc'
+            user_rc.write_text('autoload -Uz compinit\ncompinit -C\n')
+            (zsh_dir / '.zshrc').symlink_to(user_rc)
+            install(old, custom_env=env | {'PLEXI_ORIG_ZDOTDIR': str(zsh_dir), 'ZDOTDIR': '/unused/host-integration'})
+            output = run(['zsh', '-ic', '_plexi'], env | {'ZDOTDIR': str(zsh_dir)})
+            assert output.stdout.strip() == 'old', output
+            assert (zsh_dir / '.zshrc').is_symlink()
+            check_completions('old')
         if os.name == 'nt':
             path_command = next(line.split(': ', 1)[1] for line in initial.stdout.splitlines() if line.startswith('For this PowerShell session:'))
             output = run(['powershell', '-NoProfile', '-Command', path_command + '; plexi --build-info'], env)
@@ -226,6 +237,8 @@ def main(args):
         assert (root / 'custom install/alpha/installation.json').is_file()
         assert not (receipt_path.parent / 'completions/zsh/_plexi').exists()
         check_completions('new', 'alpha')
+        if os.name != 'nt' and shutil.which('zsh'):
+            assert user_rc.read_text() == 'autoload -Uz compinit\ncompinit -C\n'
         install(old)
         assert active() == 'old'
         print('PASS: scoped uninstall and reinstall retain user data and other channels')

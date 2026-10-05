@@ -729,7 +729,10 @@ fn install_checked(
             .as_ref()
             .map(|r| r.integrations.clone())
             .unwrap_or_default(),
-        path_edits: vec![],
+        path_edits: before
+            .as_ref()
+            .map(|r| r.path_edits.clone())
+            .unwrap_or_default(),
         windows_path_added: before.as_ref().is_some_and(|r| r.windows_path_added),
     };
     let files = integration_files(&installed, &receipt)?;
@@ -976,10 +979,16 @@ fn prepare_path_registration(receipt: &mut Receipt, changes: &mut Vec<Change>) -
                 }
                 existing.push_str(&block);
             }
-            receipt.path_edits.push(PathEdit {
-                path: path.clone(),
-                block,
-            });
+            if !receipt
+                .path_edits
+                .iter()
+                .any(|edit| edit.path == path && edit.block == block)
+            {
+                receipt.path_edits.push(PathEdit {
+                    path: path.clone(),
+                    block,
+                });
+            }
         }
         if existing != original {
             // Follow a user's dotfile symlink to edit its contents atomically,
