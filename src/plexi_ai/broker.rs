@@ -734,8 +734,11 @@ fn run_turn_and_respond(
     let max_tool_iterations = request
         .max_tool_iterations
         .unwrap_or(MAX_TOOL_ITERATIONS_DEFAULT);
-    let mut total_tokens_in: u32 = 0;
-    let mut total_tokens_out: u32 = 0;
+    // `None` until a provider actually reports a count. A missing usage
+    // object must stay unknown — substituting 0 made every OpenRouter turn
+    // look free in the ledger.
+    let mut total_tokens_in: Option<u32> = None;
+    let mut total_tokens_out: Option<u32> = None;
     let mut last_generation_id: Option<String> = None;
     let mut final_text = String::new();
 
@@ -812,8 +815,8 @@ fn run_turn_and_respond(
                 return AiBrokerResponse::err(message);
             }
             Ok(result) => {
-                total_tokens_in += result.input_tokens.unwrap_or(0);
-                total_tokens_out += result.output_tokens.unwrap_or(0);
+                add_reported_tokens(&mut total_tokens_in, result.input_tokens);
+                add_reported_tokens(&mut total_tokens_out, result.output_tokens);
                 if result.generation_id.is_some() {
                     last_generation_id = result.generation_id.clone();
                 }
@@ -910,12 +913,13 @@ fn run_turn_and_respond(
 
     // If we have a generation ID and an API key, fetch authoritative metrics
     // on a detached background thread and return immediately. The generation
-    // record appears ~7-15s after stream completion (Gemini via OpenRouter
-    // reports 0/0 in the stream), and blocking dispatch() on it holds the
-    // caller's whole turn open — the assistant pane sat "in flight" for
-    // 10-15s after every visible reply doing exactly that. The thread writes
-    // the ledger row and AgentTurn event with the exact counts; the response
-    // carries stream counts, which are advisory (apps see them in
+    // record appears several seconds after stream completion, and blocking
+    // dispatch() on it holds the caller's whole turn open — the assistant
+    // pane sat "in flight" for 10-15s after every visible reply doing exactly
+    // that. The thread writes the ledger row and AgentTurn event. Stream
+    // usage (the final chunk) is what the row records when the generation
+    // endpoint has no positive token counts; a 0/0 generation row must not
+    // overwrite it. The response carries stream counts (apps see them in
     // AiResponse — billing always reads the ledger).
     if let Some(gen_id) = last_generation_id {
         if !api_key.is_empty() {
@@ -937,21 +941,21 @@ fn run_turn_and_respond(
                 .spawn(move || {
                     let metrics = fetch_generation_metrics(&gen_id, &api_key);
                     let (tokens_in, tokens_out, cost_usd) = match metrics {
-                        Some(m) => {
-                            let ti = m.prompt_tokens.unwrap_or(total_tokens_in);
-                            let to = m.completion_tokens.unwrap_or(total_tokens_out);
+                        Some(m) if generation_metrics_usable(&m) => {
+                            let ti = m.prompt_tokens.or(total_tokens_in);
+                            let to = m.completion_tokens.or(total_tokens_out);
                             log::info!(
-                                "ai_broker[{app_id}]: background usage prompt={} completion={} cached={:?} reasoning={:?} cost_usd={:?}",
-                                ti, to, m.cached_tokens, m.reasoning_tokens, m.cost_usd,
+                                "ai_broker[{app_id}]: background usage prompt={ti:?} completion={to:?} cached={:?} reasoning={:?} cost_usd={:?}",
+                                m.cached_tokens, m.reasoning_tokens, m.cost_usd,
                             );
                             (ti, to, m.cost_usd)
                         }
-                        None => {
-                            log::warn!(
-                                "ai_broker[{app_id}]: background metrics unavailable; using stream counts prompt={} completion={}",
-                                total_tokens_in, total_tokens_out,
+                        other => {
+                            let cost_usd = other.and_then(|m| m.cost_usd);
+                            log::info!(
+                                "ai_broker[{app_id}]: generation token counts unavailable; recording stream usage prompt={total_tokens_in:?} completion={total_tokens_out:?} cost_usd={cost_usd:?}",
                             );
-                            (total_tokens_in, total_tokens_out, None)
+                            (total_tokens_in, total_tokens_out, cost_usd)
                         }
                     };
                     let cost_cents = cost_usd
@@ -962,8 +966,8 @@ fn run_turn_and_respond(
                         billing,
                         Some(app_id),
                         Some(model_id_bg),
-                        Some(tokens_in),
-                        Some(tokens_out),
+                        tokens_in,
+                        tokens_out,
                         cost_usd,
                     );
                     ledger::append(&row);
@@ -973,8 +977,8 @@ fn run_turn_and_respond(
                     event_log::emit_scoped(
                         HostEvent::AgentTurn {
                             pane_id: None,
-                            tokens_in,
-                            tokens_out,
+                            tokens_in: tokens_in.unwrap_or(0),
+                            tokens_out: tokens_out.unwrap_or(0),
                             cost_cents,
                             timestamp: finish_ts,
                         },
@@ -983,7 +987,11 @@ fn run_turn_and_respond(
                 });
             match spawn_result {
                 Ok(_) => {
-                    return AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out);
+                    return AiBrokerResponse::ok(
+                        final_text,
+                        total_tokens_in.unwrap_or(0),
+                        total_tokens_out.unwrap_or(0),
+                    );
                 }
                 Err(e) => {
                     // Thread spawn failed — fall through to synchronous path so
@@ -998,9 +1006,9 @@ fn run_turn_and_respond(
     }
 
     // No generation ID (non-OpenRouter) or no API key — write ledger and event
-    // synchronously using stream token counts.
-    log::warn!(
-        "ai_broker[{}]: no generation ID — using stream token counts prompt={} completion={}",
+    // synchronously using stream token counts. Absent counts stay null.
+    log::info!(
+        "ai_broker[{}]: recording ledger usage prompt={:?} completion={:?}",
         request.app_id,
         total_tokens_in,
         total_tokens_out,
@@ -1010,8 +1018,8 @@ fn run_turn_and_respond(
         billing,
         Some(request.app_id),
         Some(model_id),
-        Some(total_tokens_in),
-        Some(total_tokens_out),
+        total_tokens_in,
+        total_tokens_out,
         None,
     );
     ledger::append(&row);
@@ -1020,14 +1028,26 @@ fn run_turn_and_respond(
     event_log::emit_scoped(
         HostEvent::AgentTurn {
             pane_id: None,
-            tokens_in: total_tokens_in,
-            tokens_out: total_tokens_out,
+            tokens_in: total_tokens_in.unwrap_or(0),
+            tokens_out: total_tokens_out.unwrap_or(0),
             cost_cents: 0,
             timestamp: event_log::now_timestamp(),
         },
         None,
     );
-    AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
+    AiBrokerResponse::ok(
+        final_text,
+        total_tokens_in.unwrap_or(0),
+        total_tokens_out.unwrap_or(0),
+    )
+}
+
+/// Add a provider-reported count into a running total. `None` (the provider
+/// sent no usage) leaves the total unknown instead of adding zero.
+fn add_reported_tokens(total: &mut Option<u32>, reported: Option<u32>) {
+    if let Some(n) = reported {
+        *total = Some(total.unwrap_or(0).saturating_add(n));
+    }
 }
 
 /// Hitting `max_tool_iterations` must never strand a half-finished turn on a
@@ -1045,8 +1065,8 @@ fn summarize_progress_on_pause(
     model_tier: ModelTier,
     reasoning_effort: Option<ReasoningEffort>,
     cancel: &CancelToken,
-    total_tokens_in: &mut u32,
-    total_tokens_out: &mut u32,
+    total_tokens_in: &mut Option<u32>,
+    total_tokens_out: &mut Option<u32>,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> String {
     let fallback = || {
@@ -1077,8 +1097,8 @@ fn summarize_progress_on_pause(
 
     match turn_loop::run_turn(backend, pause_request, on_delta) {
         Ok(result) => {
-            *total_tokens_in += result.input_tokens.unwrap_or(0);
-            *total_tokens_out += result.output_tokens.unwrap_or(0);
+            add_reported_tokens(total_tokens_in, result.input_tokens);
+            add_reported_tokens(total_tokens_out, result.output_tokens);
             if result.text.is_empty() {
                 fallback()
             } else {
@@ -1092,6 +1112,14 @@ fn summarize_progress_on_pause(
             fallback()
         }
     }
+}
+
+/// A generation row with neither side above zero is not a real reading.
+/// OpenRouter's record is eventually consistent and can appear as `0/0`
+/// before token counts are filled in; accepting that row writes the ledger
+/// as zero and never retries.
+fn generation_metrics_usable(metrics: &GenerationMetrics) -> bool {
+    metrics.prompt_tokens.is_some_and(|n| n > 0) || metrics.completion_tokens.is_some_and(|n| n > 0)
 }
 
 /// Fetch the real USD cost for a completed generation from the OpenRouter
@@ -1177,8 +1205,17 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         let cost_usd = total_cost
             .as_f64()
             .or_else(|| total_cost.as_str().and_then(|s| s.parse::<f64>().ok()));
-        let prompt_tokens = data["tokens_prompt"].as_u64().map(|n| n as u32);
-        let completion_tokens = data["tokens_completion"].as_u64().map(|n| n as u32);
+        let as_u32 = |v: &serde_json::Value| -> Option<u32> {
+            v.as_u64()
+                .or_else(|| {
+                    v.as_f64()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .map(|n| n as u64)
+                })
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        let prompt_tokens = as_u32(&data["tokens_prompt"]);
+        let completion_tokens = as_u32(&data["tokens_completion"]);
         let cached_tokens = data["native_tokens_cached"]
             .as_u64()
             .or_else(|| data["tokens_cached"].as_u64())
@@ -1200,12 +1237,25 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
     // queryable immediately after the stream completes. Gemini models via
     // OpenRouter are especially slow: manually confirmed at ~30s. Use three
     // attempts: wait 2s, wait 5s, wait 8s (15s total sleep, well within
-    // the 35s app timeout).
+    // the 35s app timeout). A 200 whose token counts are still 0 is treated
+    // as "not ready" and retried; the stream's own usage is the fallback.
+    let mut last_without_tokens: Option<GenerationMetrics> = None;
     for (attempt, delay_secs) in [(1u32, 2u64), (2, 5), (3, 8)] {
         std::thread::sleep(std::time::Duration::from_secs(delay_secs));
         if let Some(metrics) = try_fetch(attempt) {
-            return Some(metrics);
+            if generation_metrics_usable(&metrics) {
+                return Some(metrics);
+            }
+            log::debug!("ai_broker: generation {gen_id} attempt {attempt} has no token counts yet");
+            last_without_tokens = Some(metrics);
         }
+    }
+
+    if last_without_tokens.is_some() {
+        log::info!(
+            "ai_broker: generation {gen_id} never reported token counts; stream usage will be recorded"
+        );
+        return last_without_tokens;
     }
 
     log::warn!(
@@ -2325,6 +2375,32 @@ mod tests {
             Some("partial answer"),
             "the partial text streamed before cancel must be committed"
         );
+    }
+
+    /// Missing provider usage stays `None` across rounds; reported counts add.
+    /// A generation row of 0/0 is not a usable reading.
+    #[test]
+    fn absent_usage_stays_unknown_and_reported_counts_add() {
+        let mut total: Option<u32> = None;
+        add_reported_tokens(&mut total, None);
+        assert!(
+            total.is_none(),
+            "a round with no usage must not become zero"
+        );
+        add_reported_tokens(&mut total, Some(194));
+        add_reported_tokens(&mut total, Some(12));
+        assert_eq!(total, Some(206));
+
+        assert!(!generation_metrics_usable(&GenerationMetrics {
+            prompt_tokens: Some(0),
+            completion_tokens: Some(0),
+            ..GenerationMetrics::default()
+        }));
+        assert!(generation_metrics_usable(&GenerationMetrics {
+            prompt_tokens: Some(24),
+            completion_tokens: Some(29),
+            ..GenerationMetrics::default()
+        }));
     }
 
     /// Verify `fetch_generation_cost` parses total_cost as string or float.

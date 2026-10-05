@@ -25,18 +25,74 @@ use std::thread;
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
 use crate::protocol::ModelTier;
 
+/// A JSON number as a token count. Missing or null stays `None` — callers
+/// must not substitute `0`, which is indistinguishable from "the provider
+/// never reported usage". Integers and whole floats are both accepted;
+/// OpenRouter emits integers, some proxies emit `194.0`.
+fn json_u32(value: &serde_json::Value) -> Option<u32> {
+    if value.is_null() {
+        return None;
+    }
+    let n = value.as_u64().or_else(|| {
+        value.as_f64().and_then(|n| {
+            if n.is_finite() && n >= 0.0 {
+                Some(n as u64)
+            } else {
+                None
+            }
+        })
+    })?;
+    u32::try_from(n).ok()
+}
+
 fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
-    let input = usage["prompt_tokens"]
-        .as_u64()
-        .or_else(|| usage["input_tokens"].as_u64())
-        .or_else(|| usage["tokens_in"].as_u64())
-        .map(|n| n as u32);
-    let output = usage["completion_tokens"]
-        .as_u64()
-        .or_else(|| usage["output_tokens"].as_u64())
-        .or_else(|| usage["tokens_out"].as_u64())
-        .map(|n| n as u32);
+    let input = json_u32(&usage["prompt_tokens"])
+        .or_else(|| json_u32(&usage["input_tokens"]))
+        .or_else(|| json_u32(&usage["tokens_in"]));
+    let output = json_u32(&usage["completion_tokens"])
+        .or_else(|| json_u32(&usage["output_tokens"]))
+        .or_else(|| json_u32(&usage["tokens_out"]));
     (input, output)
+}
+
+/// Fold a `usage` object into the running counts. A later chunk only
+/// replaces a side it actually reports, so an empty object cannot wipe a
+/// count already seen.
+fn note_usage(input: &mut Option<u32>, output: &mut Option<u32>, usage: &serde_json::Value) {
+    let (inp, out) = parse_usage_tokens(usage);
+    if inp.is_some() {
+        *input = inp;
+    }
+    if out.is_some() {
+        *output = out;
+    }
+}
+
+/// Read `usage` off one chat-completion payload. Shared by the live SSE
+/// reader and the non-streaming body parser: OpenRouter puts the object on
+/// the final response, and — unlike OpenAI — the streaming usage frame still
+/// has a non-empty `choices` array (an empty delta that repeats
+/// `finish_reason`). Skipping that frame is how every turn was recorded as
+/// 0 tokens.
+fn observe_chunk_usage(
+    input: &mut Option<u32>,
+    output: &mut Option<u32>,
+    chunk: &serde_json::Value,
+) {
+    if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
+        note_usage(input, output, usage);
+    }
+}
+
+/// Ask the provider to attach usage. `stream_options.include_usage` is the
+/// OpenAI form (safe for strict local servers). `usage.include` is the
+/// OpenRouter form; local servers reject unknown properties, so it is sent
+/// only on the OpenRouter path.
+fn apply_usage_request(body: &mut serde_json::Value, openrouter: bool) {
+    body["stream_options"] = serde_json::json!({ "include_usage": true });
+    if openrouter {
+        body["usage"] = serde_json::json!({ "include": true });
+    }
 }
 
 /// OpenRouter streaming backend.
@@ -186,10 +242,11 @@ pub(super) fn stream_openai_compatible(
         "model": model,
         "messages": messages,
         "stream": true,
-        // Request usage in streamed responses so broker token accounting can
-        // populate AiResponse.tokens_in / tokens_out reliably.
-        "stream_options": { "include_usage": true }
     });
+    // Usage is omitted from a stream unless reporting is requested, and then
+    // only on the final chunk. Both flag shapes are sent on OpenRouter;
+    // `usage.include` stays off the local path (unknown properties are rejected).
+    apply_usage_request(&mut body, openrouter_reasoning);
 
     // Inject tools when present.
     if !request.tools.is_empty() {
@@ -286,6 +343,10 @@ pub(super) fn stream_openai_compatible(
     let mut output_tokens: Option<u32> = None;
     // Accumulate tool-call deltas across SSE chunks, keyed by index.
     let mut partial_tool_calls: HashMap<usize, PartialToolCall> = HashMap::new();
+    // OpenRouter sends `finish_reason: "tool_calls"` twice: once on the last
+    // argument chunk, then again on the usage frame. Emitting Done on the
+    // first one drops the usage frame, so tool-using turns recorded 0 tokens.
+    let mut tool_calls_sent = false;
 
     for line_result in reader.lines() {
         // Cooperative cancel: the caller (e.g. ESC or an event preempt) tripped
@@ -309,13 +370,13 @@ pub(super) fn stream_openai_compatible(
             SseLine::Chunk(chunk) => chunk,
         };
 
-        // Usage-only chunk: choices is empty/absent, usage is present.
+        // Every chunk, including the final accounting frame. That frame has a
+        // non-empty `choices` array on OpenRouter, so it must not be gated on
+        // `choices` being empty.
+        observe_chunk_usage(&mut input_tokens, &mut output_tokens, &chunk);
+
+        // Usage-only chunk (OpenAI shape): choices is empty/absent.
         if chunk["choices"].as_array().is_none_or(|c| c.is_empty()) {
-            if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
-                let (inp, out) = parse_usage_tokens(usage);
-                input_tokens = inp;
-                output_tokens = out;
-            }
             continue;
         }
 
@@ -367,34 +428,30 @@ pub(super) fn stream_openai_compatible(
             let _ = tx.send(StreamEvent::ToolCallProgress { name, arg_chars });
         }
 
-        // When finish_reason == "tool_calls", finalize and emit.
+        // When finish_reason == "tool_calls", finalize and emit — but keep
+        // reading. The usage frame is a later chunk that repeats the same
+        // finish_reason; Done is sent once the stream ends.
         if finish_reason == Some("tool_calls") {
-            let calls: Vec<RawToolCall> = partial_tool_calls
-                .into_iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_values()
-                .map(|p| RawToolCall {
-                    id: p.id,
-                    // Decode the wire name back to the real dotted tool name;
-                    // a name outside the map passes through untouched.
-                    name: tool_name_map.get(&p.name).cloned().unwrap_or(p.name),
-                    arguments: p.arguments,
-                })
-                .collect();
-            // Sort is stable from BTreeMap — calls are in index order.
-            let _ = tx.send(StreamEvent::ToolCalls(calls));
-            // Token counts may arrive in subsequent chunks or in this one.
-            if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
-                let (inp, out) = parse_usage_tokens(usage);
-                input_tokens = inp;
-                output_tokens = out;
+            if !tool_calls_sent {
+                let calls: Vec<RawToolCall> = std::mem::take(&mut partial_tool_calls)
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .into_values()
+                    .map(|p| RawToolCall {
+                        id: p.id,
+                        // Decode the wire name back to the real dotted tool name;
+                        // a name outside the map passes through untouched.
+                        name: tool_name_map.get(&p.name).cloned().unwrap_or(p.name),
+                        arguments: p.arguments,
+                    })
+                    .collect();
+                // Sort is stable from BTreeMap — calls are in index order.
+                if tx.send(StreamEvent::ToolCalls(calls)).is_err() {
+                    return;
+                }
+                tool_calls_sent = true;
             }
-            let _ = tx.send(StreamEvent::Done {
-                input_tokens,
-                output_tokens,
-                generation_id: gen_id,
-            });
-            return;
+            continue;
         }
 
         if let Some(reasoning) = reasoning_delta(choice) {
@@ -420,9 +477,13 @@ pub(super) fn stream_openai_compatible(
         output_tokens,
         generation_id: gen_id,
     });
-    if input_tokens.is_none() && output_tokens.is_none() {
-        log::debug!(
-            "openai_compat[{endpoint}]: stream completed without usage metadata; broker will use generation endpoint fallback"
+    if input_tokens.is_some() || output_tokens.is_some() {
+        log::info!(
+            "openai_compat[{endpoint}]: captured usage prompt={input_tokens:?} completion={output_tokens:?}"
+        );
+    } else {
+        log::info!(
+            "openai_compat[{endpoint}]: stream completed without usage metadata; ledger will record unknown token counts"
         );
     }
 }
@@ -700,5 +761,146 @@ mod tests {
             "data: [DONE]",
         ]);
         assert_eq!(text, vec!["ok"], "malformed line must be skipped");
+    }
+
+    /// Token counts from a non-streaming chat-completion body. Uses the same
+    /// `usage` reader as the live stream.
+    fn usage_from_completion(body: &serde_json::Value) -> (Option<u32>, Option<u32>) {
+        let mut input = None;
+        let mut output = None;
+        observe_chunk_usage(&mut input, &mut output, body);
+        (input, output)
+    }
+
+    /// Token counts from an SSE transcript, stopping at `[DONE]`. Usage is
+    /// taken from whichever chunk carries it — for OpenRouter that is the
+    /// last chunk before `[DONE]`.
+    fn usage_from_sse_lines(lines: &[&str]) -> (Option<u32>, Option<u32>) {
+        let mut input = None;
+        let mut output = None;
+        for line in lines {
+            match parse_sse_line(line) {
+                SseLine::Ignore => continue,
+                SseLine::Done => break,
+                SseLine::Chunk(chunk) => observe_chunk_usage(&mut input, &mut output, &chunk),
+            }
+        }
+        (input, output)
+    }
+
+    fn ledger_row(input: Option<u32>, output: Option<u32>) -> crate::plexi_ai::ledger::LedgerRow {
+        crate::plexi_ai::ledger::LedgerRow::with_attribution(
+            "openrouter",
+            crate::plexi_ai::backend::BillingModel::Metered,
+            Some("assistant".to_string()),
+            Some("xiaomi/mimo-v2.5".to_string()),
+            input,
+            output,
+            None,
+        )
+    }
+
+    /// OpenRouter returns `usage` on the final response object, and for a
+    /// stream only on the last chunk — which still has a non-empty `choices`
+    /// array. Both shapes must land on the ledger as non-zero token counts.
+    /// A body with no usage object is unknown (`null`), not `0`.
+    #[test]
+    fn openrouter_usage_records_nonzero_ledger_tokens() {
+        let non_streaming = serde_json::json!({
+            "id": "gen-nonstr",
+            "object": "chat.completion",
+            "model": "xiaomi/mimo-v2.5",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hello"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 194,
+                "completion_tokens": 12,
+                "total_tokens": 206,
+                "cost": 0.00042
+            }
+        });
+        let (input, output) = usage_from_completion(&non_streaming);
+        let row = ledger_row(input, output);
+        assert_eq!(row.input_tokens, Some(194));
+        assert_eq!(row.output_tokens, Some(12));
+        let line = serde_json::to_string(&row).unwrap();
+        assert!(
+            line.contains(r#""input_tokens":194"#) && line.contains(r#""output_tokens":12"#),
+            "non-streaming ledger row must carry the provider counts: {line}"
+        );
+
+        // Final chunk repeats finish_reason on a non-empty choices array.
+        // An earlier finish chunk has no usage. Counts must come from the last chunk.
+        let (input, output) = usage_from_sse_lines(&[
+            r#"data: {"id":"gen-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}]}"#,
+            r#"data: {"id":"gen-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}],"usage":{"prompt_tokens":194,"completion_tokens":12,"total_tokens":206,"cost":0.00042,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}"#,
+            "data: [DONE]",
+            // Must not be read.
+            r#"data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        ]);
+        let row = ledger_row(input, output);
+        assert!(
+            row.input_tokens.is_some_and(|n| n > 0) && row.output_tokens.is_some_and(|n| n > 0),
+            "streaming ledger row must have non-zero tokens, got in={:?} out={:?}",
+            row.input_tokens,
+            row.output_tokens
+        );
+        assert_eq!(row.input_tokens, Some(194));
+        assert_eq!(row.output_tokens, Some(12));
+
+        // Tool turns: usage arrives on the chunk AFTER the first tool_calls finish.
+        let (input, output) = usage_from_sse_lines(&[
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"echo","arguments":"{}"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":80,"completion_tokens":15}}"#,
+            "data: [DONE]",
+        ]);
+        let row = ledger_row(input, output);
+        assert_eq!(row.input_tokens, Some(80));
+        assert_eq!(row.output_tokens, Some(15));
+
+        let absent = serde_json::json!({
+            "id": "gen-nousage",
+            "choices": [{"message": {"role": "assistant", "content": "Hello"}, "finish_reason": "stop"}]
+        });
+        let (input, output) = usage_from_completion(&absent);
+        let row = ledger_row(input, output);
+        assert!(
+            row.input_tokens.is_none() && row.output_tokens.is_none(),
+            "missing usage must be unknown, not zero"
+        );
+        let line = serde_json::to_string(&row).unwrap();
+        assert!(
+            line.contains(r#""input_tokens":null"#) && line.contains(r#""output_tokens":null"#),
+            "ledger must serialize unknown counts as null: {line}"
+        );
+    }
+
+    /// OpenRouter needs `usage.include` (and still accepts the OpenAI
+    /// `stream_options` flag). Local servers only get the OpenAI flag.
+    #[test]
+    fn usage_request_flags_match_the_endpoint() {
+        let mut openrouter = serde_json::json!({"model": "xiaomi/mimo-v2.5", "stream": true});
+        apply_usage_request(&mut openrouter, true);
+        assert_eq!(
+            openrouter["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
+        assert_eq!(openrouter["usage"]["include"], serde_json::json!(true));
+
+        let mut local = serde_json::json!({"model": "local", "stream": true});
+        apply_usage_request(&mut local, false);
+        assert_eq!(
+            local["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
+        assert!(
+            local.get("usage").is_none(),
+            "local servers must not see the OpenRouter usage flag"
+        );
     }
 }
