@@ -1162,7 +1162,8 @@ fn generation_metrics_usable(metrics: &GenerationMetrics) -> bool {
 /// Fetch the real USD cost for a completed generation from the OpenRouter
 /// generation endpoint.
 ///
-/// **Endpoint:** `GET https://openrouter.ai/api/v1/generation?id=<gen_id>`
+/// **Endpoint:** `GET {openrouter api root}/generation?id=<gen_id>`
+/// (`PLEXI_OPENROUTER_BASE_URL` replaces `https://openrouter.ai/api/v1`).
 ///
 /// **Response shape:**
 /// ```json
@@ -1184,7 +1185,7 @@ struct GenerationMetrics {
 }
 
 fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMetrics> {
-    let url = format!("https://openrouter.ai/api/v1/generation?id={gen_id}");
+    let url = crate::plexi_ai::backend::openrouter::openrouter_generation_endpoint(gen_id);
 
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(30))

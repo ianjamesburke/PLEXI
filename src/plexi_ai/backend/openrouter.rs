@@ -16,6 +16,11 @@
 //! **Generation ID:** captured from `X-Generation-Id` response header before
 //! reading the SSE body. Threaded back via `StreamEvent::Done` so the broker
 //! can query the real cost after the turn completes.
+//!
+//! **Base URL:** `PLEXI_OPENROUTER_BASE_URL` replaces `https://openrouter.ai/api/v1`
+//! for chat completions and the generation lookup (no trailing slash). Unset,
+//! the canonical host is used. A non-streaming `application/json` completion
+//! is accepted on the same worker as SSE.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -128,7 +133,7 @@ impl AiBackend for OpenRouterBackend {
             .name("plexi-ai-openrouter".to_string())
             .spawn(move || {
                 stream_openai_compatible(
-                    OPENROUTER_ENDPOINT,
+                    &openrouter_chat_endpoint(),
                     Some(api_key),
                     model,
                     true,
@@ -194,8 +199,56 @@ fn sanitize_message_tool_names(message: &mut serde_json::Value) {
     }
 }
 
-/// Canonical OpenRouter chat-completions endpoint.
-const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_OPENROUTER_ROOT: &str = "https://openrouter.ai/api/v1";
+
+/// Trim an API root. Empty input is not a usable override.
+fn normalize_openrouter_root(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+/// Join `path` onto an API root without producing a double slash.
+fn openrouter_url(root: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        normalize_openrouter_root(root),
+        path.trim_start_matches('/')
+    )
+}
+
+/// API root for this process. `PLEXI_OPENROUTER_BASE_URL` points chat
+/// completions and the generation lookup at another OpenAI-compatible host
+/// (a local mock, a proxy). The value replaces `https://openrouter.ai/api/v1`.
+pub(crate) fn openrouter_api_root() -> String {
+    match std::env::var("PLEXI_OPENROUTER_BASE_URL") {
+        Ok(value) => {
+            let root = normalize_openrouter_root(&value);
+            if root.is_empty() {
+                return DEFAULT_OPENROUTER_ROOT.to_string();
+            }
+            if root != DEFAULT_OPENROUTER_ROOT {
+                log::info!("openrouter: base url override {root}");
+            }
+            root
+        }
+        Err(_) => DEFAULT_OPENROUTER_ROOT.to_string(),
+    }
+}
+
+/// Chat-completions URL for the OpenRouter backend.
+pub(crate) fn openrouter_chat_endpoint() -> String {
+    openrouter_url(&openrouter_api_root(), "chat/completions")
+}
+
+/// Generation-metrics URL for one id, on the same API root as chat.
+pub(crate) fn openrouter_generation_endpoint(gen_id: &str) -> String {
+    openrouter_url(&openrouter_api_root(), &format!("generation?id={gen_id}"))
+}
+
+/// True when the response is a single JSON chat completion rather than SSE.
+fn is_json_completion(content_type: &str) -> bool {
+    let content_type = content_type.to_ascii_lowercase();
+    content_type.contains("application/json") && !content_type.contains("event-stream")
+}
 
 /// `Authorization` header value for an OpenAI-compatible request — present
 /// only when an API key is configured (local proxies may accept
@@ -335,7 +388,35 @@ pub(super) fn stream_openai_compatible(
 
     // Capture generation ID from the response header BEFORE reading the body.
     // This header is stable for the entire call and used to fetch real cost.
+    let content_type = resp.header("content-type").unwrap_or("").to_string();
     let gen_id = resp.header("X-Generation-Id").map(|s| s.to_string());
+
+    // A server that answers the streamed request with one JSON chat
+    // completion (OpenAI's non-streaming shape) never emits `data:` lines.
+    // Reading that body as SSE would drop its `usage` and record null tokens.
+    if is_json_completion(&content_type) {
+        let body_str = match resp.into_string() {
+            Ok(body) => body,
+            Err(e) => {
+                let _ = tx.send(StreamEvent::Error(format!(
+                    "failed to read non-streaming completion from {endpoint}: {e}"
+                )));
+                return;
+            }
+        };
+        let parsed = match serde_json::from_str::<serde_json::Value>(&body_str) {
+            Ok(value) => value,
+            Err(e) => {
+                let _ = tx.send(StreamEvent::Error(format!(
+                    "non-streaming completion from {endpoint} was not JSON: {e}"
+                )));
+                return;
+            }
+        };
+        let (input_tokens, output_tokens) = deliver_json_completion(&parsed, gen_id, &tx);
+        log_usage_capture(endpoint, input_tokens, output_tokens);
+        return;
+    }
 
     let reader = BufReader::new(resp.into_reader());
 
@@ -477,13 +558,41 @@ pub(super) fn stream_openai_compatible(
         output_tokens,
         generation_id: gen_id,
     });
+    log_usage_capture(endpoint, input_tokens, output_tokens);
+}
+
+/// Emit one non-streaming chat completion: assistant text, then `Done`
+/// carrying whatever `usage` the body reported (or none).
+fn deliver_json_completion(
+    body: &serde_json::Value,
+    generation_id: Option<String>,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> (Option<u32>, Option<u32>) {
+    let mut input_tokens = None;
+    let mut output_tokens = None;
+    observe_chunk_usage(&mut input_tokens, &mut output_tokens, body);
+    if let Some(text) = body["choices"][0]["message"]["content"]
+        .as_str()
+        .filter(|text| !text.is_empty())
+    {
+        let _ = tx.send(StreamEvent::Text(text.to_string()));
+    }
+    let _ = tx.send(StreamEvent::Done {
+        input_tokens,
+        output_tokens,
+        generation_id,
+    });
+    (input_tokens, output_tokens)
+}
+
+fn log_usage_capture(endpoint: &str, input_tokens: Option<u32>, output_tokens: Option<u32>) {
     if input_tokens.is_some() || output_tokens.is_some() {
         log::info!(
             "openai_compat[{endpoint}]: captured usage prompt={input_tokens:?} completion={output_tokens:?}"
         );
     } else {
         log::info!(
-            "openai_compat[{endpoint}]: stream completed without usage metadata; ledger will record unknown token counts"
+            "openai_compat[{endpoint}]: response completed without usage metadata; ledger will record unknown token counts"
         );
     }
 }
@@ -902,5 +1011,59 @@ mod tests {
             local.get("usage").is_none(),
             "local servers must not see the OpenRouter usage flag"
         );
+    }
+
+    #[test]
+    fn openrouter_urls_join_the_api_root() {
+        assert_eq!(
+            openrouter_url("https://openrouter.ai/api/v1", "chat/completions"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            openrouter_url("http://127.0.0.1:9/v1/", "generation?id=gen-1"),
+            "http://127.0.0.1:9/v1/generation?id=gen-1"
+        );
+        assert_eq!(normalize_openrouter_root("  http://127.0.0.1:9/v1/ "), "http://127.0.0.1:9/v1");
+        assert!(is_json_completion("application/json; charset=utf-8"));
+        assert!(!is_json_completion("text/event-stream"));
+    }
+
+    /// A non-streaming completion's `message.content` and `usage` are what
+    /// the ledger sees. Absent usage stays unknown.
+    #[test]
+    fn json_completion_delivers_text_and_usage() {
+        let (tx, rx) = mpsc::channel();
+        let body = serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "json-body"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 7}
+        });
+        let (input, output) = deliver_json_completion(&body, None, &tx);
+        assert_eq!((input, output), (Some(50), Some(7)));
+        drop(tx);
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(events.first(), Some(StreamEvent::Text(text)) if text == "json-body"));
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::Done { input_tokens: Some(50), output_tokens: Some(7), generation_id: None })
+        ));
+
+        let (tx, rx) = mpsc::channel();
+        let absent = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "no-usage"}, "finish_reason": "stop"}]
+        });
+        let (input, output) = deliver_json_completion(&absent, None, &tx);
+        assert!(input.is_none() && output.is_none());
+        drop(tx);
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::Done { input_tokens: None, output_tokens: None, .. })
+        ));
     }
 }
