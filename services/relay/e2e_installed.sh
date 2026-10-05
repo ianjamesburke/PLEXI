@@ -181,9 +181,9 @@ post_turn() {
 }
 
 saw_reply() {
-  local id="$1" needle="$2"
+  local page="$1" id="$2" needle="$3"
   python3 -c 'import json,sys; page=json.loads(sys.argv[1]); rid, needle = sys.argv[2], sys.argv[3];
-raise SystemExit(0 if any(e.get("kind")=="assistant_reply" and e.get("request_id")==rid and needle in (e.get("text") or "") for e in page.get("events") or []) else 1)' "$1" "$id" "$needle"
+raise SystemExit(0 if any(e.get("kind")=="assistant_reply" and e.get("request_id")==rid and needle in (e.get("text") or "") for e in page.get("events") or []) else 1)' "$page" "$id" "$needle"
 }
 
 CODE_TURN="$(post_turn req-round "say hello $CANARY")"
@@ -194,7 +194,7 @@ for _ in $(seq 1 160); do
   if saw_reply "$PAGE" req-round "mock-reply"; then ROUND_OK=1; break; fi
   sleep 0.25
 done
-if [[ -n "$ROUND_OK" ]]; then pass "round trip"; else fail "round trip" "mock reply did not arrive"; fi
+if [[ -n "$ROUND_OK" ]]; then pass "round trip"; else fail "round trip" "mock reply did not arrive: ${PAGE:0:400}"; fi
 
 CODE_TOOL="$(post_turn req-approve "APPROVAL-TOOL $CANARY")"
 if [[ "$CODE_TOOL" == "202" ]]; then pass "approval turn accepted"; else fail "approval turn accepted" "http $CODE_TOOL"; fi
