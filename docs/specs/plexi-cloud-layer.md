@@ -35,7 +35,7 @@ limits, reconnect and explicit offline status. Its P6 decisions remain a later
 local lifecycle qualification: bundled daemon, single owner, restart fencing,
 explicit continue-after-close, and no-display/no-GPU evidence. Its §10 single
 writer and recovery requirements and §11 accessible phone UI inform C1 below.
-C1–C8 here neither renumber the agents spec's P1–P5 nor authorize cloud P7.
+C1–C9 here neither renumber the agents spec's P1–P5 nor authorize cloud P7.
 
 ## Evidence snapshot: what exists
 
@@ -69,7 +69,8 @@ This inventory is evidence, not a progress board; execution belongs in stints.
 | E19 | **BUILT** — `src/release.rs:36` `minimum_tier`, `:59` `for_channel`; `scripts/RELEASE_CHANNELS.md:5`. | Feature tiers differ from version/channel choice. Stable profile is `~/.plexi/`; named channels use `~/.plexi-<channel>/`. |
 | E20 | **DOC-ONLY** — `docs/release-artifacts.md:3`, `docs/v1-binary-install.md:3`, `docs/unsigned-install.md:3`. | References defer to distribution; unsigned OS trust limitations remain separate from proposed manifest signatures. |
 | E21 | **DOC-ONLY** — `docs/specs/agents-api-and-permission-gate.md:194` P1, `:519` P2 and its verified implementation seams. | Mandatory monitor, AuthorizedCall, durable device/run identity and lossless drain are proposed prerequisites, not provided by today's optional hooks. |
-| E22 | **DOC-ONLY** — this companion's C1–C8 contracts. | Inspected website routes and desktop seams do not provide cloud-link pairing, relay delivery, broker, workflow packs, signed cloud discovery or an OIDC provider as a coherent layer. |
+| E22 | **DOC-ONLY** — this companion's C1–C9 contracts. | Inspected website routes and desktop seams do not provide cloud-link pairing, relay delivery, broker, workflow packs, signed cloud discovery or an OIDC provider as a coherent layer. |
+| E23 | **DOC-ONLY** — no BlueBubbles, iMessage, Slack or email adapter was found by a repository scan of `docs/`, `src/`, `clients/` and `apps/`. | Account-email/config and generic channel hits are not a messaging integration. C9 starts with no adapter implementation to reuse. |
 
 Operational facts supplied by Ian's ops agent on 2026-10-04 are accepted as
 current, without live inspection: Railway project `plexi-webapp` serves
@@ -140,6 +141,48 @@ No inbound desktop port, router forwarding, remote shell or localhost MCP tunnel
 | Marketplace / packs | Install/update Requests with exact package identity | Purchase and install grant no requested runtime access. |
 | Phone decision | Resolve exact typed Request through the Agents API | Free text, discussion, a notification tap or HTTP 200 is never approval. |
 | Audit / replay | The drain and authorized projections | No private mobile transcript or authoritative hosted run journal. |
+
+## Minimal cloud retention
+
+Plexi-operated cloud is a relay and control plane, not the user's archive. Message
+content and user files are never stored at rest beyond a bounded in-flight queue.
+Everything Plexi persists by default—logs and run/delivery metadata, plus any
+explicitly requested diagnostic conversation snippet—has a 30-day maximum retention.
+A user may explicitly direct
+state to their own bucket, database, Drive, Fly Volume or local host through a
+per-destination consent UI; Plexi stores no duplicate cloud copy. The purpose is
+simple: a cloud breach should find very little.
+
+| Data | Kept / TTL | Never kept on Plexi-operated servers |
+|---|---|---|
+| Relay message body or user file | In-flight encrypted queue only; delete immediately after host ACK, or purge after the **two-minute proposed** undelivered TTL. | Conversation/file archive, body-bearing backup, analytics, log, metric or trace. |
+| Pairing record | Code hash, bound host and expiry for five minutes. | Pairing code, device private key or raw message body. |
+| Device binding / revocation | Principal, public key, host and epoch while the device exists; delete/anonymize when removed or account-closed. | Device private key, raw message body or location history. |
+| Session record | Hash, audience, expiry/revocation metadata only until session expiry/revocation, then purge. | Bearer/session token value. |
+| Delivery ID and minimal audit metadata | ID/digest, Principal/host, timestamps, outcome and size only; 30 days maximum unless the user-selected destination owns it. | Payload body, token, secret, raw IP or full prompt. |
+| Logs, metrics and traces | Allowlisted IDs, sizes, timing and outcome only; 30 days maximum. | Bodies, files, prompts, tokens, secrets or unredacted IPs. |
+| Account / identity / consent | Opaque user ID and email only while account exists; consent only while its grant exists plus 30-day audit TTL. Delete/anonymize on account close. | Profile scraping, contacts, imported profiles, persistent raw IPs (hash or omit them). |
+| User secrets, OAuth refresh/access tokens | Never persisted on Plexi servers; a hosted OAuth exchange may handle an encrypted result transiently then wipe it. | Database, queue, logs, metrics, traces or backups. |
+
+Every retained row carries `expires_at` at write: finite for ordinary cloud data,
+or an explicit account-lifecycle sentinel for an active identity record that becomes
+a finite 30-day expiry on account close. A scheduled purge deletes expired rows;
+log-sink retention is configured to 30 days or less; backups either exclude
+ephemeral data or expire within its TTL and restore filters expired rows. Schema
+review and a migration test reject TTL-less or unclassified lifecycle tables. Provider disk
+encryption protects lost media; app-level encryption protects queued payloads at
+rest with keys held separately from the queue store. Neither protects content while
+the relay is TLS-terminating/relay-visible, nor a compromised running service or
+authorized operator; it narrows disk/snapshot exposure only.
+
+Until E2E is qualified, the relay can technically read relay-visible TLS payloads,
+but must **never** log their bodies: structured logging uses allowlisted fields
+(IDs, sizes, timing and outcome), with a canary test over logs, metrics and traces.
+For C9, the tenant's explicitly selected Fly Volume holds host state, C3 store and
+drain; it is not a Plexi relay copy, but the Fly/Plexi operator can access a volume
+and that limit is disclosed. Destination selection is opt-in, names the destination
+and retention owner in consent, and writes nowhere else. C1, C2 and C9 apply this
+section; local drain retention remains owned by the agents spec.
 
 ## 1. Phone web relay — FIRST BUILD
 
@@ -256,16 +299,17 @@ includes interruption during restart/deploy; there is no HA promise.
 Persist pairing hashes, key bindings, epochs, delivery ID/digest/expiry and
 transport acknowledgments. Delete body bytes after host acknowledgment; retain
 bounded non-content dedup tombstones for twenty-four hours. Unacknowledged bodies
-expire at submission TTL. The host owns execution dedup beyond edge retention.
+expire at the two-minute proposed submission TTL. The host owns execution dedup
+beyond edge retention.
 On replay, get filtered host drain events online; do not persist an independent
 relay conversation. Phone renders host receipts, not inferred completion.
 
-Backup encrypted database snapshots with seven-day maximum pilot retention and
-restricted restore rights. C1 restore procedure suspends delivery, invalidates relay sessions
-and pending pairings, then reconciles host epochs and receipts before readiness.
-No backup can resurrect a revoked device or expired action. Erasure includes
-expiry from backups; disclose the maximum backup retention before the pilot.
-Local records retain the agents-spec portable drain; cloud delivery is not it.
+Apply [minimal cloud retention](#minimal-cloud-retention): payload rows are excluded
+from backups after ACK/expiry; any retained metadata backup expires within 30 days
+and restore filters expired rows. C1 restore suspends delivery, invalidates relay
+sessions/pending pairings, then reconciles host epochs and receipts before readiness.
+No backup can resurrect a revoked device or expired action. Local records retain the
+agents-spec portable drain; cloud delivery is not it.
 
 ### Threat model, limits and phone UX
 
@@ -752,6 +796,158 @@ or narrow scope, unknown policy versions to fail closed, and provenance for the
 new build. Manifest signatures are separate from Developer ID notarization and
 Authenticode; E20's unsigned OS trust limitations are not fixed by C7 signatures.
 
+## One agent package, many front ends, one gate
+
+An agent package is a C6 `kind = "workflow"` package, not a new format. Its
+version/digest is the C6 package version; its `components` reference the existing
+`.plexi/agents/<definition>/AGENT.md` prompt/settings, `.plexi/skills` skills, and
+the relevant `team.toml` head/member layout from agents-spec P2
+(`agents-api-and-permission-gate.md:544`, `:751`). The C6 `requested_access`
+field is its requested tool/access declaration (`plexi-cloud-layer.md:698`).
+Publishing validates and freezes that same source tree as a versioned package;
+installing/launching creates host-issued Team/Agent instances and rebinds consent.
+There is no `agent-package.toml`, duplicate prompt, separate team format, or
+implicit grant. Local iteration → validate/package → publish one pinned digest.
+
+```rust
+struct GroupDeployment { id: GroupId, package: PackageDigest,
+    administrators: Vec<PrincipalId>, members: Vec<PrincipalId>,
+    devices: Vec<PrincipalId>, rollout: Rollout, revoked_at: Option<Timestamp> }
+struct FrontEndRoute { adapter: AdapterId, external_sender: VerifiedHandle,
+    principal: PrincipalId, agent: AgentId, conversation: ConversationId }
+```
+
+A publish-to-group operation atomically records one GroupDeployment: an assignment
+set of C2 account Principals and their approved device principals bound to one
+package digest. Group membership routes
+eligible messages; it grants nothing. For every call the gate evaluates the
+actual Principal, package/run, service/resource and capability. A group admin can
+add/remove mapped members, choose staged/all-at-once rollout, pin/rollback a
+version and revoke the deployment, but cannot issue a member's grant or override
+a deny. Removal revokes routes/tokens and cancels future admission; it cannot
+erase already committed receipts. Rollback selects a retained package digest and
+rechecks current grants, never restores revoked access.
+
+This one model covers an Ian personal bot (one member), the Ian-and-Pam home
+manager (two consented members), Narrative bots (managed account group), and C6
+bought bots (entitlement permits install; package still requests access). Central
+management is package/version/routing policy, never a shared super-principal.
+
+### Thin front-end adapters and the home-manager example
+
+iMessage via BlueBubbles, C1 phone web, Slack and email are adapters only: each
+maps inbound input to `(principal, agent, conversation)`, submits the standard
+Agents API envelope, and renders an attributed reply. It owns no prompt logic,
+grant, scheduler or permission decision. A phone number, email address, Slack
+identity or iMessage handle maps only after a verified account/device binding;
+an unknown, changed or ambiguous sender gets no access and no agent context.
+
+For Ian and Pam's home manager, the group thread has one group conversation and
+each private question gets a distinct one-to-one conversation. The agent may read
+only consented/mapped group-thread records for group context, replies only after a
+normalized tag/address, and never leaks a private conversation into the group.
+Every human in the thread receives a clear consent disclosure. Unmapped or
+non-consenting participants' content is excluded from agent context or minimized
+to the smallest routing-safe metadata; their messages cannot trigger a reply.
+Irreversible actions create a typed Request for the owner's configured approval
+surface. A group-chat reply is not approval unless an explicit policy permits
+that exact non-default resolution path.
+
+BlueBubbles is an optional C9 adapter, not a Plexi transport primitive. Its Mac
+needs to remain awake and available; the BlueBubbles server holds Messages/Apple
+ID credentials and becomes a sensitive credential holder under C3. Apple private
+API, Terms-of-Service, Apple-ID lockout and account-separation risk require Ian's
+explicit acceptance and a dedicated account/host policy. No claim of Apple support,
+reliability or policy compatibility is made by this design.
+
+### Hosting remains an explicit choice
+
+| Runner | Gate, approvals and secrets | Reliability, privacy and operations |
+|---|---|---|
+| **Fly Machines PoC — proposed** | Tenant #1 is Ian and Pam's house agent: one small Machine per tenant/pinned published package, one attached Fly Volume, and a headless Plexi host. It makes the normal **outbound** C1 relay connection, so its Principal, monitor/gate and drain are the same host model as desktop. C3 host storage holds agent secrets and drain/audit state; Fly deployment secrets are bootstrap/config only, never a per-call grant. All approvals travel through the relay to the owner's desktop or phone approval surface and never auto-approve. | A stopped Machine can be started by [Fly Proxy autostart/autostop](https://fly.io/docs/reference/fly-proxy-autostop-autostart/) for an existing service, or by the relay calling the Machines API after an inbound message; verify the chosen private/public service and API topology. Relay records **waking** and queues only until its normal expiry; cold-start delay is visible to messaging UX. A Volume persists across Machine restarts but is a single-volume availability/durability boundary: test restore from backups/snapshots, do not call it HA. |
+| Always-on home Mac | The Mac runs the monitor, local package and C3 store; its owner approves locally or through paired C1 phone. It can also be the BlueBubbles host. | Strongest local-data posture, but power/network/sleep and BlueBubbles/Apple-ID health are single points of failure. |
+| Railway alternative — verify | `plexi-webapp` already runs there; it could remain the web/relay edge. Do not assume its service, storage, lifecycle or isolation model meets one-volume-per-tenant, Machine-API or scale-to-zero runner requirements. | Evaluate only against the same gate, persistence, wake, backup and per-tenant isolation tests; no hosting decision follows from the existing website deployment. |
+
+**Recommendation:** after the hard P1 gate, needed P2 assignment/run/drain subset,
+and C1 relay land, make the Fly Machines design the narrowly scoped C9 proof of
+concept: Ian and Pam's house agent is tenant #1—“your own always-on
+OpenClaw-style agent, inside the Plexi ecosystem”—where *always-on* means
+reachable/wakeable, not an always-running process. Create one Machine/Volume and
+host identity per tenant through the Machines API; scale only by creating another
+isolated tenant Machine. The home Mac stays the iMessage/BlueBubbles adapter and
+talks to the cloud host through the relay; it need not run the agent.
+
+**Tenant boundary and operator duty:** Machine, Volume, relay credential, C3 host
+store, drain, package/run identity and outbound egress policy are per tenant; no
+shared filesystem, audit stream or secret binding is permitted. The Plexi/Fly
+operator owns abuse response under [Fly's acceptable-use policy](https://www.fly.io/legal/acceptable-use-policy/): apply per-tenant egress allowlists/limits,
+rate limits and quota, retain auditable reports, and provide a kill switch that
+revokes the relay credential, marks the tenant unavailable, blocks wake and stops
+the Machine. Fly secrets protect deployment delivery, not against the Fly account
+operator or a compromised/authorized Machine runtime; only C3's gated host store
+controls agent access to a value. Verify Fly organization roles, region placement,
+volume snapshot/restore behavior, API tokens and network controls before a pilot.
+
+No tenant may be created, started, woken or admitted before P1 and the required
+P2 subset plus C1 have passed their gates. Full multi-tenant hosted runtime/P7
+remains separate; this is one constrained runner proof, not a claim of a general
+hosted agent platform.
+
+### C9 — Group agents and front-end adapters
+
+**Goal/scope:** pinned package deployment to an approved group, verified adapter
+routing, iMessage/BlueBubbles first adapter, private/group conversation isolation,
+owner approvals, and a Fly Machines PoC for tenant #1. **Non-goals:** public channel
+directory, unverified sender access, payments, a general hosted runtime or claiming
+BlueBubbles support. Depends on P1; the needed P2 assignment/run/drain subset; C1
+device routing; C2 identities; C3 secrets; and C6 packages. C8 is optional unless
+the chosen adapter/service needs OIDC. Apply [minimal cloud retention](#minimal-cloud-retention):
+the Fly Volume is an explicit tenant destination, not a Plexi-held duplicate. No-gate
+means no runner start.
+
+1. **AT-C9-01 — Publish and rollout:** Rust/HostHarness test publishes package
+   v2 to a seeded group, stages then promotes/rolls back its pinned digest, and
+   proves each member's grant is checked on every call.
+2. **AT-C9-02 — Routing safety:** adapter fixtures send unknown, unmapped,
+   untagged and tagged messages. Only verified mapped/tagged input creates the
+   target conversation; unknown sender is refused and untagged input gets no reply.
+3. **AT-C9-03 — Privacy:** HostHarness supplies group and private side questions
+   with a non-consenting participant. Assert private records never enter group
+   prompt/reply, excluded content is absent/minimized, and disclosure/consent
+   receipts are visible.
+4. **AT-C9-04 — Revocation and offline:** remove Pam/device or revoke deployment,
+   retry an old adapter credential and stop the selected host. Future calls fail;
+   host-offline is explicit, and no queued action runs after expiry.
+5. **AT-C9-05 — Owner decision:** fixture requests an irreversible home action
+   from group chat. The adapter creates a typed Request; only the owner approval
+   surface can resolve it under default policy, with drain attribution.
+6. **AT-C9-06 — Fly idle wake:** staging fixture stops an existing tenant Machine,
+   sends an inbound message and proves Proxy/API wake, relay **waking** status,
+   outbound relay reconnect and exactly-once delivery after admission. Exercise a
+   cold-start timeout/expiry without fabricating a reply.
+7. **AT-C9-07 — Persistence:** restart the tenant Machine on its Volume; Rust plus
+   staging integration verifies package pin, host state, C3 store metadata and drain
+   cursor recover once, while a fresh tenant cannot read them.
+8. **AT-C9-08 — Tenant containment and kill:** browser/relay fixtures prove tenant
+   A cannot route, read secret metadata, drain or egress as tenant B; an abuse kill
+   switch revokes its relay identity, blocks proxy/API wake and records the action.
+9. **AT-C9-09 — No gate, no start:** bootstrap against a fixture lacking qualified
+   P1/P2/C1 admission refuses Machine registration/start; a running fixture rejects
+   every tool call until the monitor is live.
+10. **AT-C9-10 — Destination isolation:** C9 fixture explicitly selects its tenant
+    Fly Volume, then proves host state/drain writes occur there only, no relay copy
+    exists, and changing/removing consent stops future destination writes.
+
+**Exit gate:** publish v2 to a consented two-person home group; a tagged request
+routes once, private context stays private, unknown/untagged/revoked inputs do
+nothing, offline/waking is honest, a volume restart preserves only its tenant, and
+an irreversible request reaches the owner. The Fly PoC additionally demonstrates
+idle wake/reconnect, containment and kill without bypassing the gate.
+
+Ian's current Opus roadmap direction—to hold cloud work until the gate lands and
+real usage exists—governs this section. It is design-only and authorizes no
+BlueBubbles account, adapter implementation, deployment, cloud runner or rollout.
+
 ## Phased build order and acceptance gates
 
 Acceptance tests below are future obligations, not a completion checklist.
@@ -765,12 +961,16 @@ Order remains relay-first: C1 needs no account/identity service—only host-conf
 pairing and the P1/P2 foundation. C2 then delivers the core account/identity model
 before marketplace ownership and third-party sign-on. C3 secures credentials before
 C4; C5 proves local packs before C6 distributes them; C7 unifies updates; C8 adds
-Sign in with Plexi. Billing hooks are data-only C8 placeholders, not a payment phase.
+Sign in with Plexi; C9 adds group deployment, optional adapters and only then the
+Fly tenant-#1 runner PoC. C9's Machine admission is hard-blocked on P1, its needed
+P2 subset and C1; it is not a shortcut around the roadmap hold. Billing hooks are
+data-only C8 placeholders, not a payment phase.
 
 ### C1 — Relay, pairing and phone
 
 **Goal/scope:** outbound link, paired device principal, HTTPS PWA, delivery/replay,
-revocation and desktop-only irreversible approval on staging `*.up.railway.app`.
+revocation, [minimal cloud retention](#minimal-cloud-retention) and desktop-only
+irreversible approval on staging `*.up.railway.app`.
 **Non-goals:** required accounts, Google, payments, daemon/cloud execution, media.
 
 **Exact prerequisite:** agents P1 mandatory gate across all dispatch/control
@@ -801,6 +1001,13 @@ actual subset tests pass; current LAN Assistant CLI is not a fallback foundation
 6. **AT-C1-06 — Physical phone:** record device/browser/build; verify HTTPS,
    home-screen launch, keyboard/composer, touch, long scroll, background/resume
    and revoke on Wi-Fi/mobile reconnect. Browser emulation is separate evidence.
+7. **AT-C1-07 — Queue and log retention:** Postgres fixture sends a unique content
+   canary, ACKs one payload and leaves another offline. Assert the ACKed body is
+   absent immediately, the other is purged at the decided TTL, and the canary is
+   absent from every log, metric and trace export.
+8. **AT-C1-08 — Expiry restore:** fixture clock advances beyond 30 days, runs the
+   purge, restores a permitted backup and proves expired delivery/audit rows and
+   payloads do not return; a revoke/expiry fence still holds.
 
 **Exit gate:** phone → relay → Agents API → desktop approval → one attributed
 Chess move, matching drain/phone receipt; negative auth, offline, crash and revoke
@@ -810,7 +1017,8 @@ Deployment for those future tests requires its own authorization, not this spec.
 ### C2 — Accounts and identity foundation
 
 **Goal/scope:** account/user, sessions, optional host/device owner links,
-entitlement placeholder and secure desktop storage. **Non-goals:** account-required
+entitlement placeholder, secure desktop storage and
+[minimal cloud retention](#minimal-cloud-retention). **Non-goals:** account-required
 local/relay use, third-party OIDC or payments. C1 may precede it; C6/C8 depend on it.
 
 1. **AT-C2-01 — Sessions:** server integration tests verify hashed storage,
@@ -824,6 +1032,10 @@ local/relay use, third-party OIDC or payments. C1 may precede it; C6/C8 depend o
 4. **AT-C2-04 — Identity model:** server migration tests keep account, user,
 host, device and session IDs distinct; recovery/relink cannot alter a device
 epoch or local grant. Verify entitlement/billing placeholders hold no payment data.
+5. **AT-C2-05 — Erasure and TTL:** fixture clock purges audit/session metadata
+   after 30 days; account-close cascade deletes/anonymizes identity, sessions,
+   devices and consent as specified while preserving no token/body. A user-selected
+   destination consent is recorded without copying its data into Plexi storage.
 
 **Exit gate:** one owner can link devices and recover ownership records without
 obtaining host authority; no raw account bearer remains in migrated TOML/logs.
@@ -962,6 +1174,7 @@ Plan information is informational; billing remains unimplemented.
 | C1 phone approval | P1 exact pending call; P2 typed Request/version | Resolve Request under device policy; AuthorizedCall stays host-internal. |
 | C2 account / entitlement | P1 origin distinction, P2 Principal binding | Optional owner metadata; no host grant from cloud entitlement. |
 | C8 Sign in with Plexi | P1 service-resource gate, P2 Principal/run/drain | RP consent plus short-lived actor/audience token; neither is a local grant. |
+| C9 group/adapters/Fly tenant runner | P1 live per-call monitor; P2 Team/Assignment/Request/run/drain subset; C1 outbound relay | Pinned package + member Principal route + isolated host/Machine/Volume identity; adapter/group/Machine membership is never authority. |
 | C3 secret / launch | P1 resource/argument-bound monitor, P2 run attribution | AuthorizedCall fixes secret version, Principal, launch and destination. |
 | C4 OAuth / API | P1 credential resource and exact dispatch; P2 audit drain | Provider consent separate from grant; credential version and call outcome. |
 | C5 shell pack | P1 launch authorization; P2 pinned run configuration | Native execution Request, exact pack digest and pane/context selection. |
@@ -977,16 +1190,22 @@ Until decided, use the narrower policy and do not claim the alternative shipped.
 |---|---|---|
 | Production relay DNS | Ian adds one CNAME such as `relay.plexiapp.com`; staging stays on `*.up.railway.app`. | Before production origin; no wildcard assumed. |
 | Payload confidentiality | Trusted personal pilot uses relay-visible TLS with disclosure; E2E requires qualified protocol and explicit browser-code trust limit. | Before C1 pilot invitation. |
+| Cloud retention / offline queue | Confirm 30-day Plexi-cloud maximum and the undelivered-message TTL; recommend 30 days and **two minutes**, respectively, unless usability evidence requires a shorter bound. | Before C1 persistence schema/pilot. |
 | Accounts before pairing | No: pair to local owner key first, attach optional account in C2. | C1 identity contract. |
 | IdP implementation | Recommend a standards-compliant managed/self-hosted OIDC component behind Plexi-owned issuer/domain and data model; do not hand-roll protocol. Compare WorkOS, Clerk, Auth0, Supabase Auth and a maintained self-hosted library on export, key control, token exchange and cost. | Before C2 schema/API commitment. |
 | First relying party | Select one partner with a scoped MCP or OpenAPI surface and test tenant; do not start with broad admin/cloud control. | C8 acceptance fixture. |
 | Delegated-token format | Signed JWT with issuer/audience/expiry/jti and `act` actor claim, or opaque introspected equivalent; recommend JWT only if the first RP validates it safely. | C8 interoperability. |
 | IdP timing | Decide whether C8 precedes marketplace identity work; recommendation: build C2 identity foundation now, ship C6 marketplace first unless a committed partner needs C8. | Roadmap ordering. |
+| BlueBubbles / Apple identity | Accept private-API, ToS, Apple-ID lockout and dedicated-account risk before C9; otherwise choose another first adapter. | C9 pilot. |
+| Runner choice | Approve Fly Machines as a tenant-#1 proof after P1/P2/C1, or choose home Mac; evaluate Railway only after verifying per-tenant volume-backed scale-to-zero lifecycle/isolation. | Before C9 runner pilot. |
+| Fly organization and region | Name the Fly account/organization, permitted region/data posture, Volume backup/restore owner and operator on-call. | Before any tenant Machine. |
+| Fly abuse responsibility | Ian/Plexi accepts tenant abuse reporting, egress limits, kill-switch authority and Fly AUP response; no anonymous tenant. | Before C9 runner pilot. |
+| Pam's consent | Require informed disclosure, consent and separate private/group context policy before mapping Pam or her devices. | C9 first group. |
 | Phone permission policy | Desktop-only irreversible approvals; default phone view/needs-input, optional explicit policy for non-irreversible decisions. | C1 resolution policy; matches agents-spec sign-off. |
 | Hosted OAuth vs BYO | Plexi hosted client for product UX; supported BYO public PKCE for experts/private use. | C4 provider qualification. |
 | Google verification/CASA | Approve permitted use, assessor/security work and recurring budget before public restricted Gmail access; no cost/timeline promise. | C4 public launch. |
 | Linux secret backend | Require Secret Service; encrypted-file alternative only with independent unlock key and honest limits. | C3 / Linux remote credentials. |
-| Pricing/payments | Existing policy remains; no rollout unless Ian explicitly scopes it. | Separate commerce work, not C1–C8 delivery proof. |
+| Pricing/payments | Existing policy remains; no rollout unless Ian explicitly scopes it. | Separate commerce work, not C1–C9 delivery proof. |
 
 ## Evidence reporting and out of scope
 
@@ -997,7 +1216,8 @@ Report Rust, HostHarness, server integration, staging browser and physical-phone
 results separately; never convert a mock, source observation or timeout into a pass.
 
 This document authorizes no deploy, DNS change, Railway/Cloudflare operation,
-payment/billing rollout, release publication or hosted agent runtime (external cloud P7).
-Full daemon qualification remains a later lifecycle gate, not a C1 claim.
+Fly account, Fly Machine/Volume, payment/billing rollout, release publication or
+general hosted agent runtime (external cloud P7). Full daemon qualification remains
+a later lifecycle gate, not a C1 claim.
 No cloud-required local operation, remote raw socket tunnel, generic workflow DSL,
 cloud secrets vault or universal native-process sandbox is introduced here.
