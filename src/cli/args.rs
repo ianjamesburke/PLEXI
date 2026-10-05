@@ -276,17 +276,26 @@ pub enum Commands {
 pub enum AssistantCmd {
     /// Submit through the same composer, model, and permission path as the desktop Assistant.
     Send {
-        #[arg(long)]
-        text: String,
+        /// Prompt text. Omitted when `--status-for` only reads a pending turn.
+        #[arg(long, required_unless_present = "status_for")]
+        text: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
         #[arg(long)]
         pane_id: Option<u64>,
         #[arg(long)]
         context_id: Option<u64>,
-        /// Conversation to run the turn in. The phone relay passes its own id.
-        #[arg(long)]
-        conversation_id: Option<String>,
+        /// Caller-owned conversation. A phone session passes one stable id.
+        /// Omit to start a new conversation that is not the desktop transcript.
+        #[arg(long, conflicts_with = "desktop")]
+        conversation: Option<String>,
+        /// Append this turn to the desktop Assistant conversation.
+        #[arg(long, conflicts_with = "conversation")]
+        desktop: bool,
+        /// Read the outcome of a turn that already returned waiting_for_permission.
+        /// Does not submit a new prompt.
+        #[arg(long, conflicts_with_all = ["text", "desktop", "conversation"])]
+        status_for: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -1949,8 +1958,7 @@ mod tests {
     #[test]
     fn notify_rejects_removed_level_flag() {
         assert!(
-            Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--level", "info"])
-                .is_err(),
+            Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--level", "info"]).is_err(),
             "removed notification level flag must fail loudly"
         );
     }

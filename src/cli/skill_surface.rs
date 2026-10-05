@@ -16,8 +16,7 @@ fn skill_path() -> PathBuf {
 
 fn skill_text() -> String {
     let path = skill_path();
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
 fn built_cli() -> clap::Command {
@@ -43,9 +42,9 @@ fn find_subcommand<'a>(cmd: &'a clap::Command, tok: &str) -> Option<&'a clap::Co
 fn has_long_flag(cmd: &clap::Command, flag: &str) -> bool {
     flag == "help"
         || flag == "version"
-        || cmd
-            .get_arguments()
-            .any(|a| a.get_long() == Some(flag) || a.get_all_aliases().iter().flatten().any(|al| *al == flag))
+        || cmd.get_arguments().any(|a| {
+            a.get_long() == Some(flag) || a.get_all_aliases().iter().flatten().any(|al| *al == flag)
+        })
 }
 
 /// Extract every `--long-flag` name mentioned in a token, stripping the

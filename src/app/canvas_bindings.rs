@@ -7,8 +7,8 @@
 //! is conceptually one feature, not a scattering of unrelated cases.
 
 use super::PlexiApp;
-use crate::protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
 use crate::host::pane::{Pane, TerminalPane};
+use crate::protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::Tile;
@@ -480,7 +480,9 @@ impl PlexiApp {
         // the right of the requesting pane. Sits below user/manifest overrides
         // so a user-configured handler for e.g. `.md` still wins.
         if crate::app::text_editor_app::is_text_editable_ext(&ext) {
-            log::info!("open: '{path}' → builtin text-editor (split right of pane {sender_pane_id})");
+            log::info!(
+                "open: '{path}' → builtin text-editor (split right of pane {sender_pane_id})"
+            );
             self.open_text_file_in_split(sender_pane_id, path);
             return;
         }
@@ -599,9 +601,8 @@ pub fn open_http_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let result = std::process::Command::new("xdg-open").arg(url).spawn();
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let result: std::io::Result<std::process::Child> = Err(std::io::Error::other(
-        "URL open is macOS/Linux-only",
-    ));
+    let result: std::io::Result<std::process::Child> =
+        Err(std::io::Error::other("URL open is macOS/Linux-only"));
     match result {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("OS opener failed for {url}: {e}")),

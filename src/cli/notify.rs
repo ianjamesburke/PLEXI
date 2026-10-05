@@ -127,8 +127,8 @@ pub fn notify_cli(
         response_file_str
     );
 
-    use std::io::Write;
     use crate::platform::ipc::{self, IpcStream};
+    use std::io::Write;
     let mut stream = match IpcStream::connect(&socket_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
@@ -222,8 +222,8 @@ pub fn dismiss_notify_cli(
         "source_pane_id": source_pane_id,
         "response_file": response_file,
     });
-    use std::io::Write;
     use crate::platform::ipc::IpcStream;
+    use std::io::Write;
     let mut stream = match IpcStream::connect(&socket_path) {
         Ok(stream) => stream,
         Err(e) => {
@@ -297,17 +297,7 @@ mod notify_tests {
     fn notify_cli_no_socket_returns_one() {
         let env = socket_env_guard();
         env.unset();
-        let code = notify_cli(
-            "Test title",
-            "Test body",
-            &[],
-            true,
-            0,
-            0,
-            None,
-            None,
-            None,
-        );
+        let code = notify_cli("Test title", "Test body", &[], true, 0, 0, None, None, None);
         assert_eq!(code, 1);
     }
 
@@ -349,17 +339,7 @@ mod notify_tests {
     fn notify_cli_timeout_is_sent_as_display_lifetime() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli(
-                "Expiry",
-                "body",
-                &[],
-                false,
-                30,
-                0,
-                None,
-                None,
-                None,
-            )
+            notify_cli("Expiry", "body", &[], false, 30, 0, None, None, None)
         });
 
         assert_eq!(code, 0);

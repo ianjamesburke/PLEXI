@@ -1030,14 +1030,13 @@ fn render_node(
                 .copied()
                 .unwrap_or_default();
             let (origin, sx, sy) = canvas_transform(rect, c.width, c.height, fit);
-            let to_canvas = |pos: egui::Pos2, button: Option<&'static str>, pressed: bool| {
-                CanvasClick {
+            let to_canvas =
+                |pos: egui::Pos2, button: Option<&'static str>, pressed: bool| CanvasClick {
                     x: (pos.x - origin.x) / sx,
                     y: (pos.y - origin.y) / sy,
                     button,
                     pressed,
-                }
-            };
+                };
             // A real click is detected by egui's own `Sense` resolution
             // (resolved once per pass, inside `Context::begin_pass`, from that
             // pass's actual `RawInput` — it cannot be faked by mutating
@@ -1081,14 +1080,12 @@ fn render_node(
                         .find(|(b, _)| resp.clicked_by(*b))
                         .map_or("left", |(_, name)| *name);
                     out.canvas_clicks.push(to_canvas(pos, Some(button), true));
-                } else if let Some((_, button)) = real_button
-                    .iter()
-                    .find(|(b, _)| resp.drag_started_by(*b))
+                } else if let Some((_, button)) =
+                    real_button.iter().find(|(b, _)| resp.drag_started_by(*b))
                 {
                     out.canvas_clicks.push(to_canvas(pos, Some(button), true));
-                } else if let Some((_, button)) = real_button
-                    .iter()
-                    .find(|(b, _)| resp.drag_stopped_by(*b))
+                } else if let Some((_, button)) =
+                    real_button.iter().find(|(b, _)| resp.drag_stopped_by(*b))
                 {
                     out.canvas_clicks.push(to_canvas(pos, Some(button), false));
                 } else if resp.dragged() {
@@ -1277,25 +1274,39 @@ mod tests {
         );
         let tree = UiTree {
             root: 0,
-            nodes: vec![node(0, UiNodeData::Text(TextNode {
-                text: "Calculator".into(),
-                size: None,
-                bold: false,
-                color: None,
-                truncate: false,
-                align: Alignment::Start,
-            }))],
+            nodes: vec![node(
+                0,
+                UiNodeData::Text(TextNode {
+                    text: "Calculator".into(),
+                    size: None,
+                    bold: false,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Start,
+                }),
+            )],
         };
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
         });
-        let text = output.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "Calculator" => Some(text),
-            _ => None,
-        }).expect("painted Calculator text");
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Calculator" => Some(text),
+                _ => None,
+            })
+            .expect("painted Calculator text");
         let color = text.galley.job.sections[0].format.color;
-        let color = if color == Color32::PLACEHOLDER { text.fallback_color } else { color };
-        assert_eq!(color, colors.text_primary, "app text must follow the host palette");
+        let color = if color == Color32::PLACEHOLDER {
+            text.fallback_color
+        } else {
+            color
+        };
+        assert_eq!(
+            color, colors.text_primary,
+            "app text must follow the host palette"
+        );
 
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(420.0, 160.0))
@@ -1308,8 +1319,11 @@ mod tests {
                     });
             });
         harness.run();
-        harness.render().expect("theme regression render")
-            .save("/tmp/plexi-distribution-text-theme.png").expect("theme screenshot");
+        harness
+            .render()
+            .expect("theme regression render")
+            .save("/tmp/plexi-distribution-text-theme.png")
+            .expect("theme screenshot");
     }
 
     /// Stint 0456: the declarative TextInput renders through the styled
@@ -1406,8 +1420,7 @@ mod tests {
                 node(
                     2,
                     UiNodeData::Text(TextNode {
-                        text: "The quick brown fox jumps over the lazy dog 0123456789"
-                            .to_string(),
+                        text: "The quick brown fox jumps over the lazy dog 0123456789".to_string(),
                         size: None,
                         bold: false,
                         color: None,
@@ -1899,7 +1912,13 @@ mod tests {
                         align: Alignment::Start,
                     }),
                 ),
-                node(3, UiNodeData::Space(SpaceNode { size: 0.0, grow: true })),
+                node(
+                    3,
+                    UiNodeData::Space(SpaceNode {
+                        size: 0.0,
+                        grow: true,
+                    }),
+                ),
                 // The tail is a Row of buttons — an `Actions` bar, the shape the
                 // overflow bug actually took (a bare child never reproduced it).
                 node(
@@ -1956,9 +1975,7 @@ mod tests {
         let band = shapes
             .iter()
             .filter(|r| !fills_pane(r))
-            .find(|r| {
-                r.min.y <= 0.5 && r.min.x <= 0.5 && r.max.x >= pane.x - 0.5
-            })
+            .find(|r| r.min.y <= 0.5 && r.min.x <= 0.5 && r.max.x >= pane.x - 0.5)
             .copied();
         assert!(
             band.is_some(),
@@ -2066,8 +2083,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| {
-                        let _ =
-                            render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key), 0);
+                        let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key), 0);
                     });
             });
             let registry = crate::ui::focus::drain_text_surfaces(&ctx);

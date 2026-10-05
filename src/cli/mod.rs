@@ -288,7 +288,9 @@ pub(super) fn print_json_output(json_str: &str) -> i32 {
                         log::warn!("print_json_output: jq exited non-zero ({status}), falling back to serde");
                     }
                     Err(e) => {
-                        log::warn!("print_json_output: jq wait failed ({e}), falling back to serde");
+                        log::warn!(
+                            "print_json_output: jq wait failed ({e}), falling back to serde"
+                        );
                     }
                 }
             }
@@ -362,10 +364,7 @@ mod socket_resolution_tests {
             Path::new("/Users/test"),
         );
 
-        assert_eq!(
-            actual,
-            Some(PathBuf::from("/tmp/alpha.sock"))
-        );
+        assert_eq!(actual, Some(PathBuf::from("/tmp/alpha.sock")));
     }
 
     #[test]
@@ -377,10 +376,7 @@ mod socket_resolution_tests {
             Path::new("/Users/test"),
         );
 
-        assert_eq!(
-            actual,
-            Some(PathBuf::from("/tmp/beta.sock"))
-        );
+        assert_eq!(actual, Some(PathBuf::from("/tmp/beta.sock")));
     }
 
     #[test]
@@ -392,10 +388,7 @@ mod socket_resolution_tests {
             Path::new("/Users/test"),
         );
 
-        assert_eq!(
-            actual,
-            Some(PathBuf::from("/tmp/alpha.sock"))
-        );
+        assert_eq!(actual, Some(PathBuf::from("/tmp/alpha.sock")));
     }
 
     #[test]
@@ -1259,17 +1252,16 @@ pub use agent::{
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_call_cli, assistant_send_cli, app_info, app_init, app_inspect_cli, app_install_package, app_install_with_pin,
-    app_list, app_package_cli, app_prune_cli, app_render, app_test_cli, app_uninstall,
-    app_update_cli, InstallConfirm,
+    app_action_cli, app_call_cli, app_info, app_init, app_inspect_cli, app_install_package,
+    app_install_with_pin, app_list, app_package_cli, app_prune_cli, app_render, app_test_cli,
+    app_uninstall, app_update_cli, assistant_send_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
-pub use relay::{relay_confirm_cli, relay_connect_cli, relay_revoke_cli, relay_status_cli};
-pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,
 };
+pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
 pub use context_cli::{
     context_current_cli, context_describe_cli, context_list_cli, context_new_cli, context_open_cli,
     context_push_cli, context_set_root_cli, context_sub_cli, context_zoom_cli,
@@ -1279,12 +1271,11 @@ pub use demo::demo_cli;
 pub use doctor::doctor_cli;
 pub use events::{
     events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
-    events_subscribe_cli, pane_lifecycle_wait_cli, pane_lifecycle_follow_cli, EmitArgs,
+    events_subscribe_cli, pane_lifecycle_follow_cli, pane_lifecycle_wait_cli, EmitArgs,
 };
 pub use host::{host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{
-    install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
-    self_update_cli,
+    install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli, self_update_cli,
 };
 pub use list::{freeze_cli, parse_notify_choice};
 pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
@@ -1300,6 +1291,7 @@ pub use pane::{
     pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli,
     pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli, pane_state_cli, pane_status_cli,
 };
+pub use relay::{relay_confirm_cli, relay_connect_cli, relay_revoke_cli, relay_status_cli};
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;

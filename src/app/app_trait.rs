@@ -332,21 +332,16 @@ pub trait App: Send {
     /// Submit a text turn through a builtin app's normal interactive path.
     /// Only the host Assistant implements this; the response path is owned by
     /// the app so callers cannot bypass its model or permission loop.
-    fn submit_external_turn(&mut self, _text: String, _request_id: String, _response_file: String) -> Result<(), String> {
-        Err("this app does not accept external turns".to_string())
-    }
-
-    /// Like [`Self::submit_external_turn`], optionally in a named conversation.
-    /// The default ignores `conversation_id` and uses the app's current one.
-    fn submit_external_turn_in_conversation(
+    fn submit_external_turn(
         &mut self,
-        text: String,
-        request_id: String,
-        response_file: String,
-        conversation_id: Option<String>,
+        _text: String,
+        _request_id: String,
+        _response_file: String,
+        _conversation_id: Option<String>,
+        _join_desktop: bool,
+        _status_for: Option<String>,
     ) -> Result<(), String> {
-        let _ = conversation_id;
-        self.submit_external_turn(text, request_id, response_file)
+        Err("this app does not accept external turns".to_string())
     }
 
     /// Deliver a host file/URL drop through the app's production handler.

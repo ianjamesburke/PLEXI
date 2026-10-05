@@ -7,8 +7,8 @@
 //! chrome bands are active.
 
 use crate::app::app_trait::AppRenderContext;
-use crate::protocol::PlexiEvent;
 use crate::host::pane::AppPane;
+use crate::protocol::PlexiEvent;
 use crate::ui::theme::Colors;
 use crate::ui::{button, style};
 use egui::RichText;

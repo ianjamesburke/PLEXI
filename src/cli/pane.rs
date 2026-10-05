@@ -1337,11 +1337,9 @@ mod capture_and_status_tests {
                 pane_status_cli(42)
             });
         assert_eq!(host_error, 1);
-        assert!(
-            validate_status_reply("{}")
-                .expect_err("missing fields")
-                .contains("missing verdict")
-        );
+        assert!(validate_status_reply("{}")
+            .expect_err("missing fields")
+            .contains("missing verdict"));
     }
 }
 

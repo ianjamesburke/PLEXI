@@ -6,7 +6,15 @@ use crate::release::ReleaseFeature;
 const HELP_GROUPS: &[(&str, &[&str])] = &[
     (
         "Workspace",
-        &["run", "workspace", "secret", "connector", "routine", "agent", "context"],
+        &[
+            "run",
+            "workspace",
+            "secret",
+            "connector",
+            "routine",
+            "agent",
+            "context",
+        ],
     ),
     ("Apps", &["app", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),
@@ -221,7 +229,10 @@ mod tests {
             let mut account = account.clone();
             let help = account.render_long_help().to_string();
             assert!(!help.contains("login"), "{help}");
-            assert!(help.contains("marketplace requires the beta channel"), "{help}");
+            assert!(
+                help.contains("marketplace requires the beta channel"),
+                "{help}"
+            );
         }
     }
 
@@ -309,7 +320,12 @@ mod tests {
                     .iter()
                     .filter(|(_, names)| names.contains(&sub.get_name()))
                     .count();
-                assert_eq!(n, 1, "{channel:?}: `{}` in {n} HELP_GROUPS entries", sub.get_name());
+                assert_eq!(
+                    n,
+                    1,
+                    "{channel:?}: `{}` in {n} HELP_GROUPS entries",
+                    sub.get_name()
+                );
             }
         }
     }

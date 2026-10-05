@@ -691,9 +691,7 @@ mod tests {
             .set_active_conversation("legacy", None, "default", None)
             .unwrap();
         let a_list = ctx_a.list_conversations().unwrap();
-        assert!(a_list
-            .iter()
-            .any(|item| item.id == "legacy" && item.active));
+        assert!(a_list.iter().any(|item| item.id == "legacy" && item.active));
         let b_list = ctx_b.list_conversations().unwrap();
         assert!(
             b_list.iter().all(|item| item.id != "legacy"),

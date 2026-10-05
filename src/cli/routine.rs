@@ -24,7 +24,10 @@ enum RoutineFileError {
     /// `routine add` with a name that already exists in the file.
     DuplicateName(String),
     /// A mutating verb named a routine that is not in the file.
-    UnknownName { name: String, available: Vec<String> },
+    UnknownName {
+        name: String,
+        available: Vec<String>,
+    },
     /// I/O or parse failure — message names the path and the operation.
     Io(String),
 }
@@ -294,9 +297,9 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), RoutineFileError> {
 /// or an error (every other verb).
 fn read_doc(path: &Path, missing_ok: bool) -> Result<toml_edit::DocumentMut, RoutineFileError> {
     match std::fs::read_to_string(path) {
-        Ok(contents) => contents.parse().map_err(|e| {
-            RoutineFileError::Io(format!("failed to parse {}: {e}", path.display()))
-        }),
+        Ok(contents) => contents
+            .parse()
+            .map_err(|e| RoutineFileError::Io(format!("failed to parse {}: {e}", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && missing_ok => {
             Ok(toml_edit::DocumentMut::new())
         }

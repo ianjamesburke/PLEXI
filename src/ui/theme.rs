@@ -1168,10 +1168,7 @@ mod tests {
                     assert_ne!(regular.family, bold.family);
                     assert_eq!(fonts.row_height(&regular), fonts.row_height(&bold));
                     for c in "mMW08[]".chars() {
-                        assert_eq!(
-                            fonts.glyph_width(&regular, c),
-                            fonts.glyph_width(&bold, c)
-                        );
+                        assert_eq!(fonts.glyph_width(&regular, c), fonts.glyph_width(&bold, c));
                     }
                 }
             });

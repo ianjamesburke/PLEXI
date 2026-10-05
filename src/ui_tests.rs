@@ -3332,7 +3332,9 @@ mod tests {
             h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
             "the palette should be open over all four agent panes"
         );
-        println!("Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)");
+        println!(
+            "Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)"
+        );
     }
 
     #[test]

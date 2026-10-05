@@ -38,14 +38,24 @@ struct LlmServerReport {
 fn check_openrouter() -> OpenRouterReport {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        use crate::workspace::secrets::{keychain_user_name, system_store};
-        let store = system_store();
-        let key = ["OPENROUTER_API_KEY", "openrouter-api-key"]
-            .iter()
-            .find_map(|name| store.get(&keychain_user_name(name)));
+        let env_name = crate::config::PlexiConfig::load()
+            .ai
+            .as_ref()
+            .and_then(|ai| ai.openrouter.as_ref())
+            .and_then(|openrouter| openrouter.api_key_env.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "OPENROUTER_API_KEY".to_string());
+        let workspace = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| crate::app::registry::resolve_workspace_root(&cwd));
+        let key =
+            crate::plexi_ai::broker::resolve_openrouter_api_key(&env_name, workspace.as_deref())
+                .ok();
         match key {
             None => {
-                log::info!("cli:doctor: OPENROUTER_API_KEY not found in keychain");
+                log::info!(
+                    "cli:doctor: {env_name} not found in process env, workspace secrets, or user keychain"
+                );
                 OpenRouterReport {
                     configured: false,
                     model_count: None,
@@ -207,7 +217,9 @@ pub fn doctor_cli(json: bool) -> i32 {
     log::info!("cli:doctor: starting capability audit (json={json})");
 
     let (installation, installation_healthy) = installation_report();
-    if !json { println!("Installation: {}", installation); }
+    if !json {
+        println!("Installation: {}", installation);
+    }
     let cwd = std::env::current_dir().unwrap_or_default();
     let registry = crate::app::registry::AppRegistry::load(&cwd);
     let config = crate::config::PlexiConfig::load_with_workspace(
@@ -353,13 +365,27 @@ fn installation_report() -> (serde_json::Value, bool) {
     match crate::distribution::installed() {
         Ok(Some(receipt)) => {
             let package_error = plexi_distribution::package::Package::load(&receipt.active.path)
-                .and_then(|p| p.validate()).err().map(|e| e.to_string());
+                .and_then(|p| p.validate())
+                .err()
+                .map(|e| e.to_string());
             let cli_matches = cli["build_id"].as_str() == Some(&receipt.active.build_id);
-            let running_matches = running.as_ref().and_then(|v| v["build_id"].as_str()).map(|id| id == receipt.active.build_id);
+            let running_matches = running
+                .as_ref()
+                .and_then(|v| v["build_id"].as_str())
+                .map(|id| id == receipt.active.build_id);
             let healthy = package_error.is_none() && cli_matches && running_matches != Some(false);
-            (serde_json::json!({ "cli": cli, "installed": receipt, "running": running, "cli_matches_installed": cli_matches, "running_matches_installed": running_matches, "package_error": package_error }), healthy)
+            (
+                serde_json::json!({ "cli": cli, "installed": receipt, "running": running, "cli_matches_installed": cli_matches, "running_matches_installed": running_matches, "package_error": package_error }),
+                healthy,
+            )
         }
-        Ok(None) => (serde_json::json!({ "cli": cli, "running": running, "managed": false }), true),
-        Err(error) => (serde_json::json!({ "cli": cli, "running": running, "error": error }), false),
+        Ok(None) => (
+            serde_json::json!({ "cli": cli, "running": running, "managed": false }),
+            true,
+        ),
+        Err(error) => (
+            serde_json::json!({ "cli": cli, "running": running, "error": error }),
+            false,
+        ),
     }
 }

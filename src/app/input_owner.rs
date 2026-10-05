@@ -277,9 +277,7 @@ const PREVIOUS_OWNER_ID: &str = "plexi_input_owner_previous_frame";
 
 fn store_previous_owner(ctx: &egui::Context, owner: InputOwner) {
     ctx.memory_mut(|memory| {
-        memory
-            .data
-            .insert_temp(Id::new(PREVIOUS_OWNER_ID), owner);
+        memory.data.insert_temp(Id::new(PREVIOUS_OWNER_ID), owner);
     });
 }
 

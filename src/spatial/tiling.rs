@@ -1,5 +1,5 @@
-use crate::protocol::AgentState;
 use crate::host::pane::{AppRuntime, Pane, TerminalPane};
+use crate::protocol::AgentState;
 use crate::render;
 use crate::ui::style;
 use crate::ui::theme::Colors;

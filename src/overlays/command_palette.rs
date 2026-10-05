@@ -273,16 +273,32 @@ fn normalized_palette_query(query: &str) -> String {
 fn shortcut_label((modifiers, key): (egui::Modifiers, egui::Key)) -> String {
     let mut parts = Vec::new();
     if modifiers.command {
-        parts.push(if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" });
+        parts.push(if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "Ctrl"
+        });
     }
     if modifiers.ctrl && !modifiers.command {
-        parts.push(if cfg!(target_os = "macos") { "⌃" } else { "Ctrl" });
+        parts.push(if cfg!(target_os = "macos") {
+            "⌃"
+        } else {
+            "Ctrl"
+        });
     }
     if modifiers.alt {
-        parts.push(if cfg!(target_os = "macos") { "⌥" } else { "Alt" });
+        parts.push(if cfg!(target_os = "macos") {
+            "⌥"
+        } else {
+            "Alt"
+        });
     }
     if modifiers.shift {
-        parts.push(if cfg!(target_os = "macos") { "⇧" } else { "Shift" });
+        parts.push(if cfg!(target_os = "macos") {
+            "⇧"
+        } else {
+            "Shift"
+        });
     }
     let separator = if cfg!(target_os = "macos") { "" } else { "+" };
     let prefix = parts.join(separator);
@@ -321,7 +337,10 @@ fn reconcile_palette_selection(
 ) {
     match selected_key {
         Some(key) => {
-            if let Some(index) = entries.iter().position(|entry| entry.selection_key() == *key) {
+            if let Some(index) = entries
+                .iter()
+                .position(|entry| entry.selection_key() == *key)
+            {
                 *selected = index;
             } else {
                 // An empty key means a live result was removed. Keep that
@@ -760,14 +779,30 @@ fn pane_row_identity(
 impl PlexiApp {
     fn palette_shortcut(&self, command: &PaletteCommand) -> Option<String> {
         let binding = match command {
-            PaletteCommand::Host(crate::host::keys::Action::OpenConfig) => self.key_bindings.open_config,
-            PaletteCommand::Host(crate::host::keys::Action::ReloadConfig) => self.key_bindings.reload_config,
-            PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker) => self.key_bindings.open_notes_picker,
-            PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal) => self.key_bindings.toggle_notification_modal,
-            PaletteCommand::Host(crate::host::keys::Action::SplitRight) => self.key_bindings.split_right,
-            PaletteCommand::Host(crate::host::keys::Action::SplitDown) => self.key_bindings.split_down,
-            PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote) => self.key_bindings.open_quick_note,
-            PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad) => self.key_bindings.open_scratchpad,
+            PaletteCommand::Host(crate::host::keys::Action::OpenConfig) => {
+                self.key_bindings.open_config
+            }
+            PaletteCommand::Host(crate::host::keys::Action::ReloadConfig) => {
+                self.key_bindings.reload_config
+            }
+            PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker) => {
+                self.key_bindings.open_notes_picker
+            }
+            PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal) => {
+                self.key_bindings.toggle_notification_modal
+            }
+            PaletteCommand::Host(crate::host::keys::Action::SplitRight) => {
+                self.key_bindings.split_right
+            }
+            PaletteCommand::Host(crate::host::keys::Action::SplitDown) => {
+                self.key_bindings.split_down
+            }
+            PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote) => {
+                self.key_bindings.open_quick_note
+            }
+            PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad) => {
+                self.key_bindings.open_scratchpad
+            }
             PaletteCommand::OpenWorkspaceConfig => return None,
             PaletteCommand::Host(other) => {
                 log::warn!("palette: no shortcut label for host binding {other:?}");
@@ -1475,9 +1510,7 @@ impl PlexiApp {
                                 }
                             }
                             PaletteEntry::Builtin {
-                                name,
-                                description,
-                                ..
+                                name, description, ..
                             } => {
                                 if !shown_apps_header {
                                     shown_apps_header = true;
@@ -1506,11 +1539,7 @@ impl PlexiApp {
                                     hover_select = Some(i);
                                 }
                             }
-                            PaletteEntry::Note {
-                                title,
-                                preview,
-                                ..
-                            } => {
+                            PaletteEntry::Note { title, preview, .. } => {
                                 if !shown_notes_header {
                                     shown_notes_header = true;
                                     ui.add_space(style::SPACE_XS);
@@ -1623,7 +1652,8 @@ impl PlexiApp {
                     self.pane_navigate(pane_id);
                 } else {
                     log::info!("palette: opening note {:?} in new pane", path);
-                    let _ = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
+                    let _ =
+                        self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
                 }
             }
         }
@@ -1686,7 +1716,9 @@ impl PlexiApp {
                 self.new_context();
                 self.mark_workspace_dirty();
             }
-            crate::host::keys::Action::RenameContext => self.open_context_rename(self.router.active_idx()),
+            crate::host::keys::Action::RenameContext => {
+                self.open_context_rename(self.router.active_idx())
+            }
             crate::host::keys::Action::ParkContext => self.toggle_park_active_context(),
             crate::host::keys::Action::ContextZoomOut => {
                 self.zoom_out_of_context();
@@ -1765,10 +1797,14 @@ impl PlexiApp {
             (win.focused_pane, target)
         };
         if let Some(child_context_id) = portal_target {
-            if let Some(context_idx) = self.router.position(|context| context.context_id == child_context_id) {
+            if let Some(context_idx) = self
+                .router
+                .position(|context| context.context_id == child_context_id)
+            {
                 let current_context_id = self.router.active().context_id;
                 let current_window_id = self.windows[self.active_window].window_id;
-                self.router.push_depth(current_context_id, current_window_id, tile);
+                self.router
+                    .push_depth(current_context_id, current_window_id, tile);
                 self.switch_workspace(context_idx);
             }
         } else if let Some(tile) = tile {
@@ -1778,7 +1814,10 @@ impl PlexiApp {
             } else {
                 win.zoom_to(tile);
             }
-            log::info!("palette: zoom toggled window={} tile={tile:?}", win.window_id);
+            log::info!(
+                "palette: zoom toggled window={} tile={tile:?}",
+                win.window_id
+            );
         }
     }
 
@@ -1827,8 +1866,7 @@ impl PlexiApp {
     fn focus_palette_target(&mut self, target: PaletteFocusTarget) {
         let Some(ctx_idx) = self.windows.iter().position(|window| {
             window.window_id == target.window_id && window.context_id == target.context_id
-        })
-        else {
+        }) else {
             log::warn!(
                 "palette: target context={} window={} disappeared before focus",
                 target.context_id,
@@ -1878,8 +1916,17 @@ impl PlexiApp {
 
     /// Compatibility adapter for non-palette callers that still resolve a
     /// window by index. Palette rows must use `focus_palette_target` instead.
-    pub(crate) fn jump_to_context(&mut self, window_index: usize, window_id: u64, pane_id: Option<u64>) {
-        let Some(context_id) = self.windows.get(window_index).map(|window| window.context_id) else {
+    pub(crate) fn jump_to_context(
+        &mut self,
+        window_index: usize,
+        window_id: u64,
+        pane_id: Option<u64>,
+    ) {
+        let Some(context_id) = self
+            .windows
+            .get(window_index)
+            .map(|window| window.context_id)
+        else {
             log::warn!("palette: window index {window_index} disappeared before context focus");
             return;
         };
@@ -1934,19 +1981,27 @@ mod tests {
         );
         assert_eq!(
             palette_command_matches("notification"),
-            vec![PaletteCommand::Host(crate::host::keys::Action::ToggleNotificationModal)]
+            vec![PaletteCommand::Host(
+                crate::host::keys::Action::ToggleNotificationModal
+            )]
         );
         assert_eq!(
             palette_command_matches("picker"),
-            vec![PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker)]
+            vec![PaletteCommand::Host(
+                crate::host::keys::Action::OpenNotesPicker
+            )]
         );
         assert_eq!(
             palette_command_matches("scratchpad"),
-            vec![PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad)]
+            vec![PaletteCommand::Host(
+                crate::host::keys::Action::OpenScratchpad
+            )]
         );
         assert_eq!(
             palette_command_matches("scratch pad"),
-            vec![PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad)]
+            vec![PaletteCommand::Host(
+                crate::host::keys::Action::OpenScratchpad
+            )]
         );
     }
 
@@ -1967,7 +2022,10 @@ mod tests {
 
     #[test]
     fn palette_shortcut_label_uses_platform_command_name_and_configured_key() {
-        let configured = (egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::F);
+        let configured = (
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::F,
+        );
         let expected = if cfg!(target_os = "macos") {
             "⌘⇧F"
         } else {
@@ -1994,7 +2052,11 @@ mod tests {
                 search_text: "balls demo".to_string(),
             },
             PaletteEntry::Context {
-                target: PaletteFocusTarget { context_id: 1, window_id: 1, pane_id: None },
+                target: PaletteFocusTarget {
+                    context_id: 1,
+                    window_id: 1,
+                    pane_id: None,
+                },
                 name: "Workspace".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],
@@ -2013,7 +2075,11 @@ mod tests {
     #[test]
     fn parked_and_windowless_context_entries_remain_searchable() {
         let parked = PaletteEntry::Context {
-            target: PaletteFocusTarget { context_id: 7, window_id: 70, pane_id: None },
+            target: PaletteFocusTarget {
+                context_id: 7,
+                window_id: 70,
+                pane_id: None,
+            },
             name: "parked release work".to_string(),
             workspace_name: "Parked".to_string(),
             metadata_chips: vec!["ctx", "parked"],
@@ -2048,7 +2114,11 @@ mod tests {
                 search_text: "balls demo".to_string(),
             },
             PaletteEntry::Context {
-                target: PaletteFocusTarget { context_id: 1, window_id: 1, pane_id: None },
+                target: PaletteFocusTarget {
+                    context_id: 1,
+                    window_id: 1,
+                    pane_id: None,
+                },
                 name: "Workspace A".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],
@@ -2056,7 +2126,11 @@ mod tests {
                 search_text: "workspace a".to_string(),
             },
             PaletteEntry::Context {
-                target: PaletteFocusTarget { context_id: 2, window_id: 2, pane_id: None },
+                target: PaletteFocusTarget {
+                    context_id: 2,
+                    window_id: 2,
+                    pane_id: None,
+                },
                 name: "Workspace B".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],
@@ -2598,7 +2672,11 @@ mod tests {
         // same — state ordering is scoped to the agent group.
         let mut entries = vec![
             PaletteEntry::Context {
-                target: PaletteFocusTarget { context_id: 1, window_id: 1, pane_id: None },
+                target: PaletteFocusTarget {
+                    context_id: 1,
+                    window_id: 1,
+                    pane_id: None,
+                },
                 name: "claude-ctx".to_string(),
                 workspace_name: String::new(),
                 metadata_chips: vec!["ctx"],

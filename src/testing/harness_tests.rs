@@ -594,7 +594,10 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
     let response = read_json_response(&stale_response);
     assert_eq!(response["stale_claim"]["stale_after_seconds"], 60);
     assert!(
-        response["stale_claim"]["idle_seconds"].as_u64().unwrap_or(0) >= 600,
+        response["stale_claim"]["idle_seconds"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 600,
         "response={response}"
     );
 }
@@ -639,12 +642,7 @@ fn saved_python_app_pane_restores_as_that_app() {
     let mut h = HostHarness::new();
     let pane_id = h
         .app
-        .launch_app_by_path_with_layout_no_review_modal(
-            &app_dir.to_string_lossy(),
-            None,
-            None,
-            &[],
-        )
+        .launch_app_by_path_with_layout_no_review_modal(&app_dir.to_string_lossy(), None, None, &[])
         .expect("launch fixture app")
         .expect("a Python launch returns a pane id");
     let context_id = h.app.windows[h.app.active_window].context_id;
@@ -710,7 +708,9 @@ fn saved_python_app_pane_restores_as_that_app() {
     )
     .expect("restore relaunches the same app");
 
-    let restored = restored_pane.as_app().expect("restored pane is an app pane");
+    let restored = restored_pane
+        .as_app()
+        .expect("restored pane is an app pane");
     assert_eq!(restored.id, pane_id, "restore must keep the saved pane id");
     assert_eq!(restored.manifest_id, "todo");
     assert!(matches!(restored.runtime, AppRuntime::Python(_)));
@@ -797,7 +797,10 @@ fn legacy_app_pane_without_launch_context_still_loads() {
                 .to_string_lossy()
                 .contains("backup")
         });
-    assert!(!has_backup, "loading a legacy record must not quarantine the file");
+    assert!(
+        !has_backup,
+        "loading a legacy record must not quarantine the file"
+    );
 }
 
 /// The other half of the migration path: a `launch` that names an app
@@ -828,12 +831,7 @@ fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
         Err(reason) => reason,
     };
 
-    let pane = crate::pane_ops::restore_launch_failed_pane(
-        "missing-app",
-        99,
-        missing_dir,
-        error,
-    );
+    let pane = crate::pane_ops::restore_launch_failed_pane("missing-app", 99, missing_dir, error);
     let restored = pane.as_app().expect("launch-failed pane is an app pane");
     assert_eq!(restored.runtime.type_id(), "launch_failed");
     assert!(
@@ -880,7 +878,10 @@ fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
         "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); \
          reopen the app with `plexi app open <id>`"
     );
-    assert!(reason.contains("python-wasm"), "reason must name the legacy runtime kind");
+    assert!(
+        reason.contains("python-wasm"),
+        "reason must name the legacy runtime kind"
+    );
     assert!(
         reason.contains("plexi app open"),
         "reason must point at the recovery command"
@@ -4169,26 +4170,54 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
 fn notification_modal_keys_do_not_reach_focused_app_pane() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(Box::<KeyBurstProbe>::default(), AppPermissions::builtin(), tmp.path().to_path_buf(), None, Some("split_h"), None);
+    h.app.open_builtin_app_pane(
+        Box::<KeyBurstProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
     let pane_id = h.state().open_panes[0];
     h.focus_pane(pane_id);
-    h.app.pending_notifications.push(crate::app::PendingNotification {
-        notify_id: "input-key-capture".into(),
-        kind: crate::protocol::NotifyKind::Input,
-        input_prompt: Some("Reply".into()),
-        scope: crate::protocol::NotifyScope::Global,
-        ..Default::default()
-    });
+    h.app
+        .pending_notifications
+        .push(crate::app::PendingNotification {
+            notify_id: "input-key-capture".into(),
+            kind: crate::protocol::NotifyKind::Input,
+            input_prompt: Some("Reply".into()),
+            scope: crate::protocol::NotifyScope::Global,
+            ..Default::default()
+        });
     h.app.show_notification_modal = true;
     h.app.current_notify_id = Some("input-key-capture".into());
     h.run_frames(1);
-    frame_with_events(&mut h, vec![
-        egui::Event::Text("typed into modal".into()),
-        egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
-        egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
-    ]);
-    let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_app)
-        .and_then(|pane| pane.runtime.serialize_state()).expect("burst probe state");
+    frame_with_events(
+        &mut h,
+        vec![
+            egui::Event::Text("typed into modal".into()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("burst probe state");
     assert_eq!(state["received"], serde_json::json!([] as [&str; 0]));
     assert_eq!(state["text"], serde_json::json!([] as [&str; 0]));
 }
@@ -4517,12 +4546,7 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
                 pane.semantic_state()
                     .nodes
                     .iter()
-                    .flat_map(|node| {
-                        node.label
-                            .clone()
-                            .into_iter()
-                            .chain(node.value.clone())
-                    })
+                    .flat_map(|node| node.label.clone().into_iter().chain(node.value.clone()))
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -4567,7 +4591,9 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(
-        h.app.windows[h.app.active_window].panes.contains_key(&pane_id),
+        h.app.windows[h.app.active_window]
+            .panes
+            .contains_key(&pane_id),
         "Escape leaving a focused TextInput must not close the pane"
     );
     h.run_frames(3);
@@ -5405,7 +5431,10 @@ fn scroll_regression_open_wrapped_note_reveals_end_caret() {
     let view = h.text_editor_mut(pane).test_view();
     let caret = crate::editor::cursor::Cursor::new(0, body.chars().count());
     assert_eq!(sem["caret"].as_u64(), Some(body.chars().count() as u64));
-    assert!(view.cursor_visible(caret, 1), "opened note caret must be visible after wrapping");
+    assert!(
+        view.cursor_visible(caret, 1),
+        "opened note caret must be visible after wrapping"
+    );
 }
 
 /// A wrapped note's rewrap on zoom (viewport width changes with a side-by-side
@@ -5933,7 +5962,8 @@ fn hot_reload_serviced_while_window_hidden() {
     while python_pane_title(&h, pane_id).as_deref() != Some("v1") {
         h.run_frames(1);
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "baseline title must land before the reload is triggered (last title: {:?})",
             python_pane_title(&h, pane_id)
         );
@@ -5957,7 +5987,8 @@ fn hot_reload_serviced_while_window_hidden() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "hot reload must be serviced on hidden (logic-only) passes alone (last title: {:?})",
             python_pane_title(&h, pane_id)
         );
@@ -5992,7 +6023,8 @@ fn new_wasm_app_pane_reaches_running_while_window_hidden() {
             break;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "a newly opened pane must reach lifecycle=running on hidden (logic-only) \
              passes alone — App::ui never ran for it"
         );
@@ -6039,8 +6071,11 @@ fn future_timer_keeps_a_hidden_pane_wake_scheduled() {
     write_hidden_axis_probe(tmp.path(), "waiting");
     let entry = tmp.path().join("main.py");
     let source = std::fs::read_to_string(&entry).expect("read probe");
-    std::fs::write(&entry, source.replace("30, repeat=False", "60000, repeat=False"))
-        .expect("give the timer a future deadline");
+    std::fs::write(
+        &entry,
+        source.replace("30, repeat=False", "60000, repeat=False"),
+    )
+    .expect("give the timer a future deadline");
     let mut h = HostHarness::new();
     let pane_id = h
         .app
@@ -7637,11 +7672,21 @@ mod agent_boot {
         h.run_hidden_frames(2);
         let timeline = crate::host::app_timeline::global();
         let timeline = timeline.lock().unwrap();
-        let facts: Vec<_> = timeline.events().iter()
+        let facts: Vec<_> = timeline
+            .events()
+            .iter()
             .filter(|event| event.app_id == "plexi.host.panes" && event.pane_id == pane_id)
-            .map(|event| event.payload.as_ref().unwrap()).collect();
-        let boot: Vec<_> = facts.iter().filter(|event| event["kind"] == "agent_booted").collect();
-        assert_eq!(boot.len(), 1, "observation and waiter must not double-publish readiness");
+            .map(|event| event.payload.as_ref().unwrap())
+            .collect();
+        let boot: Vec<_> = facts
+            .iter()
+            .filter(|event| event["kind"] == "agent_booted")
+            .collect();
+        assert_eq!(
+            boot.len(),
+            1,
+            "observation and waiter must not double-publish readiness"
+        );
         assert_eq!(boot[0]["provenance"]["source"], "host_observation");
         assert!(boot[0]["provenance"]["raw_event"].is_null());
         assert!(facts.iter().any(|event| event["kind"] == "agent_idle"));
@@ -8661,9 +8706,14 @@ mod pane_lifecycle_events {
     use super::*;
 
     fn records(pane_id: u64) -> Vec<serde_json::Value> {
-        crate::host::app_timeline::global().lock().unwrap().events().iter()
+        crate::host::app_timeline::global()
+            .lock()
+            .unwrap()
+            .events()
+            .iter()
             .filter(|event| event.app_id == "plexi.host.panes" && event.pane_id == pane_id)
-            .map(|event| event.payload.clone().unwrap()).collect()
+            .map(|event| event.payload.clone().unwrap())
+            .collect()
     }
 
     #[test]
@@ -8675,25 +8725,52 @@ mod pane_lifecycle_events {
                 "type": "set_agent_state", "pane_id": pane_id,
                 "state": "idle", "agent": "claude-code", "session_id": "session-a",
                 "event": event
-            })).expect("hook provenance must be accepted on the wire");
+            }))
+            .expect("hook provenance must be accepted on the wire");
             h.inject_ipc(request);
             h.hidden_frame();
         }
         let events = records(pane_id);
-        let facts: Vec<_> = events.iter().filter(|event| matches!(event["kind"].as_str(), Some("turn_finished" | "turn_failed" | "session_ended"))).collect();
-        assert_eq!(facts.len(), 3, "each provider terminal fact must appear once: {events:?}");
-        assert_eq!(events.iter().filter(|event| event["kind"] == "agent_idle").count(), 1,
-            "only the normal Stop report announces an idle prompt");
+        let facts: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event["kind"].as_str(),
+                    Some("turn_finished" | "turn_failed" | "session_ended")
+                )
+            })
+            .collect();
+        assert_eq!(
+            facts.len(),
+            3,
+            "each provider terminal fact must appear once: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["kind"] == "agent_idle")
+                .count(),
+            1,
+            "only the normal Stop report announces an idle prompt"
+        );
         for (fact, (kind, raw)) in facts.iter().zip([
-            ("turn_finished", "Stop"), ("turn_failed", "StopFailure"), ("session_ended", "SessionEnd")
+            ("turn_finished", "Stop"),
+            ("turn_failed", "StopFailure"),
+            ("session_ended", "SessionEnd"),
         ]) {
             assert_eq!(fact["kind"], kind);
             assert_eq!(fact["provenance"]["raw_event"], raw);
             assert_eq!(fact["provenance"]["session_id"], "session-a");
             assert_eq!(fact["provenance"]["source"], "hook");
-            assert!(fact.get("exit_status").is_none(), "a hook is not an OS exit");
+            assert!(
+                fact.get("exit_status").is_none(),
+                "a hook is not an OS exit"
+            );
         }
-        assert_eq!(h.app.windows[0].panes[&pane_id].agent().unwrap().state, crate::protocol::AgentState::Idle);
+        assert_eq!(
+            h.app.windows[0].panes[&pane_id].agent().unwrap().state,
+            crate::protocol::AgentState::Idle
+        );
     }
 
     #[test]
@@ -8704,8 +8781,12 @@ mod pane_lifecycle_events {
         for (n, bytes) in [vec![65, 255], vec![66]].into_iter().enumerate() {
             let response = temp_response(tmp.path(), &format!("slot-{n}"));
             h.inject_ipc(crate::protocol::AppRequest::SlotWrite {
-                pane_id, slot_name: "status".into(), content: bytes,
-                append: n != 0, replace: false, response_file: response.clone(),
+                pane_id,
+                slot_name: "status".into(),
+                content: bytes,
+                append: n != 0,
+                replace: false,
+                response_file: response.clone(),
             });
             h.hidden_frame();
             assert_eq!(read_json_response(&response)["ok"], true);
@@ -8713,7 +8794,10 @@ mod pane_lifecycle_events {
         h.hidden_frame();
         let events = records(pane_id);
         assert_eq!(events.iter().filter(|e| e["kind"] == "spawned").count(), 1);
-        let slots: Vec<_> = events.iter().filter(|e| e["kind"] == "slot_changed").collect();
+        let slots: Vec<_> = events
+            .iter()
+            .filter(|e| e["kind"] == "slot_changed")
+            .collect();
         assert_eq!(slots.len(), 2);
         assert_eq!(slots[0]["value"], serde_json::json!([65, 255]));
         assert_eq!(slots[1]["value"], serde_json::json!([65, 255, 66]));
@@ -8723,17 +8807,33 @@ mod pane_lifecycle_events {
     fn pane_lifecycle_blocking_reasons_and_legacy_reports_are_not_guessed() {
         let mut h = HostHarness::new();
         let pane_id = h.add_test_pane();
-        for reason in [Some("permission-prompt"), Some("usage-limit"), Some("boot-failure"), None] {
-            h.inject_ipc(serde_json::from_value(serde_json::json!({
-                "type": "set_agent_state", "pane_id": pane_id, "state": "blocked",
-                "agent": "legacy-agent", "blocked_reason": reason
-            })).unwrap());
+        for reason in [
+            Some("permission-prompt"),
+            Some("usage-limit"),
+            Some("boot-failure"),
+            None,
+        ] {
+            h.inject_ipc(
+                serde_json::from_value(serde_json::json!({
+                    "type": "set_agent_state", "pane_id": pane_id, "state": "blocked",
+                    "agent": "legacy-agent", "blocked_reason": reason
+                }))
+                .unwrap(),
+            );
             h.hidden_frame();
         }
         let events = records(pane_id);
-        let blocked: Vec<_> = events.iter().filter(|e| e["kind"] == "agent_blocked").collect();
+        let blocked: Vec<_> = events
+            .iter()
+            .filter(|e| e["kind"] == "agent_blocked")
+            .collect();
         assert_eq!(blocked.len(), 4);
-        for (fact, reason) in blocked.iter().zip(["permission-prompt", "usage-limit", "boot-failure", "unknown"]) {
+        for (fact, reason) in blocked.iter().zip([
+            "permission-prompt",
+            "usage-limit",
+            "boot-failure",
+            "unknown",
+        ]) {
             assert_eq!(fact["reason"], reason);
             assert_eq!(fact["provenance"]["source"], "legacy_report");
             assert!(fact["provenance"]["raw_event"].is_null());
@@ -8745,14 +8845,34 @@ mod pane_lifecycle_events {
     fn pane_lifecycle_exit_unknown_survives_ephemeral_close_without_duplicate() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        h.app.windows[0].panes.get_mut(&pane_id).unwrap().as_terminal_mut().unwrap().ephemeral = true;
-        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit)).unwrap();
-        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Exit)).unwrap();
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .unwrap()
+            .as_terminal_mut()
+            .unwrap()
+            .ephemeral = true;
+        h.app
+            .pty_event_tx
+            .send((pane_id, egui_term::PtyEvent::Exit))
+            .unwrap();
+        h.app
+            .pty_event_tx
+            .send((pane_id, egui_term::PtyEvent::Exit))
+            .unwrap();
         h.hidden_frame();
-        assert!(!h.app.windows.iter().any(|win| win.panes.contains_key(&pane_id)));
+        assert!(!h
+            .app
+            .windows
+            .iter()
+            .any(|win| win.panes.contains_key(&pane_id)));
         let events = records(pane_id);
         let exits: Vec<_> = events.iter().filter(|e| e["kind"] == "exited").collect();
-        assert_eq!(exits.len(), 1, "exit must be published before removal, once");
+        assert_eq!(
+            exits.len(),
+            1,
+            "exit must be published before removal, once"
+        );
         assert_eq!(exits[0]["status"], "unknown");
     }
 
@@ -8764,21 +8884,33 @@ mod pane_lifecycle_events {
             let dir = tempfile::tempdir().unwrap();
             let reply = temp_response(dir.path(), "failed-boot");
             let now = std::time::Instant::now();
-            h.app.pending_agent_boots.push(crate::app::pane_wait::PendingAgentBoot {
-                pane_id, agent_cmd: "test-agent".into(), response_file: reply.clone(),
-                requested_at: now, expires_at: now + std::time::Duration::from_secs(60),
-            });
-            h.inject_ipc(serde_json::from_value(serde_json::json!({
-                "type": "set_agent_state", "pane_id": pane_id, "state": "idle",
-                "agent": "test-agent", "event": event
-            })).unwrap());
+            h.app
+                .pending_agent_boots
+                .push(crate::app::pane_wait::PendingAgentBoot {
+                    pane_id,
+                    agent_cmd: "test-agent".into(),
+                    response_file: reply.clone(),
+                    requested_at: now,
+                    expires_at: now + std::time::Duration::from_secs(60),
+                });
+            h.inject_ipc(
+                serde_json::from_value(serde_json::json!({
+                    "type": "set_agent_state", "pane_id": pane_id, "state": "idle",
+                    "agent": "test-agent", "event": event
+                }))
+                .unwrap(),
+            );
             h.hidden_frame();
             let response = read_json_response(&reply);
-            assert_eq!(response["ok"], false, "terminal provider fact must fail boot: {response}");
+            assert_eq!(
+                response["ok"], false,
+                "terminal provider fact must fail boot: {response}"
+            );
             let events = records(pane_id);
             assert!(!events.iter().any(|e| e["kind"] == "agent_booted"));
-            assert!(events.iter().any(|e| e["kind"] == "agent_blocked" && e["reason"] == "boot-failure"));
+            assert!(events
+                .iter()
+                .any(|e| e["kind"] == "agent_blocked" && e["reason"] == "boot-failure"));
         }
     }
-
 }

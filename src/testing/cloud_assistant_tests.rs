@@ -48,7 +48,11 @@ struct ScriptedChessModel {
 fn revision_from(messages: &str) -> Option<i64> {
     let at = messages.rfind("\"revision_after\":")?;
     let rest = &messages[at + "\"revision_after\":".len()..];
-    let digits: String = rest.trim_start().chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     digits.parse().ok()
 }
 
@@ -59,7 +63,11 @@ impl AiBroker for ScriptedChessModel {
         _on_delta: &mut dyn FnMut(TurnDelta<'_>),
     ) -> AiBrokerResponse {
         let agent = request.app_id.clone();
-        let last = request.messages.last().map(|m| m.content.clone()).unwrap_or_default();
+        let last = request
+            .messages
+            .last()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
         let Some(dispatcher) = request.tool_dispatcher.clone() else {
             return AiBrokerResponse::err("no tool dispatcher".to_string());
         };
@@ -187,9 +195,7 @@ fn committed_events(op: &str) -> usize {
     timeline
         .events()
         .iter()
-        .filter(|r| {
-            r.event == "chess.move_committed" && r.caused_by.as_deref() == Some(op)
-        })
+        .filter(|r| r.event == "chess.move_committed" && r.caused_by.as_deref() == Some(op))
         .count()
 }
 
@@ -212,7 +218,9 @@ fn chess_tool_path_commits_publishes_and_rejects_bad_mutations() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut agents = AgentHost::new_for_test(
         crate::host::app_timeline::global(),
-        Arc::new(ScriptedChessModel { log: Arc::clone(&log) }),
+        Arc::new(ScriptedChessModel {
+            log: Arc::clone(&log),
+        }),
         h.workspace_root(),
     );
     agents.grant_store.record(subscription_grant(BLACK_ID));
@@ -231,13 +239,19 @@ fn chess_tool_path_commits_publishes_and_rejects_bad_mutations() {
 
     let pane = h.launch_repo_app(
         "apps/chess",
-        &[format!("--white={WHITE}"), format!("--black=agent:{BLACK_ID}")],
+        &[
+            format!("--white={WHITE}"),
+            format!("--black=agent:{BLACK_ID}"),
+        ],
     );
 
     // Discovery through the real tool path: revision 0, seats as launched.
     let state = call_tool(&mut h, None, "chess.state", serde_json::json!({}));
     assert_eq!(state["output"]["revision"], 0, "{state}");
-    assert_eq!(state["output"]["seats"]["black"], format!("agent:{BLACK_ID}"));
+    assert_eq!(
+        state["output"]["seats"]["black"],
+        format!("agent:{BLACK_ID}")
+    );
 
     // An unseated caller (a pane, identified by the host) is refused, and a
     // forged identity in the input does not help.
@@ -246,10 +260,21 @@ fn chess_tool_path_commits_publishes_and_rejects_bad_mutations() {
     forged["caller_id"] = serde_json::json!(WHITE);
     let refused = call_tool(&mut h, Some(intruder), "chess.play", forged);
     let err = refused["error"].as_str().unwrap_or_default();
-    assert!(err.contains("unauthorized"), "pane caller must be refused: {refused}");
-    let missing = call_tool(&mut h, Some(9_999_999), "chess.play", play(0, "ghost", "e2e4"));
     assert!(
-        missing["error"].as_str().unwrap_or_default().contains("not found"),
+        err.contains("unauthorized"),
+        "pane caller must be refused: {refused}"
+    );
+    let missing = call_tool(
+        &mut h,
+        Some(9_999_999),
+        "chess.play",
+        play(0, "ghost", "e2e4"),
+    );
+    assert!(
+        missing["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not found"),
         "an unknown caller pane is refused, not downgraded to user: {missing}"
     );
 
@@ -259,19 +284,36 @@ fn chess_tool_path_commits_publishes_and_rejects_bad_mutations() {
     assert_eq!(white["output"]["revision_after"], 1, "{white}");
     assert_eq!(white["output"]["actor"], "user");
     let event = h
-        .wait_for_app_event("chess.move_committed", Some("user-op-1"), Duration::from_secs(10))
+        .wait_for_app_event(
+            "chess.move_committed",
+            Some("user-op-1"),
+            Duration::from_secs(10),
+        )
         .expect("move event recorded on the bus");
     assert_eq!(event.app_id, "chess");
     assert_eq!(event.resource_id, "game-1");
     assert_eq!(event.revision_after, "1");
-    assert_eq!(event.owner_context_id, ctx_id, "event is scoped to the app's context");
+    assert_eq!(
+        event.owner_context_id, ctx_id,
+        "event is scoped to the app's context"
+    );
 
     // Black's real agent loop sees the event and answers through the tool.
     let started = Instant::now();
     loop {
         h.run_frames(1);
-        let done = log.lock().unwrap().iter().filter(|r| r.agent.ends_with(BLACK_ID)).count() >= 3
-            && log.lock().unwrap().iter().any(|r| r.agent.ends_with(KIBITZER_ID));
+        let done = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.agent.ends_with(BLACK_ID))
+            .count()
+            >= 3
+            && log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.agent.ends_with(KIBITZER_ID));
         if done {
             break;
         }
@@ -283,18 +325,30 @@ fn chess_tool_path_commits_publishes_and_rejects_bad_mutations() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let calls = log.lock().unwrap().clone();
-    let black: Vec<&Recorded> = calls.iter().filter(|r| r.agent.ends_with(BLACK_ID)).collect();
+    let black: Vec<&Recorded> = calls
+        .iter()
+        .filter(|r| r.agent.ends_with(BLACK_ID))
+        .collect();
     let committed = black[0].output.as_ref().expect("black's move committed");
     assert_eq!(committed["revision_after"], 2, "{black:?}");
     assert_eq!(committed["actor"], format!("agent:{BLACK_ID}"));
-    let dup = black[1].output.as_ref().expect("duplicate returns a receipt");
+    let dup = black[1]
+        .output
+        .as_ref()
+        .expect("duplicate returns a receipt");
     assert_eq!(dup["duplicate"], true);
     assert_eq!(dup["revision_after"], 2);
     let again = black[2].error.as_deref().unwrap_or_default();
-    assert!(again.contains("wrong_side"), "a second black move is refused: {again}");
+    assert!(
+        again.contains("wrong_side"),
+        "a second black move is refused: {again}"
+    );
     for kib in calls.iter().filter(|r| r.agent.ends_with(KIBITZER_ID)) {
         let e = kib.error.as_deref().unwrap_or_default();
-        assert!(e.contains("tool_not_found"), "broker withholds chess.play: {e}");
+        assert!(
+            e.contains("tool_not_found"),
+            "broker withholds chess.play: {e}"
+        );
         assert_eq!(kib.tool, "chess.play");
         let _ = &kib.input;
     }
@@ -302,7 +356,10 @@ fn chess_tool_path_commits_publishes_and_rejects_bad_mutations() {
     // Stale and duplicate user calls after the agent's move.
     let stale = call_tool(&mut h, None, "chess.play", play(1, "user-op-2", "g1f3"));
     assert!(
-        stale["error"].as_str().unwrap_or_default().contains("stale_revision"),
+        stale["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stale_revision"),
         "{stale}"
     );
     let dup_user = call_tool(&mut h, None, "chess.play", play(0, "user-op-1", "e2e4"));

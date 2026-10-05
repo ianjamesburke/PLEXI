@@ -234,10 +234,7 @@ mod tests {
         let path = dir.path().join("w-response.json");
         let path_str = path.to_str().unwrap();
         assert!(write_response(path_str, b"{\"ok\":true}"));
-        assert_eq!(
-            std::fs::read(&path).expect("read back"),
-            b"{\"ok\":true}"
-        );
+        assert_eq!(std::fs::read(&path).expect("read back"), b"{\"ok\":true}");
         assert!(
             !Path::new(&format!("{path_str}.tmp")).exists(),
             "temp file must be renamed away"

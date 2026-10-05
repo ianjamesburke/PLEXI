@@ -22,7 +22,8 @@ fn update_check_due(last_update_check: std::time::Instant, now: std::time::Insta
 pub(crate) const WORKSPACE_SAVE_DEBOUNCE_MS: u64 = 1_000;
 
 fn workspace_save_due(last: std::time::Instant, now: std::time::Instant) -> bool {
-    now.saturating_duration_since(last) >= std::time::Duration::from_millis(WORKSPACE_SAVE_DEBOUNCE_MS)
+    now.saturating_duration_since(last)
+        >= std::time::Duration::from_millis(WORKSPACE_SAVE_DEBOUNCE_MS)
 }
 
 impl PlexiApp {
@@ -163,8 +164,13 @@ impl PlexiApp {
             log::info!("workspace: synchronous save (shutdown/update-quit)");
             log::info!("ui: restarting for update");
             let result = crate::distribution::installed()
-                .and_then(|r| r.ok_or_else(|| "no managed installation available for restart".to_string()))
-                .and_then(|r| plexi_distribution::transaction::schedule_restart(&r, std::process::id()).map_err(|e| e.to_string()));
+                .and_then(|r| {
+                    r.ok_or_else(|| "no managed installation available for restart".to_string())
+                })
+                .and_then(|r| {
+                    plexi_distribution::transaction::schedule_restart(&r, std::process::id())
+                        .map_err(|e| e.to_string())
+                });
             match result {
                 Ok(()) => {
                     self.bank_final_focus_segment();

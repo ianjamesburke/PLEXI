@@ -448,7 +448,11 @@ fn input_draft_survives_queue_navigation() {
     for notify_id in ["input-first", "message-second"] {
         h.app.pending_notifications.push(PendingNotification {
             notify_id: notify_id.into(),
-            kind: if notify_id == "input-first" { crate::protocol::NotifyKind::Input } else { crate::protocol::NotifyKind::Message },
+            kind: if notify_id == "input-first" {
+                crate::protocol::NotifyKind::Input
+            } else {
+                crate::protocol::NotifyKind::Message
+            },
             input_prompt: Some("Reply".into()),
             scope: crate::protocol::NotifyScope::Global,
             ..Default::default()
@@ -907,7 +911,10 @@ fn enqueue_notification_queues_when_enabled() {
 
 #[test]
 fn native_wasm_notification_contract_accepts_message_and_rejects_icon() {
-    assert_eq!(crate::app::dispatch::native_wasm_notification_contract_error(None), None);
+    assert_eq!(
+        crate::app::dispatch::native_wasm_notification_contract_error(None),
+        None
+    );
     assert_eq!(
         crate::app::dispatch::native_wasm_notification_contract_error(Some("check")),
         Some("native WASM notifications support title and body only; icon is unsupported")
@@ -919,14 +926,24 @@ fn enqueue_notification_rejects_when_live_queue_is_full() {
     let mut h = HostHarness::new();
     let limit = crate::app::notifications::MAX_PENDING_NOTIFICATIONS;
     h.app.pending_notifications = (0..limit)
-        .map(|index| PendingNotification { notify_id: format!("already-queued-{index}"), ..Default::default() })
+        .map(|index| PendingNotification {
+            notify_id: format!("already-queued-{index}"),
+            ..Default::default()
+        })
         .collect();
     assert!(!h.app.enqueue_notification(
         crate::app::notifications::NotifySource::App,
-        PendingNotification { notify_id: "rejected-at-capacity".into(), ..Default::default() },
+        PendingNotification {
+            notify_id: "rejected-at-capacity".into(),
+            ..Default::default()
+        },
     ));
     assert_eq!(h.app.pending_notifications.len(), limit);
-    assert!(h.app.pending_notifications.iter().all(|n| n.notify_id != "rejected-at-capacity"));
+    assert!(h
+        .app
+        .pending_notifications
+        .iter()
+        .all(|n| n.notify_id != "rejected-at-capacity"));
 }
 
 #[test]
@@ -935,12 +952,19 @@ fn notification_removal_prunes_image_cache() {
     for index in 0..8 {
         let notify_id = format!("attachment-{index}");
         h.app.pending_notifications.push(PendingNotification {
-            notify_id: notify_id.clone(), dismiss_owner_pane_id: 41, ..Default::default()
+            notify_id: notify_id.clone(),
+            dismiss_owner_pane_id: 41,
+            ..Default::default()
         });
-        h.app.notification_images.insert(notify_id.clone(), crate::app::NotificationImageState::Placeholder {
-            reason: "test attachment".into(),
-        });
-        h.app.dismiss_notification_from_sender(&notify_id, 41).expect("owner may dismiss its own notification");
+        h.app.notification_images.insert(
+            notify_id.clone(),
+            crate::app::NotificationImageState::Placeholder {
+                reason: "test attachment".into(),
+            },
+        );
+        h.app
+            .dismiss_notification_from_sender(&notify_id, 41)
+            .expect("owner may dismiss its own notification");
         assert!(h.app.notification_images.is_empty());
     }
 }
@@ -1100,8 +1124,14 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     focused.app.notifications_focus_mode = true;
     focused.inject_ipc(cli_notify_request(None, None, None, None));
     focused.run_frames(2);
-    assert!(!focused.app.show_notification_modal, "focus mode prevents interrupt");
-    assert!(focused.app.notification_cue_playback.is_none(), "focus mode mutes cue");
+    assert!(
+        !focused.app.show_notification_modal,
+        "focus mode prevents interrupt"
+    );
+    assert!(
+        focused.app.notification_cue_playback.is_none(),
+        "focus mode mutes cue"
+    );
 }
 
 /// 0566: the session is held on the app — a local binding would drop at end of
@@ -1187,7 +1217,8 @@ fn spawn_real_terminal_pane(
     context_id: u64,
 ) -> Option<(crate::spatial::tiling::PaneId, u32, u64, u64)> {
     let before = h.app.windows.len();
-    h.app.create_page_at(grid_x, grid_y, context_id, None, false, None);
+    h.app
+        .create_page_at(grid_x, grid_y, context_id, None, false, None);
     if h.app.windows.len() == before {
         return None; // no PTY in this environment
     }
@@ -1243,10 +1274,7 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
     );
 
     let notification = &h.app.pending_notifications[0];
-    assert_eq!(
-        notification.scope,
-        crate::protocol::NotifyScope::Context
-    );
+    assert_eq!(notification.scope, crate::protocol::NotifyScope::Context);
     assert_eq!(notification.source_window_id, 0);
     assert_eq!(notification.source_context_id, context_id);
 }
@@ -1725,9 +1753,7 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            panic!(
-                "live descendant notify did not arrive within 10s — check `nc -U` availability"
-            );
+            panic!("live descendant notify did not arrive within 10s — check `nc -U` availability");
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }

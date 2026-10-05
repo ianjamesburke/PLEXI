@@ -96,7 +96,10 @@ mod tests {
             model: "claude-fable-5".to_string(),
         };
         let dbg = format!("{backend:?}");
-        assert!(!dbg.contains("sk-secret"), "api key must be redacted: {dbg}");
+        assert!(
+            !dbg.contains("sk-secret"),
+            "api key must be redacted: {dbg}"
+        );
         assert!(dbg.contains("[redacted]"));
     }
 }

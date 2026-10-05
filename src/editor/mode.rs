@@ -18,16 +18,12 @@ pub enum EditorMode {
     /// render styled while the active block reveals raw source. `false` is
     /// plain source mode. The presentation flag never changes document,
     /// selection, history, or IME behavior.
-    Markdown {
-        live_preview: bool,
-    },
+    Markdown { live_preview: bool },
     /// Code presentation: line-number gutter, current-line highlight, and
     /// syntax-highlight spans for `language` (a language identifier such as a
     /// file extension token — detection from file metadata is the caller's
     /// job, never the core's). Unknown languages fall back to plain spans.
-    Code {
-        language: String,
-    },
+    Code { language: String },
 }
 
 impl EditorMode {
@@ -67,7 +63,9 @@ impl EditorMode {
         match self {
             EditorMode::PlainText => "plain".to_string(),
             EditorMode::Markdown { live_preview: true } => "markdown:live-preview".to_string(),
-            EditorMode::Markdown { live_preview: false } => "markdown:source".to_string(),
+            EditorMode::Markdown {
+                live_preview: false,
+            } => "markdown:source".to_string(),
             EditorMode::Code { language } => format!("code:{language}"),
         }
     }

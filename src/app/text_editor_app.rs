@@ -762,7 +762,8 @@ impl TextEditorApp {
 /// ([`is_text_editable_ext`]).
 const CODE_EXTENSIONS: &[&str] = &[
     "rs", "py", "js", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml", "sh", "bash", "zsh", "c",
-    "h", "cpp", "hpp", "cc", "go", "rb", "java", "html", "css", "xml", "lua", "swift", "sql", "php",
+    "h", "cpp", "hpp", "cc", "go", "rb", "java", "html", "css", "xml", "lua", "swift", "sql",
+    "php",
 ];
 
 /// Plain-text/prose extensions the editor opens in Markdown or plain mode, in
@@ -1046,9 +1047,7 @@ impl App for TextEditorApp {
         // Link commands (Markdown only). Ctrl-based: the host reserves most
         // Cmd single-letter combos (see src/host/keys.rs header).
         if self.mode.is_markdown() {
-            let ctrl = input
-                .modifiers()
-                .matches_logically(egui::Modifiers::CTRL);
+            let ctrl = input.modifiers().matches_logically(egui::Modifiers::CTRL);
             let ctrl_shift = input
                 .modifiers()
                 .matches_logically(egui::Modifiers::CTRL | egui::Modifiers::SHIFT);
@@ -1299,9 +1298,8 @@ impl App for TextEditorApp {
         };
         let revision_before = self.doc.revision();
         // Same 4px horizontal text inset the old TextEdit margin provided.
-        let mut editor_ui = ui.new_child(
-            egui::UiBuilder::new().max_rect(editor_rect.shrink2(egui::vec2(4.0, 0.0))),
-        );
+        let mut editor_ui = ui
+            .new_child(egui::UiBuilder::new().max_rect(editor_rect.shrink2(egui::vec2(4.0, 0.0))));
         editor_ui.visuals_mut().override_text_color = Some(colors.text_primary);
         editor_ui.visuals_mut().selection.stroke.color = colors.accent;
         let mut widget = EditorWidget::new(&mut self.doc, &mut self.view)

@@ -6,10 +6,10 @@
 //! subprocess path when the CPython WASM bundle is unavailable.
 
 use std::collections::{HashMap, VecDeque};
-#[cfg(test)]
-use std::process::Command;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+#[cfg(test)]
+use std::process::Command;
 #[cfg(test)]
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -79,8 +79,7 @@ impl Default for InputState {
     }
 }
 
-static NEXT_LOW_WATER_IDENTITY: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
+static NEXT_LOW_WATER_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn next_low_water_identity() -> Option<std::num::NonZeroU64> {
     let raw = NEXT_LOW_WATER_IDENTITY
@@ -670,11 +669,7 @@ impl PythonLaunchConfig {
     }
 }
 
-fn python_init_payload(
-    config: &PythonLaunchConfig,
-    state: Value,
-    size: (f32, f32),
-) -> Value {
+fn python_init_payload(config: &PythonLaunchConfig, state: Value, size: (f32, f32)) -> Value {
     // Same wire shape the live pane sends: state is always scope-keyed, never
     // a flat `state` key. `state` here seeds only the app's default scope.
     let default_scope = config
@@ -736,14 +731,18 @@ impl WasmPythonRuntime {
                 WasmPythonError::RuntimeStart("CPython bundle has no parent".to_string())
             })?
             .join("Lib");
-        let sdk = if let Some(resources) = crate::distribution::resources()
-            .map_err(WasmPythonError::RuntimeStart)? {
+        let sdk = if let Some(resources) =
+            crate::distribution::resources().map_err(WasmPythonError::RuntimeStart)?
+        {
             resources.join("sdk")
         } else {
             unbundled_python_sdk()
         };
         if !sdk.join("plexi_sdk/_v3_process.py").is_file() {
-            return Err(WasmPythonError::RuntimeStart(format!("Python SDK missing at {}", sdk.display())));
+            return Err(WasmPythonError::RuntimeStart(format!(
+                "Python SDK missing at {}",
+                sdk.display()
+            )));
         }
         log::info!("python_compat: using SDK at {}", sdk.display());
         let stdin = AppendableStdin::default();
@@ -1454,7 +1453,10 @@ fn decode_loop(
                     // beat its increment would underflow the unsigned counter
                     // into "always busy".
                     queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    if tx.send(DecodedOutput::DecodeError(error.to_string())).is_err() {
+                    if tx
+                        .send(DecodedOutput::DecodeError(error.to_string()))
+                        .is_err()
+                    {
                         queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                     }
                     produced = true;
@@ -2004,9 +2006,7 @@ fn read_python_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, WasmPythonErr
                     path: path.to_path_buf(),
                     source,
                 }),
-                Err(metadata_error)
-                    if metadata_error.kind() == std::io::ErrorKind::NotFound =>
-                {
+                Err(metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound => {
                     Ok(None)
                 }
                 Err(source) => Err(WasmPythonError::ReadState {
@@ -2705,10 +2705,7 @@ impl LivePythonPane {
             }
         } else if self.mcp_backpressured {
             self.mcp_backpressured = false;
-            log::info!(
-                "app::{}: MCP inbound backpressure released",
-                self.app_id
-            );
+            log::info!("app::{}: MCP inbound backpressure released", self.app_id);
         }
     }
 
@@ -2739,9 +2736,9 @@ impl LivePythonPane {
                             "app::{}: file pick {request_id}: no picked path could be granted; cancelling",
                             self.app_id
                         );
-                        self.queue_outbound_event(
-                            crate::protocol::PlexiEvent::FilePickCancelled { request_id },
-                        );
+                        self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                            request_id,
+                        });
                     } else {
                         let paths = granted
                             .iter()
@@ -2755,9 +2752,9 @@ impl LivePythonPane {
                 }
                 crate::host::services::FilePickOutcome::Cancelled => {
                     log::info!("app::{}: file pick {request_id} cancelled", self.app_id);
-                    self.queue_outbound_event(
-                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
-                    );
+                    self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                        request_id,
+                    });
                 }
             }
         }
@@ -2942,9 +2939,7 @@ impl LivePythonPane {
                 }
             }
             Some("close") | Some("close_self") => self.wants_close = true,
-            Some("save_app_state") => {
-                self.save_state(message.get("scope"), message.get("payload"))
-            }
+            Some("save_app_state") => self.save_state(message.get("scope"), message.get("payload")),
             Some("file_read") => self.handle_file_read(&message),
             Some("file_write") => self.handle_file_write(&message),
             Some("open_file_picker") => self.handle_open_file_picker(&message),
@@ -2963,9 +2958,8 @@ impl LivePythonPane {
                     .unwrap_or_default()
             ),
             Some("status_summary") => {}
-            _ => {
-                match app_command_from_python_message(&message) {
-                    Ok(Some(command)) => {
+            _ => match app_command_from_python_message(&message) {
+                Ok(Some(command)) => {
                     if let Some(capability) = required_capability_for_python_app_command(&command) {
                         if !self.has_capability(capability) {
                             log::info!(
@@ -2977,19 +2971,18 @@ impl LivePythonPane {
                         }
                     }
                     self.pending_commands.push(command);
-                    }
-                    Ok(None) => {
+                }
+                Ok(None) => {
                     log::warn!(
                         "app::{}: unhandled CPython WASM message: {message}",
                         self.app_id
                     );
-                    }
-                    Err(error) => log::warn!(
-                        "app::{}: rejected CPython WASM message: {error}",
-                        self.app_id
-                    ),
                 }
-            }
+                Err(error) => log::warn!(
+                    "app::{}: rejected CPython WASM message: {error}",
+                    self.app_id
+                ),
+            },
         }
     }
 
@@ -3061,9 +3054,9 @@ impl LivePythonPane {
                         "app::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
                         self.app_id
                     );
-                    self.queue_outbound_event(
-                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
-                    );
+                    self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                        request_id,
+                    });
                     return;
                 }
             },
@@ -3337,7 +3330,10 @@ impl LivePythonPane {
             return;
         }
         if self.mcp_connections.contains_key(&server_id) {
-            fail(self, format!("already connected to MCP server '{server_id}'"));
+            fail(
+                self,
+                format!("already connected to MCP server '{server_id}'"),
+            );
             return;
         }
         if self.mcp_registry.is_none() {
@@ -3371,8 +3367,7 @@ impl LivePythonPane {
             if let Some((context, viewport)) =
                 repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             {
-                context
-                    .request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
             }
         });
         match crate::host::mcp_client::McpConnection::spawn(
@@ -3422,7 +3417,10 @@ impl LivePythonPane {
             }
         };
         let Some(connection) = self.mcp_connections.get_mut(&server_id) else {
-            log::warn!("app::{}: mcp_send to unopened server {server_id}", self.app_id);
+            log::warn!(
+                "app::{}: mcp_send to unopened server {server_id}",
+                self.app_id
+            );
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
                 "server_id": server_id,
@@ -3431,7 +3429,10 @@ impl LivePythonPane {
             return;
         };
         if let Err(e) = connection.send(&payload) {
-            log::warn!("app::{}: mcp_send failed server={server_id}: {e}", self.app_id);
+            log::warn!(
+                "app::{}: mcp_send failed server={server_id}: {e}",
+                self.app_id
+            );
             self.mcp_connections.remove(&server_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
@@ -3529,7 +3530,10 @@ impl LivePythonPane {
         self.initialized = true;
         self.viewport_size = Some(size);
         log::info!(
-            "app::{}: sending Python init size={}x{}", self.app_id, size.0, size.1
+            "app::{}: sending Python init size={}x{}",
+            self.app_id,
+            size.0,
+            size.1
         );
         if let Err(error) = self.runtime.send(&json!({
             "type": "init", "app_id": self.app_id,
@@ -3875,10 +3879,7 @@ impl LivePythonPane {
         self.send_key_events(python_text_input_escape_events(input.events()))
     }
 
-    fn send_key_events(
-        &mut self,
-        events: Vec<Value>,
-    ) -> crate::app::app_trait::KeyDisposition {
+    fn send_key_events(&mut self, events: Vec<Value>) -> crate::app::app_trait::KeyDisposition {
         if events.is_empty() {
             crate::app::app_trait::KeyDisposition::Passthrough
         } else {
@@ -3988,7 +3989,8 @@ impl LivePythonPane {
                         Ok(()) => self.drain_runtime(),
                         Err(error) => {
                             log::error!(
-                                "app::{}: background render send failed: {error}", self.app_id
+                                "app::{}: background render send failed: {error}",
+                                self.app_id
                             );
                             self.error = Some(error.to_string());
                         }
@@ -4021,7 +4023,8 @@ impl LivePythonPane {
                     || self.tree.is_none()
                     || !self.timers.is_empty()
                     || !self.pending_timer_events.is_empty()
-                    || self.frame_scheduler
+                    || self
+                        .frame_scheduler
                         .next_repaint_deadline(std::time::Instant::now())
                         .is_some()))
     }
@@ -4397,7 +4400,9 @@ fn is_exception_record_line(line: &str) -> bool {
     }
     let head = line.split(':').next().unwrap_or_default();
     let mut chars = head.chars();
-    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
@@ -4735,7 +4740,9 @@ fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
     capabilities.iter().any(|item| item == capability)
 }
 
-fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app::app_trait::AppCommand>, String> {
+fn app_command_from_python_message(
+    message: &Value,
+) -> Result<Option<crate::app::app_trait::AppCommand>, String> {
     use crate::app::app_trait::AppCommand;
     let text = |key: &str| {
         message
@@ -4748,10 +4755,26 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
         return Ok(None);
     };
     if message_type == "show_notification" {
-        const UNSUPPORTED: &[&str] = &["kind", "options", "input_prompt", "required", "scope", "image_inline", "image_pipe_id", "timeout_secs", "on_dismiss"];
-        let rich_fields: Vec<&str> = UNSUPPORTED.iter().copied().filter(|field| {
-            message.as_object().is_some_and(|object| object.contains_key(*field))
-        }).collect();
+        const UNSUPPORTED: &[&str] = &[
+            "kind",
+            "options",
+            "input_prompt",
+            "required",
+            "scope",
+            "image_inline",
+            "image_pipe_id",
+            "timeout_secs",
+            "on_dismiss",
+        ];
+        let rich_fields: Vec<&str> = UNSUPPORTED
+            .iter()
+            .copied()
+            .filter(|field| {
+                message
+                    .as_object()
+                    .is_some_and(|object| object.contains_key(*field))
+            })
+            .collect();
         if !rich_fields.is_empty() {
             return Err(format!(
                 "show_notification supports title and body only; unsupported field(s): {}",
@@ -4990,13 +5013,15 @@ fn unbundled_python_sdk() -> PathBuf {
 }
 #[cfg(not(test))]
 fn unbundled_python_sdk() -> PathBuf {
-    std::env::var_os("PLEXI_SDK_PATH").map(PathBuf::from)
+    std::env::var_os("PLEXI_SDK_PATH")
+        .map(PathBuf::from)
         .unwrap_or_else(|| crate::config::config_dir().join("sdk"))
 }
 
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
-    if let Some(resources) = crate::distribution::resources()
-        .map_err(WasmPythonError::RuntimeStart)? {
+    if let Some(resources) =
+        crate::distribution::resources().map_err(WasmPythonError::RuntimeStart)?
+    {
         return resolve_cpython_bundle(resources.join("wasm-bundles"));
     }
     let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
@@ -5326,9 +5351,7 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
                     .get("tools")
                     .and_then(Value::as_array)
                     .ok_or_else(|| {
-                        WasmPythonError::BridgeJson(
-                            "ExposeTools missing array 'tools'".to_string(),
-                        )
+                        WasmPythonError::BridgeJson("ExposeTools missing array 'tools'".to_string())
                     })?
                     .iter()
                     .map(decode_tool_decl)
@@ -5342,7 +5365,10 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
                     .get("output_json")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                error: value.get("error").and_then(Value::as_str).map(str::to_string),
+                error: value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             },
         ))),
         "FileRead" => Ok(PythonBridgeEffect::Host(Effect::FileRead(FileReadEffect {
@@ -6126,10 +6152,8 @@ mod tests {
             workspace_root: workspace_root.to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             // These tests exercise root-scoped addressing (same root -> same
             // file, different root -> different file), which is exactly
             // `StateScope::Context`'s contract — `Global` would ignore the
@@ -6173,9 +6197,7 @@ mod tests {
             Some("spawn.app")
         );
         assert_eq!(
-            required(
-                serde_json::json!({"type": "spawn_pane", "app_id": "x", "layout": "split_h"})
-            ),
+            required(serde_json::json!({"type": "spawn_pane", "app_id": "x", "layout": "split_h"})),
             Some("panes.spawn")
         );
         assert_eq!(
@@ -6203,10 +6225,14 @@ mod tests {
     fn python_bridge_notification_contract_rejects_rich_fields() {
         let supported = app_command_from_python_message(&serde_json::json!({
             "type": "show_notification", "title": "Saved", "body": "Done"
-        })).expect("message-only notification is supported").expect("message decodes");
-        assert!(matches!(supported, crate::app::app_trait::AppCommand::ShowNotification {
+        }))
+        .expect("message-only notification is supported")
+        .expect("message decodes");
+        assert!(
+            matches!(supported, crate::app::app_trait::AppCommand::ShowNotification {
             kind: crate::protocol::NotifyKind::Message, options, image_inline: None, ..
-        } if options.is_empty()));
+        } if options.is_empty())
+        );
         let error = match app_command_from_python_message(&serde_json::json!({
             "type": "show_notification", "title": "Ask", "body": "Continue?",
             "kind": "choice", "options": [{"label": "yes"}]
@@ -6247,21 +6273,16 @@ mod tests {
         let payload = python_init_payload(&config, json!({}), (480.0, 320.0));
 
         assert_eq!(payload["theme"], json!(config.theme));
-        assert!(
-            payload["theme"]
-                .as_object()
-                .is_some_and(|theme| !theme.is_empty())
-        );
+        assert!(payload["theme"]
+            .as_object()
+            .is_some_and(|theme| !theme.is_empty()));
     }
 
     #[test]
     fn theme_event_updates_the_cached_python_relaunch_theme() {
         let workspace = tempdir().expect("workspace");
         let mut config = state_test_config(workspace.path(), "test.theme-relaunch");
-        let colors = std::collections::HashMap::from([(
-            "fg".to_string(),
-            "#123456".to_string(),
-        )]);
+        let colors = std::collections::HashMap::from([("fg".to_string(), "#123456".to_string())]);
 
         cache_python_theme_for_relaunch(
             &mut config,
@@ -6354,7 +6375,9 @@ mod tests {
             json!(["buy milk"])
         );
         assert!(
-            load_python_state(&under_b).expect("load under B").is_empty(),
+            load_python_state(&under_b)
+                .expect("load under B")
+                .is_empty(),
             "a launch rooted elsewhere sees an empty store, not the items"
         );
         assert!(
@@ -6398,8 +6421,7 @@ mod tests {
                 live.display()
             );
             assert_ne!(
-                reachable,
-                live,
+                reachable, live,
                 "{what}: the system still resolves the address the bytes are at — \
                  the defect this test documents no longer reproduces"
             );
@@ -6450,7 +6472,9 @@ mod tests {
                 .and_then(crate::host::pane::Pane::as_app)
                 .expect("the launched pane is an app pane");
             match &pane.runtime {
-                crate::host::pane::AppRuntime::Python(live) => python_state_path_for_config(&live.config),
+                crate::host::pane::AppRuntime::Python(live) => {
+                    python_state_path_for_config(&live.config)
+                }
                 other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
             }
         }
@@ -6537,7 +6561,10 @@ mod tests {
             else {
                 panic!("expected a Python launch spec, got {launch:?}");
             };
-            assert_eq!(recorded_dir, &app_dir, "launch context must name the real app_dir");
+            assert_eq!(
+                recorded_dir, &app_dir,
+                "launch context must name the real app_dir"
+            );
             assert!(args.is_empty());
 
             let colors =
@@ -6575,10 +6602,8 @@ mod tests {
                 "the restored runtime must re-address the exact file the live pane wrote"
             );
             assert!(
-                state_paths.contains(&(
-                    crate::host::state_scope::StateScope::Context,
-                    live_address
-                )),
+                state_paths
+                    .contains(&(crate::host::state_scope::StateScope::Context, live_address)),
                 "restore_app_pane must report the re-addressed state path for watcher registration"
             );
         }
@@ -6727,7 +6752,10 @@ mod tests {
         let chunk = vec![b'a'; STDIN_BUFFER_HARD_CAP_BYTES - 1];
         stdin.push(&chunk).expect("push under the cap");
         let err = stdin.push(&[b'b', b'c']).expect_err("cap breach must fail");
-        assert!(matches!(err, WasmPythonError::StdinBufferFull { .. }), "{err}");
+        assert!(
+            matches!(err, WasmPythonError::StdinBufferFull { .. }),
+            "{err}"
+        );
         assert_eq!(
             stdin.buffered_bytes(),
             STDIN_BUFFER_HARD_CAP_BYTES - 1,
@@ -6742,7 +6770,10 @@ mod tests {
         let mut reader = stdin.clone();
         let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
         assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
-        assert_eq!(stdin.buffered_bytes(), STDIN_BUFFER_HARD_CAP_BYTES - 1 - 4096);
+        assert_eq!(
+            stdin.buffered_bytes(),
+            STDIN_BUFFER_HARD_CAP_BYTES - 1 - 4096
+        );
         stdin
             .push(&vec![b'x'; 4096])
             .expect("freed capacity must accept new bytes");
@@ -7132,11 +7163,7 @@ mod tests {
         // Nothing was armed and nothing may ever fire: the guest is gone, so
         // a wake here would wait on a read that will never happen.
         assert!(matches!(
-            fresh_low_water_arm(
-                &stdin,
-                MCP_STDIN_HIGH_WATER,
-                Arc::new(|_| {}),
-            ),
+            fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::new(|_| {}),),
             LowWaterArm::Closed
         ));
         assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -7149,11 +7176,7 @@ mod tests {
     fn appendable_stdin_rejects_push_after_close() {
         let stdin = AppendableStdin::default();
         assert!(matches!(
-            fresh_low_water_arm(
-                &stdin,
-                MCP_STDIN_HIGH_WATER,
-                Arc::new(|_| {}),
-            ),
+            fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::new(|_| {}),),
             LowWaterArm::BelowThreshold
         ));
 
@@ -7200,11 +7223,7 @@ mod tests {
         // The real interleaving, step by step: the pump's arm observes an
         // open, below-watermark stdin...
         assert!(matches!(
-            fresh_low_water_arm(
-                &stdin,
-                MCP_STDIN_HIGH_WATER,
-                Arc::new(|_| {}),
-            ),
+            fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::new(|_| {}),),
             LowWaterArm::BelowThreshold
         ));
         // ...teardown closes it before the pump's push runs...
@@ -7287,11 +7306,7 @@ mod tests {
         });
 
         // Arm A, then identify the SAME logical arming by its token: no fire.
-        let token_a = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake_a),
-        ) {
+        let token_a = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake_a)) {
             LowWaterArm::Armed { token } => token,
             outcome => panic!("fresh arm must install A, got {outcome:?}"),
         };
@@ -7302,11 +7317,7 @@ mod tests {
         assert_eq!(a_fired.load(std::sync::atomic::Ordering::SeqCst), 0);
 
         // Fresh work supersedes A even though callback identity is irrelevant.
-        let token_b = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake_b),
-        ) {
+        let token_b = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake_b)) {
             LowWaterArm::Superseded { token, superseded } => {
                 assert_eq!(superseded, token_a);
                 token
@@ -7355,26 +7366,21 @@ mod tests {
                 .push(token);
         });
 
-        let token_a = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake),
-        ) {
+        let token_a = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake)) {
             LowWaterArm::Armed { token } => token,
             outcome => panic!("fresh arm must install A, got {outcome:?}"),
         };
-        let token_b = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake),
-        ) {
+        let token_b = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake)) {
             LowWaterArm::Superseded { token, superseded } => {
                 assert_eq!(superseded, token_a);
                 token
             }
             outcome => panic!("fresh B must supersede A, got {outcome:?}"),
         };
-        assert_eq!(*fired.lock().unwrap_or_else(|e| e.into_inner()), vec![token_a]);
+        assert_eq!(
+            *fired.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![token_a]
+        );
 
         stdin.close();
         assert_eq!(
@@ -7388,7 +7394,10 @@ mod tests {
     fn stdin_low_water_rejects_zero_threshold_instead_of_stranding_a_waiter() {
         let stdin = AppendableStdin::default();
         assert!(LowWaterThreshold::new(0).is_none());
-        let state = stdin.state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = stdin
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let InputLifecycle::Open(open) = &state.lifecycle else {
             panic!("new stdin must be open");
         };
@@ -7530,19 +7539,12 @@ mod tests {
             for action in sequence {
                 match action {
                     Action::ArmFresh => {
-                        let outcome = fresh_low_water_arm(
-                            &stdin,
-                            THRESHOLD,
-                            Arc::clone(&shared_wake),
-                        );
+                        let outcome =
+                            fresh_low_water_arm(&stdin, THRESHOLD, Arc::clone(&shared_wake));
                         if !open {
                             assert_eq!(outcome, LowWaterArm::Closed, "{sequence:?}");
                         } else if buffered < THRESHOLD.get() {
-                            assert_eq!(
-                                outcome,
-                                LowWaterArm::BelowThreshold,
-                                "{sequence:?}"
-                            );
+                            assert_eq!(outcome, LowWaterArm::BelowThreshold, "{sequence:?}");
                         } else if let Some(previous) = current {
                             let LowWaterArm::Superseded { token, superseded } = outcome else {
                                 panic!("{sequence:?}: expected supersession, got {outcome:?}");
@@ -7562,8 +7564,8 @@ mod tests {
                     }
                     Action::CheckLatest => {
                         if let Some(token) = latest {
-                            let outcome = stdin
-                                .arm_low_water_wake(LowWaterArmRequest::Existing(token));
+                            let outcome =
+                                stdin.arm_low_water_wake(LowWaterArmRequest::Existing(token));
                             let expected = if !open {
                                 LowWaterArm::Closed
                             } else if current == Some(token) {
@@ -7583,9 +7585,8 @@ mod tests {
                             "{sequence:?}"
                         );
                         assert_eq!(
-                            foreign_stdin.arm_low_water_wake(LowWaterArmRequest::Existing(
-                                foreign_token,
-                            )),
+                            foreign_stdin
+                                .arm_low_water_wake(LowWaterArmRequest::Existing(foreign_token,)),
                             LowWaterArm::StillArmed {
                                 token: foreign_token,
                             },
@@ -7629,9 +7630,15 @@ mod tests {
 
                 let observed = fired.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 for token in &observed {
-                    assert!(accepted.contains(token), "{sequence:?}: unknown token fired");
+                    assert!(
+                        accepted.contains(token),
+                        "{sequence:?}: unknown token fired"
+                    );
                     assert_eq!(
-                        observed.iter().filter(|candidate| *candidate == token).count(),
+                        observed
+                            .iter()
+                            .filter(|candidate| *candidate == token)
+                            .count(),
                         1,
                         "{sequence:?}: token {token:?} resolved more than once"
                     );
@@ -7648,7 +7655,10 @@ mod tests {
             let observed = fired.lock().unwrap_or_else(|e| e.into_inner()).clone();
             for token in accepted {
                 assert_eq!(
-                    observed.iter().filter(|candidate| **candidate == token).count(),
+                    observed
+                        .iter()
+                        .filter(|candidate| **candidate == token)
+                        .count(),
                     1,
                     "{sequence:?}: accepted token {token:?} was stranded or double-resolved"
                 );
@@ -7703,7 +7713,10 @@ mod tests {
             LowWaterArm::Stale { token }
         );
         callback_release.wait();
-        assert!(matches!(read.join().expect("join reader"), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            read.join().expect("join reader"),
+            Poll::Ready(Ok(()))
+        ));
     }
 
     // ── resolve_app_fs_path (stint 0508: workspace jail + picker grants) ──
@@ -7733,8 +7746,7 @@ mod tests {
         let secret = outside.path().join("secret.txt");
         std::fs::write(&secret, "secret").expect("seed");
 
-        let denied =
-            resolve_app_fs_path(workspace.path(), &[], &secret.to_string_lossy(), false);
+        let denied = resolve_app_fs_path(workspace.path(), &[], &secret.to_string_lossy(), false);
         assert!(denied.is_err(), "ungranted absolute path must be rejected");
 
         let workspace_file = workspace.path().join("inside.txt");
@@ -7796,14 +7808,20 @@ mod tests {
             &folder.join("new.txt").to_string_lossy(),
             true,
         );
-        assert!(write.is_ok(), "new file under granted folder writable: {write:?}");
+        assert!(
+            write.is_ok(),
+            "new file under granted folder writable: {write:?}"
+        );
         let denied = resolve_app_fs_path(
             workspace.path(),
             &grants,
             &outside.path().join("evil.txt").to_string_lossy(),
             true,
         );
-        assert!(denied.is_err(), "outside the granted folder must be rejected");
+        assert!(
+            denied.is_err(),
+            "outside the granted folder must be rejected"
+        );
     }
 
     /// A save-as grant targets a file that does not exist yet: the write
@@ -7816,13 +7834,11 @@ mod tests {
         let target = outside.path().join("exported.txt");
         let grants = vec![canonicalize_picked_path(&target).expect("grant")];
 
-        let write =
-            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), true)
-                .expect("save-as target writable before it exists");
+        let write = resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), true)
+            .expect("save-as target writable before it exists");
         std::fs::write(&write, "exported").expect("write");
-        let read =
-            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), false)
-                .expect("granted save-as target readable after write");
+        let read = resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), false)
+            .expect("granted save-as target readable after write");
         assert_eq!(std::fs::read_to_string(read).unwrap(), "exported");
     }
 
@@ -8111,10 +8127,7 @@ mod tests {
     fn pending_traceback_exception_ignores_a_partial_line_while_the_guest_lives() {
         let buffer = "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\nImportErr";
         assert_eq!(pending_traceback_exception(buffer, false), None);
-        assert_eq!(
-            pending_traceback_exception(buffer, true),
-            Some("ImportErr")
-        );
+        assert_eq!(pending_traceback_exception(buffer, true), Some("ImportErr"));
         let completed = format!("{buffer}or: fixture import failure\n");
         assert_eq!(
             pending_traceback_exception(&completed, false),
@@ -8553,8 +8566,11 @@ mod tests {
     #[test]
     fn external_io_installs_a_wake_target_before_any_paint() {
         let app = tempdir().expect("app dir");
-        std::fs::write(app.path().join("main.py"), "def init(size, args): return []\n")
-            .expect("write app");
+        std::fs::write(
+            app.path().join("main.py"),
+            "def init(size, args): return []\n",
+        )
+        .expect("write app");
         let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.hidden-wake"))
             .expect("launch pane");
         pane.service_external_io(&egui::Context::default());
@@ -8649,10 +8665,8 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: vec![
                 crate::host::state_scope::StateScope::Global,
                 crate::host::state_scope::StateScope::Context,
@@ -8693,7 +8707,11 @@ mod tests {
         let stale_a: Value =
             serde_json::from_slice(&std::fs::read(&file_a).expect("root A file untouched"))
                 .expect("valid JSON");
-        assert_eq!(stale_a, json!({"k": 1}), "old root's file must not be rewritten");
+        assert_eq!(
+            stale_a,
+            json!({"k": 1}),
+            "old root's file must not be rewritten"
+        );
 
         // A scope the app did not declare is an error at persist time, never
         // a silent fallback to another scope's file.
@@ -8707,10 +8725,8 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: undeclared_root.path().to_path_buf(),
@@ -9017,10 +9033,8 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
@@ -9075,7 +9089,10 @@ mod tests {
     /// this the test never renders again, standing in for a pane that scrolled
     /// off screen, moved to an inactive context, or sits under an occluded
     /// window.
-    fn visible_pass(runtime: &mut crate::host::pane::AppRuntime, colors: &crate::ui::theme::Colors) {
+    fn visible_pass(
+        runtime: &mut crate::host::pane::AppRuntime,
+        colors: &crate::ui::theme::Colors,
+    ) {
         let ctx = egui::Context::default();
         let _ = ctx.run_ui(
             egui::RawInput {
@@ -9089,10 +9106,7 @@ mod tests {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     runtime.ui(
                         ui,
-                        &crate::app::app_trait::AppRenderContext {
-                            colors,
-                            pane_id: 1,
-                        },
+                        &crate::app::app_trait::AppRenderContext { colors, pane_id: 1 },
                         None,
                     );
                 });
@@ -9143,10 +9157,8 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
@@ -9194,16 +9206,17 @@ mod tests {
             if runtime.needs_background_tick() {
                 runtime.background_tick();
             }
-            result = runtime.take_pending_commands().into_iter().find_map(|cmd| {
-                match cmd {
+            result = runtime
+                .take_pending_commands()
+                .into_iter()
+                .find_map(|cmd| match cmd {
                     crate::app::app_trait::AppCommand::ToolResult {
                         call_id,
                         output_json,
                         ..
                     } if call_id == "call-offscreen" => Some(output_json),
                     _ => None,
-                }
-            });
+                });
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
@@ -9233,10 +9246,8 @@ mod tests {
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
@@ -10475,7 +10486,10 @@ execution = "cloud"
     fn file_write_rejects_missing_both_and_ambiguous_content() {
         let neither = json!({"type": "file_write", "path": "out.bin"});
         let err = decode_file_write_content(&neither).expect_err("no payload must fail");
-        assert!(err.contains("content"), "error names the missing field: {err}");
+        assert!(
+            err.contains("content"),
+            "error names the missing field: {err}"
+        );
 
         let both = json!({
             "type": "file_write",

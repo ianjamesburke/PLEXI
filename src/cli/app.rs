@@ -1891,9 +1891,7 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     let caller_pane_id = std::env::var("PLEXI_PANE_ID")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok());
-    log::info!(
-        "app_call:cli: app={app_id:?} tool={tool:?} caller_pane={caller_pane_id:?}"
-    );
+    log::info!("app_call:cli: app={app_id:?} tool={tool:?} caller_pane={caller_pane_id:?}");
     let mut payload = serde_json::json!({
         "type": "call_app_tool",
         "app_id": app_id,
@@ -1917,7 +1915,10 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     }
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => {
-            let output = reply.get("output").cloned().unwrap_or(serde_json::Value::Null);
+            let output = reply
+                .get("output")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             println!("{output}");
             0
         }
@@ -1928,33 +1929,38 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     }
 }
 
-/// Submit one turn to the host Assistant and return its JSON envelope.
+/// Submit one turn, or poll `--status-for`, and return the host JSON envelope.
 ///
-/// `conversation_id` selects the phone relay's own conversation when set.
-/// The returned object includes `request_id` and, when the host has one,
-/// `turn_id`. Callers correlate on `request_id`.
+/// `conversation` selects the phone relay's own conversation. `join_desktop`
+/// opts into the desktop transcript. `status_for` reads a turn that already
+/// returned `waiting_for_permission` and does not submit a prompt.
 pub fn assistant_send_result(
-    text: &str,
+    text: Option<&str>,
     request_id: Option<&str>,
     pane_id: Option<u64>,
     context_id: Option<u64>,
-    conversation_id: Option<&str>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+    status_for: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let request_id = request_id
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
-    let mut payload = serde_json::json!({
+    if let Some(turn_id) = status_for {
+        log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
+    }
+    let payload = serde_json::json!({
         "type": "submit_assistant_turn",
-        "text": text,
+        "text": text.unwrap_or(""),
         "request_id": request_id,
         "response_file": response_file,
         "pane_id": pane_id,
         "context_id": context_id,
+        "conversation_id": conversation,
+        "join_desktop": join_desktop,
+        "status_for": status_for,
     });
-    if let Some(conversation_id) = conversation_id {
-        payload["conversation_id"] = serde_json::Value::String(conversation_id.to_string());
-    }
     let content = super::request_with(
         payload,
         "assistant-send",
@@ -1967,13 +1973,23 @@ pub fn assistant_send_result(
 
 /// Submit one turn to the host Assistant and print its terminal JSON envelope.
 pub fn assistant_send_cli(
-    text: &str,
+    text: Option<&str>,
     request_id: Option<&str>,
     pane_id: Option<u64>,
     context_id: Option<u64>,
-    conversation_id: Option<&str>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+    status_for: Option<&str>,
 ) -> i32 {
-    match assistant_send_result(text, request_id, pane_id, context_id, conversation_id) {
+    match assistant_send_result(
+        text,
+        request_id,
+        pane_id,
+        context_id,
+        conversation,
+        join_desktop,
+        status_for,
+    ) {
         Ok(value) => {
             println!("{value}");
             if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") {
@@ -1983,6 +1999,11 @@ pub fn assistant_send_cli(
             }
         }
         Err(error) => {
+            if let Some(code) = error.strip_prefix("assistant_send_exit_") {
+                if let Ok(code) = code.parse::<i32>() {
+                    return code;
+                }
+            }
             eprintln!("error: {error}");
             1
         }

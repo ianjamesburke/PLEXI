@@ -39,8 +39,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::protocol::{AiTool, PlexiEvent};
 use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
+use crate::protocol::{AiTool, PlexiEvent};
 
 // ── AppEventSender ──────────────────────────────────────────────────────────
 

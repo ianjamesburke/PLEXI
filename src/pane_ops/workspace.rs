@@ -1723,7 +1723,6 @@ impl PlexiApp {
             new_root: root,
         });
 
-
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.
         if idx == self.router.active_idx() {

@@ -1286,7 +1286,10 @@ mod tests {
         let apps_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps");
         let mut found = Vec::new();
         for entry in fs::read_dir(&apps_dir).expect("apps/ must be readable") {
-            let path = entry.expect("apps/ entry must be readable").path().join("manifest.toml");
+            let path = entry
+                .expect("apps/ entry must be readable")
+                .path()
+                .join("manifest.toml");
             if !path.is_file() {
                 continue;
             }
@@ -1379,7 +1382,8 @@ mod tests {
                 .map(|caps| caps.iter().filter_map(|c| c.as_str()).collect())
                 .unwrap_or_default();
             assert_eq!(
-                published_caps, manifest.app.capabilities.capabilities,
+                published_caps,
+                manifest.app.capabilities.capabilities,
                 "{}",
                 drifted("capabilities")
             );

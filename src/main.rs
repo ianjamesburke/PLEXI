@@ -1,4 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Window disposal proves `Send` for a type that owns both the Assistant pane
+// and wgpu resources. That check exceeds the default recursion limit.
+#![recursion_limit = "256"]
 // Ship-time panic-path protection. `todo!()` / `unimplemented!()` compile clean
 // but panic at runtime — e.g. 2026-04-18, the audio capture entry point was
 // `todo!()` and froze the GUI when a recorder app sent AudioCapture without
@@ -147,10 +150,11 @@ fn main() -> eframe::Result {
             }
         }
         if !is_app_prune_command {
-            let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
+            let pruned =
+                crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
             if !pruned.is_empty() {
                 log::info!(
-                "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
+                    "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
                     pruned.len(),
                     apps_dir.display()
                 );
@@ -162,7 +166,6 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
     drop(profile_init_lock);
-
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
     // If the path has no `.plexi/` ancestor, an adopted context path is set
@@ -272,9 +275,10 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
-        DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd,
+        ConnectorCmd, ContextCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd,
+        NotifyCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RelayCmd, RoutineCmd, SecretCmd,
+        WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -287,14 +291,35 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation_id, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, conversation_id.as_deref()))
-                        }
+                        AssistantCmd::Send {
+                            text,
+                            request_id,
+                            pane_id,
+                            context_id,
+                            conversation,
+                            desktop,
+                            status_for,
+                            json: _,
+                        } => std::process::exit(cli::assistant_send_cli(
+                            text.as_deref(),
+                            request_id.as_deref(),
+                            pane_id,
+                            context_id,
+                            conversation.as_deref(),
+                            desktop,
+                            status_for.as_deref(),
+                        )),
                     },
                     Commands::Relay { cmd } => match cmd {
-                        RelayCmd::Connect { url } => std::process::exit(cli::relay_connect_cli(url)),
-                        RelayCmd::Confirm { pairing_id } => std::process::exit(cli::relay_confirm_cli(pairing_id)),
-                        RelayCmd::Revoke { device_id } => std::process::exit(cli::relay_revoke_cli(&device_id)),
+                        RelayCmd::Connect { url } => {
+                            std::process::exit(cli::relay_connect_cli(url))
+                        }
+                        RelayCmd::Confirm { pairing_id } => {
+                            std::process::exit(cli::relay_confirm_cli(pairing_id))
+                        }
+                        RelayCmd::Revoke { device_id } => {
+                            std::process::exit(cli::relay_revoke_cli(&device_id))
+                        }
                         RelayCmd::Status => std::process::exit(cli::relay_status_cli()),
                     },
                     Commands::Run {
@@ -674,9 +699,9 @@ fn main() -> eframe::Result {
                             }
                             AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
                             AppCmd::State { cmd } => match cmd {
-                                AppStateCmd::Get { app, scope } => std::process::exit(
-                                    cli::app_state::get(&app, scope.as_deref()),
-                                ),
+                                AppStateCmd::Get { app, scope } => {
+                                    std::process::exit(cli::app_state::get(&app, scope.as_deref()))
+                                }
                                 AppStateCmd::Set { app, file, scope } => std::process::exit(
                                     cli::app_state::set(&app, file.as_deref(), scope.as_deref()),
                                 ),
@@ -737,7 +762,9 @@ fn main() -> eframe::Result {
                     Commands::Uninstall { keep_data, yes } => {
                         std::process::exit(cli::plexi_uninstall_cli(keep_data, yes))
                     }
-                    Commands::Update { rollback } => std::process::exit(cli::self_update_cli(rollback)),
+                    Commands::Update { rollback } => {
+                        std::process::exit(cli::self_update_cli(rollback))
+                    }
                     Commands::Host { cmd } => match cmd {
                         HostCmd::Start {
                             layout,
@@ -1007,21 +1034,36 @@ fn main() -> eframe::Result {
                             from_cursor,
                             plain,
                         )),
-                        PaneCmd::Wait { pane_id, until, timeout } => {
-                            std::process::exit(cli::pane_lifecycle_wait_cli(pane_id, &until, timeout))
-                        }
+                        PaneCmd::Wait {
+                            pane_id,
+                            until,
+                            timeout,
+                        } => std::process::exit(cli::pane_lifecycle_wait_cli(
+                            pane_id, &until, timeout,
+                        )),
                         PaneCmd::Events { follow: _, pane } => {
                             std::process::exit(cli::pane_lifecycle_follow_cli(pane))
                         }
                         PaneCmd::Status { pane_id } => {
                             std::process::exit(cli::pane_status_cli(pane_id))
                         }
-                        PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
-                            std::process::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
-                        }
-                        PaneCmd::State { pane_id, stale_after } => {
-                            std::process::exit(cli::pane_state_cli(pane_id, stale_after))
-                        }
+                        PaneCmd::Heartbeat {
+                            pane_id,
+                            every,
+                            text,
+                            while_idle_only,
+                            off,
+                        } => std::process::exit(cli::pane_heartbeat_cli(
+                            pane_id,
+                            every.as_deref(),
+                            text.as_deref(),
+                            while_idle_only.then_some(true),
+                            off,
+                        )),
+                        PaneCmd::State {
+                            pane_id,
+                            stale_after,
+                        } => std::process::exit(cli::pane_state_cli(pane_id, stale_after)),
                         PaneCmd::Slot { cmd } => match cmd {
                             PaneSlotCmd::Write {
                                 name,
@@ -1415,7 +1457,11 @@ fn main() -> eframe::Result {
     #[cfg(not(target_os = "macos"))]
     let activation_policy = "platform-default";
     #[cfg(target_os = "macos")]
-    let activate_ignoring_other_apps = if background { "false" } else { "bundle-default" };
+    let activate_ignoring_other_apps = if background {
+        "false"
+    } else {
+        "bundle-default"
+    };
     #[cfg(not(target_os = "macos"))]
     let activate_ignoring_other_apps = "not-applicable";
     log::info!(

@@ -539,7 +539,11 @@ impl McpConnection {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let teardown = Arc::new(Teardown {
-            pgid: Mutex::new(if cfg!(unix) { Some(child.id() as i32) } else { None }),
+            pgid: Mutex::new(if cfg!(unix) {
+                Some(child.id() as i32)
+            } else {
+                None
+            }),
             forced_reason: Mutex::new(None),
         });
         let last_stderr = Arc::new(Mutex::new(String::new()));
@@ -820,7 +824,11 @@ fn read_bounded_line<R: BufRead>(
             Err(e) => return Err(e),
         };
         if available.is_empty() {
-            return Ok(if total == 0 { LineRead::Eof } else { LineRead::Line });
+            return Ok(if total == 0 {
+                LineRead::Eof
+            } else {
+                LineRead::Line
+            });
         }
         let (chunk, consumed, done) = match available.iter().position(|b| *b == b'\n') {
             Some(idx) => (&available[..idx], idx + 1, true),
@@ -889,7 +897,11 @@ mod tests {
         assert_eq!(fs.args.len(), 3);
         assert!(fs.env.is_empty());
         assert_eq!(
-            registry.resolve("git").expect("resolve").env.get("GIT_AUTHOR_NAME"),
+            registry
+                .resolve("git")
+                .expect("resolve")
+                .env
+                .get("GIT_AUTHOR_NAME"),
             Some(&"plexi".to_string())
         );
     }
@@ -919,7 +931,10 @@ mod tests {
     #[test]
     fn unknown_server_against_empty_registry_says_none() {
         let registry = McpServerRegistry::default();
-        let message = registry.resolve("anything").expect_err("must reject").to_string();
+        let message = registry
+            .resolve("anything")
+            .expect_err("must reject")
+            .to_string();
         assert!(message.contains("configured: none"), "{message}");
     }
 
@@ -989,7 +1004,8 @@ mod tests {
     /// transport is exercised against byte shapes a real server produces.
     fn replay_script(dir: &Path, responses: &[&str]) -> PathBuf {
         let path = dir.join("replay.sh");
-        let mut script = String::from("#!/bin/sh\ni=0\nwhile IFS= read -r line; do\n  i=$((i+1))\n");
+        let mut script =
+            String::from("#!/bin/sh\ni=0\nwhile IFS= read -r line; do\n  i=$((i+1))\n");
         for (idx, response) in responses.iter().enumerate() {
             script.push_str(&format!(
                 "  if [ \"$i\" = \"{}\" ]; then printf '%s\\n' '{}'; fi\n",
@@ -1043,8 +1059,14 @@ mod tests {
         let script = replay_script(dir.path(), &[&initialize, &tools_list]);
 
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("filesystem", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn replay");
+        let conn = McpConnection::spawn(
+            "filesystem",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn replay");
 
         conn.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
             .expect("send initialize");
@@ -1056,7 +1078,10 @@ mod tests {
             panic!("expected a message, got {line:?}");
         };
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["result"]["serverInfo"]["name"], "secure-filesystem-server");
+        assert_eq!(
+            parsed["result"]["serverInfo"]["name"],
+            "secure-filesystem-server"
+        );
 
         conn.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#)
             .expect("send tools/list");
@@ -1079,8 +1104,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = replay_script(dir.path(), &[]);
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("dead", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn =
+            McpConnection::spawn("dead", &script_config(&script), dir.path(), tx, noop_wake())
+                .expect("spawn");
         drop(conn);
         let (id, line) = rx
             .recv_timeout(Duration::from_secs(10))
@@ -1094,8 +1120,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = replay_script(dir.path(), &[]);
         let (tx, _rx) = inbound_channel();
-        let conn = McpConnection::spawn("framing", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn = McpConnection::spawn(
+            "framing",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn");
         let err = conn
             .send("{\"jsonrpc\":\"2.0\",\n\"id\":1}")
             .expect_err("must reject");
@@ -1160,8 +1192,14 @@ mod tests {
             "#!/bin/sh\nsleep 300 &\nprintf '{\"descendant_pid\":%s}\\n' \"$!\"\nexec sleep 300\n",
         );
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("launcher", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn = McpConnection::spawn(
+            "launcher",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn");
         let (_, line) = rx
             .recv_timeout(Duration::from_secs(10))
             .expect("descendant pid");
@@ -1169,7 +1207,10 @@ mod tests {
             panic!("expected a message, got {line:?}");
         };
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        let pid = parsed["descendant_pid"].as_str().map(str::to_string).unwrap_or_else(|| parsed["descendant_pid"].to_string());
+        let pid = parsed["descendant_pid"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| parsed["descendant_pid"].to_string());
         let pid: libc::pid_t = pid.trim().parse().expect("numeric pid");
         assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "descendant must be alive");
 
@@ -1199,8 +1240,9 @@ mod tests {
         let script = dir.path().join("deaf.sh");
         write_script(&script, "#!/bin/sh\nexec sleep 300\n");
         let (tx, _rx) = inbound_channel();
-        let conn = McpConnection::spawn("deaf", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn =
+            McpConnection::spawn("deaf", &script_config(&script), dir.path(), tx, noop_wake())
+                .expect("spawn");
 
         // 8 KiB per message: the pipe (~64 KiB) plus the writer queue absorb
         // a bounded amount, then try_send must report Full. Far below the
@@ -1349,8 +1391,14 @@ mod tests {
             ),
         );
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("noisy", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn = McpConnection::spawn(
+            "noisy",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn");
         conn.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
             .expect("send");
         let (_, line) = rx.recv_timeout(Duration::from_secs(10)).expect("reply");

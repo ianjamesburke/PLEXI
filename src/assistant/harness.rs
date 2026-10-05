@@ -1043,8 +1043,7 @@ mod tests {
             .clone(),
         ] {
             assert!(
-                guidance.contains("path_out_of_scope")
-                    && guidance.contains("command_not_allowed"),
+                guidance.contains("path_out_of_scope") && guidance.contains("command_not_allowed"),
                 "guidance must name both refusal codes: {guidance}"
             );
             assert!(

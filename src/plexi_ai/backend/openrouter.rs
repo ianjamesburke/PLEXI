@@ -269,9 +269,7 @@ pub(super) fn stream_openai_compatible(
             return;
         }
         Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format!(
-                "io error from {endpoint}: {e}"
-            )));
+            let _ = tx.send(StreamEvent::Error(format!("io error from {endpoint}: {e}")));
             return;
         }
     };
@@ -292,7 +290,9 @@ pub(super) fn stream_openai_compatible(
         // the token. Stop reading and drop `tx` — the turn loop returns the
         // partial text accumulated so far rather than draining the full stream.
         if request.cancel.is_cancelled() {
-            log::info!("openai_compat[{endpoint}]: stream cancelled by caller — aborting read mid-stream");
+            log::info!(
+                "openai_compat[{endpoint}]: stream cancelled by caller — aborting read mid-stream"
+            );
             return;
         }
         let line = match line_result {

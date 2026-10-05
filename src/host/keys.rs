@@ -1253,7 +1253,8 @@ mod tests {
                 &mut claimed_key_releases,
                 /* app_active */ true,
                 /* keyboard_capture */ false,
-                /* overlay_open */ false, /* shortcuts_overlay_open */ false,
+                /* overlay_open */ false,
+                /* shortcuts_overlay_open */ false,
             );
         });
         actions

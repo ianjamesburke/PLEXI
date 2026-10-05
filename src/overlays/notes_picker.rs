@@ -62,8 +62,10 @@ impl PlexiApp {
         &self,
         path: &std::path::Path,
     ) -> Option<crate::spatial::tiling::PaneId> {
-        (0..self.windows.len())
-            .find_map(|idx| self.find_open_text_editor_tile(idx, path).map(|(_, pane)| pane))
+        (0..self.windows.len()).find_map(|idx| {
+            self.find_open_text_editor_tile(idx, path)
+                .map(|(_, pane)| pane)
+        })
     }
 
     /// Indices into `notes_picker_entries` matching the current query, ranked:

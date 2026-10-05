@@ -88,13 +88,11 @@ function render(event) {
 
 async function poll() {
   try {
-    if (!online) {
-      const status = await fetch("/api/status", { cache: "no-store", headers: apiHeaders() });
-      if (!status.ok) throw new Error(`status ${status.status}`);
-      const body = await status.json();
-      const [state, label] = connectionFromStatus(body);
-      setConnection(state, label);
-    }
+    const status = await fetch("/api/status", { cache: "no-store", headers: apiHeaders() });
+    if (!status.ok) throw new Error(`status ${status.status}`);
+    const body = await status.json();
+    const [state, label] = connectionFromStatus(body);
+    setConnection(state, label);
     const res = await fetch(`/api/conversation?after=${cursor}`, { cache: "no-store", headers: apiHeaders() });
     if (!res.ok) throw new Error(`conversation ${res.status}`);
     const page = await res.json();

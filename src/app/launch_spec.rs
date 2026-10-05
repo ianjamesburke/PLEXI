@@ -299,10 +299,7 @@ mod tests {
             PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(1e308)))
                 .unwrap_err();
 
-        assert!(
-            err.contains("at most"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("at most"), "unexpected error: {err}");
     }
 
     #[test]

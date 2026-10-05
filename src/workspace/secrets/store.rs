@@ -321,9 +321,7 @@ impl FileStore {
                 .truncate(true)
                 .mode(0o600)
                 .open(&tmp)
-                .map_err(|e| {
-                    SecretError::Backend(format!("open {} failed: {e}", tmp.display()))
-                })?;
+                .map_err(|e| SecretError::Backend(format!("open {} failed: {e}", tmp.display())))?;
             f.write_all(&body)
                 .and_then(|()| f.sync_all())
                 .map_err(|e| {
@@ -680,9 +678,7 @@ impl CredentialManager {
     /// so callers only ever see the account strings they passed in.
     fn enumerate(filter: &str) -> Result<Vec<String>, SecretError> {
         use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
-        use windows_sys::Win32::Security::Credentials::{
-            CredEnumerateW, CredFree, CREDENTIALW,
-        };
+        use windows_sys::Win32::Security::Credentials::{CredEnumerateW, CredFree, CREDENTIALW};
 
         let wide = Self::to_wide_nul(filter);
         let mut count: u32 = 0;
@@ -726,7 +722,7 @@ impl CredentialManager {
 
     fn write(account: &str, value: &str) -> Result<(), SecretError> {
         use windows_sys::Win32::Security::Credentials::{
-            CredWriteW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW,
+            CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
         };
 
         let target = Self::target_name(account);
@@ -787,7 +783,7 @@ impl NonDestructiveStore for CredentialManager {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
         use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
         use windows_sys::Win32::Security::Credentials::{
-            CredFree, CredReadW, CRED_TYPE_GENERIC, CREDENTIALW,
+            CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
         };
 
         let target = Self::target_name(account);

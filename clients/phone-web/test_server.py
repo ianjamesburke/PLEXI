@@ -1,6 +1,7 @@
 """Stub server contract tests. Run: python3 -m unittest clients/phone-web/test_server.py"""
 
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -99,7 +100,7 @@ class StubServerTest(unittest.TestCase):
     def test_host_backend_uses_fake_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             fake = Path(temp) / "plexi"
-            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"state\":\"succeeded\",\"reply\":\"real-ish reply\"}'\n")
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"request_id\":\"host-r1\",\"turn_id\":\"turn-host-r1\",\"state\":\"succeeded\",\"reply\":\"real-ish reply\"}'\n")
             fake.chmod(0o755)
             self.httpd.shutdown(); self.httpd.server_close()
             self.httpd = server.build_server("127.0.0.1", 0, server.HostStore(str(fake)), token="test-token")
@@ -110,7 +111,30 @@ class StubServerTest(unittest.TestCase):
             time.sleep(0.2)
             req = urllib.request.Request(self.base + "/api/conversation?after=0", headers={"Authorization":"Bearer test-token"})
             with urllib.request.urlopen(req) as res: page = json.loads(res.read())
-            self.assertIn("assistant_reply", [event["kind"] for event in page["events"]])
+            reply = next(event for event in page["events"] if event["kind"] == "assistant_reply")
+            self.assertEqual(reply["turn_id"], "turn-host-r1")
+            self.assertEqual(reply["request_id"], "host-r1")
+
+    def test_host_backend_passes_one_stable_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            argv_log = Path(temp) / "argv"
+            fake = Path(temp) / "plexi"
+            quoted = str(argv_log).replace("'", "'\\''")
+            fake.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >> '{quoted}'\n"
+                "printf '%s\\n' '{\"turn_id\":\"turn-x\",\"state\":\"succeeded\",\"reply\":\"ok\"}'\n"
+            )
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            self.assertTrue(store.conversation_id.startswith("phone-"))
+            store.submit(envelope("a", "one"))
+            store.submit(envelope("b", "two"))
+            time.sleep(0.3)
+            lines = argv_log.read_text().splitlines()
+            self.assertEqual(len(lines), 2)
+            needle = f"--conversation {store.conversation_id}"
+            self.assertTrue(all(needle in line and "--desktop" not in line for line in lines))
 
     def test_host_backend_appends_error_to_failed_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -135,6 +159,78 @@ class StubServerTest(unittest.TestCase):
             receipt = store.events[-1]
             self.assertEqual(receipt["state"], "failed")
             self.assertEqual(receipt["error"], "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
+
+    def test_host_backend_rejects_reply_without_turn_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"request_id\":\"host-noturn\",\"state\":\"succeeded\",\"reply\":\"orphan\"}'\n")
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-noturn", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertEqual(receipt["error"], "host reply missing turn_id")
+            self.assertNotIn("assistant_reply", [event["kind"] for event in store.events])
+
+    def test_host_backend_rejects_mismatched_request_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"request_id\":\"someone-else\",\"turn_id\":\"turn-x\",\"state\":\"succeeded\",\"reply\":\"wrong turn\"}'\n")
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-mine", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertIn("someone-else", receipt["error"])
+            self.assertNotIn("assistant_reply", [event["kind"] for event in store.events])
+
+    def test_host_backend_surfaces_pending_desktop_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text(
+                "#!/bin/sh\nprintf '%s\\n' "
+                "'{\"request_id\":\"host-wait\",\"state\":\"waiting_for_permission\","
+                "\"status\":\"waiting for approval on desktop\",\"pending_request_id\":\"turn-desk\"}'\n"
+            )
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-wait", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "waiting_for_permission")
+            self.assertEqual(receipt["status"], "waiting for approval on desktop (turn-desk)")
+            self.assertNotIn("error", receipt)
+
+    def test_host_backend_polls_until_the_desktop_decision_lands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$arg\" = \"--status-for\" ]; then\n"
+                "    printf '%s\\n' '{\"request_id\":\"host-wait\",\"turn_id\":\"turn-desk\",\"state\":\"succeeded\",\"reply\":\"desktop said yes\"}'\n"
+                "    exit 0\n"
+                "  fi\n"
+                "done\n"
+                "printf '%s\\n' '{\"request_id\":\"host-wait\",\"state\":\"waiting_for_permission\","
+                "\"status\":\"waiting for approval on desktop\",\"pending_request_id\":\"turn-desk\"}'\n"
+            )
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-wait", "hello"))
+            deadline = time.time() + 3
+            reply = None
+            while time.time() < deadline:
+                reply = next((event for event in store.events if event.get("kind") == "assistant_reply"), None)
+                if reply:
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(reply)
+            self.assertEqual(reply["text"], "desktop said yes")
+            self.assertEqual(reply["turn_id"], "turn-desk")
+            self.assertEqual(store.receipts["host-wait"]["state"], "succeeded")
 
 
 class AddressDiscoveryTest(unittest.TestCase):
@@ -175,28 +271,78 @@ class AddressDiscoveryTest(unittest.TestCase):
         self.assertEqual(server.parse_ip_o_ipv4(output), [("en0", "192.168.1.67"), ("lo", "127.0.0.1")])
 
 
-class TailscaleBindTests(unittest.TestCase):
-    def test_selects_first_tailscale_ipv4(self) -> None:
-        self.assertEqual(server.select_tailscale_ipv4("100.100.1.2\n"), "100.100.1.2")
+def _completed(args: list[str], code: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args, code, stdout, stderr)
 
-    def test_rejects_missing_tailscale_address(self) -> None:
-        with self.assertRaises(server.TailscaleUnavailable):
-            server.select_tailscale_ipv4("192.168.1.67\n")
 
-    def test_magicdns_from_status(self) -> None:
-        name = server.magicdns_name_from_status(json.dumps({"Self": {"DNSName": "mac.example.ts.net."}}))
-        self.assertEqual(name, "mac.example.ts.net")
+class TailscaleAddressTest(unittest.TestCase):
+    def test_selects_ipv4_and_magicdns_from_mocked_commands(self) -> None:
+        calls: list[list[str]] = []
 
-    def test_resolve_uses_injected_runner(self) -> None:
-        def run(argv, **_kwargs):
-            class Result:
-                returncode = 0
-                stdout = "100.64.0.8\n" if argv[:3] == ["tailscale", "ip", "-4"] else json.dumps({"Self": {"DNSName": "host.tail.ts.net."}})
-                stderr = ""
-            return Result()
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(list(args))
+            if args == ["tailscale", "ip", "-4"]:
+                return _completed(args, 0, stdout="100.101.102.103\n")
+            if args == ["tailscale", "status", "--json"]:
+                body = json.dumps({"Self": {"DNSName": "studio.tailnet.ts.net.", "TailscaleIPs": ["100.101.102.103"]}})
+                return _completed(args, 0, stdout=body)
+            raise AssertionError(args)
+
+        address, name = server.resolve_tailscale_endpoint(run)
+        self.assertEqual(address, "100.101.102.103")
+        self.assertEqual(name, "studio.tailnet.ts.net")
+        self.assertEqual(calls[0], ["tailscale", "ip", "-4"])
+
+    def test_ip_without_magicdns_still_binds(self) -> None:
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[1] == "ip":
+                return _completed(args, 0, stdout="100.64.0.8\n")
+            return _completed(args, 1, stderr="status unavailable")
+
         address, name = server.resolve_tailscale_endpoint(run)
         self.assertEqual(address, "100.64.0.8")
-        self.assertEqual(name, "host.tail.ts.net")
+        self.assertIsNone(name)
+
+    def test_missing_tailscale_command_is_a_clear_error(self) -> None:
+        def run(_args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise FileNotFoundError("tailscale")
+
+        with self.assertRaises(server.TailscaleUnavailable) as raised:
+            server.resolve_tailscale_endpoint(run)
+        self.assertIn("not found", str(raised.exception))
+        self.assertIn("--tailscale", str(raised.exception))
+
+    def test_daemon_down_includes_command_stderr(self) -> None:
+        detail = "failed to connect to local tailscaled; is tailscaled running?"
+
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return _completed(args, 1, stderr=detail)
+
+        with self.assertRaises(server.TailscaleUnavailable) as raised:
+            server.resolve_tailscale_endpoint(run)
+        self.assertIn("not running", str(raised.exception))
+        self.assertIn(detail, str(raised.exception))
+
+    def test_non_tailscale_address_is_rejected(self) -> None:
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return _completed(args, 0, stdout="192.168.1.20\n")
+
+        with self.assertRaises(server.TailscaleUnavailable) as raised:
+            server.resolve_tailscale_endpoint(run)
+        self.assertIn("100.64.0.0/10", str(raised.exception))
+
+    def test_select_tailscale_ipv4_skips_blank_lines(self) -> None:
+        self.assertEqual(server.select_tailscale_ipv4("\n100.77.1.9\n"), "100.77.1.9")
+        with self.assertRaises(server.TailscaleUnavailable):
+            server.select_tailscale_ipv4("")
+
+    def test_magicdns_ignores_malformed_status(self) -> None:
+        self.assertIsNone(server.magicdns_name_from_status("not-json"))
+        self.assertIsNone(server.magicdns_name_from_status(json.dumps({"Self": {"DNSName": ""}})))
+        self.assertEqual(
+            server.magicdns_name_from_status(json.dumps({"Self": {"DNSName": "phone.example.ts.net."}})),
+            "phone.example.ts.net",
+        )
 
 
 if __name__ == "__main__":

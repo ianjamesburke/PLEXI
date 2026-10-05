@@ -1088,6 +1088,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT") or os.environ.get("RELAY_PORT") or "8790"))
     parser.add_argument("--public-origin", default=os.environ.get("RELAY_PUBLIC_ORIGIN", ""))
     parser.add_argument("--phone-static", default=os.environ.get("RELAY_PHONE_STATIC", ""))
+    parser.add_argument(
+        "--undelivered-ttl",
+        type=float,
+        default=float(os.environ.get("RELAY_UNDELIVERED_TTL") or UNDELIVERED_TTL_SECONDS),
+        help="seconds to keep an undelivered body when the desktop is offline (default 120)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     install_log_guard()
@@ -1096,7 +1102,10 @@ def main() -> None:
         log.error("phone static dir missing: %s", static_dir)
         raise SystemExit(1)
     secure = os.environ.get("RELAY_COOKIE_SECURE") == "1"
-    relay = Relay(public_origin=args.public_origin or f"http://{args.host}:{args.port}")
+    relay = Relay(
+        undelivered_ttl=args.undelivered_ttl,
+        public_origin=args.public_origin or f"http://{args.host}:{args.port}",
+    )
     try:
         server = build_server(args.host, args.port, relay, static_dir, secure_cookie=secure)
     except OSError as exc:

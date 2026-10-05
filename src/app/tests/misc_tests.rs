@@ -82,7 +82,10 @@ fn key_str_to_egui_raw_input_emits_text_for_printable_chars() {
 #[test]
 fn clipboard_chord_matches_egui_winit_vocabulary() {
     let cmd = egui::Modifiers::COMMAND;
-    assert_eq!(clipboard_chord(cmd, egui::Key::X), Some(ClipboardChord::Cut));
+    assert_eq!(
+        clipboard_chord(cmd, egui::Key::X),
+        Some(ClipboardChord::Cut)
+    );
     assert_eq!(
         clipboard_chord(cmd, egui::Key::C),
         Some(ClipboardChord::Copy)
@@ -250,11 +253,10 @@ fn run_socket_connection(
 
     let ctx = egui::Context::default();
     let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
-    let (mailbox, rx) =
-        crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
-            wake.clone(),
-            "pane_ipc",
-        );
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+        wake.clone(),
+        "pane_ipc",
+    );
     let (subscribe_mailbox, _subscribe_rx) = crate::app::ui_mailbox::UiMailbox::<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >::channel(wake.clone(), "event_subscribe");
@@ -923,10 +925,16 @@ fn socket_line_parse_error_does_not_wake() {
 #[test]
 fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     let mut h = crate::testing::HostHarness::new();
-    std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();
+    std::fs::write(
+        crate::config::config_dir().join("installed_tag"),
+        "v999.0.0",
+    )
+    .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let reply = dir.path().join("build.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetBuildInfo { response_file: reply.to_string_lossy().into_owned() });
+    h.inject_ipc(crate::protocol::AppRequest::GetBuildInfo {
+        response_file: reply.to_string_lossy().into_owned(),
+    });
     h.hidden_frame();
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));

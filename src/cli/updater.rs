@@ -70,7 +70,10 @@ fn installed_version() -> String {
     match crate::distribution::installed() {
         Ok(Some(receipt)) => receipt.active.tag,
         Ok(None) => crate::distribution::build_tag(),
-        Err(error) => { log::warn!("update check: read installation identity: {error}"); crate::distribution::build_tag() }
+        Err(error) => {
+            log::warn!("update check: read installation identity: {error}");
+            crate::distribution::build_tag()
+        }
     }
 }
 
@@ -159,8 +162,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
-
-
 }
 
 fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
@@ -194,7 +195,11 @@ fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str)
 fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     let channel = crate::config::build_channel().unwrap_or_else(|| "stable".into());
     let result = super::install::run_binary_asset_install(&channel, tag);
-    let text = match &result { Ok(()) => format!("Installed and verified {tag}\n"), Err(error) => format!("Update {tag} failed: {error}\n") };
-    std::fs::write(profile_dir.join("update.log"), text).map_err(|e| format!("write update log: {e}"))?;
+    let text = match &result {
+        Ok(()) => format!("Installed and verified {tag}\n"),
+        Err(error) => format!("Update {tag} failed: {error}\n"),
+    };
+    std::fs::write(profile_dir.join("update.log"), text)
+        .map_err(|e| format!("write update log: {e}"))?;
     result
 }

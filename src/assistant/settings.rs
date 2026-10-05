@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::protocol::ModelTier;
 use crate::broker::Decision;
+use crate::protocol::ModelTier;
 
 /// One Assistant settings layer, in increasing precedence order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

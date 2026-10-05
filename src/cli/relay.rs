@@ -11,7 +11,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -46,7 +47,8 @@ struct PendingTurn {
 struct Inflight {
     delivery_id: String,
     request_id: String,
-    handle: JoinHandle<Value>,
+    rx: Receiver<Value>,
+    acked: bool,
 }
 
 struct Session {
@@ -143,6 +145,13 @@ fn run_session(url: &str, dispatch: Dispatch) -> Result<(), String> {
         poll_control(&listener, &mut session, &mut socket)?;
         if session_stopped() {
             log::info!("relay: stopping host_id={}", session.identity.host_id);
+            return Ok(());
+        }
+        if matches!(session.dispatch, Dispatch::Host) && !host_socket_open() {
+            log::info!(
+                "relay: host gone, closing desktop link host_id={}",
+                session.identity.host_id
+            );
             return Ok(());
         }
         pump_assistant(&mut session, &mut socket)?;
@@ -320,7 +329,8 @@ fn handle_relay_message(
                 session.identity.host_id,
                 text.len()
             );
-            send_json(conn, &json!({"type": "ack", "delivery_id": delivery_id}))?;
+            // Ack after the host accepts the turn. A host that dies first leaves
+            // the body queued so the relay can purge it at the TTL.
             session.queued.push_back(PendingTurn {
                 delivery_id,
                 request_id,
@@ -349,71 +359,44 @@ fn handle_relay_message(
 }
 
 fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<(), String> {
-    let finished = session
-        .inflight
-        .as_ref()
-        .is_some_and(|job| job.handle.is_finished());
-    if finished {
-        let job = session.inflight.take().expect("inflight");
-        let value = job
-            .handle
-            .join()
-            .unwrap_or_else(|_| json!({"state": "failed", "error": "assistant_panicked"}));
-        let state = value
-            .get("state")
-            .and_then(|item| item.as_str())
-            .unwrap_or("failed");
-        if let Some(returned) = value.get("request_id").and_then(|item| item.as_str()) {
-            if returned != job.request_id {
-                log::info!(
-                        "relay: dropped mismatched assistant reply request_id={} outcome=request_mismatch",
-                        job.request_id
-                    );
-                if let Some(conn) = socket.as_mut() {
-                    send_json(
-                        conn,
-                        &json!({
-                            "type": "reply",
-                            "delivery_id": job.delivery_id,
-                            "request_id": job.request_id,
-                            "state": "failed",
-                            "error": "request_mismatch",
-                        }),
-                    )?;
+    let drained = if let Some(job) = session.inflight.as_mut() {
+        let mut batch = Vec::new();
+        let mut finished = false;
+        loop {
+            match job.rx.try_recv() {
+                Ok(value) => batch.push(value),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    finished = true;
+                    break;
                 }
-                return Ok(());
             }
         }
-        log::info!(
-            "relay: phone turn finished host_id={} request_id={} state={state}",
-            session.identity.host_id,
-            job.request_id
-        );
-        if let Some(conn) = socket.as_mut() {
-            let mut reply = json!({
-                "type": "reply",
-                "delivery_id": job.delivery_id,
-                "request_id": job.request_id,
-                "state": state,
-            });
-            if let Some(text) = value.get("reply").and_then(|item| item.as_str()) {
-                reply["reply"] = json!(text);
+        let ack = !job.acked && !batch.is_empty();
+        if ack {
+            job.acked = true;
+        }
+        Some((
+            job.delivery_id.clone(),
+            job.request_id.clone(),
+            ack,
+            batch,
+            finished,
+        ))
+    } else {
+        None
+    };
+    if let Some((delivery_id, request_id, ack, batch, finished)) = drained {
+        if ack {
+            if let Some(conn) = socket.as_mut() {
+                send_json(conn, &json!({"type": "ack", "delivery_id": delivery_id}))?;
             }
-            if let Some(error) = value.get("error").and_then(|item| item.as_str()) {
-                reply["error"] = json!(error);
-            }
-            if let Some(turn_id) = value.get("turn_id").and_then(|item| item.as_str()) {
-                reply["turn_id"] = json!(turn_id);
-            }
-            if let Some(conversation_id) =
-                value.get("conversation_id").and_then(|item| item.as_str())
-            {
-                reply["conversation_id"] = json!(conversation_id);
-            }
-            if state == "waiting_for_permission" {
-                reply["state"] = json!("waiting_for_permission");
-            }
-            send_json(conn, &reply)?;
+        }
+        for value in batch {
+            forward_assistant_reply(session, socket, &delivery_id, &request_id, &value)?;
+        }
+        if finished {
+            session.inflight = None;
         }
     }
     if session.inflight.is_none() {
@@ -426,57 +409,187 @@ fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<
                 pending.conversation_id,
                 pending.text.len()
             );
+            let (tx, rx) = mpsc::channel();
             let delivery_id = pending.delivery_id.clone();
             let request_id = pending.request_id.clone();
+            thread::spawn(move || {
+                dispatch_turn(
+                    dispatch,
+                    &pending.text,
+                    &pending.request_id,
+                    &pending.conversation_id,
+                    tx,
+                );
+            });
             session.inflight = Some(Inflight {
                 delivery_id,
                 request_id,
-                handle: thread::spawn(move || {
-                    dispatch_turn(
-                        dispatch,
-                        &pending.text,
-                        &pending.request_id,
-                        &pending.conversation_id,
-                    )
-                }),
+                rx,
+                acked: false,
             });
         }
     }
     Ok(())
 }
 
-fn dispatch_turn(dispatch: Dispatch, text: &str, request_id: &str, conversation_id: &str) -> Value {
+fn forward_assistant_reply(
+    session: &Session,
+    socket: &mut Option<WsConn>,
+    delivery_id: &str,
+    request_id: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let state = value
+        .get("state")
+        .and_then(|item| item.as_str())
+        .unwrap_or("failed");
+    if let Some(returned) = value.get("request_id").and_then(|item| item.as_str()) {
+        if returned != request_id && value.get("turn_id").is_none() {
+            log::info!(
+                "relay: dropped mismatched assistant reply request_id={request_id} outcome=request_mismatch"
+            );
+            return Ok(());
+        }
+    }
+    log::info!(
+        "relay: phone turn update host_id={} request_id={request_id} state={state}",
+        session.identity.host_id
+    );
+    let Some(conn) = socket.as_mut() else {
+        return Ok(());
+    };
+    let mut reply = json!({
+        "type": "reply",
+        "delivery_id": delivery_id,
+        "request_id": request_id,
+        "state": state,
+    });
+    if let Some(text) = value.get("reply").and_then(|item| item.as_str()) {
+        reply["reply"] = json!(text);
+    }
+    if let Some(error) = value.get("error").and_then(|item| item.as_str()) {
+        reply["error"] = json!(error);
+    }
+    if let Some(turn_id) = value.get("turn_id").and_then(|item| item.as_str()) {
+        reply["turn_id"] = json!(turn_id);
+    }
+    if let Some(conversation_id) = value.get("conversation_id").and_then(|item| item.as_str()) {
+        reply["conversation_id"] = json!(conversation_id);
+    }
+    if let Some(status) = value.get("status").and_then(|item| item.as_str()) {
+        reply["status"] = json!(status);
+    }
+    send_json(conn, &reply)
+}
+
+fn dispatch_turn(
+    dispatch: Dispatch,
+    text: &str,
+    request_id: &str,
+    conversation_id: &str,
+    tx: mpsc::Sender<Value>,
+) {
     match dispatch {
-        Dispatch::Echo => json!({
-            "request_id": request_id,
-            "turn_id": format!("turn-{request_id}"),
-            "conversation_id": conversation_id,
-            "state": "succeeded",
-            "reply": format!("echo:{text}"),
-        }),
-        Dispatch::Host => match super::app::assistant_send_result(
-            text,
-            Some(request_id),
-            None,
-            None,
-            Some(conversation_id),
-        ) {
-            Ok(mut value) => {
-                if value.get("request_id").is_none() {
-                    value["request_id"] = json!(request_id);
+        Dispatch::Echo => {
+            let _ = tx.send(json!({
+                "request_id": request_id,
+                "turn_id": format!("turn-{request_id}"),
+                "conversation_id": conversation_id,
+                "state": "succeeded",
+                "reply": format!("echo:{text}"),
+            }));
+        }
+        Dispatch::Host => {
+            let first = host_assistant_turn(Some(text), request_id, Some(conversation_id), None);
+            let state = first
+                .get("state")
+                .and_then(|item| item.as_str())
+                .unwrap_or("failed")
+                .to_string();
+            let turn_id = first
+                .get("turn_id")
+                .and_then(|item| item.as_str())
+                .or_else(|| {
+                    first
+                        .get("pending_request_id")
+                        .and_then(|item| item.as_str())
+                })
+                .unwrap_or("")
+                .to_string();
+            let _ = tx.send(first);
+            if state != "waiting_for_permission" || turn_id.is_empty() {
+                return;
+            }
+            log::info!("relay: polling desktop approval request_id={request_id} turn_id={turn_id}");
+            for _ in 0..240 {
+                if !host_socket_open() {
+                    log::info!("relay: stopped approval poll, host gone turn_id={turn_id}");
+                    return;
                 }
+                thread::sleep(Duration::from_millis(500));
+                let polled = host_assistant_turn(
+                    None,
+                    &uuid::Uuid::new_v4().to_string(),
+                    None,
+                    Some(&turn_id),
+                );
+                let polled_state = polled
+                    .get("state")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("failed");
+                if polled_state != "waiting_for_permission" {
+                    let _ = tx.send(polled);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn host_assistant_turn(
+    text: Option<&str>,
+    request_id: &str,
+    conversation_id: Option<&str>,
+    status_for: Option<&str>,
+) -> Value {
+    match super::app::assistant_send_result(
+        text,
+        Some(request_id),
+        None,
+        None,
+        conversation_id,
+        false,
+        status_for,
+    ) {
+        Ok(mut value) => {
+            if value.get("request_id").is_none() {
+                value["request_id"] = json!(request_id);
+            }
+            if let Some(conversation_id) = conversation_id {
                 if value.get("conversation_id").is_none() {
                     value["conversation_id"] = json!(conversation_id);
                 }
-                value
             }
-            Err(error) => json!({
-                "request_id": request_id,
-                "conversation_id": conversation_id,
-                "state": "failed",
-                "error": error,
-            }),
-        },
+            value
+        }
+        Err(error) => json!({
+            "request_id": request_id,
+            "conversation_id": conversation_id,
+            "state": "failed",
+            "error": error,
+        }),
+    }
+}
+
+fn host_socket_open() -> bool {
+    let path = crate::config::config_dir().join("notify.sock");
+    #[cfg(unix)]
+    {
+        std::os::unix::net::UnixStream::connect(&path).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        path.exists()
     }
 }
 

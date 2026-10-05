@@ -797,8 +797,20 @@ impl SplitMix64 {
 }
 
 const INSERT_POOL: [&str; 14] = [
-    "a", "b", "z", " ", "hi", "\n", "é", "e\u{301}", "👨\u{200D}👩\u{200D}👧", "🇺🇸", "漢",
-    "- ", "1. ", "> ",
+    "a",
+    "b",
+    "z",
+    " ",
+    "hi",
+    "\n",
+    "é",
+    "e\u{301}",
+    "👨\u{200D}👩\u{200D}👧",
+    "🇺🇸",
+    "漢",
+    "- ",
+    "1. ",
+    "> ",
 ];
 
 fn random_cursor(rng: &mut SplitMix64, doc: &Document) -> Cursor {
@@ -829,9 +841,9 @@ fn random_movement(rng: &mut SplitMix64) -> Movement {
 /// Weighted random command generator over the full `EditorCommand` surface.
 pub fn random_command(rng: &mut SplitMix64, doc: &Document) -> EditorCommand {
     match rng.below(100) {
-        0..=29 => {
-            EditorCommand::InsertText(INSERT_POOL[rng.below(INSERT_POOL.len() as u64) as usize].to_string())
-        }
+        0..=29 => EditorCommand::InsertText(
+            INSERT_POOL[rng.below(INSERT_POOL.len() as u64) as usize].to_string(),
+        ),
         30..=43 => EditorCommand::Move {
             movement: random_movement(rng),
             extend: rng.below(3) == 0,
@@ -884,8 +896,7 @@ fn replay(commands: &[EditorCommand]) -> Result<(), (usize, String)> {
         }
         prev_revision = doc.revision();
     }
-    check_history_round_trip(&mut doc)
-        .map_err(|e| (commands.len().saturating_sub(1), e))
+    check_history_round_trip(&mut doc).map_err(|e| (commands.len().saturating_sub(1), e))
 }
 
 /// Greedy sequence minimization: repeatedly drop commands while the failure
@@ -962,9 +973,10 @@ fn run_random_seed(seed: u64, command_count: usize) -> Result<(), String> {
         minimized_commands: minimized,
     };
     let bundle_path = std::env::temp_dir().join(format!("plexi-editor-gate-failure-{seed}.json"));
-    match serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string()).and_then(|json| {
-        std::fs::write(&bundle_path, json).map_err(|e| e.to_string())
-    }) {
+    match serde_json::to_vec_pretty(&bundle)
+        .map_err(|e| e.to_string())
+        .and_then(|json| std::fs::write(&bundle_path, json).map_err(|e| e.to_string()))
+    {
         Ok(()) => {}
         Err(e) => log::error!(
             "editor_gate: failed to write replay bundle {}: {e}",

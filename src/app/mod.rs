@@ -1,10 +1,11 @@
 pub mod account;
-pub mod app_trait;
 mod app_call;
+pub mod app_trait;
 pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
 mod dispatch;
+mod event_stream;
 pub mod file_handlers;
 mod focus;
 pub(crate) mod focus_journal;
@@ -16,7 +17,6 @@ pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod lifecycle;
-mod event_stream;
 pub mod marketplace;
 pub(crate) mod notification_image;
 mod notifications;
@@ -1675,7 +1675,7 @@ impl PlexiApp {
                     quick_note_attachments: Vec::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_migration_pending: true,
-            notes_picker_entries: Vec::new(),
+                    notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
                     notes_picker_query: String::new(),
                     modal_state_notify_id: String::new(),
@@ -1835,16 +1835,14 @@ impl PlexiApp {
         let default_cwd = std::env::current_dir().unwrap_or_default();
         let mut default_registries = crate::app::registry_views::RegistryViews::new();
         default_registries.view_for_root(&default_cwd);
-        let default_registry_watchers =
-            start_registry_watchers_for(&default_registries, &ui_wake);
+        let default_registry_watchers = start_registry_watchers_for(&default_registries, &ui_wake);
 
         let agent_host = crate::agent::AgentHost::production(config.ai.clone());
         // Standing ruling: a context root must gitignore its app_states dir
         // (personal local data, never committed). Guarded so constructing a
         // Context never creates directories as a side effect.
         if default_root.is_dir() {
-            if let Err(error) =
-                crate::workspace::secrets::ensure_app_state_gitignore(&default_root)
+            if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(&default_root)
             {
                 log::warn!(
                     "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
@@ -2654,7 +2652,7 @@ impl PlexiApp {
                 palette_commands: Vec::new(),
                 palette_scroll_reset: false,
                 palette_agent_count_logged: None,
-                    context_visit_history: Vec::new(),
+                context_visit_history: Vec::new(),
                 renaming_pane: None,
                 text_overlay: None,
                 text_overlay_browse_rx: None,
@@ -2676,7 +2674,7 @@ impl PlexiApp {
                 quick_note_attachments: Vec::new(),
                 quick_note_ctx: QuickNoteCtx::default(),
                 notes_migration_pending: true,
-            notes_picker_entries: Vec::new(),
+                notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
                 notes_picker_query: String::new(),
                 modal_state_notify_id: String::new(),
@@ -3421,7 +3419,6 @@ impl eframe::App for PlexiApp {
         // Dispatch any DeliverNotifyAction commands the early modal render
         // produced. Routes back to the originating pane as NotifyAction events.
         self.dispatch_notify_action_cmds(early_modal_cmds);
-
 
         // Check if the focused app wants to close itself (e.g. after saving).
         {
@@ -4177,7 +4174,9 @@ impl eframe::App for PlexiApp {
 }
 
 fn read_display_version() -> String {
-    crate::distribution::build_tag().trim_start_matches('v').to_string()
+    crate::distribution::build_tag()
+        .trim_start_matches('v')
+        .to_string()
 }
 
 impl PlexiApp {

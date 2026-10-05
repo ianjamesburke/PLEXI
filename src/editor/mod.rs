@@ -20,8 +20,8 @@
 
 pub mod buffer;
 pub mod commands;
-pub mod gate;
 pub mod cursor;
+pub mod gate;
 pub mod grapheme;
 pub mod highlight;
 pub mod history;
