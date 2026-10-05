@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import ipaddress
 import json
 import logging
 import mimetypes
 import os
+import re
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +42,126 @@ log = logging.getLogger("plexi.phone_web")
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("image/svg+xml", ".svg")
+
+
+def parse_ifconfig_ipv4(output: str) -> list[tuple[str, str]]:
+    """Parse IPv4 addresses from BSD/macOS (and compatible Linux) ifconfig."""
+    addresses: list[tuple[str, str]] = []
+    interface: str | None = None
+    for line in output.splitlines():
+        match = re.match(r"^([^\s:]+)(?::[^\s]*)?:\s", line)
+        if match:
+            interface = match.group(1)
+            continue
+        match = re.match(r"^\s*inet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)", line)
+        if interface and match:
+            addresses.append((interface, match.group(1)))
+    return addresses
+
+
+def parse_ip_o_ipv4(output: str) -> list[tuple[str, str]]:
+    """Parse `ip -o -4 addr show` output without invoking any network APIs."""
+    addresses: list[tuple[str, str]] = []
+    for line in output.splitlines():
+        match = re.match(r"^\d+:\s+([^@\s:]+)(?:@\S+)?\s+inet\s+(\d+\.\d+\.\d+\.\d+)/", line)
+        if match:
+            addresses.append((match.group(1), match.group(2)))
+    return addresses
+
+
+def primary_ipv4() -> str | None:
+    """Return the IPv4 address selected by the OS default route, if usable."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            # UDP connect only selects a route; it does not send a packet.
+            probe.connect(("8.8.8.8", 80))
+            address = probe.getsockname()[0]
+    except OSError:
+        return None
+    return address if _is_reachable_ipv4(address) else None
+
+
+def interface_ipv4s() -> list[tuple[str, str]]:
+    """Best-effort interface IPv4 discovery for display only."""
+    try:
+        if sys.platform.startswith(("darwin", "freebsd", "openbsd", "netbsd")):
+            result = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=1, check=True)
+            return parse_ifconfig_ipv4(result.stdout)
+        try:
+            result = subprocess.run(["ip", "-o", "-4", "addr", "show"], capture_output=True, text=True, timeout=1, check=True)
+            return parse_ip_o_ipv4(result.stdout)
+        except FileNotFoundError:
+            result = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=1, check=True)
+            return parse_ifconfig_ipv4(result.stdout)
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _is_reachable_ipv4(address: str) -> bool:
+    try:
+        parsed = ipaddress.IPv4Address(address)
+    except ipaddress.AddressValueError:
+        return False
+    return not (parsed.is_loopback or parsed.is_unspecified or parsed.is_link_local)
+
+
+def _is_tailscale(address: str) -> bool:
+    try:
+        return ipaddress.IPv4Address(address) in ipaddress.IPv4Network("100.64.0.0/10")
+    except ipaddress.AddressValueError:
+        return False
+
+
+def _is_virtual_interface(name: str) -> bool:
+    lowered = name.lower()
+    prefixes = ("bridge", "utun", "awdl", "llw", "anpi", "ap", "gif", "stf", "vmnet", "vboxnet",
+                "docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "zt", "tun", "tap")
+    return lowered.startswith(prefixes)
+
+
+def _is_real_interface(name: str) -> bool:
+    return name.lower().startswith(("en", "eth", "wl", "wlan"))
+
+
+def select_urls(primary: str | None, interfaces: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Order safe phone URLs as (human label, IPv4 address), without I/O."""
+    by_ip: dict[str, list[str]] = {}
+    for name, address in interfaces:
+        if _is_reachable_ipv4(address) or address.startswith("127."):
+            by_ip.setdefault(address, []).append(name)
+
+    def name_for(address: str) -> str | None:
+        names = by_ip.get(address, [])
+        return next((name for name in names if _is_real_interface(name)), names[0] if names else None)
+
+    chosen: list[tuple[str, str]] = []
+    used: set[str] = set()
+
+    def add(label: str, address: str) -> None:
+        if address not in used:
+            chosen.append((label, address))
+            used.add(address)
+
+    primary_name = name_for(primary) if primary else None
+    primary_is_virtual = bool(primary_name and _is_virtual_interface(primary_name))
+    if primary and _is_reachable_ipv4(primary) and not primary_is_virtual:
+        suffix = f", {primary_name}" if primary_name else ""
+        add(f"LAN (default route, use this on the same Wi-Fi{suffix})", primary)
+
+    for address, names in by_ip.items():
+        if _is_tailscale(address):
+            add("Tailscale", address)
+
+    for address, names in by_ip.items():
+        name = next((candidate for candidate in names if _is_real_interface(candidate)), None)
+        if name and not _is_tailscale(address):
+            add(f"other interface ({name})", address)
+
+    if primary and _is_reachable_ipv4(primary) and primary_is_virtual:
+        add("virtual interface, probably not reachable from your phone", primary)
+
+    add("this machine only", "127.0.0.1")
+    return chosen
 
 
 def now() -> str:
@@ -290,19 +413,16 @@ def main() -> None:
     token = os.getenv("PLEXI_PHONE_TOKEN") or (secrets.token_urlsafe(32) if require_token else None)
     store = HostStore(args.plexi_bin) if args.backend == "host" else StubStore()
     server = build_server(host, args.port, store, token)
-    ips = {"127.0.0.1"}
-    try:
-        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
-    except socket.gaierror:
-        pass
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("8.8.8.8", 80))
-            ips.add(probe.getsockname()[0])
-    except OSError:
-        pass
     suffix = f"/?token={token}" if token else "/"
-    for ip in sorted(ips): log.info("phone shell URL: http://%s:%d%s", ip, args.port, suffix)
+    if host in ("127.0.0.1", "::1", "localhost"):
+        urls = [("this machine only", "127.0.0.1")]
+    else:
+        urls = select_urls(primary_ipv4(), interface_ipv4s())
+        if not urls:
+            urls = [("this machine only", "127.0.0.1")]
+    for index, (label, ip) in enumerate(urls):
+        prefix = "open this on your phone, " if index == 0 and ip != "127.0.0.1" else ""
+        log.info("phone shell URL (%s%s): http://%s:%d%s", prefix, label, ip, args.port, suffix)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -137,5 +137,43 @@ class StubServerTest(unittest.TestCase):
             self.assertEqual(receipt["error"], "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
 
 
+class AddressDiscoveryTest(unittest.TestCase):
+    def test_select_urls_prefers_default_wifi_then_tailscale(self) -> None:
+        urls = server.select_urls("192.168.1.67", [
+            ("lo0", "127.0.0.1"), ("en0", "192.168.1.67"), ("bridge0", "192.168.2.1"),
+            ("utun3", "100.101.102.103"), ("awdl0", "169.254.1.2"),
+        ])
+        self.assertEqual(urls[0][1], "192.168.1.67")
+        self.assertIn("LAN", urls[0][0])
+        self.assertEqual(urls[1], ("Tailscale", "100.101.102.103"))
+        self.assertNotIn("192.168.2.1", [address for _, address in urls])
+
+    def test_select_urls_without_primary_prefers_real_interfaces(self) -> None:
+        urls = server.select_urls(None, [("bridge0", "192.168.2.1"), ("en0", "192.168.1.67")])
+        self.assertEqual(urls[0], ("other interface (en0)", "192.168.1.67"))
+        self.assertNotIn("192.168.2.1", [address for _, address in urls])
+
+    def test_virtual_primary_is_demoted_below_wifi(self) -> None:
+        urls = server.select_urls("192.168.2.1", [("bridge0", "192.168.2.1"), ("en0", "192.168.1.67")])
+        self.assertEqual(urls[0][1], "192.168.1.67")
+        self.assertEqual(urls[-2][1], "192.168.2.1")
+        self.assertIn("virtual interface", urls[-2][0])
+
+    def test_virtual_and_duplicate_addresses_are_filtered(self) -> None:
+        urls = server.select_urls(None, [
+            ("en0", "192.168.1.67"), ("en1", "192.168.1.67"), ("docker0", "172.17.0.1"),
+            ("veth123", "10.0.0.2"), ("lo", "127.0.0.1"),
+        ])
+        self.assertEqual([address for _, address in urls], ["192.168.1.67", "127.0.0.1"])
+
+    def test_parses_ifconfig_output(self) -> None:
+        output = "en0: flags=8863<UP>\n\tinet 192.168.1.67 netmask 0xffffff00\nlo0: flags=8049<UP>\n\tinet 127.0.0.1 netmask 0xff000000\n"
+        self.assertEqual(server.parse_ifconfig_ipv4(output), [("en0", "192.168.1.67"), ("lo0", "127.0.0.1")])
+
+    def test_parses_ip_o_ipv4_output(self) -> None:
+        output = "2: en0    inet 192.168.1.67/24 brd 192.168.1.255 scope global en0\n1: lo    inet 127.0.0.1/8 scope host lo\n"
+        self.assertEqual(server.parse_ip_o_ipv4(output), [("en0", "192.168.1.67"), ("lo", "127.0.0.1")])
+
+
 if __name__ == "__main__":
     unittest.main()

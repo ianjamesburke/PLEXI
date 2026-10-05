@@ -21,4 +21,6 @@ node --experimental-websocket clients/phone-web/browser_check.mjs http://127.0.0
 
 Host mode runs `plexi assistant send` locally and requires a bearer token even on loopback. The server prints a ready URL containing that token; the page stores it for the session and removes it from the address bar.
 
+With `--lan`, open the first URL labelled as the default-route LAN address on the phone. Bridge, VPN, and other virtual-interface addresses are skipped (except a Tailscale address when available).
+
 Not claimed: HTTPS, a relay, third-party logins, persistence, install prompts over LAN, or protection from observers on a plain HTTP LAN (the token is visible on that network).
