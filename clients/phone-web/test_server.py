@@ -112,6 +112,30 @@ class StubServerTest(unittest.TestCase):
             with urllib.request.urlopen(req) as res: page = json.loads(res.read())
             self.assertIn("assistant_reply", [event["kind"] for event in page["events"]])
 
+    def test_host_backend_appends_error_to_failed_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"state\":\"failed\",\"error\":\"permission denied\"}'\n")
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-failed", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertEqual(receipt["error"], "permission denied")
+
+    def test_host_backend_reports_no_reply_when_cli_is_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "plexi"
+            fake.write_text("#!/bin/sh\nexit 0\n")
+            fake.chmod(0o755)
+            store = server.HostStore(str(fake))
+            store.submit(envelope("host-silent", "hello"))
+            time.sleep(0.2)
+            receipt = store.events[-1]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertEqual(receipt["error"], "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
+
 
 if __name__ == "__main__":
     unittest.main()

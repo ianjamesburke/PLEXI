@@ -127,12 +127,18 @@ class HostStore(StubStore):
             self.receipts[request_id].update(state="running", updated_at=now())
             self._append({"kind": "receipt", "request_id": request_id, "state": "running"})
         try:
-            proc = subprocess.run([self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id, "--json"], capture_output=True, text=True, timeout=130, check=False)
-            payload = json.loads(proc.stdout.strip()) if proc.stdout.strip() else {}
+            proc = subprocess.run([self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id, "--json"], capture_output=True, text=True, timeout=120, check=False)
+            if not proc.stdout.strip():
+                raise RuntimeError("no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)")
+            payload = json.loads(proc.stdout.strip())
             state = payload.get("state", "failed")
             reply = payload.get("reply")
             error = payload.get("error") or proc.stderr.strip()
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            if state != "succeeded" and not error:
+                error = f"host turn ended in {state}"
+        except subprocess.TimeoutExpired:
+            state, reply, error = "failed", None, "no reply from the host Assistant within 120 s (a permission prompt may be waiting on the desktop)"
+        except (OSError, RuntimeError, json.JSONDecodeError) as exc:
             state, reply, error = "failed", None, str(exc)
         with self.lock:
             receipt = self.receipts[request_id]
@@ -143,7 +149,10 @@ class HostStore(StubStore):
                 self._append({"kind": "assistant_reply", "request_id": request_id, "text": reply})
             if error:
                 receipt["error"] = error
-            self._append({"kind": "receipt", "request_id": request_id, "state": state})
+            event = {"kind": "receipt", "request_id": request_id, "state": state}
+            if state != "succeeded" and error:
+                event["error"] = error
+            self._append(event)
 
 
 def validate_envelope(body: object) -> str | None:
@@ -282,8 +291,16 @@ def main() -> None:
     store = HostStore(args.plexi_bin) if args.backend == "host" else StubStore()
     server = build_server(host, args.port, store, token)
     ips = {"127.0.0.1"}
-    try: ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
-    except socket.gaierror: pass
+    try:
+        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except socket.gaierror:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            ips.add(probe.getsockname()[0])
+    except OSError:
+        pass
     suffix = f"/?token={token}" if token else "/"
     for ip in sorted(ips): log.info("phone shell URL: http://%s:%d%s", ip, args.port, suffix)
     try:

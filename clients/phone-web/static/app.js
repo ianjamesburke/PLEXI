@@ -50,7 +50,14 @@ function render(event) {
   li.className = event.kind;
   li.dataset.requestId = event.request_id;
   if (event.kind === "receipt") {
-    li.textContent = event.state;
+    const state = document.createElement("div");
+    state.textContent = event.state;
+    li.append(state);
+    if (event.error) {
+      const error = document.createElement("small");
+      error.textContent = event.error.slice(0, 240);
+      li.append(error);
+    }
   } else {
     li.textContent = event.text;
   }
