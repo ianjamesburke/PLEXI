@@ -46,6 +46,19 @@ def package(root, installer, platform, channel, build):
     literal = json.dumps(json.dumps(identity))
     source.write_text('''use std::{env,fs,path::PathBuf,thread,time::Duration};
 fn main() {
+    if env::args().nth(1).as_deref() == Some("completions") {
+        if env::var("DISTRIBUTION_TEST_COMPLETION_FAIL").is_ok() { std::process::exit(1); }
+        let exe = env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_str().unwrap();
+        let build = ''' + json.dumps(build) + ''';
+        match env::args().nth(2).as_deref() {
+            Some("zsh") => println!("#compdef {name}\\n_{name}() {{ print -r -- {build}; }}\\ncompdef _{name} {name}"),
+            Some("bash") => println!("_{name}() {{ echo {build}; }}\\ncomplete -F _{name} {name}"),
+            Some("fish") => println!("complete -c {name} -a {build}"),
+            _ => std::process::exit(1),
+        }
+        return;
+    }
     if env::args().nth(1).as_deref() == Some("--hold") {
         fs::write(env::var("DISTRIBUTION_TEST_HOLD").unwrap(), "ready").unwrap();
         loop { thread::sleep(Duration::from_millis(100)); }
@@ -83,7 +96,7 @@ def main(args):
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith('PLEXI_')}
         env.pop('ZDOTDIR', None)
-        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'))
+        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / '.config'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'))
         env['PLEXI_DISTRIBUTION_HOME'] = str(home / 'distribution')
         env['PLEXI_INSTALL_DIR'] = str(root / 'custom install')
         env['PLEXI_BIN_DIR'] = str(root / 'command bin')
@@ -105,8 +118,36 @@ def main(args):
             return run([installer, '--package', path, '--channel', channel, '--applications-dir', apps, '--install-only'], custom_env, success)
         receipt_path = root / 'custom install/stable/installation.json'
         def active(): return json.loads(receipt_path.read_text())['active']['build_id']
+        if os.name != 'nt' and shutil.which('zsh'):
+            # Cache a mapping whose autoload file disappeared, as in the report.
+            run(['zsh', '-fc', 'autoload -Uz compinit; compinit -d "$HOME/.zcompdump"; compdef _plexi plexi; compdump'], env)
+            (home / '.zshrc').write_text('autoload -Uz compinit\ncompinit -C\n')
+        def check_completions(build, channel='stable'):
+            if os.name == 'nt': return
+            name = 'plexi' if channel == 'stable' else 'plexi-' + channel
+            receipt = json.loads((root / f'custom install/{channel}/installation.json').read_text())
+            completion = Path(receipt['root']) / 'completions/zsh' / ('_' + name)
+            assert completion.is_file(), f'missing installed completion: {completion}'
+            assert any(p['path'] == str(completion) for p in receipt['integrations'])
+            if shutil.which('zsh'):
+                output = run(['zsh', '-ic', f'[[ ${{_comps[{name}]}} == _{name} ]] && _{name}'], env)
+                assert output.stdout.strip() == build, output
+            output = run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', '_' + name], env)
+            assert output.stdout.strip() == build, output
         initial = install(old)
         assert active() == 'old'
+        check_completions('old')
+        if os.name != 'nt' and shutil.which('zsh'):
+            zsh_dir = home / 'custom zsh'
+            zsh_dir.mkdir()
+            user_rc = home / 'linked-zshrc'
+            user_rc.write_text('autoload -Uz compinit\ncompinit -C\n')
+            (zsh_dir / '.zshrc').symlink_to(user_rc)
+            install(old, custom_env=env | {'PLEXI_ORIG_ZDOTDIR': str(zsh_dir), 'ZDOTDIR': '/unused/host-integration'})
+            output = run(['zsh', '-ic', '_plexi'], env | {'ZDOTDIR': str(zsh_dir)})
+            assert output.stdout.strip() == 'old', output
+            assert (zsh_dir / '.zshrc').is_symlink()
+            check_completions('old')
         if os.name == 'nt':
             path_command = next(line.split(': ', 1)[1] for line in initial.stdout.splitlines() if line.startswith('For this PowerShell session:'))
             output = run(['powershell', '-NoProfile', '-Command', path_command + '; plexi --build-info'], env)
@@ -126,6 +167,8 @@ def main(args):
             assert json.loads(output.stdout)['build_id'] == 'old'
             assert shadow.read_text().endswith('echo stale\n')
         install(alpha)
+        check_completions('new', 'alpha')
+        check_completions('old')
         listed = json.loads(run([installer, 'list'], env).stdout)
         assert {r['channel'] for r in listed} == {'stable', 'alpha'}
         assert Path(run([installer, 'locate', '--channel', 'stable'], env).stdout.strip()).is_file()
@@ -145,9 +188,15 @@ def main(args):
         finally:
             held.kill(); held.wait(timeout=10)
         assert active() == 'new'
+        check_completions('new')
         assert json.loads(receipt_path.read_text())['previous']['build_id'] == 'old'
         run([installer, 'rollback', '--receipt', receipt_path.parent], env)
         assert active() == 'old'
+        check_completions('old')
+        if os.name != 'nt':
+            install(new, False, env | {'DISTRIBUTION_TEST_COMPLETION_FAIL': '1'})
+            assert active() == 'old'
+            check_completions('old')
         print('PASS: channel coexistence, spaces, upgrade and rollback')
         payload = new / 'resources/sdk/plexi_sdk/_v3_process.py'
         original = payload.read_bytes()
@@ -186,6 +235,10 @@ def main(args):
         assert retained.read_text() == 'keep me'
         assert outsider.read_text() == 'user-owned'
         assert (root / 'custom install/alpha/installation.json').is_file()
+        assert not (receipt_path.parent / 'completions/zsh/_plexi').exists()
+        check_completions('new', 'alpha')
+        if os.name != 'nt' and shutil.which('zsh'):
+            assert user_rc.read_text() == 'autoload -Uz compinit\ncompinit -C\n'
         install(old)
         assert active() == 'old'
         print('PASS: scoped uninstall and reinstall retain user data and other channels')

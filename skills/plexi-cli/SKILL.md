@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.4"
+skill_version: "5.0.5"
 plexi_version: "0.3.5"
-last_verified: "2026-10-03"
+last_verified: "2026-10-04"
 ---
 
 # Plexi CLI
@@ -220,6 +220,10 @@ plexi notify dismiss "$NOTICE"
 ```
 
 ## Installation health
+
+Unix installations configure shell completions for new terminal sessions.
+Host startup restores a missing shared agent-hook script; use `plexi agent hook
+install` to register hooks with an agent explicitly.
 
 `plexi host status --json` distinguishes the invoking CLI, installed package and
 running host by build identity. `plexi doctor --json` reports package validation

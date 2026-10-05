@@ -28,7 +28,7 @@ def main(args):
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith('PLEXI_')}
         env.pop('ZDOTDIR', None)
-        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'), PLEXI_DISTRIBUTION_HOME=str(home / 'distribution'))
+        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / '.config'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'), PLEXI_DISTRIBUTION_HOME=str(home / 'distribution'))
         def run(command, timeout=120):
             result = subprocess.run(list(map(str, command)), cwd=home, env=env, capture_output=True, text=True, timeout=timeout)
             with (args.output / 'commands.log').open('a') as log:
@@ -89,6 +89,16 @@ def main(args):
             check = ['/usr/bin/sandbox-exec', '-p', profile] + check
         identity = json.loads(run(check))
         assert identity['build_id'] == manifest['build_id']
+        if os.name != 'nt' and not channel.startswith('pr-'):
+            name = 'plexi' if channel == 'stable' else 'plexi-' + channel
+            completion = receipt_path.parent / 'completions/zsh' / ('_' + name)
+            assert completion.is_file(), 'package install omitted shell completions'
+            if shutil.which('zsh'):
+                # A fresh interactive shell must define the actual generated
+                # function, not merely cache its missing autoload name.
+                run(['zsh', '-ic', f'[[ ${{_comps[{name}]}} == _{name} ]] && [[ $functions[_{name}] != *"autoload -X"* ]]'])
+                run(['zsh', '-n', completion])
+            run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', f'complete -p {name}'])
         if args.gui:
             started = False
             try:
@@ -97,6 +107,10 @@ def main(args):
                     run([executable, 'host', 'start', '--ephemeral', '--pane', f'cwd={home}', '--timeout-secs', '90'])
                 status = json.loads(run([executable, 'host', 'status', '--json']))
                 assert status['ready'] and status['running']['build_id'] == manifest['build_id'], status
+                if os.name != 'nt':
+                    hook = profile_home / '.plexi/hooks/claude-code-agent-state.sh'
+                    assert hook.is_file() and os.access(hook, os.X_OK), 'host startup did not restore shared hook'
+                    run([hook])  # Outside a pane the registered hook exits cleanly.
                 env['PLEXI_SOCKET'] = status['socket']
                 if manifest['channel'] != 'stable': env['PLEXI_CHANNEL'] = manifest['channel']
                 panes = json.loads(run([executable, 'pane', 'list']))
@@ -109,6 +123,16 @@ def main(args):
                     if re.search(r'^\s*PLEXI_DISTRIBUTION_OK\s*$', capture, re.M): break
                     if time.monotonic() > deadline: raise AssertionError('terminal never produced the expected output')
                     time.sleep(.2)
+                if os.name != 'nt' and not channel.startswith('pr-'):
+                    run([executable, 'pane', 'send', str(terminal), name + ' hos'])
+                    run([executable, 'pane', 'key', str(terminal), 'tab'])
+                    deadline = time.monotonic() + 15
+                    while True:
+                        capture = run([executable, 'pane', 'capture', str(terminal), '--plain'])
+                        if name + ' host' in capture: break
+                        if time.monotonic() > deadline: raise AssertionError('Tab did not complete the host subcommand')
+                        time.sleep(.2)
+                    run([executable, 'pane', 'key', str(terminal), 'ctrl+u'])
                 run([executable, 'app', 'open', 'calc'])
                 deadline = time.monotonic() + 60
                 while True:

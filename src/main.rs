@@ -1337,6 +1337,11 @@ fn main() -> eframe::Result {
     // boot, mirroring the log rotate-and-prune in `platform::logging::init`.
     rpc::sweep_stale(&config::config_dir());
 
+    if let Err(error) = cli::agent::ensure_agent_state_script() {
+        log::error!("host_startup: failed to restore shared agent hook: {error}");
+        eprintln!("Could not restore Plexi's agent hook: {error}");
+    }
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("failed to load app icon");
 

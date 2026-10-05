@@ -423,17 +423,64 @@ pub fn agent_hook_uninstall_cli(claude_code: bool, codex: bool, pi: bool) -> i32
 }
 
 fn write_agent_state_script(binary: &str) -> Result<PathBuf, String> {
+    publish_agent_state_script(binary, true)
+}
+
+/// Restore the shared executable before starting panes; agent registrations
+/// remain opt-in through `agent hook install`.
+pub(crate) fn ensure_agent_state_script() -> Result<(), String> {
+    let path = crate::config::shared_dir()
+        .join("hooks")
+        .join(PLEXI_AGENT_STATE_SCRIPT);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "could not inspect hook script {}: {e}",
+                path.display()
+            ));
+        }
+    }
+    publish_agent_state_script("plexi", false)?;
+    Ok(())
+}
+
+fn publish_agent_state_script(binary: &str, replace: bool) -> Result<PathBuf, String> {
+    use std::io::Write;
     let hooks_dir = crate::config::shared_dir().join("hooks");
     std::fs::create_dir_all(&hooks_dir)
         .map_err(|e| format!("could not create hooks dir {}: {e}", hooks_dir.display()))?;
     let script_path = hooks_dir.join(PLEXI_AGENT_STATE_SCRIPT);
-    std::fs::write(&script_path, agent_state_script(binary))
+    let mut staged = tempfile::NamedTempFile::new_in(&hooks_dir)
+        .map_err(|e| format!("could not stage hook script {}: {e}", script_path.display()))?;
+    staged
+        .write_all(agent_state_script(binary).as_bytes())
         .map_err(|e| format!("could not write hook script {}: {e}", script_path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("could not chmod hook script {}: {e}", script_path.display()))?;
+    }
+    let result = if replace {
+        staged.persist(&script_path)
+    } else {
+        staged.persist_noclobber(&script_path)
+    };
+    match result {
+        Ok(_) => {}
+        Err(e) if !replace && e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Ok(script_path);
+        }
+        Err(e) => {
+            return Err(format!(
+                "could not publish hook script {}: {e}",
+                script_path.display()
+            ));
+        }
     }
     log::info!(
         "agent_hook_install: wrote hook script to {}",
@@ -1118,6 +1165,47 @@ mod agent_tests {
             let mode = fs::metadata(&script_path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o755);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_repairs_missing_shared_hook_without_replacing_existing_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+        let shared = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_shared_dir(shared.path().to_path_buf());
+        let path = shared
+            .path()
+            .join("hooks")
+            .join(super::PLEXI_AGENT_STATE_SCRIPT);
+        super::ensure_agent_state_script().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            super::agent_state_script("plexi")
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(
+            std::process::Command::new(&path)
+                .env_remove("PLEXI_SOCKET")
+                .env_remove("PLEXI_PANE_ID")
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(&path, "custom existing hook\n").unwrap();
+        super::ensure_agent_state_script().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "custom existing hook\n"
+        );
+        std::fs::remove_file(&path).unwrap();
+        super::ensure_agent_state_script().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            super::agent_state_script("plexi")
+        );
     }
 
     #[test]

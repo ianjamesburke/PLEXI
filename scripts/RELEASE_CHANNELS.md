@@ -47,14 +47,8 @@ just channel-list
 Installation destinations and ownership are defined in [Distribution contract](DISTRIBUTION.md).
 
 After installing a new or updated channel, open a fresh Plexi pane before testing
-completion behavior. Existing zsh sessions may keep an old completion cache; if
-autocomplete still looks stale, reset it in that pane:
-
-```sh
-rm -f ~/.zcompdump*
-autoload -Uz compinit
-compinit
-```
+completion behavior. Shell registration and cache handling follow the
+[Distribution contract](DISTRIBUTION.md).
 
 Workspace config for that RC lives under `.plexi-rc-010/` inside the project
 root. For example:
