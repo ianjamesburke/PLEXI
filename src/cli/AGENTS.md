@@ -65,6 +65,9 @@ Any change to a CLI verb, flag, or agent-facing behavior updates this file **and
 
 ## Distribution commands
 
+Shell completion installation and missing shared-hook recovery follow
+[`scripts/DISTRIBUTION.md`](../../scripts/DISTRIBUTION.md).
+
 Host launch, restart, updates, doctor and uninstall resolve the native distribution
 receipt. `host status --json` reports compiled CLI and running-host identities
 separately from the installed generation. `update --rollback` restores the retained

@@ -20,6 +20,21 @@ pub fn completions_installed() -> bool {
     let cli = cli_name();
     let shell = std::env::var("SHELL").unwrap_or_default();
 
+    if let Ok(Some(receipt)) = crate::distribution::installed() {
+        let directory = receipt.root.join("completions");
+        let path = if shell.contains("zsh") {
+            directory.join("zsh").join(format!("_{cli}"))
+        } else if shell.contains("bash") {
+            directory.join("bash").join(&cli)
+        } else {
+            directory.join("fish").join(format!("{cli}.fish"))
+        };
+        if path.is_file() {
+            log::info!("cli_setup: managed completions found for {cli}");
+            return true;
+        }
+    }
+
     if shell.contains("zsh") {
         // Prefer Homebrew site-functions; fall back to ~/.zfunc
         let brew_ok = std::process::Command::new("brew")

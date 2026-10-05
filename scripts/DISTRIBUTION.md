@@ -73,6 +73,11 @@ build identity, including source changes between prerelease builds.
 
 Bare `plexi` delegates to the pane's named channel only when `PLEXI_RUNNING=1`.
 Outside a pane it launches stable. Channel-named commands retain their channel.
+Unix installs keep generated zsh, bash and fish completions under the receipt
+root and register loading in the user's shell configuration. Zsh registration
+loads the definition even when an existing completion cache references a missing
+legacy file. Completion files participate in activation and rollback; removal
+deletes only that channel's registration and files. PR installs skip completions.
 `host start`, update, restart, doctor and uninstall use the receipt's target.
 `host status --json` distinguishes invoking, installed and running identities;
 doctor compares them by equality, including rollback divergence.
@@ -86,6 +91,10 @@ duplicated Unix command can be adopted only when its bytes match the payload at
 the exact historical channel path; the legacy payload itself is retained.
 Repository channel-list, cleanup and smoke tools query the native installer's
 `list`/`locate` commands, including installations at custom destinations.
+
+Host startup restores an absent channel-neutral agent-hook executable before
+creating panes. Existing scripts and agent configurations are preserved; hook
+registration remains explicit through `agent hook install`.
 
 ## Transaction
 
