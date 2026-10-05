@@ -23,11 +23,11 @@ repo="$(new_repo)"
   mkdir -p .stint/claim.lock
   printf 'lock_is_dir=%s\n' "$([[ -d .stint/claim.lock ]] && echo yes || echo no)"
   printf '\n-- auto-claim while the directory lock exists --\n'
-  /usr/bin/time -f 'elapsed_sec %e' "$STINT" claim --json
+  timed "$STINT" claim --json
   printf 'exit=%s\n' "$?"
   printf 'lock_still_there=%s\n' "$([[ -d .stint/claim.lock ]] && echo yes || echo no)"
   printf '\n-- explicit claim of 0001 while the directory lock exists --\n'
-  /usr/bin/time -f 'elapsed_sec %e' "$STINT" claim 0001 --json
+  timed "$STINT" claim 0001 --json
   printf 'exit=%s\n' "$?"
 )
 rm -rf "$repo"
@@ -78,7 +78,7 @@ PY
   printf 'lock_remains=%s\n' "$([[ -d .stint/claim.lock ]] && echo yes || echo no)"
   printf 'in_progress_files=%s\n' "$(grep -l 'status: in-progress' .stint/tasks/*.md | wc -l)"
   printf '\n-- auto-claim after the killed holder --\n'
-  /usr/bin/time -f 'elapsed_sec %e' "$STINT" claim --json
+  timed "$STINT" claim --json
   printf 'exit=%s\n' "$?"
   printf '\n-- manual rmdir, then auto-claim --\n'
   rmdir .stint/claim.lock

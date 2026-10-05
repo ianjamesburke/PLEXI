@@ -66,6 +66,20 @@ run() {
   return 0
 }
 
+# Run a command and print elapsed_sec plus maxrss_kb on stderr after it.
+timed() {
+  python3 -c '
+import resource, subprocess, sys, time
+cmd = sys.argv[1:]
+start = time.perf_counter()
+proc = subprocess.run(cmd)
+elapsed = time.perf_counter() - start
+rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+print(f"elapsed_sec {elapsed:.3f} max_rss_kb {rss}", file=sys.stderr)
+sys.exit(proc.returncode)
+' "$@"
+}
+
 frontmatter_field() {
   local file="$1"
   local key="$2"

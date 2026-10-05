@@ -42,11 +42,28 @@ PY
     local out err
     out="$(mktemp)"
     err="$(mktemp)"
-    /usr/bin/time -f "elapsed_sec %e max_rss_kb %M" -o "$err" "$@" >"$out"
+    python3 -c '
+import resource, subprocess, sys, time
+out_path, err_path = sys.argv[1], sys.argv[2]
+cmd = sys.argv[3:]
+start = time.perf_counter()
+with open(out_path, "wb") as stdout, open(err_path, "wb") as stderr:
+    proc = subprocess.run(cmd, stdout=stdout, stderr=stderr)
+elapsed = time.perf_counter() - start
+rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+with open(out_path + ".meta", "w", encoding="utf-8") as meta:
+    meta.write(f"elapsed_sec {elapsed:.3f}\nmax_rss_kb {rss}\n")
+sys.exit(proc.returncode)
+' "$out" "$err" "$@"
     local rc=$?
     printf '\n-- %s --\n' "$name"
     printf 'exit=%s\n' "$rc"
-    cat "$err"
+    cat "$out.meta"
+    printf 'stderr_bytes=%s\n' "$(wc -c <"$err")"
+    if [[ -s "$err" ]]; then
+      printf 'stderr head:\n'
+      head -n 4 "$err"
+    fi
     printf 'stdout_lines=%s stdout_bytes=%s\n' "$(wc -l <"$out")" "$(wc -c <"$out")"
     if [[ "$(wc -c <"$out")" -lt 2000 ]]; then
       printf 'stdout:\n'
