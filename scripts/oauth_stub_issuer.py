@@ -9,7 +9,7 @@ A test double, never a real identity provider: it approves or denies every
 authorization request without a login page, issues random opaque tokens, and
 holds everything in memory. It binds loopback only.
 
-    uv run scripts/oauth_stub_issuer.py --port 8765 [--decision deny]
+    uv run scripts/oauth_stub_issuer.py --port 8765 [--deny] [--log /tmp/oauth-stub.log]
 
 Endpoints:
   GET  /authorize   302 to redirect_uri with ?code= (or ?error=access_denied).
@@ -35,8 +35,15 @@ TOKENS: dict[str, dict] = {}
 ISSUED = 0
 
 
+LOG_PATH: str | None = None
+
+
 def log(msg: str) -> None:
-    print(f"[stub-issuer] {msg}", file=sys.stderr, flush=True)
+    line = f"[stub-issuer] {msg}"
+    print(line, file=sys.stderr, flush=True)
+    if LOG_PATH:
+        with open(LOG_PATH, "a", encoding="utf-8") as output:
+            print(line, file=output, flush=True)
 
 
 def is_loopback_redirect(uri: str) -> bool:
@@ -133,8 +140,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--decision", choices=["allow", "deny"], default="allow")
+    ap.add_argument("--deny", action="store_true", help="deny every authorization request")
+    ap.add_argument("--log", help="append issuer request events to this file")
     args = ap.parse_args()
-    Handler.decision = args.decision
+    global LOG_PATH
+    LOG_PATH = args.log
+    Handler.decision = "deny" if args.deny else args.decision
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     log(f"listening on http://127.0.0.1:{server.server_port} decision={args.decision}")
     server.serve_forever()
