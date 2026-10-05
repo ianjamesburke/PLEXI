@@ -1,6 +1,7 @@
 """Stub server contract tests. Run: python3 -m unittest clients/phone-web/test_server.py"""
 
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -218,6 +219,80 @@ class AddressDiscoveryTest(unittest.TestCase):
     def test_parses_ip_o_ipv4_output(self) -> None:
         output = "2: en0    inet 192.168.1.67/24 brd 192.168.1.255 scope global en0\n1: lo    inet 127.0.0.1/8 scope host lo\n"
         self.assertEqual(server.parse_ip_o_ipv4(output), [("en0", "192.168.1.67"), ("lo", "127.0.0.1")])
+
+
+def _completed(args: list[str], code: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args, code, stdout, stderr)
+
+
+class TailscaleAddressTest(unittest.TestCase):
+    def test_selects_ipv4_and_magicdns_from_mocked_commands(self) -> None:
+        calls: list[list[str]] = []
+
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(list(args))
+            if args == ["tailscale", "ip", "-4"]:
+                return _completed(args, 0, stdout="100.101.102.103\n")
+            if args == ["tailscale", "status", "--json"]:
+                body = json.dumps({"Self": {"DNSName": "studio.tailnet.ts.net.", "TailscaleIPs": ["100.101.102.103"]}})
+                return _completed(args, 0, stdout=body)
+            raise AssertionError(args)
+
+        address, name = server.resolve_tailscale_endpoint(run)
+        self.assertEqual(address, "100.101.102.103")
+        self.assertEqual(name, "studio.tailnet.ts.net")
+        self.assertEqual(calls[0], ["tailscale", "ip", "-4"])
+
+    def test_ip_without_magicdns_still_binds(self) -> None:
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[1] == "ip":
+                return _completed(args, 0, stdout="100.64.0.8\n")
+            return _completed(args, 1, stderr="status unavailable")
+
+        address, name = server.resolve_tailscale_endpoint(run)
+        self.assertEqual(address, "100.64.0.8")
+        self.assertIsNone(name)
+
+    def test_missing_tailscale_command_is_a_clear_error(self) -> None:
+        def run(_args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise FileNotFoundError("tailscale")
+
+        with self.assertRaises(server.TailscaleUnavailable) as raised:
+            server.resolve_tailscale_endpoint(run)
+        self.assertIn("not found", str(raised.exception))
+        self.assertIn("--tailscale", str(raised.exception))
+
+    def test_daemon_down_includes_command_stderr(self) -> None:
+        detail = "failed to connect to local tailscaled; is tailscaled running?"
+
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return _completed(args, 1, stderr=detail)
+
+        with self.assertRaises(server.TailscaleUnavailable) as raised:
+            server.resolve_tailscale_endpoint(run)
+        self.assertIn("not running", str(raised.exception))
+        self.assertIn(detail, str(raised.exception))
+
+    def test_non_tailscale_address_is_rejected(self) -> None:
+        def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return _completed(args, 0, stdout="192.168.1.20\n")
+
+        with self.assertRaises(server.TailscaleUnavailable) as raised:
+            server.resolve_tailscale_endpoint(run)
+        self.assertIn("100.64.0.0/10", str(raised.exception))
+
+    def test_select_tailscale_ipv4_skips_blank_lines(self) -> None:
+        self.assertEqual(server.select_tailscale_ipv4("\n100.77.1.9\n"), "100.77.1.9")
+        with self.assertRaises(server.TailscaleUnavailable):
+            server.select_tailscale_ipv4("")
+
+    def test_magicdns_ignores_malformed_status(self) -> None:
+        self.assertIsNone(server.magicdns_name_from_status("not-json"))
+        self.assertIsNone(server.magicdns_name_from_status(json.dumps({"Self": {"DNSName": ""}})))
+        self.assertEqual(
+            server.magicdns_name_from_status(json.dumps({"Self": {"DNSName": "phone.example.ts.net."}})),
+            "phone.example.ts.net",
+        )
 
 
 if __name__ == "__main__":
