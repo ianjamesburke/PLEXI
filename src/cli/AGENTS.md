@@ -65,7 +65,9 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
   explicit null `client` and `kind` and still count. `--json` prints the
   groups. `assistant send --client` and `--kind` are per-run overrides; an
   omitted flag stays unset so the host can apply `[ai] client` and kind
-  `output`.
+  `  output`. `assistant send` does not require an open Assistant pane: the
+  host reuses one in the context or creates a hidden one. A `--pane-id` that
+  does not exist still fails.
 - **Routines are post-v1.** `plexi routine` stays compiled for beta and
   worktree development but is release-gated and hidden from stable help.
 - **Connector OAuth keeps tokens host-side.** `plexi connector login stub

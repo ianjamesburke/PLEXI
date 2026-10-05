@@ -309,6 +309,7 @@ fn stream_ollama(
                     let _ = tx.send(StreamEvent::Done {
                         input_tokens,
                         output_tokens,
+                        cost_usd: None,
                         generation_id: None,
                     });
                     return;
@@ -327,6 +328,7 @@ fn stream_ollama(
     let _ = tx.send(StreamEvent::Done {
         input_tokens,
         output_tokens,
+        cost_usd: None,
         generation_id: None,
     });
 }

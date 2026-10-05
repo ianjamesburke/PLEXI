@@ -1518,8 +1518,22 @@ impl PlexiApp {
         let mut per_pane: Vec<(u64, u64, String, Vec<AppCommand>)> = Vec::new();
         for (ctx_idx, context) in self.windows.iter_mut().enumerate() {
             let context_id = context.context_id;
+            // Panes that are not in the tile tree never receive `ui()`, even
+            // when this window is visible. A headless Assistant is one of
+            // those: it lives in `panes` so a send can complete, and it has
+            // to be ticked from logic.
+            let tiled_ids: Vec<u64> = context
+                .tree
+                .tiles
+                .iter()
+                .filter_map(|(_, tile)| match tile {
+                    egui_tiles::Tile::Pane(id) => Some(*id),
+                    _ => None,
+                })
+                .collect();
             for (pane_id, pane) in context.panes.iter_mut() {
                 if let Some(app_pane) = pane.as_app_mut() {
+                    let off_tree = !tiled_ids.contains(pane_id);
                     // Active-context panes are already fully updated by
                     // ui() this frame — unless the window is hidden, in
                     // which case ui() never runs at all and the active
@@ -1529,8 +1543,9 @@ impl PlexiApp {
                     // commands flow out — but only when they actually have
                     // pending background work; idle apps are skipped so a
                     // busy foreground doesn't tick every background app on
-                    // every frame (#2021).
-                    if (ctx_idx != active || window_hidden)
+                    // every frame (#2021). Off-tree panes are not painted,
+                    // so they get the tick even in the active visible window.
+                    if (ctx_idx != active || window_hidden || off_tree)
                         && app_pane.runtime.needs_background_tick()
                     {
                         app_pane.runtime.background_tick();

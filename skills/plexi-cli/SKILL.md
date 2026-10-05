@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
 last_verified: "2026-10-05"
 ---
@@ -91,6 +91,9 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   The command reads the local ledger file and does not need a running host.
   `assistant send --client` and `--kind` override the tags for one run;
   omitted, the client comes from `[ai] client` and the kind is `output`.
+  Send does not require `app open assistant` first: with no pane named, the
+  host reuses an Assistant in the context or creates a hidden one. A pane id
+  that does not exist still fails.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
