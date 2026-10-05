@@ -74,6 +74,15 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SecretCmd,
     },
+    /// Connect third-party services over OAuth.
+    ///
+    /// Sign-in runs in your browser; the resulting token is kept in the platform
+    /// secret store and is never printed — commands report only a credential
+    /// reference. Revoke removes it locally and at the issuer.
+    Connector {
+        #[command(subcommand)]
+        cmd: ConnectorCmd,
+    },
     /// Manage workspace routines — scheduled shell commands.
     ///
     /// Routines are declared in `routines.toml` inside the workspace channel directory —
@@ -473,6 +482,54 @@ pub enum SecretCmd {
         /// Delete from the global store instead of the project-scoped store
         #[arg(long)]
         global: bool,
+    },
+}
+
+/// Which host surface runs a connector sign-in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ConnectorSurface {
+    #[default]
+    Desktop,
+    /// Not yet supported: every operation reports so.
+    Mobile,
+}
+
+#[derive(Subcommand)]
+pub enum ConnectorCmd {
+    /// Sign in to a connector and store its credential.
+    ///
+    /// Opens the issuer's sign-in page in your browser and waits for it to redirect
+    /// back to a one-time loopback address. Prints the stored credential reference
+    /// as JSON. Exit 0 connected, 2 timed out, 1 denied or failed.
+    Login {
+        /// Connector id (currently only `stub`, a local test issuer)
+        connector: String,
+        /// Base URL of the stub issuer; must be a loopback address
+        #[arg(long)]
+        issuer: Option<String>,
+        /// Print the sign-in URL instead of opening a browser
+        #[arg(long)]
+        no_browser: bool,
+        /// Seconds to wait for the browser to redirect back
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
+    },
+    /// Show a connector's stored credential reference as JSON (never the token).
+    Status {
+        connector: String,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
+    },
+    /// Revoke a connector's credential at the issuer and delete it locally.
+    ///
+    /// The local credential is deleted even when the issuer cannot be reached;
+    /// that case exits 1 and says so.
+    Revoke {
+        connector: String,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
     },
 }
 
