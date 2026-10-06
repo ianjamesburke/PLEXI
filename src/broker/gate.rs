@@ -194,11 +194,6 @@ impl PermissionMonitor {
         &self.session_id
     }
 
-    pub fn replace_store(&self, store: GrantStore) {
-        *self.store() = store;
-        log::info!("permission_monitor: grant store replaced");
-    }
-
     #[cfg(test)]
     pub fn fail_audit(&self, fail: bool) {
         self.fail_audit.store(fail, Ordering::SeqCst);
