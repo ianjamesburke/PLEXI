@@ -32,6 +32,8 @@
 //! land in the agent's transcript, which is the host-visible record of what
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
+pub mod heads;
+
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
     PermissionRequest, TargetType,
@@ -772,8 +774,8 @@ impl AgentHost {
     /// Called from `apply_context_transition_effects` — the same choke point
     /// that rescans the app registry — so agents defined in a workspace that
     /// becomes active after boot are picked up. Detaches every current agent
-    /// (removing its timeline subscriptions), re-reads grants from disk when
-    /// `grants_dir` is set, and attaches the new root's agents. `None` =
+    /// (removing its timeline subscriptions), keeps the live profile permission
+    /// monitor when `grants_dir` is set, and attaches the new root's agents. `None` =
     /// no active workspace = no agents. `context_id` is the host-observed
     /// active context (`WorkspaceRouter::active().context_id` at the call
     /// site) — stored unconditionally so `gated_dispatcher`'s connector-tool
@@ -791,10 +793,17 @@ impl AgentHost {
         }
         self.agents.clear();
         if let Some(dir) = &self.grants_dir {
-            let loaded = GrantStore::load_or_default(dir);
-            self.monitor.replace_store(loaded);
+            // The profile monitor is the live grant store (`heads` records
+            // scope allows here). Replacing it from disk drops an allow whose
+            // seal save has not landed, and the next `agents.list` comes back
+            // as `permission_required` with no `heads` field. Keep that
+            // monitor. The subscription copy is still the file on disk.
             self.grant_store = GrantStore::load_or_default(dir);
             self.monitor = crate::broker::gate::PermissionMonitor::for_profile(dir);
+            log::info!(
+                "agent: workspace reload kept the live permission monitor ({} grant(s))",
+                self.monitor.store().records().len()
+            );
         }
         let Some(root) = workspace_root else {
             log::info!("agent: no active workspace — no agents attached");
@@ -1381,6 +1390,75 @@ default_tier = "low"
         host.reload_workspace(None, 1);
         assert!(host.agents.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
+    }
+
+    /// A scope allow that has not reached disk must survive a workspace
+    /// reload. The profile monitor is the store `agents.list` admits against.
+    #[test]
+    fn reload_workspace_keeps_unsaved_scope_allows() {
+        use crate::broker::gate::{AdmitRequest, Admission, PermissionMonitor};
+        use crate::broker::{
+            ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, TargetType,
+        };
+
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let mut host = AgentHost::new_for_test(
+            timeline,
+            Arc::new(InertAiBroker),
+            ws.path().to_path_buf(),
+        );
+        host.grants_dir = Some(profile.path().to_path_buf());
+        host.monitor = PermissionMonitor::for_profile(profile.path());
+        let binding = crate::broker::ExactBinding {
+            actor_type: ActorType::Agent,
+            actor_id: "agent:lead".to_string(),
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host".to_string(),
+            workspace_root: ws.path().to_path_buf(),
+            target_type: TargetType::HostTool,
+            target_id: "agents.list".to_string(),
+            resource_scope: crate::broker::ResourceScope::Workspace,
+            resource_id: None,
+            args_fingerprint: "scope".to_string(),
+            session_id: None,
+            package_id: "agents".to_string(),
+            instance_id: Some(0),
+            context_id: Some(0),
+            call_id: String::new(),
+            operation_id: String::new(),
+        };
+        let mut record = GrantRecord::from_binding(
+            &binding,
+            Decision::Allow,
+            GrantDuration::Always,
+            GrantSource::User,
+            "grant_scope",
+        );
+        record.args_unbound = true;
+        host.monitor.store().record(record);
+
+        host.reload_workspace(Some(ws.path().to_path_buf()), 1);
+
+        let admission = host.monitor.admit(AdmitRequest {
+            call_id: "call_list",
+            tool: "agents.list",
+            input_json: "{}",
+            actor_type: ActorType::Agent,
+            actor_id: "agent:lead",
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host",
+            workspace_root: ws.path(),
+            context_id: 0,
+            package_id: "agents",
+            instance_id: 0,
+            target_type: TargetType::HostTool,
+        });
+        assert!(
+            matches!(admission, Admission::Proceed { .. }),
+            "scope allow was dropped by workspace reload"
+        );
     }
 
     /// Self-caused deliveries (the agent as actor, or events an app emitted

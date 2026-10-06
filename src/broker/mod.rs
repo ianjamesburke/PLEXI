@@ -180,6 +180,12 @@ pub struct GrantRecord {
     /// Operation id that consumed a one-shot, for receipt recovery only.
     #[serde(default)]
     pub bound_operation_id: Option<String>,
+    /// Tool scope: actor, tool, and resource still have to match, but argument
+    /// bytes do not. Exact call grants leave this false. A scope grant is how
+    /// an agent head is allowed to call a tool; it is still one `GrantRecord`
+    /// in this store, evaluated by `matches`.
+    #[serde(default)]
+    pub args_unbound: bool,
 }
 
 impl GrantRecord {
@@ -237,6 +243,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            args_unbound: false,
         }
     }
 
@@ -275,6 +282,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            args_unbound: false,
         }
     }
 
@@ -323,7 +331,9 @@ impl GrantRecord {
                 && self.target_type == TargetType::Capability
                 && req.target_type == TargetType::Capability;
         }
-        if self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint {
+        if !self.args_unbound
+            && (self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint)
+        {
             return false;
         }
         if self.resource_scope != req.resource_scope || self.resource_id != req.resource_id {
