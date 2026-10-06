@@ -75,7 +75,7 @@ phone browser  --HTTPS cookie-->  relay (Railway TLS, process is HTTP)
 **Mitigations.**
 
 - The pair page says bodies are plaintext on the server and TLS is not end-to-end encryption.
-- The operator still cannot approve. `approve` returns 403 (`relay.py:1023`). The desktop sends `submit_assistant_turn` with no grant field (`assistant_send_payload`, `src/cli/app.rs:1934`). `submit_external_turn` (`src/assistant/mod.rs:4026`) returns `waiting_for_permission` when a sheet is already up (`mod.rs:4055`), and tool calls still hit the ask gate.
+- The operator still cannot approve. `approve` returns 403 (`relay.py:1023`). The desktop sends `submit_assistant_turn` with no grant field (`assistant_send_payload`, `src/cli/app.rs:1945`). `submit_external_turn` (`src/assistant/mod.rs:4026`) returns `waiting_for_permission` when a sheet is already up (`mod.rs:4055`), and tool calls still hit the ask gate.
 - `PLEXI_RELAY_ASSISTANT=echo` skips the host. It is honored only for a loopback URL (`dispatch_from_env`, `src/cli/relay.rs:667`). The host-owned connection always uses `Dispatch::Host` (`start_host_relay`, `relay.rs:170`).
 
 **Gap.** The operator sees every body and can forge `text` and `join_desktop` on the desktop socket. There is no signature from the phone that the desktop checks.
@@ -142,7 +142,7 @@ phone browser  --HTTPS cookie-->  relay (Railway TLS, process is HTTP)
 Anything that arrives via the relay is still an assistant turn.
 
 - The phone approval routes return 403 `waiting_on_desktop` (`approve`). They do not change delivery state. Test: `test_revoke_drops_the_live_session_and_approval_changes_nothing` and `test_approval_is_waiting_on_desktop`.
-- The desktop path calls `host_assistant_turn` (`src/cli/relay.rs:748`) → `assistant_send_result` → `assistant_send_payload` (`src/cli/app.rs:1934`). The JSON has no `approved`, `grant`, or `permission` field. Test: `echo_dispatch_is_loopback_only_and_the_payload_grants_nothing`.
+- The desktop path calls `host_assistant_turn` (`src/cli/relay.rs:748`) → `assistant_send_result` → `assistant_send_payload` (`src/cli/app.rs:1945`). The JSON has no `approved`, `grant`, or `permission` field. Test: `echo_dispatch_is_loopback_only_and_the_payload_grants_nothing`.
 - Production URLs must be `wss://`. `ws://` is accepted only for localhost (`parse_relay_url` `src/cli/relay_ws.rs:24`, `is_loopback` `relay_ws.rs:87`). TLS uses the webpki root set (`tls_wrap`, `relay_ws.rs:297`). The host token stays in the keychain (`load_identity`, `src/cli/relay.rs:1013`). The desktop control socket is loopback and unauthenticated (`TcpListener::bind("127.0.0.1:0")`, `relay.rs:227`).
 - If a permission sheet is already pending, `submit_external_turn` answers `waiting_for_permission` and does not submit a new prompt.
 - The ask gate that shows the sheet lives in the assistant (`permission_requested` in `src/assistant/model.rs`). This review does not move it.

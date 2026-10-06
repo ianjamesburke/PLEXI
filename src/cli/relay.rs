@@ -1385,14 +1385,16 @@ mod tests {
         assert_eq!(dispatch_from_env(true, false), Dispatch::Host);
         assert_eq!(dispatch_from_env(false, true), Dispatch::Host);
         let payload = super::super::app::assistant_send_payload(
-            "hello from the phone",
-            "req-1",
-            "/tmp/response",
-            None,
-            None,
-            Some("phone-host"),
-            false,
-            None,
+            &super::super::app::AssistantSendFields {
+                text: "hello from the phone",
+                request_id: "req-1",
+                response_file: "/tmp/response",
+                pane_id: None,
+                context_id: None,
+                conversation: Some("phone-host"),
+                join_desktop: false,
+                status_for: None,
+            },
         );
         assert_eq!(payload["type"], "submit_assistant_turn");
         assert!(payload.get("approved").is_none());

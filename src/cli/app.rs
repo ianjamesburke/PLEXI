@@ -1929,28 +1929,30 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     }
 }
 
-/// JSON body of `submit_assistant_turn`. There is no approval, grant, or
+/// Fields of `submit_assistant_turn`. There is no approval, grant, or
 /// permission field: the host gate is the only authorizer.
-pub(crate) fn assistant_send_payload(
-    text: &str,
-    request_id: &str,
-    response_file: &str,
-    pane_id: Option<u64>,
-    context_id: Option<u64>,
-    conversation: Option<&str>,
-    join_desktop: bool,
-    status_for: Option<&str>,
-) -> serde_json::Value {
+pub(crate) struct AssistantSendFields<'a> {
+    pub text: &'a str,
+    pub request_id: &'a str,
+    pub response_file: &'a str,
+    pub pane_id: Option<u64>,
+    pub context_id: Option<u64>,
+    pub conversation: Option<&'a str>,
+    pub join_desktop: bool,
+    pub status_for: Option<&'a str>,
+}
+
+pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_json::Value {
     serde_json::json!({
         "type": "submit_assistant_turn",
-        "text": text,
-        "request_id": request_id,
-        "response_file": response_file,
-        "pane_id": pane_id,
-        "context_id": context_id,
-        "conversation_id": conversation,
-        "join_desktop": join_desktop,
-        "status_for": status_for,
+        "text": fields.text,
+        "request_id": fields.request_id,
+        "response_file": fields.response_file,
+        "pane_id": fields.pane_id,
+        "context_id": fields.context_id,
+        "conversation_id": fields.conversation,
+        "join_desktop": fields.join_desktop,
+        "status_for": fields.status_for,
     })
 }
 
@@ -1975,16 +1977,16 @@ pub fn assistant_send_result(
     if let Some(turn_id) = status_for {
         log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
     }
-    let payload = assistant_send_payload(
-        text.unwrap_or(""),
-        &request_id,
-        &response_file,
+    let payload = assistant_send_payload(&AssistantSendFields {
+        text: text.unwrap_or(""),
+        request_id: &request_id,
+        response_file: &response_file,
         pane_id,
         context_id,
         conversation,
         join_desktop,
         status_for,
-    );
+    });
     let content = super::request_with(
         payload,
         "assistant-send",
