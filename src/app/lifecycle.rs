@@ -2562,27 +2562,6 @@ impl PlexiApp {
                     response_file.clone(),
                 );
             }
-            crate::protocol::AppRequest::CallAppTool {
-                app_id,
-                tool,
-                input_json,
-                caller_pane_id,
-                call_credential,
-                peer_ancestry,
-                target_pane_id,
-                response_file,
-            } => {
-                self.call_app_tool(
-                    app_id.clone(),
-                    tool.clone(),
-                    input_json.clone(),
-                    *caller_pane_id,
-                    call_credential.clone(),
-                    peer_ancestry.clone(),
-                    *target_pane_id,
-                    response_file.clone(),
-                );
-            }
             crate::protocol::AppRequest::SetAgentState {
                 pane_id,
                 state,

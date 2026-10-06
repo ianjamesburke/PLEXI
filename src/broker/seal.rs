@@ -481,6 +481,20 @@ fn backup_corrupt(path: &Path, error: &str) {
     }
 }
 
+/// Permission MAC if the host seal store already has one. Does not create a key.
+pub(crate) fn existing_mac_key() -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    super::host_key::scrub_user_secret_host_namespace();
+    match super::host_key::get(super::host_key::MAC_ITEM)? {
+        Some(existing) => Ok(Some(Zeroizing::new(decode_hex(existing.trim())?))),
+        None => Ok(None),
+    }
+}
+
+/// Permission MAC, creating it in the host seal store when this is the first use.
+pub(crate) fn mac_key_bytes() -> Result<Zeroizing<Vec<u8>>, String> {
+    key_bytes()
+}
+
 fn key_hex() -> Result<Zeroizing<String>, String> {
     super::host_key::scrub_user_secret_host_namespace();
     if let Some(existing) = super::host_key::get(super::host_key::MAC_ITEM)? {

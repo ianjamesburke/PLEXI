@@ -3354,12 +3354,16 @@ mod tests {
         let host = dir.path().join("host");
         let dir_mode = std::fs::metadata(&host).unwrap().permissions().mode() & 0o777;
         let file_mode = std::fs::metadata(host.join("needs-you.json")).unwrap().permissions().mode() & 0o777;
-        let key_mode = std::fs::metadata(host.join("seal.key")).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "host directory must be mode 0700");
         assert_eq!(file_mode, 0o600);
-        assert_eq!(key_mode, 0o600);
+        assert!(
+            !host.join("seal.key").exists(),
+            "the seal key lives in the host seal store, not beside the journal"
+        );
         let journal = std::fs::read(host.join("needs-you.json")).unwrap();
-        let key = std::fs::read(host.join("seal.key")).unwrap();
+        let key = crate::broker::seal::existing_mac_key()
+            .expect("host seal store")
+            .expect("permission mac");
         assert!(!journal.windows(key.len()).any(|window| window == key.as_slice()));
         assert!(!dir.path().join("needs-you.json").exists());
         assert!(!dir.path().join("secrets.json").exists());

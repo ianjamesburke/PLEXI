@@ -178,16 +178,15 @@ host, profile, pending = sys.argv[1:]
 mode = stat.S_IMODE(os.stat(host).st_mode)
 if mode != 0o700:
     raise SystemExit(f"host dir mode is {oct(mode)}")
-for name in ("needs-you.json", "seal.key"):
-    file_mode = stat.S_IMODE(os.stat(os.path.join(host, name)).st_mode)
-    if file_mode != 0o600:
-        raise SystemExit(f"{name} mode is {oct(file_mode)}")
+journal_path = os.path.join(host, "needs-you.json")
+journal_mode = stat.S_IMODE(os.stat(journal_path).st_mode)
+if journal_mode != 0o600:
+    raise SystemExit(f"needs-you.json mode is {oct(journal_mode)}")
+if os.path.exists(os.path.join(host, "seal.key")):
+    raise SystemExit("seal key must live in the host seal store, not beside the journal")
 if os.path.exists(os.path.join(profile, "needs-you.json")):
     raise SystemExit("queue was written at the profile root")
-journal = open(os.path.join(host, "needs-you.json"), "rb").read()
-key = open(os.path.join(host, "seal.key"), "rb").read()
-if key in journal:
-    raise SystemExit("seal key is inside the journal")
+journal = open(journal_path, "rb").read()
 if pending.encode() not in journal:
     raise SystemExit("journal does not contain the pending id")
 PY
