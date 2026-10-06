@@ -83,6 +83,18 @@ pub fn agent_conversation_cli(head: &str, as_head: Option<&str>, json: bool) -> 
     )
 }
 
+pub fn command_view_follow_cli() -> i32 {
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    log::info!("command_view:cli: follow workspace={}", workspace.display());
+    super::events::stream_control_line(json!({
+        "type": "command_view_follow",
+        "workspace": workspace,
+    }))
+}
+
 pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
     let workspace = match crate::cli::agent::resolve_workspace_cwd() {
         Ok(root) => root,
