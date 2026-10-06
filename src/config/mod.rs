@@ -82,6 +82,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "agents",
     "cli",
     "marketplace",
+    "cloud",
     "pane_gap",
     "pane_title_font_size",
     "osc_pane_title",
@@ -124,6 +125,7 @@ const KNOWN_THEME: &[&str] = &[
 ];
 const KNOWN_EFFECTS: &[&str] = &["crt", "ghost", "ghost_opacity"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
+const KNOWN_CLOUD: &[&str] = &["retain_local_history"];
 const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "sound"];
 const KNOWN_AI: &[&str] = &[
     "backend",
@@ -284,6 +286,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("marketplace") {
                 check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("cloud") {
+                check_unknown_keys(t, "cloud", KNOWN_CLOUD, &path_str, &mut diags);
             }
             if table.contains_key("quick_note") {
                 diags.push(ConfigDiagnostic::DeprecatedSection {
@@ -489,6 +494,9 @@ pub struct PlexiConfig {
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
     pub marketplace: Option<MarketplaceConfig>,
+    /// Optional cloud link (`[cloud]`). Local use never reads this. See
+    /// [`CloudConfig`].
+    pub cloud: Option<CloudConfig>,
     /// Per-extension file-open handlers (`[file_handlers]`). Keys are bare,
     /// lowercase extensions (`md`, not `.md`); values are `kind:value` handler
     /// specs resolved by [`crate::app::file_handlers::FileHandler`]:
@@ -532,6 +540,21 @@ pub struct MarketplaceConfig {
     pub account_url: Option<String>,
     /// Default email pre-filled by `plexi account login`. Unset = prompt.
     pub account_email: Option<String>,
+}
+
+/// Cloud link settings (`[cloud]`).
+///
+/// An account is optional. Local use never requires one; a session only links
+/// this desktop to relay and cloud features. This section does not change that.
+/// The one flag here decides whether the retention job may also delete local
+/// ledger rows and assistant conversations.
+#[derive(Deserialize, Default, Clone)]
+pub struct CloudConfig {
+    /// When `true`, delete local `ai-ledger.jsonl` rows and assistant
+    /// conversation files older than 30 days. Unset or `false` keeps them.
+    /// Relay registry rows, queued-envelope metadata, and logs Plexi controls
+    /// are pruned either way.
+    pub retain_local_history: Option<bool>,
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).
@@ -1561,6 +1584,24 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.marketplace = Some(incoming),
             _ => {}
         }
+        match (self.cloud.as_mut(), other.cloud) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.cloud = Some(incoming),
+            _ => {}
+        }
+    }
+}
+
+impl CloudConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.retain_local_history.is_some() {
+            self.retain_local_history = other.retain_local_history;
+        }
+    }
+
+    /// Local ledger and conversation prune. Unset means keep local history.
+    pub fn retain_local_history(&self) -> bool {
+        self.retain_local_history.unwrap_or(false)
     }
 }
 
