@@ -6,10 +6,33 @@
 # is stale. Twenty pane-key calls while a proposal is pending return in under
 # one second and do not accept.
 #
-# scripts/e2e/human.sh is the human click (HUMAN_APPROVE). It is not on alpha
-# yet. When it is absent this script accepts through the CLI and prints
-# VERIFIED-VIA-BYPASS. That proves the feature, not the gate.
+# scripts/e2e/human.sh is the permission-sheet click (HUMAN_APPROVE) when that
+# driver is on the tree. The editor Accept button is still a pointer click the
+# driver does not press, so a granted set is accepted through the CLI and the
+# script prints VERIFIED-VIA-BYPASS.
+#
+# Channel binary: PLEXI_BIN or the first argument, any `plexi-*` name
+# (plexi-alpha, plexi-pr-N). The profile follows that binary. A PR number
+# alone is not an address.
+#
+# Linux host startup reads the seal key from Secret Service before the notify
+# socket exists. An inherited session bus that accepts and never completes the
+# handshake makes `host start` sit until its 90s deadline. A private session
+# bus is the same arrangement the needs-you and folder-secret checks use.
 set -euo pipefail
+
+if [[ "$(uname -s)" == "Linux" && -z "${CHANGE_SETS_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  # Drop the caller's bus before the daemon starts, including a socket at
+  # $XDG_RUNTIME_DIR/bus left by an earlier item.
+  session_runtime="$(mktemp -d "${TMPDIR:-/tmp}/plexi-change-sets-bus.XXXXXX")"
+  chmod 700 "$session_runtime"
+  unset DBUS_SESSION_BUS_ADDRESS || true
+  export XDG_RUNTIME_DIR="$session_runtime"
+  exec dbus-run-session -- env CHANGE_SETS_E2E_INNER=1 XDG_RUNTIME_DIR="$session_runtime" "$0" "$@"
+fi
+if [[ -z "${CHANGE_SETS_E2E_INNER:-}" ]]; then
+  unset DBUS_SESSION_BUS_ADDRESS || true
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${PLEXI_BIN:-${1:-$ROOT/target/release/plexi}}"
@@ -31,6 +54,18 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+# current_exe() follows symlinks. A symlink named plexi-alpha would report the
+# bare binary and open ~/.plexi. Copy to a real file that keeps the channel name.
+BIN_NAME="$(basename "$BIN")"
+BIN_NAME="${BIN_NAME%.exe}"
+BIN_NAME="${BIN_NAME%.EXE}"
+if [[ -L "$BIN" && "$BIN_NAME" == plexi-* ]]; then
+  mkdir -p "$WORK/bin"
+  cp -f "$(readlink -f "$BIN")" "$WORK/bin/$BIN_NAME"
+  chmod +x "$WORK/bin/$BIN_NAME"
+  BIN="$WORK/bin/$BIN_NAME"
+fi
 
 export HOME="$WORK/home"
 mkdir -p "$HOME"
@@ -56,9 +91,9 @@ export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
 if [[ -z "${VK_DRIVER_FILES:-}" && -f /usr/share/vulkan/icd.d/lvp_icd.json ]]; then
   export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
 fi
-if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
-  export XDG_RUNTIME_DIR="$WORK/runtime"
-fi
+# Never the caller's runtime dir. Its bus socket is shared with earlier items,
+# and a socket that accepts without a handshake blocks seal startup.
+export XDG_RUNTIME_DIR="$WORK/runtime"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
@@ -122,6 +157,16 @@ echo "starting host $BIN"
 "$BIN" host start --ephemeral --background --timeout-secs 90
 HOST_UP=1
 PROFILE="$("$BIN" changes profile)"
+if [[ "$BIN_NAME" == plexi-* ]]; then
+  suffix="${BIN_NAME#plexi-}"
+  case "$PROFILE" in
+    */.plexi-"$suffix") ;;
+    *)
+      echo "FAIL profile $PROFILE does not follow channel binary $BIN_NAME" >&2
+      exit 1
+      ;;
+  esac
+fi
 export PLEXI_SOCKET="$PROFILE/notify.sock"
 
 "$BIN" context set-root "$WS" >/dev/null
