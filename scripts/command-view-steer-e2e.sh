@@ -105,6 +105,8 @@ PY
 SHOT="$WORKDIR/command-view.png"
 if cli host screenshot --pane "$PANE" --output "$SHOT"; then
   test -s "$SHOT"
+  mkdir -p /tmp/plexi-e2e
+  cp "$SHOT" /tmp/plexi-e2e/command-view-steer.png
   echo "screenshot $SHOT"
 else
   echo "FAIL: host screenshot"
@@ -187,11 +189,25 @@ print("restart kept", len(a_heads), "heads and", len(a_runs), "runs")
 PY
 
 echo "STEP resolve and allow from an agent pane are refused"
-TERM="$(cli pane new "$BIN_PATH command-view resolve pending_example; $BIN_PATH command-view allow --tool assistant.turn; sleep 15" --no-focus | tr -d '[:space:]')"
-echo "agent pane $TERM"
+BEFORE="$(cli pane list)"
+cli pane new "$BIN_PATH command-view resolve pending_example; $BIN_PATH command-view allow --tool assistant.turn; sleep 20" --no-focus >/dev/null
 FOUND=0
-for _ in $(seq 1 30); do
-  CAPTURE="$(cli pane capture "$TERM" --plain 2>/dev/null || true)"
+CAPTURE=""
+for _ in $(seq 1 40); do
+  LIST="$(cli pane list)"
+  NEW_IDS="$(python3 - "$BEFORE" "$LIST" <<'PY'
+import json, sys
+before = {row.get("id") for row in json.loads(sys.argv[1])}
+rows = json.loads(sys.argv[2])
+for row in rows:
+    if row.get("id") not in before:
+        print(row.get("id"))
+PY
+)"
+  CAPTURE=""
+  for pane_id in $NEW_IDS; do
+    CAPTURE+=$'\n'"$(cli pane capture "$pane_id" --plain 2>/dev/null || true)"
+  done
   if printf '%s\n' "$CAPTURE" | python3 -c 'import sys; raise SystemExit(0 if sys.stdin.read().count("agent_cannot_approve") >= 2 else 1)'; then
     FOUND=1
     break
