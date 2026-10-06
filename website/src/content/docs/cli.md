@@ -162,52 +162,6 @@ Use --global to delete a globally-stored secret (one stored with `secret set --g
 | `<friendly_name>` | string | yes |  |
 | `--global` | flag | no | Delete from the global store instead of the project-scoped store |
 
-## `plexi connector`
-
-Connect third-party services over OAuth.
-
-Sign-in runs in your browser; the resulting token is kept in the platform secret store and is never printed — commands report only a credential reference. Revoke removes it locally and at the issuer.
-
-| Subcommand | Description |
-|---|---|
-| `login` | Sign in to a connector and store its credential |
-| `status` | Show a connector's stored credential reference as JSON (never the token) |
-| `revoke` | Revoke a connector's credential at the issuer and delete it locally |
-
-### `plexi connector login`
-
-Sign in to a connector and store its credential.
-
-Opens the issuer's sign-in page in your browser and waits for it to redirect back to a one-time loopback address. Prints the stored credential reference as JSON. Exit 0 connected, 2 timed out, 1 denied or failed.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<connector>` | string | yes | Connector id (currently only `stub`, a local test issuer) |
-| `--issuer` | string | no | Base URL of the stub issuer; must be a loopback address |
-| `--no-browser` | flag | no | Print the sign-in URL instead of opening a browser |
-| `--timeout` | string | no | Seconds to wait for the browser to redirect back Default: `300`. |
-| `--surface` | string | no | Default: `desktop`. |
-
-### `plexi connector status`
-
-Show a connector's stored credential reference as JSON (never the token)
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<connector>` | string | yes |  |
-| `--surface` | string | no | Default: `desktop`. |
-
-### `plexi connector revoke`
-
-Revoke a connector's credential at the issuer and delete it locally.
-
-The local credential is deleted even when the issuer cannot be reached; that case exits 1 and says so.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<connector>` | string | yes |  |
-| `--surface` | string | no | Default: `desktop`. |
-
 ## `plexi routine`
 
 Manage workspace routines — scheduled shell commands.
