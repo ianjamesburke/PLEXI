@@ -343,6 +343,16 @@ pub trait App: Send {
         None
     }
 
+    /// Show the desktop sheet that confirms a phone pairing code.
+    /// Returns true only when this call newly opened the sheet.
+    /// A tool sheet that is already open is left alone.
+    fn offer_relay_pairing(&mut self, _code: &str, _fingerprint: &str) -> bool {
+        false
+    }
+
+    /// Drop a pairing sheet once the code is no longer waiting.
+    fn clear_relay_pairing_sheet(&mut self) {}
+
     /// Submit a text turn through a builtin app's normal interactive path.
     /// Only the host Assistant implements this; the response path is owned by
     /// the app so callers cannot bypass its model or permission loop.

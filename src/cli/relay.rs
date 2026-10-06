@@ -197,7 +197,77 @@ pub fn start_host_relay() {
 }
 
 pub fn relay_confirm_cli(pairing_id: Option<String>) -> i32 {
+    if pairing_confirm_refused() {
+        eprintln!("error: an agent pane cannot confirm a phone pairing");
+        log::info!("relay: confirm refused caller=agent_pane");
+        return 1;
+    }
+    confirm_pairing_from_desktop(pairing_id)
+}
+
+/// Desktop sheet click. The host process may have inherited a pane id; that
+/// must not turn the person's click into an agent-pane confirm.
+pub(crate) fn confirm_pairing_from_desktop(pairing_id: Option<String>) -> i32 {
     control_roundtrip(json!({"type": "confirm", "pairing_id": pairing_id}))
+}
+
+/// True when this process is a command inside an agent pane.
+///
+/// A human terminal pane has `PLEXI_PANE_ID` and `"agent": null`. An agent
+/// pane has an agent record. No pane id means the desktop click or a shell
+/// outside the host, and those may confirm. A pane id that the host cannot
+/// classify is refused: an agent must not confirm just because pane list
+/// failed.
+fn pairing_confirm_refused() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = FORCE_AGENT_CONFIRM_CALLER.with(|cell| cell.get()) {
+        return forced;
+    }
+    let Ok(raw) = std::env::var("PLEXI_PANE_ID") else {
+        return false;
+    };
+    let Ok(pane_id) = raw.trim().parse::<u64>() else {
+        log::info!("relay: confirm refused caller=bad_pane_id");
+        return true;
+    };
+    match host_pane_list() {
+        Ok(list) => agent_pane_blocks_pairing_confirm(&list, Some(pane_id)),
+        Err(error) => {
+            log::info!("relay: confirm refused caller=pane_list_unavailable outcome={error}");
+            true
+        }
+    }
+}
+
+fn host_pane_list() -> Result<Value, i32> {
+    let content = super::request(
+        json!({"type": "list_panes"}),
+        "pane-list-response",
+        "pane list",
+    )?;
+    serde_json::from_str(&content).map_err(|error| {
+        log::info!("relay: pane list did not parse outcome={error}");
+        1
+    })
+}
+
+/// An agent pane must not pair a phone. A human pane, or no pane, may.
+pub(crate) fn agent_pane_blocks_pairing_confirm(pane_list: &Value, pane_id: Option<u64>) -> bool {
+    let Some(pane_id) = pane_id else {
+        return false;
+    };
+    let Some(rows) = pane_list.as_array() else {
+        return true;
+    };
+    match rows.iter().find(|row| row.get("id").and_then(|id| id.as_u64()) == Some(pane_id)) {
+        Some(row) => row.get("agent").is_some_and(|agent| !agent.is_null()),
+        None => true,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_AGENT_CONFIRM_CALLER: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 pub fn relay_revoke_cli(device_id: &str) -> i32 {
@@ -512,7 +582,7 @@ fn handle_relay_message(
             session.pairing_id = Some(pairing_id.to_string());
             write_status(session, "pending_confirm", None, None, Some(fingerprint))?;
             println!("Phone '{label}' wants to pair. Fingerprint {fingerprint}");
-            println!("Confirm with: plexi relay confirm");
+            println!("Confirm on the desktop sheet, or run: plexi relay confirm");
             log::info!(
                 "relay: pairing awaiting confirm host_id={} pairing_id={pairing_id}",
                 session.identity.host_id
@@ -1064,31 +1134,53 @@ fn session_stopped() -> bool {
 }
 
 fn control_roundtrip(command: Value) -> i32 {
+    // Status is rewritten on the session thread while confirm and stop read
+    // it. A torn read used to look like "not running" and fail the resume
+    // test. Retry the readable-file misses; a reached session still returns
+    // on the first try.
+    for attempt in 0..8 {
+        match control_roundtrip_once(&command) {
+            ControlOnce::Done(code) => return code,
+            ControlOnce::Retry if attempt + 1 < 8 => thread::sleep(Duration::from_millis(25)),
+            ControlOnce::Retry => break,
+        }
+    }
+    eprintln!("error: relay connect is not running");
+    1
+}
+
+enum ControlOnce {
+    Done(i32),
+    Retry,
+}
+
+fn control_roundtrip_once(command: &Value) -> ControlOnce {
     let Ok(text) = fs::read_to_string(status_path()) else {
-        eprintln!("error: relay connect is not running");
-        return 1;
+        return ControlOnce::Retry;
     };
-    let status: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let status: Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => return ControlOnce::Retry,
+    };
     let Some(control) = status.get("control").and_then(|value| value.as_str()) else {
-        eprintln!("error: relay connect is not running");
-        return 1;
+        return ControlOnce::Retry;
     };
     let mut stream = match TcpStream::connect(control) {
         Ok(stream) => stream,
         Err(error) => {
-            eprintln!("error: relay connect is not running ({error})");
-            return 1;
+            log::info!("relay: control connect retry outcome={error}");
+            return ControlOnce::Retry;
         }
     };
     if stream.write_all(format!("{command}\n").as_bytes()).is_err() {
         eprintln!("error: could not reach relay connect");
-        return 1;
+        return ControlOnce::Done(1);
     }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buf = String::new();
     let _ = stream.read_to_string(&mut buf);
     println!("{buf}");
-    0
+    ControlOnce::Done(0)
 }
 
 fn write_status(
@@ -1511,17 +1603,56 @@ fn write_private(path: &Path, body: &str) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|error| format!("relay write {}: {error}", path.display()))?;
     }
-    fs::write(path, body).map_err(|error| format!("relay write {}: {error}", path.display()))?;
+    // Rename into place so a reader never sees a truncated status file.
+    // `fs::write` truncates first; confirm/stop then parse an empty file and
+    // report that the session is gone while it is still running.
+    let tmp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("relay-status.json"),
+        std::process::id()
+    ));
+    fs::write(&tmp, body).map_err(|error| format!("relay write {}: {error}", tmp.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
     }
+    fs::rename(&tmp, path).map_err(|error| {
+        let _ = fs::remove_file(&tmp);
+        format!("relay write {}: {error}", path.display())
+    })?;
     Ok(())
 }
 
 fn status_path() -> PathBuf {
     crate::config::config_dir().join(STATUS_FILE)
+}
+
+/// Pairing code and phone fingerprint while the desktop still has to click.
+/// `None` once the code is confirmed or no session is waiting.
+pub(crate) fn pairing_prompt() -> Option<(String, String)> {
+    let text = fs::read_to_string(status_path()).ok()?;
+    let status: Value = serde_json::from_str(&text).ok()?;
+    if status.get("phase").and_then(|value| value.as_str()) != Some("pending_confirm") {
+        return None;
+    }
+    let code = status
+        .get("code")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if code.is_empty() {
+        return None;
+    }
+    let fingerprint = status
+        .get("fingerprint")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some((code, fingerprint))
 }
 
 fn identity_path() -> PathBuf {
@@ -1590,6 +1721,58 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::sync::Mutex;
     use std::time::Duration;
+
+    struct ForceAgentCaller;
+    impl ForceAgentCaller {
+        fn agent() -> Self {
+            FORCE_AGENT_CONFIRM_CALLER.with(|cell| cell.set(Some(true)));
+            Self
+        }
+    }
+    impl Drop for ForceAgentCaller {
+        fn drop(&mut self) {
+            FORCE_AGENT_CONFIRM_CALLER.with(|cell| cell.set(None));
+        }
+    }
+
+    #[test]
+    fn agent_pane_cannot_confirm_a_phone_pairing() {
+        let panes = json!([
+            {"id": 4, "type": "terminal", "agent": null},
+            {"id": 9, "type": "terminal", "agent": {"agent": "claude-code", "state": "working"}}
+        ]);
+        assert!(!agent_pane_blocks_pairing_confirm(&panes, None));
+        assert!(
+            !agent_pane_blocks_pairing_confirm(&panes, Some(4)),
+            "a human terminal pane may confirm"
+        );
+        assert!(
+            agent_pane_blocks_pairing_confirm(&panes, Some(9)),
+            "an agent pane must not confirm"
+        );
+        assert!(
+            agent_pane_blocks_pairing_confirm(&panes, Some(3)),
+            "an unknown pane id is not a human click"
+        );
+
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        fs::write(
+            status_path(),
+            json!({"control": addr, "phase": "pending_confirm"}).to_string(),
+        )
+        .unwrap();
+        let _force = ForceAgentCaller::agent();
+        let code = relay_confirm_cli(Some("pair-agent".to_string()));
+        assert_eq!(code, 1, "agent confirm must not succeed");
+        match listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("agent pane reached the pairing session: {other:?}"),
+        }
+    }
 
     /// `STOP` and the in-memory test keychain are process-global.
     static SESSION_TEST: Mutex<()> = Mutex::new(());

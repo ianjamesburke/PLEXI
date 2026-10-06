@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # Installed-build check for the phone relay.
-# The relay process is the Docker image. The desktop is plexi-pr-<PR>.
-# Records PASS/FAIL per check. Does not deploy anywhere.
+# The relay process is the Docker image. The desktop binary is PLEXI_BIN
+# (or plexi-pr-<PR> when that is unset). The profile follows the binary name.
+# Pairing confirmation is a real click (HUMAN_APPROVE). Does not deploy.
 set -u
 
 PR="${1:-2685}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="${PLEXI_BIN:-plexi-pr-${PR}}"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/human.sh"
 PORT="${RELAY_E2E_PORT:-8792}"
 MOCK_PORT="${MOCK_PORT:-8766}"
 TTL="${RELAY_UNDELIVERED_TTL:-8}"
 CANARY="relay-canary-$(date +%s)-$$-do-not-log"
-PROFILE="$HOME/.plexi-pr-${PR}"
+BIN_BASE="$(basename "$BIN")"
+BIN_BASE="${BIN_BASE%.exe}"
+if [[ "$BIN_BASE" == plexi-* ]]; then
+  PROFILE="$HOME/.$BIN_BASE"
+else
+  PROFILE="$HOME/.plexi"
+fi
 BASE="http://127.0.0.1:${PORT}"
 URL="ws://127.0.0.1:${PORT}/v1/desktop"
 LOG="$(mktemp)"
@@ -44,7 +53,19 @@ need() {
   fi
 }
 
-need docker
+if ! command -v docker >/dev/null 2>&1; then
+  echo "env error: docker is not installed; the phone relay e2e needs a local Docker relay" >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "env error: docker is installed but the daemon is not reachable" >&2
+  exit 1
+fi
+if ! command -v xdotool >/dev/null 2>&1; then
+  echo "env error: xdotool is not installed; pairing confirmation is a real click" >&2
+  exit 1
+fi
+
 need "$BIN"
 need python3
 need curl
@@ -76,7 +97,7 @@ PY
 
 export HOME
 unset PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING PLEXI_SOCKET || true
-export PLEXI_CHANNEL="pr-${PR}"
+unset PLEXI_CHANNEL
 
 "$BIN" host stop >/dev/null 2>&1 || true
 "$BIN" relay disable >/dev/null 2>&1 || true
@@ -163,10 +184,35 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 FINGERPRINT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("fingerprint") or "")' "$STATUS" 2>/dev/null || true)"
-if [[ "$PHASE" == "pending_confirm" && -n "$FINGERPRINT" ]] && "$BIN" relay confirm "$PAIRING" >/dev/null; then
+device_count() {
+  python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("devices") or []))' "$STATUS" 2>/dev/null || echo 0
+}
+code_is_listed() {
+  local code="$1"
+  "$BIN" assistant permission list 2>/dev/null | python3 -c 'import json,sys
+want=sys.argv[1]
+try:
+    data=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+ids=[str(row.get("pending_request_id") or "") for row in data.get("pending") or []]
+raise SystemExit(0 if want in ids else 1)' "$code"
+}
+BEFORE_DEVICES="$(device_count)"
+LISTED=""
+for _ in $(seq 1 100); do
+  if code_is_listed "$CODE"; then LISTED=1; break; fi
+  sleep 0.1
+done
+if [[ "$PHASE" == "pending_confirm" && -n "$FINGERPRINT" && -n "$LISTED" && "$(device_count)" == "$BEFORE_DEVICES" ]]; then
+  pass "unconfirmed code yields no device"
+else
+  fail "unconfirmed code yields no device" "phase=${PHASE:-missing} listed=${LISTED:-no} devices $(device_count)"
+fi
+if [[ -n "$LISTED" ]] && HUMAN_APPROVE "$CODE"; then
   pass "fingerprint confirm"
 else
-  fail "fingerprint confirm" "phase=${PHASE:-missing} fingerprint=${FINGERPRINT:-empty}"
+  fail "fingerprint confirm" "click did not confirm phase=${PHASE:-missing}"
 fi
 COOKIE=""
 for _ in $(seq 1 50); do
@@ -307,7 +353,18 @@ for _ in $(seq 1 50); do
   [[ "$(status_field phase)" == "pending_confirm" ]] && break
   sleep 0.1
 done
-if [[ -n "$NEW_PAIRING" ]] && "$BIN" relay confirm "$NEW_PAIRING" >/dev/null; then
+SECOND_BEFORE="$(device_count)"
+SECOND_LISTED=""
+for _ in $(seq 1 100); do
+  if code_is_listed "$NEW_CODE"; then SECOND_LISTED=1; break; fi
+  sleep 0.1
+done
+if [[ -n "$SECOND_LISTED" && "$(device_count)" == "$SECOND_BEFORE" ]]; then
+  pass "unconfirmed second code yields no device"
+else
+  fail "unconfirmed second code yields no device" "listed=${SECOND_LISTED:-no} devices $(device_count)"
+fi
+if [[ -n "$NEW_PAIRING" && -n "$SECOND_LISTED" ]] && HUMAN_APPROVE "$NEW_CODE"; then
   for _ in $(seq 1 50); do
     curl -sD /tmp/relay-e2e-headers -o /tmp/relay-e2e-body "$BASE/api/pair/$NEW_PAIRING" >/dev/null || true
     if python3 -c 'import json; raise SystemExit(0 if json.load(open("/tmp/relay-e2e-body")).get("status")=="confirmed" else 1)'; then
@@ -345,10 +402,17 @@ raise SystemExit(0 if any(e.get("request_id")=="req-approve" and e.get("state")=
 done
 if [[ -n "$WAIT_OK" ]]; then pass "waiting on desktop"; else fail "waiting on desktop" "receipt did not appear"; fi
 APPROVE_CODE="$(curl -s -o /tmp/relay-e2e-body -w '%{http_code}' -X POST "$BASE/api/approvals" -H "cookie: plexi_phone=$COOKIE" -H 'content-type: application/json' -d '{"request_id":"req-approve"}')"
-if [[ "$APPROVE_CODE" == "403" ]] && grep -q "waiting on desktop" /tmp/relay-e2e-body; then
-  pass "phone cannot approve"
+STILL_WAITING=""
+PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"
+if [[ -n "$PAGE" ]] && python3 -c 'import json,sys; page=json.loads(sys.argv[1]);
+rows=[e for e in page.get("events") or [] if e.get("request_id")=="req-approve"]
+raise SystemExit(0 if rows and all(e.get("state")=="waiting_for_permission" for e in rows) and not any(e.get("state")=="succeeded" for e in rows) else 1)' "$PAGE"; then
+  STILL_WAITING=1
+fi
+if [[ "$APPROVE_CODE" == "403" && -n "$STILL_WAITING" ]] && grep -q "waiting on desktop" /tmp/relay-e2e-body; then
+  pass "phone approval never grants"
 else
-  fail "phone cannot approve" "http $APPROVE_CODE $(cat /tmp/relay-e2e-body)"
+  fail "phone approval never grants" "http $APPROVE_CODE still=${STILL_WAITING:-no} $(cat /tmp/relay-e2e-body)"
 fi
 
 CODE_HOLD="$(post_turn req-hold "HOLD-FOR-TTL $CANARY")"

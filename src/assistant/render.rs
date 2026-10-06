@@ -732,9 +732,33 @@ impl AssistantRenderer {
                 // `Ui::horizontal_wrapped` reflows buttons onto additional
                 // rows instead of clipping or forcing the frame wider than
                 // the pane, so the sheet stays usable at small window sizes.
+                let mut painted: Vec<(&str, [f64; 4])> = Vec::new();
                 ui.horizontal_wrapped(|ui| {
                     for (i, (label, kind, value)) in actions.into_iter().enumerate() {
                         let resp = chrome_button(ui, label, kind, colors, 0.0);
+                        let rect = resp.rect;
+                        // Pane state reads accesskit. The chrome button's
+                        // glyph runs are not a labeled button, so the click
+                        // driver cannot see "Allow once" unless we publish it.
+                        ui.ctx().accesskit_node_builder(resp.id, |node| {
+                            node.set_role(egui::accesskit::Role::Button);
+                            node.set_label(label);
+                            node.set_bounds(egui::accesskit::Rect {
+                                x0: f64::from(rect.left()),
+                                y0: f64::from(rect.top()),
+                                x1: f64::from(rect.right()),
+                                y1: f64::from(rect.bottom()),
+                            });
+                        });
+                        painted.push((
+                            label,
+                            [
+                                f64::from(rect.left()),
+                                f64::from(rect.top()),
+                                f64::from(rect.right()),
+                                f64::from(rect.bottom()),
+                            ],
+                        ));
                         if i == selected {
                             ui.painter().rect_stroke(
                                 resp.rect.expand(2.0),
@@ -748,6 +772,14 @@ impl AssistantRenderer {
                         }
                     }
                 });
+                // The click driver reads these bounds from `assistant permission
+                // list` when pane state has no labeled button. Window points,
+                // same space as the accesskit rect above.
+                if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(
+                    &crate::config::config_dir(),
+                ) {
+                    monitor.publish_sheet_buttons(&painted);
+                }
             });
         ui.add_space(style::SPACE_XS);
         choice

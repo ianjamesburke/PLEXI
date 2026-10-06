@@ -45,6 +45,7 @@ impl PlexiApp {
                     "ok": true,
                     "pending": pending,
                     "audit": monitor.audit_records(),
+                    "buttons": monitor.sheet_buttons_json(),
                 })
             }
             "show" => {

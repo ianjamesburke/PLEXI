@@ -2310,6 +2310,24 @@ impl AssistantApp {
         }
     }
 
+    /// A pairing click confirms the phone. Deny leaves the code unpaired.
+    /// The code itself is not logged.
+    fn resolve_relay_pairing(&mut self, choice: PermissionChoice, pending: &model::PendingPermission) {
+        let allow = !matches!(choice, PermissionChoice::Deny);
+        let outcome = if allow {
+            crate::cli::relay::confirm_pairing_from_desktop(None)
+        } else {
+            0
+        };
+        log::info!("relay: pairing sheet decision allow={allow} outcome={outcome}");
+        if allow && outcome != 0 {
+            return;
+        }
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .clear_pairing_code(&pending.pending_request_id);
+        self.commit_permission_sheet(choice, "relay.pair");
+    }
+
     /// Apply the user's permission-sheet decision: record the grant per its
     /// duration, audit it, and unblock the worker thread.
     pub(crate) fn resolve_permission(&mut self, choice: PermissionChoice) {
@@ -2320,6 +2338,10 @@ impl AssistantApp {
         let Some(pending) = self.model.pending_permission.clone() else {
             return;
         };
+        if pending.tool == "relay.pair" {
+            self.resolve_relay_pairing(choice, &pending);
+            return;
+        }
         let is_host_tool = pending.tool.starts_with("host.");
         let target = if is_host_tool {
             pending.tool.clone()
@@ -4347,6 +4369,43 @@ impl App for AssistantApp {
 
     fn type_id(&self) -> &'static str {
         "assistant"
+    }
+
+    fn offer_relay_pairing(&mut self, code: &str, fingerprint: &str) -> bool {
+        if let Some(pending) = &self.model.pending_permission {
+            if pending.tool != "relay.pair" {
+                return false;
+            }
+            if pending.pending_request_id == code {
+                return false;
+            }
+        }
+        self.model.permission_requested_scoped(
+            "relay.pair",
+            fingerprint,
+            "phone",
+            "",
+            code,
+        );
+        if let Some(pending) = self.model.pending_permission.as_mut() {
+            pending.source = Some(PHONE_TURN_SOURCE.to_string());
+        }
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .track_pairing_code(code);
+        log::info!("relay: pairing confirmation sheet opened");
+        true
+    }
+
+    fn clear_relay_pairing_sheet(&mut self) {
+        let Some(pending) = self.model.pending_permission.clone() else {
+            return;
+        };
+        if pending.tool != "relay.pair" {
+            return;
+        }
+        self.model.pending_permission = None;
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .clear_pairing_code(&pending.pending_request_id);
     }
 
     fn submit_external_turn(
