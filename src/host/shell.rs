@@ -1038,10 +1038,14 @@ mod tests {
             .arg("5")
             .spawn()
             .expect("spawn sleep");
-        let name = get_pid_name(child.id());
+        // Under a full parallel suite, Linux can still show the spawning
+        // thread's comm for a moment after spawn returns. Wait until the
+        // exec name is visible before judging the process.
+        let name = await_pid_name(child.id(), "sleep");
+        let debug = pid_debug(child.id());
         let _ = child.kill();
         let _ = child.wait();
-        assert_eq!(name.as_deref(), Some("sleep"));
+        assert_eq!(name.as_deref(), Some("sleep"), "{debug}");
     }
 
     /// The Homebrew codex cask is a symlink (`codex ->
@@ -1061,11 +1065,12 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("spawn through symlink");
-        let name = get_pid_name(child.id());
+        let name = await_pid_name(child.id(), "codex");
+        let debug = pid_debug(child.id());
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(name.as_deref(), Some("codex"));
+        assert_eq!(name.as_deref(), Some("codex"), "{debug}");
     }
 
     #[test]
@@ -1076,5 +1081,32 @@ mod tests {
             .expect("spawn sleep");
         let _ = child.wait();
         assert_eq!(get_pid_name(child.id()), None);
+    }
+
+    fn await_pid_name(pid: u32, expected: &str) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let name = get_pid_name(pid);
+            if name.as_deref() == Some(expected) || std::time::Instant::now() >= deadline {
+                return name;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn pid_debug(pid: u32) -> String {
+        #[cfg(target_os = "linux")]
+        {
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|error| error.to_string());
+            format!("exe={exe} cmdline={cmdline:?}")
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            String::new()
+        }
     }
 }
