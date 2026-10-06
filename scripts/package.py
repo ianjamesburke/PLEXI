@@ -121,6 +121,8 @@ def assemble(args):
     shutil.copy2(REPO / "scripts/default-config.toml", resources / "default-config.toml")
     for source, destination in [("agents", "agents"), ("skills", "skills"), ("scripts/default-scripts", "scripts")]:
         shutil.copytree(REPO / source, resources / destination, ignore=ignore)
+    shutil.copytree(REPO / "services/house-agent", resources / "house-agent", ignore=ignore)
+    shutil.copy2(REPO / "services/relay/relay.py", resources / "house-agent" / "relay.py")
     if channel == "alpha" or channel.startswith("pr-"):
         for manifest in (REPO / "apps").glob("*/manifest.toml"):
             shutil.copytree(manifest.parent, resources / "maintained-apps" / manifest.parent.name, ignore=ignore)

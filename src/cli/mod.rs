@@ -214,6 +214,7 @@ pub mod app;
 pub mod app_check;
 pub mod app_state;
 pub mod completions;
+pub mod cloud_agent;
 pub mod config_cli;
 pub mod connector;
 pub mod context_cli;
@@ -1265,6 +1266,10 @@ pub use app::{
 };
 pub use app_check::app_check_cli;
 pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
+pub use cloud_agent::{
+    cloud_agent_admit_cli, cloud_agent_grant_cli, cloud_agent_retain_cli, cloud_agent_run_cli,
+    cloud_agent_status_cli, cloud_agent_stop_cli,
+};
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,

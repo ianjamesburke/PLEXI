@@ -132,6 +132,15 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AccountCmd,
     },
+    /// Host one agent package in a local container. No account is required.
+    ///
+    /// The runner starts the packaged chess opponent on an internal Docker
+    /// network. Tool calls are admitted inside that container by the permission
+    /// gate. The runner cannot approve them.
+    Cloud {
+        #[command(subcommand)]
+        cmd: CloudCmd,
+    },
     /// Watch installed CLI tools for changes to their available commands and options.
     Registry {
         #[command(subcommand)]
@@ -1006,6 +1015,89 @@ pub enum AccountCmd {
     },
     /// Log out and clear the local session.
     Logout,
+}
+
+/// `plexi cloud <cmd>`.
+#[derive(Subcommand)]
+pub enum CloudCmd {
+    /// Run, stop, or inspect the local house-agent container.
+    Agent {
+        #[command(subcommand)]
+        cmd: CloudAgentCmd,
+    },
+}
+
+/// `plexi cloud agent <cmd>`.
+#[derive(Subcommand)]
+pub enum CloudAgentCmd {
+    /// Start the packaged agent in Docker.
+    ///
+    /// Omitted `--agent` hosts `chess-opponent`. Omitted `--tenant` uses `local`.
+    Run {
+        /// Agent package id.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Tenant id. Lowercase letters, digits, and hyphens.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Stop the tenant's containers and internal network.
+    Stop {
+        /// Tenant id. Omitted, stops `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Report whether the tenant container is running.
+    Status {
+        /// Tenant id. Omitted, reports `local`.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Admit one tool call through the permission gate.
+    ///
+    /// This is the in-tenant seam. A runner must not call it to approve a call
+    /// on the host profile.
+    Admit {
+        /// Tenant profile directory that holds `grants.toml`.
+        ///
+        /// Not `--profile`: that flag is the channel selector and is removed
+        /// before clap runs.
+        #[arg(long)]
+        tenant_profile: std::path::PathBuf,
+        /// Workspace root the grant is bound to.
+        #[arg(long)]
+        workspace: std::path::PathBuf,
+        /// Tool name, such as `agent.turn` or `app.chess.play`.
+        #[arg(long)]
+        tool: String,
+        /// Canonical JSON object of arguments.
+        #[arg(long)]
+        input: String,
+        /// Agent actor id. Omitted, the actor is `chess-opponent`.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Write the house grants for the packaged chess opponent.
+    Grant {
+        /// Tenant profile directory.
+        ///
+        /// Not `--profile`: that flag is the channel selector and is removed
+        /// before clap runs.
+        #[arg(long)]
+        tenant_profile: std::path::PathBuf,
+        /// Workspace root the grants are bound to.
+        #[arg(long)]
+        workspace: std::path::PathBuf,
+    },
+    /// Apply the 30-day ceiling to a tenant profile.
+    Retain {
+        /// Tenant profile directory.
+        ///
+        /// Not `--profile`: that flag is the channel selector and is removed
+        /// before clap runs.
+        #[arg(long)]
+        tenant_profile: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2035,8 +2127,8 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
-        SecretCmd,
+        normalize_config_scope_aliases, AppCmd, Cli, CloudAgentCmd, CloudCmd, Commands, ConfigCmd,
+        ConfigScope, NotifyCmd, SecretCmd,
     };
     use clap::Parser;
 
@@ -2154,6 +2246,37 @@ mod tests {
             assert_eq!(text, "hello", "text mis-parsed for {argv:?}");
             assert!(submit, "--submit not seen for {argv:?}");
         }
+    }
+
+    #[test]
+    fn house_grant_uses_tenant_profile_not_the_channel_flag() {
+        let cli = Cli::try_parse_from([
+            "plexi",
+            "cloud",
+            "agent",
+            "grant",
+            "--tenant-profile",
+            "/tenant/profile",
+            "--workspace",
+            "/tenant",
+        ])
+        .unwrap();
+        assert!(cli.profile.is_none());
+        let Some(Commands::Cloud {
+            cmd:
+                CloudCmd::Agent {
+                    cmd:
+                        CloudAgentCmd::Grant {
+                            tenant_profile,
+                            workspace,
+                        },
+                },
+        }) = cli.command
+        else {
+            panic!("expected cloud agent grant");
+        };
+        assert_eq!(tenant_profile, std::path::PathBuf::from("/tenant/profile"));
+        assert_eq!(workspace, std::path::PathBuf::from("/tenant"));
     }
 
     #[test]
