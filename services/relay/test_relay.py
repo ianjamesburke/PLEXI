@@ -230,6 +230,10 @@ class RelayHttpTest(unittest.TestCase):
         self.server.server_close()
         relay.log.removeHandler(self.logs)
 
+    def test_bind_keeps_the_literal_address(self) -> None:
+        self.assertEqual(self.server.server_name, "127.0.0.1")
+        self.assertEqual(self.server.server_port, self.port)
+
     def test_pairing_confirm_and_revoke(self) -> None:
         desk = Desktop(self.port)
         self.addCleanup(desk.close)

@@ -30,6 +30,7 @@ import queue
 import secrets
 import select
 import socket
+import socketserver
 import sqlite3
 import struct
 import threading
@@ -1779,6 +1780,15 @@ def handle_desktop_message(relay: Relay, host_id: str, message: dict) -> dict | 
 class RelayServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind calls socket.getfqdn. A runner whose
+        # hostname does not resolve stalls that lookup, so /healthz never
+        # answers inside the desktop's health wait. Keep the bind address.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 def build_server(host: str, port: int, relay: Relay, static_dir: Path, secure_cookie: bool = False) -> RelayServer:
