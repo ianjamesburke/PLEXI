@@ -1018,8 +1018,18 @@ mod tests {
         let mut child = std::process::Command::new(&alias)
             .spawn()
             .expect("spawn interpreter-shaped agent");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let probe = get_pid_agent_probe(child.id());
+        let start = std::time::Instant::now();
+        let probe = loop {
+            let probe = get_pid_agent_probe(child.id());
+            if probe == AgentProcessProbe::Known("pi") {
+                break probe;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "interpreter agent was not visible as pi: {probe:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
         let process_name = get_pid_name(child.id());
         let argv = get_pid_argv(child.id());
         let _ = child.kill();
@@ -1032,13 +1042,31 @@ mod tests {
         );
     }
 
+    /// `Command::spawn` can return before `/proc/<pid>/comm` shows the
+    /// exec'd basename. The child still carries the parent's comm (the test
+    /// thread name, truncated to 15 bytes) until exec is published.
+    fn pid_name_after_exec(pid: u32, expected: &str) -> Option<String> {
+        let start = std::time::Instant::now();
+        loop {
+            let last = get_pid_name(pid);
+            if last.as_deref() == Some(expected) {
+                return last;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "pid {pid} comm stayed {last:?}, expected {expected:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn get_pid_name_reports_the_exec_basename() {
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("5")
             .spawn()
             .expect("spawn sleep");
-        let name = get_pid_name(child.id());
+        let name = pid_name_after_exec(child.id(), "sleep");
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(name.as_deref(), Some("sleep"));
@@ -1061,7 +1089,7 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("spawn through symlink");
-        let name = get_pid_name(child.id());
+        let name = pid_name_after_exec(child.id(), "codex");
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);

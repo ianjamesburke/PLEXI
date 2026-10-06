@@ -1186,8 +1186,12 @@ mod agent_tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o755
         );
+        // Run the script through bash. execve of the script inode itself
+        // returns ETXTBSY on Linux when a writer still holds the file that
+        // `publish_agent_state_script` just renamed into place.
         assert!(
-            std::process::Command::new(&path)
+            std::process::Command::new("bash")
+                .arg(&path)
                 .env_remove("PLEXI_SOCKET")
                 .env_remove("PLEXI_PANE_ID")
                 .status()
