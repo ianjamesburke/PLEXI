@@ -21,6 +21,7 @@ use super::relay_ws::{self, Incoming, WsConn};
 
 const STATUS_FILE: &str = "relay-status.json";
 const IDENTITY_FILE: &str = "relay-host.json";
+const PROTOCOL_VERSION: i64 = 1;
 
 #[derive(Clone, Copy)]
 enum Dispatch {
@@ -266,9 +267,14 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
                         &mut connected,
                         &json!({
                             "type": "hello",
+                            "protocol": PROTOCOL_VERSION,
                             "host_id": session.identity.host_id,
                             "host_token": session.identity.host_token,
                             "host_label": session.identity.label,
+                            "devices": session.devices.iter().map(|device| json!({
+                                "device_id": device.device_id,
+                                "fingerprint": device.fingerprint,
+                            })).collect::<Vec<_>>(),
                         }),
                     )?;
                     attempt = 0;
@@ -333,13 +339,20 @@ fn handle_relay_message(
     conn: &mut WsConn,
     message: &Value,
 ) -> Result<(), String> {
+    if let Some(problem) = protocol_problem(message) {
+        log::info!(
+            "relay: protocol mismatch host_id={} outcome=protocol_mismatch",
+            session.identity.host_id
+        );
+        return Err(problem);
+    }
     let kind = message
         .get("type")
         .and_then(|value| value.as_str())
         .unwrap_or("");
     match kind {
         "hello_ok" => {
-            session.devices = devices_from_message(message);
+            session.devices = reconcile_paired(&session.devices, &devices_from_message(message));
             persist_record(&session.identity, &session.devices)?;
             log::info!(
                 "relay: hello accepted host_id={} devices={}",
@@ -1047,6 +1060,57 @@ fn persist_record(identity: &Identity, devices: &[PairedDevice]) -> Result<(), S
     write_private(&identity_path(), &body.to_string())
 }
 
+fn protocol_problem(message: &Value) -> Option<String> {
+    let kind = message
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let mismatch = kind == "error"
+        && message.get("error").and_then(|value| value.as_str()) == Some("protocol_mismatch");
+    let hello_ok_mismatch = kind == "hello_ok"
+        && message.get("protocol").and_then(|value| value.as_i64()) != Some(PROTOCOL_VERSION);
+    if mismatch || hello_ok_mismatch {
+        let text = message
+            .get("message")
+            .and_then(|value| value.as_str())
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "This desktop speaks relay protocol {PROTOCOL_VERSION}. The relay speaks a different version. Update both so they match, then pair again."
+                )
+            });
+        Some(text)
+    } else {
+        None
+    }
+}
+
+fn reconcile_paired(local: &[PairedDevice], remote: &[PairedDevice]) -> Vec<PairedDevice> {
+    remote
+        .iter()
+        .map(|remote_device| {
+            let kept = local
+                .iter()
+                .find(|device| device.device_id == remote_device.device_id)
+                .map(|device| device.label.clone())
+                .filter(|label| !label.is_empty());
+            let label = if let Some(label) = kept {
+                label
+            } else if remote_device.label.is_empty() {
+                "phone".to_string()
+            } else {
+                remote_device.label.clone()
+            };
+            PairedDevice {
+                device_id: remote_device.device_id.clone(),
+                label,
+                fingerprint: remote_device.fingerprint.clone(),
+            }
+        })
+        .collect()
+}
+
 fn devices_from_message(message: &Value) -> Vec<PairedDevice> {
     message
         .get("devices")
@@ -1241,6 +1305,48 @@ mod tests {
 
     /// `STOP` and the in-memory test keychain are process-global.
     static SESSION_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn protocol_mismatch_stops_and_reconcile_keeps_local_labels() {
+        let mismatch = json!({
+            "type": "error",
+            "error": "protocol_mismatch",
+            "message": "desktop and relay differ",
+        });
+        assert!(protocol_problem(&mismatch)
+            .unwrap()
+            .contains("desktop and relay differ"));
+        assert!(protocol_problem(&json!({"type": "hello_ok", "devices": []})).is_some());
+        assert!(protocol_problem(&json!({
+            "type": "hello_ok",
+            "protocol": PROTOCOL_VERSION,
+            "devices": [],
+        }))
+        .is_none());
+        let local = vec![PairedDevice {
+            device_id: "dev-a".to_string(),
+            label: "pixel".to_string(),
+            fingerprint: "old".to_string(),
+        }];
+        let remote = vec![
+            PairedDevice {
+                device_id: "dev-a".to_string(),
+                label: "phone".to_string(),
+                fingerprint: "fp-a".to_string(),
+            },
+            PairedDevice {
+                device_id: "dev-b".to_string(),
+                label: "phone".to_string(),
+                fingerprint: "fp-b".to_string(),
+            },
+        ];
+        let merged = reconcile_paired(&local, &remote);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].label, "pixel");
+        assert_eq!(merged[0].fingerprint, "fp-a");
+        assert_eq!(merged[1].device_id, "dev-b");
+        assert!(reconcile_paired(&local, &[]).is_empty());
+    }
 
     #[test]
     fn phone_turns_stay_off_the_desktop_unless_opted_in() {

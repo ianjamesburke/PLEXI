@@ -15,6 +15,7 @@ PROFILE="$HOME/.plexi-pr-${PR}"
 BASE="http://127.0.0.1:${PORT}"
 URL="ws://127.0.0.1:${PORT}/v1/desktop"
 LOG="$(mktemp)"
+STATE_DIR="$(mktemp -d)"
 RESULTS=()
 CONNECT_PID=""
 MOCK_PID=""
@@ -31,6 +32,7 @@ cleanup() {
     "$BIN" host stop >/dev/null 2>&1 || true
   fi
   rm -f "$LOG" /tmp/relay-e2e-body /tmp/relay-e2e-headers
+  if [[ -n "${STATE_DIR:-}" ]]; then rm -rf "$STATE_DIR"; fi
 }
 trap cleanup EXIT
 
@@ -105,6 +107,8 @@ CONTAINER="plexi-relay-e2e-${PR}"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 if docker run -d --name "$CONTAINER" --network host \
   -e "RELAY_UNDELIVERED_TTL=${TTL}" -e PORT="$PORT" -e RELAY_HOST=0.0.0.0 \
+  -e RELAY_STATE_PATH=/data/relay.sqlite \
+  -v "$STATE_DIR:/data" \
   "$IMAGE" >/dev/null; then
   pass "docker run"
 else
@@ -203,6 +207,42 @@ for _ in $(seq 1 160); do
   sleep 0.25
 done
 if [[ -n "$ROUND_OK" ]]; then pass "round trip"; else fail "round trip" "mock reply did not arrive: ${PAGE:0:400}"; fi
+
+# Restart the relay process. The phone cookie and the desktop pairing must
+# still work. The SQLite file must not contain the canary body.
+docker restart "$CONTAINER" >/dev/null
+RELAY_UP=""
+for _ in $(seq 1 40); do
+  curl -sf "$BASE/healthz" >/dev/null && RELAY_UP=1 && break
+  sleep 0.25
+done
+if [[ -n "$RELAY_UP" ]]; then pass "relay process restarted"; else fail "relay process restarted" "healthz did not return"; fi
+RESTART_CODE=""
+RESTART_OK=""
+for _ in $(seq 1 80); do
+  RESTART_CODE="$(post_turn req-relay-restart "after relay restart $CANARY")"
+  if [[ "$RESTART_CODE" == "202" ]]; then
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$RESTART_CODE" == "202" ]]; then
+  for _ in $(seq 1 160); do
+    PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"
+    if saw_reply "$PAGE" req-relay-restart "mock-reply"; then RESTART_OK=1; break; fi
+    sleep 0.25
+  done
+fi
+if [[ -n "$RESTART_OK" ]]; then
+  pass "relay restart kept pairing"
+else
+  fail "relay restart kept pairing" "http ${RESTART_CODE:-none} ${PAGE:0:300}"
+fi
+if docker exec "$CONTAINER" grep -a -q -r "$CANARY" /data; then
+  fail "canary absent from registry" "marker stored on disk"
+else
+  pass "canary absent from registry"
+fi
 
 # The host owns the relay after this. The CLI client must not keep a second socket.
 "$BIN" relay enable --url "$URL" >"$LOG.enable" 2>&1 || true

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import socket
+import sqlite3
 import struct
 import sys
 import threading
@@ -110,7 +111,15 @@ def _exact(sock: socket.socket, n: int) -> bytes:
 
 
 class Desktop:
-    def __init__(self, port: int, host_id: str = "host-1", token: str = "token-1") -> None:
+    def __init__(
+        self,
+        port: int,
+        host_id: str = "host-1",
+        token: str = "token-1",
+        protocol: int | None = 1,
+        devices: list | None = None,
+        expect_ok: bool = True,
+    ) -> None:
         self.host_id = host_id
         self.token = token
         sock = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -134,9 +143,18 @@ class Desktop:
         if accept.encode() not in raw:
             raise AssertionError("missing websocket accept")
         self.sock = sock
-        self.send({"type": "hello", "host_id": host_id, "host_token": token, "host_label": "desk"})
+        hello_message: dict = {"type": "hello", "host_id": host_id, "host_token": token, "host_label": "desk"}
+        if protocol is not None:
+            hello_message["protocol"] = protocol
+        if devices is not None:
+            hello_message["devices"] = devices
+        self.send(hello_message)
         hello = self.recv()
-        if hello.get("type") != "hello_ok":
+        self.hello = hello
+        if not expect_ok:
+            self.devices = []
+            return
+        if hello.get("type") != "hello_ok" or hello.get("protocol") != relay.PROTOCOL_VERSION:
             raise AssertionError(hello)
         if not isinstance(hello.get("devices"), list):
             raise AssertionError(hello)
@@ -193,6 +211,7 @@ class RelayHttpTest(unittest.TestCase):
 
         status, missing, _ = _http("POST", f"{self.base}/api/pair", {"code": "ZZZZZZZZ", "label": "nope"})
         self.assertEqual(status, 404)
+        self.assertIn("protocol", missing.get("message", ""))
         self.assertNotIn("ZZZZZZZZ", self.logs.text)
 
         status, pending, token = _http("POST", f"{self.base}/api/pair", {"code": code, "label": "pixel"})
@@ -491,6 +510,109 @@ class TtlTest(unittest.TestCase):
         # The phone has not polled, so its one-shot projection may still hold
         # the text. The delivery record itself no longer does.
         self.assertTrue(all(item.body is None for item in box.deliveries.values()))
+
+
+class RegistryTest(unittest.TestCase):
+    def test_pairing_survives_a_new_process_and_skips_bodies(self) -> None:
+        clock = Clock()
+        path = str(Path(os.environ.get("TMPDIR", "/tmp")) / f"relay-registry-{os.getpid()}.sqlite")
+        self.addCleanup(lambda: _unlink_sqlite(path))
+        first = relay.Relay(clock=clock, public_origin="http://127.0.0.1", state_path=path)
+        link = first.hello("host-keep", "host-secret", "desk")
+        self.assertIsNotNone(link)
+        issued = first.start_pairing("host-keep")
+        assert issued is not None
+        status, pending = first.redeem(issued["code"], "pixel")
+        self.assertEqual(status, 202, pending)
+        confirmed = first.confirm("host-keep", issued["pairing_id"])
+        self.assertEqual(confirmed["type"], "pair_confirmed")
+        _status, _polled, token = first.pairing_status(issued["pairing_id"])
+        assert token is not None
+        device = first.device_for_token(token)
+        assert device is not None
+        status, queued = first.submit(
+            device,
+            {"schema_version": 1, "request_id": "req-keep", "content": [{"type": "text", "text": CANARY}]},
+        )
+        self.assertEqual(status, 202, queued)
+        stored = Path(path).read_bytes()
+        self.assertNotIn(CANARY.encode(), stored)
+        self.assertNotIn(token.encode(), stored)
+        self.assertNotIn(b"host-secret", stored)
+        second = relay.Relay(clock=clock, public_origin="http://127.0.0.1", state_path=path)
+        self.assertEqual(len(second.device_summaries("host-keep")), 1)
+        resumed = second.device_for_token(token)
+        self.assertIsNotNone(resumed)
+        assert resumed is not None
+        self.assertEqual(resumed.device_id, device.device_id)
+        self.assertEqual(resumed.fingerprint, device.fingerprint)
+        self.assertNotIn(CANARY, second.memory_text())
+        self.assertIsNone(second.hello("host-keep", "someone-else", "desk"))
+        self.assertIsNotNone(second.hello("host-keep", "host-secret", "desk"))
+
+    def test_idle_device_expires_after_thirty_days(self) -> None:
+        clock = Clock()
+        path = str(Path(os.environ.get("TMPDIR", "/tmp")) / f"relay-expire-{os.getpid()}.sqlite")
+        self.addCleanup(lambda: _unlink_sqlite(path))
+        box = relay.Relay(clock=clock, public_origin="http://127.0.0.1", state_path=path)
+        box.hello("host-idle", "token-idle", "desk")
+        issued = box.start_pairing("host-idle")
+        assert issued is not None
+        box.redeem(issued["code"], "pixel")
+        box.confirm("host-idle", issued["pairing_id"])
+        _status, _body, token = box.pairing_status(issued["pairing_id"])
+        assert token is not None
+        clock.advance(relay.DEVICE_IDLE_SECONDS)
+        self.assertEqual(len(box.device_summaries("host-idle")), 1)
+        clock.advance(1)
+        box.reap()
+        self.assertEqual(box.device_summaries("host-idle"), [])
+        self.assertIsNone(box.device_for_token(token))
+        reloaded = relay.Relay(clock=clock, public_origin="http://127.0.0.1", state_path=path)
+        self.assertEqual(reloaded.device_summaries("host-idle"), [])
+        self.assertIsNone(reloaded.device_for_token(token))
+
+    def test_unset_state_path_stays_in_memory(self) -> None:
+        box = relay.Relay(public_origin="http://127.0.0.1")
+        self.assertIsNone(box.registry)
+        box.hello("host-mem", "token-mem", "desk")
+        self.assertIn("host-mem", box.hosts)
+
+
+class ProtocolTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.relay = relay.Relay(public_origin="http://127.0.0.1")
+        self.server = relay.build_server("127.0.0.1", 0, self.relay, STATIC)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.server.server_address[1]
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_missing_or_wrong_protocol_does_not_register_the_host(self) -> None:
+        missing = Desktop(self.port, host_id="host-old", protocol=None, expect_ok=False)
+        self.addCleanup(missing.close)
+        self.assertEqual(missing.hello.get("error"), "protocol_mismatch")
+        self.assertIn("protocol", missing.hello.get("message", ""))
+        self.assertNotIn("host-old", self.relay.hosts)
+        wrong = Desktop(self.port, host_id="host-new", protocol=2, expect_ok=False)
+        self.addCleanup(wrong.close)
+        self.assertEqual(wrong.hello.get("error"), "protocol_mismatch")
+        self.assertNotIn("host-new", self.relay.hosts)
+
+    def test_unwritable_state_path_does_not_fall_back_to_memory(self) -> None:
+        with self.assertRaises((OSError, sqlite3.Error)):
+            relay.Relay(state_path="/proc/does-not-exist/relay.sqlite")
+
+
+def _unlink_sqlite(path: str) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.remove(path + suffix)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

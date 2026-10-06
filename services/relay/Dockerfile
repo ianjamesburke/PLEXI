@@ -9,6 +9,6 @@ COPY clients/phone-web/static /app/clients/phone-web/static
 ENV PORT=8080
 EXPOSE 8080
 
-# In-memory only. The container has no volume for message bodies.
-# relay.py reads PORT when --port is omitted.
+# Message bodies stay in memory. Pairings persist only when RELAY_STATE_PATH
+# points at a SQLite file on a mounted volume. relay.py reads PORT when --port is omitted.
 CMD ["python3", "-u", "/app/services/relay/relay.py", "--host", "0.0.0.0"]

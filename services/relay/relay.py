@@ -6,6 +6,11 @@ desktop acknowledges delivery, and any still-undelivered body is purged after
 two minutes. Logs record ids, sizes, and outcomes — never message text, pairing
 codes, or session tokens.
 
+Pairing records can outlive this process. When RELAY_STATE_PATH is set, SQLite
+stores host_id, device_id, a hash of the device token, fingerprint, created,
+last_seen, revoked, and a hash of the host token. It never stores a message
+body, a pairing code, or a raw token. Unset, the registry stays in memory.
+
 This process does not deploy itself. See DEPLOY.md for the staging note.
 """
 
@@ -22,6 +27,7 @@ import queue
 import secrets
 import select
 import socket
+import sqlite3
 import struct
 import threading
 import time
@@ -38,9 +44,19 @@ CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 UNDELIVERED_TTL_SECONDS = 120.0
 PAIRING_TTL_SECONDS = 300.0
 HEARTBEAT_TIMEOUT_SECONDS = 45.0
+DEVICE_IDLE_SECONDS = 30 * 24 * 3600
+PROTOCOL_VERSION = 1
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 8000
 COOKIE = "plexi_phone"
+PROTOCOL_MISMATCH = (
+    "This relay speaks protocol 1. The desktop sent a different version. "
+    "Update both so they match, then pair again."
+)
+INVALID_CODE_MESSAGE = (
+    "That code is not valid. If the desktop and this relay are different "
+    "versions, update both so they speak the same protocol, then pair again."
+)
 
 # Structured logs may name these fields only. Values are short tokens.
 _LOG_FIELDS = (
@@ -144,6 +160,9 @@ class Device:
     label: str
     fingerprint: str
     revoked: bool = False
+    created: float = 0.0
+    last_seen: float = 0.0
+    token_hash: str = ""
 
 
 @dataclass
@@ -196,8 +215,121 @@ class DesktopLink:
             self.outbound.put(message)
 
 
+_REGISTRY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS hosts (
+    host_id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS devices (
+    device_id TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    revoked INTEGER NOT NULL
+);
+"""
+
+
+class PairingRegistry:
+    """SQLite pairing records. Rows are the allowlisted fields only.
+
+    `hosts.token_hash` is the same host credential the process already kept in
+    memory, so a restart cannot bind a different token to an existing host_id.
+    Device labels, pairing codes, raw tokens, and message bodies are not columns.
+    """
+
+    def __init__(self, path: str) -> None:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+        self.path = path
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.executescript(_REGISTRY_SCHEMA)
+        self.conn.commit()
+        self._tighten()
+
+    def _tighten(self) -> None:
+        for suffix in ("", "-wal", "-shm"):
+            candidate = self.path + suffix
+            if os.path.exists(candidate):
+                try:
+                    os.chmod(candidate, 0o600)
+                except OSError:
+                    pass
+
+    def load(self, now: float) -> tuple[dict[str, str], dict[str, Device], dict[str, str]]:
+        hosts = {
+            host_id: token_hash
+            for host_id, token_hash in self.conn.execute("SELECT host_id, token_hash FROM hosts")
+        }
+        devices: dict[str, Device] = {}
+        sessions: dict[str, str] = {}
+        expired: list[str] = []
+        rows = self.conn.execute(
+            "SELECT device_id, host_id, token_hash, fingerprint, created, last_seen, revoked FROM devices"
+        )
+        for device_id, host_id, token_hash, fingerprint, created, last_seen, revoked in rows:
+            if now - float(last_seen) > DEVICE_IDLE_SECONDS:
+                expired.append(device_id)
+                continue
+            device = Device(
+                device_id=device_id,
+                host_id=host_id,
+                label="phone",
+                fingerprint=fingerprint,
+                revoked=bool(revoked),
+                created=float(created),
+                last_seen=float(last_seen),
+                token_hash=token_hash or "",
+            )
+            devices[device_id] = device
+            if device.token_hash and not device.revoked:
+                sessions[device.token_hash] = device_id
+        for device_id in expired:
+            self.delete_device(device_id)
+            trace("device_expired", device_id=device_id, outcome="idle")
+        return hosts, devices, sessions
+
+    def upsert_host(self, host_id: str, token_hash: str) -> None:
+        self.conn.execute(
+            "INSERT INTO hosts (host_id, token_hash) VALUES (?, ?) "
+            "ON CONFLICT(host_id) DO UPDATE SET token_hash=excluded.token_hash",
+            (host_id, token_hash),
+        )
+        self.conn.commit()
+        self._tighten()
+
+    def upsert_device(self, device: Device) -> None:
+        self.conn.execute(
+            "INSERT INTO devices (device_id, host_id, token_hash, fingerprint, created, last_seen, revoked) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(device_id) DO UPDATE SET "
+            "host_id=excluded.host_id, token_hash=excluded.token_hash, "
+            "fingerprint=excluded.fingerprint, created=excluded.created, "
+            "last_seen=excluded.last_seen, revoked=excluded.revoked",
+            (
+                device.device_id,
+                device.host_id,
+                device.token_hash,
+                device.fingerprint,
+                device.created,
+                device.last_seen,
+                1 if device.revoked else 0,
+            ),
+        )
+        self.conn.commit()
+        self._tighten()
+
+    def delete_device(self, device_id: str) -> None:
+        self.conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+        self.conn.commit()
+
+
 class Relay:
-    """In-memory pairing and delivery. No message body is written to disk."""
+    """Pairing plus in-memory delivery. No message body is written to disk."""
 
     def __init__(
         self,
@@ -206,6 +338,7 @@ class Relay:
         pairing_ttl: float = PAIRING_TTL_SECONDS,
         heartbeat_timeout: float = HEARTBEAT_TIMEOUT_SECONDS,
         public_origin: str = "",
+        state_path: str | None = None,
     ) -> None:
         self.clock = clock or _now_unix
         self.undelivered_ttl = undelivered_ttl
@@ -223,6 +356,14 @@ class Relay:
         self.by_request: dict[tuple[str, str], str] = {}  # (device_id, request_id) -> delivery_id
         self.events: dict[str, list[PhoneEvent]] = {}
         self.cursors: dict[str, int] = {}
+        self.registry: PairingRegistry | None = None
+        path = (state_path or "").strip()
+        if path:
+            self.registry = PairingRegistry(path)
+            self.hosts, self.devices, self.sessions = self.registry.load(self.now())
+            trace("registry_open", outcome="sqlite", status=str(len(self.devices)))
+        else:
+            trace("registry_open", outcome="memory")
 
     def now(self) -> float:
         return self.clock()
@@ -238,9 +379,11 @@ class Relay:
             existing = self.hosts.get(host_id)
             if existing is None:
                 self.hosts[host_id] = token_hash
+                self._persist_host_locked(host_id, token_hash)
             elif not hmac.compare_digest(existing, token_hash):
                 trace("hello_rejected", host_id=host_id, outcome="token_mismatch")
                 return None
+            self._expire_devices_locked(self.now())
             previous = self.links.get(host_id)
             if previous is not None:
                 previous.alive = False
@@ -301,12 +444,17 @@ class Relay:
             if pairing.status != "pending_desktop":
                 return {"type": "error", "error": "not_waiting_for_confirm"}
             device_id = "dev-" + secrets.token_hex(8)
-            self.devices[device_id] = Device(
+            now = self.now()
+            device = Device(
                 device_id=device_id,
                 host_id=host_id,
                 label=pairing.device_label,
                 fingerprint=pairing.fingerprint,
+                created=now,
+                last_seen=now,
             )
+            self.devices[device_id] = device
+            self._persist_device_locked(device)
             pairing.status = "confirmed"
             pairing.device_id = device_id
             self.code_index.pop(pairing.code_hash, None)
@@ -336,9 +484,11 @@ class Relay:
             if device is None or device.host_id != host_id:
                 return {"type": "error", "error": "unknown_device"}
             device.revoked = True
+            device.token_hash = ""
             dead = [token for token, bound in self.sessions.items() if bound == device_id]
             for token in dead:
                 self.sessions.pop(token, None)
+            self._persist_device_locked(device)
         trace("device_revoked", host_id=host_id, device_id=device_id, outcome="revoked")
         return {"type": "revoked", "device_id": device_id}
 
@@ -412,6 +562,7 @@ class Relay:
                 link = self.links.pop(host_id)
                 link.alive = False
                 trace("desktop_offline", host_id=host_id, outcome="heartbeat_timeout")
+            self._expire_devices_locked(now)
             self._purge_locked(now)
 
     def purge(self) -> None:
@@ -461,7 +612,7 @@ class Relay:
             pairing = self.pairings.get(pairing_id) if pairing_id else None
             if pairing is None or pairing.status not in {"open", "pending_desktop"}:
                 trace("pairing_rejected", outcome="invalid_code")
-                return 404, {"error": "invalid_code"}
+                return 404, {"error": "invalid_code", "message": INVALID_CODE_MESSAGE}
             if pairing.expires_at <= self.now():
                 pairing.status = "expired"
                 self.code_index.pop(pairing.code_hash, None)
@@ -505,7 +656,13 @@ class Relay:
             if device is None or device.revoked:
                 return 401, {"error": "revoked"}, None
             token = secrets.token_urlsafe(32)
-            self.sessions[_hash(token)] = device.device_id
+            digest = _hash(token)
+            stale = [hashed for hashed, bound in self.sessions.items() if bound == device.device_id]
+            for hashed in stale:
+                self.sessions.pop(hashed, None)
+            self.sessions[digest] = device.device_id
+            device.token_hash = digest
+            self._persist_device_locked(device)
             body["device_id"] = device.device_id
             trace("session_issued", host_id=device.host_id, device_id=device.device_id, pairing_id=pairing.pairing_id, outcome="confirmed")
             return 200, body, token
@@ -514,11 +671,64 @@ class Relay:
         if not token:
             return None
         with self.lock:
+            self._expire_devices_locked(self.now())
             device_id = self.sessions.get(_hash(token))
             device = self.devices.get(device_id) if device_id else None
             if device is None or device.revoked:
                 return None
+            device.last_seen = self.now()
+            self._persist_device_locked(device)
             return device
+
+    def note_reconcile(self, host_id: str, claimed: object) -> None:
+        """Log how the desktop's list differs from the registry.
+
+        Membership stays the registry. The desktop drops ids the registry
+        does not have and adopts ids it did not list.
+        """
+        claimed_ids: set[str] = set()
+        if isinstance(claimed, list):
+            for item in claimed[:32]:
+                if not isinstance(item, dict):
+                    continue
+                device_id = item.get("device_id")
+                if isinstance(device_id, str) and device_id:
+                    claimed_ids.add(device_id)
+        with self.lock:
+            live = {
+                device.device_id
+                for device in self.devices.values()
+                if device.host_id == host_id and not device.revoked
+            }
+        trace(
+            "registry_reconcile",
+            host_id=host_id,
+            outcome="reconciled",
+            status=f"adopted={len(live - claimed_ids)},dropped={len(claimed_ids - live)}",
+        )
+
+    def _persist_host_locked(self, host_id: str, token_hash: str) -> None:
+        if self.registry is not None:
+            self.registry.upsert_host(host_id, token_hash)
+
+    def _persist_device_locked(self, device: Device) -> None:
+        if self.registry is not None:
+            self.registry.upsert_device(device)
+
+    def _expire_devices_locked(self, now: float) -> None:
+        stale = [
+            device.device_id
+            for device in self.devices.values()
+            if now - device.last_seen > DEVICE_IDLE_SECONDS
+        ]
+        for device_id in stale:
+            device = self.devices.pop(device_id)
+            dead = [token for token, bound in self.sessions.items() if bound == device_id]
+            for token in dead:
+                self.sessions.pop(token, None)
+            if self.registry is not None:
+                self.registry.delete_device(device_id)
+            trace("device_expired", host_id=device.host_id, device_id=device_id, outcome="idle")
 
     def device_summaries(self, host_id: str) -> list[dict]:
         """Paired phones this desktop already has. A reconnect uses this list
@@ -1033,6 +1243,21 @@ def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
                 if kind != "hello":
                     ws_send(sock, json.dumps({"type": "error", "error": "hello_required"}).encode())
                     continue
+                version = message.get("protocol")
+                if isinstance(version, bool) or not isinstance(version, int) or version != PROTOCOL_VERSION:
+                    trace("hello_rejected", outcome="protocol_mismatch")
+                    ws_send(
+                        sock,
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "error": "protocol_mismatch",
+                                "protocol": PROTOCOL_VERSION,
+                                "message": PROTOCOL_MISMATCH,
+                            }
+                        ).encode(),
+                    )
+                    break
                 host_id = str(message.get("host_id", ""))
                 token = str(message.get("host_token", ""))
                 label = str(message.get("host_label", "desktop"))
@@ -1040,11 +1265,13 @@ def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
                 if link is None:
                     ws_send(sock, json.dumps({"type": "error", "error": "hello_rejected"}).encode())
                     break
+                relay.note_reconcile(host_id, message.get("devices"))
                 ws_send(
                     sock,
                     json.dumps(
                         {
                             "type": "hello_ok",
+                            "protocol": PROTOCOL_VERSION,
                             "host_id": host_id,
                             "devices": relay.device_summaries(host_id),
                         }
@@ -1127,10 +1354,16 @@ def main() -> None:
         log.error("phone static dir missing: %s", static_dir)
         raise SystemExit(1)
     secure = os.environ.get("RELAY_COOKIE_SECURE") == "1"
-    relay = Relay(
-        undelivered_ttl=args.undelivered_ttl,
-        public_origin=args.public_origin or f"http://{args.host}:{args.port}",
-    )
+    state_path = os.environ.get("RELAY_STATE_PATH", "").strip()
+    try:
+        relay = Relay(
+            undelivered_ttl=args.undelivered_ttl,
+            public_origin=args.public_origin or f"http://{args.host}:{args.port}",
+            state_path=state_path or None,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        log.error("relay registry failed to open outcome=%s", exc.__class__.__name__)
+        raise SystemExit(1) from exc
     try:
         server = build_server(args.host, args.port, relay, static_dir, secure_cookie=secure)
     except OSError as exc:
