@@ -43,10 +43,13 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
         messages = body.get("messages") or []
         tools = body.get("tools") or []
-        has_tool_result = any(m.get("role") == "tool" for m in messages)
-        if has_tool_result:
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        if tool_msgs:
+            content = tool_msgs[-1].get("content") or ""
+            if not isinstance(content, str):
+                content = json.dumps(content)
             chunks = [
-                {"choices": [{"index": 0, "delta": {"content": "Move submitted."}}]},
+                {"choices": [{"index": 0, "delta": {"content": content[:800]}}]},
                 {"choices": [{"index": 0, "finish_reason": "stop"}]},
                 {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
             ]
@@ -59,9 +62,28 @@ class Handler(BaseHTTPRequestHandler):
                 if want in fn:
                     chosen = fn
                     break
-            if chosen is None and tools:
-                chosen = (tools[0].get("function") or {}).get("name") or "chess__chess_play"
-            chosen = chosen or "chess__chess_play"
+            if chosen is None:
+                chunks = [
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "content": f"no tool matching {want}",
+                                },
+                            }
+                        ]
+                    },
+                    {"choices": [{"index": 0, "finish_reason": "stop"}]},
+                ]
+                blob = b"".join(sse(chunk) for chunk in chunks) + b"data: [DONE]\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", str(len(blob)))
+                self.end_headers()
+                self.wfile.write(blob)
+                return
             arguments = json.dumps(spec.get("arguments") or {})
             chunks = [
                 {

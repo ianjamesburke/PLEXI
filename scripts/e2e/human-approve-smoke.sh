@@ -126,6 +126,18 @@ note "host ready: $(tr '\n' ' ' < "$EVID/host-status.json")"
 
 "$BIN" app install "$REPO/apps/chess" --yes >"$EVID/app-install.out" 2>"$EVID/app-install.err" || fail "chess install failed: $(tail -20 "$EVID/app-install.err")"
 "$BIN" app open chess >"$EVID/open-chess.out" 2>"$EVID/open-chess.err" || true
+CHESS_READY=0
+for _ in $(seq 1 40); do
+  "$BIN" app call chess chess.state --json >"$EVID/chess-state.json" 2>"$EVID/chess-state.err" || true
+  if ! grep -q 'tool_not_found' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null \
+     && grep -Eq 'revision|permission_required|permission_denied' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null; then
+    CHESS_READY=1
+    break
+  fi
+  sleep 1
+done
+[[ "$CHESS_READY" -eq 1 ]] || fail "chess.state never registered: $(cat "$EVID/chess-state.json" "$EVID/chess-state.err")"
+note "chess tool registered"
 "$BIN" app open assistant >"$EVID/open-assistant.out" 2>"$EVID/open-assistant.err" || true
 
 ASSIST=""
@@ -159,7 +171,7 @@ except Exception:
     print(""); raise SystemExit
 for row in data.get("pending") or []:
     blob=json.dumps(row)
-    if "human-approve-e2e" in blob or "e2e4" in blob or "play" in blob:
+    if "chess.play" in blob or "chess_play" in blob:
         print(row.get("pending_request_id",""))
         raise SystemExit
 rows=data.get("pending") or []
@@ -197,10 +209,11 @@ if human__pending_present "$PENDING"; then
   fail "pending $PENDING still listed after HUMAN_APPROVE"
 fi
 
-if ! printf '%s' "$SEND_BODY" | grep -Eq 'succeeded|Move submitted|e2e4|revision_after'; then
-  if ! grep -q 'e2e4' "$LOG" 2>/dev/null; then
-    fail "move did not commit. send=$SEND_BODY"
-  fi
+if ! printf '%s' "$SEND_BODY" | grep -Eq 'revision_after'; then
+  fail "approved call did not return a chess receipt. send=$SEND_BODY"
+fi
+if ! printf '%s' "$SEND_BODY" | grep -q 'e2e4'; then
+  fail "approved receipt is not e2e4. send=$SEND_BODY"
 fi
 
 echo "PASS: HUMAN_APPROVE $PENDING committed the chess move" | tee "$EVID/result.txt"
