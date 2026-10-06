@@ -37,10 +37,7 @@ impl PlexiApp {
         let body = match op {
             "list" => {
                 let pending = monitor.list_pending();
-                log::info!(
-                    "permission_monitor: list pending count={}",
-                    pending.len()
-                );
+                log::info!("permission_monitor: list pending count={}", pending.len());
                 let buttons: Vec<serde_json::Value> = self
                     .approval_buttons
                     .iter()
@@ -261,9 +258,18 @@ impl PlexiApp {
         let pending = monitor.list_pending();
         self.approval_buttons.clear();
         if pending.is_empty() {
+            self.approval_banner_logged = None;
             return;
         }
         let pending_id = pending[0].pending_request_id.clone();
+        if self.approval_banner_logged.as_deref() != Some(pending_id.as_str()) {
+            log::info!(
+                "permission_monitor: approval banner shown pending={pending_id} actor={} tool={}",
+                pending[0].actor_id,
+                pending[0].tool
+            );
+            self.approval_banner_logged = Some(pending_id.clone());
+        }
         let caption = format!("{} wants {}", pending[0].actor_id, pending[0].tool);
         let synthetic = self.synthetic_input_frame;
         let mut clicked = false;
@@ -287,10 +293,7 @@ impl PlexiApp {
             });
         }
         if clicked && !synthetic {
-            match monitor.approve_pending(
-                &pending_id,
-                crate::broker::gate::ApprovalChoice::Once,
-            ) {
+            match monitor.approve_pending(&pending_id, crate::broker::gate::ApprovalChoice::Once) {
                 Ok(()) => {
                     log::info!("permission_monitor: banner approved {pending_id}")
                 }
