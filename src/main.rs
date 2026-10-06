@@ -271,9 +271,10 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd,
-        DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
+        ChangesCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd, HookAction,
+        HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd,
+        WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -288,6 +289,9 @@ fn main() -> eframe::Result {
                     Commands::Assistant { cmd } => match cmd {
                         AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
                             std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        }
+                        AssistantCmd::Tool { name, input } => {
+                            std::process::exit(cli::assistant_tool_cli(&name, &input))
                         }
                         AssistantCmd::Permission { cmd } => match cmd {
                             AssistantPermissionCmd::List => {
@@ -397,6 +401,25 @@ fn main() -> eframe::Result {
                             )),
                         },
                     },
+                    Commands::Changes { cmd } => std::process::exit(match cmd {
+                        ChangesCmd::Allow {
+                            agent,
+                            file,
+                            old,
+                            new,
+                        } => cli::changes_allow_cli(&agent, &file, &old, &new),
+                        ChangesCmd::Propose {
+                            agent,
+                            file,
+                            old,
+                            new,
+                        } => cli::changes_propose_cli(&agent, &file, &old, &new),
+                        ChangesCmd::Preview { id } => cli::changes_preview_cli(&id),
+                        ChangesCmd::Accept { id } => cli::changes_accept_cli(&id),
+                        ChangesCmd::Refresh { id } => cli::changes_refresh_cli(&id),
+                        ChangesCmd::Revert { id } => cli::changes_revert_cli(&id),
+                        ChangesCmd::Profile => cli::changes_profile_cli(),
+                    }),
                     Commands::Secret { cmd } => match cmd {
                         SecretCmd::Set {
                             friendly_name,
