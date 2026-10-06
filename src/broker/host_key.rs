@@ -4,6 +4,11 @@
 //! never written to `secrets.json` and they are not readable with
 //! `plexi secret get`. The account namespace `plexi:host:*` is reserved.
 //!
+//! `get` / `set` / `add_new` / `delete` store the account string unchanged.
+//! The Needs you journal tip is `plexi:host:needs-you-journal-tip:` plus the
+//! sha256 of the profile host directory. The permission MAC those callers
+//! share is `seal::mac_key_bytes` / `seal::existing_mac_key`.
+//!
 //! - Tests use a process-local mock. They do not open a keychain or a session bus.
 //! - Linux stores the key only in Secret Service. If that service is missing,
 //!   sealing fails and says why. There is no plaintext fallback.
@@ -696,5 +701,21 @@ mod tests {
         assert!(system_store().get("plexi:host:permission-mac").is_none());
         assert!(system_store().get("permission-mac").is_none());
         assert!(!dir.path().join("secrets.json").exists());
+    }
+
+    #[test]
+    fn needs_you_journal_tip_account_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+        let account = "plexi:host:needs-you-journal-tip:\
+            0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert!(get(account).unwrap().is_none());
+        set(account, "abcd").unwrap();
+        assert_eq!(get(account).unwrap().unwrap().as_str(), "abcd");
+        set(account, "ef01").unwrap();
+        assert_eq!(get(account).unwrap().unwrap().as_str(), "ef01");
+        delete(account).unwrap();
+        assert!(get(account).unwrap().is_none());
+        assert!(system_store().get(account).is_none());
     }
 }
