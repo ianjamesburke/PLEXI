@@ -250,12 +250,11 @@ pane_marker() {
   fi
 }
 
-# A window is optional only when PLEXI_E2E_SKIP_PANES=1. macOS does not need
-# X. On Linux with no display, start Xvfb so the pane refusals still run.
+# Pane checks always run. PLEXI_E2E_SKIP_PANES is not a skip. macOS does not
+# need X. On Linux with no display, start Xvfb so the refusals and the human
+# click still run.
 pane_gui=0
-if [[ "${PLEXI_E2E_SKIP_PANES:-}" == 1 ]]; then
-  printf 'SKIP: pane checks (PLEXI_E2E_SKIP_PANES=1)\n'
-elif [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "$(uname -s)" == "Darwin" ]]; then
   if pgrep -q WindowServer; then
     pane_gui=1
   else
@@ -332,12 +331,16 @@ esac
 if ! grep -q '^grant_code:' "\$meta"; then
   echo "grant_code:0" >>"\$meta"
 fi
+"\$PLEXI" secret read FOLDER_B_SECRET --agent me --folder "\$DIR_B" >"\$meta.read" 2>"\$meta.read.err" || echo "read_code:\$?" >>"\$meta"
+if ! grep -q '^read_code:' "\$meta"; then
+  echo "read_code:0" >>"\$meta"
+fi
 if env | grep -q '^PLEXI_TERMINAL_ENV_VALUE_'; then
   echo "dup:present" >>"\$meta"
 else
   echo "dup:absent" >>"\$meta"
 fi
-nested=\$("\$PLEXI" pane new --cwd "\$DIR_B" --no-focus 'if [ -n "\$FOLDER_B_SECRET" ]; then echo folder-b-present; else echo folder-b-absent; fi; sleep 30' | tr -d '[:space:]')
+nested=\$("\$PLEXI" pane new --cwd "\$DIR_B" --no-focus 'if [ -n "\$FOLDER_B_SECRET" ]; then echo folder-b-present; else echo permission_denied; echo folder-b-absent; fi; sleep 30' | tr -d '[:space:]')
 echo "nested:\$nested" >>"\$meta"
 if [[ "\$nested" =~ ^[0-9]+\$ ]]; then
   folderb="unseen"
@@ -379,12 +382,14 @@ EOF
     execboth_body="$(cat "$agent_meta.execboth" 2>/dev/null || true)"
     grant_body="$(cat "$agent_meta.grant" 2>/dev/null || true)"
     grant_err_body="$(cat "$agent_meta.grant.err" 2>/dev/null || true)"
+    read_body="$(cat "$agent_meta.read" 2>/dev/null || true)"
+    read_err_body="$(cat "$agent_meta.read.err" 2>/dev/null || true)"
     capture_body="$(cat "$agent_meta.capture" 2>/dev/null || true)"
     leaked=0
-    if contains_secret "$exec_body" || contains_secret "$execu_body" || contains_secret "$execboth_body" || contains_secret "$grant_body" || contains_secret "$grant_err_body" || contains_secret "$capture_body" || contains_secret "$agent_body"; then
+    if contains_secret "$exec_body" || contains_secret "$execu_body" || contains_secret "$execboth_body" || contains_secret "$grant_body" || contains_secret "$grant_err_body" || contains_secret "$read_body" || contains_secret "$read_err_body" || contains_secret "$capture_body" || contains_secret "$agent_body"; then
       leaked=1
     fi
-    rm -f "$agent_meta.exec" "$agent_meta.execu" "$agent_meta.execboth" "$agent_meta.grant" "$agent_meta.grant.err" "$agent_meta.capture" "$agent_meta.exec.err" "$agent_meta.execu.err" "$agent_meta.execboth.err"
+    rm -f "$agent_meta.exec" "$agent_meta.execu" "$agent_meta.execboth" "$agent_meta.grant" "$agent_meta.grant.err" "$agent_meta.read" "$agent_meta.read.err" "$agent_meta.capture" "$agent_meta.exec.err" "$agent_meta.execu.err" "$agent_meta.execboth.err"
     if [[ "$leaked" -eq 0 ]] \
       && [[ "$exec_body" == *"permission_denied"* ]] \
       && grep -q '^exec_code:1$' <<<"$agent_body"; then
@@ -406,12 +411,22 @@ EOF
     else
       fail "pane in folder A: secret grant --folder B is permission_denied"
     fi
+    if [[ "$leaked" -eq 0 ]] \
+      && [[ "$read_body" == *"permission_denied"* ]] \
+      && [[ "$read_body" != *"pending_request_id="* ]] \
+      && grep -q '^read_code:1$' <<<"$agent_body"; then
+      pass "pane in folder A: secret read of B is permission_denied"
+    else
+      fail "pane in folder A: secret read of B is permission_denied"
+    fi
     if [[ "$agent_body" == *"dup:absent"* ]]; then
       pass "pane env has no PLEXI_TERMINAL_ENV_VALUE_ duplicate"
     else
       fail "pane env has no PLEXI_TERMINAL_ENV_VALUE_ duplicate"
     fi
-    if [[ "$leaked" -eq 0 && "$agent_body" == *"folderb:absent"* ]]; then
+    if [[ "$leaked" -eq 0 && "$agent_body" == *"folderb:absent"* ]] \
+      && [[ "$capture_body" == *"permission_denied"* ]] \
+      && [[ "$capture_body" != *"folder-b-present"* ]]; then
       pass "pane in folder A cannot spawn a pane that receives folder B"
     else
       fail "pane in folder A cannot spawn a pane that receives folder B"
@@ -425,11 +440,14 @@ EOF
         fail "pane in folder A: secret exec survives clearing PLEXI_PANE_ID and PLEXI_SOCKET"
       fi
     fi
+    "$PLEXI" app open assistant --right >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
     unset PLEXI_SOCKET
   else
     fail "pane in folder A sees the env var (host did not become ready)"
     fail "pane in folder B does not see the env var (host did not become ready)"
   fi
+else
+  fail "pane checks did not start"
 fi
 
 # ── agent read without a grant ───────────────────────────────────────────────
@@ -457,6 +475,107 @@ else
   fail "audit row names the secret and does not contain the value"
 fi
 rm -f "$audit_pat"
+
+# ── one human click, one read ────────────────────────────────────────────────
+# `app open assistant` is release-gated. A private HOME still isolates the
+# profile, but the binary name has to be an alpha, beta, or pr channel or
+# the Allow once button never appears.
+channel_base="$(basename "$PLEXI")"
+channel_base="${channel_base%.exe}"
+case "$channel_base" in
+  plexi-alpha|plexi-beta|plexi-pr-*) ;;
+  *)
+    fail "human click allows exactly one read (binary must be plexi-alpha, plexi-beta, or plexi-pr-N so the assistant can open)"
+    channel_base=""
+    ;;
+esac
+if [[ -z "$channel_base" ]]; then
+  :
+elif [[ ! -f "$REPO_ROOT/scripts/e2e/human.sh" ]]; then
+  fail "human click allows exactly one read (scripts/e2e/human.sh missing)"
+elif ! command -v xdotool >/dev/null 2>&1; then
+  fail "human click allows exactly one read (xdotool missing)"
+elif [[ "$HOST_STARTED" != 1 ]]; then
+  fail "human click allows exactly one read (host is not running)"
+elif [[ "$read_code" -ne 2 || "$read_out" != *"pending_request_id="* ]]; then
+  fail "human click allows exactly one read (no pending)"
+else
+  pending_id="${read_out#*pending_request_id=}"
+  pending_id="${pending_id%%$'\n'*}"
+  assist=""
+  for _i in $(seq 1 20); do
+    "$PLEXI" pane list >"$WORK/panes.json" 2>/dev/null || true
+    assist="$(python3 - "$WORK/panes.json" <<'PY'
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+for row in rows:
+    title = str(row.get("title") or "")
+    manifest = str(row.get("manifest_id") or "")
+    if row.get("type") == "app" and (
+        title.lower() == "assistant" or manifest.lower() == "assistant"
+    ):
+        print(row.get("id", ""))
+        raise SystemExit
+print("")
+PY
+)"
+    [[ -n "$assist" ]] && break
+    sleep 0.3
+  done
+  if [[ -n "$assist" ]]; then
+    "$PLEXI" pane focus "$assist" >/dev/null 2>&1 || true
+  fi
+  export BIN="$PLEXI"
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/e2e/human.sh"
+  if HUMAN_APPROVE "$pending_id" once; then
+    once_file="$WORK/once-read.out"
+    : >"$once_file"
+    chmod 600 "$once_file"
+    "$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" >"$once_file" 2>"$WORK/once-read.err" || once_code=$?
+    once_code="${once_code:-0}"
+    once_ok=0
+    if [[ "$once_code" -eq 0 ]] && python3 - "$once_file" <<PY
+import pathlib, sys
+got = pathlib.Path(sys.argv[1]).read_text().strip("\n")
+want = """$SECRET"""
+raise SystemExit(0 if got == want else 1)
+PY
+    then
+      once_ok=1
+    fi
+    : >"$once_file"
+    rm -f "$once_file" "$WORK/once-read.err"
+    again_file="$WORK/again-read.out"
+    : >"$again_file"
+    chmod 600 "$again_file"
+    "$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" >"$again_file" 2>"$WORK/again-read.err" || again_code=$?
+    again_code="${again_code:-0}"
+    again_ok=0
+    if [[ "$again_code" -ne 0 ]] && python3 - "$again_file" <<PY
+import pathlib, sys
+got = pathlib.Path(sys.argv[1]).read_text()
+want = """$SECRET"""
+raise SystemExit(0 if want not in got else 1)
+PY
+    then
+      again_ok=1
+    fi
+    : >"$again_file"
+    rm -f "$again_file" "$WORK/again-read.err"
+    if [[ "$once_ok" -eq 1 && "$again_ok" -eq 1 ]]; then
+      pass "human click allows exactly one read"
+    else
+      fail "human click allows exactly one read"
+    fi
+  else
+    fail "human click allows exactly one read"
+  fi
+fi
 
 # ── grant, then read ─────────────────────────────────────────────────────────
 grant_out="$("$PLEXI" secret grant FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/grant.err")" || grant_code=$?
