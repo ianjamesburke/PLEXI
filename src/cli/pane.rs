@@ -753,7 +753,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
             }
             return 0;
         }
-        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+        if let Some(msg) = host_error_text(&content) {
             eprintln!("error: {msg}");
             return 1;
         }
@@ -788,12 +788,22 @@ fn click_request(payload: serde_json::Value, prefix: &str, log_prefix: &str) -> 
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Some(msg) = super::reply_error(&content) {
+    if let Some(msg) = host_error_text(&content) {
         log::warn!("{log_prefix}: host reported error: {msg}");
         eprintln!("error: {msg}");
         return 1;
     }
     0
+}
+
+/// Host `error` text, with `error_code` prefixed when the reply carries one.
+fn host_error_text(content: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let msg = value.get("error")?.as_str()?;
+    match value.get("error_code").and_then(|code| code.as_str()) {
+        Some(code) if !code.is_empty() && !msg.contains(code) => Some(format!("{code}: {msg}")),
+        _ => Some(msg.to_string()),
+    }
 }
 
 /// `plexi pane click <pane_id> <x> <y> [--button left]`
