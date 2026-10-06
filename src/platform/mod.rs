@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 pub mod app_nap;
+#[cfg(target_os = "macos")]
+pub mod enclave_signoff;
 pub mod clock;
 #[cfg(target_os = "macos")]
 pub mod finder_service;

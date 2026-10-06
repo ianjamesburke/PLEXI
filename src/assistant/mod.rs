@@ -1179,6 +1179,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type": "object"}),
                 timeout_ms: Some(120_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_UNSUBSCRIBE.to_string(),
@@ -1187,6 +1189,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type": "object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
         ]
     }
@@ -1204,6 +1208,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_PANES_STATE.into(),
@@ -1212,6 +1218,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_PANES_OPEN.into(),
@@ -1220,6 +1228,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_PANES_FOCUS.into(),
@@ -1228,6 +1238,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_PANES_CLOSE.into(),
@@ -1236,6 +1248,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_APPS_OPEN.into(),
@@ -1244,6 +1258,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_TERMINALS_OPEN.into(),
@@ -1252,6 +1268,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_TERMINALS_RUN.into(),
@@ -1260,6 +1278,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_TERMINALS_READ.into(),
@@ -1271,6 +1291,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_FILES_READ.into(),
@@ -1287,6 +1309,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_FILES_GREP.into(),
@@ -1300,6 +1324,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_FILES_LIST.into(),
@@ -1311,6 +1337,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_FILES_WRITE.into(),
@@ -1323,6 +1351,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_FILES_EDIT.into(),
@@ -1336,6 +1366,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_BUILD_RUN.into(),
@@ -1351,6 +1383,8 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(build_exec::MAX_BUILD_TIMEOUT_MS + 10_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
             AiTool {
                 name: HOST_TOOL_NET_FETCH.into(),
@@ -1368,6 +1402,8 @@ impl AssistantApp {
                 // Host policy, not a self-declared bit: reaching the network
                 // is never unprompted, regardless of the HTTP method.
                 read_only: false,
+                requires: None,
+                signoff: None,
             },
         ]
     }
@@ -4174,6 +4210,8 @@ enabled = ["allowed.tool"]
             output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: None,
             read_only: false,
+            requires: None,
+            signoff: None,
         };
         // A name-only session row is not an authorization. The actor and
         // scope are recorded; the call still has to match an exact binding.
@@ -4226,6 +4264,8 @@ enabled = ["allowed.tool"]
             output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: Some(2_000),
             read_only: true,
+            requires: None,
+            signoff: None,
         };
         let rw_tool = crate::protocol::AiTool {
             name: "csv.write_cell".to_string(),
@@ -4234,6 +4274,8 @@ enabled = ["allowed.tool"]
             output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: Some(2_000),
             read_only: false,
+            requires: None,
+            signoff: None,
         };
         tool_dispatch::register(
             9200,
@@ -4273,6 +4315,8 @@ enabled = ["allowed.tool"]
                 output_schema: serde_json::json!({"type": "object"}),
                 timeout_ms: None,
                 read_only: true,
+                requires: None,
+                signoff: None,
             }],
             AppEventSender::Channel(tx),
             test_scope_origin(9205, 9205),
@@ -4311,6 +4355,8 @@ enabled = ["allowed.tool"]
                 output_schema: serde_json::json!({"type": "object"}),
                 timeout_ms: None,
                 read_only: true,
+                requires: None,
+                signoff: None,
             }],
             AppEventSender::Channel(tx),
             test_scope_origin(9206, 9206),
@@ -4346,6 +4392,8 @@ enabled = ["allowed.tool"]
                     output_schema: serde_json::json!({"type": "object"}),
                     timeout_ms: None,
                     read_only: true,
+                    requires: None,
+                    signoff: None,
                 },
                 crate::protocol::AiTool {
                     name: "csv.write_cell".to_string(),
@@ -4354,6 +4402,8 @@ enabled = ["allowed.tool"]
                     output_schema: serde_json::json!({"type": "object"}),
                     timeout_ms: None,
                     read_only: false,
+                    requires: None,
+                    signoff: None,
                 },
             ],
             AppEventSender::Channel(tx),
@@ -4412,6 +4462,8 @@ enabled = ["allowed.tool"]
                     output_schema: serde_json::json!({"type": "object"}),
                     timeout_ms: None,
                     read_only: true,
+                    requires: None,
+                    signoff: None,
                 },
                 crate::protocol::AiTool {
                     name: "csv.write_cell".to_string(),
@@ -4420,6 +4472,8 @@ enabled = ["allowed.tool"]
                     output_schema: serde_json::json!({"type": "object"}),
                     timeout_ms: None,
                     read_only: false,
+                    requires: None,
+                    signoff: None,
                 },
             ],
             AppEventSender::Channel(tx),
@@ -4625,6 +4679,8 @@ enabled = ["allowed.tool"]
                 output_schema: serde_json::json!({"type": "object"}),
                 timeout_ms: Some(2_000),
                 read_only: false,
+                requires: None,
+                signoff: None,
             })
             .collect();
         tool_dispatch::register(
