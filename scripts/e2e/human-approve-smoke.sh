@@ -96,14 +96,15 @@ python3 "$ROOT/mock_chess_model.py" >"$EVID/mock.log" 2>&1 &
 MOCK_PID=$!
 sleep 0.3
 
-python3 - "$MOCK_CONTROL" <<'PY'
+OP_ID="human-approve-$$"
+python3 - "$MOCK_CONTROL" "$OP_ID" <<'PY'
 import json, sys
 open(sys.argv[1], "w").write(json.dumps({
     "tool_substr": "play",
     "arguments": {
         "game_id": "game-1",
         "expected_revision": 0,
-        "operation_id": "human-approve-$RANDOM",
+        "operation_id": sys.argv[2],
         "move": "e2e4",
     },
 }))
