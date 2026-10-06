@@ -140,8 +140,10 @@ fn split_via_handle_command_adds_pane_to_model_and_shifts_focus() {
 #[test]
 fn seeded_next_pane_id_starts_allocations_above_restored_ids() {
     let mut app = make_app();
-    // Simulate restored workspace: pane IDs in range [10, 49].
-    let max_restored: u64 = 49;
+    // new_for_test already reserved a private block. A restored workspace sits
+    // above that floor; seeding below it is rejected.
+    let floor = app.host.test_next_pane_id();
+    let max_restored = floor + 39;
     app.host.seed_next_pane_id(max_restored + 1);
 
     assert_eq!(app.host.test_next_pane_id(), max_restored + 1);

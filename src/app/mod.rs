@@ -2577,8 +2577,7 @@ impl PlexiApp {
             &crate::config::config_dir(),
             crate::host::app_timeline::global(),
         );
-        (
-            Self {
+        let mut app = Self {
                 pty_event_rx: rx,
                 pty_event_tx: tx,
                 last_notify_poll: std::time::Instant::now(),
@@ -2749,9 +2748,17 @@ impl PlexiApp {
                 pending_pane_inputs: HashMap::new(),
                 pending_pane_drags: HashMap::new(),
                 pending_pane_pointer_frames: HashMap::new(),
-            },
-            pane_ipc_tx,
-        )
+            };
+        // Launch paths allocate through HostModel, which otherwise starts at 1
+        // in every test process. Seed a private block so a pane drop in one
+        // test cannot unregister another test's tools.
+        app.host
+            .seed_next_pane_id(crate::testing::reserve_pane_id_block());
+        log::info!(
+            "test host: pane ids start at {}",
+            app.host.next_pane_id()
+        );
+        (app, pane_ipc_tx)
     }
 
     /// Add a minimal builtin pane directly to window 0 for unit tests.

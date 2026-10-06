@@ -192,6 +192,22 @@ fn monitor() -> Arc<PermissionMonitor> {
     PermissionMonitor::for_profile(&crate::config::config_dir())
 }
 
+/// `PlexiApp::new_for_test` gives every harness the same context id, and the
+/// process-global tool registry treats that id as one audience. Pane-id blocks
+/// stop two tests from overwriting the same key; they do not stop a second
+/// chess pane in another harness from withdrawing the bare `chess.play` name
+/// or from receiving a call this harness is not pumping. Move this harness's
+/// window and its router context together, before any app registers tools.
+fn isolate_tool_context(h: &mut HostHarness) {
+    static NEXT: AtomicU64 = AtomicU64::new(80_000);
+    let context_id = NEXT.fetch_add(1, Ordering::SeqCst);
+    let window_idx = h.app.active_window;
+    h.app.windows[window_idx].context_id = context_id;
+    let router_idx = h.app.router.active_idx();
+    h.app.router.get_mut(router_idx).context_id = context_id;
+    log::info!("permission_gate: isolated tool context {context_id}");
+}
+
 #[derive(Clone, Copy)]
 enum Ingress {
     Assistant,
@@ -208,6 +224,7 @@ fn permission_gate_real_chess_all_ingresses() {
 
 fn run_ingress(ingress: Ingress) {
     let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
     let pane = h.launch_repo_app("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
@@ -688,6 +705,7 @@ fn all_dispatchers_require_monitor() {
 #[test]
 fn app_call_rejects_forged_or_missing_identity() {
     let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
     let pane = h.launch_repo_app("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
@@ -725,6 +743,7 @@ fn app_call_rejects_forged_or_missing_identity() {
 #[test]
 fn chess_receipt_survives_lost_reply() {
     let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
     let pane = h.launch_repo_app("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
@@ -777,6 +796,7 @@ fn chess_receipt_survives_lost_reply() {
 #[test]
 fn app_call_and_mcp_are_gated_and_audited() {
     let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
     let pane = h.launch_repo_app("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
@@ -815,6 +835,7 @@ fn app_call_and_mcp_are_gated_and_audited() {
 #[test]
 fn second_chess_pane_routes_by_instance() {
     let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
     let first = h.launch_repo_app("apps/chess", &[]);
     let again = h.launch_repo_app("apps/chess", &[]);
     assert_eq!(again, first, "app open chess focuses the open board");
@@ -906,6 +927,7 @@ fn chess_panes(h: &HostHarness) -> Vec<u64> {
 #[test]
 fn gate_denial_reaches_the_host_log() {
     let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
     let pane = h.launch_repo_app("apps/chess", &[]);
     let start = event_len();
     let denied = socket_call(&mut h, Some(9_999_999), None, &[], play(0, "ghost-log", "e2e4", "game-1"));
