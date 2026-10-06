@@ -607,14 +607,14 @@ Example: plexi agent run spawn --head lead --admission adm-1 --json
 
 | Subcommand | Description |
 |---|---|
-| `spawn` | Claim a run of a head and append a ledger row |
+| `spawn` | Claim a run of a head, append a ledger row, and run a model turn |
 | `list` | List runs in the current workspace |
 | `show` | Show one run |
 | `finish` | Mark a run finished so another admission can claim the head |
 
 #### `plexi agent run spawn`
 
-Claim a run of a head and append a ledger row
+Claim a run of a head, append a ledger row, and run a model turn
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -624,6 +624,7 @@ Claim a run of a head and append a ledger row
 | `--kind` | string | no | `system` or `output` |
 | `--input-tokens` | string | no | Input tokens recorded on the ledger row |
 | `--output-tokens` | string | no | Output tokens recorded on the ledger row |
+| `--text` | string | no | Prompt for the model turn. Defaults to `run` on the host |
 | `--json` | flag | no | Print the host JSON reply |
 
 #### `plexi agent run list`

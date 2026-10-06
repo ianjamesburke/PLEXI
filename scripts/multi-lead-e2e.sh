@@ -21,6 +21,7 @@ BIN_PATH="$(command -v "$BIN")"
 unset PLEXI_SOCKET
 unset PLEXI_CHANNEL
 unset OPENROUTER_API_KEY
+unset PLEXI_PANE_ID
 
 WORKDIR="$(mktemp -d)"
 HOST_STARTED=0
@@ -196,6 +197,47 @@ body = json.loads(sys.argv[1])
 assert body.get("state") == "permission_required", body
 assert not (Path(sys.argv[2]) / "out.txt").exists()
 print("VERIFIED-VIA-BYPASS permission_required; file was not written")
+PY
+
+echo "STEP agent run spawn executes a mock model turn"
+SPAWN_HEAD="$(cli agent head create lead-spawn --display-name 'Lead Spawn' --grant assistant.turn=allow --json)"
+python3 -c 'import json,sys; assert json.loads(sys.argv[1]).get("ok") is True' "$SPAWN_HEAD"
+SPAWN="$(cli agent run spawn --head lead-spawn --admission spawn-11 --text 'remember 11' --json)"
+python3 - "$SPAWN" "$WORKDIR" <<'PY'
+import json, sys
+from pathlib import Path
+body = json.loads(sys.argv[1])
+assert body.get("ok") is True, body
+assert body.get("state") == "succeeded", body
+assert "Noted 11" in body.get("reply", ""), body
+text = Path(sys.argv[2], ".plexi", "agents", "lead-spawn", "conversation.jsonl").read_text()
+assert "Noted 11" in text, text
+print("spawn ran the mock model")
+PY
+
+echo "STEP a pane cannot mint a wider head"
+BEFORE="$(cli pane list)"
+cli pane new "$BIN_PATH agent head create sneaky --grant agents.admin=allow --json; sleep 20" --no-focus >/dev/null
+python3 - "$BEFORE" "$BIN_PATH" "$WORKDIR" <<'PY'
+import json, subprocess, sys, time
+from pathlib import Path
+before = {pane["id"] for pane in json.loads(sys.argv[1])}
+binary, work = sys.argv[2], Path(sys.argv[3])
+found = ""
+for _ in range(30):
+    panes = json.loads(subprocess.check_output([binary, "pane", "list"], text=True))
+    fresh = [pane for pane in panes if pane.get("id") not in before and pane.get("type") == "terminal"]
+    for pane in fresh:
+        out = subprocess.check_output([binary, "pane", "capture", str(pane["id"]), "--plain"], text=True, stderr=subprocess.DEVNULL)
+        if "permission_denied" in out:
+            found = out
+            break
+    if found:
+        break
+    time.sleep(0.4)
+assert found, "pane did not refuse the wider grant"
+assert not (work / ".plexi" / "agents" / "sneaky").exists()
+print("pane create refused a grant it does not hold")
 PY
 
 echo "PASS multi-lead e2e"

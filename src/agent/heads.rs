@@ -440,6 +440,8 @@ struct IssueRun<'a> {
     kind: &'a str,
     input_tokens: u32,
     output_tokens: u32,
+    /// When set, the new run also executes this prompt. `None` only journals.
+    prompt: Option<&'a str>,
 }
 
 fn issue_run(req: IssueRun<'_>) -> Value {
@@ -452,11 +454,15 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         kind,
         input_tokens,
         output_tokens,
+        prompt,
     } = req;
+    let prompt = prompt.map(str::to_string);
+    let head_id = head.id.clone();
+    let workspace_buf = workspace.to_path_buf();
     if kind != "system" && kind != "output" {
         return json!({"ok": false, "error_code": "invalid_kind", "error": "kind must be system or output"});
     }
-    let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
     let runs = match load_runs(workspace) {
         Ok(runs) => runs,
         Err(error) => return json!({"ok": false, "error_code": "io_error", "error": error}),
@@ -536,6 +542,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         return json!({"ok": false, "error_code": "ledger_error", "error": error, "run": record});
     }
     let token = remember_token(workspace, &record.id, &record.actor_id);
+    let run_id = record.id.clone();
     log::info!(
         "agents_api: spawned run {} head={} client_ref={} kind={} tokens={}/{} version={}",
         record.id,
@@ -546,7 +553,8 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         record.output_tokens,
         record.version,
     );
-    json!({
+    drop(guard);
+    let mut body = json!({
         "ok": true,
         "run": record,
         "run_token": token,
@@ -560,7 +568,23 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "output_tokens": row.output_tokens,
             "parent_run_id": row.parent_run_id,
         },
-    })
+    });
+    if let Some(prompt) = prompt {
+        log::info!("agents_api: spawn model turn head={head_id} run={run_id}");
+        let turn = crate::agent::leads::run_prompt(&workspace_buf, &head_id, &prompt);
+        if let Some(obj) = body.as_object_mut() {
+            if let Some(state) = turn.get("state").cloned() {
+                obj.insert("state".to_string(), state);
+            }
+            if let Some(reply) = turn.get("reply").cloned() {
+                obj.insert("reply".to_string(), reply);
+            }
+            if let Some(error) = turn.get("error").filter(|value| !value.is_null()) {
+                obj.insert("model_error".to_string(), error.clone());
+            }
+        }
+    }
+    body
 }
 
 fn find_head(workspace: &Path, id: &str) -> Result<HeadCard, Value> {
@@ -613,6 +637,28 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     return json!({"ok": false, "error_code": "invalid_argument", "error": error})
                 }
             };
+            let caller_pane = payload.get("caller_pane").and_then(|v| v.as_u64());
+            let caller_head = payload.get("caller_head").and_then(|v| v.as_str()).unwrap_or("");
+            let (parent_owned, denial_owned) = if caller_pane.is_some() {
+                if caller_head.is_empty() {
+                    log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
+                    (Some(Vec::new()), "pane".to_string())
+                } else {
+                    match find_head(&workspace, caller_head) {
+                        Ok(card) => {
+                            log::info!(
+                                "agents_api: create_head pane={caller_pane:?} parent_head={}",
+                                card.id
+                            );
+                            let actor = actor_of(&card.id);
+                            (Some(card.grants), actor)
+                        }
+                        Err(error) => return error,
+                    }
+                }
+            } else {
+                (None, "operator".to_string())
+            };
             create_head(CreateHead {
                 workspace: &workspace,
                 name,
@@ -630,8 +676,8 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 reports_to: payload.get("reports_to").and_then(|v| v.as_str()),
-                parent_grants: None,
-                denial_actor: "operator",
+                parent_grants: parent_owned.as_deref(),
+                denial_actor: &denial_owned,
             })
         }
         "list_heads" => {
@@ -658,6 +704,22 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("adm_{}", uuid::Uuid::new_v4()));
+            let journal_only = payload
+                .get("journal_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let prompt_owned = if journal_only {
+                None
+            } else {
+                Some(
+                    payload
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or("run")
+                        .to_string(),
+                )
+            };
             issue_run(IssueRun {
                 workspace: &workspace,
                 head: &head,
@@ -679,6 +741,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     .get("output_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32,
+                prompt: prompt_owned.as_deref(),
             })
         }
         "list_runs" => match load_runs(&workspace) {
@@ -813,6 +876,7 @@ fn delegate(workspace: &Path, parent_run: &str, name: &str, grants: Vec<ToolGran
         kind: &parent.kind,
         input_tokens: 0,
         output_tokens: 0,
+        prompt: None,
     });
     if spawned.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         log::info!(
@@ -1320,5 +1384,75 @@ mod tests {
             &json!({"workspace": fix.ws(), "run_id": run_id, "tool": "agents.admin", "input_json": "{}"}),
         );
         assert_eq!(admin["error_code"], "permission_denied", "{admin}");
+    }
+
+    #[test]
+    fn spawn_runs_the_model_gate_instead_of_only_journaling() {
+        let fix = Fixture::new();
+        create(&fix, "lead", &["agents.ping=allow"]);
+        let spawned = handle_request(
+            "spawn_run",
+            &json!({
+                "workspace": fix.ws(),
+                "head": "lead",
+                "admission": "adm-model",
+                "text": "remember 4",
+            }),
+        );
+        assert_eq!(spawned["ok"], true, "{spawned}");
+        assert_eq!(spawned["idempotent"], false);
+        assert_eq!(spawned["state"], "permission_required", "{spawned}");
+        let conversation = std::fs::read_to_string(
+            fix.ws()
+                .join(".plexi")
+                .join("agents")
+                .join("lead")
+                .join("conversation.jsonl"),
+        )
+        .unwrap_or_default();
+        assert!(
+            conversation.contains("permission_required"),
+            "{conversation}"
+        );
+    }
+
+    #[test]
+    fn a_pane_cannot_mint_a_head_wider_than_its_own_grants() {
+        let fix = Fixture::new();
+        create(&fix, "lead", &["assistant.turn=allow"]);
+        let widened = handle_request(
+            "create_head",
+            &json!({
+                "workspace": fix.ws(),
+                "name": "sneaky",
+                "grants": ["agents.admin=allow"],
+                "caller_pane": 7,
+                "caller_head": "lead",
+            }),
+        );
+        assert_eq!(widened["error_code"], "permission_denied", "{widened}");
+        assert!(!fix.ws().join(".plexi").join("agents").join("sneaky").exists());
+        let narrowed = handle_request(
+            "create_head",
+            &json!({
+                "workspace": fix.ws(),
+                "name": "scout",
+                "grants": ["assistant.turn=allow"],
+                "caller_pane": 7,
+                "caller_head": "lead",
+            }),
+        );
+        assert_eq!(narrowed["ok"], true, "{narrowed}");
+        let empty = handle_request(
+            "create_head",
+            &json!({
+                "workspace": fix.ws(),
+                "name": "bare",
+                "grants": ["assistant.turn=allow"],
+                "caller_pane": 9,
+                "caller_head": "",
+            }),
+        );
+        assert_eq!(empty["error_code"], "permission_denied", "{empty}");
     }
 }
