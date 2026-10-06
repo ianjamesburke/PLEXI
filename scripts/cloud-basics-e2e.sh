@@ -17,23 +17,30 @@ if [[ -z "${PLEXI_CLOUD_E2E_XVFB:-}" ]] && command -v xvfb-run >/dev/null 2>&1; 
   exec xvfb-run -a "$0" "$@"
 fi
 
-PR="${1:?usage: scripts/cloud-basics-e2e.sh <PR>}"
-BIN="plexi-pr-${PR}"
-if ! command -v "$BIN" >/dev/null 2>&1; then
-  echo "FAIL retention: $BIN is not on PATH. Run: just pr-install ${PR}"
-  echo "FAIL relay-canary: skipped"
-  echo "FAIL no-account: skipped"
-  exit 1
+if [[ -n "${PLEXI_E2E_SHIM:-}" ]]; then
+  # shellcheck disable=SC1090
+  source "${PLEXI_E2E_SHIM:?}"
+else
+  PR="${1:?usage: scripts/cloud-basics-e2e.sh <PR>}"
+  BIN="plexi-pr-${PR}"
+  if ! command -v "$BIN" >/dev/null 2>&1; then
+    echo "FAIL retention: $BIN is not on PATH. Run: just pr-install ${PR}"
+    echo "FAIL relay-canary: skipped"
+    echo "FAIL no-account: skipped"
+    exit 1
+  fi
+  unset PLEXI_CHANNEL
 fi
 
-BIN_PATH="$(command -v "$BIN")"
+if [[ -z "${BIN_PATH:-}" ]]; then
+  BIN_PATH="$(command -v "$BIN")"
+fi
 BIN_NAME="$(basename "$BIN_PATH")"
 REAL_HOME="${HOME}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_HOME="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-home.XXXXXX")"
 export HOME="${TMP_HOME}"
 unset PLEXI_SOCKET
-unset PLEXI_CHANNEL
 
 PROFILE="${HOME}/.${BIN_NAME}"
 CHANNEL_DIR=".${BIN_NAME}"
@@ -239,14 +246,37 @@ try:
     status, polled, cookie = http("GET", f"{base}/api/pair/{issued['pairing_id']}")
     if polled.get("status") != "confirmed" or not cookie:
         raise SystemExit(f"pair poll failed: {status} {polled}")
+    # V1-13: the canary string is absent from relay logs. A relay that still
+    # accepts type=text is checked with that plaintext turn. A relay that
+    # rejects plaintext (the encrypted relay is right to) is checked with a
+    # sealed envelope whose body does not contain the canary.
+    plaintext = {
+        "schema_version": 1,
+        "request_id": "req-canary",
+        "content": [{"type": "text", "text": canary}],
+    }
+    if relay.validate_envelope(plaintext) == "plaintext_rejected":
+        try:
+            import phone_crypto
+            sealed = phone_crypto.opaque_body(canary)
+        except Exception:
+            sealed = __import__("base64").urlsafe_b64encode(os.urandom(48)).decode().rstrip("=")
+        if canary in sealed:
+            raise SystemExit("sealed body leaked the canary")
+        turn = {
+            "schema_version": 1,
+            "request_id": "req-canary",
+            "content": [{"type": "sealed", "body": sealed}],
+        }
+        reply_text = sealed
+        print("relay rejected plaintext; posted a sealed envelope", file=sys.stderr)
+    else:
+        turn = plaintext
+        reply_text = canary
     status, queued, _ = http(
         "POST",
         f"{base}/api/turns",
-        {
-            "schema_version": 1,
-            "request_id": "req-canary",
-            "content": [{"type": "text", "text": canary}],
-        },
+        turn,
         cookie=cookie,
     )
     if status != 202:
@@ -257,7 +287,7 @@ try:
         "delivery_id": delivered["delivery_id"],
         "request_id": "req-canary",
         "state": "succeeded",
-        "reply": canary,
+        "reply": reply_text,
     }).encode())
 finally:
     server.shutdown()
