@@ -201,12 +201,12 @@ try:
 except Exception:
     print(""); raise SystemExit
 for row in data.get("pending") or []:
+    tool=str(row.get("tool") or "")
     blob=json.dumps(row)
-    if "chess.play" in blob or "chess_play" in blob:
+    if "chess.play" in tool or "chess_play" in tool or "chess.play" in blob:
         print(row.get("pending_request_id",""))
         raise SystemExit
-rows=data.get("pending") or []
-print(rows[-1].get("pending_request_id","") if rows else "")
+print("")
 PY
 )"
   [[ -n "$PENDING" ]] && break
