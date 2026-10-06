@@ -1,0 +1,22 @@
+:root { color-scheme: dark light; --bg: #16181d; --fg: #e8e8ea; --muted: #9a9ca3; --panel: #22252c; --accent: #4f8cff; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
+  font: 16px/1.4 system-ui, -apple-system, sans-serif; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+.bar { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: .5rem 1rem; border-bottom: 1px solid var(--panel); }
+.bar h1 { font-size: 1.1rem; margin: 0; }
+#connection { margin: 0; font-size: .9rem; color: var(--muted); }
+#connection[data-state="online"]::before { content: "● "; color: #3fb950; }
+#connection[data-state="offline"]::before { content: "● "; color: #f85149; }
+main { flex: 1; overflow-y: auto; padding: .75rem 1rem; }
+#transcript { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+#transcript li { max-width: 85%; padding: .5rem .75rem; border-radius: .75rem; background: var(--panel); overflow-wrap: anywhere; white-space: pre-wrap; }
+#transcript li.user { align-self: flex-end; background: var(--accent); color: #fff; }
+#transcript li.receipt { align-self: center; background: none; color: var(--muted); font-size: .8rem; padding: 0; }
+.composer { display: flex; gap: .5rem; align-items: flex-end; padding: .5rem 1rem calc(.5rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--panel); }
+.composer textarea { flex: 1; min-height: 44px; resize: none; font: inherit; padding: .5rem; border-radius: .5rem; border: 1px solid #3a3d45; background: var(--panel); color: var(--fg); }
+.actions { display: flex; gap: .5rem; }
+.actions button { min-width: 44px; min-height: 44px; padding: 0 .9rem; font: inherit; border-radius: .5rem; border: 0; background: var(--accent); color: #fff; }
+.actions button#cancel { background: #3a3d45; }
+.actions button:disabled { opacity: .45; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
