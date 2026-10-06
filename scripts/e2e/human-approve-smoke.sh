@@ -70,7 +70,12 @@ from pathlib import Path
 path, port = Path(sys.argv[1]), sys.argv[2]
 path.parent.mkdir(parents=True, exist_ok=True)
 text = path.read_text() if path.exists() else ""
-text = text.replace('backend = "openrouter"', 'backend = "local"', 1)
+if 'backend = "openrouter"' in text:
+    text = text.replace('backend = "openrouter"', 'backend = "local"', 1)
+elif "[ai]" not in text:
+    text = '[ai]\nbackend = "local"\n' + text
+elif 'backend = "local"' not in text:
+    text = text.replace("[ai]\n", '[ai]\nbackend = "local"\n', 1)
 marker = "\n# w15 human-approve mock\n"
 if marker not in text:
     text += f"""{marker}

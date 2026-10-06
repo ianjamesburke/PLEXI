@@ -152,20 +152,19 @@ PY
 }
 
 human__click_window() {
-  local wid="$1" x="$2" y="$3" mode="$4"
+  local wid="$1" x="$2" y="$3" _mode="${4:-screen}"
   xdotool windowactivate --sync "$wid" >/dev/null 2>&1 || true
-  if [[ "$mode" == "window" ]]; then
-    xdotool mousemove --window "$wid" --sync "$x" "$y" click --window "$wid" 1
-  else
-    local geo
-    geo="$(xdotool getwindowgeometry --shell "$wid")"
-    # shellcheck disable=SC2086
-    eval "$geo"
-    local sx sy
-    sx="$(python3 -c "print(int(float('$X') + float('$x')))")"
-    sy="$(python3 -c "print(int(float('$Y') + float('$y')))")"
-    xdotool mousemove --sync "$sx" "$sy" click 1
-  fi
+  local geo
+  geo="$(xdotool getwindowgeometry --shell "$wid")"
+  # shellcheck disable=SC2086
+  eval "$geo"
+  local sx sy
+  sx="$(python3 -c "print(int(float('$X') + float('$x')))")"
+  sy="$(python3 -c "print(int(float('$Y') + float('$y')))")"
+  # XTEST pointer events. `click --window` is XSendEvent, which winit drops,
+  # so the press never reaches the permission sheet.
+  xdotool mousemove --sync "$sx" "$sy"
+  xdotool click 1
 }
 
 # Click a labeled approval button with a real pointer event.
@@ -191,11 +190,7 @@ human__click_choice() {
     local x y
     x="${center%% *}"
     y="${center##* }"
-    if [[ "$attempt" -le 4 ]]; then
-      mode="window"
-    else
-      mode="screen"
-    fi
+    mode="xtest"
     echo "human: click '$label' at ${x},${y} mode=$mode window=$wid attempt=$attempt" >&2
     human__click_window "$wid" "$x" "$y" "$mode" || true
     sleep 0.6
