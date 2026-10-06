@@ -1972,14 +1972,117 @@ pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>
     }
 }
 
-/// Submit one turn to the host Assistant and print its terminal JSON envelope.
-pub fn assistant_send_cli(text: &str, request_id: Option<&str>, pane_id: Option<u64>, context_id: Option<u64>) -> i32 {
-    let request_id = request_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+/// Fields of `submit_assistant_turn`. There is no approval, grant, or
+/// permission field: the host permission gate is the only authorizer.
+pub(crate) struct AssistantSendFields<'a> {
+    pub text: &'a str,
+    pub request_id: &'a str,
+    pub response_file: &'a str,
+    pub pane_id: Option<u64>,
+    pub context_id: Option<u64>,
+    pub conversation: Option<&'a str>,
+    pub join_desktop: bool,
+    pub status_for: Option<&'a str>,
+}
+
+pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "type": "submit_assistant_turn",
+        "text": fields.text,
+        "request_id": fields.request_id,
+        "response_file": fields.response_file,
+        "pane_id": fields.pane_id,
+        "context_id": fields.context_id,
+        "conversation_id": fields.conversation,
+        "join_desktop": fields.join_desktop,
+        "status_for": fields.status_for,
+    })
+}
+
+/// Submit one turn, or poll `--status-for`, and return the host JSON envelope.
+///
+/// `conversation` selects the phone relay's own conversation. `join_desktop`
+/// opts into the desktop transcript. `status_for` reads a turn that already
+/// returned `waiting_for_permission` and does not submit a prompt. A phone
+/// turn never carries a grant; the desktop permission gate still admits tools.
+pub fn assistant_send_result(
+    text: Option<&str>,
+    request_id: Option<&str>,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+    status_for: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let request_id = request_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
-    let payload = serde_json::json!({"type":"submit_assistant_turn","text":text,"request_id":request_id,"response_file":response_file,"pane_id":pane_id,"context_id":context_id});
-    let content = match super::request_with(payload, "assistant-send", "assistant send", std::time::Duration::from_secs(120)) { Ok(content) => content, Err(code) => return code };
-    println!("{content}");
-    match serde_json::from_str::<serde_json::Value>(&content) { Ok(value) if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") => 0, Ok(_) => 2, Err(_) => 1 }
+    if let Some(turn_id) = status_for {
+        log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
+    } else {
+        log::info!(
+            "assistant_send:cli: submit request_id={request_id} join_desktop={join_desktop} conversation={}",
+            conversation.unwrap_or("")
+        );
+    }
+    let payload = assistant_send_payload(&AssistantSendFields {
+        text: text.unwrap_or(""),
+        request_id: &request_id,
+        response_file: &response_file,
+        pane_id,
+        context_id,
+        conversation,
+        join_desktop,
+        status_for,
+    });
+    let content = super::request_with(
+        payload,
+        "assistant-send",
+        "assistant send",
+        std::time::Duration::from_secs(120),
+    )
+    .map_err(|code| format!("assistant_send_exit_{code}"))?;
+    serde_json::from_str(&content).map_err(|_| "assistant_send_bad_json".to_string())
+}
+
+/// Submit one turn to the host Assistant and print its terminal JSON envelope.
+pub fn assistant_send_cli(
+    text: Option<&str>,
+    request_id: Option<&str>,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+    status_for: Option<&str>,
+) -> i32 {
+    match assistant_send_result(
+        text,
+        request_id,
+        pane_id,
+        context_id,
+        conversation,
+        join_desktop,
+        status_for,
+    ) {
+        Ok(value) => {
+            println!("{value}");
+            if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") {
+                0
+            } else {
+                2
+            }
+        }
+        Err(error) => {
+            if let Some(code) = error.strip_prefix("assistant_send_exit_") {
+                if let Ok(code) = code.parse::<i32>() {
+                    return code;
+                }
+            }
+            eprintln!("error: {error}");
+            1
+        }
+    }
 }
 
 #[cfg(test)]

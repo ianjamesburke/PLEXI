@@ -271,7 +271,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd, RelayCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -286,8 +286,16 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, status_for, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(
+                                text.as_deref(),
+                                request_id.as_deref(),
+                                pane_id,
+                                context_id,
+                                conversation.as_deref(),
+                                desktop,
+                                status_for.as_deref(),
+                            ))
                         }
                         AssistantCmd::Permission { cmd } => match cmd {
                             AssistantPermissionCmd::List => {
@@ -304,6 +312,19 @@ fn main() -> eframe::Result {
                                 ))
                             }
                         },
+                    },
+                    Commands::Relay { cmd } => match cmd {
+                        RelayCmd::Connect { url } => std::process::exit(cli::relay::relay_connect_cli(url)),
+                        RelayCmd::Confirm { pairing_id } => {
+                            std::process::exit(cli::relay::relay_confirm_cli(pairing_id))
+                        }
+                        RelayCmd::Revoke { device_id } => {
+                            std::process::exit(cli::relay::relay_revoke_cli(&device_id))
+                        }
+                        RelayCmd::Pair => std::process::exit(cli::relay::relay_pair_cli()),
+                        RelayCmd::Enable { url } => std::process::exit(cli::relay::relay_enable_cli(url)),
+                        RelayCmd::Disable => std::process::exit(cli::relay::relay_disable_cli()),
+                        RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::Run {
                         command,

@@ -81,6 +81,8 @@ pub struct PaneAgentState {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AppRequest {
     /// Submit one text turn to a host Assistant pane.
+    /// Submit one text turn to an existing Assistant pane. The pane owns the
+    /// normal composer, model, and permission-gate path and writes the terminal JSON reply.
     SubmitAssistantTurn {
         text: String,
         request_id: String,
@@ -89,6 +91,17 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// Caller-owned conversation. Absent means the host mints one.
+        /// Ignored when `join_desktop` is true.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+        /// Opt in to the desktop Assistant transcript. Default is a separate conversation.
+        #[serde(default)]
+        join_desktop: bool,
+        /// Read the finished status of a turn that already returned
+        /// `waiting_for_permission`. Does not submit a new prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_for: Option<String>,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {

@@ -701,9 +701,14 @@ impl AssistantRenderer {
                     } else {
                         format!(" on {}", pending.resource_id)
                     };
+                    let source = pending
+                        .source
+                        .as_deref()
+                        .map(|source| format!(" — requested from a {source} turn"))
+                        .unwrap_or_default();
                     ui.label(
                         RichText::new(format!(
-                            "{who} wants to run '{tool}'{resource}",
+                            "{who} wants to run '{tool}'{resource}{source}",
                             tool = pending.tool
                         ))
                         .size(style::TEXT_BODY)
