@@ -39,12 +39,15 @@ pub(super) fn restore_overlay_replacement(
     match pane {
         Pane::App(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
-                let type_id = app.runtime.type_id().to_string();
+                let (app_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
+                log::info!(
+                    "app_closed: app_id={app_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
+                );
                 // Free function — no `PlexiApp`/router access, so no origin is
                 // resolvable here without a new ambient lookup. Global-only.
                 crate::host::event_log::emit_scoped(
                     crate::host::event_log::HostEvent::AppClosed {
-                        app_id: type_id.clone(),
+                        app_id,
                         type_id,
                         pane_id,
                         reason: Some("overlay_restored".to_string()),
@@ -64,6 +67,16 @@ pub(super) fn restore_overlay_replacement(
             false
         }
     }
+}
+
+/// Catalog id vs runtime kind for an overlay close.
+///
+/// Spawn events already split these: `app_id` is the manifest (`balls`) and
+/// `type_id` is the runtime (`python-wasm`). Copying `runtime.type_id()` into
+/// both fields made `plexi demo` wait forever for Balls to close. Builtins
+/// often use the same string for both, so the split is a no-op for them.
+fn overlay_close_ids(manifest_id: &str, runtime_type_id: &str) -> (String, String) {
+    (manifest_id.to_string(), runtime_type_id.to_string())
 }
 
 /// Build a fresh tile tree holding `pane_ids` arranged per `layout`.
@@ -2000,5 +2013,17 @@ mod squad_tree_tests {
             tree.tiles.get(first),
             Some(egui_tiles::Tile::Pane(42))
         ));
+    }
+}
+
+#[cfg(test)]
+mod overlay_close_ids_tests {
+    use super::overlay_close_ids;
+
+    #[test]
+    fn wasm_close_keeps_catalog_id_distinct_from_runtime() {
+        let (app_id, type_id) = overlay_close_ids("balls", "python-wasm");
+        assert_eq!(app_id, "balls");
+        assert_eq!(type_id, "python-wasm");
     }
 }
