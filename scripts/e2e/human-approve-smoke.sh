@@ -103,7 +103,7 @@ open(sys.argv[1], "w").write(json.dumps({
     "arguments": {
         "game_id": "game-1",
         "expected_revision": 0,
-        "operation_id": "human-approve-e2e",
+        "operation_id": "human-approve-$RANDOM",
         "move": "e2e4",
     },
 }))
@@ -123,6 +123,7 @@ if [[ "$HOST_RC" -ne 0 ]] || ! grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$
   fail "host did not become ready (exit $HOST_RC). status=$(cat "$EVID/host-status.json") stderr=$(tail -30 "$EVID/host-start.err")"
 fi
 note "host ready: $(tr '\n' ' ' < "$EVID/host-status.json")"
+"$BIN" context set-root "$WS" >"$EVID/set-root.out" 2>"$EVID/set-root.err" || fail "context set-root failed: $(cat "$EVID/set-root.err")"
 
 "$BIN" app install "$REPO/apps/chess" --yes >"$EVID/app-install.out" 2>"$EVID/app-install.err" || fail "chess install failed: $(tail -20 "$EVID/app-install.err")"
 "$BIN" app open chess >"$EVID/open-chess.out" 2>"$EVID/open-chess.err" || true
@@ -245,6 +246,9 @@ if ! printf '%s' "$SEND_BODY" | grep -Eq 'revision_after'; then
 fi
 if ! printf '%s' "$SEND_BODY" | grep -q 'e2e4'; then
   fail "approved receipt is not e2e4. send=$SEND_BODY"
+fi
+if printf '%s' "$SEND_BODY" | grep -q '"duplicate": true'; then
+  fail "approved call replayed a previous receipt. send=$SEND_BODY"
 fi
 
 echo "PASS: HUMAN_APPROVE $PENDING committed the chess move" | tee "$EVID/result.txt"
