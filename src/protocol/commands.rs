@@ -94,15 +94,15 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// Lead (head) id. When set, the turn runs in that head's conversation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
         /// Ledger client tag for this run. Absent uses `[ai] client`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client: Option<String>,
         /// Ledger run kind: `system` or `output`. Absent means `output`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
-        /// Lead (head) id. When set, the turn runs in that head's conversation.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        head: Option<String>,
     },
     /// Open an Assistant pane bound to one head in the active context.
     OpenAssistantHead {
@@ -786,6 +786,19 @@ pub enum AppRequest {
         pending_request_id: String,
         /// `once`, `session`, `always`, or `deny`.
         choice: String,
+        response_file: String,
+    },
+    /// Read or change the permission monitor. `op` is `list`, `reset`,
+    /// `revoke`, or `allow`. A pane id or a call credential marks an agent.
+    /// Agents may revoke. Reset and allow from an agent file Needs you.
+    Permissions {
+        op: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<String>,
         response_file: String,
     },
     /// List items waiting on the human. The host expires due items first.

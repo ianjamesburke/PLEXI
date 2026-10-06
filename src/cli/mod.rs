@@ -198,6 +198,7 @@ pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<Re
 pub mod args;
 pub mod crawl;
 pub mod help;
+pub mod introspect;
 pub mod registry;
 pub mod setup;
 mod pane_caller;
@@ -217,6 +218,7 @@ pub mod app_check;
 pub mod app_state;
 pub mod completions;
 pub mod config_cli;
+pub mod connector;
 pub mod context_cli;
 pub mod demo;
 pub mod descriptor;
@@ -233,6 +235,7 @@ pub mod notes;
 pub mod notify;
 pub mod open;
 pub mod pane;
+pub mod permissions;
 pub mod registry_watch;
 pub mod release_resolver;
 pub mod routine;
@@ -1269,6 +1272,7 @@ pub use app::{
     app_prune_cli, app_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
+pub use connector::{connector_login_cli, connector_revoke_cli, connector_status_cli};
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,
@@ -1298,6 +1302,7 @@ pub use open::{
     app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
     parse_prefix, AgentBootRequest, OpenPrefix,
 };
+pub use permissions::permissions_cli;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
     pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,

@@ -831,7 +831,7 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         if self
-            .seed_window_root_pane(new_idx, &context_env, cwd.clone(), None, false)
+            .seed_window_root_pane(new_idx, &context_env, cwd.clone(), None, false, true, false)
             .is_none()
         {
             log::error!("new_context_empty: failed to seed root pane — aborting new context");
@@ -937,7 +937,7 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         if self
-            .seed_window_root_pane(new_idx, &context_env, path.clone(), None, false)
+            .seed_window_root_pane(new_idx, &context_env, path.clone(), None, false, true, false)
             .is_none()
         {
             log::error!(
@@ -980,7 +980,7 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(new_x, active_y, ws_id, None, false, None, true);
+        self.create_page_at(new_x, active_y, ws_id, None, false, None, true, false);
     }
 
     /// Shared creation helper: create a single-pane window at `(grid_x, grid_y)` in
@@ -996,6 +996,7 @@ impl PlexiApp {
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
         inject_folder_secrets: bool,
+        agent_pane: bool,
     ) {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
@@ -1015,6 +1016,7 @@ impl PlexiApp {
             initial_cmd,
             close_on_exit,
             inject_folder_secrets,
+            agent_pane,
         ) else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
@@ -1065,9 +1067,11 @@ impl PlexiApp {
         cwd: PathBuf,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
+        inject_folder_secrets: bool,
+        agent_pane: bool,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
         let (tree, panes, root_tile) =
-            self.create_single_pane_tree(context, Some(cwd), initial_cmd, close_on_exit, true)?;
+            self.create_single_pane_tree(context, Some(cwd), initial_cmd, close_on_exit, inject_folder_secrets, agent_pane)?;
         let pane_id = *panes
             .keys()
             .next()
@@ -1095,6 +1099,7 @@ impl PlexiApp {
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
         inject_folder_secrets: bool,
+        agent_pane: bool,
     ) -> Option<crate::spatial::tiling::PaneId> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
@@ -1103,26 +1108,13 @@ impl PlexiApp {
             .unwrap_or(home);
         let active = self.active_window;
         let context = self.pane_context_env_for_window(active);
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(
-            &context,
-            Some(cwd),
-            initial_cmd,
-            close_on_exit,
-            inject_folder_secrets,
-        ) else {
+        let Some((pane_id, _root_tile)) =
+            self.seed_window_root_pane(active, &context, cwd, initial_cmd, close_on_exit, inject_folder_secrets, agent_pane)
+        else {
             log::error!("seed_root_pane: failed to create terminal for empty active window");
             return None;
         };
-        let pane_id = *panes
-            .keys()
-            .next()
-            .expect("create_single_pane_tree always yields exactly one pane");
         let window_id = self.windows[active].window_id;
-        let win = &mut self.windows[active];
-        win.tree = tree;
-        win.panes = panes;
-        win.focused_pane = Some(root_tile);
-        win.zoomed_pane = None;
         log::info!(
             "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) initial_cmd={initial_cmd:?} close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
         );
@@ -1138,7 +1130,7 @@ impl PlexiApp {
         );
         let context = self.pane_context_env_for_window(self.active_window);
         let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(&context, Some(cwd), None, false, true)
+            self.create_single_pane_tree(&context, Some(cwd), None, false, true, false)
         else {
             log::error!("Failed to create terminal for reset context");
             return;

@@ -240,7 +240,7 @@ impl PlexiApp {
             if self.windows[active].panes.is_empty() {
                 let context = self.pane_context_env_for_window(active);
                 if let Some((tree, panes, root_tile)) =
-                    self.create_single_pane_tree(&context, None, None, false, true)
+                    self.create_single_pane_tree(&context, None, None, false, true, false)
                 {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
@@ -372,6 +372,7 @@ impl PlexiApp {
             &ctx_desc,
             ctx_root.as_ref(),
             ctx_depth,
+            false,
         );
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
@@ -467,6 +468,7 @@ impl PlexiApp {
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
         inject_folder_secrets: bool,
+        agent_pane: bool,
     ) {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[target_win_idx].panes.is_empty() {
@@ -499,6 +501,7 @@ impl PlexiApp {
                 &ctx_desc,
                 ctx_root.as_ref(),
                 ctx_depth,
+                agent_pane,
             );
             if let Some(cmd) = initial_cmd {
                 log::info!(
@@ -569,6 +572,7 @@ impl PlexiApp {
             &ctx_desc,
             ctx_root.as_ref(),
             ctx_depth,
+            agent_pane,
         );
         if let Some(cmd) = initial_cmd {
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");

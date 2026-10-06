@@ -290,10 +290,12 @@ pub(crate) fn restore_app_pane(
                 crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
-            let mut permissions = crate::app::permissions::AppPermissions::from_capability_strings(
+            let permissions = gate_app_permissions(
+                &config.app_id,
+                &workspace_root,
                 &config.capabilities,
+                config.allowed_hosts.clone(),
             );
-            permissions.allowed_hosts = config.allowed_hosts.clone();
             let (runtime, app_id) = build_python_runtime(
                 config,
                 workspace_root.clone(),
@@ -354,8 +356,8 @@ pub(crate) fn restore_app_pane(
             let required_caps = required_grants.capability_ids();
             let declared: std::collections::HashSet<String> =
                 required_caps.iter().cloned().collect();
-            let (remembered_grants, remembered_blocks) = permission_store
-                .build_wasm_permission_sets(manifest_id, &workspace_root, &declared);
+            let (remembered_grants, remembered_blocks) =
+                gate_wasm_sets(manifest_id, &workspace_root, &declared);
             let missing: Vec<String> = required_caps
                 .iter()
                 .filter(|cap| !remembered_grants.contains(*cap))
@@ -726,7 +728,7 @@ impl PlexiApp {
         let required_caps = required_grants.capability_ids();
         let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
         let (remembered_grants, remembered_blocks) =
-            permission_store.build_wasm_permission_sets(app_id, &workspace_root, &declared);
+            gate_wasm_sets(app_id, &workspace_root, &declared);
         let missing: Vec<String> = required_caps
             .iter()
             .filter(|cap| !remembered_grants.contains(*cap))
@@ -837,14 +839,12 @@ impl PlexiApp {
         workspace_root: PathBuf,
         launch_args: Vec<String>,
     ) -> Result<(), String> {
-        let permission_store =
-            crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
         let required_grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
             .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
         let required_caps = required_grants.capability_ids();
         let declared: HashSet<String> = required_caps.iter().cloned().collect();
         let (remembered_grants, remembered_blocks) =
-            permission_store.build_wasm_permission_sets(app_id, &workspace_root, &declared);
+            gate_wasm_sets(app_id, &workspace_root, &declared);
 
         let blocked: Vec<String> = required_caps
             .iter()
@@ -982,7 +982,7 @@ impl PlexiApp {
         layout: Option<&str>,
         launch_args: Vec<String>,
     ) -> Result<PaneId, String> {
-        use crate::app::permissions::{AppPermissions, Capability, PermissionStore};
+        use crate::app::permissions::{Capability, PermissionStore};
         use crate::host::wasm_app::{Grants, StateStore, WasmApp};
 
         let app_id = installed.manifest.id.clone();
@@ -1012,14 +1012,13 @@ impl PlexiApp {
             &installed.manifest.capabilities.capabilities,
         )
         .map_err(|e| format!("manifest lists {e}"))?;
-        let (granted_caps, blocked_caps) =
-            permission_store.build_permission_sets(&app_id, &workspace_root, &declared_caps);
-        let mut permissions = AppPermissions {
-            capabilities: granted_caps,
-            blocked: blocked_caps,
-            is_builtin: false,
-            allowed_hosts: installed.manifest.capabilities.allowed_hosts.clone(),
-        };
+        let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
+            .materialize_app_permissions(
+                &app_id,
+                &workspace_root,
+                &declared_caps,
+                installed.manifest.capabilities.allowed_hosts.clone(),
+            );
         permissions
             .capabilities
             .retain(|cap| !permissions.blocked.contains(cap));
@@ -1027,7 +1026,7 @@ impl PlexiApp {
         let wasm_declared =
             wasm_runtime_capabilities_from_permissions(&permissions, &workspace_root);
         let (remembered_grants, remembered_blocks) =
-            permission_store.build_wasm_permission_sets(&app_id, &workspace_root, &wasm_declared);
+            gate_wasm_sets(&app_id, &workspace_root, &wasm_declared);
 
         let grants = Grants {
             state: true,
@@ -1265,6 +1264,7 @@ impl PlexiApp {
                 &context.description,
                 context.root.as_ref(),
                 context.depth,
+                false,
             );
             if let Some(cmd) = initial_cmd {
                 super::apply_initial_cmd(&mut settings, cmd, false);
@@ -1320,6 +1320,7 @@ impl PlexiApp {
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         inject_folder_secrets: bool,
+        agent_pane: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
         let (mut settings, pending_credential) = Self::make_backend_settings(
@@ -1331,6 +1332,7 @@ impl PlexiApp {
             &context.description,
             context.root.as_ref(),
             context.depth,
+            agent_pane,
         );
         if let Some(cmd) = initial_cmd {
             log::info!(
@@ -1380,6 +1382,7 @@ impl PlexiApp {
         cwd_override: Option<std::path::PathBuf>,
         keep_focus: bool,
         inject_folder_secrets: bool,
+        agent_pane: bool,
     ) -> crate::spatial::tiling::PaneId {
         let new_id = self.host.alloc_pane_id();
         let context = self.pane_context_env_for_window(win_idx);
@@ -1397,6 +1400,7 @@ impl PlexiApp {
             &context.description,
             context.root.as_ref(),
             context.depth,
+            agent_pane,
         );
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -1862,7 +1866,12 @@ impl PlexiApp {
                     .workspace_root
                     .clone()
                     .unwrap_or_else(|| cwd.clone());
-                let permissions = installed.manifest.capabilities.to_permissions();
+                let permissions = gate_app_permissions(
+                    id,
+                    &workspace_root,
+                    &installed.manifest.capabilities.capabilities,
+                    installed.manifest.capabilities.allowed_hosts.clone(),
+                );
                 self.open_python_wasm_app_pane(
                     &installed.app_dir,
                     workspace_root,
@@ -2062,7 +2071,12 @@ impl PlexiApp {
             }
         };
 
-        let perms = installed.manifest.capabilities.to_permissions();
+        let perms = gate_app_permissions(
+            &installed.manifest.id,
+            workspace_root_override.as_deref().unwrap_or(&app_dir),
+            &installed.manifest.capabilities.capabilities,
+            installed.manifest.capabilities.allowed_hosts.clone(),
+        );
         let app_id = installed.manifest.id.clone();
 
         let manifest_placement = installed
@@ -2795,6 +2809,34 @@ pub(crate) fn cli_open_placement(
 fn new_scratch_note_path() -> PathBuf {
     let filename = format!("note-{}.md", chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f"));
     crate::notes::global_notes_dir().join(filename)
+}
+
+fn gate_app_permissions(
+    app_id: &str,
+    workspace_root: &std::path::Path,
+    capability_strings: &[String],
+    allowed_hosts: Vec<String>,
+) -> crate::app::permissions::AppPermissions {
+    let declared = capability_strings
+        .iter()
+        .filter_map(|capability| {
+            crate::app::permissions::Capability::try_from(capability.as_str()).ok()
+        })
+        .collect();
+    crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        .materialize_app_permissions(app_id, workspace_root, &declared, allowed_hosts)
+}
+
+fn gate_wasm_sets(
+    app_id: &str,
+    workspace_root: &std::path::Path,
+    declared: &std::collections::HashSet<String>,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        .materialize_wasm_sets(app_id, workspace_root, declared)
 }
 
 fn wasm_runtime_capabilities_from_permissions(

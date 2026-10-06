@@ -987,6 +987,7 @@ impl PlexiApp {
                             None,
                             true,
                             true,
+                            false,
                         );
                     } else {
                         if let Some(from_id) = from_pane_id {

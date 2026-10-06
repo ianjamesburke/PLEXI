@@ -403,7 +403,7 @@
           "description": "Submit one text turn to a host Assistant pane.",
           "properties": {
             "client": {
-              "description": "Ledger client tag for this run. Absent uses [ai] client.",
+              "description": "Ledger client tag for this run. Absent uses `[ai] client`.",
               "type": [
                 "string",
                 "null"
@@ -425,7 +425,7 @@
               ]
             },
             "kind": {
-              "description": "Ledger run kind: system or output. Absent means output.",
+              "description": "Ledger run kind: `system` or `output`. Absent means `output`.",
               "type": [
                 "string",
                 "null"
@@ -2170,6 +2170,48 @@
             "type",
             "pending_request_id",
             "choice",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
+          "properties": {
+            "credential": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "permissions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
             "response_file"
           ],
           "type": "object"

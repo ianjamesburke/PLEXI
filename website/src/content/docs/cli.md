@@ -301,6 +301,51 @@ Refused with `permission_denied` when the caller is a pane agent, including a ch
 |---|---|---|---|
 | `--cwd` | string | yes | Working directory of the spawned command, and the pane cwd used for injection |
 | `<command>` | string (repeatable) | no | Command and arguments |
+## `plexi connector`
+
+Connect third-party services over OAuth.
+
+Sign-in runs in your browser; the resulting token is kept in the platform secret store and is never printed — commands report only a credential reference. Revoke removes it locally and at the issuer.
+
+| Subcommand | Description |
+|---|---|
+| `login` | Sign in to a connector and store its credential |
+| `status` | Show a connector's stored credential reference as JSON (never the token) |
+| `revoke` | Revoke a connector's credential at the issuer and delete it locally |
+
+### `plexi connector login`
+
+Sign in to a connector and store its credential.
+
+Opens the issuer's sign-in page in your browser and waits for it to redirect back to a one-time loopback address. Prints the stored credential reference as JSON. Exit 0 connected, 2 timed out, 1 denied or failed.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes | Connector id (currently only `stub`, a local test issuer) |
+| `--issuer` | string | no | Base URL of the stub issuer; must be a loopback address |
+| `--no-browser` | flag | no | Print the sign-in URL instead of opening a browser |
+| `--timeout` | string | no | Seconds to wait for the browser to redirect back Default: `300`. |
+| `--surface` | string | no | Default: `desktop`. |
+
+### `plexi connector status`
+
+Show a connector's stored credential reference as JSON (never the token)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes |  |
+| `--surface` | string | no | Default: `desktop`. |
+
+### `plexi connector revoke`
+
+Revoke a connector's credential at the issuer and delete it locally.
+
+The local credential is deleted even when the issuer cannot be reached; that case exits 1 and says so.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes |  |
+| `--surface` | string | no | Default: `desktop`. |
 
 ## `plexi routine`
 
@@ -1569,9 +1614,7 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 ## `plexi needs-you`
 
-List everything waiting on the person at the desktop. The terminal cannot resolve an item.
-
-One host record covers click approvals, agent questions, blocked runs, and a host integrity item. A desktop click resolves an id. `needs-you resolve` from the terminal is refused.
+Items waiting on the person at the desktop. The terminal can list them. Resolving from the terminal is refused and does not grant.
 
 | Subcommand | Description |
 |---|---|
@@ -1650,26 +1693,6 @@ Walks through Ollama installation detection, model recommendation based on your 
 
 Example: plexi ai setup
 
-## `plexi ledger`
-
-Summarize recorded AI usage from this channel's ledger.
-
-With no subcommand, prints per-client totals for tokens, cost, runs, and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. A token count is a positive number or the word `unknown`. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
-
-| Subcommand | Description |
-|---|---|
-| `summary` | Totals for tokens, cost, run count, and wall time |
-
-### `plexi ledger summary`
-
-Totals for tokens, cost, run count, and wall time
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--by` | string | no | Group rows by `client` or `kind`. Omitted means `client` |
-| `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
-| `--json` | flag | no | Print one JSON object on stdout |
-
 ## `plexi skill`
 
 Install the agent skill compiled into this binary.
@@ -1689,6 +1712,26 @@ Write this binary's skill for one agent CLI, or both
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--agent` | string | yes | Which agent CLI loads the skill: claude, codex, or all |
+
+## `plexi ledger`
+
+Summarize recorded AI usage from this channel's ledger.
+
+With no subcommand, prints per-client totals for tokens, cost, runs, and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. A token count is a positive number or the word `unknown`. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
+
+| Subcommand | Description |
+|---|---|
+| `summary` | Totals for tokens, cost, run count, and wall time |
+
+### `plexi ledger summary`
+
+Totals for tokens, cost, run count, and wall time
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--by` | string | no | Group rows by `client` or `kind`. Omitted means `client` |
+| `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
+| `--json` | flag | no | Print one JSON object on stdout |
 
 ## `plexi completions`
 

@@ -16,18 +16,17 @@ default_tier = "medium"
 default_posture = "review"
 
 allow = [
-  "app.chess.current_state",
+  "app.chess.state",
   "app.chess.legal_moves",
 ]
 
 ask = [
-  "app.chess.make_move",
-  "app.chess.undo_move",
+  "app.chess.play",
 ]
 
 [[subscriptions]]
 app = "chess"
-events = ["game.started", "turn.ready", "move.played", "move.undone", "game.ended"]
+events = ["chess.game_started", "chess.move_committed"]
 payload = "full"
 trigger = "conversation"
 default = "ask"

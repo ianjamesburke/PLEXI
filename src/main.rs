@@ -17,6 +17,7 @@ mod cli;
 mod cloud;
 
 mod config;
+mod connectors;
 mod distribution;
 mod editor;
 mod features;
@@ -289,7 +290,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ContextCmd, LedgerCmd, NeedsYouCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ConnectorCmd, ContextCmd, LedgerCmd, NeedsYouCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         PermissionsCmd, RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
@@ -306,7 +307,15 @@ fn main() -> eframe::Result {
                     Commands::Assistant { cmd } => match cmd {
                         AssistantCmd::Send { text, head, request_id, pane_id, context_id, client, kind, json: _ } => {
                             exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
-                            std::process::exit(cli::assistant_send_cli(&text, head.as_deref(), request_id.as_deref(), pane_id, context_id, client.as_deref(), kind.as_deref()))
+                            std::process::exit(cli::assistant_send_cli(
+                                &text,
+                                head.as_deref(),
+                                request_id.as_deref(),
+                                pane_id,
+                                context_id,
+                                client.as_deref(),
+                                kind.as_deref(),
+                            ))
                         }
                         AssistantCmd::Open { head } => {
                             exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
@@ -332,6 +341,8 @@ fn main() -> eframe::Result {
                         NeedsYouCmd::List { json: _ } => {
                             std::process::exit(cli::needs_you_cli("list", None, None))
                         }
+                        // Same refuse path as `assistant permission resolve`.
+                        // Listing stays; a terminal resolve never grants.
                         NeedsYouCmd::Resolve { id, approve: _, deny } => {
                             let choice = if deny { "deny" } else { "once" };
                             std::process::exit(cli::assistant_permission_cli(
@@ -339,6 +350,25 @@ fn main() -> eframe::Result {
                                 Some(&id),
                                 Some(choice),
                             ))
+                        }
+                    },
+                    Commands::Skill { cmd } => match cmd {
+                        SkillCmd::Install { agent } => {
+                            std::process::exit(cli::skill_install::skill_install_cli(&agent))
+                        }
+                    },
+                    Commands::Permissions { cmd } => match cmd {
+                        PermissionsCmd::List { json } => {
+                            std::process::exit(cli::permissions_cli("list", None, json))
+                        }
+                        PermissionsCmd::Reset { id } => {
+                            std::process::exit(cli::permissions_cli("reset", Some(&id), true))
+                        }
+                        PermissionsCmd::Revoke { id } => {
+                            std::process::exit(cli::permissions_cli("revoke", Some(&id), true))
+                        }
+                        PermissionsCmd::Allow { id } => {
+                            std::process::exit(cli::permissions_cli("allow", Some(&id), true))
                         }
                     },
                     Commands::CommandView { cmd, json, follow } => {
@@ -367,20 +397,6 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::command_view_refused("allow"))
                             }
                             None => std::process::exit(cli::command_view_cli("list", json)),
-                        }
-                    }
-                    Commands::Skill { cmd } => match cmd {
-                        SkillCmd::Install { agent } => {
-                            std::process::exit(cli::skill_install::skill_install_cli(&agent))
-                        }
-                    }
-                    Commands::Permissions { cmd } => match cmd {
-                        PermissionsCmd::Allow { id } => {
-                            std::process::exit(cli::assistant_permission_cli(
-                                "resolve",
-                                Some(&id),
-                                Some("once"),
-                            ))
                         }
                     }
                     Commands::Run {
@@ -563,6 +579,30 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::folder_secret_exec(&cwd, &command))
                         }
                     },
+                    Commands::Connector { cmd } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Connectors);
+                        std::process::exit(match cmd {
+                            ConnectorCmd::Login {
+                                connector,
+                                issuer,
+                                no_browser,
+                                timeout,
+                                surface,
+                            } => cli::connector_login_cli(
+                                &connector,
+                                issuer.as_deref(),
+                                no_browser,
+                                timeout,
+                                surface,
+                            ),
+                            ConnectorCmd::Status { connector, surface } => {
+                                cli::connector_status_cli(&connector, surface)
+                            }
+                            ConnectorCmd::Revoke { connector, surface } => {
+                                cli::connector_revoke_cli(&connector, surface)
+                            }
+                        })
+                    }
                     Commands::App { cmd } => {
                         match cmd {
                             AppCmd::Open {

@@ -830,6 +830,7 @@ mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
 #[cfg(test)]
+mod cloud_assistant_tests;
 mod permission_gate_tests;
 
 #[cfg(test)]

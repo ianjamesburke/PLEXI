@@ -34,22 +34,26 @@ pub enum ApprovalChoice {
     Once,
     Session,
     Always,
+    /// Refuse this call only. The next call asks again.
     Deny,
+    /// Store a tool-scoped deny until a person resets or allows it.
+    DenyAlways,
 }
 
 /// One host record for everything waiting on the human.
 ///
 /// Each-time and time-boxed sign-off live on the Touch ID spike. This gate
-/// files click approvals, agent questions, blocked runs, and a host
-/// death/tamper integrity item.
+/// files click approvals, agent questions, and blocked runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NeedsYouKind {
     ApprovalClick,
     Question,
     BlockedRun,
-    /// The host rejected a queue file, or the previous process died or the
-    /// permission profile changed. It is not a grant and not an approval.
+    /// An agent asked to widen a permission. Approval applies the change.
+    PermissionChange,
+    /// A grant, deny, or audit file failed its integrity check.
+    /// Resolving it does not mint a grant.
     Integrity,
 }
 
@@ -59,6 +63,7 @@ impl NeedsYouKind {
             Self::ApprovalClick => "approval_click",
             Self::Question => "question",
             Self::BlockedRun => "blocked_run",
+            Self::PermissionChange => "permission_change",
             Self::Integrity => "integrity",
         }
     }
@@ -137,6 +142,53 @@ pub struct NeedsYouReceipt {
     pub run_outcome: RunOutcome,
 }
 
+#[derive(Debug, Clone)]
+struct PendingWiden {
+    entry_id: String,
+    action: String,
+}
+
+/// One row the Permissions app and `plexi permissions list` share.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PermissionEntry {
+    pub id: String,
+    /// `allow`, `deny`, or `pending`.
+    pub kind: String,
+    /// `once`, `session`, `until`, `always`, or `ask`.
+    pub duration: String,
+    pub actor_type: String,
+    pub actor_id: String,
+    pub tool: String,
+    pub resource_id: Option<String>,
+    pub resource_scope: String,
+    pub package_id: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub when: String,
+    pub source: String,
+    pub workspace: String,
+    pub summary: String,
+}
+
+/// Who is asking to change a stored permission.
+#[derive(Debug, Clone)]
+pub struct PermissionCaller {
+    /// `true` only for a click inside the Permissions app. A terminal, a
+    /// socket, an assistant tool, and MCP pass `false`: widen files Needs you
+    /// and does not grant. Revoke still narrows.
+    pub human: bool,
+    pub actor_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PermissionMutation {
+    Applied { entry_id: String },
+    NeedsYou { needs_you_id: String, entry_id: String },
+    Missing { entry_id: String },
+    Rejected { entry_id: String, error: String },
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingView {
     pub pending_request_id: String,
@@ -153,6 +205,7 @@ struct Pending {
     binding: ExactBinding,
     tool: String,
     input_summary: String,
+    created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +244,8 @@ pub struct PermissionMonitor {
     origins: Mutex<BTreeMap<String, String>>,
     /// Outcome recorded for a resolved id, so a second resolve repeats it.
     run_outcomes: Mutex<BTreeMap<String, RunOutcome>>,
+    /// Widen requests filed by an agent, applied only when Needs you approves.
+    widens: Mutex<BTreeMap<String, PendingWiden>>,
     /// Serializes list, expiry, and resolve so one terminal receipt wins.
     needs_resolve: Mutex<()>,
     #[cfg(test)]
@@ -261,8 +316,14 @@ impl PermissionMonitor {
         let key = crate::platform::path::canonical_or_self(dir);
         let mut map = monitors().lock().unwrap_or_else(|e| e.into_inner());
         map.entry(key)
-            .or_insert_with(|| Arc::new(Self::open(dir)))
+            .or_insert_with(|| Self::open_profile(dir))
             .clone()
+    }
+
+    /// Open `dir` without the process cache. A restart test uses this so a
+    /// second look actually reads the files again.
+    pub fn open_profile(dir: &Path) -> Arc<Self> {
+        Arc::new(Self::open(dir))
     }
 
     /// Private store. Used by tests that must not share a profile monitor.
@@ -271,15 +332,36 @@ impl PermissionMonitor {
     }
 
     fn open(dir: &Path) -> Self {
-        // Inspect before load. Migration can rewrite grants.toml, which would
-        // hide an edit made while the host was down.
+        // Inspect before load. Migration and seal quarantine can rewrite
+        // grants.toml, which would hide an edit made while the host was down.
         let finding = crate::broker::integrity::inspect(dir);
         let store = GrantStore::load_or_default(dir);
+        let mut faults = store.integrity_faults().to_vec();
+        // `AgentHost::production` and `HostSubscriptionService::new` load the
+        // grant file during startup, before this monitor exists. That load
+        // quarantines a bad MAC. The fault is noted so this open still files
+        // Needs you after the file is already gone.
+        for fault in super::seal::take_integrity_faults(dir) {
+            if !faults
+                .iter()
+                .any(|have| have.file == fault.file && have.reason == fault.reason)
+            {
+                faults.push(fault);
+            }
+        }
         let audit = dir.join("permission-audit.jsonl");
+        if let Err(reason) = super::seal::verify_audit(&audit) {
+            super::seal::reject_untrusted_audit(&audit, &reason);
+            faults.push(super::seal::IntegrityFault {
+                file: "permission-audit.jsonl".to_string(),
+                reason,
+            });
+        }
         log::info!(
-            "permission_monitor: opened profile {} audit {}",
+            "permission_monitor: opened profile {} audit {} integrity_faults={}",
             dir.display(),
-            audit.display()
+            audit.display(),
+            faults.len()
         );
         let monitor = Self::from_arc(
             Arc::new(Mutex::new(store)),
@@ -287,21 +369,58 @@ impl PermissionMonitor {
             Some(dir.to_path_buf()),
         );
         monitor.restore_queue();
+        for fault in &faults {
+            monitor.raise_integrity(fault);
+        }
         if let Some(finding) = finding {
-            let filed = monitor.file_needs_you(NeedsYouFile {
-                kind: NeedsYouKind::Integrity,
-                actor: "host".to_string(),
-                resource: "permission-profile".to_string(),
-                summary: finding.summary,
-                expires_at: None,
-                run_tag: Some("permission-integrity".to_string()),
-            });
-            if let Err(error) = filed {
-                log::error!("integrity: could not file needs-you item: {error}");
-            }
+            monitor.file_profile_integrity(finding.summary);
         }
         crate::broker::integrity::mark_running(dir);
         monitor
+    }
+
+    fn raise_integrity(&self, fault: &super::seal::IntegrityFault) {
+        let summary = format!(
+            "{} failed integrity ({}). Stored permission decisions in that file were ignored.",
+            fault.file, fault.reason
+        );
+        // Not `file_needs_you`: that path refuses Integrity so an agent cannot
+        // file one. The seal fault is host-only.
+        self.file_host_integrity(
+            "host",
+            &fault.file,
+            summary,
+            &format!("integrity:{}", fault.file),
+        );
+        let fact = AuditFact {
+            kind: "integrity".to_string(),
+            actor: "host".to_string(),
+            call_id: String::new(),
+            grant_id: String::new(),
+            resource_id: fault.file.clone(),
+            args_fingerprint: String::new(),
+            operation_id: String::new(),
+            decision: fault.reason.clone(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        };
+        if let Some(path) = &self.audit_path {
+            match super::seal::append_audit(path, &fact) {
+                Ok(()) => {
+                    self.audit_mem
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(fact);
+                    log::info!(
+                        "permission_seal: audited integrity fault {} ({})",
+                        fault.file, fault.reason
+                    );
+                }
+                Err(error) => log::error!(
+                    "permission_seal: integrity needs-you stands; audit row was not written: {error}"
+                ),
+            }
+        }
     }
 
     fn new(store: GrantStore, audit_path: Option<PathBuf>) -> Self {
@@ -330,6 +449,7 @@ impl PermissionMonitor {
             needs_you: Mutex::new(BTreeMap::new()),
             origins: Mutex::new(BTreeMap::new()),
             run_outcomes: Mutex::new(BTreeMap::new()),
+            widens: Mutex::new(BTreeMap::new()),
             needs_resolve: Mutex::new(()),
             #[cfg(test)]
             now_override: AtomicI64::new(0),
@@ -483,38 +603,37 @@ impl PermissionMonitor {
     }
 
     fn persist_pending(&self, binding: &ExactBinding, tool: &str, input_json: &str) -> String {
-        let id = {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(existing) = pending.iter().find(|row| same_pending(row, binding)).cloned() {
-                log::info!(
-                    "permission_monitor: reuse pending {} for actor={} tool={}",
-                    existing.id,
-                    binding.actor_id,
-                    tool
-                );
-                let id = existing.id.clone();
-                drop(pending);
-                self.upsert_approval_needs_you(&existing);
-                id
-            } else {
-                let id = format!("req_{}", uuid::Uuid::new_v4());
-                log::info!(
-                    "permission_monitor: pending {id} actor={} tool={} resource={:?}",
-                    binding.actor_id,
-                    tool,
-                    binding.resource_id
-                );
-                let row = Pending {
-                    id: id.clone(),
-                    binding: binding.clone(),
-                    tool: tool.to_string(),
-                    input_summary: summarize(input_json),
-                };
-                self.upsert_approval_needs_you(&row);
-                pending.push(row);
-                id
-            }
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = pending.iter().find(|row| same_pending(row, binding)).cloned() {
+            log::info!(
+                "permission_monitor: reuse pending {} for actor={} tool={}",
+                existing.id,
+                binding.actor_id,
+                tool
+            );
+            let id = existing.id.clone();
+            drop(pending);
+            self.upsert_approval_needs_you(&existing);
+            self.persist_queue();
+            return id;
+        }
+        let id = format!("req_{}", uuid::Uuid::new_v4());
+        log::info!(
+            "permission_monitor: pending {id} actor={} tool={} resource={:?}",
+            binding.actor_id,
+            tool,
+            binding.resource_id
+        );
+        let row = Pending {
+            id: id.clone(),
+            binding: binding.clone(),
+            tool: tool.to_string(),
+            input_summary: summarize(input_json),
+            created_at: self.now_secs(),
         };
+        self.upsert_approval_needs_you(&row);
+        pending.push(row);
+        drop(pending);
         self.persist_queue();
         id
     }
@@ -546,7 +665,7 @@ impl PermissionMonitor {
         let Some(pending) = pending else {
             return Err(format!("unknown pending request {pending_id}"));
         };
-        if choice == ApprovalChoice::Deny {
+        if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
             self.pending
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -555,20 +674,40 @@ impl PermissionMonitor {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(pending_id.to_string(), choice);
+            let grant_id = if choice == ApprovalChoice::DenyAlways {
+                self.record_tool_scoped(&pending.binding, Decision::Deny, None)
+            } else {
+                String::new()
+            };
+            let decision = if choice == ApprovalChoice::DenyAlways {
+                "deny_always"
+            } else {
+                "deny"
+            };
+            let close_decision = if choice == ApprovalChoice::DenyAlways {
+                "deny_always"
+            } else {
+                "denied"
+            };
             let _ = self.audit(&AuditFact {
                 kind: "deny".to_string(),
                 actor: pending.binding.actor_id.clone(),
                 call_id: pending.binding.call_id.clone(),
-                grant_id: String::new(),
+                grant_id: grant_id.clone(),
                 resource_id: pending.binding.resource_id.clone().unwrap_or_default(),
                 args_fingerprint: pending.binding.args_fingerprint.clone(),
                 operation_id: String::new(),
-                decision: "deny".to_string(),
+                decision: decision.to_string(),
                 revision_before: String::new(),
                 revision_after: String::new(),
             });
-            log::info!("permission_monitor: denied pending {pending_id}");
-            let _ = self.close_needs_you(pending_id, NeedsYouResolution::Denied, "denied", "");
+            log::info!("permission_monitor: denied pending {pending_id} decision={decision}");
+            let _ = self.close_needs_you(
+                pending_id,
+                NeedsYouResolution::Denied,
+                close_decision,
+                &grant_id,
+            );
             return Ok(());
         }
         let (duration, session_id, expires_at) = match choice {
@@ -583,7 +722,9 @@ impl PermissionMonitor {
                 None,
                 Some(crate::platform::clock::now_secs() as i64 + ALWAYS_TTL_SECS),
             ),
-            ApprovalChoice::Deny => unreachable!("deny returned above"),
+            ApprovalChoice::Deny | ApprovalChoice::DenyAlways => {
+                unreachable!("deny returned above")
+            }
         };
         let mut binding = pending.binding.clone();
         binding.session_id = session_id.clone();
@@ -624,7 +765,7 @@ impl PermissionMonitor {
                 ApprovalChoice::Once => "allow_once",
                 ApprovalChoice::Session => "allow_session",
                 ApprovalChoice::Always => "allow_until",
-                ApprovalChoice::Deny => "deny",
+                ApprovalChoice::Deny | ApprovalChoice::DenyAlways => "deny",
             }
             .to_string(),
             revision_before: String::new(),
@@ -641,6 +782,7 @@ impl PermissionMonitor {
     }
 
     /// File an agent question or a blocked run. Gate approvals are filed by admission.
+    /// Integrity is host-only (`file_host_integrity`, `file_profile_integrity`).
     pub fn file_needs_you(&self, filed: NeedsYouFile) -> Result<String, String> {
         if filed.kind.is_approval() || matches!(filed.kind, NeedsYouKind::Integrity) {
             return Err("approval items are filed by the permission gate".to_string());
@@ -680,10 +822,9 @@ impl PermissionMonitor {
                 record.resource
             );
             map.insert(id.clone(), record);
-            drop(map);
-            self.remember_origin(&id);
             id
         };
+        self.remember_origin(&id);
         self.persist_queue();
         Ok(id)
     }
@@ -774,6 +915,39 @@ impl PermissionMonitor {
                         return Ok(existing);
                     }
                     return Err(error);
+                }
+            }
+            NeedsYouKind::PermissionChange => {
+                let resolution = if approve {
+                    NeedsYouResolution::Approved
+                } else {
+                    NeedsYouResolution::Denied
+                };
+                let decision = if approve { "approved" } else { "denied" };
+                let widen = self
+                    .widens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(id);
+                if approve {
+                    let (entry_id, action) = if let Some(pending) = widen {
+                        (pending.entry_id, pending.action)
+                    } else {
+                        split_widen_tag(row.run_tag.as_deref())
+                    };
+                    if !entry_id.is_empty() && !action.is_empty() {
+                        let outcome = self.apply_mutation(&entry_id, &action);
+                        log::info!(
+                            "needs_you: permission change {id} applied action={action} entry={entry_id} outcome={}",
+                            mutation_label(&outcome)
+                        );
+                    }
+                }
+                if !self.close_needs_you(id, resolution, decision, "") {
+                    if let Some(existing) = self.resolved_receipt(id, true) {
+                        return Ok(existing);
+                    }
+                    return Err(format!("needs-you item {id} could not be audited"));
                 }
             }
             NeedsYouKind::Question | NeedsYouKind::BlockedRun | NeedsYouKind::Integrity => {
@@ -984,6 +1158,7 @@ impl PermissionMonitor {
                     binding: row.binding,
                     tool: row.tool,
                     input_summary: row.input_summary,
+                    created_at: item.created_at,
                 });
             }
             origins.insert(item.id.clone(), item.origin_session.clone());
@@ -1002,6 +1177,79 @@ impl PermissionMonitor {
                 },
             );
         }
+    }
+
+    /// Host death or a profile edit while the host was down (#2712).
+    ///
+    /// Not `file_needs_you`: that path refuses `Integrity` so an agent cannot
+    /// file one. Reuses an open `permission-integrity` row, then seals the queue.
+    fn file_profile_integrity(&self, summary: String) {
+        const TAG: &str = "permission-integrity";
+        let id = {
+            let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = map.values().find(|row| {
+                row.resolution.is_none()
+                    && row.kind == NeedsYouKind::Integrity
+                    && row.run_tag.as_deref() == Some(TAG)
+            }) {
+                log::info!("needs_you: reuse {} kind=integrity", existing.id);
+                return;
+            }
+            let id = format!("ny_{}", uuid::Uuid::new_v4());
+            log::info!(
+                "needs_you: filed {id} kind=integrity actor=host resource=permission-profile"
+            );
+            map.insert(
+                id.clone(),
+                NeedsYouRecord {
+                    id: id.clone(),
+                    kind: NeedsYouKind::Integrity,
+                    actor: "host".to_string(),
+                    resource: "permission-profile".to_string(),
+                    summary,
+                    created_at: self.now_secs(),
+                    expires_at: None,
+                    run_tag: Some(TAG.to_string()),
+                    resolution: None,
+                },
+            );
+            id
+        };
+        self.remember_origin(&id);
+        self.persist_queue();
+    }
+
+    fn file_host_integrity(&self, actor: &str, resource: &str, summary: String, tag: &str) {
+        let id = {
+            let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = map.values().find(|row| {
+                row.resolution.is_none()
+                    && row.kind == NeedsYouKind::Integrity
+                    && row.run_tag.as_deref() == Some(tag)
+            }) {
+                log::info!("needs_you: reuse {} kind=integrity", existing.id);
+                return;
+            }
+            let id = format!("ny_{}", uuid::Uuid::new_v4());
+            log::info!("needs_you: filed {id} kind=integrity actor={actor} resource={resource}");
+            map.insert(
+                id.clone(),
+                NeedsYouRecord {
+                    id: id.clone(),
+                    kind: NeedsYouKind::Integrity,
+                    actor: actor.to_string(),
+                    resource: resource.to_string(),
+                    summary,
+                    created_at: self.now_secs(),
+                    expires_at: None,
+                    run_tag: Some(tag.to_string()),
+                    resolution: None,
+                },
+            );
+            id
+        };
+        self.remember_origin(&id);
+        self.persist_queue();
     }
 
     fn file_integrity(&self, reason: &str) {
@@ -1181,9 +1429,7 @@ impl PermissionMonitor {
     }
 
     /// Revoke under the admission lock so a commit that has not entered yet
-    /// observes the removal. No socket path calls this. A later desktop
-    /// Permissions surface should call it from a real click.
-    #[cfg(test)]
+    /// observes the removal.
     pub fn revoke_grant_id(&self, grant_id: &str) -> bool {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         self.revoke_locked(grant_id)
@@ -1194,7 +1440,6 @@ impl PermissionMonitor {
         self.revoke_locked(grant_id)
     }
 
-    #[cfg(test)]
     fn revoke_locked(&self, grant_id: &str) -> bool {
         self.epoch.fetch_add(1, Ordering::SeqCst);
         let mut store = self.store();
@@ -1209,6 +1454,7 @@ impl PermissionMonitor {
         let removed = store.records().len() != before;
         drop(store);
         if removed {
+            self.save_durable();
             let _ = self.audit_locked(&AuditFact {
                 kind: "revoke".to_string(),
                 actor,
@@ -1224,6 +1470,470 @@ impl PermissionMonitor {
             log::info!("permission_monitor: revoked {grant_id}");
         }
         removed
+    }
+
+    /// Live inventory: durable grants and denies, session and one-shot grants
+    /// still in memory, and asks waiting on a person. One list, no second store.
+    pub fn list_entries(&self) -> Vec<PermissionEntry> {
+        let now = self.now_secs();
+        let mut entries = Vec::new();
+        for record in self.store().records() {
+            if let Some(expires) = record.expires_at {
+                if now >= expires {
+                    continue;
+                }
+            }
+            if record.duration == GrantDuration::Once && record.consumed {
+                continue;
+            }
+            if record.grant_id.is_empty() {
+                continue;
+            }
+            entries.push(entry_from_record(record));
+        }
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        for row in pending.iter() {
+            entries.push(entry_from_pending(row));
+        }
+        drop(pending);
+        entries.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        entries
+    }
+
+    /// Persist one app capability. A later click replaces an auto-grant of the
+    /// same capability instead of adding a second row.
+    pub fn grant_app_capability(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        cap: crate::app::permissions::Capability,
+        decision: Decision,
+    ) {
+        self.grant_capability_id(app_id, workspace_root, cap.as_str(), decision, GrantSource::User);
+    }
+
+    /// Persist one capability id (manifest capability or raw WASM import).
+    pub fn grant_capability_id(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        capability_id: &str,
+        decision: Decision,
+        source: GrantSource,
+    ) {
+        {
+            let mut store = self.store();
+            store.upsert_capability(app_id, workspace_root, capability_id, decision, source);
+        }
+        self.save_durable();
+        log::info!(
+            "permission_monitor: stored capability {capability_id} for {app_id} = {} ({source:?})",
+            decision.as_str()
+        );
+    }
+
+    /// Turn declared capabilities into gate rows and an [`AppPermissions`] set.
+    /// Non-sensitive capabilities with no stored decision are auto-granted.
+    /// Sensitive capabilities stay withheld until a human grant exists.
+    pub fn materialize_app_permissions(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        declared: &std::collections::HashSet<crate::app::permissions::Capability>,
+        allowed_hosts: Vec<String>,
+    ) -> crate::app::permissions::AppPermissions {
+        let ids: Vec<String> = declared.iter().map(|cap| cap.as_str().to_string()).collect();
+        let (granted, blocked) = self.materialize_capability_ids(app_id, workspace_root, &ids);
+        let mut capabilities = std::collections::HashSet::new();
+        let mut blocked_caps = std::collections::HashSet::new();
+        for id in granted {
+            if let Ok(cap) = crate::app::permissions::Capability::try_from(id.as_str()) {
+                capabilities.insert(cap);
+            }
+        }
+        for id in blocked {
+            if let Ok(cap) = crate::app::permissions::Capability::try_from(id.as_str()) {
+                blocked_caps.insert(cap);
+            }
+        }
+        crate::app::permissions::AppPermissions {
+            capabilities,
+            blocked: blocked_caps,
+            is_builtin: false,
+            allowed_hosts,
+        }
+    }
+
+    /// Raw WASM capability ids, same auto-grant rule as manifest capabilities.
+    pub fn materialize_wasm_sets(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        declared: &std::collections::HashSet<String>,
+    ) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+        let ids: Vec<String> = declared.iter().cloned().collect();
+        let (granted, blocked) = self.materialize_capability_ids(app_id, workspace_root, &ids);
+        (
+            granted.into_iter().collect(),
+            blocked.into_iter().collect(),
+        )
+    }
+
+    fn materialize_capability_ids(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        declared: &[String],
+    ) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+        let ws = crate::platform::path::canonical_or_self(workspace_root);
+        let now = self.now_secs();
+        let mut granted = std::collections::HashSet::new();
+        let mut blocked = std::collections::HashSet::new();
+        let mut dirty = false;
+        {
+            let mut store = self.store();
+            for capability_id in declared {
+                match stored_capability_decision(&store, app_id, &ws, capability_id, now) {
+                    Some(Decision::Deny) => {
+                        blocked.insert(capability_id.clone());
+                    }
+                    Some(Decision::Allow) => {
+                        granted.insert(capability_id.clone());
+                    }
+                    Some(Decision::Ask) => {}
+                    None if declared_capability_needs_click(capability_id) => {
+                        log::info!(
+                            "permission_monitor: withheld {capability_id} for {app_id} until a human grants it"
+                        );
+                    }
+                    None => {
+                        store.upsert_capability(
+                            app_id,
+                            workspace_root,
+                            capability_id,
+                            Decision::Allow,
+                            GrantSource::Workspace,
+                        );
+                        granted.insert(capability_id.clone());
+                        dirty = true;
+                        log::info!(
+                            "permission_monitor: auto-granted {capability_id} for {app_id}"
+                        );
+                    }
+                }
+            }
+            let declared_set: std::collections::HashSet<&str> =
+                declared.iter().map(String::as_str).collect();
+            let extras: Vec<(String, Decision)> = store
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.actor_type == ActorType::App
+                        && record.actor_id == app_id
+                        && record.target_type == TargetType::Capability
+                        && record.workspace_root.as_deref() == Some(ws.as_path())
+                        && !declared_set.contains(record.target_id.as_str())
+                        && record.expires_at.is_none_or(|expires| now < expires)
+                })
+                .map(|record| (record.target_id.clone(), record.decision))
+                .collect();
+            for (capability_id, decision) in extras {
+                match decision {
+                    Decision::Allow => {
+                        granted.insert(capability_id);
+                    }
+                    Decision::Deny => {
+                        blocked.insert(capability_id);
+                    }
+                    Decision::Ask => {}
+                }
+            }
+            if dirty {
+                store.save();
+            }
+        }
+        (granted, blocked)
+    }
+
+    /// `reset` and `allow` widen. An agent files Needs you and changes nothing.
+    /// `revoke` narrows and runs from any caller.
+    pub fn mutate_entry(
+        &self,
+        id: &str,
+        action: &str,
+        caller: &PermissionCaller,
+    ) -> PermissionMutation {
+        let action = action.trim();
+        if !matches!(action, "reset" | "allow" | "revoke") {
+            return PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error: "action must be reset, allow, or revoke".to_string(),
+            };
+        }
+        let widening = matches!(action, "reset" | "allow");
+        if widening && !caller.human {
+            return self.file_widen(id, action, &caller.actor_id);
+        }
+        let outcome = self.apply_mutation(id, action);
+        log::info!(
+            "permission_monitor: mutate {action} id={id} human={} actor={} outcome={}",
+            caller.human,
+            caller.actor_id,
+            mutation_label(&outcome)
+        );
+        outcome
+    }
+
+    fn file_widen(&self, id: &str, action: &str, actor: &str) -> PermissionMutation {
+        let Some(entry) = self.entry_by_id(id) else {
+            log::info!("permission_monitor: widen {action} missing id={id} actor={actor}");
+            return PermissionMutation::Missing {
+                entry_id: id.to_string(),
+            };
+        };
+        if action == "reset" && entry.kind != "deny" {
+            return PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error: "reset only clears a stored denial".to_string(),
+            };
+        }
+        if action == "allow" && entry.kind == "allow" {
+            return PermissionMutation::Applied {
+                entry_id: id.to_string(),
+            };
+        }
+        match self.file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::PermissionChange,
+            actor: if actor.is_empty() {
+                entry.actor_id.clone()
+            } else {
+                actor.to_string()
+            },
+            resource: entry.tool.clone(),
+            summary: format!(
+                "Approve {action} for {} {} ({id}). An agent cannot widen this itself.",
+                entry.actor_id, entry.tool
+            ),
+            expires_at: None,
+            run_tag: Some(format!("{action}:{id}")),
+        }) {
+            Ok(needs_you_id) => {
+                self.widens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(
+                        needs_you_id.clone(),
+                        PendingWiden {
+                            entry_id: id.to_string(),
+                            action: action.to_string(),
+                        },
+                    );
+                log::info!(
+                    "permission_monitor: widen {action} id={id} filed needs_you={needs_you_id} actor={actor}"
+                );
+                PermissionMutation::NeedsYou {
+                    needs_you_id,
+                    entry_id: id.to_string(),
+                }
+            }
+            Err(error) => PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error,
+            },
+        }
+    }
+
+    fn apply_mutation(&self, id: &str, action: &str) -> PermissionMutation {
+        match action {
+            "revoke" => self.revoke_entry(id),
+            "reset" => self.reset_entry(id),
+            "allow" => self.allow_entry(id),
+            _ => PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error: "action must be reset, allow, or revoke".to_string(),
+            },
+        }
+    }
+
+    fn revoke_entry(&self, id: &str) -> PermissionMutation {
+        if self.pending_exists(id) {
+            return match self.approve_pending(id, ApprovalChoice::Deny) {
+                Ok(()) => PermissionMutation::Applied {
+                    entry_id: id.to_string(),
+                },
+                Err(error) => PermissionMutation::Rejected {
+                    entry_id: id.to_string(),
+                    error,
+                },
+            };
+        }
+        let Some(entry) = self.entry_by_id(id) else {
+            return PermissionMutation::Missing {
+                entry_id: id.to_string(),
+            };
+        };
+        if entry.kind == "deny" {
+            return PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error: "a denial is cleared with reset, not revoke".to_string(),
+            };
+        }
+        if self.revoke_grant_id(id) {
+            PermissionMutation::Applied {
+                entry_id: id.to_string(),
+            }
+        } else {
+            PermissionMutation::Missing {
+                entry_id: id.to_string(),
+            }
+        }
+    }
+
+    fn reset_entry(&self, id: &str) -> PermissionMutation {
+        let Some(entry) = self.entry_by_id(id) else {
+            return PermissionMutation::Missing {
+                entry_id: id.to_string(),
+            };
+        };
+        if entry.kind != "deny" {
+            return PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error: "reset only clears a stored denial".to_string(),
+            };
+        }
+        if self.revoke_grant_id(id) {
+            PermissionMutation::Applied {
+                entry_id: id.to_string(),
+            }
+        } else {
+            PermissionMutation::Missing {
+                entry_id: id.to_string(),
+            }
+        }
+    }
+
+    fn allow_entry(&self, id: &str) -> PermissionMutation {
+        if self.pending_exists(id) {
+            return match self.approve_pending(id, ApprovalChoice::Always) {
+                Ok(()) => PermissionMutation::Applied {
+                    entry_id: id.to_string(),
+                },
+                Err(error) => PermissionMutation::Rejected {
+                    entry_id: id.to_string(),
+                    error,
+                },
+            };
+        }
+        let record = {
+            let store = self.store();
+            store
+                .records()
+                .iter()
+                .find(|record| record.grant_id == id)
+                .cloned()
+        };
+        let Some(record) = record else {
+            return PermissionMutation::Missing {
+                entry_id: id.to_string(),
+            };
+        };
+        if record.decision == Decision::Allow {
+            return PermissionMutation::Applied {
+                entry_id: id.to_string(),
+            };
+        }
+        if record.decision != Decision::Deny {
+            return PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error: "allow replaces a denial or approves a pending ask".to_string(),
+            };
+        }
+        let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
+        let mut allow = record.clone();
+        allow.grant_id = grant_id.clone();
+        allow.decision = Decision::Allow;
+        allow.duration = GrantDuration::Always;
+        allow.source = GrantSource::User;
+        allow.tool_scoped = true;
+        allow.consumed = false;
+        allow.created_at = self.now_secs();
+        allow.expires_at = Some(self.now_secs() + ALWAYS_TTL_SECS);
+        {
+            let mut store = self.store();
+            store.records_mut().retain(|row| row.grant_id != id);
+            store.record(allow);
+        }
+        self.save_durable();
+        let _ = self.audit(&AuditFact {
+            kind: "grant".to_string(),
+            actor: record.actor_id,
+            call_id: String::new(),
+            grant_id: grant_id.clone(),
+            resource_id: record.resource_id.unwrap_or_default(),
+            args_fingerprint: String::new(),
+            operation_id: String::new(),
+            decision: "allow_until".to_string(),
+            revision_before: id.to_string(),
+            revision_after: grant_id.clone(),
+        });
+        log::info!("permission_monitor: allowed {id} as {grant_id}");
+        PermissionMutation::Applied {
+            entry_id: grant_id,
+        }
+    }
+
+    fn pending_exists(&self, id: &str) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|row| row.id == id)
+    }
+
+    fn entry_by_id(&self, id: &str) -> Option<PermissionEntry> {
+        self.list_entries().into_iter().find(|entry| entry.id == id)
+    }
+
+    fn record_tool_scoped(
+        &self,
+        binding: &ExactBinding,
+        decision: Decision,
+        expires_at: Option<i64>,
+    ) -> String {
+        let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
+        let mut record = GrantRecord::from_binding(
+            binding,
+            decision,
+            GrantDuration::Always,
+            GrantSource::User,
+            &grant_id,
+        );
+        record.tool_scoped = true;
+        record.expires_at = expires_at;
+        record.session_id = None;
+        self.store().record(record);
+        self.save_durable();
+        log::info!(
+            "permission_monitor: stored tool-scoped {} {grant_id} tool={}",
+            decision.as_str(),
+            binding.target_id
+        );
+        grant_id
+    }
+
+    /// Write durable rows and leave session and one-shot rows in memory only.
+    fn save_durable(&self) {
+        let mut store = self.store();
+        let ephemeral: Vec<GrantRecord> = store
+            .records()
+            .iter()
+            .filter(|record| !record_is_durable(record))
+            .cloned()
+            .collect();
+        store.records_mut().retain(record_is_durable);
+        store.save();
+        store.records_mut().extend(ephemeral);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn list_pending(&self) -> Vec<PendingView> {
@@ -1415,31 +2125,20 @@ impl PermissionMonitor {
             .unwrap_or_else(|e| e.into_inner())
             .push(fact.clone());
         if let Some(path) = &self.audit_path {
-            if let Some(parent) = path.parent() {
-                if let Err(error) = std::fs::create_dir_all(parent) {
-                    log::error!("permission_monitor: audit dir {}: {error}", parent.display());
-                    return Err(error.to_string());
+            match super::seal::append_audit(path, fact) {
+                Ok(()) => {}
+                Err(super::seal::SealError::Untrusted(reason)) => {
+                    self.raise_integrity(&super::seal::IntegrityFault {
+                        file: "permission-audit.jsonl".to_string(),
+                        reason,
+                    });
+                    return Err("audit integrity check failed".to_string());
+                }
+                Err(super::seal::SealError::Io(reason)) => {
+                    log::error!("permission_monitor: audit write {}: {reason}", path.display());
+                    return Err(reason);
                 }
             }
-            let line = serde_json::to_string(fact).map_err(|error| error.to_string())?;
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|error| {
-                    log::error!("permission_monitor: audit open {}: {error}", path.display());
-                    error.to_string()
-                })?;
-            use std::io::Write;
-            writeln!(file, "{line}").map_err(|error| {
-                log::error!("permission_monitor: audit write {}: {error}", path.display());
-                error.to_string()
-            })?;
-            file.flush().map_err(|error| {
-                log::error!("permission_monitor: audit flush {}: {error}", path.display());
-                error.to_string()
-            })?;
-            crate::broker::integrity::note_saved_file(path);
         }
         trace_gate(format!(
             "permission_monitor: audit {} actor={} call_id={} grant_id={} resource={} op={}",
@@ -1454,9 +2153,173 @@ impl PermissionMonitor {
     }
 }
 
+fn declared_capability_needs_click(capability_id: &str) -> bool {
+    match crate::app::permissions::Capability::try_from(capability_id) {
+        Ok(cap) => cap.is_sensitive(),
+        Err(_) => crate::app::permissions::wasm_capability_requires_consent(capability_id),
+    }
+}
+
+fn stored_capability_decision(
+    store: &GrantStore,
+    app_id: &str,
+    workspace: &Path,
+    capability_id: &str,
+    now: i64,
+) -> Option<Decision> {
+    let mut allow = false;
+    let mut ask = false;
+    let mut deny = false;
+    for record in store.records() {
+        if record.actor_type != ActorType::App
+            || record.actor_id != app_id
+            || record.target_type != TargetType::Capability
+            || record.target_id != capability_id
+            || record.workspace_root.as_deref() != Some(workspace)
+        {
+            continue;
+        }
+        if record.expires_at.is_some_and(|expires| now >= expires) {
+            continue;
+        }
+        match record.decision {
+            Decision::Deny => deny = true,
+            Decision::Ask => ask = true,
+            Decision::Allow => allow = true,
+        }
+    }
+    if deny {
+        Some(Decision::Deny)
+    } else if ask {
+        Some(Decision::Ask)
+    } else if allow {
+        Some(Decision::Allow)
+    } else {
+        None
+    }
+}
+
+fn record_is_durable(record: &GrantRecord) -> bool {
+    record.source != GrantSource::Session
+        && !matches!(
+            record.duration,
+            GrantDuration::Once | GrantDuration::Session
+        )
+}
+
+fn snake<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .map(|value| match value {
+            serde_json::Value::String(text) => text,
+            other => other.to_string(),
+        })
+        .unwrap_or_default()
+}
+
+fn when_label(unix: i64) -> String {
+    chrono::DateTime::from_timestamp(unix, 0)
+        .map(|stamp| stamp.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| unix.to_string())
+}
+
+fn duration_label(record: &GrantRecord) -> &'static str {
+    if record.expires_at.is_some() {
+        "until"
+    } else {
+        match record.duration {
+            GrantDuration::Once => "once",
+            GrantDuration::Session => "session",
+            GrantDuration::Always => "always",
+            _ => "scoped",
+        }
+    }
+}
+
+fn entry_from_record(record: &GrantRecord) -> PermissionEntry {
+    let kind = record.decision.as_str().to_string();
+    let duration = duration_label(record).to_string();
+    let when = when_label(record.created_at);
+    let workspace = record
+        .workspace_root
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let summary = format!(
+        "{} {kind} {duration} {} since {when}",
+        record.actor_id, record.target_id
+    );
+    PermissionEntry {
+        id: record.grant_id.clone(),
+        kind,
+        duration,
+        actor_type: snake(&record.actor_type),
+        actor_id: record.actor_id.clone(),
+        tool: record.target_id.clone(),
+        resource_id: record.resource_id.clone(),
+        resource_scope: snake(&record.resource_scope),
+        package_id: record.package_id.clone(),
+        created_at: record.created_at,
+        expires_at: record.expires_at,
+        when,
+        source: snake(&record.source),
+        workspace,
+        summary,
+    }
+}
+
+fn entry_from_pending(row: &Pending) -> PermissionEntry {
+    let when = when_label(row.created_at);
+    let workspace = row.binding.workspace_root.display().to_string();
+    let summary = format!(
+        "{} ask {} since {when}",
+        row.binding.actor_id, row.tool
+    );
+    PermissionEntry {
+        id: row.id.clone(),
+        kind: "pending".to_string(),
+        duration: "ask".to_string(),
+        actor_type: snake(&row.binding.actor_type),
+        actor_id: row.binding.actor_id.clone(),
+        tool: row.tool.clone(),
+        resource_id: row.binding.resource_id.clone(),
+        resource_scope: snake(&row.binding.resource_scope),
+        package_id: row.binding.package_id.clone(),
+        created_at: row.created_at,
+        expires_at: None,
+        when,
+        source: "pending".to_string(),
+        workspace,
+        summary,
+    }
+}
+
+fn split_widen_tag(tag: Option<&str>) -> (String, String) {
+    let Some(tag) = tag else {
+        return (String::new(), String::new());
+    };
+    let Some((action, entry_id)) = tag.split_once(':') else {
+        return (String::new(), String::new());
+    };
+    if matches!(action, "reset" | "allow") && !entry_id.is_empty() {
+        (entry_id.to_string(), action.to_string())
+    } else {
+        (String::new(), String::new())
+    }
+}
+
+fn mutation_label(outcome: &PermissionMutation) -> &'static str {
+    match outcome {
+        PermissionMutation::Applied { .. } => "applied",
+        PermissionMutation::NeedsYou { .. } => "needs_you",
+        PermissionMutation::Missing { .. } => "missing",
+        PermissionMutation::Rejected { .. } => "rejected",
+    }
+}
+
 fn resolution_for_choice(choice: ApprovalChoice) -> NeedsYouResolution {
     match choice {
-        ApprovalChoice::Deny => NeedsYouResolution::Denied,
+        ApprovalChoice::Deny | ApprovalChoice::DenyAlways => NeedsYouResolution::Denied,
         ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always => {
             NeedsYouResolution::Approved
         }
@@ -1469,6 +2332,7 @@ fn decision_for_choice(choice: ApprovalChoice) -> &'static str {
         ApprovalChoice::Session => "allow_session",
         ApprovalChoice::Always => "allow_until",
         ApprovalChoice::Deny => "deny",
+        ApprovalChoice::DenyAlways => "deny_always",
     }
 }
 
@@ -1589,13 +2453,6 @@ pub(crate) fn revisions_from_output(output: Option<&str>) -> (String, String) {
 
 pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Option<String>) {
     let parsed = serde_json::from_str::<serde_json::Value>(input_json).ok();
-    if tool == "secret.read" {
-        let name = parsed.as_ref().and_then(|value| value.get("name")).and_then(|item| item.as_str());
-        let folder = parsed.as_ref().and_then(|value| value.get("folder")).and_then(|item| item.as_str());
-        if let (Some(name), Some(folder)) = (name, folder) {
-            return (ResourceScope::Path, Some(format!("{name}@{folder}")));
-        }
-    }
     let game = parsed.as_ref().and_then(|value| {
         value
             .get("game_id")
@@ -1892,15 +2749,19 @@ pub fn structured_error(code: &str, call_id: &str, pending_request_id: Option<&s
     } else {
         "none"
     };
+    let mut error = serde_json::json!({
+        "code": code,
+        "state": state,
+        "pending_request_id": pending_request_id,
+        "retry": retry,
+    });
+    if code == "permission_denied" {
+        error["undo"] = serde_json::json!(crate::cli::introspect::permission_undo_text());
+    }
     serde_json::json!({
         "schema_version": SCHEMA,
         "call_id": call_id,
-        "error": {
-            "code": code,
-            "state": state,
-            "pending_request_id": pending_request_id,
-            "retry": retry,
-        }
+        "error": error,
     })
     .to_string()
 }
@@ -2179,6 +3040,193 @@ mod tests {
     }
 
     #[test]
+    fn deny_once_asks_again_and_always_deny_sticks_until_reset() {
+        let monitor = PermissionMonitor::ephemeral();
+        let args = r#"{"game_id":"game-1","move":"e2e4"}"#;
+        let row = binding("ignored");
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &row, args) else {
+            panic!("first call asks");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Deny)
+            .unwrap();
+        assert!(
+            monitor.list_entries().iter().all(|entry| entry.kind != "deny"),
+            "a single deny stores nothing"
+        );
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &row, args) else {
+            panic!("deny once asks again");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::DenyAlways)
+            .unwrap();
+        let deny_id = monitor
+            .list_entries()
+            .into_iter()
+            .find(|entry| entry.kind == "deny")
+            .expect("always deny is listed")
+            .id;
+        assert!(
+            matches!(admit_of(&monitor, &row, args), Admission::Denied { .. }),
+            "always deny answers the next call"
+        );
+        let agent = PermissionCaller {
+            human: false,
+            actor_id: "agent:test".to_string(),
+        };
+        let filed = monitor.mutate_entry(&deny_id, "allow", &agent);
+        assert!(
+            matches!(filed, PermissionMutation::NeedsYou { .. }),
+            "an agent cannot allow itself: {filed:?}"
+        );
+        assert!(monitor.list_entries().iter().any(|entry| entry.id == deny_id));
+        let human = PermissionCaller {
+            human: true,
+            actor_id: "human".to_string(),
+        };
+        let reset = monitor.mutate_entry(&deny_id, "reset", &human);
+        assert!(matches!(reset, PermissionMutation::Applied { .. }), "{reset:?}");
+        assert!(
+            matches!(admit_of(&monitor, &row, args), Admission::Required { .. }),
+            "reset asks again"
+        );
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &row, args) else {
+            panic!("pending after reset");
+        };
+        // The previous required admission is still pending; approving always
+        // on it creates the grant the revoke case removes.
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Always)
+            .unwrap();
+        let grant_id = monitor
+            .list_entries()
+            .into_iter()
+            .find(|entry| entry.kind == "allow")
+            .expect("persistent grant is listed")
+            .id;
+        assert!(matches!(admit_of(&monitor, &row, args), Admission::Proceed { .. }));
+        let revoked = monitor.mutate_entry(&grant_id, "revoke", &agent);
+        assert!(matches!(revoked, PermissionMutation::Applied { .. }), "{revoked:?}");
+        assert!(
+            matches!(admit_of(&monitor, &row, args), Admission::Required { .. }),
+            "revoke asks again"
+        );
+        let denied = structured_error("permission_denied", "call-1", None);
+        assert!(denied.contains("plexi permissions list"), "{denied}");
+        assert!(denied.contains("plexi permissions reset"), "{denied}");
+        assert!(!denied.contains("gear"), "{denied}");
+    }
+
+    #[test]
+    fn hand_edited_grant_file_does_not_grant() {
+        let victim = tempfile::tempdir().unwrap();
+        let donor = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let mut donor_store = GrantStore::load_or_default(donor.path());
+        donor_store.record(GrantRecord::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+            Decision::Allow,
+        ));
+        donor_store.save();
+        let empty = GrantStore::load_or_default(victim.path());
+        empty.save();
+        let signed = std::fs::read_to_string(donor.path().join("grants.toml")).unwrap();
+        let sealed_empty = std::fs::read_to_string(victim.path().join("grants.toml")).unwrap();
+        let body = signed
+            .lines()
+            .filter(|line| !line.starts_with("# plexi-mac:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mac = sealed_empty
+            .lines()
+            .find(|line| line.starts_with("# plexi-mac:"))
+            .expect("empty file is sealed");
+        let forged = format!("{body}\n{mac}\n");
+        assert!(
+            forged.contains("allow"),
+            "the forged file must actually add a grant: {forged}"
+        );
+        std::fs::write(victim.path().join("grants.toml"), &forged).unwrap();
+
+        // A startup loader can quarantine the file before any monitor exists.
+        // The later monitor must still fail closed and file Needs you.
+        let preloaded = GrantStore::load_or_default(victim.path());
+        assert!(preloaded.records().is_empty());
+        assert!(
+            !victim.path().join("grants.toml").exists(),
+            "the startup load quarantines a forged grants file"
+        );
+        let monitor = PermissionMonitor::open_profile(victim.path());
+        assert!(monitor.store().records().is_empty());
+        let req = PermissionRequest::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+        );
+        assert_eq!(monitor.store().evaluate(&req, None), Decision::Ask);
+        let alerts = monitor.open_needs_you();
+        assert!(
+            alerts.iter().any(|row| row.kind == NeedsYouKind::Integrity),
+            "{alerts:?}"
+        );
+        assert!(
+            !victim.path().join("grants.toml").exists(),
+            "a forged grants file is quarantined"
+        );
+    }
+
+    #[test]
+    fn edited_and_deleted_audit_lines_are_detected() {
+        let edited = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(edited.path());
+        monitor.note_denial("actor", "c1", "res", "op", "denied");
+        monitor.note_denial("actor", "c2", "res", "op", "denied");
+        drop(monitor);
+        let path = edited.path().join("permission-audit.jsonl");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
+        assert!(lines.len() >= 2, "{original}");
+        lines[0] = lines[0].replace("denied", "allowed");
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let err = crate::broker::seal::verify_audit(&path).expect_err("an edited line must fail");
+        assert!(err.contains("mac"), "{err}");
+        let monitor = PermissionMonitor::open_profile(edited.path());
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .any(|row| row.kind == NeedsYouKind::Integrity),
+            "an edited audit line files needs you"
+        );
+
+        let deleted = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(deleted.path());
+        monitor.note_denial("actor", "c1", "res", "op", "denied");
+        monitor.note_denial("actor", "c2", "res", "op", "denied");
+        drop(monitor);
+        let path = deleted.path().join("permission-audit.jsonl");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let first = original.lines().next().expect("first audit line");
+        std::fs::write(&path, format!("{first}\n")).unwrap();
+        let err = crate::broker::seal::verify_audit(&path).expect_err("a deleted line must fail");
+        assert!(err.contains("tip"), "{err}");
+        std::fs::remove_file(&path).unwrap();
+        let err = crate::broker::seal::verify_audit(&path).expect_err("a deleted log must fail");
+        assert!(err.contains("deleted"), "{err}");
+
+        let monitor = PermissionMonitor::open_profile(deleted.path());
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .any(|row| row.kind == NeedsYouKind::Integrity),
+            "a deleted audit log files needs you"
+        );
+    }
+
+    #[test]
     fn needs_you_survives_reload_and_reports_outcome_unknown() {
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::for_profile(dir.path());
@@ -2317,14 +3365,6 @@ mod tests {
         assert!(!dir.path().join("secrets.json").exists());
     }
 
-    fn needs_you_decisions(monitor: &PermissionMonitor, decision: &str) -> usize {
-        monitor
-            .audit_records()
-            .iter()
-            .filter(|fact| fact.kind == "needs_you" && fact.decision == decision)
-            .count()
-    }
-
     #[test]
     fn client_resolve_is_refused_and_leaves_the_pending() {
         let monitor = PermissionMonitor::ephemeral();
@@ -2352,6 +3392,14 @@ mod tests {
             monitor.approve_pending(&id, ApprovalChoice::Once).is_ok(),
             "the desktop path can still approve"
         );
+    }
+
+    fn needs_you_decisions(monitor: &PermissionMonitor, decision: &str) -> usize {
+        monitor
+            .audit_records()
+            .iter()
+            .filter(|fact| fact.kind == "needs_you" && fact.decision == decision)
+            .count()
     }
 }
 

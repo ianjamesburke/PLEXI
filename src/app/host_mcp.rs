@@ -332,6 +332,41 @@ pub fn start_host_mcp_server(
 fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> serde_json::Value {
     let mut tools = vec![
         serde_json::json!({
+            "name": "permissions_list",
+            "description": "List live permission decisions from the permission monitor. Same rows as `plexi permissions list`.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        serde_json::json!({
+            "name": "permissions_revoke",
+            "description": "Remove an allow or refuse a pending ask. Narrows authority.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_reset",
+            "description": "Ask to clear a stored denial. An MCP caller files Needs you and does not clear it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_allow",
+            "description": "Ask to allow a denial or a pending ask. An MCP caller files Needs you and does not grant it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
             "name": "list_event_streams",
             "description": "List the event streams currently declared by running Plexi apps. Returns an array of {app_id, stream} pairs.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
@@ -438,6 +473,10 @@ fn handle_connection(
                 }
             } else {
                 match tool_name {
+                    "permissions_list" => tool_permissions("list", &arguments, profile, &caller),
+                    "permissions_revoke" => tool_permissions("revoke", &arguments, profile, &caller),
+                    "permissions_reset" => tool_permissions("reset", &arguments, profile, &caller),
+                    "permissions_allow" => tool_permissions("allow", &arguments, profile, &caller),
                     "list_event_streams" => tool_list_event_streams(&caller),
                     "subscribe_and_wait" => {
                         tool_subscribe_and_wait(&arguments, subscribe_tx, &caller)
@@ -479,6 +518,50 @@ fn handle_connection(
 
     let body_bytes = serde_json::to_vec(&response_body).unwrap_or_else(|_| b"{}".to_vec());
     write_http_response(&mut write_stream, 200, &body_bytes)
+}
+
+/// Permission-monitor tools. MCP callers are agents: revoke narrows, reset and
+/// allow file Needs you and change nothing.
+fn tool_permissions(
+    op: &str,
+    arguments: &serde_json::Value,
+    profile: &std::path::Path,
+    caller: &McpCaller,
+) -> Result<String, String> {
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile);
+    if op == "list" {
+        let entries = monitor.list_entries();
+        log::info!(
+            "host_mcp: permissions_list count={} pane={}",
+            entries.len(),
+            caller.pane_id
+        );
+        return serde_json::to_string(&serde_json::json!({"ok": true, "entries": entries}))
+            .map_err(|error| error.to_string());
+    }
+    let id = arguments
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let outcome = monitor.mutate_entry(
+        id,
+        op,
+        &crate::broker::gate::PermissionCaller {
+            human: false,
+            actor_id: format!("mcp:pane:{}", caller.pane_id),
+        },
+    );
+    log::info!("host_mcp: permissions_{op} id={id} pane={}", caller.pane_id);
+    let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+    let ok = matches!(
+        outcome,
+        crate::broker::gate::PermissionMutation::Applied { .. }
+    );
+    if let Some(map) = body.as_object_mut() {
+        map.insert("ok".to_string(), serde_json::json!(ok));
+    }
+    let text = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
+    if ok { Ok(text) } else { Err(text) }
 }
 
 /// `list_event_streams` — read declared streams from the global timeline,
@@ -951,6 +1034,174 @@ mod tests {
             br#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#,
         );
         assert_eq!(status, 401, "closed-pane credentials must be revoked");
+    }
+
+    /// A real Pi session reaches a context app tool through the Plexi-managed
+    /// Pi extension and this server — no second protocol. Pi's model is its
+    /// scripted `faux` provider, so the run needs no API key; the tool call
+    /// still crosses Pi's MCP client, the pane-scoped bearer, and
+    /// `ToolDispatcher` into the provider pane.
+    ///
+    /// Needs a Pi install (not in CI):
+    /// `PLEXI_PI_CLI=<pi-coding-agent>/dist/bundle/cli.js PLEXI_PI_PROBE_DIR=<dir with
+    /// node_modules/@earendil-works/pi-coding-agent> cargo test --bin plexi
+    /// pi_session_calls_context_app_tool -- --ignored`. `PLEXI_PI_RUNTIME`
+    /// defaults to `bun` (Pi's bundle needs Node >= 22.8 otherwise).
+    #[test]
+    #[ignore = "requires a Pi install; see doc comment"]
+    fn pi_session_calls_context_app_tool_through_host_mcp() {
+        use crate::protocol::{AiTool, PlexiEvent};
+        use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+        use std::process::{Command, Stdio};
+
+        let pi_cli = std::env::var("PLEXI_PI_CLI").expect("set PLEXI_PI_CLI to Pi's cli.js");
+        let probe_dir = PathBuf::from(
+            std::env::var("PLEXI_PI_PROBE_DIR")
+                .expect("set PLEXI_PI_PROBE_DIR to a dir whose node_modules has Pi"),
+        );
+        let runtime = std::env::var("PLEXI_PI_RUNTIME").unwrap_or_else(|_| "bun".to_string());
+
+        let (port, _test_token, _profile) = start_test_server(None);
+        let context = 300u64;
+        let caller_pane = 7_101u64;
+        let token = register_pane_credential(
+            caller_pane,
+            context,
+            PathBuf::from("/workspace/host-mcp-pi"),
+        );
+        let (provider_tx, provider_rx) = std::sync::mpsc::channel();
+        let (other_tx, _other_rx) = std::sync::mpsc::channel();
+        let tool = |name: &str| AiTool {
+            name: name.to_string(),
+            description: format!("probe tool {name}"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"square": {"type": "string"}},
+            }),
+            output_schema: serde_json::json!({"type": "object"}),
+            timeout_ms: Some(5_000),
+            read_only: false,
+        };
+        tool_dispatch::register(
+            7_102,
+            "pi-probe".to_string(),
+            vec![tool("move")],
+            AppEventSender::Channel(provider_tx),
+            test_provider_origin(context, 7_102),
+        );
+        tool_dispatch::register(
+            7_103,
+            "pi-other".to_string(),
+            vec![tool("secret")],
+            AppEventSender::Channel(other_tx),
+            test_provider_origin(context + 1, 7_103),
+        );
+
+        // Pi's MCP client will make this same request on startup. Assert the
+        // host boundary first so the real-session half below proves the call
+        // crosses that already-scoped boundary rather than a parallel path.
+        let (status, body) = post(
+            port,
+            Some(&token),
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        assert_eq!(status, 200);
+        let listed_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let listed: Vec<&str> = listed_json["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(listed.contains(&"pi-probe__move"));
+        assert!(!listed.contains(&"pi-other__secret"));
+
+        let responder = std::thread::spawn(move || {
+            let line = provider_rx
+                .recv_timeout(Duration::from_secs(60))
+                .expect("provider pane receives ToolCall from Pi");
+            let event: PlexiEvent = serde_json::from_str(line.trim()).unwrap();
+            let PlexiEvent::ToolCall {
+                call_id,
+                name,
+                input_json,
+                caller_id,
+                authorization: _,
+            } = event
+            else {
+                panic!("expected ToolCall");
+            };
+            tool_dispatch::resolve_pending(
+                &call_id,
+                ToolCallResult::ok(r#"{"moved":"e4","revision":2}"#),
+            );
+            (name, input_json, caller_id)
+        });
+
+        let dir = tempfile::tempdir_in(&probe_dir).unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let plexi_ext = dir.path().join("plexi.ts");
+        std::fs::write(&plexi_ext, crate::cli::agent::pi_extension_script("true")).unwrap();
+        let faux_ext = dir.path().join("faux.ts");
+        std::fs::write(
+            &faux_ext,
+            r#"import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+
+export default function (pi: ExtensionAPI) {
+  const faux = fauxProvider({ provider: "plexi-probe", models: [{ id: "probe" }] });
+  faux.setResponses([
+    (context) => {
+      return fauxAssistantMessage(
+        [fauxToolCall("mcp__plexi__pi_probe__move", { square: "e4" })],
+        { stopReason: "toolUse" },
+      );
+    },
+    (context) => {
+      const result = [...context.messages].reverse().find((m: any) => m.role === "toolResult") as any;
+      const text = result?.content?.map((c: any) => c.text ?? "").join("") ?? "<none>";
+      return fauxAssistantMessage(`PROBE_RESULT ${result?.isError ? "error" : "ok"} ${text}`);
+    },
+  ]);
+  pi.registerProvider(faux.provider);
+}
+"#,
+        )
+        .unwrap();
+
+        let output = Command::new(&runtime)
+            .arg(&pi_cli)
+            .args(["-p", "--no-session", "--offline", "-ne", "-e", "builtin:mcp", "-e"])
+            .arg(&plexi_ext)
+            .arg("-e")
+            .arg(&faux_ext)
+            .args(["--provider", "plexi-probe", "--model", "probe", "move e4"])
+            .current_dir(dir.path())
+            .env("HOME", &home)
+            .env("PLEXI_HOST_MCP_PORT", port.to_string())
+            .env("PLEXI_HOST_MCP_TOKEN", &token)
+            .env_remove("PLEXI_SOCKET")
+            .env_remove("PLEXI_PANE_ID")
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn Pi");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "pi failed\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+        let (name, input_json, caller_id) = responder.join().unwrap();
+        assert_eq!(name, "move");
+        assert_eq!(input_json, r#"{"square":"e4"}"#);
+        assert_eq!(caller_id, format!("mcp:pane:{caller_pane}"));
+        assert!(
+            stdout.contains(r#"PROBE_RESULT ok {"moved":"e4","revision":2}"#),
+            "tool result must reach Pi's model: {stdout}\n{stderr}"
+        );
+
+        tool_dispatch::unregister(7_102);
+        tool_dispatch::unregister(7_103);
+        revoke_pane_credentials(caller_pane);
     }
 
     /// End-to-end proof the MCP adapter is wired, not just that a host test can

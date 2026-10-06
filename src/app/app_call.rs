@@ -108,6 +108,54 @@ impl PlexiApp {
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }
 
+    pub(crate) fn permissions_cli_request(
+        &mut self,
+        op: &str,
+        id: Option<&str>,
+        pane_id: Option<u64>,
+        credential: Option<&str>,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let credential_set = credential.is_some_and(|value| !value.is_empty());
+        let human = false; // terminal and socket never widen; the Permissions app calls mutate_entry itself
+        let actor_id = match pane_id {
+            Some(id) => format!("pane:{id}"),
+            None if credential_set => "agent:credential".to_string(),
+            None => "user".to_string(),
+        };
+        let body = if op == "list" {
+            let entries = monitor.list_entries();
+            log::info!(
+                "permissions:cli list count={} human={human} actor={actor_id}",
+                entries.len()
+            );
+            serde_json::json!({"ok": true, "entries": entries})
+        } else {
+            let id = id.unwrap_or("");
+            let outcome = monitor.mutate_entry(
+                id,
+                op,
+                &crate::broker::gate::PermissionCaller {
+                    human,
+                    actor_id: actor_id.clone(),
+                },
+            );
+            log::info!("permissions:cli {op} id={id} human={human} actor={actor_id}");
+            let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+            let ok = matches!(
+                outcome,
+                crate::broker::gate::PermissionMutation::Applied { .. }
+            );
+            if let Some(map) = body.as_object_mut() {
+                map.insert("ok".to_string(), serde_json::json!(ok));
+            }
+            body
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
     pub(crate) fn observe_needs_you(
         &mut self,
         op: &str,
@@ -126,19 +174,41 @@ impl PlexiApp {
             "resolve" => {
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
-                log::info!("needs_you: host resolve {id} approve={approve}");
-                match monitor.resolve_needs_you(id, approve) {
-                    Ok(receipt) => serde_json::json!({
-                        "ok": !receipt.already,
-                        "id": receipt.id,
-                        "resolution": receipt.resolution.as_str(),
-                        "already": receipt.already,
-                        "run_outcome": receipt.run_outcome.as_str(),
-                    }),
-                    Err(error) => serde_json::json!({
+                let grants = monitor
+                    .list_needs_you()
+                    .iter()
+                    .any(|row| {
+                        row.id == id
+                            && matches!(row.kind, crate::broker::gate::NeedsYouKind::ApprovalClick | crate::broker::gate::NeedsYouKind::PermissionChange)
+                    })
+                    || monitor.show_pending(id).is_some();
+                if grants {
+                    // Socket and phone resolves never mint a grant. The desktop
+                    // banner calls approve_pending directly, and only when the
+                    // click was not synthetic.
+                    log::info!("needs_you: refused socket resolve {id} approve={approve}");
+                    monitor.refuse_client_resolve(id);
+                    serde_json::json!({
                         "ok": false,
-                        "error": error,
-                    }),
+                        "error_code": "permission_denied",
+                        "error": "only the person at the desktop can resolve a permission",
+                        "id": id,
+                    })
+                } else {
+                    log::info!("needs_you: host resolve {id} approve={approve}");
+                    match monitor.resolve_needs_you(id, approve) {
+                        Ok(receipt) => serde_json::json!({
+                            "ok": !receipt.already,
+                            "id": receipt.id,
+                            "resolution": receipt.resolution.as_str(),
+                            "already": receipt.already,
+                            "run_outcome": receipt.run_outcome.as_str(),
+                        }),
+                        Err(error) => serde_json::json!({
+                            "ok": false,
+                            "error": error,
+                        }),
+                    }
                 }
             }
             _ => serde_json::json!({"ok": false, "error": "unknown needs-you operation"}),

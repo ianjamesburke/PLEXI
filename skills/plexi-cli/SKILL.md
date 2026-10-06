@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.9"
+skill_version: "5.0.11"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -62,7 +62,8 @@ plexi skill install --agent codex
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
-  `plexi app --help`.
+  `plexi app --help`. `plexi app info <id>` prints the manifest and the tools
+  declared in that app's source.
 - **App state** — read or replace a file-backed app's state document, so a human
   and an agent can drive the same app: `plexi app state --help`. Only apps that
   declare a `[state]` section are addressable; the path is resolved from the
@@ -82,14 +83,20 @@ plexi skill install --agent codex
 - **Assistant permission** — list or show a pending grant:
   `plexi assistant permission list`, `plexi assistant permission show <id>`.
   When a tool call returns permission_required, print the pending_request_id
-  and wait for the person at the desktop to decide. `assistant permission resolve`
-  is refused by the host. Do not approve, deny, or widen a grant from the terminal.
+  and wait for the person at the desktop to decide. Do not approve, deny,
+  or widen a grant from the terminal. `assistant permission resolve`,
+  `needs-you resolve`, and `permissions allow` are refused and do not grant.
 - **Needs you** — one list of everything waiting on the human:
-  `plexi needs-you list --json`. Click approvals, agent questions, blocked runs, and a host integrity item share that record.
-  An integrity item appears after a start when the previous host did not exit cleanly or the permission profile changed while it was down.
-  `plexi needs-you resolve` and `plexi permissions allow` are refuse-only: the host
-  returns `permission_denied` and leaves the pending in place. A real desktop click grants.
-  Open items survive a host restart. Do not edit profile files to create or approve an item.
+  `plexi needs-you list --json`. Click approvals, agent questions, blocked
+  runs, and a host integrity item share that record. An integrity item
+  appears after a start when the previous host did not exit cleanly or the
+  permission profile changed while it was down. Open items survive a host
+  restart. The resolve JSON, when a desktop decision lands, includes
+  `run_outcome`: `unblocked` when this host process still has the run, and
+  `outcome_unknown` when that run was filed by a previous process.
+  Integrity, questions, and blocked runs do not mint a grant. Do not edit
+  profile files to create or approve an item. Do not resolve an item from
+  the terminal.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
@@ -111,7 +118,7 @@ plexi skill install --agent codex
   requests from an agent pane. `assistant send --head <id>` runs one model turn
   in that head's conversation. `assistant open --head <id>` opens an Assistant
   pane bound to that head. `agent conversation --head <id> --as <other>` is
-  refused when the ids differ. `command-view` lists heads, runs, and queued tasks from the agents API.
+  refused when the ids differ.   `command-view` lists heads, runs, and queued tasks from the agents API.
   `command-view open` shows the same rows in a pane. `command-view send <lead> <text>`
   runs a real turn in that head's conversation. `command-view cancel <run>` stops
   that run before the next tool. `command-view resolve` and `command-view allow`
@@ -130,6 +137,19 @@ plexi skill install --agent codex
   Send does not require `app open assistant` first: with no pane named, the
   host reuses an Assistant in the context or creates a hidden one. A pane id
   that does not exist still fails.
+- **Connectors** — connect a registered service with OAuth:
+  `plexi connector --help`. The current `stub` connector is a loopback-only
+  test issuer. Login prints a credential reference, never an access or refresh
+  token; `status` prints that same safe reference; and `revoke` removes the
+  local credential even if its remote revoke attempt fails. Mobile connector
+  operations explicitly report that they are not yet supported.
+- **Agents** — install workspace definitions and report or inspect agent state:
+  `plexi agent --help`. `agent report --event` preserves a provider lifecycle
+  event separately from its UI state; `--blocked-reason` supplies a typed reason.
+  Read `agent report --help` before using these optional fields. When a managed
+  Pi hook is installed, Pi's built-in MCP client automatically receives the
+  pane-scoped host MCP endpoint, so context-reachable app tools are available as
+  Pi MCP tools without configuring a second tool protocol.
 - **Configuration and diagnostics** — inspect configuration, AI setup, app
   health, and updates: `plexi config --help`, `plexi ai --help`,
   `plexi doctor --help`, and `plexi update --help`.
@@ -157,6 +177,7 @@ notify
 workspace
 run
 secret
+connector
 routine
 events
 agent
@@ -192,6 +213,17 @@ plexi secret set FOLDER_TOKEN --folder /path/to/project
 plexi secret list
 plexi secret read FOLDER_TOKEN --agent reader --folder /path/to/project
 plexi secret rm FOLDER_TOKEN --folder /path/to/project
+### Test a desktop OAuth connector against the local stub issuer
+
+With a loopback stub issuer already running, start sign-in. The issuer redirects
+the browser to a one-time loopback callback; pass `--no-browser` to copy the
+displayed URL into a browser yourself. The command prints only a credential
+reference. Revoke once the test is complete.
+
+```bash
+plexi connector login stub --issuer http://127.0.0.1:8765
+plexi connector status stub
+plexi connector revoke stub
 ```
 
 ## Worked examples
@@ -301,20 +333,6 @@ NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to insp
 plexi notify dismiss "$NOTICE"
 ```
 
-### Summarize AI ledger usage
-
-`plexi ledger` prints this channel's per-client totals. `ledger summary`
-groups by client or kind. `--since` keeps rows at or after a date. Each group
-reports runs, input and output tokens, cost, and wall time. A token count that
-was not measured is the word `unknown`. Wall time is null in JSON when it was
-not recorded. A client or kind that was never tagged is the null group.
-
-```bash
-plexi ledger
-plexi ledger summary --by client --since 2026-01-01 --json
-plexi assistant send --text "hello" --client narrative --kind output
-```
-
 ### Create an agent head and claim a run
 
 Heads live in the workspace `.plexi/agents` directory. Grants are the permission
@@ -338,6 +356,20 @@ plexi command-view resolve pending_example
 plexi command-view allow --tool assistant.turn
 plexi agent assign --head lead --input task.json --json
 plexi agent cancel --id task_example --json
+```
+
+### Summarize AI ledger usage
+
+`plexi ledger` prints this channel's per-client totals. `ledger summary`
+groups by client or kind. `--since` keeps rows at or after a date. Each group
+reports runs, input and output tokens, cost, and wall time. A token count that
+was not measured is the word `unknown`. Wall time is null in JSON when it was
+not recorded. A client or kind that was never tagged is the null group.
+
+```bash
+plexi ledger
+plexi ledger summary --by client --since 2026-01-01 --json
+plexi assistant send --text "hello" --client narrative --kind output
 ```
 
 ## Installation health

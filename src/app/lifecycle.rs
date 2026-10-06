@@ -216,7 +216,7 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, client, kind, head } => {
+            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, head, client, kind } => {
                 if let Some(head) = head {
                     let workspace = context_id
                         .and_then(|id| self.context_root_for(id))
@@ -313,6 +313,21 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
+            }
+            crate::protocol::AppRequest::Permissions {
+                op,
+                id,
+                pane_id,
+                credential,
+                response_file,
+            } => {
+                self.permissions_cli_request(
+                    op,
+                    id.as_deref(),
+                    *pane_id,
+                    credential.as_deref(),
+                    response_file,
+                );
             }
             crate::protocol::AppRequest::ListNeedsYou { response_file } => {
                 self.observe_needs_you("list", None, None, response_file);
@@ -1236,6 +1251,7 @@ impl PlexiApp {
                             cwd_override,
                             spec.no_focus,
                             inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if let Some(ref pane_name) = spec.name {
                             if !pane_name.is_empty() {
@@ -1273,6 +1289,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1296,6 +1313,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.restore_window_focused_pane(target_win_idx, original_focused);
@@ -1340,6 +1358,7 @@ impl PlexiApp {
                                             spec.ephemeral,
                                             cwd_override,
                                             inject_folder_secrets,
+                                            spec.agent.is_some(),
                                         ) {
                                             Some(seeded_id) => response_pane_id = seeded_id,
                                             None => {
@@ -1388,6 +1407,7 @@ impl PlexiApp {
                                 spec.ephemeral,
                                 cwd_override,
                                 inject_folder_secrets,
+                                spec.agent.is_some(),
                             ) {
                                 Some(seeded_id) => response_pane_id = seeded_id,
                                 None => launch_result = Err("failed to seed root pane".into()),
@@ -1421,6 +1441,7 @@ impl PlexiApp {
                             cwd_override,
                             keep_focus,
                             inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -2541,6 +2562,27 @@ impl PlexiApp {
                     response_file.clone(),
                 );
             }
+            crate::protocol::AppRequest::CallAppTool {
+                app_id,
+                tool,
+                input_json,
+                caller_pane_id,
+                call_credential,
+                peer_ancestry,
+                target_pane_id,
+                response_file,
+            } => {
+                self.call_app_tool(
+                    app_id.clone(),
+                    tool.clone(),
+                    input_json.clone(),
+                    *caller_pane_id,
+                    call_credential.clone(),
+                    peer_ancestry.clone(),
+                    *target_pane_id,
+                    response_file.clone(),
+                );
+            }
             crate::protocol::AppRequest::SetAgentState {
                 pane_id,
                 state,
@@ -2993,6 +3035,7 @@ impl PlexiApp {
                             false,
                             None,
                             true,
+                            false,
                         );
                     }
                 }
@@ -3405,17 +3448,13 @@ impl PlexiApp {
             store.set(app_id, &ws, cap, new_state);
             store.save();
 
-            // Dual-write the unified broker store so grants.toml stays in
-            // lockstep with the legacy permissions.toml until all call sites
-            // read through the broker (permissions-broker spec, Phase A).
-            let mut grants = crate::broker::GrantStore::load_or_default(&self.permission_store_dir);
-            grants.record_app_capability(
-                app_id,
-                &ws,
-                cap,
-                crate::broker::Decision::from_permission_state(new_state),
-            );
-            grants.save();
+            crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
+                .grant_app_capability(
+                    app_id,
+                    &ws,
+                    cap,
+                    crate::broker::Decision::from_permission_state(new_state),
+                );
 
             // Live-update every running instance of this app in this workspace.
             let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
@@ -3797,6 +3836,7 @@ impl PlexiApp {
                 cwd,
                 false,
                 true,
+                false,
             )
         });
 
