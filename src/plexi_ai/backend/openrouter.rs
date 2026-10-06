@@ -13,9 +13,15 @@
 //! entry in the messages array — NOT as a top-level `"system"` field (which
 //! is Anthropic format and silently ignored by OpenRouter).
 //!
-//! **Generation ID:** captured from `X-Generation-Id` response header before
-//! reading the SSE body. Threaded back via `StreamEvent::Done` so the broker
-//! can query the real cost after the turn completes.
+//! **Cost:** `usage: {include: true}` is sent on the OpenRouter path.
+//! `usage.cost` on the final stream chunk or the non-streaming body is the
+//! cost the ledger records. `X-Generation-Id` is only a fallback when that
+//! field is missing.
+//!
+//! **Base URL:** `PLEXI_OPENROUTER_BASE_URL` replaces `https://openrouter.ai/api/v1`
+//! for chat completions and the generation lookup (no trailing slash). Unset,
+//! the canonical host is used. A non-streaming `application/json` completion
+//! is accepted on the same worker as SSE.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -25,18 +31,102 @@ use std::thread;
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
 use crate::protocol::ModelTier;
 
+/// A JSON number as a token count. Missing or null stays `None` — callers
+/// must not substitute `0`, which is indistinguishable from "the provider
+/// never reported usage". Integers and whole floats are both accepted;
+/// OpenRouter emits integers, some proxies emit `194.0`.
+fn json_u32(value: &serde_json::Value) -> Option<u32> {
+    if value.is_null() {
+        return None;
+    }
+    let n = value.as_u64().or_else(|| {
+        value.as_f64().and_then(|n| {
+            if n.is_finite() && n >= 0.0 {
+                Some(n as u64)
+            } else {
+                None
+            }
+        })
+    })?;
+    u32::try_from(n).ok()
+}
+
+/// A JSON number or numeric string as a USD cost. Missing, null, negative,
+/// and non-finite values stay `None`. `0` is a real zero (`Some(0.0)`), not
+/// a missing cost.
+fn json_f64(value: &serde_json::Value) -> Option<f64> {
+    if value.is_null() {
+        return None;
+    }
+    let n = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))?;
+    if n.is_finite() && n >= 0.0 {
+        Some(n)
+    } else {
+        None
+    }
+}
+
 fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
-    let input = usage["prompt_tokens"]
-        .as_u64()
-        .or_else(|| usage["input_tokens"].as_u64())
-        .or_else(|| usage["tokens_in"].as_u64())
-        .map(|n| n as u32);
-    let output = usage["completion_tokens"]
-        .as_u64()
-        .or_else(|| usage["output_tokens"].as_u64())
-        .or_else(|| usage["tokens_out"].as_u64())
-        .map(|n| n as u32);
+    let input = json_u32(&usage["prompt_tokens"])
+        .or_else(|| json_u32(&usage["input_tokens"]))
+        .or_else(|| json_u32(&usage["tokens_in"]));
+    let output = json_u32(&usage["completion_tokens"])
+        .or_else(|| json_u32(&usage["output_tokens"]))
+        .or_else(|| json_u32(&usage["tokens_out"]));
     (input, output)
+}
+
+/// Fold a `usage` object into the running counts. A later chunk only
+/// replaces a side it actually reports, so an empty object cannot wipe a
+/// count already seen.
+fn note_usage(
+    input: &mut Option<u32>,
+    output: &mut Option<u32>,
+    cost: &mut Option<f64>,
+    usage: &serde_json::Value,
+) {
+    let (inp, out) = parse_usage_tokens(usage);
+    if inp.is_some() {
+        *input = inp;
+    }
+    if out.is_some() {
+        *output = out;
+    }
+    // A later chunk replaces cost only when it reports one. An empty usage
+    // object must not wipe a cost already seen.
+    if let Some(reported) = json_f64(&usage["cost"]) {
+        *cost = Some(reported);
+    }
+}
+
+/// Read `usage` off one chat-completion payload. Shared by the live SSE
+/// reader and the non-streaming body parser: OpenRouter puts the object on
+/// the final response, and — unlike OpenAI — the streaming usage frame still
+/// has a non-empty `choices` array (an empty delta that repeats
+/// `finish_reason`). Skipping that frame is how every turn was recorded as
+/// 0 tokens.
+fn observe_chunk_usage(
+    input: &mut Option<u32>,
+    output: &mut Option<u32>,
+    cost: &mut Option<f64>,
+    chunk: &serde_json::Value,
+) {
+    if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
+        note_usage(input, output, cost, usage);
+    }
+}
+
+/// Ask the provider to attach usage. `stream_options.include_usage` is the
+/// OpenAI form (safe for strict local servers). `usage.include` is the
+/// OpenRouter form; local servers reject unknown properties, so it is sent
+/// only on the OpenRouter path.
+fn apply_usage_request(body: &mut serde_json::Value, openrouter: bool) {
+    body["stream_options"] = serde_json::json!({ "include_usage": true });
+    if openrouter {
+        body["usage"] = serde_json::json!({ "include": true });
+    }
 }
 
 /// OpenRouter streaming backend.
@@ -72,7 +162,7 @@ impl AiBackend for OpenRouterBackend {
             .name("plexi-ai-openrouter".to_string())
             .spawn(move || {
                 stream_openai_compatible(
-                    OPENROUTER_ENDPOINT,
+                    &openrouter_chat_endpoint(),
                     Some(api_key),
                     model,
                     true,
@@ -138,8 +228,56 @@ fn sanitize_message_tool_names(message: &mut serde_json::Value) {
     }
 }
 
-/// Canonical OpenRouter chat-completions endpoint.
-const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_OPENROUTER_ROOT: &str = "https://openrouter.ai/api/v1";
+
+/// Trim an API root. Empty input is not a usable override.
+fn normalize_openrouter_root(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+/// Join `path` onto an API root without producing a double slash.
+fn openrouter_url(root: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        normalize_openrouter_root(root),
+        path.trim_start_matches('/')
+    )
+}
+
+/// API root for this process. `PLEXI_OPENROUTER_BASE_URL` points chat
+/// completions and the generation lookup at another OpenAI-compatible host
+/// (a local mock, a proxy). The value replaces `https://openrouter.ai/api/v1`.
+pub(crate) fn openrouter_api_root() -> String {
+    match std::env::var("PLEXI_OPENROUTER_BASE_URL") {
+        Ok(value) => {
+            let root = normalize_openrouter_root(&value);
+            if root.is_empty() {
+                return DEFAULT_OPENROUTER_ROOT.to_string();
+            }
+            if root != DEFAULT_OPENROUTER_ROOT {
+                log::info!("openrouter: base url override {root}");
+            }
+            root
+        }
+        Err(_) => DEFAULT_OPENROUTER_ROOT.to_string(),
+    }
+}
+
+/// Chat-completions URL for the OpenRouter backend.
+pub(crate) fn openrouter_chat_endpoint() -> String {
+    openrouter_url(&openrouter_api_root(), "chat/completions")
+}
+
+/// Generation-metrics URL for one id, on the same API root as chat.
+pub(crate) fn openrouter_generation_endpoint(gen_id: &str) -> String {
+    openrouter_url(&openrouter_api_root(), &format!("generation?id={gen_id}"))
+}
+
+/// True when the response is a single JSON chat completion rather than SSE.
+fn is_json_completion(content_type: &str) -> bool {
+    let content_type = content_type.to_ascii_lowercase();
+    content_type.contains("application/json") && !content_type.contains("event-stream")
+}
 
 /// `Authorization` header value for an OpenAI-compatible request — present
 /// only when an API key is configured (local proxies may accept
@@ -186,10 +324,11 @@ pub(super) fn stream_openai_compatible(
         "model": model,
         "messages": messages,
         "stream": true,
-        // Request usage in streamed responses so broker token accounting can
-        // populate AiResponse.tokens_in / tokens_out reliably.
-        "stream_options": { "include_usage": true }
     });
+    // Usage is omitted from a stream unless reporting is requested, and then
+    // only on the final chunk. Both flag shapes are sent on OpenRouter;
+    // `usage.include` stays off the local path (unknown properties are rejected).
+    apply_usage_request(&mut body, openrouter_reasoning);
 
     // Inject tools when present.
     if !request.tools.is_empty() {
@@ -278,14 +417,47 @@ pub(super) fn stream_openai_compatible(
 
     // Capture generation ID from the response header BEFORE reading the body.
     // This header is stable for the entire call and used to fetch real cost.
+    let content_type = resp.header("content-type").unwrap_or("").to_string();
     let gen_id = resp.header("X-Generation-Id").map(|s| s.to_string());
+
+    // A server that answers the streamed request with one JSON chat
+    // completion (OpenAI's non-streaming shape) never emits `data:` lines.
+    // Reading that body as SSE would drop its `usage` and record null tokens.
+    if is_json_completion(&content_type) {
+        let body_str = match resp.into_string() {
+            Ok(body) => body,
+            Err(e) => {
+                let _ = tx.send(StreamEvent::Error(format!(
+                    "failed to read non-streaming completion from {endpoint}: {e}"
+                )));
+                return;
+            }
+        };
+        let parsed = match serde_json::from_str::<serde_json::Value>(&body_str) {
+            Ok(value) => value,
+            Err(e) => {
+                let _ = tx.send(StreamEvent::Error(format!(
+                    "non-streaming completion from {endpoint} was not JSON: {e}"
+                )));
+                return;
+            }
+        };
+        let (input_tokens, output_tokens, cost_usd) = deliver_json_completion(&parsed, gen_id, &tx);
+        log_usage_capture(endpoint, input_tokens, output_tokens, cost_usd);
+        return;
+    }
 
     let reader = BufReader::new(resp.into_reader());
 
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
+    let mut cost_usd: Option<f64> = None;
     // Accumulate tool-call deltas across SSE chunks, keyed by index.
     let mut partial_tool_calls: HashMap<usize, PartialToolCall> = HashMap::new();
+    // OpenRouter sends `finish_reason: "tool_calls"` twice: once on the last
+    // argument chunk, then again on the usage frame. Emitting Done on the
+    // first one drops the usage frame, so tool-using turns recorded 0 tokens.
+    let mut tool_calls_sent = false;
 
     for line_result in reader.lines() {
         // Cooperative cancel: the caller (e.g. ESC or an event preempt) tripped
@@ -309,13 +481,13 @@ pub(super) fn stream_openai_compatible(
             SseLine::Chunk(chunk) => chunk,
         };
 
-        // Usage-only chunk: choices is empty/absent, usage is present.
+        // Every chunk, including the final accounting frame. That frame has a
+        // non-empty `choices` array on OpenRouter, so it must not be gated on
+        // `choices` being empty.
+        observe_chunk_usage(&mut input_tokens, &mut output_tokens, &mut cost_usd, &chunk);
+
+        // Usage-only chunk (OpenAI shape): choices is empty/absent.
         if chunk["choices"].as_array().is_none_or(|c| c.is_empty()) {
-            if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
-                let (inp, out) = parse_usage_tokens(usage);
-                input_tokens = inp;
-                output_tokens = out;
-            }
             continue;
         }
 
@@ -367,34 +539,30 @@ pub(super) fn stream_openai_compatible(
             let _ = tx.send(StreamEvent::ToolCallProgress { name, arg_chars });
         }
 
-        // When finish_reason == "tool_calls", finalize and emit.
+        // When finish_reason == "tool_calls", finalize and emit — but keep
+        // reading. The usage frame is a later chunk that repeats the same
+        // finish_reason; Done is sent once the stream ends.
         if finish_reason == Some("tool_calls") {
-            let calls: Vec<RawToolCall> = partial_tool_calls
-                .into_iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_values()
-                .map(|p| RawToolCall {
-                    id: p.id,
-                    // Decode the wire name back to the real dotted tool name;
-                    // a name outside the map passes through untouched.
-                    name: tool_name_map.get(&p.name).cloned().unwrap_or(p.name),
-                    arguments: p.arguments,
-                })
-                .collect();
-            // Sort is stable from BTreeMap — calls are in index order.
-            let _ = tx.send(StreamEvent::ToolCalls(calls));
-            // Token counts may arrive in subsequent chunks or in this one.
-            if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
-                let (inp, out) = parse_usage_tokens(usage);
-                input_tokens = inp;
-                output_tokens = out;
+            if !tool_calls_sent {
+                let calls: Vec<RawToolCall> = std::mem::take(&mut partial_tool_calls)
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .into_values()
+                    .map(|p| RawToolCall {
+                        id: p.id,
+                        // Decode the wire name back to the real dotted tool name;
+                        // a name outside the map passes through untouched.
+                        name: tool_name_map.get(&p.name).cloned().unwrap_or(p.name),
+                        arguments: p.arguments,
+                    })
+                    .collect();
+                // Sort is stable from BTreeMap — calls are in index order.
+                if tx.send(StreamEvent::ToolCalls(calls)).is_err() {
+                    return;
+                }
+                tool_calls_sent = true;
             }
-            let _ = tx.send(StreamEvent::Done {
-                input_tokens,
-                output_tokens,
-                generation_id: gen_id,
-            });
-            return;
+            continue;
         }
 
         if let Some(reasoning) = reasoning_delta(choice) {
@@ -418,11 +586,51 @@ pub(super) fn stream_openai_compatible(
     let _ = tx.send(StreamEvent::Done {
         input_tokens,
         output_tokens,
+        cost_usd,
         generation_id: gen_id,
     });
-    if input_tokens.is_none() && output_tokens.is_none() {
-        log::debug!(
-            "openai_compat[{endpoint}]: stream completed without usage metadata; broker will use generation endpoint fallback"
+    log_usage_capture(endpoint, input_tokens, output_tokens, cost_usd);
+}
+
+/// Emit one non-streaming chat completion: assistant text, then `Done`
+/// carrying whatever `usage` the body reported (or none).
+fn deliver_json_completion(
+    body: &serde_json::Value,
+    generation_id: Option<String>,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> (Option<u32>, Option<u32>, Option<f64>) {
+    let mut input_tokens = None;
+    let mut output_tokens = None;
+    let mut cost_usd = None;
+    observe_chunk_usage(&mut input_tokens, &mut output_tokens, &mut cost_usd, body);
+    if let Some(text) = body["choices"][0]["message"]["content"]
+        .as_str()
+        .filter(|text| !text.is_empty())
+    {
+        let _ = tx.send(StreamEvent::Text(text.to_string()));
+    }
+    let _ = tx.send(StreamEvent::Done {
+        input_tokens,
+        output_tokens,
+        cost_usd,
+        generation_id,
+    });
+    (input_tokens, output_tokens, cost_usd)
+}
+
+fn log_usage_capture(
+    endpoint: &str,
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    cost_usd: Option<f64>,
+) {
+    if input_tokens.is_some() || output_tokens.is_some() || cost_usd.is_some() {
+        log::info!(
+            "openai_compat[{endpoint}]: captured usage prompt={input_tokens:?} completion={output_tokens:?} cost_usd={cost_usd:?}"
+        );
+    } else {
+        log::info!(
+            "openai_compat[{endpoint}]: response completed without usage metadata; ledger will record unknown token counts and cost"
         );
     }
 }
@@ -613,6 +821,7 @@ mod tests {
         let event = StreamEvent::Done {
             input_tokens: Some(10),
             output_tokens: Some(20),
+            cost_usd: None,
             generation_id: Some("gen-abc123".to_string()),
         };
         if let StreamEvent::Done { generation_id, .. } = event {
@@ -700,5 +909,269 @@ mod tests {
             "data: [DONE]",
         ]);
         assert_eq!(text, vec!["ok"], "malformed line must be skipped");
+    }
+
+    /// Token counts from a non-streaming chat-completion body. Uses the same
+    /// `usage` reader as the live stream.
+    fn usage_from_completion(body: &serde_json::Value) -> (Option<u32>, Option<u32>, Option<f64>) {
+        let mut input = None;
+        let mut output = None;
+        let mut cost = None;
+        observe_chunk_usage(&mut input, &mut output, &mut cost, body);
+        (input, output, cost)
+    }
+
+    /// Token counts from an SSE transcript, stopping at `[DONE]`. Usage is
+    /// taken from whichever chunk carries it — for OpenRouter that is the
+    /// last chunk before `[DONE]`.
+    fn usage_from_sse_lines(lines: &[&str]) -> (Option<u32>, Option<u32>, Option<f64>) {
+        let mut input = None;
+        let mut output = None;
+        let mut cost = None;
+        for line in lines {
+            match parse_sse_line(line) {
+                SseLine::Ignore => continue,
+                SseLine::Done => break,
+                SseLine::Chunk(chunk) => {
+                    observe_chunk_usage(&mut input, &mut output, &mut cost, &chunk)
+                }
+            }
+        }
+        (input, output, cost)
+    }
+
+    fn ledger_row(input: Option<u32>, output: Option<u32>) -> crate::plexi_ai::ledger::LedgerRow {
+        crate::plexi_ai::ledger::LedgerRow::with_attribution(
+            "openrouter",
+            crate::plexi_ai::backend::BillingModel::Metered,
+            Some("assistant".to_string()),
+            Some("xiaomi/mimo-v2.5".to_string()),
+            input,
+            output,
+            None,
+        )
+    }
+
+    /// OpenRouter returns `usage` on the final response object, and for a
+    /// stream only on the last chunk — which still has a non-empty `choices`
+    /// array. Both shapes must land on the ledger as non-zero token counts.
+    /// A body with no usage object is unknown (`null`), not `0`.
+    #[test]
+    fn openrouter_usage_records_nonzero_ledger_tokens() {
+        let non_streaming = serde_json::json!({
+            "id": "gen-nonstr",
+            "object": "chat.completion",
+            "model": "xiaomi/mimo-v2.5",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hello"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 194,
+                "completion_tokens": 12,
+                "total_tokens": 206,
+                "cost": 0.00042
+            }
+        });
+        let (input, output, _) = usage_from_completion(&non_streaming);
+        let row = ledger_row(input, output);
+        assert_eq!(row.input_tokens, Some(194));
+        assert_eq!(row.output_tokens, Some(12));
+        let line = serde_json::to_string(&row).unwrap();
+        assert!(
+            line.contains(r#""input_tokens":194"#) && line.contains(r#""output_tokens":12"#),
+            "non-streaming ledger row must carry the provider counts: {line}"
+        );
+
+        // Final chunk repeats finish_reason on a non-empty choices array.
+        // An earlier finish chunk has no usage. Counts must come from the last chunk.
+        let (input, output, _) = usage_from_sse_lines(&[
+            r#"data: {"id":"gen-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}]}"#,
+            r#"data: {"id":"gen-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}],"usage":{"prompt_tokens":194,"completion_tokens":12,"total_tokens":206,"cost":0.00042,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}"#,
+            "data: [DONE]",
+            // Must not be read.
+            r#"data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        ]);
+        let row = ledger_row(input, output);
+        assert!(
+            row.input_tokens.is_some_and(|n| n > 0) && row.output_tokens.is_some_and(|n| n > 0),
+            "streaming ledger row must have non-zero tokens, got in={:?} out={:?}",
+            row.input_tokens,
+            row.output_tokens
+        );
+        assert_eq!(row.input_tokens, Some(194));
+        assert_eq!(row.output_tokens, Some(12));
+
+        // Tool turns: usage arrives on the chunk AFTER the first tool_calls finish.
+        let (input, output, _) = usage_from_sse_lines(&[
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"echo","arguments":"{}"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":80,"completion_tokens":15}}"#,
+            "data: [DONE]",
+        ]);
+        let row = ledger_row(input, output);
+        assert_eq!(row.input_tokens, Some(80));
+        assert_eq!(row.output_tokens, Some(15));
+
+        let absent = serde_json::json!({
+            "id": "gen-nousage",
+            "choices": [{"message": {"role": "assistant", "content": "Hello"}, "finish_reason": "stop"}]
+        });
+        let (input, output, cost) = usage_from_completion(&absent);
+        assert!(cost.is_none(), "missing usage must not invent a zero cost");
+        let row = ledger_row(input, output);
+        assert!(
+            row.input_tokens.is_none() && row.output_tokens.is_none(),
+            "missing usage must be unknown, not zero"
+        );
+        let line = serde_json::to_string(&row).unwrap();
+        assert!(
+            line.contains(r#""input_tokens":null"#) && line.contains(r#""output_tokens":null"#),
+            "ledger must serialize unknown counts as null: {line}"
+        );
+    }
+
+    /// `usage.cost` is a number or a numeric string on the final chunk and
+    /// on a non-streaming body. Missing cost stays null, not zero. A later
+    /// chunk that omits cost does not wipe one already seen.
+    #[test]
+    fn usage_cost_is_recorded_from_the_final_chunk() {
+        let numeric = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 194, "completion_tokens": 12, "cost": 0.00042}
+        });
+        let (_input, _output, cost) = usage_from_completion(&numeric);
+        assert_eq!(cost, Some(0.00042));
+        let row = crate::plexi_ai::ledger::LedgerRow::with_attribution(
+            "openrouter",
+            crate::plexi_ai::backend::BillingModel::Metered,
+            Some("assistant".to_string()),
+            Some("xiaomi/mimo-v2.5".to_string()),
+            Some(194),
+            Some(12),
+            cost,
+        );
+        let line = serde_json::to_string(&row).unwrap();
+        assert!(
+            line.contains(r#""cost_usd":0.00042"#),
+            "ledger row must carry usage.cost: {line}"
+        );
+
+        let quoted = serde_json::json!({
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4, "cost": "0.021"}
+        });
+        let (_input, _output, cost) = usage_from_completion(&quoted);
+        assert_eq!(cost, Some(0.021));
+
+        let zero = serde_json::json!({"usage": {"cost": 0}});
+        let (_input, _output, cost) = usage_from_completion(&zero);
+        assert_eq!(cost, Some(0.0), "a reported zero is a real cost");
+
+        let absent = serde_json::json!({
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4}
+        });
+        let (_input, _output, cost) = usage_from_completion(&absent);
+        assert!(cost.is_none(), "omitted cost stays unknown, not zero");
+
+        let negative = serde_json::json!({"usage": {"cost": -1.0}});
+        assert!(usage_from_completion(&negative).2.is_none());
+
+        let (_input, _output, cost) = usage_from_sse_lines(&[
+            r#"data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":0.1}}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":194,"completion_tokens":12}}"#,
+            "data: [DONE]",
+        ]);
+        assert_eq!(
+            cost,
+            Some(0.1),
+            "a later usage object without cost must not wipe a cost already seen"
+        );
+
+        let (_input, _output, cost) = usage_from_sse_lines(&[
+            r#"data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}],"usage":{"cost":0.1}}"#,
+            r#"data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":194,"completion_tokens":12,"cost":"0.021"}}"#,
+            "data: [DONE]",
+        ]);
+        assert_eq!(cost, Some(0.021), "the final chunk's cost replaces an earlier one");
+    }
+
+    /// OpenRouter needs `usage.include` (and still accepts the OpenAI
+    /// `stream_options` flag). Local servers only get the OpenAI flag.
+    #[test]
+    fn usage_request_flags_match_the_endpoint() {
+        let mut openrouter = serde_json::json!({"model": "xiaomi/mimo-v2.5", "stream": true});
+        apply_usage_request(&mut openrouter, true);
+        assert_eq!(
+            openrouter["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
+        assert_eq!(openrouter["usage"]["include"], serde_json::json!(true));
+
+        let mut local = serde_json::json!({"model": "local", "stream": true});
+        apply_usage_request(&mut local, false);
+        assert_eq!(
+            local["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
+        assert!(
+            local.get("usage").is_none(),
+            "local servers must not see the OpenRouter usage flag"
+        );
+    }
+
+    #[test]
+    fn openrouter_urls_join_the_api_root() {
+        assert_eq!(
+            openrouter_url("https://openrouter.ai/api/v1", "chat/completions"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            openrouter_url("http://127.0.0.1:9/v1/", "generation?id=gen-1"),
+            "http://127.0.0.1:9/v1/generation?id=gen-1"
+        );
+        assert_eq!(normalize_openrouter_root("  http://127.0.0.1:9/v1/ "), "http://127.0.0.1:9/v1");
+        assert!(is_json_completion("application/json; charset=utf-8"));
+        assert!(!is_json_completion("text/event-stream"));
+    }
+
+    /// A non-streaming completion's `message.content` and `usage` are what
+    /// the ledger sees. Absent usage stays unknown.
+    #[test]
+    fn json_completion_delivers_text_and_usage() {
+        let (tx, rx) = mpsc::channel();
+        let body = serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "json-body"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 7}
+        });
+        let (input, output, cost) = deliver_json_completion(&body, None, &tx);
+        assert_eq!((input, output, cost), (Some(50), Some(7), None));
+        drop(tx);
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(events.first(), Some(StreamEvent::Text(text)) if text == "json-body"));
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::Done { input_tokens: Some(50), output_tokens: Some(7), cost_usd: None, generation_id: None })
+        ));
+
+        let (tx, rx) = mpsc::channel();
+        let absent = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "no-usage"}, "finish_reason": "stop"}]
+        });
+        let (input, output, cost) = deliver_json_completion(&absent, None, &tx);
+        assert!(input.is_none() && output.is_none() && cost.is_none());
+        drop(tx);
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::Done { input_tokens: None, output_tokens: None, .. })
+        ));
     }
 }

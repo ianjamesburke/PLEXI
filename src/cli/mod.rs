@@ -221,6 +221,7 @@ pub mod doctor;
 pub mod events;
 pub mod host;
 pub mod install;
+pub mod ledger;
 mod install_hint;
 pub mod install_host;
 pub mod list;
@@ -1281,6 +1282,7 @@ pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
     self_update_cli,
 };
+pub use ledger::ledger_summary_cli;
 pub use list::{freeze_cli, parse_notify_choice};
 pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
 pub use notes::{notes_list_cli, notes_open_cli};

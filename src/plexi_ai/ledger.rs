@@ -4,18 +4,145 @@
 //! Budget enforcement is active: `check_budget` gates every `ai.query` call
 //! against per-app and global daily spend caps from `[ai]` config.
 //!
-//! Row format (all fields present; cost_usd is null for subscription billing):
+//! Row format (cost_usd is null for subscription billing; client is null when
+//! the run and `[ai] client` both leave it unset; wall_ms is omitted until a
+//! run measures it):
 //! ```json
 //! {"ts":"2026-04-16T12:00:00Z","backend":"openrouter","billing":"metered",
 //!  "model":"anthropic/claude-haiku-4-5","input_tokens":234,"output_tokens":512,
-//!  "cost_usd":0.0023,"cost_cents":0}
+//!  "cost_usd":0.0023,"cost_cents":0,"client":"narrative","kind":"output"}
 //! ```
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::plexi_ai::backend::BillingModel;
+
+/// Whether a run is host bookkeeping (`system`) or user-facing work (`output`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunKind {
+    System,
+    #[default]
+    Output,
+}
+
+impl RunKind {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "system" => Ok(Self::System),
+            "output" => Ok(Self::Output),
+            other => Err(format!("kind must be 'system' or 'output', got '{other}'")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Output => "output",
+        }
+    }
+}
+
+/// Tags stamped on one brokered run and its ledger row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunTags {
+    pub client: Option<String>,
+    pub kind: RunKind,
+}
+
+impl RunTags {
+    /// Per-run override wins when it is non-empty. Otherwise `config_client`
+    /// (the workspace `[ai] client`) is the client. Kind defaults to `output`.
+    pub fn resolve(
+        override_client: Option<&str>,
+        override_kind: Option<RunKind>,
+        config_client: Option<&str>,
+    ) -> Self {
+        let client = nonempty(override_client).or_else(|| nonempty(config_client));
+        Self {
+            client,
+            kind: override_kind.unwrap_or(RunKind::Output),
+        }
+    }
+}
+
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// Which tag `summary` groups by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryBy {
+    Client,
+    Kind,
+}
+
+impl SummaryBy {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "client" => Ok(Self::Client),
+            "kind" => Ok(Self::Kind),
+            other => Err(format!("--by must be 'client' or 'kind', got '{other}'")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Kind => "kind",
+        }
+    }
+}
+
+/// One aggregated bucket from [`summary`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerSummaryGroup {
+    pub key: Option<String>,
+    pub runs: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
+    pub wall_ms: Option<u64>,
+}
+
+/// Result of `plexi ledger summary`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerSummary {
+    pub by: SummaryBy,
+    pub since: Option<String>,
+    pub groups: Vec<LedgerSummaryGroup>,
+}
+
+impl LedgerSummary {
+    /// JSON object. Each group names its key `client` or `kind` to match `by`.
+    pub fn to_value(&self) -> serde_json::Value {
+        let name = self.by.as_str();
+        let groups: Vec<serde_json::Value> = self
+            .groups
+            .iter()
+            .map(|group| {
+                serde_json::json!({
+                    name: group.key,
+                    "runs": group.runs,
+                    "input_tokens": group.input_tokens,
+                    "output_tokens": group.output_tokens,
+                    "cost_usd": group.cost_usd,
+                    "wall_ms": group.wall_ms,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "by": name,
+            "since": self.since,
+            "groups": groups,
+        })
+    }
+}
 
 /// One ledger entry — matches the JSON shape written to disk.
 ///
@@ -38,16 +165,26 @@ pub struct LedgerRow {
     /// Cost in USD cents, rounded. `0` for subscription billing or unknown
     /// token counts. The issue (#284) requires this on every broker row.
     pub cost_cents: u64,
+    /// Free-form project tag (`narrative`, `du`, `personal`). Null when neither
+    /// the run nor `[ai] client` set one. Always serialized so a migrated row
+    /// is distinguishable from a row that has not been migrated.
+    pub client: Option<String>,
+    /// `system` or `output`. Null only on rows migrated from before tags
+    /// existed; new rows always set it (`output` when the run did not).
+    pub kind: Option<RunKind>,
+    /// Wall-clock time of the brokered turn, in milliseconds. Omitted when
+    /// the row was written before wall time was tracked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_ms: Option<u64>,
 }
 
 impl LedgerRow {
     /// Construct a ledger row carrying `app_id` and concrete `model` — the
     /// shape the `ai.query` broker writes (#284, #383).
     ///
-    /// `cost_usd` is passed explicitly from the caller (fetched via the
-    /// OpenRouter generation endpoint after the turn completes). Pass `None`
-    /// when cost is unavailable (generation endpoint returned 404 / timeout)
-    /// or for subscription billing; `cost_cents` will be `0` in that case.
+    /// `cost_usd` is the provider's `usage.cost` when the response included
+    /// it. Pass `None` when that field was absent (the generation lookup may
+    /// fill it later) or for subscription billing; `cost_cents` is `0` then.
     pub fn with_attribution(
         backend_name: &str,
         billing: BillingModel,
@@ -79,14 +216,35 @@ impl LedgerRow {
             output_tokens,
             cost_usd,
             cost_cents,
+            client: None,
+            kind: Some(RunKind::Output),
+            wall_ms: None,
         }
+    }
+
+    /// Stamp the run's tags and measured wall time onto a row.
+    pub fn tagged(mut self, tags: RunTags, wall_ms: Option<u64>) -> Self {
+        self.client = tags.client;
+        self.kind = Some(tags.kind);
+        self.wall_ms = wall_ms;
+        self
     }
 }
 
 /// Append `row` to the ledger file. Creates the file if it doesn't exist.
 /// Silently logs and returns on I/O failure — billing ledger errors must
 /// never crash the UI or interrupt the conversation.
+fn ledger_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn append(row: &LedgerRow) {
+    let _guard = ledger_lock();
+    // One-shot for files written before tags existed; a no-op once every
+    // object already has `client` and `kind`. Runs under the same lock as
+    // `fill_cost` so a cost patch cannot race a rewrite.
+    migrate_null_tags_locked();
     let path = ledger_path();
 
     if let Some(parent) = path.parent() {
@@ -125,7 +283,7 @@ pub fn append(row: &LedgerRow) {
 
 /// Returns the ledger path, migrating from the old `agent-ledger.jsonl` name
 /// if it exists and the new file does not yet.
-fn ledger_path() -> PathBuf {
+pub(crate) fn ledger_path() -> PathBuf {
     let config_dir = crate::config::config_dir();
     let new_path = config_dir.join("ai-ledger.jsonl");
     let old_path = config_dir.join("agent-ledger.jsonl");
@@ -143,6 +301,319 @@ fn ledger_path() -> PathBuf {
     }
 
     new_path
+}
+
+/// Give every existing object row explicit null `client` and `kind` when those
+/// keys are absent. Malformed lines are kept verbatim. Token and cost bytes
+/// on a migrated row are not rewritten. Returns how many rows gained a null
+/// tag. Idempotent: a second call rewrites nothing.
+pub fn migrate_null_tags() -> usize {
+    let _guard = ledger_lock();
+    migrate_null_tags_locked()
+}
+
+fn migrate_null_tags_locked() -> usize {
+    let path = ledger_path();
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(e) => {
+            log::warn!(
+                "plexi_ai ledger: tag migration skipped, failed to read {}: {e}",
+                path.display()
+            );
+            return 0;
+        }
+    };
+
+    let mut changed = 0usize;
+    let mut out = String::new();
+    for line in data.split_inclusive('\n') {
+        let (body, newline) = line
+            .strip_suffix('\n')
+            .map(|body| (body, true))
+            .unwrap_or((line, false));
+        let updated = match null_tag_line(body) {
+            Some(updated) => {
+                changed += 1;
+                updated
+            }
+            None => body.to_string(),
+        };
+        out.push_str(&updated);
+        if newline {
+            out.push('\n');
+        }
+    }
+    if changed == 0 {
+        return 0;
+    }
+
+    let tmp = path.with_extension("jsonl.migrating");
+    if let Err(e) = std::fs::write(&tmp, &out) {
+        log::warn!(
+            "plexi_ai ledger: tag migration failed to write {}: {e}",
+            tmp.display()
+        );
+        return 0;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        log::warn!(
+            "plexi_ai ledger: tag migration failed to replace {}: {e}",
+            path.display()
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return 0;
+    }
+    log::info!("ai ledger: migrated {changed} row(s) with null client and kind tags");
+    changed
+}
+
+/// Fill `cost_usd` on the row whose `ts` matches, when that field is still
+/// null. Other lines are left byte-for-byte. Returns whether a row was
+/// patched. A row that already has a cost is left alone.
+pub fn fill_cost(path: &Path, ts: &str, cost_usd: f64) -> bool {
+    if !cost_usd.is_finite() || cost_usd < 0.0 {
+        log::warn!("plexi_ai ledger: refusing to fill non-finite cost {cost_usd}");
+        return false;
+    }
+    let _guard = ledger_lock();
+    let data = match std::fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(e) => {
+            log::warn!(
+                "plexi_ai ledger: cost fill skipped, failed to read {}: {e}",
+                path.display()
+            );
+            return false;
+        }
+    };
+    let mut changed = false;
+    let mut out = String::with_capacity(data.len() + 16);
+    for line in data.split_inclusive('\n') {
+        if !changed {
+            if let Some(patched) = patch_null_cost_line(line, ts, cost_usd) {
+                out.push_str(&patched);
+                changed = true;
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    if !changed {
+        log::info!("ai ledger: no null-cost row matched ts={ts}");
+        return false;
+    }
+    let tmp = path.with_extension("jsonl.cost");
+    if let Err(e) = std::fs::write(&tmp, &out) {
+        log::warn!(
+            "plexi_ai ledger: cost fill failed to write {}: {e}",
+            tmp.display()
+        );
+        return false;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        log::warn!(
+            "plexi_ai ledger: cost fill failed to replace {}: {e}",
+            path.display()
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    log::info!("ai ledger: filled cost_usd={cost_usd} on row ts={ts}");
+    true
+}
+
+/// Replace a null `cost_usd` on the line with this `ts`. `None` when the
+/// line is a different row, already priced, or not the compact shape the
+/// ledger writer emits.
+fn patch_null_cost_line(line: &str, ts: &str, cost_usd: f64) -> Option<String> {
+    let (body, newline) = line
+        .strip_suffix('\n')
+        .map(|body| (body, true))
+        .unwrap_or((line, false));
+    if body.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    if value.get("ts").and_then(|v| v.as_str()) != Some(ts) {
+        return None;
+    }
+    if !value.get("cost_usd").is_some_and(|v| v.is_null()) {
+        return None;
+    }
+    let needle = "\"cost_usd\":null,\"cost_cents\":0";
+    if !body.contains(needle) {
+        log::warn!("plexi_ai ledger: null-cost row ts={ts} was not in the compact writer shape");
+        return None;
+    }
+    let cost_json = serde_json::to_string(&cost_usd).ok()?;
+    let cents = (cost_usd * 100.0).round().max(0.0) as u64;
+    let mut updated = body.replacen(
+        needle,
+        &format!("\"cost_usd\":{cost_json},\"cost_cents\":{cents}"),
+        1,
+    );
+    if newline {
+        updated.push('\n');
+    }
+    Some(updated)
+}
+
+/// `Some(rewritten)` when `line` is a JSON object missing `client` or `kind`.
+/// The original bytes stay; the missing keys are appended as JSON null.
+fn null_tag_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let object = value.as_object()?;
+    let need_client = !object.contains_key("client");
+    let need_kind = !object.contains_key("kind");
+    if !need_client && !need_kind {
+        return None;
+    }
+    let end = line.trim_end();
+    if !end.ends_with('}') {
+        log::warn!("plexi_ai ledger: tag migration left a line unchanged (no closing brace)");
+        return None;
+    }
+    let mut updated = end[..end.len() - 1].to_string();
+    if need_client {
+        updated.push_str(",\"client\":null");
+    }
+    if need_kind {
+        updated.push_str(",\"kind\":null");
+    }
+    updated.push('}');
+    Some(updated)
+}
+
+/// Aggregate ledger rows. Missing tag keys count as null. Token, cost, and
+/// wall totals are null when no row in the group recorded that field.
+/// `since` is a `YYYY-MM-DD` or RFC3339 lower bound compared against `ts`.
+pub fn summary(by: SummaryBy, since: Option<&str>) -> Result<LedgerSummary, String> {
+    if let Some(since) = since {
+        validate_since(since)?;
+    }
+    migrate_null_tags();
+    let path = ledger_path();
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(format!(
+                "failed to read AI ledger {}: {e}",
+                path.display()
+            ));
+        }
+    };
+
+    let mut groups: Vec<LedgerSummaryGroup> = Vec::new();
+    for line in data.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(e) => {
+                log::warn!("plexi_ai ledger: skipping malformed line during summary: {e}");
+                continue;
+            }
+        };
+        let ts = value.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(since) = since {
+            if ts.as_bytes() < since.as_bytes() {
+                continue;
+            }
+        }
+        let key = match by {
+            SummaryBy::Client => tag_key(&value, "client"),
+            SummaryBy::Kind => tag_key(&value, "kind"),
+        };
+        let idx = groups
+            .iter()
+            .position(|group| group.key == key)
+            .unwrap_or_else(|| {
+                groups.push(LedgerSummaryGroup {
+                    key,
+                    runs: 0,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: None,
+                    wall_ms: None,
+                });
+                groups.len() - 1
+            });
+        let group = &mut groups[idx];
+        group.runs = group.runs.saturating_add(1);
+        add_u64(&mut group.input_tokens, json_u64(value.get("input_tokens")));
+        add_u64(&mut group.output_tokens, json_u64(value.get("output_tokens")));
+        if let Some(cost) = value.get("cost_usd").and_then(serde_json::Value::as_f64) {
+            group.cost_usd = Some(group.cost_usd.unwrap_or(0.0) + cost);
+        }
+        add_u64(&mut group.wall_ms, json_u64(value.get("wall_ms")));
+    }
+    groups.sort_by(|left, right| match (&left.key, &right.key) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(left), Some(right)) => left.cmp(right),
+    });
+    log::info!(
+        "ai ledger: summary by={} since={} groups={}",
+        by.as_str(),
+        since.unwrap_or(""),
+        groups.len()
+    );
+    Ok(LedgerSummary {
+        by,
+        since: since.map(str::to_string),
+        groups,
+    })
+}
+
+fn validate_since(since: &str) -> Result<(), String> {
+    let bytes = since.as_bytes();
+    let date_ok = bytes.len() >= 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+        && (bytes.len() == 10 || bytes[10] == b'T' || bytes[10] == b' ');
+    if date_ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "--since must be YYYY-MM-DD or an RFC3339 timestamp, got '{since}'"
+        ))
+    }
+}
+
+fn tag_key(value: &serde_json::Value, field: &str) -> Option<String> {
+    match value.get(field) {
+        Some(serde_json::Value::String(text)) => nonempty(Some(text)),
+        _ => None,
+    }
+}
+
+fn json_u64(value: Option<&serde_json::Value>) -> Option<u64> {
+    let value = value?;
+    value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| n as u64)
+    })
+}
+
+fn add_u64(total: &mut Option<u64>, value: Option<u64>) {
+    if let Some(value) = value {
+        *total = Some(total.unwrap_or(0).saturating_add(value));
+    }
 }
 
 // ── Budget enforcement ────────────────────────────────────────────────────────
@@ -415,5 +886,224 @@ mod ledger_tests {
         let spend = today_spend();
         // global_usd is >= 0 (sanity check — no panics, no negative values)
         assert!(spend.global_usd >= 0.0, "global_usd must be non-negative");
+    }
+
+    fn isolated_ledger() -> (tempfile::TempDir, crate::config::TestProfileDirGuard) {
+        let dir = tempfile::TempDir::new().expect("temp profile dir");
+        let guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+        (dir, guard)
+    }
+
+    fn ledger_file() -> std::path::PathBuf {
+        crate::config::config_dir().join("ai-ledger.jsonl")
+    }
+
+    #[test]
+    fn run_tags_persist_on_the_ledger_row() {
+        let (_dir, _guard) = isolated_ledger();
+        let row = LedgerRow::with_attribution(
+            "openrouter",
+            BillingModel::Metered,
+            Some("assistant".to_string()),
+            Some("xiaomi/mimo-v2.5".to_string()),
+            Some(194),
+            Some(12),
+            Some(0.5),
+        )
+        .tagged(
+            RunTags {
+                client: Some("narrative".to_string()),
+                kind: RunKind::Output,
+            },
+            Some(1500),
+        );
+        append(&row);
+        let text = std::fs::read_to_string(ledger_file()).expect("ledger");
+        let value: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(value["client"], "narrative");
+        assert_eq!(value["kind"], "output");
+        assert_eq!(value["input_tokens"], 194);
+        assert_eq!(value["output_tokens"], 12);
+        assert_eq!(value["cost_usd"], 0.5);
+        assert_eq!(value["wall_ms"], 1500);
+        assert_eq!(value["cost_cents"], 50);
+    }
+
+    #[test]
+    fn run_tag_defaults_apply() {
+        let from_config = RunTags::resolve(None, None, Some("narrative"));
+        assert_eq!(from_config.client.as_deref(), Some("narrative"));
+        assert_eq!(from_config.kind, RunKind::Output);
+
+        let overridden = RunTags::resolve(Some(" du "), Some(RunKind::System), Some("narrative"));
+        assert_eq!(overridden.client.as_deref(), Some("du"));
+        assert_eq!(overridden.kind, RunKind::System);
+
+        let blank = RunTags::resolve(Some("  "), None, Some("personal"));
+        assert_eq!(blank.client.as_deref(), Some("personal"));
+        assert_eq!(blank.kind, RunKind::Output);
+
+        let unset = RunTags::resolve(None, None, None);
+        assert!(unset.client.is_none());
+        assert_eq!(unset.kind, RunKind::Output);
+
+        let row = LedgerRow::with_attribution(
+            "openrouter",
+            BillingModel::Metered,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(row.client.is_none());
+        assert_eq!(row.kind, Some(RunKind::Output));
+        assert!(row.wall_ms.is_none());
+
+        let mut base = crate::config::AiConfig {
+            client: Some("narrative".to_string()),
+            ..Default::default()
+        };
+        base.overlay(crate::config::AiConfig::default());
+        assert_eq!(base.client.as_deref(), Some("narrative"));
+        let mut incoming = crate::config::AiConfig::default();
+        incoming.client = Some("du".to_string());
+        base.overlay(incoming);
+        assert_eq!(
+            RunTags::resolve(None, None, base.client.as_deref())
+                .client
+                .as_deref(),
+            Some("du")
+        );
+        assert!(SummaryBy::parse("client").is_ok());
+        assert!(SummaryBy::parse("kind").is_ok());
+        assert!(SummaryBy::parse("app").is_err());
+    }
+
+    #[test]
+    fn summary_aggregates_by_client_and_honors_since() {
+        let (_dir, _guard) = isolated_ledger();
+        let lines = [
+            r#"{"ts":"2025-12-31T23:00:00Z","backend":"openrouter","billing":"metered","input_tokens":9,"output_tokens":9,"cost_usd":9.0,"cost_cents":900,"client":"personal","kind":"output","wall_ms":9}"#,
+            r#"{"ts":"2026-01-01T00:00:00Z","backend":"openrouter","billing":"metered","input_tokens":10,"output_tokens":4,"cost_usd":0.25,"cost_cents":25,"client":"narrative","kind":"output","wall_ms":100}"#,
+            r#"{"ts":"2026-01-02T00:00:00Z","backend":"openrouter","billing":"metered","input_tokens":5,"output_tokens":1,"cost_usd":0.5,"cost_cents":50,"client":"narrative","kind":"output","wall_ms":50}"#,
+            r#"{"ts":"2026-01-02T01:00:00Z","backend":"openrouter","billing":"metered","input_tokens":null,"output_tokens":null,"cost_usd":0.25,"cost_cents":25,"client":"du","kind":"system"}"#,
+            r#"{"ts":"2026-01-03T00:00:00Z","backend":"openrouter","billing":"metered","input_tokens":3,"output_tokens":1,"cost_usd":0.25,"cost_cents":25,"client":null,"kind":null}"#,
+        ];
+        std::fs::write(ledger_file(), lines.join("\n") + "\n").unwrap();
+
+        let report = summary(SummaryBy::Client, Some("2026-01-01")).expect("summary");
+        assert_eq!(report.groups.len(), 3);
+        let du = &report.groups[0];
+        assert_eq!(du.key.as_deref(), Some("du"));
+        assert_eq!(du.runs, 1);
+        assert!(du.input_tokens.is_none());
+        assert!(du.output_tokens.is_none());
+        assert_eq!(du.cost_usd, Some(0.25));
+        assert!(du.wall_ms.is_none(), "untracked wall time stays null");
+        let narrative = &report.groups[1];
+        assert_eq!(narrative.key.as_deref(), Some("narrative"));
+        assert_eq!(narrative.runs, 2);
+        assert_eq!(narrative.input_tokens, Some(15));
+        assert_eq!(narrative.output_tokens, Some(5));
+        assert_eq!(narrative.cost_usd, Some(0.75));
+        assert_eq!(narrative.wall_ms, Some(150));
+        let untagged = &report.groups[2];
+        assert!(untagged.key.is_none());
+        assert_eq!(untagged.runs, 1);
+        assert_eq!(untagged.input_tokens, Some(3));
+
+        let value = report.to_value();
+        assert_eq!(value["by"], "client");
+        assert_eq!(value["since"], "2026-01-01");
+        assert_eq!(value["groups"][1]["client"], "narrative");
+        assert_eq!(value["groups"][1]["runs"], 2);
+        assert_eq!(value["groups"][0]["wall_ms"], serde_json::Value::Null);
+
+        let by_kind = summary(SummaryBy::Kind, Some("2026-01-01")).expect("kind summary");
+        assert_eq!(by_kind.groups[0].key.as_deref(), Some("output"));
+        assert_eq!(by_kind.groups[0].runs, 2);
+        assert_eq!(by_kind.groups[1].key.as_deref(), Some("system"));
+        assert_eq!(by_kind.groups[1].runs, 1);
+        assert!(by_kind.groups[2].key.is_none());
+        assert!(summary(SummaryBy::Client, Some("yesterday")).is_err());
+    }
+
+    #[test]
+    fn migrate_null_tags_preserves_usage_and_is_idempotent() {
+        let (_dir, _guard) = isolated_ledger();
+        let original = "\
+{\"ts\":\"2026-04-16T12:00:00Z\",\"backend\":\"openrouter\",\"billing\":\"metered\",\"input_tokens\":234,\"output_tokens\":512,\"cost_usd\":0.5,\"cost_cents\":50}\n\
+not json\n\
+{\"ts\":\"2026-04-17T12:00:00Z\",\"client\":\"du\",\"kind\":\"output\",\"input_tokens\":1,\"output_tokens\":2,\"cost_usd\":0.25,\"cost_cents\":25}\n";
+        std::fs::write(ledger_file(), original).unwrap();
+        assert_eq!(migrate_null_tags(), 1);
+        let text = std::fs::read_to_string(ledger_file()).unwrap();
+        let mut lines = text.lines();
+        let migrated = lines.next().unwrap();
+        assert!(
+            migrated.contains("\"input_tokens\":234") && migrated.contains("\"output_tokens\":512"),
+            "token bytes must survive migration: {migrated}"
+        );
+        assert!(
+            migrated.contains("\"cost_usd\":0.5") && migrated.contains("\"cost_cents\":50"),
+            "cost bytes must survive migration: {migrated}"
+        );
+        let value: serde_json::Value = serde_json::from_str(migrated).unwrap();
+        assert!(value["client"].is_null());
+        assert!(value["kind"].is_null());
+        assert_eq!(value["input_tokens"], 234);
+        assert_eq!(lines.next().unwrap(), "not json");
+        let already = lines.next().unwrap();
+        assert!(already.contains("\"client\":\"du\""));
+        assert!(already.contains("\"kind\":\"output\""));
+        let after = std::fs::read_to_string(ledger_file()).unwrap();
+        assert_eq!(migrate_null_tags(), 0);
+        assert_eq!(std::fs::read_to_string(ledger_file()).unwrap(), after);
+    }
+
+    #[test]
+    fn fill_cost_patches_only_the_matching_null_row() {
+        let (_dir, _guard) = isolated_ledger();
+        let missing = LedgerRow::with_attribution(
+            "openrouter",
+            BillingModel::Metered,
+            Some("assistant".to_string()),
+            Some("xiaomi/mimo-v2.5".to_string()),
+            Some(3463),
+            Some(14),
+            None,
+        );
+        let priced = LedgerRow::with_attribution(
+            "openrouter",
+            BillingModel::Metered,
+            Some("assistant".to_string()),
+            Some("xiaomi/mimo-v2.5".to_string()),
+            Some(10),
+            Some(4),
+            Some(0.5),
+        );
+        append(&missing);
+        append(&priced);
+        let before = std::fs::read_to_string(ledger_file()).unwrap();
+        let priced_line = before.lines().nth(1).unwrap().to_string();
+        assert!(fill_cost(&ledger_file(), &missing.ts, 0.021));
+        let after = std::fs::read_to_string(ledger_file()).unwrap();
+        let mut lines = after.lines();
+        let filled = lines.next().unwrap();
+        assert!(
+            filled.contains(r#""input_tokens":3463"#)
+                && filled.contains(r#""output_tokens":14"#)
+                && filled.contains(r#""cost_usd":0.021"#)
+                && filled.contains(r#""cost_cents":2"#),
+            "null cost must be filled in place: {filled}"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            priced_line,
+            "a row that already has a cost must keep its bytes"
+        );
+        assert!(!fill_cost(&ledger_file(), &missing.ts, 9.0));
+        assert_eq!(std::fs::read_to_string(ledger_file()).unwrap(), after);
     }
 }

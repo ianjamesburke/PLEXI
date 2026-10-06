@@ -121,6 +121,10 @@ pub struct AgentDefinition {
     pub tools: Vec<String>,
     pub skills: Vec<String>,
     pub hooks: Vec<String>,
+    /// Default ledger client for this agent's runs. A per-run override wins.
+    pub client: Option<String>,
+    /// Default ledger kind. `None` means the run's own kind, or `output`.
+    pub kind: Option<crate::plexi_ai::ledger::RunKind>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -159,6 +163,10 @@ struct AgentTable {
     description: String,
     #[serde(default)]
     effort: Option<String>,
+    #[serde(default)]
+    client: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -205,6 +213,22 @@ impl AgentDefinition {
             .effort
             .as_deref()
             .map(ReasoningEffort::parse)
+            .transpose()
+            .map_err(|e| format!("settings.toml: [agent] {e}"))?;
+        let client = settings
+            .agent
+            .client
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string);
+        let kind = settings
+            .agent
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(crate::plexi_ai::ledger::RunKind::parse)
             .transpose()
             .map_err(|e| format!("settings.toml: [agent] {e}"))?;
         let mut model_routes = AgentModelRoutes::default();
@@ -258,6 +282,8 @@ impl AgentDefinition {
             tools: settings.tools.enabled,
             skills: settings.skills.enabled,
             hooks: settings.hooks.enabled,
+            client,
+            kind,
         })
     }
 
@@ -303,6 +329,8 @@ impl AgentRegistry {
             tools: Vec::new(),
             skills: Vec::new(),
             hooks: Vec::new(),
+            client: None,
+            kind: None,
         };
         let user_dir = profile_dir.join("agents");
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
@@ -1048,11 +1076,18 @@ impl AgentHost {
             tool_dispatcher: Some(dispatcher),
             cancel: crate::plexi_ai::CancelToken::new(),
             max_tool_iterations: None,
+            client: agent.def.client.clone(),
+            kind: agent.def.kind,
         };
         let agent_id = agent.def.id.clone();
         log::info!(
-            "agent[{agent_id}]: starting conversation turn ({} event line(s))",
-            event_lines.len()
+            "agent[{agent_id}]: starting conversation turn ({} event line(s)) client={:?} kind={}",
+            event_lines.len(),
+            request.client,
+            request
+                .kind
+                .map(crate::plexi_ai::ledger::RunKind::as_str)
+                .unwrap_or("output")
         );
         let broker = Arc::clone(&self.ai_broker);
         let outcome_tx = self.outcome_tx.clone();
@@ -1193,6 +1228,26 @@ default = "ask"
         assert_eq!(sub.payload, PayloadMode::Full);
         assert_eq!(sub.trigger, TriggerMode::Conversation);
         assert_eq!(sub.default, Decision::Ask);
+        assert!(def.client.is_none());
+        assert!(def.kind.is_none());
+    }
+
+    #[test]
+    fn run_tags_default_when_absent_and_parse_when_set() {
+        let tagged = SETTINGS.replace(
+            "default_tier = \"medium\"\n",
+            "default_tier = \"medium\"\nclient = \"narrative\"\nkind = \"system\"\n",
+        );
+        let def = AgentDefinition::parse("You are a helper.", &tagged).expect("tagged settings");
+        assert_eq!(def.client.as_deref(), Some("narrative"));
+        assert_eq!(def.kind, Some(crate::plexi_ai::ledger::RunKind::System));
+
+        let bad = SETTINGS.replace(
+            "default_tier = \"medium\"\n",
+            "default_tier = \"medium\"\nkind = \"nope\"\n",
+        );
+        let err = AgentDefinition::parse("p", &bad).unwrap_err();
+        assert!(err.contains("kind"), "{err}");
     }
 
     #[test]

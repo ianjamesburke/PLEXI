@@ -36,6 +36,7 @@ ghost_opacity = 0.75
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+# client = "personal"          # default AI ledger tag; a run can override it
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
