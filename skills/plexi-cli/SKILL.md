@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -65,11 +65,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
-- **Assistant permission** — list, show, or resolve a pending grant:
-  `plexi assistant permission list`, `plexi assistant permission show <id>`,
-  `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
-  `always`, `deny`, and `revoke` are the choices. This is the observation
-  seam for the desktop permission sheet.
+- **Assistant permission** — list or show a pending grant:
+  `plexi assistant permission list`, `plexi assistant permission show <id>`.
+  When a tool call returns permission_required, print the pending_request_id
+  and wait for the person at the desktop to decide. Do not approve, deny,
+  or widen a grant from the terminal.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

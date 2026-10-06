@@ -222,6 +222,11 @@ pub trait App: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
 
+    /// Pending approval this app is showing, when it is an approval surface.
+    fn approval_request_id(&self) -> Option<String> {
+        None
+    }
+
     /// Human-readable display name shown in the pane title.
     fn display_name(&self) -> String;
 

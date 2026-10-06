@@ -39,7 +39,7 @@ Observe and resolve pending permission requests. This is not `plexi agent reques
 |---|---|
 | `list` | List pending permission requests as JSON |
 | `show` | Show one pending permission request as JSON |
-| `resolve` | Resolve one pending request: once, session, always, or deny |
+| `resolve` | Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal |
 
 #### `plexi assistant permission list`
 
@@ -55,12 +55,46 @@ Show one pending permission request as JSON
 
 #### `plexi assistant permission resolve`
 
-Resolve one pending request: once, session, always, or deny
+Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
+
+## `plexi needs-you`
+
+Items waiting on the person at the desktop. The terminal cannot resolve them
+
+| Subcommand | Description |
+|---|---|
+| `resolve` | Ask the host to resolve an item. The host refuses |
+
+### `plexi needs-you resolve`
+
+Ask the host to resolve an item. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Request approval. The host still refuses |
+| `--deny` | flag | no | Request denial. The host still refuses |
+
+## `plexi permissions`
+
+Permission grants. Allowing from the terminal is refused
+
+| Subcommand | Description |
+|---|---|
+| `allow` | Ask the host to allow a pending request. The host refuses |
+
+### `plexi permissions allow`
+
+Ask the host to allow a pending request. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
 
 ## `plexi run`
 

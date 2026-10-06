@@ -272,8 +272,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd,
-        DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        DescriptorCmd, EventsCmd, HookAction, HostCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
+        PermissionsCmd, RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -304,6 +304,25 @@ fn main() -> eframe::Result {
                                 ))
                             }
                         },
+                    },
+                    Commands::NeedsYou { cmd } => match cmd {
+                        NeedsYouCmd::Resolve { id, approve: _, deny } => {
+                            let choice = if deny { "deny" } else { "once" };
+                            std::process::exit(cli::assistant_permission_cli(
+                                "resolve",
+                                Some(&id),
+                                Some(choice),
+                            ))
+                        }
+                    },
+                    Commands::Permissions { cmd } => match cmd {
+                        PermissionsCmd::Allow { id } => {
+                            std::process::exit(cli::assistant_permission_cli(
+                                "resolve",
+                                Some(&id),
+                                Some("once"),
+                            ))
+                        }
                     },
                     Commands::Run {
                         command,
