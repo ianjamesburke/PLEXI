@@ -888,17 +888,24 @@ fn send_line_to_socket(
     let fd = connect_unix_deadline(socket_path, deadline)?;
     let raw_fd = fd.as_raw_fd();
     let mut written = 0;
+    // One `write` of the whole remainder can copy megabytes into a large
+    // socket buffer before the next deadline check. A loaded Intel runner
+    // spent 434ms doing that against a 100ms deadline and still returned
+    // `WriteTimeout`. Cap each syscall so the deadline is rechecked before
+    // the overshoot can reach the caller's bound.
+    const WRITE_CHUNK: usize = 16 * 1024;
     while written < line.len() {
         if std::time::Instant::now() >= deadline {
             return Err(SocketTransportError::WriteTimeout {
                 bytes_written: written,
             });
         }
+        let end = (written + WRITE_CHUNK).min(line.len());
         let rc = unsafe {
             libc::write(
                 raw_fd,
-                line[written..].as_ptr() as *const libc::c_void,
-                line.len() - written,
+                line[written..end].as_ptr() as *const libc::c_void,
+                end - written,
             )
         };
         if rc > 0 {
