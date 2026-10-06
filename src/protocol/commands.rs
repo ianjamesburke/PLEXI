@@ -405,6 +405,10 @@ pub enum AppRequest {
         /// answering with a typed timeout. Requires `agent_cmd`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         boot_timeout_secs: Option<f64>,
+        /// Spawn another instance even when `[launch] on_launch` would focus
+        /// the one already open. Sent by `plexi app open --new`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force_new: bool,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`

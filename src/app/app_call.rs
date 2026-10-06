@@ -199,13 +199,18 @@ impl PlexiApp {
         let namespaced = match dispatcher.select_app_tool(&app_id, &tool, target_pane_id) {
             Ok(name) => name,
             Err(error) => {
-                monitor.note_denial(&caller, "app-call", &app_id, "", "ambiguous_instance");
-                log::info!("app_call: {error}");
-                reply(serde_json::json!({
+                let code = error.code();
+                monitor.note_denial(&caller, "app-call", &app_id, "", code);
+                log::info!("app_call: {code} {}", error.message());
+                let mut body = serde_json::json!({
                     "ok": false,
-                    "error_code": "permission_denied",
-                    "error": error,
-                }));
+                    "error_code": code,
+                    "error": error.message(),
+                });
+                if !error.panes().is_empty() {
+                    body["panes"] = serde_json::json!(error.panes());
+                }
+                reply(body);
                 return;
             }
         };

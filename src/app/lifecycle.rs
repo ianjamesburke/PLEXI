@@ -1047,12 +1047,13 @@ impl PlexiApp {
                     }
                 };
                 log::info!(
-                    "pane_ipc: kind=spawn_pane target={} layout={:?} args={:?} ephemeral={} no_focus={} from_pane_id={:?} cwd={:?} workspace_root={:?} response_file={:?}",
+                    "pane_ipc: kind=spawn_pane target={} layout={:?} args={:?} ephemeral={} no_focus={} force_new={} from_pane_id={:?} cwd={:?} workspace_root={:?} response_file={:?}",
                     spec.target_for_log(),
                     spec.layout,
                     spec.args,
                     spec.ephemeral,
                     spec.no_focus,
+                    spec.force_new,
                     spec.from_pane_id,
                     spec.cwd,
                     spec.workspace_root,
@@ -1314,13 +1315,21 @@ impl PlexiApp {
                 {
                     let (target_win, orig_focused_in_target) =
                         self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
-                    launch_result = self
-                        .launch_app_by_path_with_layout_no_review_modal(
+                    launch_result = if spec.force_new {
+                        self.launch_app_by_path_forced_no_review_modal(
                             &app_path.to_string_lossy(),
                             spec.layout.clone(),
                             spec.workspace_root.clone(),
                             &spec.args,
                         )
+                    } else {
+                        self.launch_app_by_path_with_layout_no_review_modal(
+                            &app_path.to_string_lossy(),
+                            spec.layout.clone(),
+                            spec.workspace_root.clone(),
+                            &spec.args,
+                        )
+                    }
                         .map(|pane_id| {
                             if let Some(pane_id) = pane_id {
                                 response_pane_id = pane_id;
@@ -1358,13 +1367,21 @@ impl PlexiApp {
                             .view_for_context(target_context_id, &self.router)
                             .placement_for(type_id),
                     );
-                    launch_result = self
-                        .launch_app_by_id_with_layout(
+                    launch_result = if spec.force_new {
+                        self.launch_app_by_id_with_layout_forced(
                             type_id,
                             Some(placement),
                             &spec.args,
                             cwd_override,
                         )
+                    } else {
+                        self.launch_app_by_id_with_layout(
+                            type_id,
+                            Some(placement),
+                            &spec.args,
+                            cwd_override,
+                        )
+                    }
                         .map(|existing_id| {
                             // A dedup focused a live instance; the response must
                             // report that pane, not the predicted id (#0336).
@@ -3631,6 +3648,7 @@ impl PlexiApp {
                 // `pane new --agent` requires PLEXI_SOCKET for this reason.
                 agent_cmd: None,
                 boot_timeout_secs: None,
+                force_new: val["force_new"].as_bool().unwrap_or(false),
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
             else {
