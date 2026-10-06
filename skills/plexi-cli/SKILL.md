@@ -72,9 +72,10 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   seam for the desktop permission sheet.
 - **Needs you** — one list of everything waiting on the human:
   `plexi needs-you list --json` and
-  `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.
+  `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, blocked runs, and a host integrity item share that record.
+  An integrity item appears after a start when the previous host did not exit cleanly or the permission profile changed while it was down.
   Resolving an id resolves it everywhere exactly once. Expired items are
-  auto-denied. A repeat resolve returns the existing resolution. Open items
+  auto-denied. A repeat resolve returns the existing resolution. Integrity, questions, and blocked runs do not mint a grant. Open items
   survive a host restart. The resolve JSON includes `run_outcome`:
   `unblocked` when this host process still has the run, and `outcome_unknown`
   when that run was filed by a previous process. Do not edit profile files to
