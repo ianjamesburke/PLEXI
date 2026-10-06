@@ -71,6 +71,10 @@ answer to stint 0745's open question — that split is correct, not a missing
 migration. `ScopeOrigin`'s module doc bans env vars as authority inputs for the
 same reason.
 
+## Change sets
+
+`host.files.edit` and `host.files.write` prepare a change set in `host::changes` and do not write the target file. `plexi changes accept` is the disk write. It re-admits the same `host.files.edit` grant; it does not consult a second permission store. The agent id is the audit actor and the `agent_id` field of `change-ledger.jsonl`. A digest mismatch marks the set `stale` and accept refuses it until `refresh` rebases that same edit.
+
 ## Traps
 
 - **The host's launch env leaks into every pane.** Anything not overridden in

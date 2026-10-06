@@ -454,10 +454,25 @@ impl PlexiApp {
                     return ToolCallResult::err("invalid_input: content is required".to_string());
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
-                match write_scoped_file(&roots, path, content) {
-                    Ok(outcome) => ToolCallResult::ok_value(serde_json::json!({
-                        "ok": true, "path": path, "bytes": content.len(),
-                        "created": outcome.created, "diff": outcome.diff,
+                let resolved = match resolve_scoped_file_path(&roots, path) {
+                    Ok(resolved) => resolved,
+                    Err(error) => return ToolCallResult::err(error),
+                };
+                let agent = parsed
+                    .get("agent")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("assistant");
+                match crate::host::changes::prepare_replace(&resolved, content, agent) {
+                    Ok(prepared) => ToolCallResult::ok_value(serde_json::json!({
+                        "ok": true,
+                        "path": path,
+                        "bytes": content.len(),
+                        "created": false,
+                        "applied": prepared.applied,
+                        "change_set_id": prepared.id,
+                        "diff": prepared.diff,
+                        "revision_before": prepared.base_digest,
+                        "revision_after": prepared.base_digest,
                     })),
                     Err(error) => ToolCallResult::err(error),
                 }
@@ -479,9 +494,23 @@ impl PlexiApp {
                     );
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
-                match edit_scoped_file(&roots, path, old_string, new_string) {
-                    Ok(diff) => ToolCallResult::ok_value(serde_json::json!({
-                        "ok": true, "path": path, "diff": diff,
+                let resolved = match resolve_scoped_file_path(&roots, path) {
+                    Ok(resolved) => resolved,
+                    Err(error) => return ToolCallResult::err(error),
+                };
+                let agent = parsed
+                    .get("agent")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("assistant");
+                match crate::host::changes::prepare_edit(&resolved, old_string, new_string, agent) {
+                    Ok(prepared) => ToolCallResult::ok_value(serde_json::json!({
+                        "ok": true,
+                        "path": path,
+                        "applied": prepared.applied,
+                        "change_set_id": prepared.id,
+                        "diff": prepared.diff,
+                        "revision_before": prepared.base_digest,
+                        "revision_after": prepared.base_digest,
                     })),
                     Err(error) => ToolCallResult::err(error),
                 }
@@ -859,8 +888,10 @@ fn is_skipped_walk_dir(name: &str) -> bool {
 const MAX_WALK_DEPTH: usize = 8;
 const MAX_WALK_FILES: usize = 5000;
 const MAX_LIST_ENTRIES: usize = 500;
-/// Unified-diff shaping for edit/write results rendered in the transcript.
+/// Unified-diff shaping for the scoped edit helpers exercised by tests.
+#[cfg(test)]
 const DIFF_CONTEXT_LINES: usize = 3;
+#[cfg(test)]
 const MAX_DIFF_CHARS: usize = 4000;
 
 /// Resolve `raw` against the allowed roots. Relative paths use the primary
@@ -1133,9 +1164,8 @@ fn list_scoped(
 }
 
 /// Minimal single-hunk unified diff: trims the common prefix/suffix and
-/// wraps the changed span in up to `DIFF_CONTEXT_LINES` of context. Exact
-/// for single-span changes (every `host.files.edit`); for multi-span writes
-/// the one hunk covers the full changed region.
+/// wraps the changed span in up to `DIFF_CONTEXT_LINES` of context.
+#[cfg(test)]
 fn unified_diff(old: &str, new: &str, path: &str) -> String {
     if old == new {
         return String::new();
@@ -1195,12 +1225,14 @@ fn unified_diff(old: &str, new: &str, path: &str) -> String {
 
 /// Outcome of a scoped write: whether the file was created, and the diff
 /// against the previous content when it was overwritten.
+#[cfg(test)]
 #[derive(Debug)]
 struct WriteOutcome {
     created: bool,
     diff: Option<String>,
 }
 
+#[cfg(test)]
 fn write_scoped_file(
     roots: &[std::path::PathBuf],
     raw: &str,
@@ -1226,6 +1258,7 @@ fn write_scoped_file(
 /// Replace exactly one occurrence of `old_string` and return the unified
 /// diff of the change. Zero or multiple matches fail loudly — the same
 /// edit-verification contract proven by Claude Code's Edit tool.
+#[cfg(test)]
 fn edit_scoped_file(
     roots: &[std::path::PathBuf],
     raw: &str,
@@ -1648,6 +1681,7 @@ mod tests {
             "{read:?}"
         );
 
+        let notes = workspace.path().join("notes/new.txt");
         let write = harness.app.handle_assistant_host_tool(
             "host.files.write",
             r#"{"path":"notes/new.txt","content":"before\n"}"#,
@@ -1655,6 +1689,13 @@ mod tests {
             context,
         );
         assert!(write.error.is_none(), "{write:?}");
+        assert!(
+            !notes.exists(),
+            "a write is a change set and must not create the file"
+        );
+        let write_id = change_set_id(&write);
+        crate::host::changes::commit_prepared(&write_id).unwrap();
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "before\n");
 
         let edit = harness.app.handle_assistant_host_tool(
             "host.files.edit",
@@ -1664,9 +1705,22 @@ mod tests {
         );
         assert!(edit.error.is_none(), "{edit:?}");
         assert_eq!(
-            std::fs::read_to_string(workspace.path().join("notes/new.txt")).unwrap(),
-            "after\n"
+            std::fs::read_to_string(&notes).unwrap(),
+            "before\n",
+            "an edit is a change set and must not touch disk"
         );
+        let edit_id = change_set_id(&edit);
+        crate::host::changes::commit_prepared(&edit_id).unwrap();
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "after\n");
+    }
+
+    fn change_set_id(result: &crate::plexi_ai::tool_dispatch::ToolCallResult) -> String {
+        let value: serde_json::Value =
+            serde_json::from_str(result.output_json.as_deref().expect("output")).unwrap();
+        value["change_set_id"]
+            .as_str()
+            .expect("change_set_id")
+            .to_string()
     }
 
     #[cfg(unix)]

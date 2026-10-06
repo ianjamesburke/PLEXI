@@ -79,6 +79,16 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SecretCmd,
     },
+    /// Preview and accept an agent's file edit before it is written.
+    ///
+    /// `propose` stores a change set and does not modify the file. `preview`
+    /// prints the diff. `accept` writes it after the permission gate admits
+    /// the same edit. If the file changed since propose, accept reports
+    /// `stale` until `refresh`. `revert` restores a committed set.
+    Changes {
+        #[command(subcommand)]
+        cmd: ChangesCmd,
+    },
     /// Connect third-party services over OAuth.
     ///
     /// Sign-in runs in your browser; the resulting token is kept in the platform
@@ -466,6 +476,60 @@ pub enum WorkspaceCmd {
         /// Print slot directories that would be removed without deleting them.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ChangesCmd {
+    /// Record a permission-gate allow for one exact edit.
+    Allow {
+        /// Agent id the grant and the later audit row name.
+        #[arg(long)]
+        agent: String,
+        /// File the edit applies to.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Exact text to replace. It must occur once.
+        #[arg(long)]
+        old: String,
+        /// Replacement text.
+        #[arg(long)]
+        new: String,
+    },
+    /// Prepare an edit. The file is not modified.
+    Propose {
+        /// Agent id recorded on the change set.
+        #[arg(long)]
+        agent: String,
+        /// File the edit applies to.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Exact text to replace. It must occur once.
+        #[arg(long)]
+        old: String,
+        /// Replacement text.
+        #[arg(long)]
+        new: String,
+    },
+    /// Print the prepared diff and whether the set is stale.
+    Preview {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Write a pending change set after the permission gate admits it.
+    Accept {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Rebase a stale change set onto the file's current text.
+    Refresh {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Restore the file to the text from before accept.
+    Revert {
+        /// Change set id from `propose`.
+        id: String,
     },
 }
 

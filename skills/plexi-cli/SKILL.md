@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -252,6 +252,19 @@ severity or urgency flag.
 NOTICE=$(plexi notify --title 'Review ready' --body 'The branch is ready to inspect.' \
   --scope context --timeout 30)
 plexi notify dismiss "$NOTICE"
+```
+
+### Review an agent file edit before it is written
+
+`plexi changes propose` admits the edit through the permission gate and stores a change set. The file is unchanged until `accept`. `preview` prints the diff. If the file changed after propose, `accept` reports stale until `refresh`. `revert` restores a committed change set. The audit and `change-ledger.jsonl` name the agent and do not replace the permission gate.
+
+```bash
+plexi changes allow --agent editor-bot --file notes/draft.txt --old alpha --new beta
+CS=$(plexi changes propose --agent editor-bot --file notes/draft.txt --old alpha --new beta | sed -n 's/^change_set=//p')
+plexi changes preview "$CS"
+plexi changes accept "$CS"
+plexi changes refresh "$CS"
+plexi changes revert "$CS"
 ```
 
 ## Installation health

@@ -274,7 +274,7 @@ fn main() -> eframe::Result {
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        ChangesCmd, RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -398,6 +398,24 @@ fn main() -> eframe::Result {
                             )),
                         },
                     },
+                    Commands::Changes { cmd } => std::process::exit(match cmd {
+                        ChangesCmd::Allow {
+                            agent,
+                            file,
+                            old,
+                            new,
+                        } => cli::changes_allow_cli(&agent, &file, &old, &new),
+                        ChangesCmd::Propose {
+                            agent,
+                            file,
+                            old,
+                            new,
+                        } => cli::changes_propose_cli(&agent, &file, &old, &new),
+                        ChangesCmd::Preview { id } => cli::changes_preview_cli(&id),
+                        ChangesCmd::Accept { id } => cli::changes_accept_cli(&id),
+                        ChangesCmd::Refresh { id } => cli::changes_refresh_cli(&id),
+                        ChangesCmd::Revert { id } => cli::changes_revert_cli(&id),
+                    }),
                     Commands::Secret { cmd } => match cmd {
                         SecretCmd::Set {
                             friendly_name,

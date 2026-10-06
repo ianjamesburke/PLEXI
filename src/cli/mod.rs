@@ -207,6 +207,7 @@ pub mod subprocess;
 pub mod test_env;
 
 pub mod account;
+pub mod changes;
 pub mod agent;
 pub mod ai;
 pub mod app;
@@ -1300,6 +1301,10 @@ pub use pane::{
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;
+pub use changes::{
+    changes_accept_cli, changes_allow_cli, changes_preview_cli, changes_propose_cli,
+    changes_refresh_cli, changes_revert_cli,
+};
 pub use workspace::{
     workspace_clean_cli, workspace_init, workspace_secret_delete, workspace_secret_get,
     workspace_secret_list, workspace_secret_set,
