@@ -577,6 +577,7 @@ fn main() -> eframe::Result {
                                 window,
                                 from: from_pane_id,
                                 extra_args,
+                                new: force_new,
                             } => {
                                 let layout: Option<String> = if down {
                                     Some("split_v".into())
@@ -634,23 +635,25 @@ fn main() -> eframe::Result {
                                             ));
                                         }
                                         cli::OpenPrefix::App(name) => {
-                                            log::info!("app_open:cli: prefix-routed app:{name}");
+                                            log::info!("app_open:cli: prefix-routed app:{name} force_new={force_new}");
                                             std::process::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
                                                 layout.as_deref(),
                                                 from_pane_id,
                                                 None,
+                                                force_new,
                                             ));
                                         }
                                         cli::OpenPrefix::Bare(name) => {
-                                            log::info!("app_open:cli: opening app type_id={name}");
+                                            log::info!("app_open:cli: opening app type_id={name} force_new={force_new}");
                                             std::process::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
                                                 layout.as_deref(),
                                                 from_pane_id,
                                                 None,
+                                                force_new,
                                             ));
                                         }
                                     }
@@ -673,6 +676,7 @@ fn main() -> eframe::Result {
                                         &[],
                                         None,
                                         None,
+                                        false,
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
@@ -1235,6 +1239,7 @@ fn main() -> eframe::Result {
                                 &[],
                                 None,
                                 agent.as_ref(),
+                                false,
                             ));
                         }
                     },

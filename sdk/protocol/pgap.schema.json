@@ -1147,6 +1147,10 @@
             "ephemeral": {
               "type": "boolean"
             },
+            "force_new": {
+              "description": "Spawn another instance even when `[launch] on_launch` would focus\nthe one already open. Sent by `plexi app open --new`.",
+              "type": "boolean"
+            },
             "from_pane_id": {
               "format": "uint64",
               "minimum": 0,

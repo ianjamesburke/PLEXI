@@ -572,6 +572,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         agent_cmd: None,
         boot_timeout_secs: None,
         peer_ancestry: None,
+        force_new: false,
     });
     app.drain_pane_cmd_channel();
 
@@ -656,6 +657,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         agent_cmd: None,
         boot_timeout_secs: None,
         peer_ancestry: None,
+        force_new: false,
     });
     app.drain_pane_cmd_channel();
 
@@ -748,6 +750,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
         agent_cmd: None,
         boot_timeout_secs: None,
         peer_ancestry: None,
+        force_new: false,
     });
     app.drain_pane_cmd_channel();
 

@@ -74,7 +74,11 @@ plexi skill install --agent codex
   `pane:<id>` from the host credential or peer; a missing pane is never
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
-  one live instance when several panes of that app are open. A rejection exits 1.
+  one live instance when several panes of that app are open. Without `--pane`,
+  two or more instances return `error_code` `ambiguous_instance` and a `panes`
+  list; the call does not choose one. `plexi app open --new <app>` opens another
+  instance when a later open would otherwise focus the one already up. A
+  rejection exits 1.
 - **Assistant permission** — list or show a pending grant:
   `plexi assistant permission list`, `plexi assistant permission show <id>`.
   When a tool call returns permission_required, print the pending_request_id

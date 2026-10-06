@@ -1674,6 +1674,7 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
+        log::info!("launch_app_by_id: force_new id={id}");
         self.launch_app_by_id_with_layout_inner(id, layout, args, cwd_override, true)
     }
 
@@ -1973,6 +1974,26 @@ impl PlexiApp {
             args,
             false,
             true,
+        )
+    }
+
+    /// Path launch that skips the review modal and `[launch] on_launch`.
+    /// `plexi app open --new <path>` uses this so a second chess board can exist.
+    pub(crate) fn launch_app_by_path_forced_no_review_modal(
+        &mut self,
+        app_path: &str,
+        layout: Option<String>,
+        workspace_root_override: Option<std::path::PathBuf>,
+        args: &[String],
+    ) -> Result<Option<PaneId>, String> {
+        log::info!("launch_app_by_path: force_new path={app_path}");
+        self.launch_app_by_path_with_layout_inner(
+            app_path,
+            layout,
+            workspace_root_override,
+            args,
+            false,
+            false,
         )
     }
 

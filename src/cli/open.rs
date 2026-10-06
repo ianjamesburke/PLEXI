@@ -153,6 +153,7 @@ pub fn pane_new_cli(
     extra_args: &[String],
     context_name: Option<&str>,
     agent: Option<&AgentBootRequest>,
+    force_new: bool,
 ) -> i32 {
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
@@ -218,7 +219,10 @@ pub fn pane_new_cli(
                 payload["boot_timeout_secs"] = serde_json::json!(secs);
             }
         }
-        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?}", agent.map(|a| &a.command));
+        if force_new {
+            payload["force_new"] = serde_json::Value::Bool(true);
+        }
+        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} force_new={force_new} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?}", agent.map(|a| &a.command));
         let response_file = match super::send_request(payload, "spawn-pane-response", "pane") {
             Ok(response_file) => response_file,
             Err(code) => return code,
@@ -271,7 +275,10 @@ pub fn pane_new_cli(
     if let Some(ctx) = context_name {
         queue_payload["context_name"] = serde_json::Value::String(ctx.to_string());
     }
-    log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?}");
+    if force_new {
+        queue_payload["force_new"] = serde_json::Value::Bool(true);
+    }
+    log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} force_new={force_new} cwd={cwd:?}");
     match crate::cli::queue_spawn(queue_payload, "pane new", &format!("open {type_id}")) {
         Ok(()) => 0,
         Err(code) => code,
@@ -380,6 +387,7 @@ fn open_descriptor_in_renderer(
         &[path],
         None,
         None,
+        false,
     )
 }
 
@@ -437,6 +445,7 @@ pub fn open_mcp_by_name(
                 &[],
                 None,
                 None,
+                false,
             )
         }
         None => {
@@ -643,6 +652,7 @@ pub fn open_cli(
     layout: Option<&str>,
     from_pane_id: Option<u64>,
     cwd: Option<&str>,
+    force_new: bool,
 ) -> i32 {
     // Intercept github: prefix for ephemeral open-without-install.
     if type_id.starts_with("github:") {
@@ -665,8 +675,8 @@ pub fn open_cli(
     };
     if resolved.join("manifest.toml").exists() {
         let abs_path = resolved.to_string_lossy().to_string();
-        log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path} force_new={force_new}");
+        return open_app_by_path(&abs_path, args, layout, from_pane_id, force_new);
     }
 
     // A `.wasm` file is a sandboxed component app launched through the same
@@ -682,7 +692,7 @@ pub fn open_cli(
         }
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected .wasm component, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        return open_app_by_path(&abs_path, args, layout, from_pane_id, force_new);
     }
 
     pane_new_cli(
@@ -698,6 +708,7 @@ pub fn open_cli(
         args,
         None,
         None,
+        force_new,
     )
 }
 
@@ -707,6 +718,7 @@ fn open_app_by_path(
     args: &[String],
     layout: Option<&str>,
     from_pane_id: Option<u64>,
+    force_new: bool,
 ) -> i32 {
     // Leave layout unset when no flag is given so the host applies its placement
     // default (manifest `[launch] placement`, else a sibling split) instead of
@@ -715,7 +727,8 @@ fn open_app_by_path(
     let spec = match PaneLaunchSpec::path(abs_path, args.to_vec()) {
         Ok(spec) => spec
             .with_layout(layout.map(str::to_string))
-            .with_from_pane_id(from_pane_id),
+            .with_from_pane_id(from_pane_id)
+            .with_force_new(force_new),
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
@@ -738,7 +751,7 @@ fn open_app_by_path(
                 "response_file": response_file,
             })
         });
-        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout:?} from_pane_id={from_pane_id:?}");
+        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout:?} force_new={force_new} from_pane_id={from_pane_id:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -761,7 +774,7 @@ fn open_app_by_path(
             "layout": layout,
         })
     });
-    log::info!("open_app_by_path: queued path={abs_path}");
+    log::info!("open_app_by_path: queued path={abs_path} force_new={force_new}");
     match crate::cli::queue_spawn(queue_payload, "open", &format!("open {abs_path}")) {
         Ok(()) => 0,
         Err(code) => code,
@@ -818,7 +831,7 @@ mod open_cli_tests {
         // sibling split) rather than forcing an overlay takeover (stint 0330).
         let env = socket_env_guard();
         let (code, payload) =
-            capture_spawn_payload(&env, || open_cli("balls", &[], None, None, None));
+            capture_spawn_payload(&env, || open_cli("balls", &[], None, None, None, false));
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
@@ -834,7 +847,7 @@ mod open_cli_tests {
     fn app_open_explicit_tab_layout_is_preserved() {
         let env = socket_env_guard();
         let (code, payload) = capture_spawn_payload(&env, || {
-            open_cli("file_browser", &[], Some("tab"), None, None)
+            open_cli("file_browser", &[], Some("tab"), None, None, false)
         });
 
         assert_eq!(code, 0);
@@ -879,7 +892,7 @@ mod open_cli_tests {
         let args = vec!["--sample".to_string(), "96".to_string()];
 
         let (code, payload) =
-            capture_spawn_payload(&env, || open_cli(&wasm_path_str, &args, None, None, None));
+            capture_spawn_payload(&env, || open_cli(&wasm_path_str, &args, None, None, None, false));
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
@@ -1160,6 +1173,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            false,
         );
 
         assert_eq!(code, 1);
@@ -1213,6 +1227,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            false,
         );
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -1269,6 +1284,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            false,
         );
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
