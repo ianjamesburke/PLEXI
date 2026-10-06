@@ -6,10 +6,9 @@
 # is stale. Twenty pane-key calls while a proposal is pending return in under
 # one second and do not accept.
 #
-# scripts/e2e/human.sh is the permission-sheet click (HUMAN_APPROVE) when that
-# driver is on the tree. The editor Accept button is still a pointer click the
-# driver does not press, so a granted set is accepted through the CLI and the
-# script prints VERIFIED-VIA-BYPASS.
+# scripts/e2e/human.sh is required. Permission asks are HUMAN_APPROVE clicks.
+# The editor Accept button is a pointer click through the same driver. The
+# script does not resolve a permission or accept a change set from the CLI.
 #
 # Channel binary: PLEXI_BIN or the first argument, any `plexi-*` name
 # (plexi-alpha, plexi-pr-N). The profile follows that binary. A PR number
@@ -105,28 +104,47 @@ SHOT="${SHOT:-$WORK/pending.png}"
 
 PASS=0
 FAIL=0
-BYPASS=0
 ok() { echo "PASS $1"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL $1"; FAIL=$((FAIL + 1)); }
 
 bytes() { sha256sum "$FILE" | awk '{print $1}'; }
 
-HUMAN=""
-if [[ -f "$ROOT/scripts/e2e/human.sh" ]]; then
-  # shellcheck disable=SC1091
-  source "$ROOT/scripts/e2e/human.sh"
-  HUMAN=1
+if [[ ! -f "$ROOT/scripts/e2e/human.sh" ]]; then
+  echo "FAIL scripts/e2e/human.sh is required" >&2
+  exit 1
 fi
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/human.sh"
 
 approve_pending() {
   local id="$1"
-  if [[ -n "$HUMAN" ]]; then
-    HUMAN_APPROVE "$id" once
-    return
+  HUMAN_APPROVE "$id" once
+}
+
+# Pointer click on a labeled button. Same XTEST path as HUMAN_APPROVE.
+click_label() {
+  local label="$1"
+  local pid wid center attempt x y
+  pid="$(human__host_pid)"
+  wid="$(human__window_id "$pid")"
+  if [[ -z "$wid" ]]; then
+    echo "FAIL no host window for $label" >&2
+    return 1
   fi
-  BYPASS=1
-  echo "VERIFIED-VIA-BYPASS permission $id" >&2
-  "$BIN" assistant permission resolve "$id" --choice once >/dev/null
+  for attempt in 1 2 3 4 5 6 7 8; do
+    center="$(human__button_center "$label" || true)"
+    if [[ -z "$center" ]]; then
+      sleep 0.3
+      continue
+    fi
+    x="${center%% *}"
+    y="${center##* }"
+    echo "human: click '$label' at ${x},${y} window=$wid attempt=$attempt" >&2
+    human__click_window "$wid" "$x" "$y" "window" || true
+    return 0
+  done
+  echo "FAIL button $label not found" >&2
+  return 1
 }
 
 run_tool() {
@@ -208,37 +226,23 @@ else
   echo "$STATE"
 fi
 
-ACCEPT_MODE="cli"
-if [[ -n "$HUMAN" ]]; then
-  # The editor Accept button is a pointer click, not a permission-sheet
-  # label. HUMAN_APPROVE covers a pending gate id when one is waiting.
-  # A set that is already granted still needs the editor click; without a
-  # pending id the CLI accept below is the bypass.
-  ACCEPT_MODE="human-or-cli"
+if click_label "Accept"; then
+  ACCEPT_CLICKED=1
+else
+  ACCEPT_CLICKED=0
 fi
-set +e
-ACCEPT_OUT="$("$BIN" changes accept "$CS" 2>"$WORK/accept.err")"
-ACCEPT_CODE=$?
-set -e
-if [[ "$ACCEPT_CODE" -eq 2 ]]; then
-  ACCEPT_ID="$(printf '%s\n' "$ACCEPT_OUT" | sed -n 's/^pending_request_id=//p' | head -n 1)"
-  approve_pending "$ACCEPT_ID"
-  set +e
-  ACCEPT_OUT="$("$BIN" changes accept "$CS" 2>"$WORK/accept.err")"
-  ACCEPT_CODE=$?
-  set -e
-fi
-if [[ "$ACCEPT_MODE" != "human" ]]; then
-  BYPASS=1
-  echo "VERIFIED-VIA-BYPASS accept $CS" >&2
-fi
-if [[ "$ACCEPT_CODE" -eq 0 ]] && python3 -c 'import pathlib,sys; sys.exit(0 if pathlib.Path(sys.argv[1]).read_bytes()==b"beta\n" else 1)' "$FILE"; then
+WROTE=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if python3 -c 'import pathlib,sys; sys.exit(0 if pathlib.Path(sys.argv[1]).read_bytes()==b"beta\n" else 1)' "$FILE"; then
+    WROTE=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$ACCEPT_CLICKED" -eq 1 && "$WROTE" -eq 1 ]]; then
   ok "accept writes the agent edit"
 else
   bad "accept writes the agent edit"
-  echo "exit=$ACCEPT_CODE"
-  echo "$ACCEPT_OUT"
-  cat "$WORK/accept.err" >&2 || true
   python3 -c 'import pathlib,sys; print(repr(pathlib.Path(sys.argv[1]).read_bytes()))' "$FILE" || true
 fi
 
@@ -328,11 +332,6 @@ else
   echo "note: screenshot skipped"
 fi
 
-if [[ "$BYPASS" -eq 1 ]]; then
-  echo "VERIFIED-VIA-BYPASS"
-else
-  echo "HUMAN_APPROVE"
-fi
 echo "PASS=$PASS FAIL=$FAIL shot=$SHOT"
 if [[ "$FAIL" -ne 0 ]]; then
   exit 1
