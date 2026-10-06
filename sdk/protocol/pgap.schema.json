@@ -400,13 +400,27 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Submit one text turn to a host Assistant pane.",
+          "description": "Submit one text turn to the Assistant. With `pane_id` omitted the host\nreuses an Assistant in the context or creates a hidden one, so a\nphone, relay, or CLI caller does not need `app open assistant` first.\nA `pane_id` that does not exist still fails with\n`assistant_pane_not_found`. The pane owns the normal composer path and\nwrites the terminal JSON reply.",
           "properties": {
+            "client": {
+              "description": "Ledger client tag for this run. Absent uses `[ai] client`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "context_id": {
               "format": "uint64",
               "minimum": 0,
               "type": [
                 "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Ledger run kind: `system` or `output`. Absent means `output`.",
+              "type": [
+                "string",
                 "null"
               ]
             },
@@ -1074,6 +1088,18 @@
               "description": "When set, the host launches the app directly from this filesystem path\nrather than looking it up in the registry by type_id.",
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "peer_ancestry": {
+              "description": "Host-stamped ancestor pids of the socket peer. The client cannot\nset this: `handle_socket_line` overwrites it from the kernel\ncredential captured at accept. `None` means the request did not\narrive on the command socket (spawn queue, in-process).",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
                 "null"
               ]
             },
