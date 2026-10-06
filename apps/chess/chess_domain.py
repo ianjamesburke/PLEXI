@@ -7,10 +7,9 @@ move list, a monotonically increasing revision, seat assignments, the receipt
 for every accepted operation, and an outbox of events committed with the move
 but not yet confirmed published.
 
-Authorization here is the app's own resource policy, applied *after* the host
-has already admitted the call (reference monitor + grants). The host stamps the
-caller identity; this module only decides whether that identity holds the seat
-for the side to move.
+Authorization is the host envelope beside the call. Seat enrollment is not
+an authorization path. The host stamps the actor; this module checks that
+envelope, the revision, and the move.
 """
 
 from __future__ import annotations
@@ -60,8 +59,7 @@ def new_game(
     seats: Optional[dict] = None,
     start_fen: str = START_FEN,
 ) -> dict:
-    """A fresh game at revision 0. `seats` maps "white"/"black" to the actor
-    id allowed to move that side (None leaves a seat to the local user)."""
+    """A fresh game at revision 0. `seats` is display metadata only."""
     if not game_id:
         raise ChessError("invalid_argument", "game_id is required")
     Position.from_fen(start_fen)  # validate before committing anything
@@ -142,14 +140,15 @@ def play(
     expected_revision: int,
     operation_id: str,
     move: str,
+    authorization: Optional[dict] = None,
 ) -> PlayOutcome:
     """Validate and commit one move. Raises ChessError without mutating.
 
-    Order of checks is part of the contract: the game must match, a repeated
-    operation id returns its original receipt (or conflicts), then side
-    ownership, revision, and legality are checked against current state."""
+    Order: identity, operation id, game, duplicate receipt, game-over, then
+    revision before authorization, then legality. A repeated operation with
+    the same actor and move returns the original receipt."""
     if not actor:
-        raise ChessError("unauthorized", "no caller identity")
+        raise ChessError("permission_denied", "no caller identity")
     if not operation_id:
         raise ChessError("invalid_argument", "operation_id is required")
     _check_game(game, game_id)
@@ -157,11 +156,7 @@ def play(
 
     prior = game["receipts"].get(operation_id)
     if prior is not None:
-        same = (
-            prior["actor"] == actor
-            and prior["move"] == uci
-            and prior["revision_before"] == expected_revision
-        )
+        same = prior["actor"] == actor and prior["move"] == uci
         if not same:
             raise ChessError(
                 "operation_conflict",
@@ -176,8 +171,8 @@ def play(
         raise ChessError("game_over", f"game is over ({st})", current_revision=game["revision"])
 
     side = side_to_move(pos)
-    _authorize(game, actor, side)
     _check_revision(game, expected_revision)
+    _authorize(game, actor, side, authorization)
 
     try:
         played = pos.make_move(uci)
@@ -238,7 +233,7 @@ def start_new_game(
     """Privileged reset. Only the local user may replace the current game; a
     new id invalidates every reference to the old one."""
     if actor != LOCAL_USER:
-        raise ChessError("unauthorized", f"{actor} may not start a new game")
+        raise ChessError("permission_denied", f"{actor} may not start a new game")
     if game is not None and game.get("game_id") == game_id:
         raise ChessError("invalid_argument", "a new game needs a new game_id")
     return new_game(game_id, seats, start_fen)
@@ -280,17 +275,33 @@ def _check_revision(game: dict, revision: int) -> None:
         )
 
 
-def _authorize(game: dict, actor: str, side: str) -> None:
+def _authorize(game: dict, actor: str, side: str, authorization: Optional[dict]) -> None:
+    """Host envelope, not seat enrollment. Revision was already checked."""
+    auth = authorization if isinstance(authorization, dict) else {}
     if actor == LOCAL_USER:
-        return
-    holder = game["seats"].get(side)
-    if holder == actor:
-        return
-    other = "black" if side == "white" else "white"
-    if game["seats"].get(other) == actor:
+        if auth.get("human_interaction") is True and auth.get("game_id") == game["game_id"]:
+            return
         raise ChessError(
-            "wrong_side",
-            f"{actor} holds {other}; it is {side}'s move",
+            "permission_denied",
+            "a board move needs a host-stamped human interaction envelope",
             current_revision=game["revision"],
         )
-    raise ChessError("unauthorized", f"{actor} holds no seat in this game")
+    if auth.get("actor") != actor or auth.get("package") != "chess":
+        raise ChessError(
+            "permission_denied",
+            "host authorization does not match this caller",
+            current_revision=game["revision"],
+        )
+    if auth.get("game_id") != game["game_id"] or not auth.get("grant_id"):
+        raise ChessError(
+            "permission_denied",
+            "host authorization does not match this game",
+            current_revision=game["revision"],
+        )
+    claimed = auth.get("side")
+    if claimed and claimed != side:
+        raise ChessError(
+            "wrong_side",
+            f"{actor} claimed {claimed}; it is {side}'s move",
+            current_revision=game["revision"],
+        )

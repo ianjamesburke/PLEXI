@@ -503,12 +503,15 @@ impl PlexiApp {
                             call_id,
                             output_json,
                             error,
+                            error_code,
                         } => {
                             crate::plexi_ai::tool_dispatch::resolve_pending(
                                 &call_id,
                                 crate::plexi_ai::tool_dispatch::ToolCallResult {
                                     output_json,
                                     error,
+                                    error_code,
+                                    pending_request_id: None,
                                 },
                             );
                             None
@@ -550,9 +553,15 @@ impl PlexiApp {
                     call_id,
                     output_json,
                     error,
+                    error_code,
                 } => crate::plexi_ai::tool_dispatch::resolve_pending(
                     &call_id,
-                    crate::plexi_ai::tool_dispatch::ToolCallResult { output_json, error },
+                    crate::plexi_ai::tool_dispatch::ToolCallResult {
+                        output_json,
+                        error,
+                        error_code,
+                        pending_request_id: None,
+                    },
                 ),
                 AppCommand::AppEventRequest {
                     request,

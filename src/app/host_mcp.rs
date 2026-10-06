@@ -265,6 +265,10 @@ pub fn start_host_mcp_server(
     save_identity(config_dir, port);
 
     let _ = DISCOVERY.set(port);
+    // The directory this server was started with is the grant profile. Callers
+    // pass `config_dir()` in production. Connection threads must not call
+    // `config_dir()` themselves: a test's profile override is thread-local.
+    let profile = config_dir.to_path_buf();
 
     std::thread::Builder::new()
         .name(format!("host-mcp-accept-{port}"))
@@ -273,10 +277,11 @@ pub fn start_host_mcp_server(
                 match stream {
                     Ok(stream) => {
                         let subscribe_tx = subscribe_tx.clone();
+                        let profile = profile.clone();
                         std::thread::Builder::new()
                             .name("host-mcp-conn".to_string())
                             .spawn(move || {
-                                if let Err(e) = handle_connection(stream, &subscribe_tx) {
+                                if let Err(e) = handle_connection(stream, &subscribe_tx, &profile) {
                                     log::warn!("host_mcp: connection error: {e}");
                                 }
                             })
@@ -335,6 +340,7 @@ fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> ser
 fn handle_connection(
     stream: std::net::TcpStream,
     subscribe_tx: &UiMailbox<HostSubscribeRequest>,
+    profile: &std::path::Path,
 ) -> std::io::Result<()> {
     let peer = stream
         .peer_addr()
@@ -347,8 +353,13 @@ fn handle_connection(
         RequestOutcome::Handled => return Ok(()),
     };
     let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
-        caller.pane_id,
-        caller.context_id,
+        crate::plexi_ai::tool_dispatch::DispatchScope::new(
+            caller.pane_id,
+            format!("mcp:pane:{}", caller.pane_id),
+            caller.workspace_root.clone(),
+            caller.context_id,
+        ),
+        crate::broker::gate::PermissionMonitor::for_profile(profile),
     );
 
     let id = json.get("id").cloned().unwrap_or(serde_json::Value::Null);
@@ -600,12 +611,11 @@ mod tests {
 
     /// A test server whose subscribe channel is serviced by a granted service
     /// bound to the global timeline (the production wiring, minus the UI loop).
-    fn start_test_server(grant_target: Option<&str>) -> (u16, String) {
+    fn start_test_server(grant_target: Option<&str>) -> (u16, String, std::path::PathBuf) {
         static NEXT_PANE_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(80_000);
         use crate::broker::{
-            ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource,
-            ResourceScope, TargetType,
+            ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource,
         };
         let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let actor_id = format!("mcp:pane:{pane_id}");
@@ -616,21 +626,16 @@ mod tests {
         );
         let mut store = crate::broker::GrantStore::default();
         if let Some(target) = grant_target {
-            store.record(GrantRecord {
-                actor_type: ActorType::Agent,
-                actor_id,
-                actor_scope: ActorScope::User,
-                workspace_root: Some(workspace_root.clone()),
-                target_type: TargetType::AppEventStream,
-                target_id: target.to_string(),
-                resource_scope: ResourceScope::Global,
-                resource_id: None,
-                decision: Decision::Allow,
-                duration: GrantDuration::Session,
-                source: GrantSource::Session,
-                created_at: 0,
-                expires_at: None,
-            });
+            store.record(GrantRecord::event_stream_allow(
+                ActorType::Agent,
+                &actor_id,
+                ActorScope::User,
+                target,
+                &workspace_root,
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+            ));
         }
         let svc = crate::host::event_subscriptions::HostSubscriptionService::new_for_test(
             store,
@@ -647,9 +652,12 @@ mod tests {
         // Each test server gets an isolated profile dir so its persisted
         // endpoint never collides with a sibling test's port.
         let dir = tempfile::tempdir().unwrap();
-        let port = start_host_mcp_server(tx, dir.path()).unwrap();
+        let profile = dir.path().to_path_buf();
+        let port = start_host_mcp_server(tx, &profile).unwrap();
+        // The accept thread keeps using this directory after the test returns.
+        std::mem::forget(dir);
         let token = register_pane_credential(pane_id, 1, workspace_root);
-        (port, token)
+        (port, token, profile)
     }
 
     #[test]
@@ -708,7 +716,7 @@ mod tests {
 
     #[test]
     fn no_auth_returns_401() {
-        let (port, _t) = start_test_server(None);
+        let (port, _t, _profile) = start_test_server(None);
         let (status, _) = post(
             port,
             None,
@@ -719,7 +727,7 @@ mod tests {
 
     #[test]
     fn tools_list_exposes_subscription_tools() {
-        let (port, token) = start_test_server(None);
+        let (port, token, _profile) = start_test_server(None);
         let (status, body) = post(
             port,
             Some(&token),
@@ -756,11 +764,11 @@ mod tests {
         use crate::protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
 
-        let (port, _test_token) = start_test_server(None);
+        let (port, _test_token, profile) = start_test_server(None);
         let context_a = 100u64;
         let context_b = 200u64; // a different context — must stay unreachable
         let workspace_a = PathBuf::from("/workspace/host-mcp-a");
-        let caller_token = register_pane_credential(7_001, context_a, workspace_a);
+        let caller_token = register_pane_credential(7_001, context_a, workspace_a.clone());
         let (provider_tx, provider_rx) = std::sync::mpsc::channel();
         let (other_tx, _other_rx) = std::sync::mpsc::channel();
         let tool = |name: &str| AiTool {
@@ -818,6 +826,40 @@ mod tests {
             "client arguments cannot override credential workspace: {json}"
         );
 
+        {
+            use crate::broker::{
+                ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord,
+                GrantSource, ResourceScope, TargetType,
+            };
+            let args = r#"{"value":7}"#;
+            let binding = ExactBinding {
+                actor_type: ActorType::App,
+                actor_id: "mcp:pane:7001".to_string(),
+                actor_scope: ActorScope::User,
+                trust_origin: "host".to_string(),
+                workspace_root: workspace_a.clone(),
+                target_type: TargetType::AppConnector,
+                target_id: "workspace-a-app__echo".to_string(),
+                resource_scope: ResourceScope::Workspace,
+                resource_id: None,
+                args_fingerprint: crate::broker::gate::fingerprint_args(args).unwrap(),
+                session_id: None,
+                package_id: "workspace-a-app".to_string(),
+                instance_id: Some(7_002),
+                context_id: Some(context_a),
+                call_id: String::new(),
+                operation_id: String::new(),
+            };
+            crate::broker::gate::PermissionMonitor::for_profile(&profile)
+                .store()
+                .record(GrantRecord::from_binding(
+                    &binding,
+                    Decision::Allow,
+                    GrantDuration::Always,
+                    GrantSource::User,
+                    "grant-mcp-echo",
+                ));
+        }
         let responder = std::thread::spawn(move || {
             let line = provider_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -828,6 +870,7 @@ mod tests {
                 name,
                 input_json,
                 caller_id,
+                authorization: _,
             } = event
             else {
                 panic!("expected ToolCall");
@@ -887,7 +930,7 @@ mod tests {
         );
         let runtime = std::env::var("PLEXI_PI_RUNTIME").unwrap_or_else(|_| "bun".to_string());
 
-        let (port, _test_token) = start_test_server(None);
+        let (port, _test_token, _profile) = start_test_server(None);
         let context = 300u64;
         let caller_pane = 7_101u64;
         let token = register_pane_credential(
@@ -952,6 +995,7 @@ mod tests {
                 name,
                 input_json,
                 caller_id,
+                authorization: _,
             } = event
             else {
                 panic!("expected ToolCall");
@@ -1055,7 +1099,7 @@ export default function (pi: ExtensionAPI) {
                 }],
             )
             .unwrap();
-        let (port, token) = start_test_server(Some(&format!("{app}::{stream}")));
+        let (port, token, _profile) = start_test_server(Some(&format!("{app}::{stream}")));
 
         // Emit shortly after the tool call begins its long-poll.
         std::thread::spawn(move || {

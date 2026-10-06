@@ -14,6 +14,11 @@ python_compat = true
 [state]
 scopes = ["context"]
 
+[launch]
+# One board per context. A second `app open chess` focuses that board
+# instead of stacking a pane whose tools the host cannot address.
+on_launch = "focus_existing_in_context"
+
 [app.capabilities]
 capabilities = []
 

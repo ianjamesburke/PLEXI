@@ -26,6 +26,27 @@ use crate::protocol::ModelTier;
 use crate::broker::Decision;
 
 use super::commands;
+
+/// Stable accessibility label for a chess-style `move` field in a tool summary.
+fn move_label(summary: &str) -> Option<String> {
+    let mv = if let Some(start) = summary.find("move: ") {
+        let rest = &summary[start + "move: ".len()..];
+        let end = rest.find([',', '}', '\n']).unwrap_or(rest.len());
+        rest[..end].trim().trim_matches('"').to_string()
+    } else {
+        let start = summary.find("\"move\"")?;
+        let rest = summary[start + "\"move\"".len()..].trim_start();
+        let rest = rest.strip_prefix(':')?.trim_start();
+        let rest = rest.strip_prefix('"')?;
+        let end = rest.find('"')?;
+        rest[..end].to_string()
+    };
+    if mv.is_empty() {
+        None
+    } else {
+        Some(format!("move {mv}"))
+    }
+}
 use super::model::{
     AssistantModel, AssistantOverlay, CompactionState, PermissionChoice, ToolStatus, TurnRole,
 };
@@ -388,6 +409,23 @@ impl AssistantRenderer {
         } else {
             ("✓", colors.text_dim)
         };
+        if turn.text.contains("stale revision") {
+            ui.label(
+                RichText::new("stale revision")
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.danger),
+            );
+        }
+        if let Some(preview) = &turn.output_preview {
+            if let Some(line) = preview.lines().find(|line| line.starts_with("actor:")) {
+                ui.label(
+                    RichText::new(line)
+                        .size(style::TEXT_CAPTION)
+                        .monospace()
+                        .color(colors.text_primary),
+                );
+            }
+        }
         let header = RichText::new(format!("{icon} {}", turn.text))
             .size(style::TEXT_CAPTION)
             .monospace()
@@ -653,14 +691,31 @@ impl AssistantRenderer {
                 ui.scope(|ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.set_max_width(ui.available_width());
+                    let who = if pending.actor_id.is_empty() {
+                        "assistant (medium)".to_string()
+                    } else {
+                        pending.actor_id.clone()
+                    };
+                    let resource = if pending.resource_id.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" on {}", pending.resource_id)
+                    };
                     ui.label(
                         RichText::new(format!(
-                            "assistant (medium) wants to run the app tool '{}'",
-                            pending.tool
+                            "{who} wants to run '{tool}'{resource}",
+                            tool = pending.tool
                         ))
                         .size(style::TEXT_BODY)
                         .color(colors.text_primary),
                     );
+                    if let Some(mv) = move_label(&pending.input_summary) {
+                        ui.label(
+                            RichText::new(mv)
+                                .size(style::TEXT_BODY)
+                                .color(colors.text_primary),
+                        );
+                    }
                 });
                 if !pending.input_summary.is_empty() {
                     ui.scope(|ui| {

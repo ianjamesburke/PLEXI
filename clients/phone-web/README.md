@@ -1,6 +1,6 @@
 # Phone shell
 
-Phone-sized web page for Plexi: connection state, one transcript, a composer, Send and Cancel. It is the phone shell waiting for the real intake contract (spec P4). It is **not** the cloud assistant: there is no auth, no pairing, no host connection, and no persistence. `server.py` accepts turns into memory, marks them `queued`, and echoes them back after a short delay so cancellation can be tested.
+Phone-sized web page for Plexi: connection state, one transcript, a composer, Send and Cancel. It is the phone shell waiting for the real intake contract (spec P4). The default loopback process is an in-memory echo. Host mode runs `plexi assistant send` and requires a bearer token even on loopback. LAN mode is plain HTTP, not HTTPS. Receipts stay in memory. Website configuration for plexiapp.com is not a phone relay.
 
 Stack: Python stdlib server + static HTML/CSS/JS on one origin. No dependencies.
 

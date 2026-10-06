@@ -29,8 +29,8 @@
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
 use crate::broker::{
-    ActorType, Decision, GrantDuration, GrantStore, PermissionPosture, PermissionRequest,
-    TargetType,
+    ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
+    PermissionRequest, TargetType,
 };
 use crate::host::app_timeline::{AppTimeline, EventDelivery};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
@@ -471,6 +471,7 @@ impl AgentRuntime {
 pub struct AgentHost {
     pub agents: Vec<AgentRuntime>,
     pub grant_store: GrantStore,
+    pub monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
     timeline: Arc<Mutex<AppTimeline>>,
     ai_broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
@@ -510,6 +511,7 @@ impl AgentHost {
         Self {
             agents: Vec::new(),
             grant_store,
+            monitor: crate::broker::gate::PermissionMonitor::ephemeral(),
             timeline,
             ai_broker,
             workspace_root,
@@ -543,7 +545,10 @@ impl AgentHost {
         }
         self.agents.clear();
         if let Some(dir) = &self.grants_dir {
+            let loaded = GrantStore::load_or_default(dir);
+            self.monitor.replace_store(loaded);
             self.grant_store = GrantStore::load_or_default(dir);
+            self.monitor = crate::broker::gate::PermissionMonitor::for_profile(dir);
         }
         let Some(root) = workspace_root else {
             log::info!("agent: no active workspace — no agents attached");
@@ -572,13 +577,14 @@ impl AgentHost {
             let mut granted = true;
             for event in &sub.events {
                 let target = format!("{}::{}", sub.app, event);
-                let req = PermissionRequest::new(
+                let req = PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
                     ActorType::Agent,
                     &def.id,
-                    TargetType::AppEventStream,
+                    ActorScope::User,
                     &target,
-                    Some(&self.workspace_root),
-                );
+                    &self.workspace_root,
+                    None,
+                ));
                 // Subscriptions deliberately evaluate WITHOUT the agent's own
                 // posture: an agent must not self-grant event access from its
                 // settings file. Only user/workspace/managed grants count.
@@ -738,9 +744,21 @@ impl AgentHost {
     /// this workspace whose `app_connector:app.<tool_name>` target evaluates
     /// to `Allow` for the agent (user grants + the agent's posture tiers).
     fn gated_dispatcher(&self, agent: &AgentRuntime) -> ToolDispatcher {
-        let mut dispatcher =
-            ToolDispatcher::from_registry(0, format!("agent:{}", agent.def.id), self.context_id);
-        let allowed: HashSet<String> = dispatcher
+        // Discovery does not authorize. Posture deny still hides a tool;
+        // everything else stays visible and `dispatch_call` rechecks the monitor.
+        let mut dispatcher = ToolDispatcher::from_registry(
+            crate::plexi_ai::tool_dispatch::DispatchScope {
+                caller_pane_id: 0,
+                caller_app_id: format!("agent:{}", agent.def.id),
+                actor_type: ActorType::Agent,
+                actor_scope: ActorScope::User,
+                workspace_root: self.workspace_root.clone(),
+                context_id: self.context_id,
+                trust_origin: "host".to_string(),
+            },
+            std::sync::Arc::clone(&self.monitor),
+        );
+        let denied: HashSet<String> = dispatcher
             .all_tools()
             .into_iter()
             .filter(|tool| {
@@ -748,30 +766,30 @@ impl AgentHost {
                     ActorType::Agent,
                     &agent.def.id,
                     TargetType::AppConnector,
-                    &format!("app.{}", tool.name),
+                    &tool.name,
                     Some(&self.workspace_root),
                 );
-                let with_posture = self.grant_store.evaluate(&req, Some(&agent.def.posture));
-                // `Ask` from the posture tier is satisfied by an explicit
-                // user grant: re-evaluate without the posture — `Allow` then
-                // means a persisted user/workspace allow exists (denies still
-                // dominate both evaluations).
-                let allowed = with_posture == Decision::Allow
-                    || (with_posture == Decision::Ask
-                        && self.grant_store.evaluate(&req, None) == Decision::Allow);
-                if !allowed {
+                let decision = self.grant_store.evaluate(&req, Some(&agent.def.posture));
+                if decision == Decision::Deny {
                     log::info!(
-                        "agent[{}]: tool '{}' withheld from turn ({})",
+                        "agent[{}]: tool '{}' withheld from turn (deny)",
                         agent.def.id,
-                        tool.name,
-                        with_posture.as_str()
+                        tool.name
                     );
                 }
-                allowed
+                decision == Decision::Deny
             })
             .map(|tool| tool.name)
             .collect();
-        dispatcher.retain_allowed(&allowed);
+        if !denied.is_empty() {
+            let allowed: HashSet<String> = dispatcher
+                .all_tools()
+                .into_iter()
+                .map(|tool| tool.name)
+                .filter(|name| !denied.contains(name))
+                .collect();
+            dispatcher.retain_allowed(&allowed);
+        }
         dispatcher
     }
 
@@ -862,6 +880,7 @@ impl AgentHost {
             Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(ai_config)),
             config_dir.clone(),
         );
+        host.monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
         host.grants_dir = Some(config_dir);
         host
     }
@@ -1033,7 +1052,7 @@ default_tier = "low"
     /// and switching away detaches them and removes their subscriptions.
     #[test]
     fn reload_workspace_attaches_and_detaches_agents() {
-        use crate::broker::{ActorScope, GrantRecord, GrantSource, ResourceScope};
+        use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
 
         let ws = tempfile::tempdir().unwrap();
         let agent_dir = ws
@@ -1061,21 +1080,16 @@ default_tier = "low"
             "move.undone",
             "game.ended",
         ] {
-            host.grant_store.record(GrantRecord {
-                actor_type: ActorType::Agent,
-                actor_id: "chess-opponent".to_string(),
-                actor_scope: ActorScope::User,
-                workspace_root: None,
-                target_type: TargetType::AppEventStream,
-                target_id: format!("chess::{event}"),
-                resource_scope: ResourceScope::Game,
-                resource_id: None,
-                decision: Decision::Allow,
-                duration: GrantDuration::Session,
-                source: GrantSource::User,
-                created_at: 0,
-                expires_at: None,
-            });
+            host.grant_store.record(GrantRecord::event_stream_allow(
+                ActorType::Agent,
+                "chess-opponent",
+                ActorScope::User,
+                &format!("chess::{event}"),
+                ws.path(),
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+            ));
         }
         assert!(host.agents.is_empty());
 

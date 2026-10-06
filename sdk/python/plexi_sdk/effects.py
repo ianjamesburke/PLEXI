@@ -189,6 +189,7 @@ class ToolResult:
     call_id: str
     output_json: Optional[str] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 @dataclass

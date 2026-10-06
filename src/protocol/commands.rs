@@ -729,10 +729,25 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
 
+    /// List pending permission requests. Observation seam for the desktop gate.
+    ListPermissionRequests { response_file: String },
+    /// Show one pending permission request.
+    ShowPermissionRequest {
+        pending_request_id: String,
+        response_file: String,
+    },
+    /// Resolve one pending permission request from the desktop observation seam.
+    ResolvePermissionRequest {
+        pending_request_id: String,
+        /// `once`, `session`, `always`, or `deny`.
+        choice: String,
+        response_file: String,
+    },
     /// Call an app-exposed tool through the host tool dispatcher. Sent by
     /// `plexi app call`. The host resolves the viewer context from
-    /// `caller_pane_id` (the active window's context when absent), stamps the
-    /// caller identity (`pane:<id>` or `user`), and writes
+    /// `caller_pane_id` (the credential's context when absent), stamps the
+    /// caller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or
+    /// `session:<id>` — never `user`), and writes
     /// `{"ok":true,"output":<json>}` or `{"error":"..."}` to `response_file`
     /// from a worker thread once the app answers or the host deadline passes.
     CallAppTool {
@@ -742,6 +757,16 @@ pub enum AppRequest {
         input_json: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller_pane_id: Option<u64>,
+        /// Host-issued session credential. A client-supplied pane id is only a claim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_credential: Option<String>,
+        /// Host-captured peer ancestry. Socket clients cannot set this; the
+        /// listener overwrites it before the call is admitted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        peer_ancestry: Vec<u32>,
+        /// Pane that owns the tool when more than one instance of the app is live.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
@@ -912,6 +937,8 @@ pub enum AppRequest {
         output_json: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
     },
     /// Host-owned audio playback via `rodio`.
     AudioPlay {

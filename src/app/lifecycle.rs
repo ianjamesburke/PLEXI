@@ -234,6 +234,15 @@ impl PlexiApp {
                 if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
                 else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
             }
+            crate::protocol::AppRequest::ListPermissionRequests { response_file } => {
+                self.observe_permissions("list", None, None, response_file);
+            }
+            crate::protocol::AppRequest::ShowPermissionRequest { pending_request_id, response_file } => {
+                self.observe_permissions("show", Some(pending_request_id), None, response_file);
+            }
+            crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
+                self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
+            }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;
@@ -2307,6 +2316,9 @@ impl PlexiApp {
                 tool,
                 input_json,
                 caller_pane_id,
+                call_credential,
+                peer_ancestry,
+                target_pane_id,
                 response_file,
             } => {
                 self.call_app_tool(
@@ -2314,6 +2326,9 @@ impl PlexiApp {
                     tool.clone(),
                     input_json.clone(),
                     *caller_pane_id,
+                    call_credential.clone(),
+                    peer_ancestry.clone(),
+                    *target_pane_id,
                     response_file.clone(),
                 );
             }

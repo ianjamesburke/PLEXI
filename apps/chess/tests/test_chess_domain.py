@@ -26,9 +26,26 @@ def _game(**kw) -> dict:
     return g
 
 
-def _play(game, actor, rev, op, move, game_id="game-1"):
+def _auth(actor, game_id="game-1", side=None):
+    if actor == d.LOCAL_USER:
+        return {
+            "schema_version": 1, "actor": actor, "package": "chess",
+            "game_id": game_id, "grant_id": "human", "human_interaction": True,
+        }
+    body = {
+        "schema_version": 1, "actor": actor, "package": "chess",
+        "game_id": game_id, "grant_id": "grant-test", "human_interaction": False,
+    }
+    if side:
+        body["side"] = side
+    return body
+
+
+def _play(game, actor, rev, op, move, game_id="game-1", authorization="auto", side=None):
+    if authorization == "auto":
+        authorization = _auth(actor, game_id, side)
     return d.play(game, actor=actor, game_id=game_id, expected_revision=rev,
-                  operation_id=op, move=move)
+                  operation_id=op, move=move, authorization=authorization)
 
 
 def _rejects(code, game, *args, **kw):
@@ -77,15 +94,25 @@ def test_san_is_rejected_in_favor_of_uci():
 
 
 def test_wrong_side_rejected():
-    _rejects("wrong_side", _game(), BLACK, 0, "op-1", "e7e5")
+    _rejects("wrong_side", _game(), BLACK, 0, "op-1", "e7e5", side="black")
 
 
-def test_unseated_actor_rejected():
-    _rejects("unauthorized", _game(), "agent:intruder", 0, "op-1", "e2e4")
+def test_host_approved_actor_needs_no_seat():
+    out = _play(_game(), "agent:intruder", 0, "op-1", "e2e4")
+    assert out.receipt["actor"] == "agent:intruder"
+
+
+def test_missing_envelope_is_denied():
+    _rejects("permission_denied", _game(), "agent:intruder", 0, "op-1", "e2e4", authorization=None)
+
+
+def test_stale_revision_wins_over_wrong_side():
+    g = _play(_game(), WHITE, 0, "op-1", "e2e4").game
+    _rejects("stale_revision", g, BLACK, 0, "op-2", "e7e5", side="white")
 
 
 def test_empty_identity_rejected():
-    _rejects("unauthorized", _game(), "", 0, "op-1", "e2e4")
+    _rejects("permission_denied", _game(), "", 0, "op-1", "e2e4")
 
 
 def test_local_user_may_move_either_side():
@@ -176,7 +203,7 @@ def test_reset_is_privileged_and_invalidates_old_game():
     g = _play(_game(), WHITE, 0, "op-1", "e2e4").game
     with pytest.raises(d.ChessError) as err:
         d.start_new_game(g, actor=WHITE, game_id="game-2")
-    assert err.value.code == "unauthorized"
+    assert err.value.code == "permission_denied"
     fresh = d.start_new_game(g, actor=d.LOCAL_USER, game_id="game-2",
                              seats={"white": WHITE, "black": BLACK})
     assert fresh["revision"] == 0 and fresh["receipts"] == {}

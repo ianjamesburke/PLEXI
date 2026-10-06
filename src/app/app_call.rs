@@ -3,9 +3,10 @@
 //! The call runs through the same `ToolDispatcher` the Assistant and the host
 //! MCP server use, so the app receives an ordinary `ToolCall` and answers with
 //! an ordinary `ToolResult`. The host decides two things the caller cannot:
-//! the viewer context (the calling pane's live context, or the active window's
+//! the viewer context (the calling pane's live context, or the credential's
 //! context for a caller outside any pane) and the caller identity the app sees
-//! (`pane:<id>` or `user`).
+//! (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or `session:<id>`). A missing
+//! pane is never the human `user`.
 //!
 //! `dispatch_call` blocks until the app answers, and the app's answer is
 //! drained by `App::logic`, so the call runs on a worker thread and writes the
@@ -13,23 +14,102 @@
 
 use super::PlexiApp;
 
-/// The identity an app sees for a socket caller. A pane id the host cannot
-/// find is refused rather than downgraded to `user`, so a stale or forged id
-/// never gains the outside-a-pane identity.
-pub(crate) fn caller_identity(caller_pane_id: Option<u64>) -> String {
-    match caller_pane_id {
-        Some(pane_id) => format!("pane:{pane_id}"),
-        None => "user".to_string(),
+/// The identity an app sees for a verified socket caller. No pane is never
+/// the human `user`.
+pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option<&str>) -> String {
+    match (caller_pane_id, session_actor) {
+        (_, Some(actor)) if !actor.is_empty() => actor.to_string(),
+        (Some(pane_id), _) => format!("pane:{pane_id}"),
+        (None, _) => "session:unscoped".to_string(),
     }
 }
 
 impl PlexiApp {
+    pub(crate) fn observe_permissions(
+        &mut self,
+        op: &str,
+        pending_id: Option<&String>,
+        choice: Option<&String>,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let body = match op {
+            "list" => {
+                let pending = monitor.list_pending();
+                log::info!(
+                    "permission_monitor: list pending count={}",
+                    pending.len()
+                );
+                serde_json::json!({
+                    "ok": true,
+                    "pending": pending,
+                    "audit": monitor.audit_records(),
+                })
+            }
+            "show" => {
+                let id = pending_id.map(String::as_str).unwrap_or("");
+                match monitor.show_pending(id) {
+                    Some(row) => {
+                        log::info!("permission_monitor: show pending {id}");
+                        serde_json::json!({"ok": true, "pending": row})
+                    }
+                    None => serde_json::json!({
+                        "ok": false,
+                        "error_code": "permission_denied",
+                        "error": format!("unknown pending request {id}"),
+                    }),
+                }
+            }
+            "resolve" => {
+                let id = pending_id.map(String::as_str).unwrap_or("");
+                let raw = choice.map(String::as_str).unwrap_or("");
+                if raw == "revoke" {
+                    let removed = monitor.revoke_grant_id(id);
+                    log::info!("permission_monitor: revoke grant {id} removed={removed}");
+                    serde_json::json!({"ok": removed, "grant_id": id})
+                } else {
+                let parsed = match raw {
+                    "once" => Some(crate::broker::gate::ApprovalChoice::Once),
+                    "session" => Some(crate::broker::gate::ApprovalChoice::Session),
+                    "always" => Some(crate::broker::gate::ApprovalChoice::Always),
+                    "deny" => Some(crate::broker::gate::ApprovalChoice::Deny),
+                    _ => None,
+                };
+                match parsed {
+                    Some(choice) => match monitor.approve_pending(id, choice) {
+                        Ok(()) => {
+                            log::info!("permission_monitor: resolved pending {id} via observation seam");
+                            serde_json::json!({"ok": true, "pending_request_id": id})
+                        }
+                        Err(error) => serde_json::json!({
+                            "ok": false,
+                            "error_code": "permission_denied",
+                            "error": error,
+                        }),
+                    },
+                    None => serde_json::json!({
+                        "ok": false,
+                        "error": "choice must be once, session, always, deny, or revoke",
+                    }),
+                }
+                }
+            }
+            _ => serde_json::json!({"ok": false, "error": "unknown permission operation"}),
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_app_tool(
         &mut self,
         app_id: String,
         tool: String,
         input_json: String,
         caller_pane_id: Option<u64>,
+        call_credential: Option<String>,
+        peer_ancestry: Vec<u32>,
+        target_pane_id: Option<u64>,
         response_file: Option<String>,
     ) {
         let reply = move |body: serde_json::Value| {
@@ -37,28 +117,98 @@ impl PlexiApp {
                 crate::rpc::write_response(rf, body.to_string().as_bytes());
             }
         };
-        let context_id = match caller_pane_id {
-            Some(pane_id) => match self.find_pane_in_any_window(pane_id) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let peer_pane = self
+            .resolve_socket_peer_pane(&peer_ancestry)
+            .map(|(pane_id, _, _)| pane_id);
+        let verified = match monitor.authenticate_call(
+            caller_pane_id,
+            call_credential.as_deref(),
+            peer_pane,
+        ) {
+            Ok(caller) => caller,
+            Err(error) => {
+                let actor = caller_pane_id
+                    .map(|pane| format!("pane:{pane}"))
+                    .unwrap_or_else(|| "session:unscoped".to_string());
+                monitor.note_denial(&actor, "app-call", &app_id, "", "identity");
+                log::info!(
+                    "app_call: denied app={app_id} tool={tool} identity={error:?} claim={caller_pane_id:?} actor={actor}"
+                );
+                let code = match error {
+                    crate::broker::gate::IdentityError::StaleCredential => "permission_denied",
+                    crate::broker::gate::IdentityError::Forged
+                    | crate::broker::gate::IdentityError::Mismatch
+                    | crate::broker::gate::IdentityError::Missing => "permission_denied",
+                };
+                reply(serde_json::json!({
+                    "ok": false,
+                    "error_code": code,
+                    "error": crate::broker::gate::structured_error(code, "app-call", None),
+                }));
+                return;
+            }
+        };
+        if verified.is_human {
+            reply(serde_json::json!({
+                "ok": false,
+                "error_code": "permission_denied",
+                "error": "socket caller cannot be the human user",
+            }));
+            return;
+        }
+        let context_id = if verified.context_id != 0 {
+            verified.context_id
+        } else if let Some(pane_id) = verified.pane_id {
+            match self.find_pane_in_any_window(pane_id) {
                 Some((win_idx, _)) => self.windows[win_idx].context_id,
                 None => {
-                    log::warn!(
-                        "app_call: refused app={app_id} tool={tool} — caller pane {pane_id} not found"
-                    );
+                    log::warn!("app_call: refused — verified pane {pane_id} is not live");
                     reply(serde_json::json!({
-                        "error": format!("caller pane {pane_id} not found")
+                        "ok": false,
+                        "error_code": "permission_denied",
+                        "error": format!("caller pane {pane_id} not found"),
                     }));
                     return;
                 }
-            },
-            None => self.windows[self.active_window].context_id,
+            }
+        } else {
+            // A no-pane session may ask in an explicit context. It is not the human.
+            self.windows[self.active_window].context_id
         };
-        let caller = caller_identity(caller_pane_id);
-        let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
-            caller_pane_id.unwrap_or(0),
+        let workspace = if verified.workspace_root.as_os_str().is_empty() {
+            self.context_root_for(context_id)
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+        } else {
+            verified.workspace_root.clone()
+        };
+        let caller = caller_identity(verified.pane_id, Some(&verified.actor_id));
+        let mut scope = crate::plexi_ai::tool_dispatch::DispatchScope::new(
+            verified.pane_id.unwrap_or(0),
             caller.clone(),
+            workspace,
             context_id,
         );
-        let namespaced = format!("{app_id}__{tool}");
+        scope.actor_type = verified.actor_type;
+        scope.actor_scope = verified.actor_scope;
+        let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
+            scope,
+            std::sync::Arc::clone(&monitor),
+        );
+        let namespaced = match dispatcher.select_app_tool(&app_id, &tool, target_pane_id) {
+            Ok(name) => name,
+            Err(error) => {
+                monitor.note_denial(&caller, "app-call", &app_id, "", "ambiguous_instance");
+                log::info!("app_call: {error}");
+                reply(serde_json::json!({
+                    "ok": false,
+                    "error_code": "permission_denied",
+                    "error": error,
+                }));
+                return;
+            }
+        };
         let call_id = format!("cli-{}", uuid::Uuid::new_v4());
         log::info!(
             "app_call: caller={caller} context={context_id} app={app_id} tool={tool} call_id={call_id}"
@@ -69,8 +219,16 @@ impl PlexiApp {
                 let result = dispatcher.dispatch_call(call_id.clone(), &namespaced, input_json);
                 let body = match (result.error, result.output_json) {
                     (Some(error), _) => {
-                        log::info!("app_call: call_id={call_id} rejected: {error}");
-                        serde_json::json!({"error": error})
+                        log::info!(
+                            "app_call: call_id={call_id} rejected code={:?}: {error}",
+                            result.error_code
+                        );
+                        serde_json::json!({
+                            "ok": false,
+                            "error": error,
+                            "error_code": result.error_code,
+                            "pending_request_id": result.pending_request_id,
+                        })
                     }
                     (None, Some(output)) => {
                         let output = serde_json::from_str::<serde_json::Value>(&output)
@@ -93,8 +251,9 @@ mod tests {
     use super::caller_identity;
 
     #[test]
-    fn socket_caller_identity_is_pane_or_user() {
-        assert_eq!(caller_identity(Some(42)), "pane:42");
-        assert_eq!(caller_identity(None), "user");
+    fn socket_caller_identity_is_never_the_human() {
+        assert_eq!(caller_identity(Some(42), None), "pane:42");
+        assert_eq!(caller_identity(None, Some("session:abc")), "session:abc");
+        assert_ne!(caller_identity(None, None), "user");
     }
 }
