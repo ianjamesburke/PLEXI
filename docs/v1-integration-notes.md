@@ -126,7 +126,15 @@ Clean. `scripts/v1-acceptance.sh` lands on the integrated tree.
 
 ### One integrity row for a tampered profile
 
-`PermissionMonitor::open` inspects the stamp before load. An unsigned `grants.toml` is both a profile-change finding and a seal fault. When `profile_changed` is set, the `grants.toml` seal fault is not raised again; `file_profile_integrity` is the row a person acknowledges. Audit and other seal faults are still raised. `edited_profile_while_down_files_an_integrity_item` expects that one acknowledgement to clear the list.
+`PermissionMonitor::open` inspects the stamp before load. An unsigned `grants.toml` is both a profile-change finding and a seal fault. When `profile_changed` is set, the `grants.toml` seal fault is not a second Needs you row. Its reason (`bad mac`, and the "failed integrity" sentence) is appended to the profile-integrity summary, and `audit_integrity_fault` still writes the audit fact. Other seal faults are still raised on their own. `edited_profile_while_down_files_an_integrity_item` expects one acknowledgement to clear the list. `scripts/permissions-seal-e2e.sh` still requires the text `bad mac` and an integrity audit row.
+
+### Installed-script profile and audit text
+
+A channel-named binary ignores `PLEXI_CHANNEL`. `scripts/needs-you-e2e.sh` and `services/relay/e2e_installed.sh` resolve the profile from the binary name the same way `needs-you-persist-e2e.sh` already did. `scripts/folder-secrets-e2e.sh` accepts an escaped `"kind":"ask"` in the sealed audit. `scripts/permission-gate-e2e.sh` and `scripts/no-self-approval-e2e.sh` restore `config.toml` on exit so a later ledger run still sees `backend = "openrouter"`. `permissions allow` from an agent answers `needs_you` and does not grant; `expect_denied` accepts that reply. `pane click --` keeps a negative coordinate from being parsed as a flag.
+
+`scripts/needs-you-e2e.sh` and `scripts/needs-you-persist-e2e.sh` assert that a terminal resolve does not approve. The item stays open. A desktop click is still the grant. Those two scripts and `scripts/folder-secrets-e2e.sh` start a private session bus so the host seal key can be stored and the journal or audit can be written. Folder values stay on the encrypted-file backend.
+
+The skill states that terminal resolve, `permissions allow`, `secret grant`, and `secret exec` are refused. `scripts/skill-check.sh` ignores a line that says so. It still fails a line that teaches those commands as a way to grant. The reference block does not list the resolve commands.
 
 ### Folder-secret ask names the secret
 

@@ -638,7 +638,13 @@ if plexi_version and bin_version and plexi_version != bin_version:
 lint = re.compile(
     r"permission resolve|needs-you resolve|permissions allow|secret grant|secret exec"
 )
-hits = [f"{i}:{line.strip()}" for i, line in enumerate(text.splitlines(), 1) if lint.search(line)]
+# A line that names the command in order to say it is refused is the contract.
+skip = re.compile(r"refused|do not grant|permission_denied|Do not approve|Do not resolve", re.I)
+hits = [
+    f"{i}:{line.strip()}"
+    for i, line in enumerate(text.splitlines(), 1)
+    if lint.search(line) and not skip.search(line)
+]
 if hits:
     errors.append("skill tells agents to self-resolve: " + "; ".join(hits[:6]))
 else:

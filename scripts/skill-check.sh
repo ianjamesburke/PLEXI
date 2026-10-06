@@ -204,7 +204,10 @@ else
 fi
 
 # ── 4. Skill lint from V1-03 step 10 ─────────────────────────────────────────
-if grep -nE 'permission resolve|needs-you resolve|permissions allow|secret grant|secret exec' "$CLAUDE_SKILL" "$SKILL_SRC"; then
+# Lines that name these commands in order to say they are refused are the
+# contract. A line that teaches them as a way to grant still fails.
+if grep -nE 'permission resolve|needs-you resolve|permissions allow|secret grant|secret exec' "$CLAUDE_SKILL" "$SKILL_SRC" \
+  | grep -vE 'refused|do not grant|permission_denied|Do not approve|Do not resolve'; then
   record FAIL step4 "skill names a resolve command"
 else
   record PASS step4 "skill lint clean"

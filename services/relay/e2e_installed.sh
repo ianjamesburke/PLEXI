@@ -11,7 +11,13 @@ PORT="${RELAY_E2E_PORT:-8792}"
 MOCK_PORT="${MOCK_PORT:-8766}"
 TTL="${RELAY_UNDELIVERED_TTL:-8}"
 CANARY="relay-canary-$(date +%s)-$$-do-not-log"
-PROFILE="$HOME/.plexi-pr-${PR}"
+# A channel-named binary writes `~/.plexi-<name>`, not `~/.plexi-pr-<default>`.
+BIN_NAME="$(basename "$BIN")"
+if [[ "$BIN_NAME" == plexi-* ]]; then
+  PROFILE="$HOME/.plexi-${BIN_NAME#plexi-}"
+else
+  PROFILE="$HOME/.plexi-pr-${PR}"
+fi
 BASE="http://127.0.0.1:${PORT}"
 URL="ws://127.0.0.1:${PORT}/v1/desktop"
 LOG="$(mktemp)"

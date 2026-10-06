@@ -41,6 +41,9 @@ record() {
 }
 
 cleanup() {
+  if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" && -n "${PROFILE:-}" ]]; then
+    cp -f "$CONFIG_BACKUP" "$PROFILE/config.toml" 2>/dev/null || true
+  fi
   if [[ -n "${BIN:-}" && -x "$BIN" ]]; then
     "$BIN" host stop >>"$EVID/log.txt" 2>&1 || true
   fi
@@ -63,6 +66,11 @@ fi
 note "binary: $BIN ($("$BIN" --version 2>&1 || true))"
 note "sha: $(git -C "$REPO" rev-parse HEAD)"
 
+CONFIG_BACKUP=""
+if [[ -f "$PROFILE/config.toml" ]]; then
+  CONFIG_BACKUP="$(mktemp)"
+  cp -f "$PROFILE/config.toml" "$CONFIG_BACKUP"
+fi
 python3 - "$PROFILE/config.toml" "$MOCK_PORT" <<'PY'
 import re, sys, tomllib
 from pathlib import Path

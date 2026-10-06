@@ -3,6 +3,12 @@
 # confirm the tool proceeds with an audit row.
 set -euo pipefail
 
+# The journal HMAC is the host seal key. A private session bus is where that
+# key is stored on Linux. Without it the queue file is never written.
+if [[ "$(uname -s)" == "Linux" && -z "${NEEDS_YOU_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env NEEDS_YOU_E2E_INNER=1 "$0" "$@"
+fi
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
 if [[ ! -x "$BIN" ]]; then
@@ -25,7 +31,14 @@ export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/vulkan/icd.d/lvp_icd.json}
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-ubuntu}"
 mkdir -p "$XDG_RUNTIME_DIR"
 
-PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+# A channel-named binary (`plexi-pr-N`) ignores PLEXI_CHANNEL and uses its own
+# profile. The bare binary follows PLEXI_CHANNEL.
+BIN_NAME="$(basename "$BIN")"
+if [[ "$BIN_NAME" == plexi-* ]]; then
+  PROFILE="$HOME/.plexi-${BIN_NAME#plexi-}"
+else
+  PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+fi
 SOCKET="$PROFILE/notify.sock"
 INPUT='{"game_id":"game-1","expected_revision":0,"operation_id":"op-needs-you","move":"e2e4"}'
 
@@ -156,46 +169,38 @@ if item.get("kind") != "approval_click" or item.get("resolution") is not None:
     raise SystemExit(f"unexpected row {item}")
 PY
 
-echo "resolving $ID"
-RESOLVE="$("$BIN" needs-you resolve "$ID" --approve)"
+echo "terminal resolve must not grant"
+set +e
+RESOLVE="$("$BIN" needs-you resolve "$ID" --approve 2>"$WORK/resolve.err")"
+RESOLVE_CODE=$?
+set -e
 printf '%s\n' "$RESOLVE" >"$WORK/resolve.json"
-python3 - "$WORK/resolve.json" "$ID" <<'PY'
-import json, sys
-body = json.load(open(sys.argv[1]))
-if body.get("ok") is not True or body.get("resolution") != "approved" or body.get("id") != sys.argv[2]:
-    raise SystemExit(f"resolve failed: {body}")
-if body.get("already") is True:
-    raise SystemExit(f"first resolve was already settled: {body}")
-PY
-
-echo "retrying the tool"
-run_in_pane "$WORK/call2.out" "$BIN app call chess chess.play --json --input '$INPUT' > '$WORK/call2.out' 2>&1"
-python3 - "$WORK/call2.out" <<'PY'
+python3 - "$WORK/resolve.json" "$RESOLVE_CODE" "$WORK/resolve.err" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()
+code = int(sys.argv[2])
+err = open(sys.argv[3]).read()
+body = {}
 start = text.find("{")
-if start < 0:
-    raise SystemExit(f"tool did not proceed: {text}")
-body = json.loads(text[start:])
-if body.get("ok") is not True:
-    raise SystemExit(f"tool did not proceed: {text}")
+if start >= 0:
+    try:
+        body = json.loads(text[start:])
+    except json.JSONDecodeError:
+        body = {}
+granted = code == 0 and body.get("ok") is True and body.get("resolution") == "approved"
+if granted:
+    raise SystemExit(f"terminal resolve granted: {text} {err}")
+print("terminal resolve did not grant")
 PY
 
-echo "checking audit"
-AUDIT="$PROFILE/permission-audit.jsonl"
-if [[ ! -f "$AUDIT" ]]; then
-  echo "error: missing audit file $AUDIT" >&2
-  exit 1
-fi
-python3 - "$AUDIT" "$ID" <<'PY'
+echo "item still open"
+LIST2="$("$BIN" needs-you list --json)"
+python3 - "$LIST2" "$ID" <<'PY'
 import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-needs = [row for row in rows if row.get("kind") == "needs_you" and row.get("operation_id") == sys.argv[2] and row.get("decision") == "approved"]
-grants = [row for row in rows if row.get("decision") == "allow_once"]
-if not needs:
-    raise SystemExit(f"no needs_you audit row for {sys.argv[2]}")
-if not grants:
-    raise SystemExit("no allow_once audit row")
+body = json.loads(sys.argv[1])
+item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
+if item is None or item.get("resolution") is not None:
+    raise SystemExit(f"pending item was settled from the terminal: {body}")
 PY
 
 echo "needs-you e2e passed"

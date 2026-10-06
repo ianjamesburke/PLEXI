@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.12"
+skill_version: "5.0.13"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -84,8 +84,7 @@ plexi skill install --agent codex
   `plexi assistant permission list`, `plexi assistant permission show <id>`.
   When a tool call returns permission_required, print the pending_request_id
   and wait for the person at the desktop to decide. Do not approve, deny,
-  or widen a grant from the terminal. `assistant permission resolve`,
-  `needs-you resolve`, and `permissions allow` are refused and do not grant.
+  or widen a grant from the terminal. `assistant permission resolve`, `needs-you resolve`, and `permissions allow` are refused and do not grant.
 - **Needs you** — one list of everything waiting on the human:
   `plexi needs-you list --json`. Click approvals, agent questions, blocked
   runs, and a host integrity item share that record. An integrity item
@@ -106,18 +105,9 @@ plexi skill install --agent codex
   (the phone relay uses this). `--desktop` appends to the desktop transcript
   and conflicts with `--conversation`. `--status-for <turn-id>` reads a turn
   that already returned `waiting_for_permission` and does not submit a prompt.
-- **Assistant permission** — list, show, or resolve a pending grant:
-  `plexi assistant permission list`, `plexi assistant permission show <id>`,
-  `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
-  `always`, `deny`, and `revoke` are the choices. This is the observation
-  seam for the desktop permission sheet.
-- **Needs you** — one list of everything waiting on the human:
-  `plexi needs-you list --json` and
-  `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.
-  Resolving an id resolves it everywhere exactly once. Expired items are
-  auto-denied. A repeat resolve returns the existing resolution.
-  A paired phone passes `--from-phone` and may approve a question or a blocked run.
-  An approval click is irreversible: the phone's approve returns `waiting on desktop` and the desktop sheet stays the grant. Deny is allowed from the phone.
+- **Phone answers** — a paired phone passes `--from-phone` and may answer a
+  question or a blocked run. An approval click stays on the desktop sheet.
+  The phone's approve returns `waiting on desktop`. Deny is allowed from the phone.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
@@ -205,10 +195,8 @@ assistant send
 assistant permission
 assistant permission list
 assistant permission show
-assistant permission resolve
 needs-you
 needs-you list
-needs-you resolve
 relay
 relay connect
 relay confirm

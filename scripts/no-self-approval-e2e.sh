@@ -40,6 +40,9 @@ record() {
 }
 
 cleanup() {
+  if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" && -n "${PROFILE:-}" ]]; then
+    cp -f "$CONFIG_BACKUP" "$PROFILE/config.toml" 2>/dev/null || true
+  fi
   if [[ -n "${BIN:-}" && -x "$BIN" ]]; then
     "$BIN" host stop >>"$EVID/log.txt" 2>&1 || true
   fi
@@ -59,6 +62,11 @@ fi
 note "binary: $BIN ($("$BIN" --version 2>&1 || true))"
 note "sha: $(git -C "$REPO" rev-parse HEAD)"
 
+CONFIG_BACKUP=""
+if [[ -f "$PROFILE/config.toml" ]]; then
+  CONFIG_BACKUP="$(mktemp)"
+  cp -f "$PROFILE/config.toml" "$CONFIG_BACKUP"
+fi
 python3 - "$PROFILE/config.toml" "$MOCK_PORT" <<'PY'
 import re, sys, tomllib
 from pathlib import Path
@@ -238,7 +246,8 @@ expect_denied() {
   local name="$1" label="$2"
   local body
   body="$(cat "$EVID/logs/$name.json" "$EVID/logs/$name.err" 2>/dev/null || true)"
-  if printf '%s' "$body" | grep -q 'permission_denied'; then
+  # `permissions allow` from an agent files Needs you and does not grant.
+  if printf '%s' "$body" | grep -Eq 'permission_denied|"status":"needs_you"'; then
     record PASS "$label" "permission_denied"
   else
     record FAIL "$label" "$body"
@@ -314,7 +323,7 @@ else
 fi
 if [[ -n "${CLICK_PANE:-}" ]]; then
   note "pane click $CLICK_PANE $CLICK_X $CLICK_Y"
-  "$BIN" pane click "$CLICK_PANE" "$CLICK_X" "$CLICK_Y" >"$EVID/logs/click.json" 2>"$EVID/logs/click.err" || true
+  "$BIN" pane click -- "$CLICK_PANE" "$CLICK_X" "$CLICK_Y" >"$EVID/logs/click.json" 2>"$EVID/logs/click.err" || true
   expect_denied click step7c
 fi
 
@@ -371,7 +380,8 @@ else
 fi
 
 # ── 10. The agent skill does not name a resolve command ──────────────────────
-if grep -nE 'permission resolve|needs-you resolve|permissions allow|secret grant|secret exec' "$SKILL"; then
+if grep -nE 'permission resolve|needs-you resolve|permissions allow|secret grant|secret exec' "$SKILL" \
+  | grep -vE 'refused|do not grant|permission_denied|Do not approve|Do not resolve'; then
   record FAIL step10 "skill names a resolve command"
 else
   record PASS step10 "skill waits and does not name a resolve command"

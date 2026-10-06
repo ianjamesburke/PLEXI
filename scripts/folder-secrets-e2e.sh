@@ -8,6 +8,13 @@
 # value is generated at runtime and is not written into this script.
 set -uo pipefail
 
+# The permission audit is sealed with the host MAC in Secret Service. A private
+# session bus lets that write succeed without using the login keyring. Folder
+# secret values stay on the encrypted-file backend selected below.
+if [[ "$(uname -s)" == "Linux" && -z "${FOLDER_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env FOLDER_E2E_INNER=1 "$0" "$@"
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLEXI="${1:-$REPO_ROOT/target/release/plexi}"
 WORK="$(mktemp -d -t plexi-folder-secrets-XXXXXX)"
@@ -448,9 +455,10 @@ audit="$PROFILE/permission-audit.jsonl"
 audit_pat="$(mktemp)"
 chmod 600 "$audit_pat"
 printf '%s\n%s\n' "$SECRET" "$SECRET_B" >"$audit_pat"
+# A sealed audit line stores the fact as a JSON string, so the quotes are escaped.
 if [[ -f "$audit" ]] \
   && grep -q 'FOLDER_E2E_SECRET' "$audit" \
-  && grep -q '"kind":"ask"' "$audit" \
+  && { grep -F -q '"kind":"ask"' "$audit" || grep -F -q '\"kind\":\"ask\"' "$audit"; } \
   && ! grep -q -F -f "$audit_pat" "$audit"; then
   pass "audit row names the secret and does not contain the value"
 else

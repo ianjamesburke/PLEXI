@@ -397,20 +397,30 @@ impl PermissionMonitor {
         monitor.restore_queue();
         // A grants.toml edit while the host was down is already the profile
         // integrity item. Raising the seal fault as well leaves a second row
-        // after the person acknowledges that one change.
+        // after the person acknowledges that one change. The seal reason
+        // stays on that one row, and the audit fact is still written.
         let profile_changed = finding.as_ref().is_some_and(|item| item.profile_changed);
+        let mut profile_summary = finding.map(|item| item.summary);
         for fault in &faults {
             if profile_changed && fault.file == "grants.toml" {
                 log::info!(
                     "permission_monitor: grants.toml seal fault folded into the profile integrity item ({})",
                     fault.reason
                 );
+                if let Some(summary) = profile_summary.as_mut() {
+                    summary.push(' ');
+                    summary.push_str(&format!(
+                        "{} failed integrity ({}). Stored permission decisions in that file were ignored.",
+                        fault.file, fault.reason
+                    ));
+                }
+                monitor.audit_integrity_fault(fault);
                 continue;
             }
             monitor.raise_integrity(fault);
         }
-        if let Some(finding) = finding {
-            monitor.file_profile_integrity(finding.summary);
+        if let Some(summary) = profile_summary {
+            monitor.file_profile_integrity(summary);
         }
         crate::broker::integrity::mark_running(dir);
         monitor
@@ -429,6 +439,10 @@ impl PermissionMonitor {
             summary,
             &format!("integrity:{}", fault.file),
         );
+        self.audit_integrity_fault(fault);
+    }
+
+    fn audit_integrity_fault(&self, fault: &super::seal::IntegrityFault) {
         let fact = AuditFact {
             kind: "integrity".to_string(),
             actor: "host".to_string(),
