@@ -34,6 +34,7 @@
 
 pub mod heads;
 pub mod leads;
+pub mod queue;
 
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,

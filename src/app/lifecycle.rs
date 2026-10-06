@@ -223,7 +223,7 @@ impl PlexiApp {
                         .or_else(crate::config::active_workspace_root)
                         .unwrap_or_else(|| self.router.active().root.clone());
                     log::info!("pane_ipc: kind=submit_assistant_turn head={head}");
-                    let accepted = crate::agent::leads::submit_turn(&workspace, head, text, request_id, response_file);
+                    let accepted = crate::agent::leads::submit_turn(&workspace, head, text, request_id, response_file, None);
                     if accepted.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                         write_json_response(response_file, serde_json::json!({
                             "request_id": request_id,
@@ -270,6 +270,17 @@ impl PlexiApp {
                     },
                     _ => crate::agent::leads::projection(&workspace),
                 };
+                write_json_response(response_file, body);
+            }
+            crate::protocol::AppRequest::AgentQueue { op, payload, response_file } => {
+                log::info!("pane_ipc: kind=agent_queue op={op}");
+                let workspace = payload
+                    .get("workspace")
+                    .and_then(|value| value.as_str())
+                    .map(std::path::PathBuf::from)
+                    .or_else(crate::config::active_workspace_root)
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                let body = crate::agent::queue::handle(&workspace, op, payload);
                 write_json_response(response_file, body);
             }
             crate::protocol::AppRequest::ListPermissionRequests { response_file } => {

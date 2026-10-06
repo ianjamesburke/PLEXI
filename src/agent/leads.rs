@@ -47,6 +47,7 @@ struct Job {
     text: String,
     request_id: String,
     response_file: String,
+    task_id: Option<String>,
 }
 
 struct Flight {
@@ -250,6 +251,7 @@ pub fn projection(workspace: &Path) -> Value {
         "heads": rows,
         "runs": runs.get("runs").cloned().unwrap_or(json!([])),
         "needs_you": pending,
+        "tasks": crate::agent::queue::snapshot(&workspace),
     })
 }
 
@@ -289,6 +291,23 @@ pub fn pane_lines(workspace: &Path) -> Vec<String> {
             lines.push(format!("needs you {id} {tool}"));
         }
     }
+    if let Some(tasks) = body.get("tasks").and_then(|value| value.as_array()) {
+        for task in tasks {
+            let id = task
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let head = task
+                .get("head")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let state = task
+                .get("state")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            lines.push(format!("task {id} {head} {state}"));
+        }
+    }
     if lines.is_empty() {
         lines.push("no leads".to_string());
     }
@@ -303,6 +322,7 @@ pub fn submit_turn(
     text: &str,
     request_id: &str,
     response_file: &str,
+    task_id: Option<&str>,
 ) -> Value {
     if text.trim().is_empty() {
         return json!({"ok": false, "error_code": "invalid_argument", "error": "text is required"});
@@ -321,6 +341,7 @@ pub fn submit_turn(
         text: text.to_string(),
         request_id: request_id.to_string(),
         response_file: response_file.to_string(),
+        task_id: task_id.map(str::to_string),
     };
     enqueue_job(job);
     json!({"ok": true, "accepted": true, "head": head, "request_id": request_id})
@@ -344,6 +365,8 @@ fn spawn_job(job: Job) {
     let fail_head = head.clone();
     let fail_file = response_file.clone();
     let fail_request = request_id.clone();
+    let fail_task = job.task_id.clone();
+    let fail_workspace = job.workspace.clone();
     let built = thread::Builder::new().name(format!("plexi-lead-{head}"));
     if let Err(error) = built.spawn(move || {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job(&job)));
@@ -351,6 +374,15 @@ fn spawn_job(job: Job) {
             Ok(body) => body,
             Err(_) => {
                 log::error!("lead: turn panicked head={head}");
+                if let Some(task_id) = &job.task_id {
+                    crate::agent::queue::finish_task(
+                        &job.workspace,
+                        task_id,
+                        "failed",
+                        "",
+                        "lead turn panicked",
+                    );
+                }
                 json!({
                     "request_id": request_id,
                     "state": "failed",
@@ -363,6 +395,15 @@ fn spawn_job(job: Job) {
         release_head(&head);
     }) {
         log::error!("lead: failed to spawn turn thread: {error}");
+        if let Some(task_id) = &fail_task {
+            crate::agent::queue::finish_task(
+                &fail_workspace,
+                task_id,
+                "failed",
+                "",
+                &error.to_string(),
+            );
+        }
         crate::rpc::write_json_response(
             &fail_file,
             json!({
@@ -411,6 +452,13 @@ fn run_job(job: &Job) -> Value {
         .to_string();
     if spawned.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         log::error!("lead: spawn_run failed head={} body={spawned}", job.head);
+        if let Some(task_id) = &job.task_id {
+            let error = spawned
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("spawn_run failed");
+            crate::agent::queue::finish_task(&job.workspace, task_id, "failed", "", error);
+        }
         return json!({
             "request_id": job.request_id,
             "state": "failed",
@@ -419,7 +467,17 @@ fn run_job(job: &Job) -> Value {
             "head": job.head,
         });
     }
-    let done = run_model_turn(&job.workspace, &job.head, &job.text, &mut http_complete);
+    let done = run_model_turn(
+        &job.workspace,
+        &job.head,
+        &job.text,
+        job.task_id.as_deref(),
+        &mut http_complete,
+    );
+    if let Some(task_id) = &job.task_id {
+        let error = done.error.as_deref().unwrap_or("");
+        crate::agent::queue::finish_task(&job.workspace, task_id, done.state, &run_id, error);
+    }
     if !run_id.is_empty() {
         let _ = crate::agent::heads::handle_request(
             "finish_run",
@@ -459,6 +517,7 @@ fn run_model_turn(
     workspace: &Path,
     head: &str,
     text: &str,
+    task_id: Option<&str>,
     model: &mut dyn FnMut(&[Value]) -> Result<ModelReply, String>,
 ) -> TurnDone {
     let workspace_buf = canonical_workspace(workspace);
@@ -525,6 +584,13 @@ fn run_model_turn(
     }
 
     for round in 0..MAX_TOOL_ROUNDS {
+        if stop_if_cancelled(workspace, head, task_id) {
+            return TurnDone {
+                state: "cancelled",
+                reply: String::new(),
+                error: Some("cancelled".to_string()),
+            };
+        }
         let reply = match model(&messages) {
             Ok(reply) => reply,
             Err(error) => {
@@ -551,6 +617,13 @@ fn run_model_turn(
             messages.push(json!({"role": "assistant", "content": reply.text}));
         }
         for call in reply.tool_calls {
+            if stop_if_cancelled(workspace, head, task_id) {
+                return TurnDone {
+                    state: "cancelled",
+                    reply: String::new(),
+                    error: Some("cancelled".to_string()),
+                };
+            }
             let result = execute_tool(workspace, head, &actor, &call);
             let _ = append_message(
                 workspace,
@@ -741,6 +814,17 @@ fn admit(workspace: &Path, actor: &str, tool: &str, input_json: &str, call_id: &
         instance_id: 0,
         target_type: TargetType::HostTool,
     })
+}
+
+fn stop_if_cancelled(workspace: &Path, head: &str, task_id: Option<&str>) -> bool {
+    let Some(task_id) = task_id else {
+        return false;
+    };
+    if !crate::agent::queue::cancel_requested(workspace, task_id) {
+        return false;
+    }
+    log::info!("lead: cancelled before the next tool head={head} task={task_id}");
+    true
 }
 
 fn fail(state: &'static str, error: String) -> TurnDone {
@@ -965,8 +1049,8 @@ mod tests {
         let fixture = Fixture::new();
         fixture.create("lead-a", &["assistant.turn=allow"]);
         fixture.create("lead-b", &["assistant.turn=allow"]);
-        let a = run_model_turn(fixture.ws(), "lead-a", "remember 7", &mut scripted);
-        let b = run_model_turn(fixture.ws(), "lead-b", "what number?", &mut scripted);
+        let a = run_model_turn(fixture.ws(), "lead-a", "remember 7", None, &mut scripted);
+        let b = run_model_turn(fixture.ws(), "lead-b", "what number?", None, &mut scripted);
         assert_eq!(a.state, "succeeded");
         assert_eq!(a.reply, "Noted 7");
         assert_eq!(b.state, "succeeded");
@@ -996,7 +1080,7 @@ mod tests {
             &["assistant.turn=allow", "leads.conversation.read=allow"],
         );
         fixture.create("lead-b", &["assistant.turn=allow"]);
-        run_model_turn(fixture.ws(), "lead-b", "remember 7", &mut scripted);
+        run_model_turn(fixture.ws(), "lead-b", "remember 7", None, &mut scripted);
         let mut model = |messages: &[Value]| {
             let blob = serde_json::to_string(messages).unwrap_or_default();
             if blob.contains("read-other") && !blob.contains("a lead cannot read another lead") {
@@ -1012,7 +1096,13 @@ mod tests {
                 Ok(text_reply("I could not read it"))
             }
         };
-        let done = run_model_turn(fixture.ws(), "lead-a", "read-other lead-b", &mut model);
+        let done = run_model_turn(
+            fixture.ws(),
+            "lead-a",
+            "read-other lead-b",
+            None,
+            &mut model,
+        );
         assert_eq!(done.state, "succeeded", "{:?}", done.error);
         let a_text = fs::read_to_string(conversation_path(fixture.ws(), "lead-a")).unwrap();
         assert!(a_text.contains("cannot read another lead"));
@@ -1045,7 +1135,7 @@ mod tests {
                 }],
             })
         };
-        let done = run_model_turn(fixture.ws(), "lead-a", "write it", &mut model);
+        let done = run_model_turn(fixture.ws(), "lead-a", "write it", None, &mut model);
         assert_eq!(done.state, "permission_required");
         assert!(!fixture.ws().join("secret.txt").exists());
     }
@@ -1082,7 +1172,13 @@ mod tests {
                 Ok(text_reply("done"))
             }
         };
-        let done = run_model_turn(fixture.ws(), "lead-a", "write then message", &mut model);
+        let done = run_model_turn(
+            fixture.ws(),
+            "lead-a",
+            "write then message",
+            None,
+            &mut model,
+        );
         assert_eq!(done.state, "permission_denied");
         assert_eq!(
             fs::read_to_string(fixture.ws().join("out.txt")).unwrap(),
@@ -1092,5 +1188,52 @@ mod tests {
             .unwrap_or_default();
         assert!(audit.contains("\"decision\":\"use\""), "{audit}");
         assert!(audit.contains("leads.message"), "{audit}");
+    }
+
+    #[test]
+    fn cancel_stops_before_the_next_tool_is_admitted() {
+        let fixture = Fixture::new();
+        fixture.create("lead-a", &["assistant.turn=allow", "lead.step=allow"]);
+        let queued = crate::agent::queue::enqueue(fixture.ws(), "lead-a", "long-task");
+        let task_id = queued["task"]["id"].as_str().unwrap().to_string();
+        crate::agent::queue::finish_task(fixture.ws(), &task_id, "running", "", "");
+        let mut calls = 0;
+        let ws = fixture.ws().to_path_buf();
+        let flag_id = task_id.clone();
+        let mut model = move |_messages: &[Value]| {
+            calls += 1;
+            if calls == 1 {
+                Ok(ModelReply {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_step_1".to_string(),
+                        name: "lead.step".to_string(),
+                        arguments: r#"{"n":0}"#.to_string(),
+                    }],
+                })
+            } else {
+                let _ = crate::agent::queue::request_cancel(&ws, &flag_id);
+                Ok(ModelReply {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_step_2".to_string(),
+                        name: "lead.step".to_string(),
+                        arguments: r#"{"n":1}"#.to_string(),
+                    }],
+                })
+            }
+        };
+        let done = run_model_turn(
+            fixture.ws(),
+            "lead-a",
+            "long-task",
+            Some(&task_id),
+            &mut model,
+        );
+        assert_eq!(done.state, "cancelled", "{:?}", done.error);
+        let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
+            .unwrap_or_default();
+        let uses = audit.matches("\"operation_id\":\"lead.step\"").count();
+        assert_eq!(uses, 1, "{audit}");
     }
 }
