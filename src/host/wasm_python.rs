@@ -4776,6 +4776,10 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
                 .get("error")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            error_code: message
+                .get("error_code")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }),
         "declare_event_streams" => {
             let streams = message

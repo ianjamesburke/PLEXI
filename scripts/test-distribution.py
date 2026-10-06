@@ -134,6 +134,10 @@ def main(args):
                 assert output.stdout.strip() == build, output
             output = run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', '_' + name], env)
             assert output.stdout.strip() == build, output
+            # Login interactive bash (host panes exec `bash -i -l`) does not
+            # read ~/.bashrc. The completion must load from the login file.
+            output = run(['bash', '-ilc', 'complete -p ' + name], env)
+            assert f'complete -F _{name} {name}' in output.stdout, output
         initial = install(old)
         assert active() == 'old'
         check_completions('old')

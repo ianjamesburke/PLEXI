@@ -1,4 +1,5 @@
 pub mod account;
+mod app_call;
 pub mod app_trait;
 pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
@@ -579,7 +580,7 @@ const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
 /// only variants that carry a `peer_pid` field — so `handle_pane_ipc_request`
 /// can resolve the sender pane from a value the client never controlled,
 /// instead of trusting the wire-supplied `source_context_id`/`source_pane_id`.
-fn handle_socket_line(
+pub(crate) fn handle_socket_line(
     line: &str,
     mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
     peer_ancestry: Option<&[u32]>,
@@ -596,6 +597,15 @@ fn handle_socket_line(
                 crate::protocol::AppRequest::Notify { peer_pid: p, .. }
                 | crate::protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
                     *p = peer_ancestry.map(<[u32]>::to_vec);
+                }
+                crate::protocol::AppRequest::CallAppTool { peer_ancestry: p, .. } => {
+                    // Overwrite any client-supplied ancestry. A missing capture
+                    // leaves the vector empty so the call cannot pretend to be a pane.
+                    *p = peer_ancestry.unwrap_or(&[]).to_vec();
+                    log::info!(
+                        "pane_ipc: stamped CallAppTool peer ancestry ({} pid(s))",
+                        p.len()
+                    );
                 }
                 _ => {}
             }
@@ -2567,8 +2577,7 @@ impl PlexiApp {
             &crate::config::config_dir(),
             crate::host::app_timeline::global(),
         );
-        (
-            Self {
+        let mut app = Self {
                 pty_event_rx: rx,
                 pty_event_tx: tx,
                 last_notify_poll: std::time::Instant::now(),
@@ -2739,9 +2748,17 @@ impl PlexiApp {
                 pending_pane_inputs: HashMap::new(),
                 pending_pane_drags: HashMap::new(),
                 pending_pane_pointer_frames: HashMap::new(),
-            },
-            pane_ipc_tx,
-        )
+            };
+        // Launch paths allocate through HostModel, which otherwise starts at 1
+        // in every test process. Seed a private block so a pane drop in one
+        // test cannot unregister another test's tools.
+        app.host
+            .seed_next_pane_id(crate::testing::reserve_pane_id_block());
+        log::info!(
+            "test host: pane ids start at {}",
+            app.host.next_pane_id()
+        );
+        (app, pane_ipc_tx)
     }
 
     /// Add a minimal builtin pane directly to window 0 for unit tests.
@@ -2871,6 +2888,16 @@ impl PlexiApp {
             .cloned()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
+        let call_credential = crate::broker::gate::PermissionMonitor::for_profile(
+            &crate::config::config_dir(),
+        )
+        .issue_credential(
+            Some(pane_id),
+            context_id,
+            &workspace_root,
+            &format!("pane:{pane_id}"),
+        );
+        env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
         if let Some((port, token)) =
             host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
         {

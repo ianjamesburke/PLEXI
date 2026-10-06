@@ -105,6 +105,7 @@ def test_subscription_effects_encode_rust_wire_shape() -> None:
         "call_id": "call-7",
         "output_json": '{"rows":3}',
         "error": None,
+        "error_code": None,
     }
 
 

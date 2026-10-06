@@ -101,28 +101,25 @@ impl HostSnapshot {
 
 // ─── HostHarness ─────────────────────────────────────────────────────────────
 
-/// Process-wide pane-id block allocator for `HostHarness` instances.
+/// Process-wide pane-id block allocator for test hosts.
 ///
 /// `cargo test` runs every `#[test]` in one process across a thread pool, and
 /// production singletons that are correctly process-global in a real host
 /// (e.g. `plexi_ai::tool_dispatch::GLOBAL_REGISTRY`, keyed by `pane_id`) stay
 /// exactly that global in test builds too — there is no per-test process to
-/// isolate them. Before this, every `HostHarness::new()` started its own
-/// `next_pane_id` at the same fixed `100`, so two tests that both register
-/// into such a global registry could race on the identical key: one test's
-/// entry silently overwrites the other's, and the loser observes missing or
-/// foreign data with no error (`connector_tool_visible_only_to_assistant_in_the_owning_context`,
-/// stint 0724 Phase F — flaky only under full-suite parallel execution,
-/// always green in isolation). Each harness now reserves its own disjoint
-/// block from one atomic counter, so no two concurrently-running harnesses
-/// can ever assign the same `pane_id`, regardless of test execution order.
+/// isolate them. `HostModel` is the allocator for panes opened through the
+/// app (`launch_app_by_path`, scenes). `HostHarness` keeps a second counter
+/// for panes it inserts directly. Both draw from this atomic, and
+/// `PlexiApp::new_for_test` seeds `HostModel` from it. A fixed start of `1`
+/// made every chess launch and every scene claim pane 1; `AppPane`'s drop
+/// then unregistered whichever test still held that key.
 static NEXT_TEST_PANE_ID_BLOCK: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(100);
 
-/// Reserve a fresh block of pane ids for one `HostHarness` instance. `10_000`
-/// is far more than any single test creates, so blocks never collide; `u64`
-/// has no realistic risk of exhausting across even a very large test run.
-fn reserve_pane_id_block() -> u64 {
+/// Reserve a fresh block of pane ids for one test host. `10_000` is far more
+/// than any single test creates, so blocks never collide; `u64` has no
+/// realistic risk of exhausting across even a very large test run.
+pub(crate) fn reserve_pane_id_block() -> u64 {
     NEXT_TEST_PANE_ID_BLOCK.fetch_add(10_000, std::sync::atomic::Ordering::SeqCst)
 }
 
@@ -553,13 +550,16 @@ impl HostHarness {
     pub fn launch_dev_app_without_render(&mut self, name: &str) -> PaneId {
         let app_dir =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("apps/dev/{name}"));
-        self.app
+        let before = self.state().open_panes;
+        let focused = self
+            .app
             .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
             .unwrap_or_else(|e| panic!("launch {name}: {e}"));
-        *self
-            .state()
+        self.state()
             .open_panes
-            .last()
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .or(focused)
             .unwrap_or_else(|| panic!("a pane appears after launching {name}"))
     }
 
@@ -571,6 +571,33 @@ impl HostHarness {
         let pane_id = self.launch_dev_app_without_render(name);
         self.wait_for_first_render(pane_id);
         pane_id
+    }
+
+    /// Launch the real process app at `<repo>/<rel_dir>` with launch `args`,
+    /// rooted in the harness's scratch workspace (so any `PersistState` lands
+    /// in a tempdir, never the checkout), and wait for its first render.
+    pub fn launch_repo_app(&mut self, rel_dir: &str, args: &[String]) -> PaneId {
+        let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir);
+        let workspace = self._workspace_dir.path().to_path_buf();
+        let before = self.state().open_panes;
+        let focused = self
+            .app
+            .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, Some(workspace), args)
+            .unwrap_or_else(|e| panic!("launch {rel_dir}: {e}"));
+        let pane_id = self
+            .state()
+            .open_panes
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .or(focused)
+            .unwrap_or_else(|| panic!("a pane appears after launching {rel_dir}"));
+        self.wait_for_first_render(pane_id);
+        pane_id
+    }
+
+    /// The harness's scratch workspace root.
+    pub fn workspace_root(&self) -> std::path::PathBuf {
+        self._workspace_dir.path().to_path_buf()
     }
 
     /// Poll frames until the Python guest backing `pane_id` has committed its
@@ -765,6 +792,8 @@ mod daw_gate;
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
+#[cfg(test)]
+mod permission_gate_tests;
 
 #[cfg(test)]
 mod profile_isolation_tests {

@@ -1868,6 +1868,120 @@ pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
     0
 }
 
+/// Host deadline for a CLI tool call. Strictly below the CLI's poll window so
+/// the caller always sees the host's typed timeout, never a client timeout.
+pub(crate) const APP_CALL_HOST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `plexi app call <app_id> <tool> [--input JSON]` — invoke an app tool through
+/// the host's tool dispatcher and print its JSON output on stdout.
+pub fn app_call_cli(
+    app_id: &str,
+    tool: &str,
+    input: &str,
+    json: bool,
+    target_pane: Option<u64>,
+) -> i32 {
+    let input_value: serde_json::Value = match serde_json::from_str(input) {
+        Ok(value @ serde_json::Value::Object(_)) => value,
+        Ok(_) => {
+            eprintln!("error: --input must be a JSON object");
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("error: --input is not valid JSON: {error}");
+            return 1;
+        }
+    };
+    // Provenance, not authority: the host validates the pane id and resolves
+    // its live context; it never trusts an identity carried in `input`.
+    let caller_pane_id = std::env::var("PLEXI_PANE_ID")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok());
+    log::info!(
+        "app_call:cli: app={app_id:?} tool={tool:?} caller_pane={caller_pane_id:?}"
+    );
+    let mut payload = serde_json::json!({
+        "type": "call_app_tool",
+        "app_id": app_id,
+        "tool": tool,
+        "input_json": input_value.to_string(),
+    });
+    if let Some(pane_id) = caller_pane_id {
+        payload["caller_pane_id"] = serde_json::json!(pane_id);
+    }
+    if let Some(pane) = target_pane {
+        payload["target_pane_id"] = serde_json::json!(pane);
+        log::info!("app_call:cli: target_pane={pane}");
+    }
+    if let Ok(credential) = std::env::var("PLEXI_CALL_CREDENTIAL") {
+        if !credential.is_empty() {
+            payload["call_credential"] = serde_json::json!(credential);
+        }
+    }
+    let content = match super::request_with(
+        payload,
+        "app-call-response",
+        "app call",
+        APP_CALL_HOST_TIMEOUT + std::time::Duration::from_secs(5),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(reply) => {
+            if json {
+                println!("{reply}");
+                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) { 1 } else { 0 };
+            }
+            let output = reply.get("output").cloned().unwrap_or(serde_json::Value::Null);
+            println!("{output}");
+            0
+        }
+        Err(error) => {
+            eprintln!("error: host reply is not JSON: {error}");
+            1
+        }
+    }
+}
+
+/// `plexi assistant permission list|show|resolve` — observation seam for pending grants.
+pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>) -> i32 {
+    let response_file = crate::rpc::response_file("assistant-permission", "json");
+    let payload = match op {
+        "list" => serde_json::json!({"type":"list_permission_requests","response_file":response_file}),
+        "show" => serde_json::json!({"type":"show_permission_request","pending_request_id":id.unwrap_or(""),"response_file":response_file}),
+        "resolve" => serde_json::json!({"type":"resolve_permission_request","pending_request_id":id.unwrap_or(""),"choice":choice.unwrap_or(""),"response_file":response_file}),
+        _ => {
+            eprintln!("error: unknown permission operation");
+            return 1;
+        }
+    };
+    log::info!("assistant_permission:cli: op={op} id={id:?}");
+    let content = match super::request_with(payload, "assistant-permission", "assistant permission", std::time::Duration::from_secs(15)) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(_) => 1,
+        Err(_) => 1,
+    }
+}
+
+/// Submit one turn to the host Assistant and print its terminal JSON envelope.
+pub fn assistant_send_cli(text: &str, request_id: Option<&str>, pane_id: Option<u64>, context_id: Option<u64>) -> i32 {
+    let request_id = request_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let response_file = crate::rpc::response_file("assistant-send", "json");
+    let payload = serde_json::json!({"type":"submit_assistant_turn","text":text,"request_id":request_id,"response_file":response_file,"pane_id":pane_id,"context_id":context_id});
+    let content = match super::request_with(payload, "assistant-send", "assistant send", std::time::Duration::from_secs(120)) { Ok(content) => content, Err(code) => return code };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) { Ok(value) if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") => 0, Ok(_) => 2, Err(_) => 1 }
+}
+
 #[cfg(test)]
 mod app_install_workspace_tests {
     use super::{classify_app_install_spec, AppInstallSpecKind};

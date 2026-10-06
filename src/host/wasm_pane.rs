@@ -96,6 +96,7 @@ pub enum WasmHostEffect {
         call_id: String,
         output_json: Option<String>,
         error: Option<String>,
+        error_code: Option<String>,
     },
 }
 
@@ -1537,6 +1538,7 @@ impl WasmPane {
                 call_id: req.call_id,
                 output_json: req.output_json,
                 error: req.error,
+                error_code: None,
             });
     }
 
@@ -4308,6 +4310,7 @@ mod tests {
                     call_id: id,
                     output_json,
                     error,
+                    error_code: _,
                 } if id == call_id => Some((output_json.clone(), error.clone())),
                 _ => None,
             })

@@ -58,6 +58,18 @@ App-to-host requests — go to `route_command`.
 
 Messages the app sends to request host services.
 
+### `submit_assistant_turn`
+
+Submit one text turn to a host Assistant pane.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context_id` | `integer?` | no |
+| `pane_id` | `integer?` | no |
+| `request_id` | `string` | yes |
+| `response_file` | `string` | yes |
+| `text` | `string` | yes |
+
 ### `capability_request`
 
 Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
@@ -559,6 +571,48 @@ Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <
 | `pane_id` | `integer` | yes |
 | `response_file` | `string?` | no |
 
+### `list_permission_requests`
+
+List pending permission requests. Observation seam for the desktop gate.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `show_permission_request`
+
+Show one pending permission request.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pending_request_id` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `resolve_permission_request`
+
+Resolve one pending permission request from the desktop observation seam.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `choice` | `string` | yes |
+| `pending_request_id` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `call_app_tool`
+
+Call an app-exposed tool through the host tool dispatcher. Sent by `plexi app call`. The host resolves the viewer con...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `app_id` | `string` | yes |
+| `call_credential` | `string?` | no |
+| `caller_pane_id` | `integer?` | no |
+| `input_json` | `string` | yes |
+| `peer_ancestry` | `integer[]` | no |
+| `response_file` | `string?` | no |
+| `target_pane_id` | `integer?` | no |
+| `tool` | `string` | yes |
+
 ### `create_context`
 
 Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
@@ -701,6 +755,7 @@ v3.7 tool protocol (#399). App returns the result of a `PlexiEvent::ToolCall` in
 |-------|------|----------|
 | `call_id` | `string` | yes |
 | `error` | `string?` | no |
+| `error_code` | `string?` | no |
 | `output_json` | `string?` | no |
 
 ### `audio_play`
@@ -1410,6 +1465,7 @@ Host-to-app tool invocation (#399). The broker calls a tool exposed via `DrawCom
 
 | Field | Type | Required |
 |-------|------|----------|
+| `authorization` | `string?` | no |
 | `call_id` | `string` | yes |
 | `caller_id` | `string` | yes |
 | `input_json` | `string` | yes |

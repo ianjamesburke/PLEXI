@@ -192,7 +192,7 @@ ExposeTools(tools: list[AiTool])
 ### `ToolResult`
 
 ```python
-ToolResult(call_id: str, output_json: Optional[str] = None, error: Optional[str] = None)
+ToolResult(call_id: str, output_json: Optional[str] = None, error: Optional[str] = None, error_code: Optional[str] = None)
 ```
 
 ### `SetTimer`
@@ -444,7 +444,7 @@ AiResponse(request_id: str, content: Optional[str], tokens_in: int, tokens_out: 
 ### `ToolCall`
 
 ```python
-ToolCall(call_id: str, name: str, input_json: str, caller_id: str)
+ToolCall(call_id: str, name: str, input_json: str, caller_id: str, authorization: Optional[str] = None)
 ```
 
 ### `EventSubscriptionResult`

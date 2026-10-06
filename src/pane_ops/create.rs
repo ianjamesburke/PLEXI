@@ -1558,11 +1558,23 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<&Path>,
     ) -> Option<PaneId> {
-        use crate::app::registry::OnLaunchPolicy;
         let on_launch = self
             .registries
             .view_for_context(caller_context_id, &self.router)
             .on_launch_for(id);
+        self.focus_for_on_launch(on_launch, id, caller_context_id, args, cwd_override)
+    }
+
+    /// Focus a live instance when `policy` says this launch must not spawn.
+    pub(crate) fn focus_for_on_launch(
+        &mut self,
+        on_launch: crate::app::registry::OnLaunchPolicy,
+        id: &str,
+        caller_context_id: u64,
+        args: &[String],
+        cwd_override: Option<&Path>,
+    ) -> Option<PaneId> {
+        use crate::app::registry::OnLaunchPolicy;
         let (scope, target) = match on_launch {
             OnLaunchPolicy::AlwaysNew => return None,
             OnLaunchPolicy::FocusExisting => ("focus_existing", self.locate_app_instance(id, None)),
@@ -1901,15 +1913,34 @@ impl PlexiApp {
         layout: Option<String>,
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<Option<PaneId>, String> {
         self.launch_app_by_path_with_layout_inner(
             app_path,
             layout,
             workspace_root_override,
             args,
             true,
+            true,
         )
-        .map(|_| ())
+    }
+
+    /// Spawn another instance even when the manifest says to focus the open one.
+    /// The split-mirror and the multi-instance routing test use this.
+    #[cfg(test)]
+    pub(crate) fn launch_app_by_path_forced(
+        &mut self,
+        app_path: &str,
+        workspace_root_override: Option<std::path::PathBuf>,
+        args: &[String],
+    ) -> Result<Option<PaneId>, String> {
+        self.launch_app_by_path_with_layout_inner(
+            app_path,
+            None,
+            workspace_root_override,
+            args,
+            true,
+            false,
+        )
     }
 
     pub(crate) fn launch_app_by_path_with_layout_no_review_modal(
@@ -1925,6 +1956,7 @@ impl PlexiApp {
             workspace_root_override,
             args,
             false,
+            true,
         )
     }
 
@@ -1935,6 +1967,7 @@ impl PlexiApp {
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
         queue_raw_wasm_review: bool,
+        honor_on_launch: bool,
     ) -> Result<Option<PaneId>, String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
@@ -2007,6 +2040,22 @@ impl PlexiApp {
             "launch_app_by_path_with_layout: workspace_root={}",
             workspace_root.display()
         );
+        if honor_on_launch {
+            let policy = installed
+                .launch
+                .on_launch
+                .as_deref()
+                .and_then(|mode| crate::app::registry::OnLaunchPolicy::parse(mode).ok())
+                .unwrap_or_default();
+            if let Some(existing) =
+                self.focus_for_on_launch(policy, &app_id, context_id, args, None)
+            {
+                log::info!(
+                    "launch_app_by_path_with_layout: focused existing {app_id} pane {existing}"
+                );
+                return Ok(Some(existing));
+            }
+        }
         if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
             let pane_id = self.open_installed_wasm_app_pane(
                 installed,

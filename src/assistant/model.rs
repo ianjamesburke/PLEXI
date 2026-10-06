@@ -125,6 +125,9 @@ pub struct PendingPermission {
     /// Keyboard cursor over `PermissionChoice::ORDER`, so Tab/arrow nav can
     /// move it and Enter can activate whatever it lands on.
     pub selected: usize,
+    pub actor_id: String,
+    pub resource_id: String,
+    pub pending_request_id: String,
 }
 
 /// What the user chose on the permission sheet.
@@ -980,6 +983,10 @@ impl AssistantModel {
         }
         let mut turn = match &call.error {
             None => Turn::tool(call.tool.clone(), ToolStatus::Succeeded),
+            Some(e) if e.contains("stale_revision") => Turn::tool(
+                "stale revision — the board changed before this move".to_string(),
+                ToolStatus::Failed,
+            ),
             Some(e) => Turn::tool(format!("{} — {e}", call.tool), ToolStatus::Failed),
         };
         turn.detail = call.detail;
@@ -995,10 +1002,24 @@ impl AssistantModel {
     /// The cursor starts on `Deny` (`ORDER`'s last slot) — the safe default
     /// if the user reflexively hits Enter without looking.
     pub fn permission_requested(&mut self, tool: &str, input_summary: &str) {
+        self.permission_requested_scoped(tool, input_summary, "", "", "");
+    }
+
+    pub fn permission_requested_scoped(
+        &mut self,
+        tool: &str,
+        input_summary: &str,
+        actor_id: &str,
+        resource_id: &str,
+        pending_request_id: &str,
+    ) {
         self.pending_permission = Some(PendingPermission {
             tool: tool.to_string(),
             input_summary: input_summary.to_string(),
             selected: PermissionChoice::ORDER.len() - 1,
+            actor_id: actor_id.to_string(),
+            resource_id: resource_id.to_string(),
+            pending_request_id: pending_request_id.to_string(),
         });
     }
 
