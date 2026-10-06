@@ -243,6 +243,21 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
             }
+            crate::protocol::AppRequest::Permissions {
+                op,
+                id,
+                pane_id,
+                credential,
+                response_file,
+            } => {
+                self.permissions_cli_request(
+                    op,
+                    id.as_deref(),
+                    *pane_id,
+                    credential.as_deref(),
+                    response_file,
+                );
+            }
             crate::protocol::AppRequest::ListNeedsYou { response_file } => {
                 self.observe_needs_you("list", None, None, response_file);
             }

@@ -715,12 +715,17 @@ impl ToolDispatcher {
                     &self.scope.caller_app_id,
                     resource_id.as_deref().unwrap_or(""),
                 );
-                if choice == crate::broker::gate::ApprovalChoice::Deny {
-                    let _ = self.monitor.approve_pending(
-                        pending_request_id,
-                        crate::broker::gate::ApprovalChoice::Deny,
+                if matches!(
+                    choice,
+                    crate::broker::gate::ApprovalChoice::Deny
+                        | crate::broker::gate::ApprovalChoice::DenyAlways
+                ) {
+                    let _ = self.monitor.approve_pending(pending_request_id, choice);
+                    return ToolCallResult::coded(
+                        "permission_denied",
+                        &call_id,
+                        Some(pending_request_id),
                     );
-                    return ToolCallResult::coded("permission_denied", &call_id, Some(pending_request_id));
                 }
                 if self
                     .monitor

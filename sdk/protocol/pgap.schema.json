@@ -400,6 +400,48 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Submit one text turn to an existing Assistant pane. The pane owns the\nnormal composer/model/grant path and writes the terminal JSON reply.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "submit_assistant_turn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text",
+            "request_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.",
           "properties": {
             "capability": {
@@ -1962,10 +2004,170 @@
         },
         {
           "additionalProperties": false,
-          "description": "Call an app-exposed tool through the host tool dispatcher. Sent by\n`plexi app call`. The host resolves the viewer context from\n`caller_pane_id` (the active window's context when absent), stamps the\ncaller identity (`pane:<id>` or `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the app answers or the host deadline passes.",
+          "description": "List pending permission requests. Observation seam for the desktop gate.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_permission_requests",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Show one pending permission request.",
+          "properties": {
+            "pending_request_id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "show_permission_request",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pending_request_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resolve one pending permission request from the desktop observation seam.",
+          "properties": {
+            "choice": {
+              "description": "`once`, `session`, `always`, or `deny`.",
+              "type": "string"
+            },
+            "pending_request_id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "resolve_permission_request",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pending_request_id",
+            "choice",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
+          "properties": {
+            "credential": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "permissions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "List items waiting on the human. The host expires due items first.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resolve one needs-you item exactly once. `approve` false denies it.",
+          "properties": {
+            "approve": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "resolve_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "approve",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Call an app-exposed tool through the host tool dispatcher. Sent by\n`plexi app call`. The host resolves the viewer context from\n`caller_pane_id` (the credential's context when absent), stamps the\ncaller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or\n`session:<id>` — never `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the app answers or the host deadline passes.",
           "properties": {
             "app_id": {
               "type": "string"
+            },
+            "call_credential": {
+              "description": "Host-issued session credential. A client-supplied pane id is only a claim.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "caller_pane_id": {
               "format": "uint64",
@@ -1979,9 +2181,27 @@
               "description": "Tool input, a JSON object serialized as a string.",
               "type": "string"
             },
+            "peer_ancestry": {
+              "description": "Host-captured peer ancestry. Socket clients cannot set this; the\nlistener overwrites it before the call is admitted.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
             "response_file": {
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "target_pane_id": {
+              "description": "Pane that owns the tool when more than one instance of the app is live.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
                 "null"
               ]
             },
@@ -2439,6 +2659,12 @@
               "type": "string"
             },
             "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error_code": {
               "type": [
                 "string",
                 "null"
@@ -4621,6 +4847,13 @@
         {
           "description": "Host-to-app tool invocation (#399). The broker calls a tool exposed via\n`DrawCommand::ExposeTools` by sending this event to the owning pane.\nThe app must reply with `DrawCommand::ToolResult { call_id, … }`.",
           "properties": {
+            "authorization": {
+              "description": "Host-stamped authorization envelope. Absent on legacy WASM guests;\nPython apps receive it beside the model arguments.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "type": "string"
             },

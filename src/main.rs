@@ -272,7 +272,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd, NeedsYouCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd, NeedsYouCmd, PermissionsCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -312,6 +312,20 @@ fn main() -> eframe::Result {
                         }
                         NeedsYouCmd::Resolve { id, approve, deny } => {
                             std::process::exit(cli::needs_you_cli("resolve", Some(&id), Some(approve && !deny)))
+                        }
+                    },
+                    Commands::Permissions { cmd } => match cmd {
+                        PermissionsCmd::List { json } => {
+                            std::process::exit(cli::permissions_cli("list", None, json))
+                        }
+                        PermissionsCmd::Reset { id } => {
+                            std::process::exit(cli::permissions_cli("reset", Some(&id), true))
+                        }
+                        PermissionsCmd::Revoke { id } => {
+                            std::process::exit(cli::permissions_cli("revoke", Some(&id), true))
+                        }
+                        PermissionsCmd::Allow { id } => {
+                            std::process::exit(cli::permissions_cli("allow", Some(&id), true))
                         }
                     },
                     Commands::Run {

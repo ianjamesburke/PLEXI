@@ -180,6 +180,13 @@ pub struct GrantRecord {
     /// Operation id that consumed a one-shot, for receipt recovery only.
     #[serde(default)]
     pub bound_operation_id: Option<String>,
+    /// Actor + tool + resource, ignoring the argument fingerprint.
+    ///
+    /// Exact one-shot and session grants stay fingerprint-bound. An explicit
+    /// Always deny, and an allow created from the Permissions app, set this so
+    /// the next call of that tool is answered without a matching payload.
+    #[serde(default)]
+    pub tool_scoped: bool,
 }
 
 impl GrantRecord {
@@ -237,6 +244,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            tool_scoped: false,
         }
     }
 
@@ -275,6 +283,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            tool_scoped: false,
         }
     }
 
@@ -322,6 +331,12 @@ impl GrantRecord {
             return !toolish
                 && self.target_type == TargetType::Capability
                 && req.target_type == TargetType::Capability;
+        }
+        if self.tool_scoped {
+            return match &self.resource_id {
+                Some(id) => req.resource_id.as_deref() == Some(id.as_str()),
+                None => true,
+            };
         }
         if self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint {
             return false;

@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -68,8 +68,22 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Assistant permission** — list, show, or resolve a pending grant:
   `plexi assistant permission list`, `plexi assistant permission show <id>`,
   `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
-  `always`, `deny`, and `revoke` are the choices. This is the observation
-  seam for the desktop permission sheet.
+  `always`, `deny`, `deny_always`, and `revoke` are the choices. This is the observation
+  seam for the desktop permission sheet. `deny` refuses that call only.
+  `deny_always` stores a denial.
+- **Permissions** — the live permission monitor, the same rows as the Permissions app:
+
+  ```bash
+  plexi permissions list --json
+  plexi permissions reset <id>
+  plexi permissions revoke <id>
+  plexi permissions allow <id>
+  ```
+
+  Reset clears a stored denial. Revoke removes an allow. Allow turns a denial
+  into an allow. From a pane (`PLEXI_PANE_ID`) or with `PLEXI_CALL_CREDENTIAL`,
+  reset and allow file a Needs you item and leave the decision unchanged.
+  Revoke runs from either caller. Open the app with `plexi app open permissions`.
 - **Needs you** — one list of everything waiting on the human:
   `plexi needs-you list --json` and
   `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.

@@ -92,6 +92,29 @@ file's exact bytes — WAV, PNG, any media round-trips unchanged.
 Binary-exact file write. Rejects non-bytes payloads and payloads over
 `MAX_FILE_IO_BYTES` immediately, before the host round trip.
 
+### `ReadPermissionDecisions`
+
+```python
+ReadPermissionDecisions()
+```
+
+Ask the host for the live permission-monitor inventory.
+
+The host replies with :class:`events.PermissionInventory`. The app does
+not keep its own grant store.
+
+### `PermissionDecision`
+
+```python
+PermissionDecision(id: str, action: str)
+```
+
+Change one live permission row.
+
+``action`` is ``revoke``, ``reset``, or ``allow``. A click in the
+Permissions app is a human decision. The host replies with a fresh
+:class:`events.PermissionInventory`.
+
 ### `ReadHostLog`
 
 ```python
@@ -192,7 +215,7 @@ ExposeTools(tools: list[AiTool])
 ### `ToolResult`
 
 ```python
-ToolResult(call_id: str, output_json: Optional[str] = None, error: Optional[str] = None)
+ToolResult(call_id: str, output_json: Optional[str] = None, error: Optional[str] = None, error_code: Optional[str] = None)
 ```
 
 ### `SetTimer`
@@ -359,6 +382,18 @@ FileReadResult(content: Optional[bytes], error: Optional[str])
 FileWriteResult(error: Optional[str])
 ```
 
+### `PermissionInventory`
+
+```python
+PermissionInventory(entries: list, notice: str = '', status: str = '')
+```
+
+Host reply to :class:`effects.ReadPermissionDecisions` or
+:class:`effects.PermissionDecision`.
+
+``entries`` is the permission monitor's live list. ``notice`` is empty
+on a plain read.
+
 ### `HostLogResult`
 
 ```python
@@ -444,7 +479,7 @@ AiResponse(request_id: str, content: Optional[str], tokens_in: int, tokens_out: 
 ### `ToolCall`
 
 ```python
-ToolCall(call_id: str, name: str, input_json: str, caller_id: str)
+ToolCall(call_id: str, name: str, input_json: str, caller_id: str, authorization: Optional[str] = None)
 ```
 
 ### `EventSubscriptionResult`

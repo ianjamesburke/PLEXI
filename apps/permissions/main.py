@@ -1,72 +1,74 @@
 #!/usr/bin/env python3
-"""Permissions — SDK v3 runtime-state permission grant browser."""
+"""Permissions — live view of the permission monitor.
+
+Rows come from the host. This app does not keep a second grant store.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from plexi_sdk import log, state
-from plexi_sdk.effects import RequestCapability, SetState, SetStatus, SetTitle
-from plexi_sdk.events import CapabilityDenied, CapabilityGranted, KeyEvent, UiAction
+from plexi_sdk import log
+from plexi_sdk import state
+from plexi_sdk.effects import (
+    PermissionDecision,
+    ReadPermissionDecisions,
+    SetState,
+    SetStatus,
+    SetTimer,
+    SetTitle,
+)
+from plexi_sdk.events import KeyEvent, PermissionInventory, TimerFired, UiAction
 from plexi_sdk.ui import Button, Column, FooterKeys, SelectList, Spacer, Text
 
+POLL_TIMER = 1
+
 DEFAULT_STATE: dict[str, Any] = {
-    "grants": [],
+    "entries": [],
     "selected": 0,
-    "path": "",
     "mode": "list",
     "notice": "",
-    "can_manage": False,
-}
-
-STATE_LABELS = {
-    "green": "allow",
-    "yellow": "ask",
-    "red": "block",
-    "revoked": "revoked",
 }
 
 
 def init(size, args) -> list:
     data = _state()
-    if not data["path"]:
-        data["path"] = str(Path.cwd())
-    missing = {key: data[key] for key in DEFAULT_STATE if state.get(key, None) is None}
-    log.info("permissions: SDK v3 initialized")
-    effects: list = [
+    log.info(f"permissions: opened with {len(data['entries'])} decisions")
+    return [
         SetTitle("Permissions"),
         SetStatus(_status(data)),
-        RequestCapability("permissions.manage"),
+        ReadPermissionDecisions(),
+        SetTimer(id=POLL_TIMER, delay_ms=1000, repeat=True),
     ]
-    if missing:
-        effects.append(SetState(missing))
-    return effects
 
 
 def update(event) -> list:
+    if isinstance(event, TimerFired) and event.id == POLL_TIMER:
+        return [ReadPermissionDecisions()]
+
+    if isinstance(event, PermissionInventory):
+        data = _state()
+        data["entries"] = [_entry(row) for row in event.entries]
+        data["selected"] = _clamp(data["selected"], len(data["entries"]))
+        if event.notice:
+            data["notice"] = event.notice
+        elif event.status == "list":
+            data["notice"] = ""
+        log.info(
+            f"permissions: inventory count={len(data['entries'])} status={event.status or 'list'}"
+        )
+        return _commit(data)
+
     data = _state()
-
-    if isinstance(event, CapabilityGranted) and event.name == "permissions.manage":
-        data["can_manage"] = True
-        data["notice"] = "permissions.manage granted. Waiting for host grant inventory."
-        return _commit(data)
-
-    if isinstance(event, CapabilityDenied) and event.name == "permissions.manage":
-        data["can_manage"] = False
-        data["notice"] = "permissions.manage denied."
-        return _commit(data)
-
     action = _action(event)
     if action is None:
         return []
 
     if action == "reload":
-        data["notice"] = "Reload requested. SDK v3 has no list-permissions effect yet."
-        log.info("permissions: reload requested without v3 host list effect")
-        return _commit(data)
+        log.info("permissions: reload")
+        return [ReadPermissionDecisions()]
 
-    if action == "detail" and data["grants"]:
+    if action == "detail" and data["entries"]:
         data["mode"] = "detail"
         data["notice"] = ""
         return _commit(data)
@@ -75,23 +77,25 @@ def update(event) -> list:
         data["mode"] = "list"
         return _commit(data)
 
-    if action == "revoke":
-        return _revoke_selected(data)
-
     if action == "up":
-        data["selected"] = _clamp(data["selected"] - 1, len(data["grants"]))
+        data["selected"] = _clamp(data["selected"] - 1, len(data["entries"]))
         return _commit(data)
 
     if action == "down":
-        data["selected"] = _clamp(data["selected"] + 1, len(data["grants"]))
+        data["selected"] = _clamp(data["selected"] + 1, len(data["entries"]))
         return _commit(data)
+
+    if action in {"revoke", "reset", "allow"} and data["entries"]:
+        entry = data["entries"][data["selected"]]
+        log.info(f"permissions: {action} {entry['id']}")
+        return [PermissionDecision(id=entry["id"], action=action)]
 
     return []
 
 
 def view():
     data = _state()
-    if data["mode"] == "detail":
+    if data["mode"] == "detail" and data["entries"]:
         return _detail_view(data)
     return _list_view(data)
 
@@ -100,73 +104,57 @@ def _state() -> dict:
     data = dict(DEFAULT_STATE)
     for key, value in DEFAULT_STATE.items():
         data[key] = state.get(key, value)
-    data["grants"] = [_grant(row) for row in data.get("grants") or []]
-    data["selected"] = _clamp(int(data.get("selected") or 0), len(data["grants"]))
-    data["path"] = str(data.get("path") or "")
-    data["mode"] = (
-        data.get("mode") if data.get("mode") in {"list", "detail"} else "list"
-    )
+    data["entries"] = [_entry(row) for row in data.get("entries") or []]
+    data["selected"] = _clamp(int(data.get("selected") or 0), len(data["entries"]))
+    data["mode"] = data.get("mode") if data.get("mode") in {"list", "detail"} else "list"
     data["notice"] = str(data.get("notice") or "")
-    data["can_manage"] = bool(data.get("can_manage"))
     return data
 
 
-def _grant(row: dict) -> dict:
+def _entry(row: dict) -> dict:
     return {
-        "app_id": str(row.get("app_id") or row.get("app") or "?"),
-        "capability": str(row.get("capability") or "?"),
-        "state": str(row.get("state") or "yellow"),
-        "workspace": str(row.get("workspace") or row.get("path") or ""),
-        "description": str(row.get("description") or ""),
-        "sensitive": bool(row.get("sensitive")),
-        "stored": bool(row.get("stored", True)),
+        "id": str(row.get("id") or ""),
+        "kind": str(row.get("kind") or ""),
+        "duration": str(row.get("duration") or ""),
+        "actor_id": str(row.get("actor_id") or ""),
+        "actor_type": str(row.get("actor_type") or ""),
+        "tool": str(row.get("tool") or ""),
+        "resource_id": str(row.get("resource_id") or ""),
+        "when": str(row.get("when") or ""),
+        "source": str(row.get("source") or ""),
+        "workspace": str(row.get("workspace") or ""),
+        "summary": str(row.get("summary") or ""),
     }
 
 
 def _commit(data: dict) -> list:
-    data["selected"] = _clamp(data["selected"], len(data["grants"]))
+    data["selected"] = _clamp(data["selected"], len(data["entries"]))
     return [SetState(data), SetStatus(_status(data))]
-
-
-def _revoke_selected(data: dict) -> list:
-    if not data["grants"]:
-        return []
-    grant = dict(data["grants"][data["selected"]])
-    grant["state"] = "revoked"
-    data["grants"][data["selected"]] = grant
-    data["notice"] = (
-        "Revoke modeled locally. SDK v3 host revoke effect is not available."
-    )
-    log.info(
-        "permissions: modeled revoke for "
-        f"{grant['app_id']}/{grant['capability']} workspace={grant['workspace']!r}"
-    )
-    return _commit(data)
 
 
 def _list_view(data: dict):
     rows = [
         {
-            "name": f"{grant['app_id']}  {grant['capability']}",
-            "description": _grant_summary(grant),
+            "name": f"{entry['tool']}  {entry['kind']}",
+            "description": f"{entry['actor_id']}  {entry['id']}  {entry['when']}",
         }
-        for grant in data["grants"]
+        for entry in data["entries"]
     ]
     body = (
         SelectList(rows, selected_idx=data["selected"])
         if rows
-        else Text("No permission grants in state.", size=12.0)
+        else Text("No permission decisions.", size=12.0)
     )
     return Column(
         [
             Text("Permissions", bold=True, size=15.0),
-            Text(data["path"] or "workspace unknown", size=11.0),
+            Text("Live decisions from the permission monitor.", size=11.0),
             body,
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
             Spacer(grow=True),
             Button("Open", "permissions:detail", disabled=not rows),
             Button("Reload", "permissions:reload"),
-            FooterKeys([("j/k", "select"), ("↩", "open"), ("r", "reload")]),
+            FooterKeys([("j/k", "select"), ("enter", "open"), ("r", "reload")]),
         ],
         gap=8.0,
         grow=True,
@@ -174,44 +162,37 @@ def _list_view(data: dict):
 
 
 def _detail_view(data: dict):
-    grant = data["grants"][data["selected"]] if data["grants"] else _grant({})
+    entry = data["entries"][data["selected"]]
+    kind = entry["kind"]
+    resource = entry["resource_id"] or "any"
+    buttons = []
+    if kind in {"allow", "pending"}:
+        buttons.append(Button("Revoke", "permissions:revoke", style="danger"))
+    if kind == "deny":
+        buttons.append(Button("Ask again", "permissions:reset"))
+        buttons.append(Button("Allow", "permissions:allow"))
+    if kind == "pending":
+        buttons.append(Button("Allow", "permissions:allow"))
+    buttons.append(Button("Back", "permissions:back"))
     return Column(
         [
             Text("Permission", bold=True, size=15.0),
-            Text(f"{grant['app_id']} / {grant['capability']}", bold=True, size=16.0),
-            Text(
-                f"State: {STATE_LABELS.get(grant['state'], grant['state'])}", size=12.0
-            ),
-            Text(f"Workspace: {grant['workspace'] or data['path'] or '-'}", size=12.0),
-            Text(f"Description: {grant['description'] or '-'}", size=12.0),
-            Text(f"Stored: {'yes' if grant['stored'] else 'live only'}", size=12.0),
-            Text(f"Sensitive: {'yes' if grant['sensitive'] else 'no'}", size=12.0),
+            Text(f"{entry['tool']}  {kind}", bold=True, size=16.0),
+            Text(f"Who: {entry['actor_id'] or '-'}", size=12.0),
+            Text(f"What: {entry['tool']}  {entry['duration']}", size=12.0),
+            Text(f"Resource: {resource}", size=12.0),
+            Text(f"When: {entry['when'] or '-'}", size=12.0),
+            Text(f"Id: {entry['id']}", size=12.0),
+            Text(f"Source: {entry['source'] or '-'}", size=12.0),
+            Text(f"Workspace: {entry['workspace'] or '-'}", size=12.0),
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
             Spacer(grow=True),
-            Button(
-                "Revoke",
-                "permissions:revoke",
-                style="danger",
-                disabled=not data["can_manage"],
-            ),
-            Button("Back", "permissions:back"),
+            *buttons,
             FooterKeys([("x", "revoke"), ("esc", "back")]),
         ],
         gap=8.0,
         grow=True,
     )
-
-
-def _grant_summary(grant: dict) -> str:
-    state_label = STATE_LABELS.get(grant["state"], grant["state"])
-    bits = [state_label]
-    if grant["workspace"]:
-        bits.append(grant["workspace"])
-    if grant["sensitive"]:
-        bits.append("sensitive")
-    if not grant["stored"]:
-        bits.append("live")
-    return " | ".join(bits)
 
 
 def _action(event) -> str | None:
@@ -235,11 +216,11 @@ def _action(event) -> str | None:
 
 
 def _status(data: dict) -> str:
-    grant_count = len(data["grants"])
-    if data["mode"] == "detail" and grant_count:
-        grant = data["grants"][data["selected"]]
-        return f"{grant['app_id']} {grant['capability']}"
-    return f"{grant_count} grants"
+    count = len(data["entries"])
+    if data["mode"] == "detail" and count:
+        entry = data["entries"][data["selected"]]
+        return f"{entry['tool']} {entry['kind']}"
+    return f"{count} decisions"
 
 
 def _clamp(selected: int, total: int) -> int:
