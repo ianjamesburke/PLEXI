@@ -232,6 +232,7 @@ pub mod open;
 pub mod pane;
 pub mod registry_watch;
 pub mod relay;
+mod relay_crypto;
 mod relay_ws;
 pub mod release_resolver;
 pub mod routine;

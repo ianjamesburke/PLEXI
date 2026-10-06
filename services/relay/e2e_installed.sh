@@ -31,7 +31,7 @@ cleanup() {
   if command -v "$BIN" >/dev/null 2>&1; then
     "$BIN" host stop >/dev/null 2>&1 || true
   fi
-  rm -f "$LOG" /tmp/relay-e2e-body /tmp/relay-e2e-headers
+  rm -f "$LOG" /tmp/relay-e2e-body /tmp/relay-e2e-headers /tmp/relay-e2e-payload
   if [[ -n "${STATE_DIR:-}" ]]; then rm -rf "$STATE_DIR"; fi
 }
 trap cleanup EXIT
@@ -186,16 +186,19 @@ status_field() {
 
 post_turn() {
   local id="$1" text="$2" cookie="${3:-$COOKIE}"
+  python3 "$ROOT/services/relay/phone_crypto.py" seal \
+    --status "$STATUS" --state "$STATE_DIR/phone-$cookie.json" \
+    --request-id "$id" --text "$text" >/tmp/relay-e2e-payload
   curl -s -o /tmp/relay-e2e-body -w '%{http_code}' -X POST "$BASE/api/turns" \
     -H "cookie: plexi_phone=$cookie" -H 'content-type: application/json' \
-    -d "{\"schema_version\":1,\"request_id\":\"$id\",\"content\":[{\"type\":\"text\",\"text\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$text")}]}"
+    --data-binary @/tmp/relay-e2e-payload
 }
 
 saw_reply() {
-  local page="$1" id="$2" needle="$3"
+  local page="$1" id="$2" needle="$3" cookie="${4:-$COOKIE}"
   [[ -n "$page" ]] || return 1
-  python3 -c 'import json,sys; page=json.loads(sys.argv[1]); rid, needle = sys.argv[2], sys.argv[3];
-raise SystemExit(0 if any(e.get("kind")=="assistant_reply" and e.get("request_id")==rid and needle in (e.get("text") or "") for e in page.get("events") or []) else 1)' "$page" "$id" "$needle"
+  printf '%s' "$page" | python3 "$ROOT/services/relay/phone_crypto.py" saw \
+    --state "$STATE_DIR/phone-$cookie.json" --request-id "$id" --needle "$needle"
 }
 
 CODE_TURN="$(post_turn req-round "say hello $CANARY")"

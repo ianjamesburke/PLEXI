@@ -5,7 +5,7 @@
 //! `request_id` and the phone's own conversation. The relay is the default
 //! path. A local `--tailscale` phone shell remains a direct alternative.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use super::relay_crypto;
 use super::relay_ws::{self, Incoming, WsConn};
 
 const STATUS_FILE: &str = "relay-status.json";
@@ -48,6 +49,7 @@ struct PendingTurn {
     delivery_id: String,
     request_id: String,
     conversation_id: String,
+    device_id: String,
     text: String,
     join_desktop: bool,
 }
@@ -55,6 +57,7 @@ struct PendingTurn {
 struct Inflight {
     delivery_id: String,
     request_id: String,
+    device_id: String,
     rx: Receiver<Value>,
     acked: bool,
 }
@@ -71,6 +74,8 @@ struct Session {
     queued: VecDeque<PendingTurn>,
     inflight: Option<Inflight>,
     last_ping: Instant,
+    pending_key: Option<relay_crypto::PendingDesktopKey>,
+    phone_sessions: HashMap<String, relay_crypto::PhoneSession>,
 }
 
 pub fn relay_connect_cli(url: Option<String>) -> i32 {
@@ -223,6 +228,8 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
         .map_err(|error| format!("relay profile: {error}"))?;
     let _lock = try_session_lock()?;
     let (identity, devices) = load_identity(crate::workspace::secrets::system_store())?;
+    let phone_sessions = load_phone_sessions(&devices);
+    let pending_key = load_desktop_key(&identity.host_id);
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|error| format!("relay control: {error}"))?;
     let control = listener
@@ -243,6 +250,8 @@ fn run_session(url: &str, dispatch: Dispatch, owner: &'static str) -> Result<(),
         queued: VecDeque::new(),
         inflight: None,
         last_ping: Instant::now(),
+        pending_key,
+        phone_sessions,
     };
     write_status(&session, "connecting", None, None, None)?;
     log::info!(
@@ -395,15 +404,25 @@ fn handle_relay_message(
                 .get("qr_url")
                 .and_then(|value| value.as_str())
                 .unwrap_or("/");
+            let pending = relay_crypto::generate_desktop_key().map_err(|_| {
+                "could not generate a pairing key".to_string()
+            })?;
+            persist_desktop_key(&session.identity.host_id, &pending)?;
+            let qr_url = relay_crypto::qr_with_public_key(qr_url, &pending.public);
+            let key_fingerprint = relay_crypto::key_fingerprint(&pending.public);
+            session.pending_key = Some(pending);
             session.pairing_id = Some(pairing_id.to_string());
-            write_status(session, "waiting_for_phone", Some(code), Some(qr_url), None)?;
-            // The code is shown to the person at this desktop. It is not logged.
+            write_status(session, "waiting_for_phone", Some(code), Some(&qr_url), None)?;
+            // The code and the key fingerprint are shown to the person at this
+            // desktop. Neither is logged. The public key is only in the URL
+            // fragment, which the relay never receives.
             println!("Pair this phone");
             println!("Code: {code}");
+            println!("Key fingerprint: {key_fingerprint}");
             println!("QR (no code, no session token): {qr_url}");
             println!("The phone enters the code. Then run: plexi relay confirm");
             log::info!(
-                "relay: pairing code displayed host_id={} pairing_id={pairing_id}",
+                "relay: pairing key displayed host_id={} pairing_id={pairing_id} outcome=key_displayed",
                 session.identity.host_id
             );
         }
@@ -468,6 +487,11 @@ fn handle_relay_message(
             session
                 .devices
                 .retain(|device| device.device_id != device_id);
+            session.phone_sessions.remove(device_id);
+            if !device_id.is_empty() {
+                let _ = crate::workspace::secrets::system_store()
+                    .delete(&phone_session_account(device_id));
+            }
             persist_record(&session.identity, &session.devices)?;
             let phase = if session.devices.is_empty() {
                 "revoked"
@@ -486,24 +510,34 @@ fn handle_relay_message(
             let delivery_id = json_str(message, "delivery_id");
             let request_id = json_str(message, "request_id");
             let conversation_id = json_str(message, "conversation_id");
-            let text = json_str(message, "text");
-            log::info!(
-                "relay: phone turn received host_id={} request_id={request_id} delivery_id={delivery_id} conversation_id={conversation_id} bytes={}",
-                session.identity.host_id,
-                text.len()
-            );
-            // Ack after the host accepts the turn. A host that dies first leaves
-            // the body queued so the relay can purge it at the TTL.
-            session.queued.push_back(PendingTurn {
-                delivery_id,
-                request_id,
-                conversation_id,
-                text,
-                join_desktop: message
-                    .get("join_desktop")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-            });
+            let device_id = json_str(message, "device_id");
+            let sealed = json_str(message, "text");
+            // The outer join_desktop flag is the relay's copy. The phone's
+            // choice is inside the seal. A relay that flips the outer flag
+            // does not change the turn.
+            match accept_sealed(session, &device_id, &request_id, &sealed) {
+                Ok((text, join_desktop)) => {
+                    log::info!(
+                        "relay: phone seal accepted host_id={} request_id={request_id} delivery_id={delivery_id} device_id={device_id} bytes={}",
+                        session.identity.host_id,
+                        sealed.len()
+                    );
+                    session.queued.push_back(PendingTurn {
+                        delivery_id,
+                        request_id,
+                        conversation_id,
+                        device_id,
+                        text,
+                        join_desktop,
+                    });
+                }
+                Err(error) => {
+                    log::info!(
+                        "relay: phone seal rejected host_id={} request_id={request_id} delivery_id={delivery_id} device_id={device_id} outcome={error:?}",
+                        session.identity.host_id
+                    );
+                }
+            }
         }
         "pong" | "error" => {
             let outcome = message
@@ -546,6 +580,7 @@ fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<
         Some((
             job.delivery_id.clone(),
             job.request_id.clone(),
+            job.device_id.clone(),
             ack,
             batch,
             finished,
@@ -553,14 +588,21 @@ fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<
     } else {
         None
     };
-    if let Some((delivery_id, request_id, ack, batch, finished)) = drained {
+    if let Some((delivery_id, request_id, device_id, ack, batch, finished)) = drained {
         if ack {
             if let Some(conn) = socket.as_mut() {
                 send_json(conn, &json!({"type": "ack", "delivery_id": delivery_id}))?;
             }
         }
         for value in batch {
-            forward_assistant_reply(session, socket, &delivery_id, &request_id, &value)?;
+            forward_assistant_reply(
+                session,
+                socket,
+                &delivery_id,
+                &request_id,
+                &device_id,
+                &value,
+            )?;
         }
         if finished {
             session.inflight = None;
@@ -579,6 +621,7 @@ fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<
             let (tx, rx) = mpsc::channel();
             let delivery_id = pending.delivery_id.clone();
             let request_id = pending.request_id.clone();
+            let device_id = pending.device_id.clone();
             thread::spawn(move || {
                 dispatch_turn(
                     dispatch,
@@ -592,6 +635,7 @@ fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<
             session.inflight = Some(Inflight {
                 delivery_id,
                 request_id,
+                device_id,
                 rx,
                 acked: false,
             });
@@ -601,10 +645,11 @@ fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<
 }
 
 fn forward_assistant_reply(
-    session: &Session,
+    session: &mut Session,
     socket: &mut Option<WsConn>,
     delivery_id: &str,
     request_id: &str,
+    device_id: &str,
     value: &Value,
 ) -> Result<(), String> {
     let state = value
@@ -632,11 +677,35 @@ fn forward_assistant_reply(
         "request_id": request_id,
         "state": state,
     });
-    if let Some(text) = value.get("reply").and_then(|item| item.as_str()) {
-        reply["reply"] = json!(text);
-    }
-    if let Some(error) = value.get("error").and_then(|item| item.as_str()) {
-        reply["error"] = json!(error);
+    let reply_text = value.get("reply").and_then(|item| item.as_str());
+    let error_text = value.get("error").and_then(|item| item.as_str());
+    if reply_text.is_some() || error_text.is_some() {
+        if let Some(phone) = session.phone_sessions.get_mut(device_id) {
+            match relay_crypto::seal_reply(
+                phone,
+                reply_text.unwrap_or(""),
+                error_text,
+                request_id,
+            ) {
+                Ok(sealed) => {
+                    if let Err(error) = persist_phone_session(device_id, phone) {
+                        log::error!("relay: phone session was not stored outcome={error}");
+                    }
+                    reply["reply"] = json!(sealed);
+                }
+                Err(error) => {
+                    log::info!(
+                        "relay: phone reply seal failed request_id={request_id} outcome={error:?}"
+                    );
+                    reply["state"] = json!("failed");
+                }
+            }
+        } else {
+            log::info!(
+                "relay: phone reply dropped request_id={request_id} outcome=no_session"
+            );
+            reply["state"] = json!("failed");
+        }
     }
     if let Some(turn_id) = value.get("turn_id").and_then(|item| item.as_str()) {
         reply["turn_id"] = json!(turn_id);
@@ -975,6 +1044,9 @@ fn write_status(
     if let Some(qr_url) = qr_url {
         value["qr_url"] = json!(qr_url);
     }
+    if let Some(pending) = &session.pending_key {
+        value["key_fingerprint"] = json!(relay_crypto::key_fingerprint(&pending.public));
+    }
     if let Some(fingerprint) = fingerprint {
         value["fingerprint"] = json!(fingerprint);
     }
@@ -997,6 +1069,11 @@ fn write_status(
                         value["fingerprint"] = existing.clone();
                     }
                 }
+                if value.get("key_fingerprint").is_none() {
+                    if let Some(existing) = previous.get("key_fingerprint") {
+                        value["key_fingerprint"] = existing.clone();
+                    }
+                }
             }
         }
     }
@@ -1008,6 +1085,94 @@ fn write_status(
 
 fn token_account(host_id: &str) -> String {
     format!("plexi:user:relay-host-token:{host_id}")
+}
+
+fn phone_session_account(device_id: &str) -> String {
+    format!("plexi:user:relay-phone-session:{device_id}")
+}
+
+fn desktop_key_account(host_id: &str) -> String {
+    format!("plexi:user:relay-desktop-key:{host_id}")
+}
+
+fn load_desktop_key(host_id: &str) -> Option<relay_crypto::PendingDesktopKey> {
+    let raw = crate::workspace::secrets::system_store().get(&desktop_key_account(host_id))?;
+    let key = relay_crypto::desktop_key_from_record(&raw)?;
+    log::info!("relay: desktop key restored host_id={host_id}");
+    Some(key)
+}
+
+fn persist_desktop_key(host_id: &str, key: &relay_crypto::PendingDesktopKey) -> Result<(), String> {
+    crate::workspace::secrets::system_store()
+        .set(
+            &desktop_key_account(host_id),
+            &relay_crypto::desktop_key_record(key),
+        )
+        .map_err(|error| format!("relay keychain: {error}"))
+}
+
+fn load_phone_sessions(
+    devices: &[PairedDevice],
+) -> HashMap<String, relay_crypto::PhoneSession> {
+    let store = crate::workspace::secrets::system_store();
+    let mut sessions = HashMap::new();
+    for device in devices {
+        let Some(raw) = store.get(&phone_session_account(&device.device_id)) else {
+            continue;
+        };
+        match relay_crypto::PhoneSession::from_record(&raw) {
+            Some(phone) => {
+                sessions.insert(device.device_id.clone(), phone);
+            }
+            None => {
+                log::info!(
+                    "relay: phone session rejected device_id={} outcome=bad_record",
+                    device.device_id
+                );
+            }
+        }
+    }
+    sessions
+}
+
+fn persist_phone_session(device_id: &str, phone: &relay_crypto::PhoneSession) -> Result<(), String> {
+    crate::workspace::secrets::system_store()
+        .set(&phone_session_account(device_id), &phone.to_record())
+        .map_err(|error| format!("relay keychain: {error}"))
+}
+
+fn accept_sealed(
+    session: &mut Session,
+    device_id: &str,
+    request_id: &str,
+    body: &str,
+) -> Result<(String, bool), relay_crypto::SealError> {
+    if device_id.is_empty() {
+        return Err(relay_crypto::SealError::Malformed);
+    }
+    let opened = relay_crypto::open_phone_body(
+        body,
+        request_id,
+        &mut session.pending_key,
+        session.phone_sessions.get_mut(device_id),
+    )?;
+    match opened {
+        relay_crypto::PhoneOpen::New { opened, session: phone } => {
+            if let Err(error) = persist_phone_session(device_id, &phone) {
+                log::error!("relay: phone session was not stored outcome={error}");
+            }
+            session.phone_sessions.insert(device_id.to_string(), phone);
+            Ok((opened.text, opened.join_desktop))
+        }
+        relay_crypto::PhoneOpen::Existing { opened } => {
+            if let Some(phone) = session.phone_sessions.get(device_id) {
+                if let Err(error) = persist_phone_session(device_id, phone) {
+                    log::error!("relay: phone session was not stored outcome={error}");
+                }
+            }
+            Ok((opened.text, opened.join_desktop))
+        }
+    }
 }
 
 fn load_identity(
@@ -1542,15 +1707,11 @@ mod tests {
         }
         let cookie = cookie.expect("session cookie");
         let marker = "CANARY-host-roundtrip-6c1e";
+        let state = profile.path().join("phone.json");
         let (turn_status, queued, _) = http(
             "POST",
             &format!("http://127.0.0.1:{port}/api/turns"),
-            Some(json!({
-                "schema_version": 1,
-                "request_id": "req-echo",
-                "conversation_id": "not-authoritative",
-                "content": [{"type": "text", "text": marker}],
-            })),
+            Some(seal_turn(profile.path(), &state, "req-echo", marker)),
             Some(&cookie),
         );
         assert_eq!(turn_status, 202, "{queued}");
@@ -1562,19 +1723,8 @@ mod tests {
                 None,
                 Some(&cookie),
             );
-            if page["events"].as_array().is_some_and(|events| {
-                events
-                    .iter()
-                    .any(|event| event["text"] == format!("echo:{marker}"))
-            }) {
+            if reply_has(&page, &state, "req-echo", &format!("echo:{marker}")) {
                 saw = true;
-                let reply = page["events"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|event| event["kind"] == "assistant_reply")
-                    .unwrap();
-                assert_eq!(reply["request_id"], "req-echo");
                 break;
             }
             thread::sleep(Duration::from_millis(50));
@@ -1697,25 +1847,24 @@ mod tests {
         assert!(ids.contains(&device_id.as_str()));
         let identity = fs::read_to_string(profile.path().join(IDENTITY_FILE)).unwrap();
         assert!(!identity.contains("host_token"));
+        let first_state = profile.path().join("phone-first.json");
+        let second_state = profile.path().join("phone-second.json");
         let (turn_status, _, _) = http(
             "POST",
             &format!("http://127.0.0.1:{port}/api/turns"),
-            Some(json!({
-                "schema_version": 1,
-                "request_id": "req-resume",
-                "content": [{"type": "text", "text": "still paired"}],
-            })),
+            Some(seal_turn(profile.path(), &first_state, "req-resume", "still paired")),
             Some(&cookie),
         );
         assert_eq!(turn_status, 202);
         let (other_status, _, _) = http(
             "POST",
             &format!("http://127.0.0.1:{port}/api/turns"),
-            Some(json!({
-                "schema_version": 1,
-                "request_id": "req-other",
-                "content": [{"type": "text", "text": "second phone"}],
-            })),
+            Some(seal_turn(
+                profile.path(),
+                &second_state,
+                "req-other",
+                "second phone",
+            )),
             Some(&second_cookie),
         );
         assert_eq!(other_status, 202);
@@ -1727,22 +1876,14 @@ mod tests {
         let (revoked_status, _, _) = http(
             "POST",
             &format!("http://127.0.0.1:{port}/api/turns"),
-            Some(json!({
-                "schema_version": 1,
-                "request_id": "req-revoked",
-                "content": [{"type": "text", "text": "gone"}],
-            })),
+            Some(seal_turn(profile.path(), &first_state, "req-revoked", "gone")),
             Some(&cookie),
         );
         assert_eq!(revoked_status, 401);
         let (kept_status, _, _) = http(
             "POST",
             &format!("http://127.0.0.1:{port}/api/turns"),
-            Some(json!({
-                "schema_version": 1,
-                "request_id": "req-kept",
-                "content": [{"type": "text", "text": "kept"}],
-            })),
+            Some(seal_turn(profile.path(), &second_state, "req-kept", "kept")),
             Some(&second_cookie),
         );
         assert_eq!(kept_status, 202);
@@ -1750,6 +1891,50 @@ mod tests {
         let _ = worker.join();
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    fn seal_turn(profile: &Path, state: &Path, request_id: &str, text: &str) -> Value {
+        let output = Command::new("python3")
+            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("services/relay/phone_crypto.py"))
+            .arg("seal")
+            .arg("--status")
+            .arg(profile.join(STATUS_FILE))
+            .arg("--state")
+            .arg(state)
+            .arg("--request-id")
+            .arg(request_id)
+            .arg("--text")
+            .arg(text)
+            .output()
+            .expect("python phone_crypto");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("seal json")
+    }
+
+    fn reply_has(page: &Value, state: &Path, request_id: &str, needle: &str) -> bool {
+        let mut child = Command::new("python3")
+            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("services/relay/phone_crypto.py"))
+            .arg("saw")
+            .arg("--state")
+            .arg(state)
+            .arg("--request-id")
+            .arg(request_id)
+            .arg("--needle")
+            .arg(needle)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("python phone_crypto");
+        {
+            let stdin = child.stdin.as_mut().expect("stdin");
+            serde_json::to_writer(stdin, page).expect("page");
+        }
+        child.wait().expect("saw").success()
     }
 
     fn wait_for_phase(profile: &Path, phase: &str) -> Value {

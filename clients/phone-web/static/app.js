@@ -1,5 +1,9 @@
 // Plexi phone shell. Talks to the local stub turn API on the same origin.
 // No credentials are stored; the draft stays in the composer until the server accepts it.
+// A relay page seals every body. The desktop public key arrives in the URL
+// fragment and is never sent to the relay.
+
+import { keyFingerprint, openReply, rememberDesktopKey, sealTurn } from "./e2e.js";
 
 const POLL_MS = 1000;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled", "expired", "waiting_for_permission", "waiting_on_desktop"]);
@@ -10,8 +14,10 @@ function receiptLabel(state) {
 }
 
 function connectionFromStatus(body) {
+  mode = body.mode || "";
   if (body.host === "desktop_offline" || body.desktop === "offline") return ["offline", "desktop offline"];
   if (body.host === "not_connected") return ["online", "Online · local stub, no host"];
+  if (mode === "relay" && !desktopKey) return ["offline", "Open the desktop QR to load the key"];
   return ["online", "Online"];
 }
 
@@ -33,6 +39,23 @@ els.desktop.addEventListener("change", () => {
 
 let cursor = 0;
 let online = false;
+let mode = "";
+const desktopKey = rememberDesktopKey();
+const sentKey = "plexiSentPlain";
+function rememberSent(id, text) {
+  const sent = JSON.parse(sessionStorage.getItem(sentKey) || "{}");
+  sent[id] = text;
+  sessionStorage.setItem(sentKey, JSON.stringify(sent));
+}
+function sentText(id) {
+  return (JSON.parse(sessionStorage.getItem(sentKey) || "{}"))[id];
+}
+if (desktopKey) {
+  const line = document.createElement("p");
+  line.id = "key-fingerprint";
+  line.textContent = "Key fingerprint " + keyFingerprint(desktopKey);
+  document.querySelector("header").append(line);
+}
 const urlToken = new URLSearchParams(location.search).get("token");
 if (urlToken) {
   sessionStorage.setItem("plexiPhoneToken", urlToken);
@@ -78,7 +101,15 @@ function render(event) {
       li.append(error);
     }
   } else {
-    li.textContent = event.text;
+    let text = sentText(event.request_id) || event.text || "";
+    if (!sentText(event.request_id) && desktopKey && event.kind === "assistant_reply" && event.text) {
+      try {
+        text = openReply(text, event.request_id).text || "";
+      } catch (err) {
+        text = "sealed message rejected";
+      }
+    }
+    li.textContent = text;
   }
   const scroller = els.transcript.parentElement;
   const pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
@@ -117,10 +148,18 @@ els.form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = els.message.value.trim();
   if (!text || !online || sending) return;
+  if (mode === "relay" && !desktopKey) {
+    setConnection("offline", "Open the desktop QR to load the key");
+    return;
+  }
   const id = requestId();
   sending = true;
   syncControls();
   try {
+    const joinDesktop = els.desktop.checked;
+    const content = mode === "relay"
+      ? [{ type: "sealed", body: sealTurn(text, id, joinDesktop) }]
+      : [{ type: "text", text }];
     const res = await fetch("/api/turns", {
       method: "POST",
       credentials: "same-origin",
@@ -129,8 +168,8 @@ els.form.addEventListener("submit", async (e) => {
         schema_version: 1,
         request_id: id,
         conversation_id: "local-stub",
-        join_desktop: els.desktop.checked,
-        content: [{ type: "text", text }],
+        join_desktop: mode === "relay" ? false : joinDesktop,
+        content,
       }),
     });
     const receipt = await res.json();
@@ -142,6 +181,7 @@ els.form.addEventListener("submit", async (e) => {
       throw new Error(receipt.error || `turn ${res.status}`);
     }
     if (!TERMINAL.has(receipt.state) && !activeRequestIds.includes(id)) activeRequestIds.push(id);
+    if (mode === "relay") rememberSent(id, text);
     els.message.value = "";
   } catch (err) {
     console.warn("phone shell send failed", err);

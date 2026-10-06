@@ -93,17 +93,19 @@ print(line.split(":",1)[1].split(";",1)[0].strip().split("=",1)[1] if "=" in lin
 done
 test -n "$COOKIE"
 
+python3 "$ROOT/services/relay/phone_crypto.py" seal \
+  --status "$STATUS" --state "$HOME_DIR/phone.json" \
+  --request-id "req-e2e" --text "$MARKER" >/tmp/relay-e2e-payload
 TURN_CODE="$(curl -s -o /tmp/relay-e2e-body -w '%{http_code}' -X POST "$BASE/api/turns" \
   -H "cookie: plexi_phone=$COOKIE" -H 'content-type: application/json' \
-  -d "{\"schema_version\":1,\"request_id\":\"req-e2e\",\"conversation_id\":\"not-authoritative\",\"content\":[{\"type\":\"text\",\"text\":\"$MARKER\"}]}")"
+  --data-binary @/tmp/relay-e2e-payload)"
 test "$TURN_CODE" = "202"
 
 SAW=""
 for _ in $(seq 1 50); do
   PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE")"
-  if python3 -c 'import json,sys; page=json.loads(sys.argv[1]); marker=sys.argv[2];
-ok=any(e.get("kind")=="assistant_reply" and e.get("text")=="echo:"+marker and e.get("request_id")=="req-e2e" for e in page.get("events") or [])
-raise SystemExit(0 if ok else 1)' "$PAGE" "$MARKER"; then
+  if printf '%s' "$PAGE" | python3 "$ROOT/services/relay/phone_crypto.py" saw \
+    --state "$HOME_DIR/phone.json" --request-id "req-e2e" --needle "echo:$MARKER"; then
     SAW=1
     break
   fi
@@ -117,9 +119,12 @@ kill "$CONNECT_PID"
 wait "$CONNECT_PID" 2>/dev/null || true
 CONNECT_PID=""
 sleep 0.4
+python3 "$ROOT/services/relay/phone_crypto.py" seal \
+  --status "$STATUS" --state "$HOME_DIR/phone.json" \
+  --request-id "req-off" --text "$MARKER-offline" >/tmp/relay-e2e-payload
 OFFLINE="$(curl -s -o /tmp/relay-e2e-body -w '%{http_code}' -X POST "$BASE/api/turns" \
   -H "cookie: plexi_phone=$COOKIE" -H 'content-type: application/json' \
-  -d "{\"schema_version\":1,\"request_id\":\"req-off\",\"content\":[{\"type\":\"text\",\"text\":\"$MARKER-offline\"}]}")"
+  --data-binary @/tmp/relay-e2e-payload)"
 test "$OFFLINE" = "409"
 python3 -c 'import json; body=json.load(open("/tmp/relay-e2e-body")); raise SystemExit(0 if body.get("error")=="desktop_offline" and body.get("message")=="desktop offline" else 1)'
 
@@ -128,7 +133,7 @@ CONNECT_PID=$!
 READY=""
 for _ in $(seq 1 50); do
   PHASE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("phase") or "")' "$STATUS" 2>/dev/null || true)"
-  if [[ "$PHASE" == "waiting_for_phone" || "$PHASE" == "pending_confirm" || "$PHASE" == "confirmed" ]]; then
+  if [[ "$PHASE" == "paired" || "$PHASE" == "waiting_for_phone" || "$PHASE" == "pending_confirm" || "$PHASE" == "confirmed" ]]; then
     READY=1
     break
   fi

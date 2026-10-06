@@ -105,6 +105,9 @@ tokio = { version = "1", features = ["io-util"] }
 sysinfo = "0.32"
 # Clipboard reads for capability-gated WASM effects. eframe owns writes through egui.
 arboard = "3"
+# Static X25519 so the desktop private key can live in the keychain across a
+# restart. ring only offers an ephemeral key that cannot be serialized.
+x25519-dalek = { version = "2", default-features = false, features = ["alloc", "precomputed-tables", "static_secrets", "zeroize"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux window backends for winit. The base `eframe` entry above runs

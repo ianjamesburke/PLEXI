@@ -1,7 +1,8 @@
 """Plexi phone relay.
 
 The desktop host connects outbound (WebSocket). The phone uses HTTPS on the
-same origin. Message bodies live only in memory: they are dropped when the
+same origin. Message bodies are sealed envelopes. This process forwards them
+and cannot read them. They live only in memory: they are dropped when the
 desktop acknowledges delivery, and any still-undelivered body is purged after
 two minutes. Logs record ids, sizes, and outcomes — never message text, pairing
 codes, or session tokens.
@@ -49,6 +50,10 @@ DEVICE_IDLE_SECONDS = 30 * 24 * 3600
 PROTOCOL_VERSION = 1
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 8000
+# A sealed body is the plaintext cap plus the handshake header, tag, and
+# base64url expansion. Truncating it would break the authenticator, so an
+# oversize seal is rejected whole.
+MAX_SEALED_CHARS = 12000
 MAX_INFLIGHT_PER_DEVICE = 8
 MAX_DESKTOP_SOCKETS = 64
 HELLO_DEADLINE_SECONDS = 10.0
@@ -622,8 +627,9 @@ class Relay:
             return
         state = message.get("state") if isinstance(message.get("state"), str) else "failed"
         reply_text = message.get("reply") if isinstance(message.get("reply"), str) else None
-        if reply_text is not None and len(reply_text) > MAX_TEXT_CHARS:
-            reply_text = reply_text[:MAX_TEXT_CHARS]
+        if reply_text is not None and len(reply_text) > MAX_SEALED_CHARS:
+            trace("reply_ignored", host_id=host_id, outcome="reply_too_long")
+            reply_text = None
         error = message.get("error") if isinstance(message.get("error"), str) else None
         if error is not None and len(error) > 240:
             error = error[:240]
@@ -921,7 +927,7 @@ class Relay:
         if problem:
             trace("turn_rejected", device_id=device.device_id, outcome=problem if problem.isidentifier() or "_" in problem else "invalid")
             return 400, {"error": problem}
-        text = envelope["content"][0]["text"]
+        text = envelope["content"][0]["body"]
         request_id = envelope["request_id"]
         canonical = json.dumps(envelope, sort_keys=True)
         body_hash = _hash(canonical)
@@ -1056,13 +1062,17 @@ def validate_envelope(body: object) -> str | None:
         return "invalid_request_id"
     content = body.get("content")
     if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
-        return "content_must_be_one_text_part"
+        return "content_must_be_one_sealed_part"
     part = content[0]
-    if part.get("type") != "text" or not isinstance(part.get("text"), str):
-        return "content_must_be_one_text_part"
-    text = part["text"]
-    if not text.strip() or len(text) > MAX_TEXT_CHARS:
-        return "invalid_text"
+    if part.get("type") == "text":
+        return "plaintext_rejected"
+    if part.get("type") != "sealed" or not isinstance(part.get("body"), str):
+        return "content_must_be_one_sealed_part"
+    sealed = part["body"]
+    if not sealed or len(sealed) > MAX_SEALED_CHARS:
+        return "invalid_sealed"
+    if any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=" for ch in sealed):
+        return "invalid_sealed"
     return None
 
 
@@ -1086,27 +1096,34 @@ PAIR_PAGE = """<!doctype html>
       <input id="label" name="label" maxlength="40" placeholder="phone" value="phone">
       <button type="submit">Pair</button>
     </form>
+    <p id="key-fingerprint"></p>
     <p id="fingerprint"></p>
     <p>The desktop must confirm this phone. A code alone does not pair it.</p>
-    <p>Messages pass through this relay in the clear on the server. Transport is protected by TLS. This is not end-to-end encryption.</p>
+    <p>Message bodies are sealed. This relay only routes the envelope. Compare the key fingerprint with the desktop. It comes from the QR fragment, which this server never receives.</p>
   </main>
-  <script>
+  <script type="module">
+    import { keyFingerprint, rememberDesktopKey } from "/e2e.js";
     const status = document.getElementById("pair-status");
     const fingerprint = document.getElementById("fingerprint");
+    const keyLine = document.getElementById("key-fingerprint");
+    const desktopKey = rememberDesktopKey();
+    if (desktopKey) keyLine.textContent = "Key fingerprint " + keyFingerprint(desktopKey);
+    else keyLine.textContent = "Open the QR from the desktop. This page has no key, so it will not send messages.";
     document.getElementById("pair-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (!desktopKey) { status.textContent = "Open the QR from the desktop first"; return; }
       const code = document.getElementById("code").value.trim();
       const label = document.getElementById("label").value.trim() || "phone";
       status.textContent = "Waiting for the desktop to confirm…";
       const redeem = await fetch("/api/pair", {method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body: JSON.stringify({code, label})});
       const body = await redeem.json();
       if (!redeem.ok) { status.textContent = body.message || body.error || "Pairing failed"; return; }
-      fingerprint.textContent = "Fingerprint " + (body.fingerprint || "");
+      fingerprint.textContent = "Device fingerprint " + (body.fingerprint || "");
       const id = body.pairing_id;
       const timer = setInterval(async () => {
         const res = await fetch("/api/pair/" + encodeURIComponent(id), {credentials:"same-origin"});
         const poll = await res.json();
-        if (poll.status === "confirmed") { clearInterval(timer); location.replace("/"); }
+        if (poll.status === "confirmed") { clearInterval(timer); location.replace("/" + location.hash); }
         else if (poll.status === "denied" || poll.status === "expired") { clearInterval(timer); status.textContent = poll.status === "denied" ? "Desktop denied this phone" : "Code expired"; }
       }, 1000);
     });
