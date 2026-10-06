@@ -1081,14 +1081,14 @@ fn generation_cost_fallback(
         .cloned()
 }
 
-/// Add a provider-reported count into a running total. `None` (the provider
-/// sent no usage) leaves the total unknown instead of adding zero.
+/// Add a provider-reported count into a running total. `None` and `Some(0)`
+/// leave the total unchanged, so a missing or zero reading stays unknown.
 fn elapsed_ms(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn add_reported_tokens(total: &mut Option<u32>, reported: Option<u32>) {
-    if let Some(n) = reported {
+    if let Some(n) = reported.filter(|n| *n > 0) {
         *total = Some(total.unwrap_or(0).saturating_add(n));
     }
 }
@@ -2464,6 +2464,18 @@ mod tests {
         add_reported_tokens(&mut total, Some(194));
         add_reported_tokens(&mut total, Some(12));
         assert_eq!(total, Some(206));
+        add_reported_tokens(&mut total, Some(0));
+        assert_eq!(
+            total,
+            Some(206),
+            "a zero reading must not change a real total"
+        );
+        let mut zeroed: Option<u32> = None;
+        add_reported_tokens(&mut zeroed, Some(0));
+        assert!(
+            zeroed.is_none(),
+            "a lone zero reading must stay unknown, not Some(0)"
+        );
 
         assert!(!generation_metrics_usable(&GenerationMetrics {
             prompt_tokens: Some(0),

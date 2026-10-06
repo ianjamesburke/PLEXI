@@ -209,12 +209,14 @@ pub enum Commands {
     },
     /// Summarize recorded AI usage from this channel's ledger.
     ///
-    /// Reads `ai-ledger.jsonl` in the channel profile. Does not require a
-    /// running host. Rows written before run tags existed are migrated in
+    /// With no subcommand, prints per-client totals for tokens, cost, runs,
+    /// and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does
+    /// not require a running host. A token count is a positive number or the
+    /// word `unknown`. Rows written before run tags existed are migrated in
     /// place to explicit null `client` and `kind`.
     Ledger {
         #[command(subcommand)]
-        cmd: LedgerCmd,
+        cmd: Option<LedgerCmd>,
     },
 
     // ── System ────────────────────────────────────────────────────────────────
@@ -2557,5 +2559,32 @@ mod tests {
         assert_eq!(name, None);
         assert_eq!(wasm.as_deref(), Some("counter"));
         assert_eq!(lang, "python");
+    }
+
+    #[test]
+    fn bare_ledger_is_the_per_client_summary() {
+        let cli = Cli::try_parse_from(["plexi", "ledger"]).expect("bare ledger parses");
+        assert!(matches!(cli.command, Some(Commands::Ledger { cmd: None })));
+
+        let summary = Cli::try_parse_from([
+            "plexi",
+            "ledger",
+            "summary",
+            "--by",
+            "kind",
+            "--since",
+            "2026-01-01",
+            "--json",
+        ])
+        .expect("ledger summary parses");
+        let Some(Commands::Ledger {
+            cmd: Some(super::LedgerCmd::Summary { by, since, json }),
+        }) = summary.command
+        else {
+            panic!("expected ledger summary");
+        };
+        assert_eq!(by.as_deref(), Some("kind"));
+        assert_eq!(since.as_deref(), Some("2026-01-01"));
+        assert!(json);
     }
 }
