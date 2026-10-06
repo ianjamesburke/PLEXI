@@ -636,18 +636,14 @@ def subcommands(path):
     code, body = help_text(path)
     if code != 0 and "unrecognized" in body.lower():
         return set()
+    # Root help groups verbs under headings (Workspace, Panes, …) instead of
+    # a Commands: block. Nested help uses Commands:. Both indent the name,
+    # then at least two spaces, then the description.
     names = set()
-    in_cmds = False
     for line in body.splitlines():
-        if re.match(r"^Commands:", line):
-            in_cmds = True
-            continue
-        if in_cmds:
-            if line and not line.startswith(" ") and not line.startswith("\t"):
-                break
-            m = re.match(r"^\s{2}([a-z0-9][a-z0-9-]*)\b", line)
-            if m:
-                names.add(m.group(1))
+        m = re.match(r"^  ([a-z][a-z0-9-]*)\s{2,}\S", line)
+        if m:
+            names.add(m.group(1))
     return names
 
 def walk(tokens, strict):
@@ -746,7 +742,7 @@ PY
     note_row "$id" "PASS" "$summary"
   else
     local why
-    why="$(grep '^FAIL ' "$log" | head -3 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    why="$(grep '^FAIL ' "$log" | head -3 | sed 's/^FAIL //' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     note_row "$id" "FAIL" "${why:-skill check failed (log $log)}"
   fi
 }
