@@ -40,6 +40,8 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) context_name: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) agent: Option<AgentBootSpec>,
+    /// Bypass `[launch] on_launch` and spawn a fresh instance.
+    pub(crate) force_new: bool,
 }
 
 impl PaneLaunchSpec {
@@ -62,7 +64,13 @@ impl PaneLaunchSpec {
             context_name: None,
             name: None,
             agent: None,
+            force_new: false,
         })
+    }
+
+    pub(crate) fn with_force_new(mut self, force_new: bool) -> Self {
+        self.force_new = force_new;
+        self
     }
 
     pub(crate) fn from_spawn_pane(request: &AppRequest) -> Result<Self, String> {
@@ -82,6 +90,7 @@ impl PaneLaunchSpec {
             name,
             agent_cmd,
             boot_timeout_secs,
+            force_new,
             ..
         } = request
         else {
@@ -154,6 +163,7 @@ impl PaneLaunchSpec {
             context_name: context_name.clone(),
             name: name.clone(),
             agent,
+            force_new: *force_new,
         })
     }
 
@@ -201,6 +211,7 @@ impl PaneLaunchSpec {
             name: self.name.clone(),
             agent_cmd: self.agent.as_ref().map(|agent| agent.command.clone()),
             boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
+            force_new: self.force_new,
         }
     }
 
@@ -236,6 +247,7 @@ mod tests {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            force_new: false,
         }
     }
 
@@ -251,6 +263,19 @@ mod tests {
             *boot_timeout_secs = timeout;
         }
         request
+    }
+
+    #[test]
+    fn force_new_round_trips_onto_the_spawn_request() {
+        let mut request = spawn_pane("chess", None, &[]);
+        if let AppRequest::SpawnPane { force_new, .. } = &mut request {
+            *force_new = true;
+        }
+        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        assert!(spec.force_new);
+        let wire = serde_json::to_value(spec.to_spawn_pane_request()).expect("json");
+        assert_eq!(wire["force_new"], true);
+        assert_eq!(wire["type_id"], "chess");
     }
 
     #[test]

@@ -599,6 +599,12 @@ pub enum AppCmd {
         /// Extra arguments passed through to the app (only valid with an app id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
+        /// Spawn another instance instead of focusing one that is already open.
+        ///
+        /// Use this when two panes of the same app must stay addressable.
+        /// `plexi app call --pane <id>` then names which instance receives the tool.
+        #[arg(long)]
+        new: bool,
     },
     /// Pre-approve a raw `.wasm` component's host imports without a prompt.
     ///
@@ -869,6 +875,8 @@ pub enum AppCmd {
     /// The host stamps the caller identity from the pane credential or peer
     /// ancestry (`pane:<id>`). A missing pane is never the human `user`.
     /// The app sees that identity, never one taken from the input.
+    /// When more than one instance of the app is open, pass `--pane` or the
+    /// call fails with `error_code` `ambiguous_instance` and does not pick one.
     /// Exits 1 with `error: <message>` when the tool or the app rejects the call.
     ///
     /// Example: plexi app call chess chess.state

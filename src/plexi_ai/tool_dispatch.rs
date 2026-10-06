@@ -512,6 +512,53 @@ pub trait PermissionPresenter: Send + Sync {
     ) -> crate::broker::gate::ApprovalChoice;
 }
 
+/// Why `app call` could not choose a single tool provider.
+#[derive(Debug)]
+pub(crate) enum AppToolRouteError {
+    /// Two or more panes expose the tool and the caller did not name one.
+    Ambiguous { message: String, panes: Vec<u64> },
+    /// The named pane does not expose the tool.
+    Missing { message: String },
+}
+
+impl AppToolRouteError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Ambiguous { .. } => "ambiguous_instance",
+            Self::Missing { .. } => "tool_not_found",
+        }
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Ambiguous { message, .. } | Self::Missing { message } => message,
+        }
+    }
+
+    pub(crate) fn panes(&self) -> &[u64] {
+        match self {
+            Self::Ambiguous { panes, .. } => panes,
+            Self::Missing { .. } => &[],
+        }
+    }
+}
+
+fn pane_ids_in_qualified_names(prefix: &str, names: &[String]) -> Vec<u64> {
+    let mut panes = Vec::new();
+    for name in names {
+        let Some(rest) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some((id, _)) = rest.split_once("__") else {
+            continue;
+        };
+        if let Ok(pane) = id.parse::<u64>() {
+            panes.push(pane);
+        }
+    }
+    panes
+}
+
 pub struct ToolDispatcher {
     /// Snapshot: exposed_name → (provider_pane_id, provider_tool_name, AiTool).
     /// Already filtered to the caller's context.
@@ -867,7 +914,7 @@ impl ToolDispatcher {
         app_id: &str,
         tool: &str,
         target_pane: Option<u64>,
-    ) -> Result<String, String> {
+    ) -> Result<String, AppToolRouteError> {
         let plain = format!("{app_id}__{tool}");
         if let Some(pane) = target_pane {
             let qualified = format!("{app_id}:{pane}__{tool}");
@@ -877,11 +924,14 @@ impl ToolDispatcher {
             }
             if let Some((provider, _, _)) = self.tools.get(&plain) {
                 if *provider == pane {
+                    log::info!("tool_dispatch: routed {plain} to pane {pane}");
                     return Ok(plain);
                 }
             }
             log::info!("tool_dispatch: pane {pane} does not expose {plain}");
-            return Err(format!("tool_not_found: pane {pane} does not expose {tool}"));
+            return Err(AppToolRouteError::Missing {
+                message: format!("tool_not_found: pane {pane} does not expose {tool}"),
+            });
         }
         if self.tools.contains_key(&plain) {
             return Ok(plain);
@@ -898,14 +948,18 @@ impl ToolDispatcher {
         if matches.is_empty() {
             return Ok(plain);
         }
+        let panes = pane_ids_in_qualified_names(&prefix, &matches);
         log::info!(
-            "tool_dispatch: ambiguous {plain}; address one of {}",
+            "tool_dispatch: ambiguous_instance {plain} panes={panes:?}; address {}",
             matches.join(", ")
         );
-        Err(format!(
-            "ambiguous_instance: {plain} is live on multiple panes; address {}",
-            matches.join(", ")
-        ))
+        Err(AppToolRouteError::Ambiguous {
+            message: format!(
+                "ambiguous_instance: {plain} is live on multiple panes; address {}",
+                matches.join(", ")
+            ),
+            panes,
+        })
     }
 
     fn provider_of(&self, name: &str) -> (String, u64) {

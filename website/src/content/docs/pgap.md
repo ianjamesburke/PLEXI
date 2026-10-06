@@ -60,11 +60,13 @@ Messages the app sends to request host services.
 
 ### `submit_assistant_turn`
 
-Submit one text turn to a host Assistant pane.
+Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an Assistant in the context or creates ...
 
 | Field | Type | Required |
 |-------|------|----------|
+| `client` | `string?` | no |
 | `context_id` | `integer?` | no |
+| `kind` | `string?` | no |
 | `pane_id` | `integer?` | no |
 | `request_id` | `string` | yes |
 | `response_file` | `string` | yes |
@@ -271,6 +273,7 @@ Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps. Requires 
 | `context_name` | `string?` | no |
 | `cwd` | `string?` | no |
 | `ephemeral` | `boolean` | no |
+| `force_new` | `boolean` | no |
 | `from_pane_id` | `integer?` | no |
 | `layout` | `string?` | no |
 | `name` | `string?` | no |
