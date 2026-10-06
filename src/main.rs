@@ -14,6 +14,7 @@ mod app;
 mod assistant;
 mod broker;
 mod cli;
+mod cloud;
 
 mod config;
 mod distribution;
@@ -195,9 +196,13 @@ fn main() -> eframe::Result {
     let merged_config_root = adopted_root
         .clone()
         .or_else(crate::config::active_workspace_root);
-    let log_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref())
-        .log
-        .unwrap_or_default();
+    let merged_config =
+        crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
+    let log_config = merged_config.log.clone().unwrap_or_default();
+    let retain_local_history = merged_config
+        .cloud
+        .as_ref()
+        .is_some_and(|cloud| cloud.retain_local_history());
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = raw_args
@@ -205,6 +210,19 @@ fn main() -> eframe::Result {
         .skip(1)
         .any(|a| !a.starts_with('-') && known_subcommands().contains(a.as_str()));
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    // Host startup only. A CLI invocation must not prune local history as a
+    // side effect of printing JSON, and its stderr must stay a clean payload.
+    if !cli_mode {
+        if let Err(error) = crate::cloud::retention::run_at_startup(
+            chrono::Utc::now(),
+            chrono::Local::now().date_naive(),
+            retention_days,
+            retain_local_history,
+            merged_config_root.as_deref(),
+        ) {
+            log::warn!("cloud retention failed: {error}");
+        }
+    }
     let frame_tick = crate::platform::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat
@@ -271,9 +289,10 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd, NeedsYouCmd,
-        DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli,
+        Commands, ConfigCmd, ContextCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd,
+        NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd,
+        WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -286,8 +305,8 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
+                        AssistantCmd::Send { text, request_id, pane_id, context_id, client, kind, json: _ } => {
+                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, client.as_deref(), kind.as_deref()))
                         }
                         AssistantCmd::Permission { cmd } => match cmd {
                             AssistantPermissionCmd::List => {
@@ -1337,6 +1356,11 @@ fn main() -> eframe::Result {
                     Commands::Note { text } => {
                         std::process::exit(cli::notes::note_capture_cli(&text))
                     }
+                    Commands::Ledger { cmd } => match cmd {
+                        LedgerCmd::Summary { by, since, json } => std::process::exit(
+                            cli::ledger_summary_cli(by.as_deref(), since.as_deref(), json),
+                        ),
+                    },
                     Commands::Ai { cmd } => match cmd {
                         AiCmd::Onboard => std::process::exit(cli::ai_onboard_cli()),
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
