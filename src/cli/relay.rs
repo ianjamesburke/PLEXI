@@ -1548,20 +1548,36 @@ fn backoff(attempt: u32) {
 }
 
 fn machine_label() -> String {
+    let label = hostname_from_os();
+    let label = label.trim();
+    if label.is_empty() {
+        "desktop".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+/// The desktop's machine name, used only as a relay host label.
+/// Windows libc does not export `gethostname`; `COMPUTERNAME` is the
+/// name the OS already published for this process.
+#[cfg(unix)]
+fn hostname_from_os() -> String {
     let mut buf = [0u8; 256];
     // SAFETY: gethostname writes a NUL-terminated name into `buf`, which we
     // bound by its length and never read past the first NUL.
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
     if rc != 0 {
-        return "desktop".to_string();
+        return String::new();
     }
     let end = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
-    let label = String::from_utf8_lossy(&buf[..end]).trim().to_string();
-    if label.is_empty() {
-        "desktop".to_string()
-    } else {
-        label
-    }
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+#[cfg(not(unix))]
+fn hostname_from_os() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
