@@ -330,8 +330,9 @@ elif [[ "$HOST_STARTED" != 1 ]]; then
 elif [[ -z "$pending_id" ]]; then
   fail "human click grants the pending read (no pending)"
 else
+  "$PLEXI" app open assistant --right >"$WORK/assistant-open.txt" 2>&1 || true
   assist=""
-  for _i in $(seq 1 20); do
+  for _i in $(seq 1 40); do
     "$PLEXI" pane list >"$WORK/panes.json" 2>/dev/null || true
     assist="$(python3 - "$WORK/panes.json" <<'PY'
 import json, sys
