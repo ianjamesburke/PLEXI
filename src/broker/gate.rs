@@ -1560,6 +1560,13 @@ pub(crate) fn revisions_from_output(output: Option<&str>) -> (String, String) {
 
 pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Option<String>) {
     let parsed = serde_json::from_str::<serde_json::Value>(input_json).ok();
+    if tool == "secret.read" {
+        let name = parsed.as_ref().and_then(|value| value.get("name")).and_then(|item| item.as_str());
+        let folder = parsed.as_ref().and_then(|value| value.get("folder")).and_then(|item| item.as_str());
+        if let (Some(name), Some(folder)) = (name, folder) {
+            return (ResourceScope::Path, Some(format!("{name}@{folder}")));
+        }
+    }
     let game = parsed.as_ref().and_then(|value| {
         value
             .get("game_id")

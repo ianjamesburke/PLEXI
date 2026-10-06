@@ -143,6 +143,26 @@ note
 notes
 ```
 
+### Bind a secret to a folder
+
+`plexi secret set NAME --folder <path>` reads the value from stdin (or a hidden
+prompt) and stores it in the OS keychain, or in the labeled encrypted-file
+fallback when Secret Service is unavailable. `list` prints names and folders.
+A new pane whose cwd is inside that folder receives the name as an environment
+variable; `secret exec --cwd` runs a command with that same environment.
+`secret read --agent <id>` returns `permission_required` until
+`secret grant --agent <id>` allows that agent. The value is never printed by
+`list`, `grant`, or the audit log.
+
+```bash
+plexi secret set FOLDER_TOKEN --folder /path/to/project
+plexi secret list
+plexi secret grant FOLDER_TOKEN --agent reader --folder /path/to/project
+plexi secret read FOLDER_TOKEN --agent reader --folder /path/to/project
+plexi secret exec --cwd /path/to/project -- sh -c 'test -n "$FOLDER_TOKEN"'
+plexi secret rm FOLDER_TOKEN --folder /path/to/project
+```
+
 ## Worked examples
 
 ### Initialize, open, and check an app

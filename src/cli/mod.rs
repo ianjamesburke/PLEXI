@@ -1301,8 +1301,9 @@ pub use routine::{routine_add, routine_list, routine_remove, routine_run, routin
 pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;
 pub use workspace::{
-    workspace_clean_cli, workspace_init, workspace_secret_delete, workspace_secret_get,
-    workspace_secret_list, workspace_secret_set,
+    folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm,
+    folder_secret_set, workspace_clean_cli, workspace_init, workspace_secret_delete,
+    workspace_secret_get, workspace_secret_list, workspace_secret_set,
 };
 
 #[cfg(test)]
