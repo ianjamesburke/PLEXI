@@ -47,7 +47,7 @@ jobs:
         # a miss, so a network failure is attributed to the fetch, not the test).
         # Phone seal tests shell out to phone_crypto.py, which imports cryptography.
         run: |
-          python3 -m pip install --user -r services/relay/requirements-phone-crypto.txt
+          PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --user -r services/relay/requirements-phone-crypto.txt
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
             cargo test --bin plexi
