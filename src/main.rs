@@ -272,7 +272,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd, NeedsYouCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -305,6 +305,14 @@ fn main() -> eframe::Result {
                                 ))
                             }
                         },
+                    },
+                    Commands::NeedsYou { cmd } => match cmd {
+                        NeedsYouCmd::List { json: _ } => {
+                            std::process::exit(cli::needs_you_cli("list", None, None))
+                        }
+                        NeedsYouCmd::Resolve { id, approve, deny } => {
+                            std::process::exit(cli::needs_you_cli("resolve", Some(&id), Some(approve && !deny)))
+                        }
                     },
                     Commands::Run {
                         command,

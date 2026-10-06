@@ -228,6 +228,13 @@ class StubStore:
         with self.lock:
             return {"cursor": len(self.events), "events": [dict(e) for e in self.events[cursor:]]}
 
+    def needs_you(self) -> tuple[int, dict]:
+        return 200, {"ok": True, "items": []}
+
+    def resolve_needs_you(self, item_id: str, decision: str) -> tuple[int, dict]:
+        log.info("needs-you stub resolve id=%s decision=%s refused", item_id, decision)
+        return 503, {"ok": False, "error": "needs-you requires the host"}
+
 
 class HostStore(StubStore):
     """In-memory phone receipts backed by the installed host CLI."""
@@ -276,6 +283,45 @@ class HostStore(StubStore):
             if state != "succeeded" and error:
                 event["error"] = error
             self._append(event)
+
+    def needs_you(self) -> tuple[int, dict]:
+        return self._needs_you_cli(["needs-you", "list", "--json"])
+
+    def resolve_needs_you(self, item_id: str, decision: str) -> tuple[int, dict]:
+        flag = "--approve" if decision == "approve" else "--deny"
+        return self._needs_you_cli(["needs-you", "resolve", item_id, flag])
+
+    def _needs_you_cli(self, args: list[str]) -> tuple[int, dict]:
+        log.info("needs-you phone %s", " ".join(args))
+        try:
+            proc = subprocess.run(
+                [self.plexi_bin, *args],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.error("needs-you phone failed: %s", exc)
+            return 502, {"ok": False, "error": str(exc)}
+        raw = proc.stdout.strip()
+        try:
+            payload = json.loads(raw) if raw else {"ok": False, "error": proc.stderr.strip() or "empty reply"}
+        except json.JSONDecodeError:
+            log.error("needs-you phone bad json: %s", raw)
+            return 502, {"ok": False, "error": proc.stderr.strip() or "bad json"}
+        if not isinstance(payload, dict):
+            return 502, {"ok": False, "error": "bad json"}
+        error = str(payload.get("error", ""))
+        if payload.get("ok") is True:
+            status = 200
+        elif "unknown" in error:
+            status = 404
+        elif payload.get("already") is True:
+            status = 409
+        else:
+            status = 400
+        return status, payload
 
 
 def validate_envelope(body: object) -> str | None:
@@ -332,6 +378,9 @@ def make_handler(store: StubStore, token: str | None = None) -> type[BaseHTTPReq
             if url.path == "/api/status":
                 self._json(200, {"mode": "host" if isinstance(store, HostStore) else "local_stub", "host": "configured" if isinstance(store, HostStore) else "not_connected", "intake_contract": None})
                 return
+            if url.path == "/api/needs-you":
+                self._json(*store.needs_you())
+                return
             if url.path == "/api/conversation":
                 try:
                     cursor = max(0, int(parse_qs(url.query).get("after", ["0"])[0]))
@@ -355,6 +404,19 @@ def make_handler(store: StubStore, token: str | None = None) -> type[BaseHTTPReq
                 self._json(413, {"error": "body_too_large"})
                 return
             raw = self.rfile.read(length) if length else b""
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "needs-you" and parts[3] == "resolve":
+                try:
+                    body = json.loads(raw or b"null")
+                except json.JSONDecodeError:
+                    self._json(400, {"ok": False, "error": "invalid_json"})
+                    return
+                decision = body.get("decision") if isinstance(body, dict) else None
+                if decision not in ("approve", "deny"):
+                    log.warning("needs-you rejected decision=%s", decision)
+                    self._json(400, {"ok": False, "error": "decision must be approve or deny"})
+                    return
+                self._json(*store.resolve_needs_you(parts[2], decision))
+                return
             if parts == ["api", "turns"]:
                 try:
                     body = json.loads(raw or b"null")
