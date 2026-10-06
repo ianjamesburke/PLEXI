@@ -330,10 +330,21 @@ done
 if [[ -n "$PENDING" ]] && HUMAN_APPROVE "$PENDING" once; then
   wait "$SEND_PID" || true
   SEND4="$(cat "$EVID/logs/step4-send.json" "$EVID/logs/step4-send.err" 2>/dev/null || true)"
-  if printf '%s' "$SEND4" | grep -q 'e7e5' \
-     && printf '%s' "$SEND4" | grep -q '"revision_after": 2' \
-     && printf '%s' "$SEND4" | grep -q 'agent:default' \
-     && ! printf '%s' "$SEND4" | grep -q '"duplicate": true'; then
+  if python3 - "$EVID/logs/step4-send.json" <<'PY'
+import json, sys
+outer = json.load(open(sys.argv[1]))
+reply = outer.get("reply") or ""
+body = json.loads(reply) if isinstance(reply, str) else reply
+ok = (
+    outer.get("state") == "succeeded"
+    and body.get("move") == "e7e5"
+    and body.get("revision_after") == 2
+    and body.get("actor") == "agent:default"
+    and body.get("duplicate") is False
+)
+raise SystemExit(0 if ok else 1)
+PY
+  then
     record PASS step4 "e7e5 committed by agent, revision 2"
   else
     record FAIL step4 "$SEND4"
@@ -390,7 +401,7 @@ done
 if [[ -n "$PENDING6" ]] && HUMAN_PLAY_UCI g1f3 && HUMAN_APPROVE "$PENDING6" once; then
   wait "$SEND6" || true
   SEND6_BODY="$(cat "$EVID/logs/step6-send.json" "$EVID/logs/step6-send.err" 2>/dev/null || true)"
-  if printf '%s' "$SEND6_BODY" | grep -q 'stale_revision' || grep -q 'stale_revision' "$LOG"; then
+  if printf '%s' "$SEND6_BODY" | grep -q 'stale_revision'; then
     record PASS step6 "human correction produced stale_revision"
   else
     record FAIL step6 "$SEND6_BODY"
