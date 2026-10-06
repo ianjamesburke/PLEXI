@@ -90,19 +90,64 @@ Resolve one pending request: once, session, always, or deny. The host refuses ev
 
 ## `plexi command-view`
 
-Show every lead and its latest transcript line.
+Show every lead, its runs, and its queue. Send and cancel steer those leads.
 
-The rows come from the agents API head records and each head's conversation. `open` shows the same projection in a pane.
+The rows come from the agents API head records, runs, and each head's conversation. `open` shows the same projection in a pane. `send` runs a real model turn. `cancel` stops that run. `resolve` and `allow` never grant, and an agent pane is refused.
 
-Example: plexi command-view --json Example: plexi command-view open
+Example: plexi command-view --json Example: plexi command-view open Example: plexi command-view send lead-a "status?" Example: plexi command-view cancel run_example
 
 | Subcommand | Description |
 |---|---|
 | `open` | Open the command view pane in the active context |
+| `send` | Send text to a lead. The turn runs in that head's conversation |
+| `cancel` | Stop a live run before its next tool call |
+| `resolve` | Resolve a pending approval. An agent pane is refused, and this command does not grant |
+| `allow` | Record an allow. An agent pane is refused, and this command does not grant |
 
 ### `plexi command-view open`
 
 Open the command view pane in the active context
+
+### `plexi command-view send`
+
+Send text to a lead. The turn runs in that head's conversation.
+
+Example: plexi command-view send lead-a "status?"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<lead>` | string | yes | Lead id |
+| `<text>` | string | yes | Prompt for that lead |
+
+### `plexi command-view cancel`
+
+Stop a live run before its next tool call.
+
+Example: plexi command-view cancel run_example
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<run>` | string | yes | Run id from `command-view --json` |
+
+### `plexi command-view resolve`
+
+Resolve a pending approval. An agent pane is refused, and this command does not grant.
+
+Example: plexi command-view resolve pending_example
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Pending request id |
+
+### `plexi command-view allow`
+
+Record an allow. An agent pane is refused, and this command does not grant.
+
+Example: plexi command-view allow --tool assistant.turn
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--tool` | string | no | Tool name. Ignored. The command does not write a grant |
 
 ## `plexi run`
 
