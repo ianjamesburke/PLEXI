@@ -1,5 +1,6 @@
 //! Command view pane. It paints the same projection `plexi command-view --json`
-//! returns. Steering stays on the CLI so a click here cannot skip the gate.
+//! returns, one row per line, so a waiting lead stays on screen. Steering stays
+//! on the CLI so a click here cannot skip the gate.
 
 use crate::app::app_trait::{App, AppRenderContext};
 
@@ -22,10 +23,29 @@ impl App for CommandViewApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        _ctx: &AppRenderContext<'_>,
+        ctx: &AppRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
-        ui.label(crate::host::command_view::pane_text());
+        let colors = ctx.colors;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .id_salt("command-view")
+            .show(ui, |ui| {
+                for line in crate::host::command_view::pane_text().lines() {
+                    let attention = line.contains("waiting on you") || line.contains("needs you ");
+                    let color = if attention {
+                        colors.warning
+                    } else {
+                        colors.text_primary
+                    };
+                    ui.label(
+                        egui::RichText::new(line)
+                            .family(egui::FontFamily::Monospace)
+                            .size(crate::ui::style::TEXT_BODY)
+                            .color(color),
+                    );
+                }
+            });
     }
 
     fn semantic_state(&self) -> Option<serde_json::Value> {

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Installed-binary check for the command view.
 # Contract: src/host/command_view.rs
+# Profile: resolve_channel_dir in src/config/mod.rs. A channel-named binary
+# (plexi-pr-2699) uses ~/.plexi-pr-2699 and ignores PLEXI_CHANNEL.
 #
 #   bash scripts/command-view-e2e.sh [path-to-plexi-binary]
 set -uo pipefail
@@ -41,7 +43,6 @@ mkdir -p "$HOME/.plexi" "$WORK/workspace"
 if [[ -d "$ORIG_HOME/.plexi/wasm-bundles" ]]; then
   ln -s "$ORIG_HOME/.plexi/wasm-bundles" "$HOME/.plexi/wasm-bundles"
 fi
-export PLEXI_CHANNEL="command-view-e2e"
 unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING || true
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-$(id -u)}"
@@ -49,13 +50,25 @@ mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 cd "$WORK/workspace"
 
-PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+# Same rule as resolve_channel_dir: plexi-pr-2699 -> .plexi-pr-2699, and that
+# name wins over PLEXI_CHANNEL. Only a bare plexi binary adopts the env channel.
+bin_base="$(basename "$BIN")"
+bin_base="${bin_base%.exe}"
+bin_base="${bin_base%.EXE}"
+if [[ "$bin_base" == plexi-* && -n "${bin_base#plexi-}" ]]; then
+  unset PLEXI_CHANNEL || true
+  PROFILE="$HOME/.plexi-${bin_base#plexi-}"
+else
+  export PLEXI_CHANNEL="command-view-e2e"
+  PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+fi
 SOCKET="$PROFILE/notify.sock"
+echo "profile $PROFILE (binary $bin_base)"
 
 start_host() {
   unset DISPLAY
   if command -v xvfb-run >/dev/null 2>&1; then
-    xvfb-run -a "$BIN" >"$WORK/host.log" 2>&1 &
+    xvfb-run -a -s "-screen 0 1600x1000x24" "$BIN" >"$WORK/host.log" 2>&1 &
   else
     "$BIN" >"$WORK/host.log" 2>&1 &
   fi
@@ -229,6 +242,116 @@ if [[ -n "$NY" ]]; then
 else
   fail "block did not surface needs you"
   cat "$WORK/block.json" >&2 || true
+fi
+
+echo "command pane pixels"
+SHOT="$WORK/command-pane.png"
+SHOT_OK=0
+if [[ -n "$PANE" ]]; then
+  sleep 1
+  set +e
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 25 "$BIN" host screenshot --pane "$PANE" --output "$SHOT" >"$WORK/shot.log" 2>&1
+  else
+    "$BIN" host screenshot --pane "$PANE" --output "$SHOT" >"$WORK/shot.log" 2>&1
+  fi
+  SHOT_CODE=$?
+  set -e
+  if [[ "$SHOT_CODE" == 0 ]] && python3 - "$SHOT" <<'PY'
+import struct, sys, zlib
+data = open(sys.argv[1], "rb").read()
+if data[:8] != b"\x89PNG\r\n\x1a\n":
+    raise SystemExit("not a png")
+pos = 8
+width = height = bit_depth = color_type = interlace = None
+idat = []
+while pos + 8 <= len(data):
+    length = struct.unpack(">I", data[pos:pos + 4])[0]
+    kind = data[pos + 4:pos + 8]
+    chunk = data[pos + 8:pos + 8 + length]
+    pos += 12 + length
+    if kind == b"IHDR":
+        width, height, bit_depth, color_type, _, _, interlace = struct.unpack(">IIBBBBB", chunk)
+    elif kind == b"IDAT":
+        idat.append(chunk)
+    elif kind == b"IEND":
+        break
+if not width or width < 200 or height < 80:
+    raise SystemExit(f"pane crop too small: {width}x{height}")
+if bit_depth != 8 or interlace != 0 or color_type not in (2, 6):
+    raise SystemExit(0)
+channels = 3 if color_type == 2 else 4
+raw = zlib.decompress(b"".join(idat))
+stride = width * channels
+i = 0
+prev = bytearray(stride)
+samples = []
+step_y = max(1, height // 40)
+step_x = max(1, width // 40)
+for y in range(height):
+    filt = raw[i]
+    i += 1
+    row = bytearray(raw[i:i + stride])
+    i += stride
+    if filt == 1:
+        for x in range(stride):
+            left = row[x - channels] if x >= channels else 0
+            row[x] = (row[x] + left) & 255
+    elif filt == 2:
+        for x in range(stride):
+            row[x] = (row[x] + prev[x]) & 255
+    elif filt == 3:
+        for x in range(stride):
+            left = row[x - channels] if x >= channels else 0
+            row[x] = (row[x] + ((left + prev[x]) // 2)) & 255
+    elif filt == 4:
+        for x in range(stride):
+            a = row[x - channels] if x >= channels else 0
+            b = prev[x]
+            c = prev[x - channels] if x >= channels else 0
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            pr = a if pa <= pb and pa <= pc else b if pb <= pc else c
+            row[x] = (row[x] + pr) & 255
+    elif filt != 0:
+        raise SystemExit(f"bad filter {filt}")
+    if y % step_y == 0:
+        for x in range(0, width, step_x):
+            samples.append(row[x * channels])
+    prev = row
+mean = sum(samples) / len(samples)
+var = sum((sample - mean) ** 2 for sample in samples) / len(samples)
+if var < 20:
+    raise SystemExit(f"flat image variance {var:.1f}")
+print(f"{width}x{height} variance {var:.0f}")
+PY
+  then
+    SHOT_OK=1
+  fi
+  if command -v tesseract >/dev/null 2>&1 && [[ -s "$SHOT" ]]; then
+    tesseract "$SHOT" stdout --psm 6 >"$WORK/shot.txt" 2>"$WORK/shot.ocr" || true
+    if ! python3 - "$WORK/shot.txt" <<'PY'
+import sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read().lower()
+missing = [word for word in ("lead-a", "lead-b", "waiting") if word not in text]
+if missing:
+    raise SystemExit("ocr missed " + ", ".join(missing))
+PY
+    then
+      SHOT_OK=0
+      echo "ocr did not read both leads and the waiting state" >&2
+      cat "$WORK/shot.txt" >&2 || true
+    fi
+  fi
+fi
+if [[ -f "$SHOT" ]]; then
+  cp "$SHOT" /tmp/plexi-command-view-pane.png
+fi
+if [[ "$SHOT_OK" == 1 ]]; then
+  pass "command pane shows two leads, one waiting on you"
+else
+  fail "command pane render"
+  cat "$WORK/shot.log" >&2 || true
 fi
 
 cv resolve "$NY" --approve >"$WORK/resolve.json"
