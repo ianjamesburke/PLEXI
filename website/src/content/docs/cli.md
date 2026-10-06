@@ -800,7 +800,7 @@ Example: plexi app call chess chess.state Example: plexi app call chess chess.pl
 
 ## `plexi account`
 
-Manage your Plexi marketplace account (only needed to publish or buy paid apps).
+Optional account that links this desktop to relay and cloud features.
 
 Free apps install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
 
