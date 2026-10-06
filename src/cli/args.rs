@@ -148,6 +148,16 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: EventsCmd,
     },
+    /// List and resolve everything waiting on you.
+    ///
+    /// One host record covers click approvals, agent questions, and blocked
+    /// runs. Resolving an id from here, the desktop
+    /// badge, or the phone page resolves it everywhere, exactly once.
+    #[command(name = "needs-you")]
+    NeedsYou {
+        #[command(subcommand)]
+        cmd: NeedsYouCmd,
+    },
     /// Send a notification to the Plexi UI.
     Notify {
         #[command(subcommand)]
@@ -308,6 +318,26 @@ pub enum LedgerCmd {
         /// Print one JSON object on stdout.
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum NeedsYouCmd {
+    /// List open items waiting on you as JSON.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Resolve one item. Approve lets a click-gated tool proceed; deny refuses it.
+    Resolve {
+        id: String,
+        /// Approve the item.
+        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        approve: bool,
+        /// Deny the item.
+        #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
+        deny: bool,
     },
 }
 

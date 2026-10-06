@@ -246,6 +246,12 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
             }
+            crate::protocol::AppRequest::ListNeedsYou { response_file } => {
+                self.observe_needs_you("list", None, None, response_file);
+            }
+            crate::protocol::AppRequest::ResolveNeedsYou { id, approve, response_file } => {
+                self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
+            }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;
@@ -2384,6 +2390,32 @@ impl PlexiApp {
                         self.emit_agent_booted(*pane_id, provenance);
                     }
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
+                    if *state == crate::protocol::AgentState::Blocked
+                        && *blocked_reason != Some(crate::protocol::AgentBlockedReason::PermissionPrompt)
+                    {
+                        let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
+                            format!("{agent} is blocked")
+                        });
+                        let kind = if event.as_deref() == Some("AskQuestion") {
+                            crate::broker::gate::NeedsYouKind::Question
+                        } else {
+                            crate::broker::gate::NeedsYouKind::BlockedRun
+                        };
+                        let filed = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        )
+                        .file_needs_you(crate::broker::gate::NeedsYouFile {
+                            kind,
+                            actor: agent.clone(),
+                            resource: format!("pane:{pane_id}"),
+                            summary,
+                            expires_at: None,
+                            run_tag: session_id.clone().or_else(|| Some(format!("pane:{pane_id}"))),
+                        });
+                        if let Err(error) = filed {
+                            log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
+                        }
+                    }
                     // Fast path: answer a parked `pane new --agent` spawn the
                     // frame the hook report lands. The host-observed detector
                     // path is picked up by the level-triggered re-check in
