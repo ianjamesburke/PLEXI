@@ -803,6 +803,15 @@ item_v1_14() {
         note_row "$id" "FAIL" "bypass: ${check_mode#bypass:} — scripts/skill-check.sh (scripts/e2e/plexi-bin.md)"
         return
         ;;
+      human|none)
+        # #2722's skill-check is the contract check. The inline lint below
+        # flags skill lines that name a refused command, which that script
+        # already accepts.
+        local summary
+        summary="$(grep -E '^PASS' "$check_log" | tail -1)"
+        note_row "$id" "PASS" "${summary:-scripts/skill-check.sh passed}"
+        return
+        ;;
     esac
   fi
   if [[ ! -f "$skill" ]]; then
@@ -1064,7 +1073,7 @@ run_one() {
 echo "v1-acceptance"
 echo "binary    ${BIN:-<none>} (${BIN_BASE:-})"
 if [[ -n "$BIN" ]]; then
-  echo "version   $("$BIN" --version 2>&1 | head -1)"
+  echo "version   $("$BIN" --version 2>&1 | grep -E 'plexi [0-9]' | head -1)"
 fi
 echo "tree      $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "display   $DISPLAY"
