@@ -23,8 +23,18 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
+# A channel-named binary (`plexi-pr-2718`, `plexi-alpha`) ignores PLEXI_CHANNEL.
+# A bare `plexi` adopts it. The profile dir has to match whichever one is running.
+bin_base="$(basename "$BIN")"
+bin_base="${bin_base%.exe}"
+if [[ "$bin_base" == plexi-* ]]; then
+  export PLEXI_CHANNEL="${bin_base#plexi-}"
+else
+  export PLEXI_CHANNEL="${PLEXI_CHANNEL:-seal-e2e}"
+fi
+
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -32,10 +42,9 @@ mkdir -p "$HOME/.plexi"
 if [[ -d "$ORIG_HOME/.plexi/wasm-bundles" ]]; then
   ln -s "$ORIG_HOME/.plexi/wasm-bundles" "$HOME/.plexi/wasm-bundles"
 fi
-export PLEXI_CHANNEL="seal-e2e"
 unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING || true
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$WORK/runtime}"
+export XDG_RUNTIME_DIR="$WORK/runtime"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 chmod 700 "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 
@@ -52,7 +61,7 @@ fi
 
 stop_host() {
   if [[ -n "${HOST_PID:-}" ]]; then
-    kill "$HOST_PID" 2>/dev/null || true
+    kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true
     wait "$HOST_PID" 2>/dev/null || true
     unset HOST_PID
   fi
@@ -62,9 +71,9 @@ stop_host() {
 start_host() {
   unset DISPLAY
   if command -v xvfb-run >/dev/null 2>&1; then
-    xvfb-run -a "$BIN" >"$WORK/host.log" 2>&1 &
+    setsid xvfb-run -a "$BIN" >"$WORK/host.log" 2>&1 &
   else
-    "$BIN" >"$WORK/host.log" 2>&1 &
+    setsid "$BIN" >"$WORK/host.log" 2>&1 &
   fi
   HOST_PID=$!
   for _ in $(seq 1 90); do
