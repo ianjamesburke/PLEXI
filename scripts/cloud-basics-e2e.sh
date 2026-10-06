@@ -3,9 +3,11 @@
 # Usage: scripts/cloud-basics-e2e.sh <PR>
 #
 # Uses a temp HOME. The channel profile is ${HOME}/.<binary-name>, derived
-# from the installed plexi-pr-<PR> binary. Never touches the OS keychain and
-# never opens a secret dialog: it does not call secret commands, and the host
-# is started with --background so it does not activate a window.
+# from the installed plexi-pr-<PR> binary, or from PLEXI_E2E_SHIM when the
+# acceptance harness sets it. Never touches the OS keychain and never opens a
+# secret dialog: it does not call secret commands, and the host is started
+# with --background so it does not activate a window. A relay that rejects
+# plaintext is checked with a sealed envelope that does not contain the canary.
 
 set -euo pipefail
 
