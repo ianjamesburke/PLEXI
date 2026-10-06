@@ -1315,6 +1315,7 @@ impl PlexiApp {
         cwd: Option<PathBuf>,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
+        inject_folder_secrets: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
         let (mut settings, pending_credential) = Self::make_backend_settings(
@@ -1333,6 +1334,11 @@ impl PlexiApp {
             );
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
+        crate::host::shell::apply_folder_secret_injection(
+            &mut settings.env,
+            settings.working_directory.as_deref(),
+            inject_folder_secrets,
+        );
         let mut pane = TerminalPane::new(
             new_id,
             self.ctx.clone(),
@@ -1369,6 +1375,7 @@ impl PlexiApp {
         close_on_exit: bool,
         cwd_override: Option<std::path::PathBuf>,
         keep_focus: bool,
+        inject_folder_secrets: bool,
     ) -> crate::spatial::tiling::PaneId {
         let new_id = self.host.alloc_pane_id();
         let context = self.pane_context_env_for_window(win_idx);
@@ -1390,6 +1397,11 @@ impl PlexiApp {
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
+        crate::host::shell::apply_folder_secret_injection(
+            &mut settings.env,
+            settings.working_directory.as_deref(),
+            inject_folder_secrets,
+        );
         let Some(mut pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),

@@ -40,6 +40,8 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) context_name: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) agent: Option<AgentBootSpec>,
+    /// Host-stamped. See `AppRequest::SpawnPane::peer_ancestry`.
+    pub(crate) peer_ancestry: Option<Vec<u32>>,
 }
 
 impl PaneLaunchSpec {
@@ -62,6 +64,7 @@ impl PaneLaunchSpec {
             context_name: None,
             name: None,
             agent: None,
+            peer_ancestry: None,
         })
     }
 
@@ -82,6 +85,7 @@ impl PaneLaunchSpec {
             name,
             agent_cmd,
             boot_timeout_secs,
+            peer_ancestry,
             ..
         } = request
         else {
@@ -154,6 +158,7 @@ impl PaneLaunchSpec {
             context_name: context_name.clone(),
             name: name.clone(),
             agent,
+            peer_ancestry: peer_ancestry.clone(),
         })
     }
 
@@ -201,6 +206,7 @@ impl PaneLaunchSpec {
             name: self.name.clone(),
             agent_cmd: self.agent.as_ref().map(|agent| agent.command.clone()),
             boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
+            peer_ancestry: self.peer_ancestry.clone(),
         }
     }
 
@@ -236,6 +242,7 @@ mod tests {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         }
     }
 

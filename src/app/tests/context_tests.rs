@@ -2070,7 +2070,7 @@ fn create_context_with_windows_adds_extra_pages() {
         .map(|x| x + 1)
         .unwrap_or(1);
     for cmd in &cmds {
-        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false, None);
+        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false, None, true);
         new_x += 1;
     }
 
@@ -3783,6 +3783,7 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
         app.drain_pane_cmd_channel();
         let total_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
