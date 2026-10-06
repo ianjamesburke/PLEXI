@@ -74,7 +74,11 @@ build identity, including source changes between prerelease builds.
 Bare `plexi` delegates to the pane's named channel only when `PLEXI_RUNNING=1`.
 Outside a pane it launches stable. Channel-named commands retain their channel.
 Unix installs keep generated zsh, bash and fish completions under the receipt
-root and register loading in the user's shell configuration. Zsh registration
+root and register loading in the user's shell configuration. Bash is registered
+in `~/.bashrc` and on the login file a login interactive bash reads
+(`.bash_profile`, else `.bash_login`, else `.profile`). The `.profile` copy
+runs only when `BASH_VERSION` is set. Host panes exec `bash -i -l`, which does
+not read `~/.bashrc`. Zsh registration
 loads the definition even when an existing completion cache references a missing
 legacy file. Completion files participate in activation and rollback; removal
 deletes only that channel's registration and files. PR installs skip completions.

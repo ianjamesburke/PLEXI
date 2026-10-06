@@ -901,6 +901,20 @@ fn completion_path(receipt: &Receipt, shell: &str) -> PathBuf {
     receipt.root.join("completions").join(shell).join(file)
 }
 
+/// Login interactive bash reads the first of these that exists.
+#[cfg(unix)]
+fn bash_login_profile(home: &Path) -> PathBuf {
+    let profile = home.join(".bash_profile");
+    if profile.exists() {
+        return profile;
+    }
+    let login = home.join(".bash_login");
+    if login.exists() {
+        return login;
+    }
+    home.join(".profile")
+}
+
 #[cfg(unix)]
 fn prepare_path_registration(receipt: &mut Receipt, changes: &mut Vec<Change>) -> Result<()> {
     let home =
@@ -955,6 +969,26 @@ fn prepare_path_registration(receipt: &mut Receipt, changes: &mut Vec<Change>) -
                 receipt.root.display()
             ));
         }
+        // Host panes exec `bash -i -l`. A login interactive bash reads
+        // .bash_profile, else .bash_login, else .profile — not .bashrc — so
+        // the .bashrc registration above never reaches a pane on its own.
+        let login = bash_login_profile(&home);
+        let completion = quote_shell(&completion_path(receipt, "bash"));
+        let source = if login.ends_with(".profile") {
+            format!(
+                "if [ -n \"$BASH_VERSION\" ] && [ -r {completion} ]; then\n  . {completion}\nfi"
+            )
+        } else {
+            format!("if [ -r {completion} ]; then\n  . {completion}\nfi")
+        };
+        log::info!(
+            "distribution: registered bash completions for login shells in {}",
+            login.display()
+        );
+        blocks.entry(login).or_default().push(format!(
+            "\n# Plexi completions: {}\n{source}\n# End Plexi completions\n",
+            receipt.root.display()
+        ));
     }
     for (path, blocks) in blocks {
         let mut existing = match fs::read_to_string(&path) {

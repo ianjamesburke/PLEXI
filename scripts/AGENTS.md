@@ -34,6 +34,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - **Worktree dir gone after `wtp remove`.** Finish all file edits and cd away before cleanup steps.
 - **Skill file edits don't need `bump + install`.** When the only change is `.claude/skills/*.md` or non-Rust config, commit directly to alpha. `just bump && just install` is only needed when Rust code changes should be reflected in the running build.
 - **`scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`** — it installs whatever tree it lives in. Never call it directly for a PR build; `just pr-install <N>` resolves the PR's head into the right worktree and runs the script from there (safe from any cwd).
+- **Login bash does not read `~/.bashrc`.** Host panes exec `bash -i -l` (`apply_initial_cmd`). Bash completion registration has to land on the login file in `prepare_path_registration`; a `.bashrc`-only snippet never reaches a pane. See `scripts/DISTRIBUTION.md`.
 - **`just merge-pr` must run from the canonical alpha checkout.** Stint state lives in ignored `.stint/` files that feature worktrees may not have. If a PR body references stint IDs, running merge closeout from a feature worktree can fail before merge with missing `.stint/tasks`; rerun from `/Users/ianburke/Documents/GitHub/PLEXI` on `alpha`.
 
 ## Child DOX Index
