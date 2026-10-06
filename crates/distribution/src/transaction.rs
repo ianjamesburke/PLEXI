@@ -1184,7 +1184,9 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
 
 pub fn launch_ready(receipt: &Receipt) -> Result<()> {
     let mut command = Command::new(receipt.active.executable());
-    command.args(["host", "start"]);
+    // `host start` defaults to 15s. A cold Windows install missed that and
+    // the package gate reported the host as not ready. The e2e scripts use 90s.
+    command.args(["host", "start", "--timeout-secs", "90"]);
     clean_environment(&mut command);
     let status = command.status().context("start installed host")?;
     if !status.success() {
