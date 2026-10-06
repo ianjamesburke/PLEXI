@@ -4,6 +4,7 @@ mod app_call;
 pub(crate) mod assistant_host_tools;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
+pub mod command_view_app;
 mod dispatch;
 pub mod file_handlers;
 mod focus;
@@ -790,6 +791,11 @@ fn handle_socket_connection(
                     &mailbox,
                     peer_ancestry.as_deref(),
                 );
+                return;
+            }
+            Some("command_view_follow") => {
+                log::info!("command_view: follow connected");
+                crate::host::command_view::serve_follow(write_half);
                 return;
             }
             Some("events_list") => {

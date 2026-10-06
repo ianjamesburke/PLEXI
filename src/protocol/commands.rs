@@ -751,6 +751,29 @@ pub enum AppRequest {
         approve: bool,
         response_file: String,
     },
+    /// List or steer the command view. Steer ops are admitted by the gate
+    /// before the board changes. The host writes the projection JSON to
+    /// `response_file`.
+    CommandView {
+        op: String,
+        #[serde(default)]
+        lead: String,
+        #[serde(default)]
+        run: String,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        tool: String,
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        approve: bool,
+        #[serde(default)]
+        workspace: String,
+        response_file: String,
+    },
     /// Call an app-exposed tool through the host tool dispatcher. Sent by
     /// `plexi app call`. The host resolves the viewer context from
     /// `caller_pane_id` (the credential's context when absent), stamps the

@@ -1266,6 +1266,19 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
             return (ResourceScope::Game, Some(game_id));
         }
     }
+    if let Some(resource) = tool.strip_prefix("command.").filter(|name| {
+        matches!(*name, "send" | "enqueue" | "pause" | "cancel")
+    }).and_then(|_| {
+        parsed.as_ref().and_then(|value| {
+            value
+                .get("resource")
+                .and_then(|item| item.as_str())
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+        })
+    }) {
+        return (ResourceScope::Workspace, Some(resource));
+    }
     if let Some(path) = parsed.as_ref().and_then(|value| {
         value
             .get("path")

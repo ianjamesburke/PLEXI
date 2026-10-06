@@ -119,7 +119,7 @@ impl PlexiApp {
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
                 log::info!("needs_you: host resolve {id} approve={approve}");
-                match monitor.resolve_needs_you(id, approve) {
+                match crate::host::command_view::settle_needs_you(&monitor, id, approve) {
                     Ok(receipt) => serde_json::json!({
                         "ok": !receipt.already,
                         "id": receipt.id,

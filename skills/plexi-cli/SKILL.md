@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -70,6 +70,17 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
   `always`, `deny`, and `revoke` are the choices. This is the observation
   seam for the desktop permission sheet.
+- **Command view** — one list of leads, runs, queues, and needs-you items:
+  `plexi command-view --json`. Steer with
+  `plexi command-view send --lead lead-a --text "status"`,
+  `plexi command-view enqueue --lead lead-a --text "ship the notes"`,
+  `plexi command-view pause --run run-1`, and
+  `plexi command-view cancel --run run-1`. Those four admit through the
+  permission gate. `plexi command-view allow --tool command.send --lead lead-a --text "status"`
+  records the exact grant. `plexi command-view block --lead lead-a --run run-1 --summary "which notes"`
+  files a needs-you row. `plexi command-view resolve ny_1 --approve` or `--deny`
+  settles it and unblocks the run. `plexi command-view --follow` streams host
+  events until interrupted.
 - **Needs you** — one list of everything waiting on the human:
   `plexi needs-you list --json` and
   `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.
@@ -150,6 +161,23 @@ reference. Revoke once the test is complete.
 plexi connector login stub --issuer http://127.0.0.1:8765
 plexi connector status stub
 plexi connector revoke stub
+```
+
+### Steer a lead from the command view
+
+List the projection, grant one exact send, then send it. `--follow` streams
+`command.view` events until you interrupt it.
+
+```bash
+plexi command-view --json
+plexi command-view allow --tool command.send --lead lead-a --text "status"
+plexi command-view send --lead lead-a --text "status"
+plexi command-view enqueue --lead lead-a --text "ship the notes"
+plexi command-view pause --run run-1
+plexi command-view cancel --run run-1
+plexi command-view block --lead lead-a --run run-1 --summary "which notes"
+plexi command-view resolve ny_1 --approve
+plexi command-view --follow
 ```
 
 ## Worked examples

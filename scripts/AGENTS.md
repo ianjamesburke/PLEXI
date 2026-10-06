@@ -40,6 +40,10 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 
 - `default-scripts/` — default app scripts bundled into new user profiles.
 
+## Installed checks
+
+- `command-view-e2e.sh` drives `plexi command-view` against a private-home host. The profile directory follows `resolve_channel_dir` in `src/config/mod.rs`. The projection contract is `src/host/command_view.rs`.
+
 ## Style
 
 Document stable contracts, not history. Update in the same change that makes a rule obsolete.

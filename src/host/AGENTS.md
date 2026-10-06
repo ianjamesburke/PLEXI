@@ -71,6 +71,10 @@ answer to stint 0745's open question — that split is correct, not a missing
 migration. `ScopeOrigin`'s module doc bans env vars as authority inputs for the
 same reason.
 
+## Command view
+
+`command_view` is the in-memory lead/run/queue projection behind `plexi command-view`. Needs-you rows stay on the permission monitor. The module does not write a profile file. Steer tools are admitted before the board changes. A revision publishes one `command.view` event on publisher `plexi.host.command`.
+
 ## Traps
 
 - **The host's launch env leaks into every pane.** Anything not overridden in
