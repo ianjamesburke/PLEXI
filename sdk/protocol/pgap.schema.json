@@ -2103,7 +2103,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Resolve one needs-you item exactly once. `approve` false denies it.",
+          "description": "Resolve one needs-you item. Approving a click approval is refused:\nthe row stays open and only the desktop Allow once click grants it.\n`approve` false denies the item. Questions and blocked runs settle\nexactly once.",
           "properties": {
             "approve": {
               "type": "boolean"

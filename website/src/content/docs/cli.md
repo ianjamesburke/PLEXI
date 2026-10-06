@@ -1285,7 +1285,7 @@ One host record covers click approvals, agent questions, and blocked runs. Resol
 | Subcommand | Description |
 |---|---|
 | `list` | List open items waiting on you as JSON |
-| `resolve` | Resolve one item. Approve lets a click-gated tool proceed; deny refuses it |
+| `resolve` | Resolve one item. Approving a click approval is refused; deny still denies it |
 
 ### `plexi needs-you list`
 
@@ -1297,7 +1297,7 @@ List open items waiting on you as JSON
 
 ### `plexi needs-you resolve`
 
-Resolve one item. Approve lets a click-gated tool proceed; deny refuses it
+Resolve one item. Approving a click approval is refused; deny still denies it
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|

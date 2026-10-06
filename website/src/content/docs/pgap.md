@@ -610,7 +610,7 @@ List items waiting on the human. The host expires due items first.
 
 ### `resolve_needs_you`
 
-Resolve one needs-you item exactly once. `approve` false denies it.
+Resolve one needs-you item. Approving a click approval is refused: the row stays open and only the desktop Allow once...
 
 | Field | Type | Required |
 |-------|------|----------|
