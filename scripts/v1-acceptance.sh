@@ -4,41 +4,58 @@
 # Runs against an installed build. Feature scripts already in this tree are
 # invoked by path. A script or command that is not on the build is NOT-LANDED.
 # An approval that did not go through scripts/e2e/human.sh (HUMAN_APPROVE)
-# is VERIFIED-VIA-BYPASS, never PASS.
+# is a FAIL. The row names the bypass: skip panes, CLI approval, env flag,
+# or none when the contract requires a click and the script never makes one.
+# No contract item permits a bypass. See scripts/e2e/plexi-bin.md.
 #
 #   scripts/v1-acceptance.sh
 #   scripts/v1-acceptance.sh --bin ~/.local/bin/plexi-alpha
 #   scripts/v1-acceptance.sh --pr 2704
 #
+# Item scripts take the channel binary from PLEXI_BIN. The harness exports
+# that and PLEXI_E2E_SHIM (scripts/e2e/plexi-bin.sh). A channel-named binary
+# ignores PLEXI_CHANNEL; the profile is ~/.$(basename) (plexi-alpha →
+# ~/.plexi-alpha). Scripts that still require plexi-pr-<N> are run from a
+# same-directory copy that sources the shim. The owning PR applies the
+# one-line in scripts/e2e/plexi-bin.md.
+#
 # Linux: private Xvfb, a temp HOME, PLEXI_KEYCHAIN_PATH pointed at a throwaway
 # file, a local Docker relay when the phone script is present, and the mock
-# OpenRouter unless OPENROUTER_API_KEY is already set.
+# OpenRouter unless OPENROUTER_API_KEY is already set. config.toml is
+# snapshotted from scripts/default-config.toml and restored after every item
+# so a gate or relay rewrite of [ai] backend cannot poison the ledger item.
 #
-# Exit 0 when every item is PASS, 1 when any item is FAIL, 2 when the run is
-# incomplete (NOT-LANDED or VERIFIED-VIA-BYPASS and no FAIL).
+# Exit 0 when every item is PASS, 1 when any item is FAIL (including a
+# bypass), 2 when the run is incomplete (NOT-LANDED and no FAIL).
 
 set -uo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HARNESS_DIR/.." && pwd)"
+SHIM="$HARNESS_DIR/e2e/plexi-bin.sh"
 EVID="${V1_ACCEPTANCE_EVID:-/tmp/plexi-v1-acceptance-$(date -u +%Y%m%dT%H%M%SZ)}"
 mkdir -p "$EVID"
 
 PR_NUM=""
 BIN_ARG=""
+TREE_ARG=""
 ONLY="${V1_ACCEPTANCE_ONLY:-}"
 
 usage() {
   cat <<'EOF'
-usage: scripts/v1-acceptance.sh [--bin PATH] [--pr N]
+usage: scripts/v1-acceptance.sh [--bin PATH] [--pr N] [--tree PATH]
 
   --bin PATH   installed channel binary (plexi-alpha, plexi-pr-N, …)
   --pr N       use plexi-pr-N from PATH (after just pr-install N)
+  --tree PATH  tree whose item scripts and default-config.toml are used
+               (default: the repo that contains this harness)
 
 Env:
   PLEXI_BIN              same as --bin
   OPENROUTER_API_KEY     when set, the suite does not start the mock
   V1_ACCEPTANCE_ONLY     comma-separated item ids (V1-01,V1-14) for a partial run
   V1_ACCEPTANCE_EVID     directory for per-item logs (kept after the run)
+  V1_ACCEPTANCE_TREE     same as --tree
 EOF
 }
 
@@ -52,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       PR_NUM="${2:-}"
       shift 2
       ;;
+    --tree)
+      TREE_ARG="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -61,8 +82,17 @@ while [[ $# -gt 0 ]]; do
       usage >&2
       exit 1
       ;;
-  esac
+    esac
 done
+
+if [[ -n "$TREE_ARG" ]]; then
+  REPO="$(cd "$TREE_ARG" && pwd)"
+elif [[ -n "${V1_ACCEPTANCE_TREE:-}" ]]; then
+  REPO="$(cd "$V1_ACCEPTANCE_TREE" && pwd)"
+fi
+export PLEXI_E2E_SHIM="$SHIM"
+# Skip-panes is a bypass. The suite never turns it on.
+unset PLEXI_E2E_SKIP_PANES || true
 
 # Caller pane vars would address the wrong host.
 unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT \
@@ -87,6 +117,9 @@ MOCK_PID=""
 DISPLAY_NUM=""
 
 cleanup() {
+  if [[ -n "${REPO:-}" ]]; then
+    find "$REPO/scripts" "$REPO/services" -name '.v1-shimmed-*.sh' -delete 2>/dev/null || true
+  fi
   if [[ -n "${BIN:-}" && -x "${BIN:-}" ]]; then
     "$BIN" host stop >/dev/null 2>&1 || true
   fi
@@ -206,7 +239,53 @@ if [[ -n "$BIN" ]]; then
       ;;
   esac
   export PATH="$(dirname "$BIN"):$PATH"
+  export PLEXI_BIN="$BIN"
+  export BIN
 fi
+
+# [ai] backend = "openrouter" from the tree's default config. Item scripts
+# that point the broker at a local mock rewrite this file. Restoring the
+# snapshot after every item keeps that rewrite from reaching the ledger.
+CONFIG_BASELINE="$EVID/config-baseline.toml"
+profile_config_path() {
+  local base
+  base="$(basename "${BIN:-plexi}")"
+  base="${base%.exe}"
+  if [[ "$base" == plexi-* ]]; then
+    printf '%s/.%s/config.toml' "$HOME" "$base"
+  elif [[ -n "${PLEXI_CHANNEL:-}" ]]; then
+    printf '%s/.plexi-%s/config.toml' "$HOME" "$PLEXI_CHANNEL"
+  else
+    printf '%s/.plexi/config.toml' "$HOME"
+  fi
+}
+seed_config_baseline() {
+  local src path
+  src="$REPO/scripts/default-config.toml"
+  path="$(profile_config_path)"
+  if [[ ! -f "$src" ]]; then
+    return
+  fi
+  mkdir -p "$(dirname "$path")"
+  cp -f "$src" "$path"
+  cp -f "$src" "$CONFIG_BASELINE"
+}
+restore_config() {
+  local path
+  path="$(profile_config_path)"
+  if [[ -f "$CONFIG_BASELINE" ]]; then
+    if [[ -f "$path" ]] && ! cmp -s "$CONFIG_BASELINE" "$path"; then
+      echo "$(date -u +%H:%M:%S) restored ${path} (item had rewritten config.toml)" >>"$EVID/config-restore.log"
+    fi
+    mkdir -p "$(dirname "$path")"
+    cp -f "$CONFIG_BASELINE" "$path"
+  fi
+}
+with_config() {
+  restore_config
+  "$@"
+  restore_config
+}
 
 # Mock OpenRouter unless the caller already supplied a real key.
 OPENROUTER_MODE="mock"
@@ -254,9 +333,13 @@ note_row() {
   printf '%s\t%s\t%s\n' "$id" "$status" "$detail"
   case "$status" in
     PASS) N_PASS=$((N_PASS + 1)) ;;
-    FAIL) N_FAIL=$((N_FAIL + 1)) ;;
+    FAIL)
+      N_FAIL=$((N_FAIL + 1))
+      if [[ "$detail" == bypass:* ]]; then
+        N_BYPASS=$((N_BYPASS + 1))
+      fi
+      ;;
     NOT-LANDED) N_LANDED=$((N_LANDED + 1)) ;;
-    VERIFIED-VIA-BYPASS) N_BYPASS=$((N_BYPASS + 1)) ;;
   esac
 }
 
@@ -280,36 +363,99 @@ binary_has() {
   "$BIN" "$@" --help >/dev/null 2>&1
 }
 
-# human | bypass | none | driver-missing
-script_approval_mode() {
+# driver-missing | human | none | bypass:<kinds>
+# kinds are "skip panes", "CLI approval", and "env flag".
+# A negative assertion (must not grant, permission_denied) is not CLI approval.
+# The VERIFIED-VIA-BYPASS echo is CLI approval only when that branch ran, or
+# the script grants from the CLI and never calls HUMAN_APPROVE.
+script_bypass() {
   local script="$1"
-  python3 - "$script" "$REPO/scripts/e2e/human.sh" <<'PY'
+  local log="$2"
+  python3 - "$script" "$log" "$REPO/scripts/e2e/human.sh" <<'PY'
 import re, sys
-path, human = sys.argv[1:]
+path, log_path, human = sys.argv[1:]
 text = open(path, encoding="utf-8", errors="replace").read()
-human_ok = open(human, encoding="utf-8", errors="replace").read().find("HUMAN_APPROVE") >= 0 if __import__("os").path.isfile(human) else False
+try:
+    log = open(log_path, encoding="utf-8", errors="replace").read()
+except FileNotFoundError:
+    log = ""
+human_ok = False
+if __import__("os").path.isfile(human):
+    human_ok = "HUMAN_APPROVE" in open(human, encoding="utf-8", errors="replace").read()
 wants_human = "HUMAN_APPROVE" in text and re.search(r"human\.sh", text)
-positive = []
-pat = re.compile(
-    r"permission resolve|needs-you resolve|permissions allow|secret grant|secret exec|"
-    r"command-view resolve|\bchanges accept\b|\bresolve\b[^\n]*--approve"
-)
-for raw in text.splitlines():
-    line = raw.split("#", 1)[0]
-    if not pat.search(line):
-        continue
-    # Attack attempts and the skill-lint grep are not the approving path.
-    if re.search(r"in_pane|\|\| true|permission_denied|\bgrep\b", line):
-        continue
-    if re.search(r"^\s*(pass|fail|ok|bad|record)\b", line):
-        continue
-    positive.append(line.strip())
 if wants_human and not human_ok:
     print("driver-missing")
-elif wants_human and not positive:
+    raise SystemExit(0)
+
+lines = text.splitlines()
+grant = re.compile(
+    r"assistant permission resolve|needs-you resolve|permissions allow|"
+    r"\bsecret grant\b|command-view resolve|\bchanges accept\b"
+)
+negative = (
+    "must not grant",
+    "did not grant",
+    "does not record",
+    "permission_denied",
+    "must not approve",
+    "did not approve",
+    "not a grant",
+    "not resolvable",
+    "forged id",
+    "are refused",
+    "is refused",
+)
+
+def is_negative(idx, line):
+    window = "\n".join(lines[max(0, idx - 3): idx + 12]).lower()
+    if any(n in window for n in negative):
+        return True
+    if re.search(r"in_pane|\|\| true|\bgrep\b|\\\$PLEXI", line):
+        return True
+    if re.search(r"^\s*(pass|fail|ok|bad|record)\b", line):
+        return True
+    return False
+
+positive = []
+for idx, raw in enumerate(lines):
+    line = raw.split("#", 1)[0]
+    if not grant.search(line):
+        continue
+    if is_negative(idx, line):
+        continue
+    positive.append(line.strip())
+
+kinds = []
+skip_taken = "SKIP: pane checks (PLEXI_E2E_SKIP_PANES=1)" in log or bool(
+    re.search(r"(?m)^[ \t]*PLEXI_E2E_SKIP_PANES=1\b", text)
+)
+if skip_taken:
+    kinds.append("skip panes")
+env_flags = sorted(set(re.findall(r"\b(PLEXI_E2E_[A-Z0-9_]+)\b", text)))
+env_flags = [name for name in env_flags if name != "PLEXI_E2E_SKIP_PANES"]
+forced_env = []
+for name in env_flags:
+    if re.search(rf"(?m)^[ \t]*(?:export[ \t]+)?{name}=(?!\$)", text):
+        forced_env.append(name)
+if forced_env:
+    kinds.append("env flag")
+log_bypass = "VERIFIED-VIA-BYPASS" in log
+log_human = (
+    "HUMAN_APPROVE" in log
+    or "human: click" in log
+    or ("human: " in log and "resolved" in log)
+)
+if positive and not (wants_human and log_human and not log_bypass):
+    if "CLI approval" not in kinds:
+        kinds.append("CLI approval")
+elif log_bypass and positive and "CLI approval" not in kinds:
+    kinds.append("CLI approval")
+if wants_human and log_human and not kinds:
     print("human")
-elif positive or "VERIFIED-VIA-BYPASS" in text:
-    print("bypass")
+elif kinds:
+    print("bypass:" + ", ".join(kinds))
+elif wants_human:
+    print("human")
 else:
     print("none")
 PY
@@ -319,52 +465,82 @@ script_needs_pr() {
   grep -qE '\$\{1:\?[^}]*<PR>' "$1"
 }
 
+# A <PR>-only script is copied beside itself with the shim source line in
+# place of the PR/BIN pair, so dirname "$0" still finds the repo.
+shim_script() {
+  local script="$1"
+  if grep -q 'PLEXI_E2E_SHIM\|plexi-bin.sh' "$script"; then
+    printf '%s' "$script"
+    return
+  fi
+  if ! script_needs_pr "$script"; then
+    printf '%s' "$script"
+    return
+  fi
+  local dest
+  dest="$(dirname "$script")/.v1-shimmed-$(basename "$script")"
+  python3 - "$script" "$dest" <<'PY'
+import sys
+src, dest = sys.argv[1:]
+lines = open(src, encoding="utf-8", errors="replace").read().splitlines(True)
+out = []
+i = 0
+replaced = False
+while i < len(lines):
+    if (not replaced) and "${1:?" in lines[i] and "<PR>" in lines[i]:
+        out.append('source "${PLEXI_E2E_SHIM:?}"\n')
+        i += 1
+        if i < len(lines) and "BIN=" in lines[i] and "plexi-pr-" in lines[i]:
+            i += 1
+        replaced = True
+        continue
+    out.append(lines[i])
+    i += 1
+if not replaced:
+    raise SystemExit("shim: no <PR> line in " + src)
+open(dest, "w", encoding="utf-8").writelines(out)
+PY
+  chmod +x "$dest"
+  printf '%s' "$dest"
+}
+
 invoke_script() {
   local script="$1"
   local log="$2"
-  local mode
-  mode="$(script_approval_mode "$script")"
-  if [[ "$mode" == "driver-missing" ]]; then
-    printf 'driver-missing\n' >"$log"
-    echo "driver-missing"
-    return 0
-  fi
   export PLEXI_BIN="$BIN"
+  export PLEXI_E2E_SHIM="$SHIM"
   export BIN
-  local -a cmd
+  local run="$script"
+  local shimmed=0
   if script_needs_pr "$script"; then
-    local pr="$PR_NUM"
-    if [[ -z "$pr" && "$BIN_BASE" == plexi-pr-* ]]; then
-      pr="${BIN_BASE#plexi-pr-}"
+    run="$(shim_script "$script")"
+    if [[ "$run" != "$script" ]]; then
+      shimmed=1
     fi
-    if [[ -z "$pr" ]]; then
-      printf 'pr-only\n' >"$log"
-      echo "pr-only"
-      return 0
-    fi
-    # The script looks up plexi-pr-<N> on PATH. current_exe() follows
-    # symlinks, so this has to be a hardlink (or a copy) whose path basename
-    # is the channel name.
-    mkdir -p "$EVID/bin"
-    if [[ "$BIN_BASE" != "plexi-pr-${pr}" ]]; then
-      ln -f "$BIN" "$EVID/bin/plexi-pr-${pr}" 2>/dev/null || cp -f "$BIN" "$EVID/bin/plexi-pr-${pr}"
-      chmod +x "$EVID/bin/plexi-pr-${pr}" || true
-    fi
-    export PATH="$EVID/bin:$(dirname "$BIN"):$PATH"
-    cmd=(timeout --foreground 1200 bash "$script" "$pr")
-  elif grep -q 'path-to-plexi-binary' "$script"; then
-    cmd=(timeout --foreground 1200 bash "$script" "$BIN")
+  fi
+  local -a cmd
+  if grep -q 'path-to-plexi-binary' "$script"; then
+    cmd=(timeout --foreground 1200 bash "$run" "$BIN")
   else
-    cmd=(timeout --foreground 1200 bash "$script")
+    cmd=(timeout --foreground 1200 bash "$run")
   fi
   set +e
   "${cmd[@]}" >"$log" 2>&1
   local code=$?
   set +e
+  if [[ "$shimmed" -eq 1 ]]; then
+    rm -f "$run"
+  fi
+  local mode
+  mode="$(script_bypass "$script" "$log")"
+  if [[ "$mode" == "driver-missing" ]]; then
+    echo "driver-missing"
+    return 0
+  fi
   if [[ "$code" -eq 0 ]]; then
     echo "$mode"
   else
-    echo "fail:$code"
+    echo "fail:$code:$mode"
   fi
 }
 
@@ -372,7 +548,8 @@ invoke_script() {
 # Paths after --any are alternates (a later PR renamed the script): the item
 # is landed when any one of them exists, and every one that exists is run.
 # Paths after --optional run when present and are never required.
-# requires_human=1: a green run that never called HUMAN_APPROVE is bypass.
+# requires_human=1: a green run that never called HUMAN_APPROVE is FAIL
+# (bypass: none). A named bypass is FAIL on every item.
 run_scripts() {
   local id="$1" title="$2" requires_human="$3"
   shift 3
@@ -445,8 +622,8 @@ run_scripts() {
     return
   fi
 
-  local saw_bypass=0 saw_human=0 saw_none=0
-  local detail="" path mode log
+  local saw_human=0
+  local bypass_kinds="" detail="" path mode log rest code kind
   for path in "${present[@]}"; do
     log="$EVID/${id}-$(basename "$path").log"
     mode="$(invoke_script "$REPO/$path" "$log")"
@@ -455,17 +632,26 @@ run_scripts() {
         note_row "$id" "NOT-LANDED" "$path requires scripts/e2e/human.sh (W15), which is not on this tree"
         return
         ;;
-      pr-only)
-        note_row "$id" "NOT-LANDED" "$path addresses plexi-pr-<N> only; this install is $BIN_BASE"
-        return
-        ;;
       fail:*)
-        note_row "$id" "FAIL" "$path exited ${mode#fail:} (log $log)"
+        rest="${mode#fail:}"
+        code="${rest%%:*}"
+        kind="${rest#*:}"
+        if [[ "$kind" == bypass:* ]]; then
+          note_row "$id" "FAIL" "bypass: ${kind#bypass:} — $path exited $code (log $log)"
+        else
+          note_row "$id" "FAIL" "$path exited $code (log $log)"
+        fi
         return
         ;;
       human) saw_human=1; detail+=" $path" ;;
-      bypass) saw_bypass=1; detail+=" $path" ;;
-      none) saw_none=1; detail+=" $path" ;;
+      none) detail+=" $path" ;;
+      bypass:*)
+        if [[ -n "$bypass_kinds" ]]; then
+          bypass_kinds+="; "
+        fi
+        bypass_kinds+="${mode#bypass:} ($path)"
+        detail+=" $path"
+        ;;
       *)
         note_row "$id" "FAIL" "$path returned unexpected status $mode"
         return
@@ -473,8 +659,12 @@ run_scripts() {
     esac
   done
 
-  if [[ "$saw_bypass" -eq 1 || ( "$requires_human" -eq 1 && "$saw_human" -eq 0 ) ]]; then
-    note_row "$id" "VERIFIED-VIA-BYPASS" "ran${detail}; approvals did not use HUMAN_APPROVE"
+  if [[ -n "$bypass_kinds" ]]; then
+    note_row "$id" "FAIL" "bypass: ${bypass_kinds} — ran${detail}; see scripts/e2e/plexi-bin.md"
+    return
+  fi
+  if [[ "$requires_human" -eq 1 && "$saw_human" -eq 0 ]]; then
+    note_row "$id" "FAIL" "bypass: none — ran${detail}; contract requires HUMAN_APPROVE and the script never clicks (scripts/e2e/plexi-bin.md)"
     return
   fi
   note_row "$id" "PASS" "ran${detail}"
@@ -587,15 +777,22 @@ item_v1_14() {
     check_mode="$(invoke_script "$REPO/scripts/skill-check.sh" "$check_log")"
     case "$check_mode" in
       fail:*)
-        note_row "$id" "FAIL" "scripts/skill-check.sh exited ${check_mode#fail:} (log $check_log)"
+        rest="${check_mode#fail:}"
+        code="${rest%%:*}"
+        kind="${rest#*:}"
+        if [[ "$kind" == bypass:* ]]; then
+          note_row "$id" "FAIL" "bypass: ${kind#bypass:} — scripts/skill-check.sh exited $code (log $check_log)"
+        else
+          note_row "$id" "FAIL" "scripts/skill-check.sh exited $code (log $check_log)"
+        fi
         return
         ;;
-      driver-missing|pr-only)
+      driver-missing)
         note_row "$id" "NOT-LANDED" "scripts/skill-check.sh could not run ($check_mode)"
         return
         ;;
-      bypass)
-        note_row "$id" "VERIFIED-VIA-BYPASS" "scripts/skill-check.sh did not use HUMAN_APPROVE"
+      bypass:*)
+        note_row "$id" "FAIL" "bypass: ${check_mode#bypass:} — scripts/skill-check.sh (scripts/e2e/plexi-bin.md)"
         return
         ;;
     esac
@@ -840,7 +1037,17 @@ run_one() {
     fi
   fi
   if [[ "$id" == "V1-08" ]] && ! command -v docker >/dev/null 2>&1; then
-    note_row "$id" "FAIL" "local Docker relay required and docker is not installed"
+    local kind="none"
+    if [[ -f "$REPO/services/relay/e2e_installed.sh" ]]; then
+      kind="$(script_bypass "$REPO/services/relay/e2e_installed.sh" /dev/null)"
+    fi
+    if [[ "$kind" == bypass:* ]]; then
+      note_row "$id" "FAIL" "bypass: ${kind#bypass:} — local Docker relay required and docker is not installed"
+    elif [[ "$requires_human" -eq 1 && "$kind" != "human" ]]; then
+      note_row "$id" "FAIL" "bypass: none — local Docker relay required and docker is not installed; script never calls HUMAN_APPROVE (scripts/e2e/plexi-bin.md)"
+    else
+      note_row "$id" "FAIL" "local Docker relay required and docker is not installed"
+    fi
     return
   fi
   run_scripts "$id" "$id" "$requires_human" "${rest[@]}"
@@ -857,9 +1064,11 @@ echo "home      $HOME"
 echo "keychain  $PLEXI_KEYCHAIN_PATH"
 echo "openrouter $OPENROUTER_MODE"
 echo "evidence  $EVID"
+seed_config_baseline
+echo "config    $(profile_config_path) (restored between items)"
 echo
 
-item_v1_01
+with_config item_v1_01
 # Paths are the files those PRs actually add. --any lists a rename: either
 # file lands the item, and every file that is present is run.
 #   V1-02 #2720 scripts/permission-gate-e2e.sh (driver: #2709 scripts/e2e/human.sh)
@@ -876,20 +1085,20 @@ item_v1_01
 #   V1-13 #2703 scripts/cloud-basics-e2e.sh
 #   V1-14 #2722 scripts/skill-check.sh
 #   V1-15 #2718 scripts/app-share-e2e.sh
-run_one V1-02 1 --probe assistant permission -- scripts/permission-gate-e2e.sh
-run_one V1-03 1 -- scripts/no-self-approval-e2e.sh
-run_one V1-04 1 --probe permissions -- scripts/permissions-seal-e2e.sh
-run_one V1-05 1 --probe needs-you -- scripts/needs-you-e2e.sh scripts/needs-you-persist-e2e.sh
-run_one V1-06 1 -- scripts/folder-secrets-e2e.sh
-run_one V1-07 0 --probe ledger -- scripts/e2e/ledger/run.sh
-run_one V1-08 1 -- services/relay/e2e_installed.sh
-run_one V1-09 1 --probe agent head -- scripts/e2e_agents_api_installed.sh
-run_one V1-10 0 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
-run_one V1-11 0 --probe command-view -- --any scripts/command-view-steer-e2e.sh scripts/command-view-e2e.sh
-run_one V1-12 1 --probe changes -- --any scripts/change-sets-e2e.sh scripts/assistant-editor-change-set-e2e.sh
-run_one V1-13 0 -- scripts/cloud-basics-e2e.sh
-item_v1_14
-run_one V1-15 1 --probe app package -- scripts/app-share-e2e.sh
+with_config run_one V1-02 1 --probe assistant permission -- scripts/permission-gate-e2e.sh
+with_config run_one V1-03 1 -- scripts/no-self-approval-e2e.sh
+with_config run_one V1-04 1 --probe permissions -- scripts/permissions-seal-e2e.sh
+with_config run_one V1-05 1 --probe needs-you -- scripts/needs-you-e2e.sh scripts/needs-you-persist-e2e.sh
+with_config run_one V1-06 1 -- scripts/folder-secrets-e2e.sh
+with_config run_one V1-07 0 --probe ledger -- scripts/e2e/ledger/run.sh
+with_config run_one V1-08 1 -- services/relay/e2e_installed.sh
+with_config run_one V1-09 1 --probe agent head -- scripts/e2e_agents_api_installed.sh
+with_config run_one V1-10 0 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
+with_config run_one V1-11 0 --probe command-view -- --any scripts/command-view-steer-e2e.sh scripts/command-view-e2e.sh
+with_config run_one V1-12 1 --probe changes -- --any scripts/change-sets-e2e.sh scripts/assistant-editor-change-set-e2e.sh
+with_config run_one V1-13 0 -- scripts/cloud-basics-e2e.sh
+with_config item_v1_14
+with_config run_one V1-15 1 --probe app package -- scripts/app-share-e2e.sh
 
 echo
 
@@ -898,9 +1107,9 @@ exit_code=0
 if [[ "$N_FAIL" -gt 0 ]]; then
   verdict="FAIL"
   exit_code=1
-elif [[ "$N_LANDED" -gt 0 || "$N_BYPASS" -gt 0 ]]; then
+elif [[ "$N_LANDED" -gt 0 ]]; then
   verdict="INCOMPLETE"
   exit_code=2
 fi
-echo "VERDICT ${verdict}  pass=${N_PASS} fail=${N_FAIL} not-landed=${N_LANDED} verified-via-bypass=${N_BYPASS}"
+echo "VERDICT ${verdict}  pass=${N_PASS} fail=${N_FAIL} not-landed=${N_LANDED} bypass-fail=${N_BYPASS}"
 exit "$exit_code"
