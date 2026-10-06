@@ -126,17 +126,48 @@ note "host ready: $(tr '\n' ' ' < "$EVID/host-status.json")"
 
 "$BIN" app install "$REPO/apps/chess" --yes >"$EVID/app-install.out" 2>"$EVID/app-install.err" || fail "chess install failed: $(tail -20 "$EVID/app-install.err")"
 "$BIN" app open chess >"$EVID/open-chess.out" 2>"$EVID/open-chess.err" || true
+mkdir -p "$EVID/jobs"
+"$BIN" pane list >"$EVID/panes-boot.json" 2>/dev/null || true
+TERM="$(python3 - "$EVID/panes-boot.json" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+terms=[str(r["id"]) for r in rows if r.get("type")=="terminal"]
+print(terms[0] if terms else "")
+PY
+)"
+[[ -n "$TERM" ]] || fail "no terminal pane to probe chess tools"
+in_pane() {
+  local name="$1" body="$2"
+  local script="$EVID/jobs/$name.sh"
+  local donef="$EVID/jobs/$name.done"
+  cat >"$script" <<EOF
+#!/bin/bash
+set -o pipefail
+$body
+echo \$? > "$donef"
+EOF
+  chmod +x "$script"
+  rm -f "$donef"
+  "$BIN" pane send "$TERM" --submit "bash '$script'" >/dev/null 2>&1 || true
+  local i
+  for i in $(seq 1 30); do
+    [[ -f "$donef" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
 CHESS_READY=0
-for _ in $(seq 1 40); do
-  "$BIN" app call chess chess.state --json >"$EVID/chess-state.json" 2>"$EVID/chess-state.err" || true
-  if ! grep -q 'tool_not_found' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null \
-     && grep -Eq 'revision|permission_required|permission_denied' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null; then
+for attempt in $(seq 1 12); do
+  in_pane "ready-$attempt" "\"$BIN\" app call chess chess.state --json > '$EVID/chess-state.json' 2> '$EVID/chess-state.err'" || true
+  if [[ -f "$EVID/chess-state.json" || -f "$EVID/chess-state.err" ]] \
+     && ! grep -q 'tool_not_found' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null \
+     && grep -Eq 'revision|permission_required' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null; then
     CHESS_READY=1
     break
   fi
-  sleep 1
+  sleep 2
 done
-[[ "$CHESS_READY" -eq 1 ]] || fail "chess.state never registered: $(cat "$EVID/chess-state.json" "$EVID/chess-state.err")"
+[[ "$CHESS_READY" -eq 1 ]] || fail "chess.state never registered: $(cat "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null)"
 note "chess tool registered"
 "$BIN" app open assistant >"$EVID/open-assistant.out" 2>"$EVID/open-assistant.err" || true
 
