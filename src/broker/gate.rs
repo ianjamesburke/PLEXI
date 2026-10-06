@@ -395,7 +395,18 @@ impl PermissionMonitor {
             Some(dir.to_path_buf()),
         );
         monitor.restore_queue();
+        // A grants.toml edit while the host was down is already the profile
+        // integrity item. Raising the seal fault as well leaves a second row
+        // after the person acknowledges that one change.
+        let profile_changed = finding.as_ref().is_some_and(|item| item.profile_changed);
         for fault in &faults {
+            if profile_changed && fault.file == "grants.toml" {
+                log::info!(
+                    "permission_monitor: grants.toml seal fault folded into the profile integrity item ({})",
+                    fault.reason
+                );
+                continue;
+            }
             monitor.raise_integrity(fault);
         }
         if let Some(finding) = finding {
@@ -2488,6 +2499,20 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
     if tool.contains("chess") {
         if let Some(game_id) = game {
             return (ResourceScope::Game, Some(game_id));
+        }
+    }
+    // Folder-secret reads name the secret and its folder. The value stays out
+    // of the audit. Grants use the same `{name}@{folder}` id.
+    if tool == crate::workspace::secrets::SECRET_READ_TOOL {
+        if let Some(value) = parsed.as_ref() {
+            let name = value.get("name").and_then(|item| item.as_str()).unwrap_or("");
+            let folder = value
+                .get("folder")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
+            if !name.is_empty() && !folder.is_empty() {
+                return (ResourceScope::Path, Some(format!("{name}@{folder}")));
+            }
         }
     }
     if let Some(path) = parsed.as_ref().and_then(|value| {

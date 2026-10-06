@@ -612,6 +612,24 @@ fn ct_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
+/// How many times `needle` appears in an audit log. A sealed line stores the
+/// fact as a JSON string, so a search for `"decision":"use"` has to accept
+/// the escaped form `\"decision\":\"use\"` as well.
+#[cfg(test)]
+pub(crate) fn audit_count(audit: &str, needle: &str) -> usize {
+    let raw = audit.matches(needle).count();
+    if raw > 0 {
+        return raw;
+    }
+    audit.matches(&needle.replace('"', "\\\"")).count()
+}
+
+/// True when `needle` is present as a raw fact or inside a sealed envelope.
+#[cfg(test)]
+pub(crate) fn audit_contains(audit: &str, needle: &str) -> bool {
+    audit_count(audit, needle) > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

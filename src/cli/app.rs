@@ -2155,6 +2155,7 @@ pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_
 /// returned `waiting_for_permission` and does not submit a prompt. A phone
 /// turn never carries a grant; the desktop permission gate still admits tools.
 /// `head`, `client`, and `kind` are the desktop and ledger path.
+#[allow(clippy::too_many_arguments)]
 pub fn assistant_send_result(
     text: Option<&str>,
     head: Option<&str>,
@@ -2206,6 +2207,7 @@ pub fn assistant_send_result(
 }
 
 /// Submit one turn to the host Assistant and print its terminal JSON envelope.
+#[allow(clippy::too_many_arguments)]
 pub fn assistant_send_cli(
     text: Option<&str>,
     head: Option<&str>,

@@ -68,7 +68,8 @@ pub use reconcile::ReconcileReport;
 
 pub use folder::{
     canonical_folder, env_for_cwd, grant_folder_secret, list_folder_secrets, read_folder_secret,
-    remove_folder_secret, set_folder_secret, FolderSecretMeta, ReadResult, SecretActor,
+    remove_folder_secret, set_folder_secret, FolderSecretMeta, ReadResult, SECRET_READ_TOOL,
+    SecretActor,
 };
 pub use folder_store::backend_label;
 pub use resolver::{

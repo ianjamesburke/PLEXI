@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.11"
+skill_version: "5.0.12"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -257,6 +257,8 @@ plexi secret set FOLDER_TOKEN --folder /path/to/project
 plexi secret list
 plexi secret read FOLDER_TOKEN --agent reader --folder /path/to/project
 plexi secret rm FOLDER_TOKEN --folder /path/to/project
+```
+
 ### Test a desktop OAuth connector against the local stub issuer
 
 With a loopback stub issuer already running, start sign-in. The issuer redirects

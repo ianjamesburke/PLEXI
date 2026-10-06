@@ -1060,6 +1060,7 @@ impl PlexiApp {
     ///
     /// Returns `(pane_id, root_tile)`, or `None` if the PTY-backed terminal
     /// failed to spawn — the caller decides how to degrade.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn seed_window_root_pane(
         &mut self,
         win_idx: usize,

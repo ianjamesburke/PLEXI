@@ -1280,7 +1280,10 @@ mod tests {
         );
         let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
             .unwrap_or_default();
-        assert!(audit.contains("\"decision\":\"use\""), "{audit}");
+        assert!(
+            crate::broker::seal::audit_contains(&audit, "\"decision\":\"use\""),
+            "{audit}"
+        );
         assert!(audit.contains("leads.message"), "{audit}");
     }
 
@@ -1328,7 +1331,7 @@ mod tests {
         assert_eq!(done.state, "cancelled", "{:?}", done.error);
         let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
             .unwrap_or_default();
-        let uses = audit.matches("\"operation_id\":\"lead.step\"").count();
+        let uses = crate::broker::seal::audit_count(&audit, "\"operation_id\":\"lead.step\"");
         assert_eq!(uses, 1, "{audit}");
     }
 
@@ -1394,7 +1397,7 @@ mod tests {
         let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
             .unwrap_or_default();
         assert_eq!(
-            audit.matches("\"operation_id\":\"lead.step\"").count(),
+            crate::broker::seal::audit_count(&audit, "\"operation_id\":\"lead.step\""),
             1,
             "{audit}"
         );

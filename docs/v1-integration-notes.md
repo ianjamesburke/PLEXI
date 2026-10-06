@@ -117,3 +117,25 @@ Keep change sets and everything already on the stack.
 ### #2721 `99bfa538`
 
 Clean. `scripts/v1-acceptance.sh` lands on the integrated tree.
+
+## After the train compiles
+
+### Sealed audit text
+
+`permission-audit.jsonl` is a chain of envelopes. The fact is a JSON string, so a line contains `\"decision\":\"use\"` rather than `"decision":"use"`. Tests that read the file (`agent::leads` grant and cancel, `host::changes` ask and commit) match through `seal::audit_count` / `seal::audit_contains`, which accept the raw fact or the escaped envelope. Do not unwrap the seal to make the old substring match.
+
+### One integrity row for a tampered profile
+
+`PermissionMonitor::open` inspects the stamp before load. An unsigned `grants.toml` is both a profile-change finding and a seal fault. When `profile_changed` is set, the `grants.toml` seal fault is not raised again; `file_profile_integrity` is the row a person acknowledges. Audit and other seal faults are still raised. `edited_profile_while_down_files_an_integrity_item` expects that one acknowledgement to clear the list.
+
+### Folder-secret ask names the secret
+
+`resource_of` for `secret.read` returns `ResourceScope::Path` and `{name}@{folder}`, the same id `grant_record` stores. The ask audit then contains the name. The value is not an audit field. Without this, a grant written as `{name}@{folder}` does not match the admission, and the ask fact has an empty `resource_id`.
+
+### Clippy argument counts
+
+Stacked signatures cross `clippy::too_many_arguments` only after the train is together. Allow it on `dispatch_model_turn`, `submit_external_turn_tagged`, `assistant_send_result`, `assistant_send_cli`, and `seed_window_root_pane`. The same allow is already used elsewhere in the host. Do not drop a field to get back under seven.
+
+### Skill fence
+
+`skills/plexi-cli/SKILL.md` closes the folder-secret `bash` block before the connector heading. An unclosed fence inverts later fences, and `skill_surface_matches_cli` then treats prose as a bare reference block. `skill_version` is `5.0.12`.

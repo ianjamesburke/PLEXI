@@ -1936,6 +1936,7 @@ impl AssistantApp {
     /// Run one model turn. `isolated` keeps the transcript and the permission
     /// sheet's owner off the desktop conversation. The same permission monitor
     /// admits tools either way.
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_model_turn(
         &mut self,
         conversation_id: String,
@@ -4491,6 +4492,7 @@ impl AssistantApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn submit_external_turn_tagged(
         &mut self,
         text: String,

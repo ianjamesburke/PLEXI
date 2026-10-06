@@ -979,7 +979,10 @@ mod tests {
             std::fs::read_to_string(crate::config::config_dir().join("permission-audit.jsonl"))
                 .unwrap();
         assert!(audit.contains("agent:editor-bot"), "{audit}");
-        assert!(audit.contains("\"kind\":\"ask\""), "{audit}");
+        assert!(
+            crate::broker::seal::audit_contains(&audit, "\"kind\":\"ask\""),
+            "{audit}"
+        );
         assert!(!audit.contains("beta"), "{audit}");
     }
 
@@ -999,7 +1002,10 @@ mod tests {
             std::fs::read_to_string(crate::config::config_dir().join("change-ledger.jsonl"))
                 .unwrap();
         assert!(audit.contains("agent:editor-bot"), "{audit}");
-        assert!(audit.contains("\"decision\":\"commit\""), "{audit}");
+        assert!(
+            crate::broker::seal::audit_contains(&audit, "\"decision\":\"commit\""),
+            "{audit}"
+        );
         assert!(
             ledger.contains("\"agent_id\":\"agent:editor-bot\""),
             "{ledger}"
