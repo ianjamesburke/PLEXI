@@ -64,11 +64,34 @@ Submit one text turn to a host Assistant pane.
 
 | Field | Type | Required |
 |-------|------|----------|
+| `client` | `string?` | no |
 | `context_id` | `integer?` | no |
+| `head` | `string?` | no |
+| `kind` | `string?` | no |
 | `pane_id` | `integer?` | no |
 | `request_id` | `string` | yes |
 | `response_file` | `string` | yes |
 | `text` | `string` | yes |
+
+### `open_assistant_head`
+
+Open an Assistant pane bound to one head in the active context.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context_id` | `integer?` | no |
+| `head` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `command_view`
+
+Read or steer the command view. `op` is `list` or `open` here; later steer ops share this request.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | no |
+| `response_file` | `string` | yes |
 
 ### `capability_request`
 

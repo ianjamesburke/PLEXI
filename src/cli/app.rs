@@ -2007,7 +2007,7 @@ pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>
 }
 
 /// Submit one turn to the host Assistant and print its terminal JSON envelope.
-pub fn assistant_send_cli(text: &str, request_id: Option<&str>, pane_id: Option<u64>, context_id: Option<u64>, client: Option<&str>, kind: Option<&str>) -> i32 {
+pub fn assistant_send_cli(text: &str, head: Option<&str>, request_id: Option<&str>, pane_id: Option<u64>, context_id: Option<u64>, client: Option<&str>, kind: Option<&str>) -> i32 {
     if let Some(kind) = kind {
         if let Err(error) = crate::plexi_ai::ledger::RunKind::parse(kind) {
             eprintln!("error: {error}");
@@ -2016,13 +2016,14 @@ pub fn assistant_send_cli(text: &str, request_id: Option<&str>, pane_id: Option<
     }
     let request_id = request_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
-    let mut payload = serde_json::json!({"type":"submit_assistant_turn","text":text,"request_id":request_id,"response_file":response_file,"pane_id":pane_id,"context_id":context_id});
+    let mut payload = serde_json::json!({"type":"submit_assistant_turn","text":text,"head":head,"request_id":request_id,"response_file":response_file,"pane_id":pane_id,"context_id":context_id});
     if let Some(client) = client.map(str::trim).filter(|client| !client.is_empty()) {
         payload["client"] = serde_json::json!(client);
     }
     if let Some(kind) = kind.map(str::trim).filter(|kind| !kind.is_empty()) {
         payload["kind"] = serde_json::json!(kind);
     }
+    log::info!("assistant_send:cli: head={head:?} request_id={request_id} client={client:?} kind={kind:?}");
     let content = match super::request_with(payload, "assistant-send", "assistant send", std::time::Duration::from_secs(120)) { Ok(content) => content, Err(code) => return code };
     println!("{content}");
     match serde_json::from_str::<serde_json::Value>(&content) { Ok(value) if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") => 0, Ok(_) => 2, Err(_) => 1 }

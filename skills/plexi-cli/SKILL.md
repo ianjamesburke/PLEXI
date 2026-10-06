@@ -97,7 +97,13 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   same `--admission` to get that run back, and a second admission while it is
   active returns `assignment_conflict`. `agent run finish` stops it. `agent delegate`
   starts a temporary child with a subset of the parent run's grants. Ask-tier
-  calls wait on `plexi assistant permission list`. `agent report --event` preserves
+  calls wait on `plexi assistant permission list`. Do not resolve those
+  requests from an agent pane. `assistant send --head <id>` runs one model turn
+  in that head's conversation. `assistant open --head <id>` opens an Assistant
+  pane bound to that head. `agent conversation --head <id> --as <other>` is
+  refused when the ids differ. `command-view` lists heads from the agents API;
+  `command-view open` shows the same rows in a pane. A lead cannot read, write,
+  or message another lead. `agent report --event` preserves
   a provider lifecycle event separately from its UI state; `--blocked-reason`
   supplies a typed reason. Read `agent report --help` before using these optional
   fields.
@@ -305,6 +311,10 @@ plexi agent run list --json
 plexi agent run show run_example --json
 plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
 plexi agent run finish run_example --json
+plexi assistant open --head lead
+plexi assistant send --head lead --text 'status?'
+plexi agent conversation --head lead --json
+plexi command-view --json
 ```
 
 ## Installation health

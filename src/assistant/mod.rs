@@ -538,6 +538,10 @@ pub struct AssistantApp {
     /// (see `restore_assistant_pane`/`open_assistant_pane_with_hint`), not
     /// re-derived later.
     context_id: u64,
+    /// Set when this pane is one lead's view. The conversation file belongs
+    /// to the head, not to the context's active conversation pointer.
+    bound_head: Option<String>,
+    head_label: String,
     profile_dir: PathBuf,
     agent_registry: AgentRegistry,
     skill_registry: SkillRegistry,
@@ -704,6 +708,8 @@ impl AssistantApp {
             broker,
             workspace_root,
             context_id,
+            bound_head: None,
+            head_label: String::new(),
             profile_dir: profile_dir.to_path_buf(),
             agent_registry,
             skill_registry,
@@ -757,6 +763,81 @@ impl AssistantApp {
         // Persisted event-stream grants survive restarts: resubscribe them.
         app.resubscribe_granted_streams();
         app
+    }
+
+    /// Bind this pane to a head. The pane title and transcript follow that
+    /// head's conversation file.
+    pub fn bind_head(&mut self, head_id: &str) -> Result<(), String> {
+        let path = crate::agent::workspace_agents_dir(&self.workspace_root)
+            .join(head_id)
+            .join("head.json");
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|error| format!("no head '{head_id}': {error}"))?;
+        let card: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|error| format!("head '{head_id}' card is invalid: {error}"))?;
+        let label = card
+            .get("display_name")
+            .and_then(|value| value.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(head_id)
+            .to_string();
+        self.bound_head = Some(head_id.to_string());
+        self.head_label = label.clone();
+        self.model.session_name = Some(label);
+        self.model.conversation_id = format!("head-{head_id}");
+        self.sync_bound_transcript();
+        log::info!("assistant: bound pane to head {head_id}");
+        Ok(())
+    }
+
+    fn create_new_lead(&mut self) {
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        let name = format!("lead-{suffix}");
+        let created = crate::agent::heads::handle_request(
+            "create_head",
+            &serde_json::json!({
+                "workspace": self.workspace_root,
+                "name": name,
+                "display_name": name,
+            }),
+        );
+        if created.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+            log::error!("assistant: new lead {name} was not created: {created}");
+            return;
+        }
+        log::info!("assistant: new lead {name} created from the pane header");
+        crate::agent::leads::request_open_pane(name, self.context_id);
+    }
+
+    fn sync_bound_transcript(&mut self) {
+        let Some(head) = self.bound_head.clone() else {
+            return;
+        };
+        let messages = crate::agent::leads::load_conversation(&self.workspace_root, &head);
+        let turns = messages
+            .into_iter()
+            .map(|message| {
+                let role = match message.role.as_str() {
+                    "user" => TurnRole::User,
+                    "assistant" => TurnRole::Assistant,
+                    "tool" => TurnRole::Tool,
+                    _ => TurnRole::Error,
+                };
+                model::Turn {
+                    role,
+                    text: message.text,
+                    created_at: message.created_at,
+                    status: None,
+                    thoughts: None,
+                    detail: None,
+                    input_summary: None,
+                    output_preview: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        if turns != self.model.turns {
+            self.model.turns = turns;
+        }
     }
 
     /// Re-create timeline subscriptions for every persisted `Allow` grant on
@@ -1376,6 +1457,9 @@ impl AssistantApp {
 
     /// Persist the active conversation id and the full transcript.
     fn session_write(&mut self) {
+        if self.bound_head.is_some() {
+            return;
+        }
         if let Err(e) = self.store.set_active_conversation(
             &self.model.conversation_id,
             self.model.session_name.as_deref(),
@@ -3714,7 +3798,34 @@ impl App for AssistantApp {
     }
 
     fn display_name(&self) -> String {
-        "Assistant".to_string()
+        if self.head_label.is_empty() {
+            "Assistant".to_string()
+        } else {
+            self.head_label.clone()
+        }
+    }
+
+    fn bound_head(&self) -> Option<&str> {
+        self.bound_head.as_deref()
+    }
+
+    fn semantic_state(&self) -> Option<serde_json::Value> {
+        let turns = self
+            .model
+            .turns
+            .iter()
+            .map(|turn| {
+                serde_json::json!({
+                    "role": format!("{:?}", turn.role),
+                    "text": turn.text,
+                })
+            })
+            .collect::<Vec<_>>();
+        Some(serde_json::json!({
+            "head": self.bound_head,
+            "title": self.display_name(),
+            "turns": turns,
+        }))
     }
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
@@ -3722,12 +3833,19 @@ impl App for AssistantApp {
     }
 
     fn background_tick(&mut self) {
+        self.sync_bound_transcript();
         self.pump_turn_io();
         self.run_pending_compaction();
     }
 
     fn needs_background_tick(&self) -> bool {
-        self.model.streaming.in_flight || self.compact_pending || !self.pending_commands.is_empty()
+        self.model.streaming.in_flight
+            || self.compact_pending
+            || !self.pending_commands.is_empty()
+            || self
+                .bound_head
+                .as_deref()
+                .is_some_and(crate::agent::leads::head_busy)
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
@@ -3794,6 +3912,7 @@ impl App for AssistantApp {
         ctx: &AppRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
+        self.sync_bound_transcript();
         self.pump_turn_io();
         // Active panes do not receive `background_tick`; defer until after
         // this frame draws the status row, then compact before the next frame.
@@ -3807,10 +3926,25 @@ impl App for AssistantApp {
             ctx.pane_id,
         );
         match event {
+            Some(ComposerEvent::Submit) if self.bound_head.is_some() => {
+                let text = std::mem::take(&mut self.model.composer);
+                if let Some(head) = self.bound_head.clone() {
+                    let request_id = uuid::Uuid::new_v4().to_string();
+                    log::info!("assistant: composer submit head={head}");
+                    let _ = crate::agent::leads::submit_turn(
+                        &self.workspace_root,
+                        &head,
+                        &text,
+                        &request_id,
+                        &crate::rpc::response_file("assistant-composer", "json"),
+                    );
+                }
+            }
             Some(ComposerEvent::Submit) => {
                 let effects = self.model.submit();
                 self.execute_effects(effects);
             }
+            Some(ComposerEvent::NewLead) => self.create_new_lead(),
             Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
             Some(ComposerEvent::OverlayConfirm) => self.confirm_overlay(),
             None => {}
@@ -3818,7 +3952,13 @@ impl App for AssistantApp {
         if compact_visible_this_frame && self.run_pending_compaction() {
             ui.ctx().request_repaint();
         }
-        if self.model.streaming.in_flight || self.compact_pending {
+        if self.model.streaming.in_flight
+            || self.compact_pending
+            || self
+                .bound_head
+                .as_deref()
+                .is_some_and(crate::agent::leads::head_busy)
+        {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
