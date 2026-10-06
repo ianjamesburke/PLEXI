@@ -41,12 +41,14 @@ pub enum ApprovalChoice {
 ///
 /// Each-time and time-boxed sign-off live on the Touch ID spike. This gate
 /// files click approvals, agent questions, and blocked runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NeedsYouKind {
     ApprovalClick,
     Question,
     BlockedRun,
+    /// The host rejected a queue file. It is not a grant and not an approval.
+    Integrity,
 }
 
 impl NeedsYouKind {
@@ -55,6 +57,7 @@ impl NeedsYouKind {
             Self::ApprovalClick => "approval_click",
             Self::Question => "question",
             Self::BlockedRun => "blocked_run",
+            Self::Integrity => "integrity",
         }
     }
 
@@ -103,11 +106,33 @@ pub struct NeedsYouFile {
     pub run_tag: Option<String>,
 }
 
+/// What happened to the run that was waiting.
+///
+/// `unblocked` means this host process still owns that run, so the decision
+/// applies to it. `outcome_unknown` means the run was filed by a host process
+/// that is gone: the decision is recorded and the item is not dropped, and the
+/// host does not claim the original run observed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    Unblocked,
+    OutcomeUnknown,
+}
+
+impl RunOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unblocked => "unblocked",
+            Self::OutcomeUnknown => "outcome_unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedsYouReceipt {
     pub id: String,
     pub resolution: NeedsYouResolution,
     pub already: bool,
+    pub run_outcome: RunOutcome,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -152,10 +177,18 @@ pub struct PermissionMonitor {
     admission: Mutex<()>,
     epoch: AtomicU64,
     audit_path: Option<PathBuf>,
+    /// Profile whose `<profile>/host` queue this monitor persists. `None` for
+    /// an ephemeral monitor, which never touches disk.
+    profile_dir: Option<PathBuf>,
     audit_mem: Mutex<Vec<AuditFact>>,
     fail_audit: AtomicBool,
     /// Open and resolved items waiting on the human. One map, one resolution.
     needs_you: Mutex<BTreeMap<String, NeedsYouRecord>>,
+    /// Host session that filed each item. A different session means the
+    /// original run is gone.
+    origins: Mutex<BTreeMap<String, String>>,
+    /// Outcome recorded for a resolved id, so a second resolve repeats it.
+    run_outcomes: Mutex<BTreeMap<String, RunOutcome>>,
     /// Serializes list, expiry, and resolve so one terminal receipt wins.
     needs_resolve: Mutex<()>,
     #[cfg(test)]
@@ -243,14 +276,20 @@ impl PermissionMonitor {
             dir.display(),
             audit.display()
         );
-        Self::new(store, Some(audit))
+        let monitor = Self::from_arc(Arc::new(Mutex::new(store)), Some(audit), Some(dir.to_path_buf()));
+        monitor.restore_queue();
+        monitor
     }
 
     fn new(store: GrantStore, audit_path: Option<PathBuf>) -> Self {
-        Self::from_arc(Arc::new(Mutex::new(store)), audit_path)
+        Self::from_arc(Arc::new(Mutex::new(store)), audit_path, None)
     }
 
-    fn from_arc(store: Arc<Mutex<GrantStore>>, audit_path: Option<PathBuf>) -> Self {
+    fn from_arc(
+        store: Arc<Mutex<GrantStore>>,
+        audit_path: Option<PathBuf>,
+        profile_dir: Option<PathBuf>,
+    ) -> Self {
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         log::info!("permission_monitor: session {session_id} started");
         Self {
@@ -262,13 +301,33 @@ impl PermissionMonitor {
             admission: Mutex::new(()),
             epoch: AtomicU64::new(1),
             audit_path,
+            profile_dir,
             audit_mem: Mutex::new(Vec::new()),
             fail_audit: AtomicBool::new(false),
             needs_you: Mutex::new(BTreeMap::new()),
+            origins: Mutex::new(BTreeMap::new()),
+            run_outcomes: Mutex::new(BTreeMap::new()),
             needs_resolve: Mutex::new(()),
             #[cfg(test)]
             now_override: AtomicI64::new(0),
         }
+    }
+
+    /// True when a previous host left a queue file. A frame uses this so it
+    /// does not open a profile store when nothing is waiting.
+    pub fn has_persisted_queue(dir: &Path) -> bool {
+        super::needs_you_store::queue_file_exists(dir)
+    }
+
+    /// Drop the process cache and open `dir` again. Tests use this as a restart.
+    #[cfg(test)]
+    pub fn reload_for_test(dir: &Path) -> Arc<Self> {
+        let key = crate::platform::path::canonical_or_self(dir);
+        monitors()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&key);
+        Self::for_profile(dir)
     }
 
     /// The process-cached monitor for `dir`, if something in this process has
@@ -401,33 +460,39 @@ impl PermissionMonitor {
     }
 
     fn persist_pending(&self, binding: &ExactBinding, tool: &str, input_json: &str) -> String {
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = pending.iter().find(|row| same_pending(row, binding)).cloned() {
-            log::info!(
-                "permission_monitor: reuse pending {} for actor={} tool={}",
-                existing.id,
-                binding.actor_id,
-                tool
-            );
-            let id = existing.id.clone();
-            self.upsert_approval_needs_you(&existing);
-            return id;
-        }
-        let id = format!("req_{}", uuid::Uuid::new_v4());
-        log::info!(
-            "permission_monitor: pending {id} actor={} tool={} resource={:?}",
-            binding.actor_id,
-            tool,
-            binding.resource_id
-        );
-        let row = Pending {
-            id: id.clone(),
-            binding: binding.clone(),
-            tool: tool.to_string(),
-            input_summary: summarize(input_json),
+        let id = {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = pending.iter().find(|row| same_pending(row, binding)).cloned() {
+                log::info!(
+                    "permission_monitor: reuse pending {} for actor={} tool={}",
+                    existing.id,
+                    binding.actor_id,
+                    tool
+                );
+                let id = existing.id.clone();
+                drop(pending);
+                self.upsert_approval_needs_you(&existing);
+                id
+            } else {
+                let id = format!("req_{}", uuid::Uuid::new_v4());
+                log::info!(
+                    "permission_monitor: pending {id} actor={} tool={} resource={:?}",
+                    binding.actor_id,
+                    tool,
+                    binding.resource_id
+                );
+                let row = Pending {
+                    id: id.clone(),
+                    binding: binding.clone(),
+                    tool: tool.to_string(),
+                    input_summary: summarize(input_json),
+                };
+                self.upsert_approval_needs_you(&row);
+                pending.push(row);
+                id
+            }
         };
-        self.upsert_approval_needs_you(&row);
-        pending.push(row);
+        self.persist_queue();
         id
     }
 
@@ -554,43 +619,49 @@ impl PermissionMonitor {
 
     /// File an agent question or a blocked run. Gate approvals are filed by admission.
     pub fn file_needs_you(&self, filed: NeedsYouFile) -> Result<String, String> {
-        if filed.kind.is_approval() {
+        if filed.kind.is_approval() || matches!(filed.kind, NeedsYouKind::Integrity) {
             return Err("approval items are filed by the permission gate".to_string());
         }
         if filed.actor.is_empty() || filed.summary.is_empty() {
             return Err("needs-you actor and summary are required".to_string());
         }
-        let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(tag) = filed.run_tag.as_deref() {
-            if let Some(existing) = map.values().find(|row| {
-                row.resolution.is_none()
-                    && row.kind == filed.kind
-                    && row.run_tag.as_deref() == Some(tag)
-            }) {
-                log::info!("needs_you: reuse {} kind={}", existing.id, existing.kind.as_str());
-                return Ok(existing.id.clone());
+        let id = {
+            let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(tag) = filed.run_tag.as_deref() {
+                if let Some(existing) = map.values().find(|row| {
+                    row.resolution.is_none()
+                        && row.kind == filed.kind
+                        && row.run_tag.as_deref() == Some(tag)
+                }) {
+                    log::info!("needs_you: reuse {} kind={}", existing.id, existing.kind.as_str());
+                    return Ok(existing.id.clone());
+                }
             }
-        }
-        let id = format!("ny_{}", uuid::Uuid::new_v4());
-        let record = NeedsYouRecord {
-            id: id.clone(),
-            kind: filed.kind,
-            actor: filed.actor,
-            resource: filed.resource,
-            summary: filed.summary,
-            created_at: self.now_secs(),
-            expires_at: filed.expires_at,
-            run_tag: filed.run_tag,
-            resolution: None,
+            let id = format!("ny_{}", uuid::Uuid::new_v4());
+            let record = NeedsYouRecord {
+                id: id.clone(),
+                kind: filed.kind,
+                actor: filed.actor,
+                resource: filed.resource,
+                summary: filed.summary,
+                created_at: self.now_secs(),
+                expires_at: filed.expires_at,
+                run_tag: filed.run_tag,
+                resolution: None,
+            };
+            log::info!(
+                "needs_you: filed {} kind={} actor={} resource={}",
+                record.id,
+                record.kind.as_str(),
+                record.actor,
+                record.resource
+            );
+            map.insert(id.clone(), record);
+            drop(map);
+            self.remember_origin(&id);
+            id
         };
-        log::info!(
-            "needs_you: filed {} kind={} actor={} resource={}",
-            record.id,
-            record.kind.as_str(),
-            record.actor,
-            record.resource
-        );
-        map.insert(id.clone(), record);
+        self.persist_queue();
         Ok(id)
     }
 
@@ -664,8 +735,10 @@ impl PermissionMonitor {
                 id: id.to_string(),
                 resolution,
                 already: true,
+                run_outcome: self.stored_outcome(id),
             });
         }
+        let outcome = self.run_outcome_for(id);
         match row.kind {
             NeedsYouKind::ApprovalClick => {
                 let choice = if approve {
@@ -680,7 +753,7 @@ impl PermissionMonitor {
                     return Err(error);
                 }
             }
-            NeedsYouKind::Question | NeedsYouKind::BlockedRun => {
+            NeedsYouKind::Question | NeedsYouKind::BlockedRun | NeedsYouKind::Integrity => {
                 let resolution = if approve {
                     NeedsYouResolution::Approved
                 } else {
@@ -695,6 +768,11 @@ impl PermissionMonitor {
                 }
             }
         }
+        self.run_outcomes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(id.to_string(), outcome);
+        log::info!("needs_you: resolve {id} run_outcome={}", outcome.as_str());
         self.resolved_receipt(id, false)
             .ok_or_else(|| format!("needs-you item {id} was not resolved"))
     }
@@ -706,7 +784,41 @@ impl PermissionMonitor {
                 id: id.to_string(),
                 resolution,
                 already,
+                run_outcome: self.stored_outcome(id),
             })
+    }
+
+    fn stored_outcome(&self, id: &str) -> RunOutcome {
+        self.run_outcomes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(id)
+            .copied()
+            .unwrap_or(RunOutcome::OutcomeUnknown)
+    }
+
+    fn run_outcome_for(&self, id: &str) -> RunOutcome {
+        if self.origin_is_current(id) {
+            RunOutcome::Unblocked
+        } else {
+            RunOutcome::OutcomeUnknown
+        }
+    }
+
+    fn origin_is_current(&self, id: &str) -> bool {
+        self.origins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(id)
+            .is_some_and(|origin| origin == &self.session_id)
+    }
+
+    fn remember_origin(&self, id: &str) {
+        self.origins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(id.to_string())
+            .or_insert_with(|| self.session_id.clone());
     }
 
     fn needs_you_of(&self, id: &str) -> Option<NeedsYouRecord> {
@@ -720,6 +832,8 @@ impl PermissionMonitor {
     fn upsert_approval_needs_you(&self, pending: &Pending) {
         let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
         if map.contains_key(&pending.id) {
+            drop(map);
+            self.remember_origin(&pending.id);
             return;
         }
         let record = NeedsYouRecord {
@@ -745,6 +859,8 @@ impl PermissionMonitor {
             record.resource
         );
         map.insert(record.id.clone(), record);
+        drop(map);
+        self.remember_origin(&pending.id);
     }
 
     /// Mark an open item resolved and audit it. Returns false when it was already resolved
@@ -767,6 +883,14 @@ impl PermissionMonitor {
             row.resolution = Some(resolution);
             row.clone()
         };
+        let audited_decision = if self.origin_is_current(id) {
+            decision.to_string()
+        } else {
+            match decision {
+                "approved" | "denied" => "outcome_unknown".to_string(),
+                other => other.to_string(),
+            }
+        };
         let fact = AuditFact {
             kind: "needs_you".to_string(),
             actor: snapshot.actor.clone(),
@@ -775,7 +899,7 @@ impl PermissionMonitor {
             resource_id: snapshot.resource.clone(),
             args_fingerprint: String::new(),
             operation_id: snapshot.id.clone(),
-            decision: decision.to_string(),
+            decision: audited_decision,
             revision_before: String::new(),
             revision_after: String::new(),
         };
@@ -792,7 +916,160 @@ impl PermissionMonitor {
             return false;
         }
         log::info!("needs_you: resolved {id} {decision}");
+        self.persist_queue();
         true
+    }
+
+    fn restore_queue(&self) {
+        let Some(profile) = self.profile_dir.clone() else {
+            return;
+        };
+        match super::needs_you_store::load(&profile) {
+            super::needs_you_store::LoadedQueue::Empty => {
+                log::info!("needs_you: no persisted queue in {}", profile.display());
+            }
+            super::needs_you_store::LoadedQueue::Items(items) => {
+                let count = items.len();
+                self.install_restored(items);
+                log::info!("needs_you: restored {count} open items from {}", profile.display());
+            }
+            super::needs_you_store::LoadedQueue::Untrusted(reason) => {
+                log::error!("needs_you: rejected queue in {}: {reason}", profile.display());
+                if super::needs_you_store::quarantine(&profile).is_some() {
+                    self.file_integrity(&reason);
+                } else if super::needs_you_store::queue_file_exists(&profile) {
+                    log::error!(
+                        "needs_you: left untrusted queue in place at {}",
+                        profile.display()
+                    );
+                    self.file_integrity_memory_only(&reason);
+                } else {
+                    self.file_integrity(&reason);
+                }
+            }
+        }
+    }
+
+    fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) {
+        let mut pending = self.pending.lock().unwrap_or_else(|error| error.into_inner());
+        let mut needs = self.needs_you.lock().unwrap_or_else(|error| error.into_inner());
+        let mut origins = self.origins.lock().unwrap_or_else(|error| error.into_inner());
+        for item in items {
+            if let (NeedsYouKind::ApprovalClick, Some(row)) = (item.kind, item.pending.clone()) {
+                pending.push(Pending {
+                    id: item.id.clone(),
+                    binding: row.binding,
+                    tool: row.tool,
+                    input_summary: row.input_summary,
+                });
+            }
+            origins.insert(item.id.clone(), item.origin_session.clone());
+            needs.insert(
+                item.id.clone(),
+                NeedsYouRecord {
+                    id: item.id,
+                    kind: item.kind,
+                    actor: item.actor,
+                    resource: item.resource,
+                    summary: item.summary,
+                    created_at: item.created_at,
+                    expires_at: item.expires_at,
+                    run_tag: item.run_tag,
+                    resolution: None,
+                },
+            );
+        }
+    }
+
+    fn file_integrity(&self, reason: &str) {
+        self.file_integrity_memory_only(reason);
+        self.persist_queue();
+    }
+
+    fn file_integrity_memory_only(&self, reason: &str) {
+        let id = format!("ny_{}", uuid::Uuid::new_v4());
+        let summary = format!("Needs you queue failed its integrity check ({reason}). Stored entries in that file were not loaded.");
+        log::info!("needs_you: filed {id} kind=integrity");
+        self.needs_you
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                id.clone(),
+                NeedsYouRecord {
+                    id: id.clone(),
+                    kind: NeedsYouKind::Integrity,
+                    actor: "host".to_string(),
+                    resource: "needs-you".to_string(),
+                    summary,
+                    created_at: self.now_secs(),
+                    expires_at: None,
+                    run_tag: Some(format!("integrity:{id}")),
+                    resolution: None,
+                },
+            );
+        self.remember_origin(&id);
+    }
+
+    fn persist_queue(&self) {
+        let Some(profile) = self.profile_dir.clone() else {
+            return;
+        };
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let needs = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let origins = self
+            .origins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let mut items = Vec::new();
+        for record in needs.values() {
+            if record.resolution.is_some() {
+                continue;
+            }
+            let origin = origins
+                .get(&record.id)
+                .cloned()
+                .unwrap_or_else(|| self.session_id.clone());
+            let restored_pending = if record.kind == NeedsYouKind::ApprovalClick {
+                let Some(row) = pending.iter().find(|row| row.id == record.id) else {
+                    log::error!(
+                        "needs_you: skipped persisting approval {} with no pending request",
+                        record.id
+                    );
+                    continue;
+                };
+                Some(super::needs_you_store::RestoredPending {
+                    tool: row.tool.clone(),
+                    input_summary: row.input_summary.clone(),
+                    binding: row.binding.clone(),
+                })
+            } else {
+                None
+            };
+            items.push(super::needs_you_store::RestoredItem {
+                id: record.id.clone(),
+                kind: record.kind,
+                actor: record.actor.clone(),
+                resource: record.resource.clone(),
+                summary: record.summary.clone(),
+                created_at: record.created_at,
+                expires_at: record.expires_at,
+                run_tag: record.run_tag.clone(),
+                origin_session: origin,
+                pending: restored_pending,
+            });
+        }
+        if let Err(error) = super::needs_you_store::save(&profile, &items) {
+            log::error!("needs_you: persist failed for {}: {error}", profile.display());
+        }
     }
 
     fn now_secs(&self) -> i64 {
@@ -1891,6 +2168,145 @@ mod tests {
         assert!(denied.already);
         assert_eq!(denied.resolution, NeedsYouResolution::Denied);
         assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
+    }
+
+    #[test]
+    fn needs_you_survives_reload_and_reports_outcome_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(dir.path());
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-persist"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.session_id = Some(monitor.session_id().to_string());
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("a click approval must be filed");
+        };
+        let blocked = monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::BlockedRun,
+                actor: "agent:guide".into(),
+                resource: "ci".into(),
+                summary: "Runner stopped".into(),
+                expires_at: None,
+                run_tag: Some("run-persist".into()),
+            })
+            .unwrap();
+        drop(monitor);
+        let restored = PermissionMonitor::reload_for_test(dir.path());
+        let open = restored.list_needs_you();
+        assert!(
+            open.iter().any(|row| row.id == pending_request_id),
+            "pending id must survive restart: {open:?}"
+        );
+        assert!(open.iter().any(|row| row.id == blocked), "{open:?}");
+        let receipt = restored
+            .resolve_needs_you(&pending_request_id, true)
+            .unwrap();
+        assert!(!receipt.already);
+        assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
+        assert_eq!(receipt.run_outcome, RunOutcome::OutcomeUnknown);
+        assert!(
+            restored
+                .list_needs_you()
+                .iter()
+                .all(|row| row.id != pending_request_id),
+            "resolving must close the item"
+        );
+        assert_eq!(needs_you_decisions(&restored, "outcome_unknown"), 1);
+        let mut retry = base.clone();
+        retry.session_id = Some(restored.session_id().to_string());
+        assert!(
+            matches!(admit_of(&restored, &retry, args), Admission::Proceed { .. }),
+            "the exact request is unblocked by the restored approval"
+        );
+        let question = restored.resolve_needs_you(&blocked, true).unwrap();
+        assert_eq!(question.run_outcome, RunOutcome::OutcomeUnknown);
+    }
+
+    #[test]
+    fn forged_queue_is_not_a_grant_and_is_not_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(dir.path());
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-forge"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.session_id = Some(monitor.session_id().to_string());
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("a click approval must be filed");
+        };
+        drop(monitor);
+        let journal = dir.path().join("host").join("needs-you.json");
+        std::fs::write(
+            &journal,
+            b"{\"schema\":1,\"items\":[{\"id\":\"req_forged\",\"kind\":\"approval_click\",\"resolution\":\"approved\"}]}\n#mac 00\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("needs-you.json"),
+            b"{\"id\":\"req_planted\",\"resolution\":\"approved\"}\n",
+        )
+        .unwrap();
+        let restored = PermissionMonitor::reload_for_test(dir.path());
+        let open = restored.list_needs_you();
+        assert!(
+            open.iter().all(|row| row.id != "req_forged" && row.id != "req_planted"),
+            "forged ids must not be listed: {open:?}"
+        );
+        assert!(
+            open.iter().any(|row| row.kind == NeedsYouKind::Integrity),
+            "a rejected queue must surface an integrity item, not disappear: {open:?}"
+        );
+        assert!(restored.resolve_needs_you("req_forged", true).is_err());
+        assert!(
+            restored.store().records().iter().all(|record| record.grant_id != "req_forged"),
+            "a forged file must not become a grant"
+        );
+        assert_ne!(pending_request_id, "req_forged");
+        let _ = pending_request_id;
+    }
+
+    #[test]
+    fn deleted_queue_is_an_integrity_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(dir.path());
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-delete"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.session_id = Some(monitor.session_id().to_string());
+        let Admission::Required { .. } = admit_of(&monitor, &base, args) else {
+            panic!("a click approval must be filed");
+        };
+        drop(monitor);
+        std::fs::remove_file(dir.path().join("host").join("needs-you.json")).unwrap();
+        let restored = PermissionMonitor::reload_for_test(dir.path());
+        let open = restored.list_needs_you();
+        assert!(
+            open.iter().any(|row| row.kind == NeedsYouKind::Integrity),
+            "deleting the queue must be reported: {open:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_queue_directory_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(dir.path());
+        let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-mode"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.session_id = Some(monitor.session_id().to_string());
+        let Admission::Required { .. } = admit_of(&monitor, &base, args) else {
+            panic!("a click approval must be filed");
+        };
+        let host = dir.path().join("host");
+        let dir_mode = std::fs::metadata(&host).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(host.join("needs-you.json")).unwrap().permissions().mode() & 0o777;
+        let key_mode = std::fs::metadata(host.join("seal.key")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "host directory must be mode 0700");
+        assert_eq!(file_mode, 0o600);
+        assert_eq!(key_mode, 0o600);
+        let journal = std::fs::read(host.join("needs-you.json")).unwrap();
+        let key = std::fs::read(host.join("seal.key")).unwrap();
+        assert!(!journal.windows(key.len()).any(|window| window == key.as_slice()));
+        assert!(!dir.path().join("needs-you.json").exists());
+        assert!(!dir.path().join("secrets.json").exists());
     }
 
     fn needs_you_decisions(monitor: &PermissionMonitor, decision: &str) -> usize {

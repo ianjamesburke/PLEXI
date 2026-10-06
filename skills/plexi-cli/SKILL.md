@@ -79,6 +79,10 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   still denies. A phone may deny or answer a question. A phone approve never
   grants a permission. Expired items are auto-denied. A repeat resolve of an
   already settled question or blocked run returns the existing resolution.
+  Open items survive a host restart. The resolve JSON includes `run_outcome`:
+  `unblocked` when this host process still has the run, and `outcome_unknown`
+  when that run was filed by a previous process. Do not edit profile files to
+  create or approve an item.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

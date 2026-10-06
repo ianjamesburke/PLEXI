@@ -151,6 +151,7 @@ impl PlexiApp {
                             "id": receipt.id,
                             "resolution": receipt.resolution.as_str(),
                             "already": receipt.already,
+                            "run_outcome": receipt.run_outcome.as_str(),
                         }),
                         Err(error) => serde_json::json!({
                             "ok": false,
