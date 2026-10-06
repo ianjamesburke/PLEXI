@@ -97,6 +97,7 @@ same reason.
 - **A context rooted at the home directory has the global tier as its context
   tier.** `new_context_empty` produces exactly that, so any code listing both
   tiers must dedupe canonically or it shows the same directory twice.
+- **A just-written script must not be the `execve` target.** On Linux, `execve` of an inode a test just created or renamed returns `ETXTBSY` ("Text file busy") under parallel `cargo test`. Invoke it through `sh` or `bash` (a stable binary that opens the script for read). `script_config` in `mcp_client` and the shared agent-hook repair test both do this.
 - **`WasmPythonRuntime::launch` returns before the guest can run any Python.**
   The Wasmtime compile of the CPython WASI module happens on the guest thread
   *after* `launch` returns, behind a process-global cache mutex, and costs
