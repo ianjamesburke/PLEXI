@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import socket
 import sqlite3
 import struct
@@ -50,20 +51,39 @@ class LogCapture(logging.Handler):
         return "\n".join(self.lines)
 
 
-def _http(method: str, url: str, body: dict | None = None, cookie: str | None = None) -> tuple[int, dict, str | None]:
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {"Content-Type": "application/json"} if body is not None else {}
+def _http(
+    method: str,
+    url: str,
+    body: dict | None = None,
+    cookie: str | None = None,
+    extra_headers: dict | None = None,
+    raw_body: bytes | None = None,
+    return_header: bool = False,
+) -> tuple[int, dict, str | None]:
+    if raw_body is not None:
+        data: bytes | None = raw_body
+        headers = {"Content-Type": "application/octet-stream"}
+    elif body is not None:
+        data = json.dumps(body).encode()
+        headers = {"Content-Type": "application/json"}
+    else:
+        data = None
+        headers = {}
+    if extra_headers:
+        headers.update(extra_headers)
     if cookie:
         headers["Cookie"] = f"{relay.COOKIE}={cookie}"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             raw = response.read().decode()
-            token = _cookie(response.headers.get("Set-Cookie"))
+            set_cookie = response.headers.get("Set-Cookie")
+            token = set_cookie if return_header else _cookie(set_cookie)
             return response.status, json.loads(raw or "{}"), token
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode()
-        token = _cookie(exc.headers.get("Set-Cookie") if exc.headers else None)
+        set_cookie = exc.headers.get("Set-Cookie") if exc.headers else None
+        token = set_cookie if return_header else _cookie(set_cookie)
         return exc.code, json.loads(raw or "{}"), token
 
 
@@ -182,6 +202,7 @@ class Desktop:
 
 class RelayHttpTest(unittest.TestCase):
     def setUp(self) -> None:
+        relay.install_log_guard()
         self.logs = LogCapture()
         relay.log.addHandler(self.logs)
         relay.log.setLevel(logging.INFO)
@@ -453,6 +474,81 @@ class RelayHttpTest(unittest.TestCase):
         return cookie
 
 
+    def test_cross_site_post_is_rejected(self) -> None:
+        status, body, _ = _http(
+            "POST",
+            f"{self.base}/api/pair",
+            {"code": "ZZZZZZZZ", "label": "pixel"},
+            extra_headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+        )
+        self.assertEqual(status, 403, body)
+        status, missing, _ = _http(
+            "POST",
+            f"{self.base}/api/pair",
+            {"code": "ZZZZZZZZ", "label": "pixel"},
+            extra_headers={"Origin": f"http://127.0.0.1:{self.port}"},
+        )
+        self.assertEqual(status, 404, missing)
+
+    def test_negative_and_huge_bodies_are_rejected(self) -> None:
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        self.addCleanup(sock.close)
+        sock.sendall(
+            b"POST /api/pair HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: -1\r\nConnection: close\r\n\r\n"
+        )
+        raw = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            raw += chunk
+        self.assertIn(b"400", raw.split(b"\r\n", 1)[0])
+        huge = b"{" + b"x" * (relay.MAX_BODY_BYTES + 8)
+        status, body, _ = _http("POST", f"{self.base}/api/pair", None, raw_body=huge)
+        self.assertEqual(status, 413, body)
+
+    def test_secure_cookie_and_one_shot_session(self) -> None:
+        box = relay.Relay(public_origin="http://127.0.0.1")
+        server = relay.build_server("127.0.0.1", 0, box, STATIC, secure_cookie=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        port = server.server_address[1]
+        base = f"http://127.0.0.1:{port}"
+        desk = Desktop(port)
+        self.addCleanup(desk.close)
+        desk.send({"type": "pair_start"})
+        issued = desk.recv()
+        status, pending, _ = _http("POST", f"{base}/api/pair", {"code": issued["code"], "label": "pixel"})
+        self.assertEqual(status, 202, pending)
+        self.assertEqual(desk.recv()["type"], "pair_pending")
+        desk.send({"type": "pair_confirm", "pairing_id": issued["pairing_id"]})
+        self.assertEqual(desk.recv()["type"], "pair_confirmed")
+        status, polled, header = _http("GET", f"{base}/api/pair/{issued['pairing_id']}", return_header=True)
+        self.assertEqual(polled["status"], "confirmed")
+        self.assertIn("Secure", header)
+        self.assertIn("HttpOnly", header)
+        self.assertIn("SameSite=Lax", header)
+        cookie = _cookie(header)
+        self.assertIsNotNone(cookie)
+        _status, _again, header2 = _http("GET", f"{base}/api/pair/{issued['pairing_id']}", return_header=True)
+        self.assertEqual(_cookie(header2), cookie)
+        status, _state, _ = _http("GET", f"{base}/api/status", cookie=cookie)
+        self.assertEqual(status, 200)
+        _status, still, header3 = _http("GET", f"{base}/api/pair/{issued['pairing_id']}", return_header=True)
+        self.assertEqual(still["status"], "confirmed")
+        self.assertIsNone(_cookie(header3))
+        status, _state, _ = _http("GET", f"{base}/api/status", cookie=cookie)
+        self.assertEqual(status, 200)
+        desk.send({"type": "revoke", "device_id": polled["device_id"]})
+        self.assertEqual(desk.recv()["type"], "revoked")
+        status, denied, _ = _http("GET", f"{base}/api/status", cookie=cookie)
+        self.assertEqual(status, 401, denied)
+        status, _page, _ = _http("GET", f"{base}/api/conversation?after=0", cookie=cookie)
+        self.assertEqual(status, 401)
+
+
 class TtlTest(unittest.TestCase):
     def test_undelivered_body_is_purged_after_ttl(self) -> None:
         clock = Clock()
@@ -605,6 +701,209 @@ class ProtocolTest(unittest.TestCase):
     def test_unwritable_state_path_does_not_fall_back_to_memory(self) -> None:
         with self.assertRaises((OSError, sqlite3.Error)):
             relay.Relay(state_path="/proc/does-not-exist/relay.sqlite")
+
+
+class SecurityTest(unittest.TestCase):
+    """Cheap checks for the relay threat model. See docs/security/relay-threat-model.md."""
+
+    def test_pairing_code_entropy(self) -> None:
+        alphabet = relay.CODE_ALPHABET
+        self.assertEqual(len(alphabet), len(set(alphabet)))
+        self.assertGreaterEqual(len(alphabet), 32)
+        self.assertGreaterEqual(relay.CODE_LENGTH, 8)
+        self.assertGreaterEqual(len(alphabet) ** relay.CODE_LENGTH, 2**40)
+        codes = {relay._code() for _ in range(30)}
+        self.assertGreater(len(codes), 1)
+        for code in codes:
+            self.assertEqual(len(code), relay.CODE_LENGTH)
+            self.assertTrue(set(code) <= set(alphabet))
+
+    def test_tokens_are_hashed_and_compared_in_constant_time(self) -> None:
+        self.assertTrue(relay.secret_equal("same-token", "same-token"))
+        self.assertFalse(relay.secret_equal("same-token", "same-token-2"))
+        self.assertFalse(relay.secret_equal("short", "a-much-longer-value"))
+        box = relay.Relay(public_origin="http://127.0.0.1")
+        self.assertIsNotNone(box.hello("host-hash", "desktop-token-aaa", "desk"))
+        stored = box.hosts["host-hash"]
+        self.assertNotEqual(stored, "desktop-token-aaa")
+        self.assertEqual(len(stored), 64)
+        self.assertTrue(relay.secret_equal(stored, relay._hash("desktop-token-aaa")))
+        self.assertIsNone(box.hello("host-hash", "desktop-token-bbb", "desk"))
+        self.assertIsNotNone(box.hello("host-hash", "desktop-token-aaa", "desk"))
+
+    def test_cookie_secure_flag_follows_the_bind(self) -> None:
+        previous = os.environ.pop("RELAY_COOKIE_SECURE", None)
+        try:
+            self.assertFalse(relay.cookies_should_be_secure("127.0.0.1", "http://127.0.0.1:8790"))
+            self.assertFalse(relay.cookies_should_be_secure("localhost", "http://localhost:8790"))
+            self.assertTrue(relay.cookies_should_be_secure("0.0.0.0", "http://0.0.0.0:8080"))
+            self.assertTrue(relay.cookies_should_be_secure("127.0.0.1", "https://plexi-relay.example"))
+            os.environ["RELAY_COOKIE_SECURE"] = "0"
+            self.assertFalse(relay.cookies_should_be_secure("0.0.0.0", "https://plexi-relay.example"))
+            os.environ["RELAY_COOKIE_SECURE"] = "1"
+            self.assertTrue(relay.cookies_should_be_secure("127.0.0.1", "http://127.0.0.1:8790"))
+        finally:
+            os.environ.pop("RELAY_COOKIE_SECURE", None)
+            if previous is not None:
+                os.environ["RELAY_COOKIE_SECURE"] = previous
+        header = relay.cookie_header("abc", secure=True)
+        self.assertIn("HttpOnly", header)
+        self.assertIn("SameSite=Lax", header)
+        self.assertIn("Secure", header)
+        self.assertNotIn("Secure", relay.cookie_header("abc", secure=False))
+
+    def test_failed_pairing_attempts_are_rate_limited(self) -> None:
+        clock = Clock()
+        box = relay.Relay(
+            clock=clock,
+            public_origin="http://127.0.0.1",
+            pair_fail_limit=2,
+            pair_fail_global=5,
+        )
+        self.assertIsNotNone(box.hello("host-rate", "token-rate", "desk"))
+        issued = box.start_pairing("host-rate")
+        assert issued is not None
+        for _ in range(2):
+            status, body = box.redeem("ZZZZZZZZ", "pixel", client="203.0.113.5")
+            self.assertEqual(status, 404, body)
+        status, blocked = box.redeem(issued["code"], "pixel", client="203.0.113.5")
+        self.assertEqual(status, 429, blocked)
+        self.assertNotIn(issued["code"], json.dumps(blocked))
+        status, pending = box.redeem(issued["code"], "pixel", client="203.0.113.9")
+        self.assertEqual(status, 202, pending)
+        clock.advance(relay.PAIRING_TTL_SECONDS)
+        issued = box.start_pairing("host-rate")
+        assert issued is not None
+        status, pending = box.redeem(issued["code"], "pixel", client="203.0.113.5")
+        self.assertEqual(status, 202, pending)
+
+    def test_sqlite_registry_is_private_and_stores_no_secrets(self) -> None:
+        path = str(Path(os.environ.get("TMPDIR", "/tmp")) / f"relay-mode-{os.getpid()}" / "relay.sqlite")
+
+        def cleanup() -> None:
+            _unlink_sqlite(path)
+            parent = os.path.dirname(path)
+            if os.path.isdir(parent):
+                os.rmdir(parent)
+
+        self.addCleanup(cleanup)
+        box = relay.Relay(public_origin="http://127.0.0.1", state_path=path)
+        self.assertIsNotNone(box.hello("host-mode", "host-token-not-stored", "desk"))
+        issued = box.start_pairing("host-mode")
+        assert issued is not None
+        mode = os.stat(path).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+        parent_mode = os.stat(os.path.dirname(path)).st_mode & 0o777
+        self.assertEqual(parent_mode, 0o700)
+        stored = Path(path).read_bytes()
+        self.assertNotIn(issued["code"].encode(), stored)
+        self.assertNotIn(b"host-token-not-stored", stored)
+        for suffix in ("-wal", "-shm"):
+            candidate = path + suffix
+            if os.path.exists(candidate):
+                self.assertEqual(os.stat(candidate).st_mode & 0o777, 0o600)
+
+    def test_inflight_turns_are_capped(self) -> None:
+        box = relay.Relay(public_origin="http://127.0.0.1")
+        device, _token = _paired_device(box, "host-cap", "token-cap")
+        for index in range(relay.MAX_INFLIGHT_PER_DEVICE):
+            status, queued = box.submit(
+                device,
+                {"schema_version": 1, "request_id": f"req-{index}", "content": [{"type": "text", "text": "x" * 20}]},
+            )
+            self.assertEqual(status, 202, queued)
+        status, rejected = box.submit(
+            device,
+            {"schema_version": 1, "request_id": "req-over", "content": [{"type": "text", "text": "one more"}]},
+        )
+        self.assertEqual((status, rejected["error"]), (429, "too_many_pending"))
+        status, again = box.submit(
+            device,
+            {"schema_version": 1, "request_id": "req-0", "content": [{"type": "text", "text": "x" * 20}]},
+        )
+        self.assertEqual(status, 200, again)
+
+    def test_text_and_negative_length_are_rejected(self) -> None:
+        self.assertEqual(
+            relay.validate_envelope(
+                {"schema_version": 1, "request_id": "req", "content": [{"type": "text", "text": "y" * (relay.MAX_TEXT_CHARS + 1)}]}
+            ),
+            "invalid_text",
+        )
+
+    def test_log_guard_drops_tokens(self) -> None:
+        relay.install_log_guard()
+        logs = LogCapture()
+        relay.log.addHandler(logs)
+        self.addCleanup(relay.log.removeHandler, logs)
+        relay.note_secret("super-secret-token-value-0123456789")
+        relay.log.info("leaked super-secret-token-value-0123456789")
+        relay.log.info("cookie plexi_phone=not-a-real-token")
+        relay.log.info("event=ok outcome=ready")
+        self.assertNotIn("super-secret-token-value-0123456789", logs.text)
+        self.assertNotIn("plexi_phone=", logs.text)
+        self.assertIn("outcome=ready", logs.text)
+
+    def test_one_host_cannot_see_another_hosts_turn(self) -> None:
+        box = relay.Relay(public_origin="http://127.0.0.1")
+        device_a, _token_a = _paired_device(box, "host-a", "token-a")
+        _device_b, _token_b = _paired_device(box, "host-b", "token-b")
+        status, queued = box.submit(
+            device_a,
+            {"schema_version": 1, "request_id": "req-a", "content": [{"type": "text", "text": "only-for-a"}]},
+        )
+        self.assertEqual(status, 202, queued)
+        link_b = box.links["host-b"]
+        stolen = _drain(link_b)
+        self.assertFalse(any(item.get("text") == "only-for-a" for item in stolen))
+        delivered = next(item for item in _drain(box.links["host-a"]) if item.get("type") == "deliver")
+        self.assertEqual(delivered["text"], "only-for-a")
+        self.assertEqual(delivered["device_id"], device_a.device_id)
+        box.reply("host-b", {"type": "reply", "delivery_id": delivered["delivery_id"], "state": "succeeded", "reply": "from-b"})
+        page = box.conversation(device_a, 0)
+        self.assertFalse(any(event.get("text") == "from-b" for event in page["events"]))
+        self.assertEqual(box.deliveries[delivered["delivery_id"]].state, "queued")
+
+    def test_revoke_drops_the_live_session_and_approval_changes_nothing(self) -> None:
+        box = relay.Relay(public_origin="http://127.0.0.1")
+        device, token = _paired_device(box, "host-rev", "token-rev")
+        status, queued = box.submit(
+            device,
+            {"schema_version": 1, "request_id": "req-rev", "content": [{"type": "text", "text": "hold"}]},
+        )
+        self.assertEqual(status, 202, queued)
+        code, body = box.approve(device)
+        self.assertEqual(code, 403, body)
+        self.assertEqual(box.deliveries[queued["delivery_id"]].state, "queued")
+        revoked = box.revoke("host-rev", device.device_id)
+        self.assertEqual(revoked["type"], "revoked")
+        self.assertIsNone(box.device_for_token(token))
+        self.assertEqual(box.revoke("host-other", device.device_id)["type"], "error")
+
+
+def _paired_device(box: relay.Relay, host_id: str, token: str) -> tuple[relay.Device, str]:
+    link = box.hello(host_id, token, "desk")
+    assert link is not None
+    issued = box.start_pairing(host_id)
+    assert issued is not None
+    status, pending = box.redeem(issued["code"], "pixel")
+    assert status == 202, pending
+    confirmed = box.confirm(host_id, issued["pairing_id"])
+    assert confirmed["type"] == "pair_confirmed", confirmed
+    _status, _body, session = box.pairing_status(issued["pairing_id"])
+    assert session is not None
+    device = box.device_for_token(session)
+    assert device is not None
+    return device, session
+
+
+def _drain(link: relay.DesktopLink) -> list[dict]:
+    messages: list[dict] = []
+    while True:
+        try:
+            messages.append(link.outbound.get_nowait())
+        except queue.Empty:
+            return messages
 
 
 def _unlink_sqlite(path: str) -> None:

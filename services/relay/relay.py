@@ -31,6 +31,7 @@ import sqlite3
 import struct
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -48,6 +49,15 @@ DEVICE_IDLE_SECONDS = 30 * 24 * 3600
 PROTOCOL_VERSION = 1
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 8000
+MAX_INFLIGHT_PER_DEVICE = 8
+MAX_DESKTOP_SOCKETS = 64
+HELLO_DEADLINE_SECONDS = 10.0
+CODE_LENGTH = 8
+# 32-symbol alphabet × 8 characters is 40 bits. The failure budget below
+# makes an online guess of one live code negligible inside PAIRING_TTL.
+PAIR_FAIL_LIMIT = 10
+PAIR_FAIL_GLOBAL_LIMIT = 100
+PAIR_FAIL_WINDOW_SECONDS = PAIRING_TTL_SECONDS
 COOKIE = "plexi_phone"
 PROTOCOL_MISMATCH = (
     "This relay speaks protocol 1. The desktop sent a different version. "
@@ -89,13 +99,40 @@ def trace(event: str, **fields: object) -> None:
     log.info(" ".join(parts))
 
 
+# Long credentials (session tokens, host tokens). Pairing codes are shorter
+# and are kept out by `trace` never accepting them, which the canary test
+# covers. A short code must not be a scrub key: it can be a substring of a
+# logged id.
+_SECRET_MIN = 20
+_secrets: deque[str] = deque(maxlen=256)
+_secrets_lock = threading.Lock()
+
+
+def note_secret(value: str) -> None:
+    """Remember a credential so a later log line that contains it is dropped."""
+    if len(value) < _SECRET_MIN or any(ch.isspace() for ch in value):
+        return
+    with _secrets_lock:
+        if value not in _secrets:
+            _secrets.append(value)
+
+
+def _scrubbed(rendered: str) -> bool:
+    lowered = rendered.lower()
+    if "plexi_phone=" in lowered or "host_token" in lowered or "bearer " in lowered:
+        return True
+    with _secrets_lock:
+        secrets_now = list(_secrets)
+    return any(secret in rendered for secret in secrets_now)
+
+
 class _BodyFilter(logging.Filter):
-    """Last-resort drop if a record interpolates a body-sized string.
+    """Drop body-sized lines and any line that contains a live credential.
 
     The canary test still fails when application code logs the marker: this
-    filter does not rewrite messages, it only rejects a record whose rendered
-    text is implausibly long for an allowlisted line. Short canaries must be
-    kept out by `trace` never receiving them.
+    filter does not rewrite messages. Short canaries must be kept out by
+    `trace` never receiving them. Credentials registered with `note_secret`
+    are dropped even when the line is otherwise short.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -103,11 +140,14 @@ class _BodyFilter(logging.Filter):
             rendered = record.getMessage()
         except Exception:
             return False
-        return len(rendered) <= 512 and "\n" not in rendered
+        if len(rendered) > 512 or "\n" in rendered:
+            return False
+        return not _scrubbed(rendered)
 
 
 def install_log_guard() -> None:
-    log.addFilter(_BodyFilter())
+    if not any(isinstance(item, _BodyFilter) for item in log.filters):
+        log.addFilter(_BodyFilter())
     log.setLevel(logging.INFO)
     log.propagate = True
 
@@ -119,16 +159,67 @@ def phone_static_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "clients" / "phone-web" / "static"
 
 
+def _prepare_private_file(path: str) -> None:
+    """Create `path` as 0o600 before SQLite opens it.
+
+    `sqlite3.connect` would otherwise create the file with the process umask,
+    which is world-readable on a typical 0o022 umask, until a later chmod.
+    """
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.close(fd)
+    os.chmod(path, 0o600)
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise OSError(f"relay registry {path} mode {mode:o} is not private")
+
+
 def _now_unix() -> float:
     return time.time()
 
 
 def _code() -> str:
-    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
+    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
 
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def secret_equal(left: str, right: str) -> bool:
+    """Constant-time equality, including when the inputs differ in length.
+
+    Both sides are hashed to a fixed digest first so a length mismatch cannot
+    return early inside `compare_digest`.
+    """
+    return hmac.compare_digest(
+        hashlib.sha256(left.encode()).digest(),
+        hashlib.sha256(right.encode()).digest(),
+    )
+
+
+def cookie_header(token: str, secure: bool) -> str:
+    parts = [f"{COOKIE}={token}", "HttpOnly", "SameSite=Lax", "Path=/"]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def cookies_should_be_secure(bind_host: str, public_origin: str) -> bool:
+    """Secure cookies on any public bind. Loopback HTTP stays usable in tests.
+
+    `RELAY_COOKIE_SECURE=1` forces the flag on. `=0` forces it off. Otherwise
+    an https public origin or a non-loopback bind (the container listens on
+    0.0.0.0 behind the TLS proxy) sets Secure.
+    """
+    flag = os.environ.get("RELAY_COOKIE_SECURE", "").strip()
+    if flag == "1":
+        return True
+    if flag == "0":
+        return False
+    if public_origin.lower().startswith("https://"):
+        return True
+    host = bind_host.strip().lower().strip("[]")
+    return host not in {"127.0.0.1", "::1", "localhost"}
 
 
 def _fingerprint(host_id: str, label: str, nonce: str) -> str:
@@ -151,6 +242,10 @@ class Pairing:
     nonce: str = ""
     fingerprint: str = ""
     device_id: str | None = None
+    # Raw session token, memory only, cleared once the phone presents it.
+    # Re-polling before that repeats the same cookie. It is not written to SQLite.
+    session_token: str | None = None
+    token_consumed: bool = False
 
 
 @dataclass
@@ -243,8 +338,14 @@ class PairingRegistry:
     def __init__(self, path: str) -> None:
         parent = os.path.dirname(path)
         if parent:
+            # chmod only a directory this process created. A path under /tmp
+            # or a mounted volume must not have its existing parent locked down.
+            created = not os.path.isdir(parent)
             os.makedirs(parent, mode=0o700, exist_ok=True)
+            if created:
+                os.chmod(parent, 0o700)
         self.path = path
+        _prepare_private_file(path)
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(_REGISTRY_SCHEMA)
@@ -255,10 +356,10 @@ class PairingRegistry:
         for suffix in ("", "-wal", "-shm"):
             candidate = self.path + suffix
             if os.path.exists(candidate):
-                try:
-                    os.chmod(candidate, 0o600)
-                except OSError:
-                    pass
+                os.chmod(candidate, 0o600)
+                mode = os.stat(candidate).st_mode & 0o777
+                if mode & 0o077:
+                    raise OSError(f"relay registry {candidate} mode {mode:o} is not private")
 
     def load(self, now: float) -> tuple[dict[str, str], dict[str, Device], dict[str, str]]:
         hosts = {
@@ -339,12 +440,19 @@ class Relay:
         heartbeat_timeout: float = HEARTBEAT_TIMEOUT_SECONDS,
         public_origin: str = "",
         state_path: str | None = None,
+        pair_fail_limit: int = PAIR_FAIL_LIMIT,
+        pair_fail_global: int = PAIR_FAIL_GLOBAL_LIMIT,
+        pair_fail_window: float = PAIR_FAIL_WINDOW_SECONDS,
     ) -> None:
         self.clock = clock or _now_unix
         self.undelivered_ttl = undelivered_ttl
         self.pairing_ttl = pairing_ttl
         self.heartbeat_timeout = heartbeat_timeout
         self.public_origin = public_origin.rstrip("/")
+        self.pair_fail_limit = pair_fail_limit
+        self.pair_fail_global = pair_fail_global
+        self.pair_fail_window = pair_fail_window
+        self._pair_fails: dict[str, list[float]] = {}
         self.lock = threading.Lock()
         self.hosts: dict[str, str] = {}  # host_id -> token hash
         self.links: dict[str, DesktopLink] = {}
@@ -374,13 +482,14 @@ class Relay:
         if not host_id or not host_token or len(host_id) > 80 or len(host_token) > 128:
             trace("hello_rejected", outcome="invalid")
             return None
+        note_secret(host_token)
         token_hash = _hash(host_token)
         with self.lock:
             existing = self.hosts.get(host_id)
             if existing is None:
                 self.hosts[host_id] = token_hash
                 self._persist_host_locked(host_id, token_hash)
-            elif not hmac.compare_digest(existing, token_hash):
+            elif not secret_equal(existing, token_hash):
                 trace("hello_rejected", host_id=host_id, outcome="token_mismatch")
                 return None
             self._expire_devices_locked(self.now())
@@ -488,6 +597,10 @@ class Relay:
             dead = [token for token, bound in self.sessions.items() if bound == device_id]
             for token in dead:
                 self.sessions.pop(token, None)
+            for pairing in self.pairings.values():
+                if pairing.device_id == device_id:
+                    pairing.session_token = None
+                    pairing.token_consumed = True
             self._persist_device_locked(device)
         trace("device_revoked", host_id=host_id, device_id=device_id, outcome="revoked")
         return {"type": "revoked", "device_id": device_id}
@@ -509,7 +622,11 @@ class Relay:
             return
         state = message.get("state") if isinstance(message.get("state"), str) else "failed"
         reply_text = message.get("reply") if isinstance(message.get("reply"), str) else None
+        if reply_text is not None and len(reply_text) > MAX_TEXT_CHARS:
+            reply_text = reply_text[:MAX_TEXT_CHARS]
         error = message.get("error") if isinstance(message.get("error"), str) else None
+        if error is not None and len(error) > 240:
+            error = error[:240]
         turn_id = message.get("turn_id") if isinstance(message.get("turn_id"), str) else None
         with self.lock:
             delivery = self.deliveries.get(delivery_id)
@@ -602,15 +719,19 @@ class Relay:
 
     # ── phone ──────────────────────────────────────────────────────────────
 
-    def redeem(self, code: str, label: str) -> tuple[int, dict]:
+    def redeem(self, code: str, label: str, client: str = "") -> tuple[int, dict]:
         if not isinstance(code, str) or not isinstance(label, str):
             return 400, {"error": "invalid_pairing"}
         label = label.strip()[:40] or "phone"
         code_hash = _hash(code.strip().upper())
         with self.lock:
+            if self._pair_blocked_locked(client):
+                trace("pairing_rejected", outcome="rate_limited")
+                return 429, {"error": "rate_limited", "message": "Too many pairing attempts. Wait and try again."}
             pairing_id = self.code_index.get(code_hash)
             pairing = self.pairings.get(pairing_id) if pairing_id else None
             if pairing is None or pairing.status not in {"open", "pending_desktop"}:
+                self._note_pair_fail_locked(client)
                 trace("pairing_rejected", outcome="invalid_code")
                 return 404, {"error": "invalid_code", "message": INVALID_CODE_MESSAGE}
             if pairing.expires_at <= self.now():
@@ -654,31 +775,73 @@ class Relay:
                 return 200, body, None
             device = self.devices.get(pairing.device_id)
             if device is None or device.revoked:
+                pairing.session_token = None
+                pairing.token_consumed = True
                 return 401, {"error": "revoked"}, None
+            body["device_id"] = device.device_id
+            # The pairing id is logged and is not a second credential. The
+            # first confirmed poll mints the cookie. Further polls repeat that
+            # same cookie until the phone presents it, then they stop.
+            if pairing.token_consumed:
+                return 200, body, None
+            if pairing.session_token:
+                return 200, body, pairing.session_token
             token = secrets.token_urlsafe(32)
+            note_secret(token)
             digest = _hash(token)
             stale = [hashed for hashed, bound in self.sessions.items() if bound == device.device_id]
             for hashed in stale:
                 self.sessions.pop(hashed, None)
             self.sessions[digest] = device.device_id
             device.token_hash = digest
+            pairing.session_token = token
             self._persist_device_locked(device)
-            body["device_id"] = device.device_id
             trace("session_issued", host_id=device.host_id, device_id=device.device_id, pairing_id=pairing.pairing_id, outcome="confirmed")
             return 200, body, token
 
     def device_for_token(self, token: str | None) -> Device | None:
         if not token:
             return None
+        digest = _hash(token)
         with self.lock:
             self._expire_devices_locked(self.now())
-            device_id = self.sessions.get(_hash(token))
+            device_id = self.sessions.get(digest)
             device = self.devices.get(device_id) if device_id else None
             if device is None or device.revoked:
                 return None
+            if not secret_equal(device.token_hash, digest):
+                return None
             device.last_seen = self.now()
             self._persist_device_locked(device)
+            for pairing in self.pairings.values():
+                if pairing.device_id == device.device_id:
+                    pairing.session_token = None
+                    pairing.token_consumed = True
             return device
+
+    def _prune_fails_locked(self, key: str, now: float) -> list[float]:
+        hits = [stamp for stamp in self._pair_fails.get(key, []) if now - stamp < self.pair_fail_window]
+        if hits:
+            self._pair_fails[key] = hits
+        else:
+            self._pair_fails.pop(key, None)
+        return hits
+
+    def _pair_blocked_locked(self, client: str) -> bool:
+        if len(self._pair_fails) > 4096:
+            return True
+        now = self.now()
+        client_key = client or "unknown"
+        if len(self._prune_fails_locked(client_key, now)) >= self.pair_fail_limit:
+            return True
+        return len(self._prune_fails_locked("*", now)) >= self.pair_fail_global
+
+    def _note_pair_fail_locked(self, client: str) -> None:
+        now = self.now()
+        for key in (client or "unknown", "*"):
+            hits = self._prune_fails_locked(key, now)
+            hits.append(now)
+            self._pair_fails[key] = hits
 
     def note_reconcile(self, host_id: str, claimed: object) -> None:
         """Log how the desktop's list differs from the registry.
@@ -773,6 +936,14 @@ class Relay:
                     trace("turn_rejected", device_id=device.device_id, request_id=request_id, outcome="operation_conflict")
                     return 409, {"error": "operation_conflict"}
                 return 200, {"request_id": request_id, "delivery_id": existing.delivery_id, "state": existing.state}
+            inflight = sum(
+                1
+                for item in self.deliveries.values()
+                if item.device_id == device.device_id and item.body is not None
+            )
+            if inflight >= MAX_INFLIGHT_PER_DEVICE:
+                trace("turn_rejected", device_id=device.device_id, host_id=device.host_id, outcome="too_many_pending")
+                return 429, {"error": "too_many_pending"}
             if not self._online_locked(device.host_id):
                 trace("turn_refused", host_id=device.host_id, device_id=device.device_id, request_id=request_id, bytes=len(text), outcome="desktop_offline")
                 return 409, {"error": "desktop_offline", "message": "desktop offline"}
@@ -900,6 +1071,7 @@ PAIR_PAGE = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
   <title>Pair Plexi</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/app.css">
@@ -926,7 +1098,7 @@ PAIR_PAGE = """<!doctype html>
       const code = document.getElementById("code").value.trim();
       const label = document.getElementById("label").value.trim() || "phone";
       status.textContent = "Waiting for the desktop to confirm…";
-      const redeem = await fetch("/api/pair", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({code, label})});
+      const redeem = await fetch("/api/pair", {method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body: JSON.stringify({code, label})});
       const body = await redeem.json();
       if (!redeem.ok) { status.textContent = body.message || body.error || "Pairing failed"; return; }
       fingerprint.textContent = "Fingerprint " + (body.fingerprint || "");
@@ -969,22 +1141,54 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
                 return True
             host = self.headers.get("Host", "")
             parsed = urlparse(origin)
+            if parsed.scheme not in {"http", "https"}:
+                return False
             return parsed.netloc == host
+
+        def _post_allowed(self) -> bool:
+            site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+            if site == "cross-site":
+                return False
+            return self._origin_ok()
+
+        def _security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cache-Control", "no-store")
 
         def _json(self, status: int, payload: dict, cookie: str | None = None) -> None:
             data = json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Connection", "close")
-            self.send_header("X-Content-Type-Options", "nosniff")
+            self._security_headers()
             self.close_connection = True
             if cookie is not None:
-                flag = "; Secure" if secure_cookie else ""
-                self.send_header("Set-Cookie", f"{COOKIE}={cookie}; HttpOnly; SameSite=Lax; Path=/{flag}")
+                self.send_header("Set-Cookie", cookie_header(cookie, secure_cookie))
             self.end_headers()
             self.wfile.write(data)
+
+        def _read_body(self) -> bytes | None:
+            raw_length = self.headers.get("Content-Length", "0").strip()
+            try:
+                length = int(raw_length)
+            except ValueError:
+                self._json(400, {"error": "invalid_content_length"})
+                return None
+            if length < 0:
+                self._json(400, {"error": "invalid_content_length"})
+                return None
+            if length > MAX_BODY_BYTES:
+                self._json(413, {"error": "body_too_large"})
+                return None
+            if length == 0:
+                return b""
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                self._json(400, {"error": "truncated_body"})
+                return None
+            return raw
 
         def _device(self) -> Device | None:
             return relay.device_for_token(cookie_token(self.headers.get("Cookie")))
@@ -1025,9 +1229,9 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
                     data = PAIR_PAGE.encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
                     self.send_header("Content-Length", str(len(data)))
                     self.send_header("Connection", "close")
+                    self._security_headers()
                     self.close_connection = True
                     self.end_headers()
                     self.wfile.write(data)
@@ -1035,20 +1239,15 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
             self._static(url.path)
 
         def do_POST(self) -> None:  # noqa: N802
-            if not self._origin_ok():
+            if not self._post_allowed():
+                trace("http", outcome="bad_origin")
                 self._json(403, {"error": "bad_origin"})
                 return
             url = urlparse(self.path)
             parts = [part for part in url.path.split("/") if part]
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                self._json(400, {"error": "invalid_content_length"})
+            raw = self._read_body()
+            if raw is None:
                 return
-            if length > MAX_BODY_BYTES:
-                self._json(413, {"error": "body_too_large"})
-                return
-            raw = self.rfile.read(length) if length else b""
             if parts == ["api", "pair"]:
                 try:
                     body = json.loads(raw or b"null")
@@ -1058,7 +1257,8 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
                 if not isinstance(body, dict):
                     self._json(400, {"error": "invalid_pairing"})
                     return
-                self._json(*relay.redeem(str(body.get("code", "")), str(body.get("label", "phone"))))
+                client = self.client_address[0] if self.client_address else ""
+                self._json(*relay.redeem(str(body.get("code", "")), str(body.get("label", "phone")), client))
                 return
             if parts == ["api", "approvals"] or (len(parts) >= 2 and parts[-1] == "approve"):
                 device = self._device()
@@ -1107,8 +1307,8 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
             self.send_response(200)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
+            self._security_headers()
             self.close_connection = True
             self.end_headers()
             self.wfile.write(data)
@@ -1197,9 +1397,40 @@ def ws_recv(sock: socket.socket) -> tuple[int, bytes] | None:
     return opcode, payload
 
 
+_ws_lock = threading.Lock()
+_ws_open = 0
+
+
+def _ws_enter() -> bool:
+    global _ws_open
+    with _ws_lock:
+        if _ws_open >= MAX_DESKTOP_SOCKETS:
+            return False
+        _ws_open += 1
+        return True
+
+
+def _ws_leave() -> None:
+    global _ws_open
+    with _ws_lock:
+        _ws_open = max(0, _ws_open - 1)
+
+
 def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
+    if not _ws_enter():
+        trace("hello_rejected", outcome="too_many_sockets")
+        try:
+            ws_send(sock, json.dumps({"type": "error", "error": "unavailable"}).encode())
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+        return
     link: DesktopLink | None = None
     host_id = ""
+    started = time.monotonic()
     try:
         while True:
             if link is not None:
@@ -1211,6 +1442,9 @@ def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
                     ws_send(sock, json.dumps(outgoing).encode())
             ready, _, _ = select.select([sock], [], [], 0.2)
             if not ready:
+                if link is None and time.monotonic() - started > HELLO_DEADLINE_SECONDS:
+                    trace("hello_rejected", outcome="timeout")
+                    break
                 if link is not None and not link.alive:
                     break
                 continue
@@ -1285,6 +1519,7 @@ def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
     except OSError as exc:
         trace("desktop_socket_closed", host_id=host_id or None, outcome=exc.__class__.__name__)
     finally:
+        _ws_leave()
         if link is not None and host_id:
             relay.disconnect(host_id, link)
         try:
@@ -1353,12 +1588,13 @@ def main() -> None:
     if not static_dir.is_dir():
         log.error("phone static dir missing: %s", static_dir)
         raise SystemExit(1)
-    secure = os.environ.get("RELAY_COOKIE_SECURE") == "1"
+    origin = args.public_origin or f"http://{args.host}:{args.port}"
+    secure = cookies_should_be_secure(args.host, origin)
     state_path = os.environ.get("RELAY_STATE_PATH", "").strip()
     try:
         relay = Relay(
             undelivered_ttl=args.undelivered_ttl,
-            public_origin=args.public_origin or f"http://{args.host}:{args.port}",
+            public_origin=origin,
             state_path=state_path or None,
         )
     except (OSError, sqlite3.Error) as exc:
@@ -1371,7 +1607,11 @@ def main() -> None:
         raise SystemExit(1) from exc
     stop = threading.Event()
     threading.Thread(target=_reaper, args=(relay, stop), name="relay-reaper", daemon=True).start()
-    trace("relay_listening", outcome="ready", status=str(args.port))
+    trace(
+        "relay_listening",
+        outcome="secure_cookie" if secure else "local_cookie",
+        status=str(args.port),
+    )
     log.info("phone UI %s/", relay.public_origin)
     log.info("desktop websocket %s/v1/desktop", relay.public_origin.replace("https://", "wss://").replace("http://", "ws://"))
     try:

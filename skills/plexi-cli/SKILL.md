@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.9"
+skill_version: "5.0.10"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -116,7 +116,8 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   and route phone turns into `assistant send --conversation phone-<host>`
   (never `--desktop`). A turn that needs approval returns
   `waiting_for_permission`; the relay then polls `--status-for`. The phone
-  never approves irreversible actions. `plexi relay --help`.
+  never approves irreversible actions. `relay connect --url` accepts `ws://`
+  only for localhost; a remote relay URL must be `wss://`. `plexi relay --help`.
 
 The release gate verifies these feature-map entry points:
 

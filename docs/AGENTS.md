@@ -1,6 +1,6 @@
 # docs - Agent Contract
 
-This directory contains active PRMs (product/architecture specs). Present-tense reference docs live next to the code they describe, in the owning directory's AGENTS.md.
+This directory contains active PRMs (product/architecture specs). Present-tense reference docs live next to the code they describe, in the owning directory's AGENTS.md. `security/` holds security reviews. Those files are not PRMs: they have no stint, and they are not deleted when a task closes.
 
 ## PRM Rules
 

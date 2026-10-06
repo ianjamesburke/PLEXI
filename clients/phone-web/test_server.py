@@ -86,6 +86,38 @@ class StubServerTest(unittest.TestCase):
         status, _ = self.request("/../server.py")
         self.assertEqual(status, 404)
 
+    def test_request_log_drops_the_url_token(self) -> None:
+        import logging
+
+        class Capture(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__(level=logging.INFO)
+                self.lines: list[str] = []
+
+            def emit(self, record: logging.LogRecord) -> None:
+                self.lines.append(record.getMessage())
+
+        capture = Capture()
+        server.log.addHandler(capture)
+        server.log.setLevel(logging.INFO)
+        self.addCleanup(server.log.removeHandler, capture)
+        secret = "phone-shell-token-should-not-be-logged"
+        urllib.request.urlopen(f"{self.base}/?token={secret}", timeout=5).read()
+        logged = "\n".join(capture.lines)
+        self.assertNotIn(secret, logged)
+        self.assertNotIn("token=", logged)
+
+    def test_wrong_length_bearer_is_unauthorized(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.httpd = server.build_server("127.0.0.1", 0, self.store, token="test-token")
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        req = urllib.request.Request(self.base + "/api/status", headers={"Authorization": "Bearer x"})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(caught.exception.code, 401)
+
     def test_token_blocks_api_but_not_page(self) -> None:
         self.httpd.shutdown(); self.httpd.server_close()
         self.httpd = server.build_server("127.0.0.1", 0, self.store, token="test-token")

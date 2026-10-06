@@ -16,6 +16,7 @@ Run: python3 clients/phone-web/server.py [--host 127.0.0.1] [--port 8787]
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -486,7 +487,13 @@ def make_handler(store: StubStore, token: str | None = None) -> type[BaseHTTPReq
         server_version = "PlexiPhoneShellStub/0"
 
         def log_message(self, fmt: str, *args: object) -> None:
-            log.info("%s %s", self.address_string(), fmt % args)
+            # The request line can carry `?token=`. Drop the query before logging.
+            try:
+                rendered = fmt % args
+            except Exception:
+                rendered = "unprintable"
+            path_only = rendered.split("?", 1)[0]
+            log.info("phone request %s", path_only[:180])
 
         def _json(self, status: int, payload: dict) -> None:
             data = json.dumps(payload).encode()
@@ -501,7 +508,11 @@ def make_handler(store: StubStore, token: str | None = None) -> type[BaseHTTPReq
             if token is None:
                 return True
             supplied = self.headers.get("Authorization", "")
-            return hmac.compare_digest(supplied, f"Bearer {token}")
+            # Hash both sides so a length mismatch cannot return early.
+            return hmac.compare_digest(
+                hashlib.sha256(supplied.encode()).digest(),
+                hashlib.sha256(f"Bearer {token}".encode()).digest(),
+            )
 
         def _api_auth(self, path: str) -> bool:
             if path.startswith("/api/") and not self._authorized():

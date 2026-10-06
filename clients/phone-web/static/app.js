@@ -95,12 +95,12 @@ function render(event) {
 
 async function poll() {
   try {
-    const status = await fetch("/api/status", { cache: "no-store", headers: apiHeaders() });
+    const status = await fetch("/api/status", { cache: "no-store", credentials: "same-origin", headers: apiHeaders() });
     if (!status.ok) throw new Error(`status ${status.status}`);
     const body = await status.json();
     const [state, label] = connectionFromStatus(body);
     setConnection(state, label);
-    const res = await fetch(`/api/conversation?after=${cursor}`, { cache: "no-store", headers: apiHeaders() });
+    const res = await fetch(`/api/conversation?after=${cursor}`, { cache: "no-store", credentials: "same-origin", headers: apiHeaders() });
     if (!res.ok) throw new Error(`conversation ${res.status}`);
     const page = await res.json();
     page.events.forEach(render);
@@ -123,6 +123,7 @@ els.form.addEventListener("submit", async (e) => {
   try {
     const res = await fetch("/api/turns", {
       method: "POST",
+      credentials: "same-origin",
       headers: apiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         schema_version: 1,
@@ -163,7 +164,7 @@ els.cancel.addEventListener("click", async () => {
   const id = activeRequestIds.at(-1);
   if (!id) return;
   try {
-    const res = await fetch(`/api/turns/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: apiHeaders() });
+    const res = await fetch(`/api/turns/${encodeURIComponent(id)}/cancel`, { method: "POST", credentials: "same-origin", headers: apiHeaders() });
     if (!res.ok) throw new Error(`cancel ${res.status}`);
   } catch (err) {
     console.warn("phone shell cancel failed", err);

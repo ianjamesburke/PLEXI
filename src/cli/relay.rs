@@ -23,7 +23,7 @@ const STATUS_FILE: &str = "relay-status.json";
 const IDENTITY_FILE: &str = "relay-host.json";
 const PROTOCOL_VERSION: i64 = 1;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Dispatch {
     /// `plexi assistant send` against the running host.
     Host,
@@ -81,10 +81,21 @@ pub fn relay_connect_cli(url: Option<String>) -> i32 {
             return 1;
         }
     };
-    let dispatch = match std::env::var("PLEXI_RELAY_ASSISTANT") {
-        Ok(value) if value == "echo" => Dispatch::Echo,
-        _ => Dispatch::Host,
+    let parsed = match relay_ws::parse_relay_url(&url) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("error: {error}");
+            log::info!("relay: rejected url outcome=insecure_or_invalid");
+            return 1;
+        }
     };
+    let echo_requested = std::env::var("PLEXI_RELAY_ASSISTANT")
+        .ok()
+        .is_some_and(|value| value == "echo");
+    let dispatch = dispatch_from_env(echo_requested, relay_ws::is_loopback(&parsed.host));
+    if echo_requested && !matches!(dispatch, Dispatch::Echo) {
+        log::info!("relay: ignored echo dispatch outcome=not_loopback");
+    }
     match live_connection() {
         Some(LiveConnection::Host) => {
             println!("attached to the host relay");
@@ -131,8 +142,9 @@ pub fn relay_enable_cli(url: Option<String>) -> i32 {
             return 1;
         }
     };
-    if relay_ws::parse_relay_url(&url).is_err() {
-        eprintln!("error: relay url must be ws:// or wss://");
+    if let Err(error) = relay_ws::parse_relay_url(&url) {
+        eprintln!("error: {error}");
+        log::info!("relay: rejected url outcome=insecure_or_invalid");
         return 1;
     }
     if let Err(error) = write_relay_config(true, &url) {
@@ -647,6 +659,16 @@ pub(crate) fn desktop_turn_target(
         (None, true)
     } else {
         (Some(conversation_id), false)
+    }
+}
+
+/// `echo` is the local install check. It never runs against a remote relay,
+/// and the host-owned connection does not consult this env var at all.
+fn dispatch_from_env(echo_requested: bool, loopback: bool) -> Dispatch {
+    if echo_requested && loopback {
+        Dispatch::Echo
+    } else {
+        Dispatch::Host
     }
 }
 
@@ -1355,6 +1377,29 @@ mod tests {
             (Some("phone-host"), false)
         );
         assert_eq!(desktop_turn_target("phone-host", true), (None, true));
+    }
+
+    #[test]
+    fn echo_dispatch_is_loopback_only_and_the_payload_grants_nothing() {
+        assert_eq!(dispatch_from_env(true, true), Dispatch::Echo);
+        assert_eq!(dispatch_from_env(true, false), Dispatch::Host);
+        assert_eq!(dispatch_from_env(false, true), Dispatch::Host);
+        let payload = super::super::app::assistant_send_payload(
+            "hello from the phone",
+            "req-1",
+            "/tmp/response",
+            None,
+            None,
+            Some("phone-host"),
+            false,
+            None,
+        );
+        assert_eq!(payload["type"], "submit_assistant_turn");
+        assert!(payload.get("approved").is_none());
+        assert!(payload.get("grant").is_none());
+        assert!(payload.get("permission").is_none());
+        assert_eq!(payload["join_desktop"], false);
+        assert_eq!(payload["conversation_id"], "phone-host");
     }
 
     #[test]

@@ -32,6 +32,11 @@ pub fn parse_relay_url(input: &str) -> Result<RelayUrl, String> {
         .host_str()
         .ok_or_else(|| "relay url is missing a host".to_string())?
         .to_string();
+    if !tls && !is_loopback(&host) {
+        return Err(
+            "relay url must use wss:// (ws:// is only allowed for localhost)".to_string(),
+        );
+    }
     let port = parsed.port().unwrap_or(if tls { 443 } else { 80 });
     let mut path = parsed.path().to_string();
     if path.is_empty() || path == "/" {
@@ -77,6 +82,11 @@ impl Write for Io {
             Io::Tls(stream) => stream.flush(),
         }
     }
+}
+
+pub fn is_loopback(host: &str) -> bool {
+    let host = host.trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 pub struct WsConn {
@@ -334,5 +344,9 @@ mod tests {
         assert!(remote.tls);
         assert_eq!(remote.port, 443);
         assert_eq!(remote.path, "/v1/desktop");
+        assert!(parse_relay_url("ws://localhost:9/v1/desktop").is_ok());
+        assert!(parse_relay_url("ws://[::1]:9/v1/desktop").is_ok());
+        assert!(parse_relay_url("ws://example.com/v1/desktop").is_err());
+        assert!(parse_relay_url("ws://10.0.0.8:8790/v1/desktop").is_err());
     }
 }

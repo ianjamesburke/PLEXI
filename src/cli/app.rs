@@ -1929,6 +1929,31 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     }
 }
 
+/// JSON body of `submit_assistant_turn`. There is no approval, grant, or
+/// permission field: the host gate is the only authorizer.
+pub(crate) fn assistant_send_payload(
+    text: &str,
+    request_id: &str,
+    response_file: &str,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+    status_for: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "submit_assistant_turn",
+        "text": text,
+        "request_id": request_id,
+        "response_file": response_file,
+        "pane_id": pane_id,
+        "context_id": context_id,
+        "conversation_id": conversation,
+        "join_desktop": join_desktop,
+        "status_for": status_for,
+    })
+}
+
 /// Submit one turn, or poll `--status-for`, and return the host JSON envelope.
 ///
 /// `conversation` selects the phone relay's own conversation. `join_desktop`
@@ -1950,17 +1975,16 @@ pub fn assistant_send_result(
     if let Some(turn_id) = status_for {
         log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
     }
-    let payload = serde_json::json!({
-        "type": "submit_assistant_turn",
-        "text": text.unwrap_or(""),
-        "request_id": request_id,
-        "response_file": response_file,
-        "pane_id": pane_id,
-        "context_id": context_id,
-        "conversation_id": conversation,
-        "join_desktop": join_desktop,
-        "status_for": status_for,
-    });
+    let payload = assistant_send_payload(
+        text.unwrap_or(""),
+        &request_id,
+        &response_file,
+        pane_id,
+        context_id,
+        conversation,
+        join_desktop,
+        status_for,
+    );
     let content = super::request_with(
         payload,
         "assistant-send",
