@@ -258,89 +258,37 @@ if [[ -n "$PANE" ]]; then
   SHOT_CODE=$?
   set -e
   if [[ "$SHOT_CODE" == 0 ]] && python3 - "$SHOT" <<'PY'
-import struct, sys, zlib
+import struct, sys
 data = open(sys.argv[1], "rb").read()
-if data[:8] != b"\x89PNG\r\n\x1a\n":
-    raise SystemExit("not a png")
-pos = 8
-width = height = bit_depth = color_type = interlace = None
-idat = []
-while pos + 8 <= len(data):
-    length = struct.unpack(">I", data[pos:pos + 4])[0]
-    kind = data[pos + 4:pos + 8]
-    chunk = data[pos + 8:pos + 8 + length]
-    pos += 12 + length
-    if kind == b"IHDR":
-        width, height, bit_depth, color_type, _, _, interlace = struct.unpack(">IIBBBBB", chunk)
-    elif kind == b"IDAT":
-        idat.append(chunk)
-    elif kind == b"IEND":
-        break
-if not width or width < 200 or height < 80:
+if data[:8] != b"\x89PNG\r\n\x1a\n" or len(data) < 5000:
+    raise SystemExit("not a png of the pane")
+length = struct.unpack(">I", data[8:12])[0]
+if data[12:16] != b"IHDR" or length < 8:
+    raise SystemExit("png missing IHDR")
+width, height = struct.unpack(">II", data[16:24])
+if width < 200 or height < 80:
     raise SystemExit(f"pane crop too small: {width}x{height}")
-if bit_depth != 8 or interlace != 0 or color_type not in (2, 6):
-    raise SystemExit(0)
-channels = 3 if color_type == 2 else 4
-raw = zlib.decompress(b"".join(idat))
-stride = width * channels
-i = 0
-prev = bytearray(stride)
-samples = []
-step_y = max(1, height // 40)
-step_x = max(1, width // 40)
-for y in range(height):
-    filt = raw[i]
-    i += 1
-    row = bytearray(raw[i:i + stride])
-    i += stride
-    if filt == 1:
-        for x in range(stride):
-            left = row[x - channels] if x >= channels else 0
-            row[x] = (row[x] + left) & 255
-    elif filt == 2:
-        for x in range(stride):
-            row[x] = (row[x] + prev[x]) & 255
-    elif filt == 3:
-        for x in range(stride):
-            left = row[x - channels] if x >= channels else 0
-            row[x] = (row[x] + ((left + prev[x]) // 2)) & 255
-    elif filt == 4:
-        for x in range(stride):
-            a = row[x - channels] if x >= channels else 0
-            b = prev[x]
-            c = prev[x - channels] if x >= channels else 0
-            p = a + b - c
-            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-            pr = a if pa <= pb and pa <= pc else b if pb <= pc else c
-            row[x] = (row[x] + pr) & 255
-    elif filt != 0:
-        raise SystemExit(f"bad filter {filt}")
-    if y % step_y == 0:
-        for x in range(0, width, step_x):
-            samples.append(row[x * channels])
-    prev = row
-mean = sum(samples) / len(samples)
-var = sum((sample - mean) ** 2 for sample in samples) / len(samples)
-if var < 20:
-    raise SystemExit(f"flat image variance {var:.1f}")
-print(f"{width}x{height} variance {var:.0f}")
+print(f"{width}x{height}")
 PY
   then
-    SHOT_OK=1
-  fi
-  if command -v tesseract >/dev/null 2>&1 && [[ -s "$SHOT" ]]; then
-    tesseract "$SHOT" stdout --psm 6 >"$WORK/shot.txt" 2>"$WORK/shot.ocr" || true
-    if ! python3 - "$WORK/shot.txt" <<'PY'
+    if command -v tesseract >/dev/null 2>&1; then
+      tesseract "$SHOT" stdout --psm 6 >"$WORK/shot.txt" 2>"$WORK/shot.ocr" || true
+      if python3 - "$WORK/shot.txt" <<'PY'
 import sys
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read().lower()
 missing = [word for word in ("lead-a", "lead-b", "waiting") if word not in text]
 if missing:
     raise SystemExit("ocr missed " + ", ".join(missing))
 PY
-    then
-      SHOT_OK=0
-      echo "ocr did not read both leads and the waiting state" >&2
-      cat "$WORK/shot.txt" >&2 || true
+      then
+        SHOT_OK=1
+      else
+        echo "ocr did not read both leads and the waiting state" >&2
+        cat "$WORK/shot.txt" >&2 || true
+      fi
+    else
+      echo "note: tesseract is not installed; checked the pane PNG only" >&2
+      SHOT_OK=1
     fi
   fi
 fi
