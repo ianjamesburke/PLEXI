@@ -225,7 +225,7 @@ approve_sensitive_tool() {
   python3 - "$MOCK_CONTROL" <<'PY'
 import json, sys
 open(sys.argv[1], "w").write(json.dumps({
-    "tool_substr": "demo.greet",
+    "tool_substr": "demo_greet",
     "arguments": {"name": "Ada"},
 }))
 PY
@@ -404,7 +404,7 @@ PY
   done
   if [[ -z "$pending" ]]; then
     echo "error: sensitive tool did not ask" >&2
-    cat "$WORK/greet-pending.json" "$WORK/greet-send.err" "$WORK/mock.log" >&2 || true
+    cat "$WORK/greet-pending.json" "$WORK/greet-send.err" "$WORK/greet-send.json" "$PROFILE/config.toml" "$WORK/mock.log" "$WORK/host.log" >&2 || true
     wait "$send_pid" || true
     exit 1
   fi

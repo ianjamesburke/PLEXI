@@ -282,7 +282,8 @@ click_grant_and_revoke() {
   local port=18765
   export MOCK_CONTROL="$WORK/mock.json"
   export MOCK_PORT="$port"
-  python3 - "$MOCK_CONTROL" 'panes.list' '{}' <<'PY'
+  # The local backend rewrites dotted names (host.panes.list → host_panes_list).
+  python3 - "$MOCK_CONTROL" 'panes_list' '{}' <<'PY'
 import json, sys
 open(sys.argv[1], "w").write(json.dumps({"tool_substr": sys.argv[2], "arguments": json.loads(sys.argv[3])}))
 PY
@@ -331,8 +332,9 @@ class Handler(BaseHTTPRequestHandler):
                     chosen = fn
                     break
             if chosen is None:
+                names = [(t.get("function") or {}).get("name") for t in tools]
                 chunks = [
-                    {"choices": [{"index": 0, "delta": {"content": f"no tool matching {want}"}}]},
+                    {"choices": [{"index": 0, "delta": {"content": f"no tool matching {want} in {names}"}}]},
                     {"choices": [{"index": 0, "finish_reason": "stop"}]},
                 ]
             else:
@@ -443,7 +445,7 @@ PY
   done
   if [[ -z "$pending" ]]; then
     echo "error: no pending grant for the Permissions app" >&2
-    cat "$WORK/grant-pending.json" "$WORK/grant-send.err" >&2 || true
+    cat "$WORK/grant-pending.json" "$WORK/grant-send.err" "$WORK/grant-send.json" "$WORK/host-start.err" "$WORK/mock.log" "$WORK/open-assistant.err" "$WORK/panes.json" >&2 || true
     wait "$send_pid" || true
     exit 1
   fi
@@ -503,7 +505,7 @@ PY
     exit 1
   fi
   echo "permissions list and the Permissions app show $grant_id"
-  python3 - "$MOCK_CONTROL" 'permissions.revoke' "$(python3 -c 'import json,sys; print(json.dumps({"id": sys.argv[1]}))' "$grant_id")" <<'PY'
+  python3 - "$MOCK_CONTROL" 'permissions_revoke' "$(python3 -c 'import json,sys; print(json.dumps({"id": sys.argv[1]}))' "$grant_id")" <<'PY'
 import json, sys
 open(sys.argv[1], "w").write(json.dumps({"tool_substr": sys.argv[2], "arguments": json.loads(sys.argv[3])}))
 PY
@@ -550,7 +552,7 @@ PY
   fi
   python3 - "$MOCK_CONTROL" <<'PY'
 import json, sys
-open(sys.argv[1], "w").write(json.dumps({"tool_substr": "panes.list", "arguments": {}}))
+open(sys.argv[1], "w").write(json.dumps({"tool_substr": "panes_list", "arguments": {}}))
 PY
   "$BIN" assistant send --pane-id "$assist" --text "List panes again." --request-id seal-ask-again --json >"$WORK/again-send.json" 2>"$WORK/again-send.err" &
   send_pid=$!
