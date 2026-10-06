@@ -427,6 +427,10 @@ struct SheetTicket {
 struct HumanSheets {
     queue: std::collections::VecDeque<SheetTicket>,
     armed: Option<std::sync::mpsc::Sender<String>>,
+    /// Pending ids already handed to the host gate. Only `post_human_sheet`
+    /// reads this, and that waiter exists on a Unix host build. Windows and
+    /// `cfg(test)` admit locally, so the field is not part of those binaries.
+    #[cfg(all(unix, not(test)))]
     posted: std::collections::HashSet<String>,
 }
 
@@ -436,6 +440,7 @@ fn human_sheets() -> &'static std::sync::Mutex<HumanSheets> {
         std::sync::Mutex::new(HumanSheets {
             queue: std::collections::VecDeque::new(),
             armed: None,
+            #[cfg(all(unix, not(test)))]
             posted: std::collections::HashSet::new(),
         })
     })
