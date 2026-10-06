@@ -555,6 +555,9 @@ impl PermissionStore {
                 path.display()
             );
         }
+        if let Some(fault) = loaded.fault.clone() {
+            crate::broker::seal::note_integrity_fault(config_dir, fault);
+        }
         let mut store = Self {
             file: TomlStore::at(path, STORE_LABEL, loaded.data),
             untrusted: loaded.fault,

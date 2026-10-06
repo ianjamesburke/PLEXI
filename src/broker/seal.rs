@@ -10,6 +10,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use zeroize::Zeroizing;
 
 use crate::workspace::secrets::system_store;
@@ -26,6 +27,45 @@ const GENESIS: &str = "genesis";
 pub struct IntegrityFault {
     pub file: String,
     pub reason: String,
+}
+
+/// Faults seen by a loader that ran before [`crate::broker::gate::PermissionMonitor`]
+/// existed. That loader quarantines the file, so the monitor's own read finds
+/// nothing and would otherwise file no Needs you.
+fn noted_faults() -> &'static Mutex<Vec<(PathBuf, IntegrityFault)>> {
+    static NOTED: OnceLock<Mutex<Vec<(PathBuf, IntegrityFault)>>> = OnceLock::new();
+    NOTED.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn note_integrity_fault(dir: &Path, fault: IntegrityFault) {
+    let key = crate::platform::path::canonical_or_self(dir);
+    log::info!(
+        "permission_seal: noted integrity fault {} ({})",
+        fault.file, fault.reason
+    );
+    noted_faults()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((key, fault));
+}
+
+/// Faults noted for `dir` since the last take. The monitor raises each one.
+pub(crate) fn take_integrity_faults(dir: &Path) -> Vec<IntegrityFault> {
+    let key = crate::platform::path::canonical_or_self(dir);
+    let mut guard = noted_faults()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut kept = Vec::new();
+    let mut mine = Vec::new();
+    for (noted_dir, fault) in guard.drain(..) {
+        if noted_dir == key {
+            mine.push(fault);
+        } else {
+            kept.push((noted_dir, fault));
+        }
+    }
+    *guard = kept;
+    mine
 }
 
 pub enum SealStatus {
