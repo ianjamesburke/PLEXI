@@ -584,6 +584,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             }
         }
     }
+    crate::host::command_view::publish(&workspace_buf, "run updated");
     body
 }
 
@@ -638,7 +639,10 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 }
             };
             let caller_pane = payload.get("caller_pane").and_then(|v| v.as_u64());
-            let caller_head = payload.get("caller_head").and_then(|v| v.as_str()).unwrap_or("");
+            let caller_head = payload
+                .get("caller_head")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let (parent_owned, denial_owned) = if caller_pane.is_some() {
                 if caller_head.is_empty() {
                     log::info!("agents_api: create_head pane={caller_pane:?} holds no grants");
@@ -659,7 +663,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
             } else {
                 (None, "operator".to_string())
             };
-            create_head(CreateHead {
+            let created = create_head(CreateHead {
                 workspace: &workspace,
                 name,
                 display_name: payload
@@ -678,7 +682,11 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 reports_to: payload.get("reports_to").and_then(|v| v.as_str()),
                 parent_grants: parent_owned.as_deref(),
                 denial_actor: &denial_owned,
-            })
+            });
+            if created.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+                crate::host::command_view::publish(&workspace, "head created");
+            }
+            created
         }
         "list_heads" => {
             let include_temporary = payload
@@ -1415,7 +1423,12 @@ mod tests {
             }),
         );
         assert_eq!(widened["error_code"], "permission_denied", "{widened}");
-        assert!(!fix.ws().join(".plexi").join("agents").join("sneaky").exists());
+        assert!(!fix
+            .ws()
+            .join(".plexi")
+            .join("agents")
+            .join("sneaky")
+            .exists());
         let narrowed = handle_request(
             "create_head",
             &json!({

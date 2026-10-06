@@ -43,7 +43,7 @@ impl App for CommandViewApp {
             .id_salt("command-view")
             .show(ui, |ui| {
                 for line in lines {
-                    let attention = line.starts_with("needs you");
+                    let attention = line.starts_with("waiting");
                     let color = if attention {
                         colors.warning
                     } else {
