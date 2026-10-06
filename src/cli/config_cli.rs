@@ -145,6 +145,11 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "integer",
         "How many days to retain log files",
     ),
+    (
+        "cloud.retain_local_history",
+        "bool",
+        "Also delete local ledger rows and assistant conversations older than 30 days (default false)",
+    ),
     // notifications.*
     (
         "notifications.enabled",
