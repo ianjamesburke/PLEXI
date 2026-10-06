@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.9"
+skill_version: "5.0.10"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -85,6 +85,9 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   into an allow. From a pane (`PLEXI_PANE_ID`) or with `PLEXI_CALL_CREDENTIAL`,
   reset and allow file a Needs you item and leave the decision unchanged.
   Revoke runs from either caller. Open the app with `plexi app open permissions`.
+  Editing `grants.toml`, `permissions.toml`, or `permission-audit.jsonl` does not
+  grant a permission. The host ignores a file whose signature does not match,
+  asks again, and files Needs you.
 - **Needs you** — one list of everything waiting on the human:
   `plexi needs-you list --json` and
   `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.

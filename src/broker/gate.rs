@@ -52,6 +52,9 @@ pub enum NeedsYouKind {
     BlockedRun,
     /// An agent asked to widen a permission. Approval applies the change.
     PermissionChange,
+    /// A grant, deny, or audit file failed its integrity check.
+    /// Resolving it does not mint a grant.
+    Integrity,
 }
 
 impl NeedsYouKind {
@@ -61,6 +64,7 @@ impl NeedsYouKind {
             Self::Question => "question",
             Self::BlockedRun => "blocked_run",
             Self::PermissionChange => "permission_change",
+            Self::Integrity => "integrity",
         }
     }
 
@@ -281,8 +285,14 @@ impl PermissionMonitor {
         let key = crate::platform::path::canonical_or_self(dir);
         let mut map = monitors().lock().unwrap_or_else(|e| e.into_inner());
         map.entry(key)
-            .or_insert_with(|| Arc::new(Self::open(dir)))
+            .or_insert_with(|| Self::open_profile(dir))
             .clone()
+    }
+
+    /// Open `dir` without the process cache. A restart test uses this so a
+    /// second look actually reads the files again.
+    pub fn open_profile(dir: &Path) -> Arc<Self> {
+        Arc::new(Self::open(dir))
     }
 
     /// Private store. Used by tests that must not share a profile monitor.
@@ -292,13 +302,43 @@ impl PermissionMonitor {
 
     fn open(dir: &Path) -> Self {
         let store = GrantStore::load_or_default(dir);
+        let mut faults = store.integrity_faults().to_vec();
         let audit = dir.join("permission-audit.jsonl");
+        if let Err(reason) = super::seal::verify_audit(&audit) {
+            super::seal::reject_untrusted_audit(&audit, &reason);
+            faults.push(super::seal::IntegrityFault {
+                file: "permission-audit.jsonl".to_string(),
+                reason,
+            });
+        }
         log::info!(
-            "permission_monitor: opened profile {} audit {}",
+            "permission_monitor: opened profile {} audit {} integrity_faults={}",
             dir.display(),
-            audit.display()
+            audit.display(),
+            faults.len()
         );
-        Self::new(store, Some(audit))
+        let monitor = Self::new(store, Some(audit));
+        for fault in &faults {
+            monitor.raise_integrity(fault);
+        }
+        monitor
+    }
+
+    fn raise_integrity(&self, fault: &super::seal::IntegrityFault) {
+        let summary = format!(
+            "{} failed integrity ({}). Stored permission decisions in that file were ignored.",
+            fault.file, fault.reason
+        );
+        if let Err(error) = self.file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::Integrity,
+            actor: "host".to_string(),
+            resource: fault.file.clone(),
+            summary,
+            expires_at: None,
+            run_tag: Some(format!("integrity:{}", fault.file)),
+        }) {
+            log::error!("permission_seal: could not file integrity alert: {error}");
+        }
     }
 
     fn new(store: GrantStore, audit_path: Option<PathBuf>) -> Self {
@@ -792,7 +832,7 @@ impl PermissionMonitor {
                     return Err(format!("needs-you item {id} could not be audited"));
                 }
             }
-            NeedsYouKind::Question | NeedsYouKind::BlockedRun => {
+            NeedsYouKind::Question | NeedsYouKind::BlockedRun | NeedsYouKind::Integrity => {
                 let resolution = if approve {
                     NeedsYouResolution::Approved
                 } else {
@@ -1508,26 +1548,20 @@ impl PermissionMonitor {
             .unwrap_or_else(|e| e.into_inner())
             .push(fact.clone());
         if let Some(path) = &self.audit_path {
-            if let Some(parent) = path.parent() {
-                if let Err(error) = std::fs::create_dir_all(parent) {
-                    log::error!("permission_monitor: audit dir {}: {error}", parent.display());
-                    return Err(error.to_string());
+            match super::seal::append_audit(path, fact) {
+                Ok(()) => {}
+                Err(super::seal::SealError::Untrusted(reason)) => {
+                    self.raise_integrity(&super::seal::IntegrityFault {
+                        file: "permission-audit.jsonl".to_string(),
+                        reason,
+                    });
+                    return Err("audit integrity check failed".to_string());
+                }
+                Err(super::seal::SealError::Io(reason)) => {
+                    log::error!("permission_monitor: audit write {}: {reason}", path.display());
+                    return Err(reason);
                 }
             }
-            let line = serde_json::to_string(fact).map_err(|error| error.to_string())?;
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|error| {
-                    log::error!("permission_monitor: audit open {}: {error}", path.display());
-                    error.to_string()
-                })?;
-            use std::io::Write;
-            writeln!(file, "{line}").map_err(|error| {
-                log::error!("permission_monitor: audit write {}: {error}", path.display());
-                error.to_string()
-            })?;
         }
         trace_gate(format!(
             "permission_monitor: audit {} actor={} call_id={} grant_id={} resource={} op={}",
@@ -2458,6 +2492,107 @@ mod tests {
         assert!(denied.contains("plexi permissions list"), "{denied}");
         assert!(denied.contains("plexi permissions reset"), "{denied}");
         assert!(!denied.contains("gear"), "{denied}");
+    }
+
+    #[test]
+    fn hand_edited_grant_file_does_not_grant() {
+        let victim = tempfile::tempdir().unwrap();
+        let donor = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let mut donor_store = GrantStore::load_or_default(donor.path());
+        donor_store.record(GrantRecord::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+            Decision::Allow,
+        ));
+        donor_store.save();
+        let empty = GrantStore::load_or_default(victim.path());
+        empty.save();
+        let signed = std::fs::read_to_string(donor.path().join("grants.toml")).unwrap();
+        let sealed_empty = std::fs::read_to_string(victim.path().join("grants.toml")).unwrap();
+        let body = signed
+            .lines()
+            .filter(|line| !line.starts_with("# plexi-mac:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mac = sealed_empty
+            .lines()
+            .find(|line| line.starts_with("# plexi-mac:"))
+            .expect("empty file is sealed");
+        let forged = format!("{body}\n{mac}\n");
+        assert!(
+            forged.contains("allow"),
+            "the forged file must actually add a grant: {forged}"
+        );
+        std::fs::write(victim.path().join("grants.toml"), &forged).unwrap();
+
+        let monitor = PermissionMonitor::open_profile(victim.path());
+        assert!(monitor.store().records().is_empty());
+        let req = PermissionRequest::app_capability(
+            "my-app",
+            ws.path(),
+            crate::app::permissions::Capability::NetHttp,
+        );
+        assert_eq!(monitor.store().evaluate(&req, None), Decision::Ask);
+        let alerts = monitor.open_needs_you();
+        assert!(
+            alerts.iter().any(|row| row.kind == NeedsYouKind::Integrity),
+            "{alerts:?}"
+        );
+        assert!(
+            !victim.path().join("grants.toml").exists(),
+            "a forged grants file is quarantined"
+        );
+    }
+
+    #[test]
+    fn edited_and_deleted_audit_lines_are_detected() {
+        let edited = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(edited.path());
+        monitor.note_denial("actor", "c1", "res", "op", "denied");
+        monitor.note_denial("actor", "c2", "res", "op", "denied");
+        drop(monitor);
+        let path = edited.path().join("permission-audit.jsonl");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
+        assert!(lines.len() >= 2, "{original}");
+        lines[0] = lines[0].replace("denied", "allowed");
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let err = crate::broker::seal::verify_audit(&path).expect_err("an edited line must fail");
+        assert!(err.contains("mac"), "{err}");
+        let monitor = PermissionMonitor::open_profile(edited.path());
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .any(|row| row.kind == NeedsYouKind::Integrity),
+            "an edited audit line files needs you"
+        );
+
+        let deleted = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(deleted.path());
+        monitor.note_denial("actor", "c1", "res", "op", "denied");
+        monitor.note_denial("actor", "c2", "res", "op", "denied");
+        drop(monitor);
+        let path = deleted.path().join("permission-audit.jsonl");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let first = original.lines().next().expect("first audit line");
+        std::fs::write(&path, format!("{first}\n")).unwrap();
+        let err = crate::broker::seal::verify_audit(&path).expect_err("a deleted line must fail");
+        assert!(err.contains("tip"), "{err}");
+        std::fs::remove_file(&path).unwrap();
+        let err = crate::broker::seal::verify_audit(&path).expect_err("a deleted log must fail");
+        assert!(err.contains("deleted"), "{err}");
+
+        let monitor = PermissionMonitor::open_profile(deleted.path());
+        assert!(
+            monitor
+                .open_needs_you()
+                .iter()
+                .any(|row| row.kind == NeedsYouKind::Integrity),
+            "a deleted audit log files needs you"
+        );
     }
 
     fn needs_you_decisions(monitor: &PermissionMonitor, decision: &str) -> usize {

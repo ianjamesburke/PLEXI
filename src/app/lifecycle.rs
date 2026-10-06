@@ -1145,6 +1145,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             spec.no_focus,
+                            spec.agent.is_some(),
                         );
                         if let Some(ref pane_name) = spec.name {
                             if !pane_name.is_empty() {
@@ -1181,6 +1182,7 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1203,6 +1205,7 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.restore_window_focused_pane(target_win_idx, original_focused);
@@ -1246,6 +1249,7 @@ impl PlexiApp {
                                             initial_cmd.as_deref(),
                                             spec.ephemeral,
                                             cwd_override,
+                                            spec.agent.is_some(),
                                         ) {
                                             Some(seeded_id) => response_pane_id = seeded_id,
                                             None => {
@@ -1293,6 +1297,7 @@ impl PlexiApp {
                                 initial_cmd.as_deref(),
                                 spec.ephemeral,
                                 cwd_override,
+                                spec.agent.is_some(),
                             ) {
                                 Some(seeded_id) => response_pane_id = seeded_id,
                                 None => launch_result = Err("failed to seed root pane".into()),
@@ -1325,6 +1330,7 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             keep_focus,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -2807,6 +2813,7 @@ impl PlexiApp {
                             Some(cmd.as_str()),
                             false,
                             None,
+                            false,
                         );
                     }
                 }
@@ -3609,6 +3616,7 @@ impl PlexiApp {
                 Some(command),
                 ephemeral,
                 cwd,
+                false,
                 false,
             )
         });

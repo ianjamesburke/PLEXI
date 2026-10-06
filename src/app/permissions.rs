@@ -447,11 +447,11 @@ pub struct PermissionStoreData {
 }
 
 /// Loads, mutates, and persists `permissions.toml` in the Plexi config dir.
-/// File handling (load-or-default, corrupt backup, atomic save) lives in
-/// [`TomlStore`]; this type owns only the entry-key rules.
+/// The file is HMAC-sealed. A missing or bad MAC drops every entry.
 #[derive(Debug)]
 pub struct PermissionStore {
     file: TomlStore<PermissionStoreData>,
+    untrusted: Option<crate::broker::seal::IntegrityFault>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,6 +465,7 @@ impl Default for PermissionStore {
     fn default() -> Self {
         Self {
             file: TomlStore::detached(STORE_LABEL),
+            untrusted: None,
         }
     }
 }
@@ -540,23 +541,27 @@ impl PermissionStore {
         count
     }
 
-    /// Load from `config_dir/permissions.toml`. Returns empty store on missing file.
-    /// On parse failure: logs the error, renames the corrupt file to
-    /// `permissions.toml.corrupt-<timestamp>` for recovery, and returns an empty store.
+    /// Load from `config_dir/permissions.toml`. A missing file is an empty store.
+    /// A missing or bad MAC quarantines the file and returns empty;
+    /// [`Self::integrity_fault`] names it. A signed file that does not parse is
+    /// backed up and also returns empty.
     pub fn load_or_default(config_dir: &Path) -> Self {
-        let file = TomlStore::load_or_default(
-            config_dir,
-            "permissions.toml",
-            STORE_LABEL,
-            |data: &PermissionStoreData, path| {
-                log::info!(
-                    "permission_store: loaded {} entries from {}",
-                    data.entries.len(),
-                    path.display()
-                );
-            },
-        );
-        let mut store = Self { file };
+        let path = config_dir.join("permissions.toml");
+        let loaded = crate::broker::seal::load_toml::<PermissionStoreData>(&path);
+        if loaded.trusted {
+            log::info!(
+                "permission_store: loaded {} entries from {}",
+                loaded.data.entries.len(),
+                path.display()
+            );
+        }
+        let mut store = Self {
+            file: TomlStore::at(path, STORE_LABEL, loaded.data),
+            untrusted: loaded.fault,
+        };
+        if store.untrusted.is_some() {
+            return store;
+        }
         let migrated = Self::migrate_raw_path_keys(&mut store.file.data);
         if migrated > 0 {
             log::info!(
@@ -565,6 +570,11 @@ impl PermissionStore {
             store.save();
         }
         store
+    }
+
+    /// Set when the file on disk was refused. The in-memory entries are empty.
+    pub fn integrity_fault(&self) -> Option<&crate::broker::seal::IntegrityFault> {
+        self.untrusted.as_ref()
     }
 
     /// Get the stored state for a (app, workspace, capability) triple.
@@ -623,9 +633,13 @@ impl PermissionStore {
         );
     }
 
-    /// Atomically write to disk. No-op for a test store with no path.
+    /// Atomically write a sealed file. No-op for a test store with no path.
     pub fn save(&self) {
-        self.file.save();
+        let label = self.file.label();
+        if let Err(error) = crate::broker::seal::write_toml(&self.file.path, label, &self.file.data)
+        {
+            log::error!("{label}: failed to save {}: {error}", self.file.path.display());
+        }
     }
 
     /// Apply stored state for a set of declared capabilities.
@@ -1341,17 +1355,18 @@ mod tests {
             "corrupt permissions.toml must be renamed, not left in place"
         );
 
-        // A .corrupt-* backup must exist.
+        // An unsigned file is quarantined, not parsed.
         let backup_exists = std::fs::read_dir(tmp.path()).unwrap().any(|e| {
             e.unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with("permissions.toml.corrupt-")
+                .starts_with("permissions.toml.untrusted-")
         });
         assert!(
             backup_exists,
-            "a .corrupt-<timestamp> backup must be created"
+            "a .untrusted-<timestamp> backup must be created"
         );
+        assert!(store.integrity_fault().is_some());
 
         // Returned store must be empty.
         assert!(
@@ -1426,7 +1441,11 @@ mod tests {
         // Write entry with raw key directly to the TOML file.
         let raw_key = format!("my-app::{}::fs.read", raw_path.display());
         let toml_content = format!("[entries]\n\"{raw_key}\" = \"green\"\n");
-        std::fs::write(config_tmp.path().join("permissions.toml"), toml_content).unwrap();
+        crate::broker::seal::write_sealed(
+            &config_tmp.path().join("permissions.toml"),
+            toml_content.as_bytes(),
+        )
+        .expect("seal legacy permissions file");
 
         let store = PermissionStore::load_or_default(config_tmp.path());
 

@@ -1534,6 +1534,7 @@ impl PlexiApp {
                             &ctx_desc,
                             ctx_root,
                             ctx_depth,
+                            false,
                         );
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
@@ -2033,7 +2034,7 @@ impl PlexiApp {
         let seed_cwd = app.windows[0].path.clone();
         let seed_context = app.pane_context_env_for_window(0);
         if app
-            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false)
+            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false, false)
             .is_some()
         {
             log::info!("first boot: seeded base root pane in context 1");
@@ -2874,10 +2875,12 @@ impl PlexiApp {
         context_description: &str,
         context_root: Option<&PathBuf>,
         context_depth: u32,
+        agent_pane: bool,
     ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
         log::info!(
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
-             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
+             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
+             agent_pane={agent_pane}"
         );
         let mut env = shell::build_env(working_directory.as_deref());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
@@ -2917,6 +2920,7 @@ impl PlexiApp {
             );
         }
         env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
+        crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
         (
             BackendSettings {
                 shell: shell::detect_shell(),
@@ -3723,7 +3727,7 @@ impl eframe::App for PlexiApp {
                     self.step_focus_history_forward();
                 }
                 Action::NewTab => {
-                    self.new_tab(self.active_window, None, false, None);
+                    self.new_tab(self.active_window, None, false, None, false);
                     self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {

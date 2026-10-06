@@ -4305,7 +4305,7 @@ fn first_boot_seam_seeds_base_root_pane() {
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
     if h.app
-        .seed_window_root_pane(0, &context, cwd, None, false)
+        .seed_window_root_pane(0, &context, cwd, None, false, false)
         .is_none()
     {
         // No PTY in this env — the installer degrades to the welcome screen,
@@ -4335,7 +4335,7 @@ fn first_boot_shape_matches_new_context() {
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
     if h.app
-        .seed_window_root_pane(0, &context, cwd, None, false)
+        .seed_window_root_pane(0, &context, cwd, None, false, false)
         .is_none()
     {
         return; // no PTY in this env

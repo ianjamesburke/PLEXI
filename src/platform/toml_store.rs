@@ -1,14 +1,15 @@
-//! A TOML file that holds one serializable payload, loads to a default when
-//! absent, backs itself up when corrupt, and saves atomically.
+//! A TOML file that holds one serializable payload.
 //!
-//! Both permission stores (`app::permissions::PermissionStore` over
-//! `permissions.toml` and `broker::GrantStore` over `grants.toml`) were the
-//! same file-handling code written twice, down to the log wording. That
-//! handling lives here now; each store keeps only its own payload and rules.
+//! Permission stores keep their payload here. Sealed load and save live in
+//! `broker::seal`, because a MAC has to be checked before the body is parsed.
 
+#[cfg(test)]
 use serde::Serialize;
+#[cfg(test)]
 use serde::de::DeserializeOwned;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// `label` prefixes every log line this store emits, so the messages stay
 /// attributable to the owning subsystem (`grant_store`, `permission_store`).
@@ -31,6 +32,18 @@ impl<T: Default> TomlStore<T> {
     }
 }
 
+impl<T> TomlStore<T> {
+    /// A store whose payload was already checked by the caller.
+    pub fn at(path: PathBuf, label: &'static str, data: T) -> Self {
+        Self { data, path, label }
+    }
+
+    pub fn label(&self) -> &'static str {
+        self.label
+    }
+}
+
+#[cfg(test)]
 impl<T: Default + DeserializeOwned + Serialize> TomlStore<T> {
     /// Load `dir/file_name`.
     ///
