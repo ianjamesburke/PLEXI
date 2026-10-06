@@ -9,8 +9,12 @@
 
 set -euo pipefail
 
+# Resolve before any `cd`. The script later enters a temp workspace, and a
+# relative $0 would no longer point at scripts/e2e/human.sh.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
-  exec xvfb-run -a "$0" "$@"
+  exec xvfb-run -a "$SCRIPT_DIR/$(basename "$0")" "$@"
 fi
 
 if [[ -n "${PLEXI_E2E_SHIM:-}" ]]; then
@@ -222,7 +226,7 @@ PENDING="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pending_r
 PERM="$(cli assistant permission list)"
 python3 -c 'import json,sys; body=json.loads(sys.argv[1]); rows=body["pending"]; assert any(row.get("pending_request_id")==sys.argv[2] and row.get("actor_id")=="agent:scout" for row in rows)' "$PERM" "$PENDING"
 # shellcheck disable=SC1091
-source "$(cd "$(dirname "$0")" && pwd)/e2e/human.sh"
+source "$SCRIPT_DIR/e2e/human.sh"
 HUMAN_APPROVE "$PENDING"
 REVIEW2="$(mcp "$CHILD_TOKEN" agents.review '{}')"
 REVIEW2_TEXT="$(printf '%s' "$REVIEW2" | mcp_text)"
