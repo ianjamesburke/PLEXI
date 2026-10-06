@@ -20,7 +20,7 @@ fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     }
 }
 
-fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
+fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_below");
     let tile = tree.tiles.insert_pane(pane_id);
     tree.root = Some(tile);
@@ -34,11 +34,11 @@ fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
         grid_x: 0,
         grid_y: 1,
         window_id,
-        context_id: 1, // same workspace as window 0
+        context_id,
     }
 }
 
-fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
+fn same_workspace_window_bottom(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_bottom");
     let tile = tree.tiles.insert_pane(pane_id);
     tree.root = Some(tile);
@@ -52,7 +52,7 @@ fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
         grid_x: 0,
         grid_y: 2,
         window_id,
-        context_id: 1,
+        context_id,
     }
 }
 
@@ -227,8 +227,9 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
     let mut h = HostHarness::new();
     let pane_a = h.add_test_pane();
     // Three windows: grid_y 0 (window 0), 1 (window 1), 2 (window 2).
-    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+    let context_id = h.app.windows[0].context_id;
+    h.app.windows.push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app.windows.push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     assert!(
         h.app.pane_navigate(pane_a),
@@ -250,8 +251,9 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
 fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
-    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+    let context_id = h.app.windows[0].context_id;
+    h.app.windows.push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app.windows.push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     // Start from the middle window.
     assert_eq!(h.app.active_window, 0);
@@ -327,7 +329,7 @@ fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
         "moving within a page must exit zoom"
     );
 
-    let mut other_page = same_workspace_window_below(2, 9910);
+    let mut other_page = same_workspace_window_below(h.app.windows[0].context_id, 2, 9910);
     let other_page_tile = other_page.tree.root.expect("other page must have a tile");
     other_page.zoom_to(other_page_tile);
     h.app.windows.push(other_page);
