@@ -571,7 +571,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
     });
     if let Some(prompt) = prompt {
         log::info!("agents_api: spawn model turn head={head_id} run={run_id}");
-        let turn = crate::agent::leads::run_prompt(&workspace_buf, &head_id, &prompt);
+        let turn = crate::agent::leads::run_prompt(&workspace_buf, &head_id, &prompt, Some(run_id.as_str()).filter(|id| !id.is_empty()));
         if let Some(obj) = body.as_object_mut() {
             if let Some(state) = turn.get("state").cloned() {
                 obj.insert("state".to_string(), state);
