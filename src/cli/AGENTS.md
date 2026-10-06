@@ -57,16 +57,19 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **`plexi demo` is macOS-only until platform keymaps exist.** On Linux and
   Windows it refuses before teaching any shortcut; do not infer or document a
   replacement chord until the host keymap defines one.
-- **`plexi ledger summary` reads the local AI ledger.** It does not talk to
-  the host. `--by client` (used when `--by` is omitted) or `--by kind` groups
-  rows; `--since` is a `YYYY-MM-DD` or RFC3339 lower bound on each row's
-  timestamp. Rows written before run tags existed are migrated in place to
-  explicit null `client` and `kind` and still count. `--json` prints the
-  groups. `assistant send --client` and `--kind` are per-run overrides; an
-  omitted flag stays unset so the host can apply `[ai] client` and kind
-  `  output`. `assistant send` does not require an open Assistant pane: the
-  host reuses one in the context or creates a hidden one. A `--pane-id` that
-  does not exist still fails.
+- **`plexi ledger` prints per-client totals from the local AI ledger.** It
+  does not talk to the host. With no subcommand it is the human summary
+  grouped by client. `ledger summary --by client` (used when `--by` is
+  omitted) or `--by kind` groups rows; `--since` is a `YYYY-MM-DD` or RFC3339
+  lower bound on each row's timestamp. Rows written before run tags existed
+  are migrated in place to explicit null `client` and `kind` and still count.
+  A token count is a positive number or the word `unknown`. A missing or zero
+  reading stays `unknown` and is left out of a group total. `--json` prints
+  the groups with the same token contract. `assistant send --client` and
+  `--kind` are per-run overrides; an omitted flag stays unset so the host can
+  apply `[ai] client` and kind `output`. `assistant send` does not require an
+  open Assistant pane: the host reuses one in the context or creates a hidden
+  one. A `--pane-id` that does not exist still fails.
 - **Routines are post-v1.** `plexi routine` stays compiled for beta and
   worktree development but is release-gated and hidden from stable help.
 
