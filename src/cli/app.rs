@@ -2019,6 +2019,8 @@ pub(crate) struct AssistantSendFields<'a> {
     pub conversation: Option<&'a str>,
     pub join_desktop: bool,
     pub status_for: Option<&'a str>,
+    pub client: Option<&'a str>,
+    pub kind: Option<&'a str>,
 }
 
 pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_json::Value {
@@ -2032,7 +2034,18 @@ pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_
         "conversation_id": fields.conversation,
         "join_desktop": fields.join_desktop,
         "status_for": fields.status_for,
+        "client": fields.client,
+        "kind": fields.kind,
     })
+}
+
+/// Conversation routing and ledger tags for [`assistant_send_result`].
+pub struct AssistantSendRoute<'a> {
+    pub conversation: Option<&'a str>,
+    pub join_desktop: bool,
+    pub status_for: Option<&'a str>,
+    pub client: Option<&'a str>,
+    pub kind: Option<&'a str>,
 }
 
 /// Submit one turn, or poll `--status-for`, and return the host JSON envelope.
@@ -2046,14 +2059,22 @@ pub fn assistant_send_result(
     request_id: Option<&str>,
     pane_id: Option<u64>,
     context_id: Option<u64>,
-    conversation: Option<&str>,
-    join_desktop: bool,
-    status_for: Option<&str>,
+    route: AssistantSendRoute<'_>,
 ) -> Result<serde_json::Value, String> {
+    let AssistantSendRoute {
+        conversation,
+        join_desktop,
+        status_for,
+        client,
+        kind,
+    } = route;
     let request_id = request_id
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
+    if let Some(kind) = kind {
+        crate::plexi_ai::ledger::RunKind::parse(kind)?;
+    }
     if let Some(turn_id) = status_for {
         log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
     } else {
@@ -2071,6 +2092,8 @@ pub fn assistant_send_result(
         conversation,
         join_desktop,
         status_for,
+        client: client.map(str::trim).filter(|client| !client.is_empty()),
+        kind: kind.map(str::trim).filter(|kind| !kind.is_empty()),
     });
     let content = super::request_with(
         payload,
@@ -2088,19 +2111,9 @@ pub fn assistant_send_cli(
     request_id: Option<&str>,
     pane_id: Option<u64>,
     context_id: Option<u64>,
-    conversation: Option<&str>,
-    join_desktop: bool,
-    status_for: Option<&str>,
+    route: AssistantSendRoute<'_>,
 ) -> i32 {
-    match assistant_send_result(
-        text,
-        request_id,
-        pane_id,
-        context_id,
-        conversation,
-        join_desktop,
-        status_for,
-    ) {
+    match assistant_send_result(text, request_id, pane_id, context_id, route) {
         Ok(value) => {
             println!("{value}");
             if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") {

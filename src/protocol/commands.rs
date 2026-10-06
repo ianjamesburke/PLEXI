@@ -80,9 +80,12 @@ pub struct PaneAgentState {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AppRequest {
-    /// Submit one text turn to a host Assistant pane.
-    /// Submit one text turn to an existing Assistant pane. The pane owns the
-    /// normal composer, model, and permission-gate path and writes the terminal JSON reply.
+    /// Submit one text turn to the Assistant. With `pane_id` omitted the host
+    /// reuses an Assistant in the context or creates a hidden one, so a
+    /// phone, relay, or CLI caller does not need `app open assistant` first.
+    /// A `pane_id` that does not exist still fails with
+    /// `assistant_pane_not_found`. The pane owns the normal composer path and
+    /// writes the terminal JSON reply.
     SubmitAssistantTurn {
         text: String,
         request_id: String,
@@ -102,6 +105,12 @@ pub enum AppRequest {
         /// `waiting_for_permission`. Does not submit a new prompt.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status_for: Option<String>,
+        /// Ledger client tag for this run. Absent uses `[ai] client`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
+        /// Ledger run kind: `system` or `output`. Absent means `output`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {

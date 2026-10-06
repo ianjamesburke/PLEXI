@@ -1361,6 +1361,8 @@ impl WasmPane {
                         tool_dispatcher: None,
                         cancel: crate::plexi_ai::CancelToken::new(),
                         max_tool_iterations: None,
+                        client: None,
+                        kind: None,
                     },
                     &mut on_delta,
                 );

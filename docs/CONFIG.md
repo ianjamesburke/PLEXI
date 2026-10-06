@@ -93,12 +93,13 @@ model_medium = "claude-opus-5"
 model_high   = "claude-fable-5"
 ```
 
-Optional AI spend caps:
+Optional AI spend caps, and the default ledger client tag. A run can override `client`; when both are unset the ledger row stores null. `kind` is not a config key — it defaults to `output` per run.
 
 ```toml
 [ai]
 per_app_daily_usd = 1.00
 global_daily_usd  = 10.00
+# client = "personal"
 ```
 
 ## Keybindings
@@ -230,6 +231,7 @@ ghost_opacity = 0.75
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+# client = "personal"          # default AI ledger tag; a run can override it
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
@@ -251,7 +253,14 @@ model_high   = "anthropic/claude-fable-5"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart
-# retention_days = 30
+# retention_days = 30          # dated plexi-YYYY-MM-DD.log archives. The live plexi.log stays.
+
+# [cloud]
+# Local use never needs an account. Signing in only links this desktop to
+# relay and cloud features. Unset, local ledger rows and assistant
+# conversations are kept. Relay registry rows, queued envelopes, and the log
+# archives above are still pruned.
+# retain_local_history = false
 
 # [keybindings]
 # toggle_command_palette = "cmd+p"
@@ -275,8 +284,8 @@ tips = true
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. "plexi" enables plexiapp.com accounts; unset / "none" =
-# login fails closed. Accounts are only ever needed to publish or buy paid apps —
-# free apps install without one.
+# login fails closed. An account is optional: local use never needs one. A
+# session only links this desktop to relay and cloud features.
 # account_backend = "plexi"
 # Accounts service base URL. Unset = the official plexiapp.com service. Override
 # only to point `plexi account login` at a private deployment.

@@ -134,6 +134,8 @@ fn submit_to(
         conversation_id: conversation_id.map(str::to_string),
         join_desktop,
         status_for: None,
+        client: None,
+        kind: None,
     });
 }
 
@@ -147,6 +149,8 @@ fn status_for(h: &HostHarness, path: &Path, request_id: &str, turn_id: &str) {
         conversation_id: None,
         join_desktop: false,
         status_for: Some(turn_id.to_string()),
+        client: None,
+        kind: None,
     });
 }
 

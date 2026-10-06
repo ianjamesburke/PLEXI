@@ -40,6 +40,96 @@ fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path
     h.app.windows.len() - 1
 }
 
+/// `assistant send` with no pane id must not fail `assistant_pane_not_found`.
+/// The host creates one hidden Assistant that is not in the tile tree, and a
+/// later frame completes the turn. A send that names a missing pane still fails.
+#[test]
+fn assistant_send_without_a_pane_creates_a_hidden_one() {
+    let _channel = crate::config::set_test_channel("alpha");
+    let mut h = HostHarness::new();
+    let focused_before = h.app.windows[0].focused_pane;
+    let missing = crate::config::config_dir().join("assistant-missing-pane.json");
+    h.app.handle_pane_ipc_request(AppRequest::SubmitAssistantTurn {
+        text: "hello".to_string(),
+        request_id: "missing".to_string(),
+        response_file: missing.display().to_string(),
+        pane_id: Some(999_999),
+        context_id: None,
+        conversation_id: None,
+        join_desktop: false,
+        status_for: None,
+        client: None,
+        kind: None,
+    });
+    let missing_body = std::fs::read_to_string(&missing).unwrap_or_default();
+    assert!(
+        missing_body.contains("assistant_pane_not_found"),
+        "a named missing pane must still fail: {missing_body}"
+    );
+    assert!(
+        assistant_panes(&h).is_empty(),
+        "a named missing pane must not create an assistant"
+    );
+
+    let response = crate::config::config_dir().join("assistant-headless-send.json");
+    h.app.handle_pane_ipc_request(AppRequest::SubmitAssistantTurn {
+        text: "hello".to_string(),
+        request_id: "headless".to_string(),
+        response_file: response.display().to_string(),
+        pane_id: None,
+        context_id: None,
+        conversation_id: None,
+        join_desktop: false,
+        status_for: None,
+        client: None,
+        kind: None,
+    });
+    let panes = assistant_panes(&h);
+    assert_eq!(panes.len(), 1, "one hidden assistant: {panes:?}");
+    let pane_id = panes[0];
+    let win = &h.app.windows[0];
+    let pane = win.panes.get(&pane_id).expect("assistant pane");
+    assert!(pane.is_hidden(), "headless assistant stays hidden");
+    assert!(
+        !win.tree.tiles.iter().any(|(_, tile)| {
+            matches!(tile, egui_tiles::Tile::Pane(id) if *id == pane_id)
+        }),
+        "headless assistant is not placed in the tile tree"
+    );
+    assert_eq!(win.focused_pane, focused_before);
+
+    for _ in 0..40 {
+        h.frame(RawInput::default());
+        if response.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let body = std::fs::read_to_string(&response).unwrap_or_default();
+    assert!(
+        !body.contains("assistant_pane_not_found"),
+        "headless send must be accepted: {body}"
+    );
+    assert!(
+        body.contains("\"state\":\"failed\"") || body.contains("\"state\":\"succeeded\""),
+        "the turn must write a terminal reply: {body}"
+    );
+}
+
+fn assistant_panes(h: &HostHarness) -> Vec<u64> {
+    h.app
+        .windows
+        .iter()
+        .flat_map(|window| {
+            window.panes.iter().filter_map(|(id, pane)| {
+                pane.as_app()
+                    .is_some_and(|app| app.runtime.type_id() == "assistant")
+                    .then_some(*id)
+            })
+        })
+        .collect()
+}
+
 /// Stint 0724 Phase C regression: an app pane in context A exposes a
 /// connector tool; an Assistant pane in a sibling context B must NOT see it,
 /// and an Assistant pane in context A must. Proves the migration off

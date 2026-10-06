@@ -907,9 +907,13 @@ fn host_assistant_turn(
         Some(request_id),
         None,
         None,
-        conversation_id,
-        join_desktop,
-        status_for,
+        super::app::AssistantSendRoute {
+            conversation: conversation_id,
+            join_desktop,
+            status_for,
+            client: None,
+            kind: None,
+        },
     ) {
         Ok(mut value) => {
             if value.get("request_id").is_none() {
@@ -1656,6 +1660,8 @@ mod tests {
                 conversation: Some("phone-host"),
                 join_desktop: false,
                 status_for: None,
+                client: None,
+                kind: None,
             },
         );
         assert_eq!(payload["type"], "submit_assistant_turn");

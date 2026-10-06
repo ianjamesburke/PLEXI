@@ -146,9 +146,13 @@ fn assistant_begin(h: &mut HostHarness, assistant: u64, input: &serde_json::Valu
         "play the move".to_string(),
         format!("req-{}", uuid::Uuid::new_v4()),
         reply.display().to_string(),
-        None,
-        true,
-        None,
+        crate::app::app_trait::ExternalTurnOpts {
+            conversation_id: None,
+            join_desktop: true,
+            status_for: None,
+            client: None,
+            kind: None,
+        },
     )
     .unwrap();
     reply

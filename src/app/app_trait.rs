@@ -218,6 +218,19 @@ pub enum AppCommand {
 /// The trait all Plexi apps implement.
 ///
 /// Apps live inside `Pane::App` runtimes.
+/// Routing and ledger tags for one external Assistant turn.
+///
+/// `conversation_id` keeps a phone turn off the desktop transcript.
+/// `join_desktop` opts into that transcript. `client` and `kind` are the
+/// ledger tags from `assistant send --client/--kind`.
+pub struct ExternalTurnOpts {
+    pub conversation_id: Option<String>,
+    pub join_desktop: bool,
+    pub status_for: Option<String>,
+    pub client: Option<String>,
+    pub kind: Option<String>,
+}
+
 pub trait App: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
@@ -338,9 +351,7 @@ pub trait App: Send {
         _text: String,
         _request_id: String,
         _response_file: String,
-        _conversation_id: Option<String>,
-        _join_desktop: bool,
-        _status_for: Option<String>,
+        _opts: ExternalTurnOpts,
     ) -> Result<(), String> {
         Err("this app does not accept external turns".to_string())
     }

@@ -32,6 +32,8 @@ Submit through the same composer, model, and permission path as the desktop Assi
 | `--conversation` | string | no | Caller-owned conversation. A phone session passes one stable id. Omit to start a new conversation that is not the desktop transcript |
 | `--desktop` | flag | no | Append this turn to the desktop Assistant conversation |
 | `--status-for` | string | no | Read the outcome of a turn that already returned waiting_for_permission. Does not submit a new prompt |
+| `--client` | string | no | Ledger client tag for this run. Omitted uses `[ai] client` |
+| `--kind` | string | no | Ledger run kind: `system` or `output`. Omitted means `output` |
 | `--json` | flag | no |  |
 
 ### `plexi assistant permission`
@@ -861,7 +863,7 @@ Example: plexi app call chess chess.state Example: plexi app call chess chess.pl
 
 ## `plexi account`
 
-Manage your Plexi marketplace account (only needed to publish or buy paid apps).
+Optional account that links this desktop to relay and cloud features.
 
 Free apps install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
 
@@ -1418,6 +1420,26 @@ Interactive wizard to configure a local AI model via Ollama.
 Walks through Ollama installation detection, model recommendation based on your hardware, pulling the recommended model, and writing the [ai.ollama] section to your config.toml so Plexi apps can use it immediately.
 
 Example: plexi ai setup
+
+## `plexi ledger`
+
+Summarize recorded AI usage from this channel's ledger.
+
+Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
+
+| Subcommand | Description |
+|---|---|
+| `summary` | Totals for tokens, cost, run count, and wall time |
+
+### `plexi ledger summary`
+
+Totals for tokens, cost, run count, and wall time
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--by` | string | no | Group rows by `client` or `kind`. Omitted means `client` |
+| `--since` | string | no | Include rows at or after this YYYY-MM-DD or RFC3339 timestamp |
+| `--json` | flag | no | Print one JSON object on stdout |
 
 ## `plexi completions`
 

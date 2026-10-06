@@ -42,6 +42,7 @@ plexi config reset
 | `confirm_close` | bool | true | Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true). |
 | `confirm_context_close` | bool | true | Set to false to close contexts immediately on Cmd+Shift+W without a confirmation dialog (default: true). |
 | `focus_history_depth` | integer | — | — |
+| `cloud` | CloudConfig | — | Optional cloud link (`[cloud]`). Local use never reads this. See [`CloudConfig`]. |
 
 ### Theme (`[theme]`)
 
@@ -128,6 +129,7 @@ plexi secret set openrouter-api-key --global
 | `backend` | string | — | Backend selection: `"openrouter"` (default), `"ollama"`, or `"local"`. |
 | `per_app_daily_usd` | float | $1.00 | Per-app daily spend cap in USD. Default $1.00. |
 | `global_daily_usd` | float | $10.00 | Global daily spend cap across all apps in USD. Default $10.00. |
+| `client` | string | — | Default ledger client tag for Assistant and agent runs that do not set one. Free-form (`narrative`, `du`, `personal`). A blank or missing value leaves the row's client null. |
 
 #### OpenRouter (`[ai.openrouter]`)
 
@@ -310,6 +312,7 @@ ghost_opacity = 0.75
 
 [ai]
 backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+# client = "personal"          # default AI ledger tag; a run can override it
 
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
@@ -331,7 +334,13 @@ model_high   = "anthropic/claude-fable-5"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart
-# retention_days = 30
+# retention_days = 30          # dated plexi-YYYY-MM-DD.log archives. The live plexi.log stays.
+
+# [cloud]
+# Local use never needs an account. Signing in only links this desktop to
+# relay and cloud features. Unset, local ledger rows and assistant
+# conversations are kept.
+# retain_local_history = false
 
 # [keybindings]
 # toggle_command_palette = "cmd+p"
@@ -367,8 +376,9 @@ tips = true
 # Publisher submission endpoint. Unset = `plexi app publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
-# Account/auth backend. Unset / "none" = login/signup fail closed. Accounts are
-# only ever needed to publish or buy paid apps — free apps install without one.
+# Account/auth backend. Unset / "none" = login/signup fail closed. An account is
+# optional: local use never needs one. A session only links this desktop to
+# relay and cloud features.
 # account_backend = "none"
 # Accounts service host the device-flow login talks to. Defaults to plexiapp.com.
 # account_url     = "https://plexiapp.com"

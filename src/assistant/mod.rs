@@ -116,12 +116,20 @@ struct IsolatedPermissionOwner {
     conversation_id: String,
 }
 
+/// Ledger client and kind for one model turn.
+struct LedgerTags {
+    client: Option<String>,
+    kind: Option<String>,
+}
+
 /// An isolated `assistant send` waiting for the one in-flight side turn to finish.
 struct QueuedIsolated {
     conversation_id: String,
     text: String,
     request_id: String,
     response_file: String,
+    client: Option<String>,
+    kind: Option<String>,
 }
 
 fn safe_conversation_id(id: &str) -> bool {
@@ -974,7 +982,9 @@ impl AssistantApp {
                     conversation_id,
                     turn_id,
                     prompt,
-                } => self.start_turn(conversation_id, turn_id, prompt),
+                    client,
+                    kind,
+                } => self.start_turn(conversation_id, turn_id, prompt, client, kind),
                 AssistantEffect::SessionWrite { .. } => self.session_write(),
                 AssistantEffect::ListTools => self.cmd_list_tools(),
                 AssistantEffect::ListApps => self.cmd_list_apps(),
@@ -1772,8 +1782,22 @@ impl AssistantApp {
     }
 
     /// Run one desktop model turn on a worker thread.
-    fn start_turn(&mut self, conversation_id: String, turn_id: String, prompt: String) {
-        self.dispatch_model_turn(conversation_id, turn_id, prompt, None, false);
+    fn start_turn(
+        &mut self,
+        conversation_id: String,
+        turn_id: String,
+        prompt: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) {
+        self.dispatch_model_turn(
+            conversation_id,
+            turn_id,
+            prompt,
+            None,
+            false,
+            LedgerTags { client, kind },
+        );
     }
 
     /// Run one model turn. `isolated` keeps the transcript and the permission
@@ -1786,7 +1810,9 @@ impl AssistantApp {
         prompt: String,
         messages: Option<Vec<AiMessage>>,
         isolated: bool,
+        tags: LedgerTags,
     ) {
+        let LedgerTags { client, kind } = tags;
         if isolated {
             self.side_in_flight = Some(turn_id.clone());
             self.side_conversation = Some(conversation_id.clone());
@@ -1909,6 +1935,17 @@ impl AssistantApp {
         // rounds than a typical chat turn; raise the cap so the assistant
         // pauses gracefully later instead of being cut short mid-build.
         const APP_BUILD_MAX_TOOL_ITERATIONS: usize = 60;
+        let client = nonempty_tag(client).or_else(|| agent.client.clone());
+        let kind = match kind.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+            Some(text) => match crate::plexi_ai::ledger::RunKind::parse(text) {
+                Ok(kind) => Some(kind),
+                Err(error) => {
+                    log::warn!("assistant[{conversation_id}]: {error}; recording kind as output");
+                    Some(crate::plexi_ai::ledger::RunKind::Output)
+                }
+            },
+            None => agent.kind,
+        };
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
             model_tier: tier,
@@ -1922,9 +1959,11 @@ impl AssistantApp {
             tool_dispatcher: Some(Arc::new(dispatcher)),
             cancel,
             max_tool_iterations: is_app_build_turn.then_some(APP_BUILD_MAX_TOOL_ITERATIONS),
+            client,
+            kind,
         };
         log::info!(
-            "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={}",
+            "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={} client={:?} kind={}",
             agent.id,
             request.model_tier.as_str(),
             request
@@ -1941,7 +1980,12 @@ impl AssistantApp {
                 .tool_dispatcher
                 .as_ref()
                 .map(|dispatcher| dispatcher.all_tools().len())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            request.client.as_deref(),
+            request
+                .kind
+                .map(crate::plexi_ai::ledger::RunKind::as_str)
+                .unwrap_or("output")
         );
         let broker = Arc::clone(&self.broker);
         let outcome_conversation = conversation_id.clone();
@@ -2221,7 +2265,8 @@ impl AssistantApp {
         let conversation_id = self.model.conversation_id.clone();
         let turn_id = self.claim_followup_turn_id();
         self.model.active_turn_id = Some(turn_id.clone());
-        self.start_turn(conversation_id, turn_id, String::new());
+        let (client, kind) = self.model.take_queued_run_tags();
+        self.start_turn(conversation_id, turn_id, String::new(), client, kind);
     }
 
     /// User pressed ESC during an in-flight turn. Stop generating, and if the
@@ -4058,8 +4103,10 @@ impl AssistantApp {
         text: String,
         request_id: String,
         response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
     ) -> Result<(), String> {
-        let effects = self.model.submit_prompt(text);
+        let effects = self.model.submit_prompt_tagged(text, client, kind);
         let Some(turn_id) = self.model.last_submitted_turn_id.clone() else {
             return Err("assistant did not assign a turn id".to_string());
         };
@@ -4085,6 +4132,8 @@ impl AssistantApp {
         text: String,
         request_id: String,
         response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
     ) {
         if self.side_in_flight.is_some() {
             log::info!(
@@ -4095,10 +4144,19 @@ impl AssistantApp {
                 text,
                 request_id,
                 response_file,
+                client,
+                kind,
             });
             return;
         }
-        self.start_isolated_turn(conversation_id, text, request_id, response_file);
+        self.start_isolated_turn(
+            conversation_id,
+            text,
+            request_id,
+            response_file,
+            client,
+            kind,
+        );
     }
 
     fn start_isolated_turn(
@@ -4107,6 +4165,8 @@ impl AssistantApp {
         text: String,
         request_id: String,
         response_file: String,
+        client: Option<String>,
+        kind: Option<String>,
     ) {
         if !self.side_transcripts.contains_key(&conversation_id) {
             let loaded = self.store.load_turns(&conversation_id);
@@ -4140,7 +4200,14 @@ impl AssistantApp {
             "assistant: isolated turn accepted request_id={request_id} turn_id={turn_id} conversation_id={conversation_id} messages={}",
             messages.len()
         );
-        self.dispatch_model_turn(conversation_id, turn_id, text, Some(messages), true);
+        self.dispatch_model_turn(
+            conversation_id,
+            turn_id,
+            text,
+            Some(messages),
+            true,
+            LedgerTags { client, kind },
+        );
     }
 
     fn isolated_reply_pending(&self) -> bool {
@@ -4254,9 +4321,22 @@ impl AssistantApp {
                 next.text,
                 next.request_id,
                 next.response_file,
+                next.client,
+                next.kind,
             );
         }
     }
+}
+
+fn nonempty_tag(value: Option<String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 impl App for AssistantApp {
@@ -4274,16 +4354,24 @@ impl App for AssistantApp {
         text: String,
         request_id: String,
         response_file: String,
-        conversation_id: Option<String>,
-        join_desktop: bool,
-        status_for: Option<String>,
+        opts: crate::app::app_trait::ExternalTurnOpts,
     ) -> Result<(), String> {
+        let crate::app::app_trait::ExternalTurnOpts {
+            conversation_id,
+            join_desktop,
+            status_for,
+            client,
+            kind,
+        } = opts;
         if let Some(turn_id) = status_for.as_deref() {
             self.reply_external_status(&request_id, &response_file, turn_id);
             return Ok(());
         }
         if text.trim().is_empty() {
             return Err("text must not be empty".to_string());
+        }
+        if let Some(kind) = kind.as_deref() {
+            crate::plexi_ai::ledger::RunKind::parse(kind)?;
         }
         if join_desktop && conversation_id.is_some() {
             return Err("pass either a conversation id or --desktop, not both".to_string());
@@ -4303,7 +4391,7 @@ impl App for AssistantApp {
             return Ok(());
         }
         if join_desktop {
-            return self.submit_desktop_turn(text, request_id, response_file);
+            return self.submit_desktop_turn(text, request_id, response_file, client, kind);
         }
         let conversation_id = match conversation_id {
             Some(id) if safe_conversation_id(&id) => id,
@@ -4315,7 +4403,14 @@ impl App for AssistantApp {
             }
             None => model::new_conversation_id(),
         };
-        self.enqueue_isolated_turn(conversation_id, text, request_id, response_file);
+        self.enqueue_isolated_turn(
+            conversation_id,
+            text,
+            request_id,
+            response_file,
+            client,
+            kind,
+        );
         Ok(())
     }
 
