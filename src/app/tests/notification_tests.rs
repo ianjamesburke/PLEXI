@@ -3,7 +3,7 @@ use crate::app::app_trait::AppCommand;
 use crate::host::context::Window;
 use crate::testing::HostHarness;
 
-fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
+fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_below");
     let tile = tree.tiles.insert_pane(pane_id);
     tree.root = Some(tile);
@@ -17,7 +17,7 @@ fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
         grid_x: 0,
         grid_y: 1,
         window_id,
-        context_id: 1, // same workspace as window 0
+        context_id,
     }
 }
 
@@ -336,7 +336,11 @@ fn window_scoped_notification_visible_only_on_source_window() {
     let win1_id = 2u64;
     h.app
         .windows
-        .push(same_workspace_window_below(win1_id, 9920));
+        .push(same_workspace_window_below(
+            h.app.windows[0].context_id,
+            win1_id,
+            9920,
+        ));
 
     let win0_id = h.app.windows[0].window_id;
     assert_eq!(h.app.active_window, 0);
