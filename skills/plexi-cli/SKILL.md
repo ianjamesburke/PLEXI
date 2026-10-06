@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -72,9 +72,10 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   seam for the desktop permission sheet.
 - **Needs you** — one list of everything waiting on the human:
   `plexi needs-you list --json` and
-  `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.
+  `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, blocked runs, and a host integrity item share that record.
+  An integrity item appears after a start when the previous host did not exit cleanly or the permission profile changed while it was down.
   Resolving an id resolves it everywhere exactly once. Expired items are
-  auto-denied. A repeat resolve returns the existing resolution.
+  auto-denied. A repeat resolve returns the existing resolution. Integrity, questions, and blocked runs do not mint a grant.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

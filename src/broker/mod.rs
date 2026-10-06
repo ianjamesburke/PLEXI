@@ -10,6 +10,7 @@
 //! `/permissions` UI surface come later; their target types exist as data only.
 
 pub mod gate;
+pub mod integrity;
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
@@ -795,6 +796,7 @@ impl GrantStore {
     /// Atomically write to disk. No-op for path-less test stores.
     pub fn save(&self) {
         self.file.save();
+        crate::broker::integrity::note_saved_file(&self.file.path);
     }
 
     /// Evaluate a request through the spec's ordered tiers:
