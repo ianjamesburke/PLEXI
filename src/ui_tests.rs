@@ -58,11 +58,12 @@ pub(crate) enum HarnessOpenTarget<'a> {
     },
 }
 
-type HarnessBuiltinFactory = fn(&Path, &[String]) -> Box<dyn crate::app::app_trait::App>;
+type HarnessBuiltinFactory = fn(&Path, &[String], u64) -> Box<dyn crate::app::app_trait::App>;
 
 fn assistant_harness_factory(
     workspace_root: &Path,
     _args: &[String],
+    context_id: u64,
 ) -> Box<dyn crate::app::app_trait::App> {
     let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
         std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
@@ -70,7 +71,7 @@ fn assistant_harness_factory(
         workspace_root.to_path_buf(),
         broker,
         workspace_root,
-        1,
+        context_id,
     ))
 }
 
@@ -81,11 +82,12 @@ fn harness_builtin_factory(
     id: &str,
     cwd: &Path,
     args: &[String],
+    context_id: u64,
 ) -> Option<Box<dyn crate::app::app_trait::App>> {
     HARNESS_BUILTIN_FACTORIES
         .iter()
         .find(|(candidate, _)| *candidate == id)
-        .map(|(_, factory)| factory(cwd, args))
+        .map(|(_, factory)| factory(cwd, args, context_id))
 }
 
 /// Semantic UI test harness. Wraps egui_kittest's `Harness<PlexiApp>` using the
@@ -108,8 +110,12 @@ impl PlexiUiHarness {
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
         let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let frame_tick = Arc::new(AtomicU64::new(0));
+        let context_id = crate::testing::reserve_test_context_id();
+        let pane_block = crate::testing::reserve_pane_id_block();
         let harness = egui_kittest::Harness::new_eframe(move |cc| {
-            let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+            let (mut app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+            app.set_initial_context_id_for_test(context_id);
+            app.host.seed_next_pane_id(pane_block);
             app
         });
         Self {
@@ -136,11 +142,15 @@ impl PlexiUiHarness {
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
         let _shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let frame_tick = Arc::new(AtomicU64::new(0));
+        let context_id = crate::testing::reserve_test_context_id();
+        let pane_block = crate::testing::reserve_pane_id_block();
         let harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(width, height))
             .with_pixels_per_point(ppp)
             .build_eframe(move |cc| {
-                let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+                let (mut app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+                app.set_initial_context_id_for_test(context_id);
+                app.host.seed_next_pane_id(pane_block);
                 app
             });
         Self {
@@ -233,7 +243,8 @@ impl PlexiUiHarness {
                 .copied()
                 .collect()
         });
-        if let Some(app) = harness_builtin_factory(id, cwd, args) {
+        let context_id = self.with_app(|app| app.windows[app.active_window].context_id);
+        if let Some(app) = harness_builtin_factory(id, cwd, args, context_id) {
             self.with_app_mut(|host| {
                 host.open_builtin_app_pane(
                     app,
@@ -1273,20 +1284,24 @@ mod tests {
     #[test]
     fn parked_sidebar_dropdown_uses_shared_list_header() {
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        let alpha_root = h.workspace_root().join("parked-alpha");
+        let beta_root = h.workspace_root().join("parked-beta");
+        std::fs::create_dir_all(&alpha_root).expect("parked alpha root");
+        std::fs::create_dir_all(&beta_root).expect("parked beta root");
         h.with_app_mut(|app| {
             app.sidebar_visible = true;
             app.parked_section_expanded = false;
-            let mk = |id: u64, name: &str| crate::host::context::Context {
+            let mk = |id: u64, name: &str, root: std::path::PathBuf| crate::host::context::Context {
                 name: name.to_string().into(),
-                root: std::env::temp_dir().join(name),
+                root,
                 description: None,
                 context_id: id,
                 parent_id: None,
                 depth: 0,
                 parked: true,
             };
-            app.router.push(mk(70_001, "parked-alpha"));
-            app.router.push(mk(70_002, "parked-beta"));
+            app.router.push(mk(70_001, "parked-alpha", alpha_root));
+            app.router.push(mk(70_002, "parked-beta", beta_root));
         });
         h.run_steps(2);
         h.with_app(|app| {
@@ -1299,33 +1314,9 @@ mod tests {
         });
         h.save_screenshot(&evidence_png!()).expect("render failed");
 
-        // The parked header sits under the "Contexts" header and active row;
-        // click its shared fixed-height hit target near the chevron. The
-        // active row is two lines tall since stint 0651 (every context shows
-        // its root as a subtitle), which pushes the header down.
-        let click = egui::pos2(28.0, 147.0);
-        h.harness()
-            .input_mut()
-            .events
-            .push(egui::Event::PointerMoved(click));
-        h.harness()
-            .input_mut()
-            .events
-            .push(egui::Event::PointerButton {
-                pos: click,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            });
-        h.harness()
-            .input_mut()
-            .events
-            .push(egui::Event::PointerButton {
-                pos: click,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            });
+        // The header is a shared list widget. Click the reported label so a
+        // font-metric or row-height shift cannot miss a fixed point.
+        h.harness().get_by_label("Parked (2)").click();
         h.run_steps(2);
 
         h.with_app(|app| {

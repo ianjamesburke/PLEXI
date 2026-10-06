@@ -1017,9 +1017,12 @@ mod tests {
     }
 
     fn script_config(path: &Path) -> McpServerConfig {
+        // Run through `sh`. execve of a script inode that was just written
+        // returns ETXTBSY ("Text file busy") on Linux when cargo test is
+        // parallel. `sh` is a stable binary; it opens the script for read.
         McpServerConfig {
-            command: path.display().to_string(),
-            args: Vec::new(),
+            command: "sh".to_string(),
+            args: vec![path.display().to_string()],
             env: BTreeMap::new(),
             cwd: None,
         }

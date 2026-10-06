@@ -796,7 +796,12 @@ mod open_cli_tests {
                 .expect("read open payload");
             let payload: Value = serde_json::from_str(&line).expect("open payload json");
             if let Some(response_file) = payload.get("response_file").and_then(|v| v.as_str()) {
-                std::fs::write(response_file, r#"{"pane_id":123}"#).expect("write open response");
+                // The CLI returns as soon as the path exists. A plain write can
+                // be observed empty; the host's atomic rename is the contract.
+                assert!(
+                    crate::rpc::write_response(response_file, br#"{"pane_id":123}"#),
+                    "write open response"
+                );
             }
             payload
         });

@@ -154,16 +154,14 @@ PY
 human__click_window() {
   local wid="$1" x="$2" y="$3" _mode="${4:-screen}"
   xdotool windowactivate --sync "$wid" >/dev/null 2>&1 || true
-  local geo
-  geo="$(xdotool getwindowgeometry --shell "$wid")"
-  # shellcheck disable=SC2086
-  eval "$geo"
-  local sx sy
-  sx="$(python3 -c "print(int(float('$X') + float('$x')))")"
-  sy="$(python3 -c "print(int(float('$Y') + float('$y')))")"
-  # XTEST pointer events. `click --window` is XSendEvent, which winit drops,
-  # so the press never reaches the permission sheet.
-  xdotool mousemove --sync "$sx" "$sy"
+  local ix iy
+  ix="$(python3 -c "print(int(float('$x')))")"
+  iy="$(python3 -c "print(int(float('$y')))")"
+  # Move in the window's client coordinates, then click with XTEST.
+  # Adding getwindowgeometry's origin is the outer frame: on this X server
+  # that sits one permission-button row below the client, so an Allow once
+  # click lands on Deny. `click --window` is XSendEvent, which winit drops.
+  xdotool mousemove --window "$wid" --sync "$ix" "$iy"
   xdotool click 1
 }
 

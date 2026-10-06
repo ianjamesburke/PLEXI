@@ -192,12 +192,10 @@ fn monitor() -> Arc<PermissionMonitor> {
     PermissionMonitor::for_profile(&crate::config::config_dir())
 }
 
-/// `PlexiApp::new_for_test` gives every harness the same context id, and the
-/// process-global tool registry treats that id as one audience. Pane-id blocks
-/// stop two tests from overwriting the same key; they do not stop a second
-/// chess pane in another harness from withdrawing the bare `chess.play` name
-/// or from receiving a call this harness is not pumping. Move this harness's
-/// window and its router context together, before any app registers tools.
+/// Move this harness onto a fresh context id before any app registers tools.
+/// `HostHarness::new` already assigns a process-unique id; this second move
+/// keeps a permission test out of any namespace a scene or earlier launch
+/// still holds. The window and the router context move together.
 fn isolate_tool_context(h: &mut HostHarness) {
     static NEXT: AtomicU64 = AtomicU64::new(80_000);
     let context_id = NEXT.fetch_add(1, Ordering::SeqCst);
@@ -520,8 +518,12 @@ fn start_mcp(h: &HostHarness, context_id: u64, workspace: &Path) -> (u16, String
         "permission-gate-mcp",
     );
     let port = crate::app::host_mcp::start_host_mcp_server(tx, &crate::config::config_dir()).unwrap();
+    // `register_pane_credential` returns the existing token for a pane id and
+    // retargets it. A `context_id % 1000` key collides across harnesses and
+    // hands one test another test's caller.
+    static NEXT_MCP_PANE: AtomicU64 = AtomicU64::new(880_000);
     let token = crate::app::host_mcp::register_pane_credential_for_test(
-        880_000 + (context_id % 1000),
+        NEXT_MCP_PANE.fetch_add(1, Ordering::SeqCst),
         context_id,
         workspace.to_path_buf(),
     );
@@ -848,6 +850,7 @@ fn second_chess_pane_routes_by_instance() {
         .expect("forced second chess pane")
         .expect("pane id");
     h.wait_for_first_render(second);
+    h.wait_for_exposed_tools(second);
     pump_until(&mut h, |harness| {
         chess_play_names(harness)
             .iter()
