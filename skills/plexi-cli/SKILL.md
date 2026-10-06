@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.8"
+skill_version: "5.0.9"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -52,7 +52,8 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Contexts** — create or enter scoped project spaces, including pre-populated
   sub-contexts: `plexi context --help`.
 - **Apps** — scaffold, check, test, open, package, install, and inspect apps:
-  `plexi app --help`.
+  `plexi app --help`. `plexi app info <id>` prints the manifest and the tools
+  declared in that app's source.
 - **App state** — read or replace a file-backed app's state document, so a human
   and an agent can drive the same app: `plexi app state --help`. Only apps that
   declare a `[state]` section are addressable; the path is resolved from the

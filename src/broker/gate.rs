@@ -162,17 +162,6 @@ pub enum PermissionMutation {
     Rejected { entry_id: String, error: String },
 }
 
-/// Steps a person can actually take. The Assistant prompt, `host.help`, and
-/// denied tool results all use this text so none of them invent UI.
-pub const PERMISSION_GUIDANCE: &str = "\
-A Deny click refuses only that call. The next call asks again. Always deny is a separate choice and stays stored until you change it. \
-To review or undo a stored decision, open the Permissions app with `plexi app open permissions`, or run `plexi permissions list`. \
-Reset a denial with `plexi permissions reset <id>`. Remove an allow with `plexi permissions revoke <id>`. \
-Allow a denial with `plexi permissions allow <id>` from a human terminal. \
-An agent, an MCP client, or an Assistant tool cannot widen permissions; that files a Needs you item (`plexi needs-you list`). \
-Do not invent Plexi controls. There is no gear icon, command palette, or Cmd+Shift+P for permissions. \
-If you are not sure a Plexi control exists, say so and offer to open the Permissions app.";
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingView {
     pub pending_request_id: String,
@@ -2110,7 +2099,7 @@ pub fn structured_error(code: &str, call_id: &str, pending_request_id: Option<&s
         "retry": retry,
     });
     if code == "permission_denied" {
-        error["undo"] = serde_json::json!(PERMISSION_GUIDANCE);
+        error["undo"] = serde_json::json!(crate::cli::introspect::permission_undo_text());
     }
     serde_json::json!({
         "schema_version": SCHEMA,
@@ -2467,7 +2456,8 @@ mod tests {
         );
         let denied = structured_error("permission_denied", "call-1", None);
         assert!(denied.contains("plexi permissions list"), "{denied}");
-        assert!(denied.contains("plexi app open permissions"), "{denied}");
+        assert!(denied.contains("plexi permissions reset"), "{denied}");
+        assert!(!denied.contains("gear"), "{denied}");
     }
 
     fn needs_you_decisions(monitor: &PermissionMonitor, decision: &str) -> usize {

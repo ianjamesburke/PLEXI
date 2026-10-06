@@ -1466,6 +1466,11 @@ pub fn app_info(id: &str) -> i32 {
         eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
         return 1;
     };
+    let app_dir = installed
+        .bin_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| installed.bin_path.clone());
     let m = &installed.manifest;
     println!("id:          {}", m.id);
     println!("name:        {}", m.name);
@@ -1480,6 +1485,16 @@ pub fn app_info(id: &str) -> i32 {
     if let Some(ref repo) = m.repo {
         println!("repo:        {repo}");
     }
+    let tools = crate::cli::introspect::declared_tools(&app_dir);
+    println!("tools:");
+    if tools.is_empty() {
+        println!("  (none declared)");
+    } else {
+        for (name, description) in &tools {
+            println!("  {name}  {description}");
+        }
+    }
+    log::info!("app_info: id={id} tools={}", tools.len());
     0
 }
 

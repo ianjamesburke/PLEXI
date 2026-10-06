@@ -359,6 +359,24 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
+/// Tools currently exposed by live app panes: app id, pane id, tool name, description.
+pub(crate) fn live_exposed_tools() -> Vec<(String, u64, String, String)> {
+    let registry = global_registry().lock().unwrap_or_else(|error| error.into_inner());
+    let mut tools = Vec::new();
+    for (pane_id, entry) in &registry.entries {
+        for tool in &entry.tools {
+            tools.push((
+                entry.app_id.clone(),
+                *pane_id,
+                tool.name.clone(),
+                tool.description.clone(),
+            ));
+        }
+    }
+    tools.sort_by(|left, right| left.0.cmp(&right.0).then(left.2.cmp(&right.2)));
+    tools
+}
+
 // ── Pending calls ────────────────────────────────────────────────────────────
 
 /// Result returned to the broker by a completed tool call.

@@ -198,6 +198,7 @@ pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<Re
 pub mod args;
 pub mod crawl;
 pub mod help;
+pub mod introspect;
 pub mod registry;
 pub mod setup;
 #[cfg(test)]
