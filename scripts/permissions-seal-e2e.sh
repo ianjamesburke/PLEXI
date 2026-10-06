@@ -22,6 +22,9 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: missing binary $BIN (run just build first)" >&2
   exit 1
 fi
+export BIN
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/human.sh"
 
 # A channel-named binary (`plexi-pr-2718`, `plexi-alpha`) ignores PLEXI_CHANNEL.
 # A bare `plexi` adopts it. The profile dir has to match whichever one is running.
@@ -34,7 +37,7 @@ else
 fi
 
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${MOCK_PID:-}" ]]; then kill "$MOCK_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; fi; "$BIN" host stop >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -69,8 +72,7 @@ stop_host() {
 }
 
 start_host() {
-  unset DISPLAY
-  if command -v xvfb-run >/dev/null 2>&1; then
+  if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
     setsid xvfb-run -a "$BIN" >"$WORK/host.log" 2>&1 &
   else
     setsid "$BIN" >"$WORK/host.log" 2>&1 &
@@ -171,7 +173,7 @@ SAVED_BUS="${DBUS_SESSION_BUS_ADDRESS:-}"
 SAVED_PID="${DBUS_SESSION_BUS_PID:-}"
 
 echo "phase A: Linux-style refusal when Secret Service is not on the bus"
-unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID || true
+unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID DISPLAY || true
 plant_forge
 echo "starting host without a session bus"
 start_host
@@ -249,6 +251,344 @@ PY
   assert_direct_read_fails
   echo "phase B passed"
   stop_host
+fi
+
+# Contract step 4: a real pointer click grants, the Permissions app and
+# `permissions list` show that row, then a real click revokes it. The next
+# call asks. This never calls `permissions allow`.
+click_grant_and_revoke() {
+  if ! command -v xdotool >/dev/null 2>&1; then
+    echo "error: xdotool is required for HUMAN_APPROVE" >&2
+    exit 1
+  fi
+  local display=":147"
+  local n
+  for n in $(seq 147 170); do
+    if [[ ! -e "/tmp/.X${n}-lock" ]]; then
+      display=":$n"
+      break
+    fi
+  done
+  Xvfb "$display" -screen 0 1400x900x24 >"$WORK/xvfb.log" 2>&1 &
+  XVFB_PID=$!
+  export DISPLAY="$display"
+  local i
+  for i in $(seq 1 50); do
+    if [[ -S "/tmp/.X11-unix/X${display#:}" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  local port=18765
+  export MOCK_CONTROL="$WORK/mock.json"
+  export MOCK_PORT="$port"
+  python3 - "$MOCK_CONTROL" 'panes.list' '{}' <<'PY'
+import json, sys
+open(sys.argv[1], "w").write(json.dumps({"tool_substr": sys.argv[2], "arguments": json.loads(sys.argv[3])}))
+PY
+  cat >"$WORK/mock_model.py" <<'PY'
+import json, os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+CONTROL = os.environ["MOCK_CONTROL"]
+PORT = int(os.environ["MOCK_PORT"])
+CALLS = {"n": 0}
+
+def control():
+    try:
+        return json.load(open(CONTROL, encoding="utf-8"))
+    except OSError:
+        return {}
+
+def sse(payload):
+    return f"data: {json.dumps(payload)}\n\n".encode()
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, fmt, *args):
+        return
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        try:
+            body = json.loads(raw.decode() or "{}")
+        except json.JSONDecodeError:
+            body = {}
+        messages = body.get("messages") or []
+        tools = body.get("tools") or []
+        if any(m.get("role") == "tool" for m in messages):
+            content = "ok"
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": content}}]},
+                {"choices": [{"index": 0, "finish_reason": "stop"}]},
+            ]
+        else:
+            spec = control()
+            want = spec.get("tool_substr", "")
+            chosen = None
+            for tool in tools:
+                fn = (tool.get("function") or {}).get("name") or ""
+                if want and want in fn:
+                    chosen = fn
+                    break
+            if chosen is None:
+                chunks = [
+                    {"choices": [{"index": 0, "delta": {"content": f"no tool matching {want}"}}]},
+                    {"choices": [{"index": 0, "finish_reason": "stop"}]},
+                ]
+            else:
+                CALLS["n"] += 1
+                arguments = json.dumps(spec.get("arguments") or {})
+                cid = f"call_seal_{CALLS['n']}"
+                chunks = [
+                    {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": cid, "function": {"name": chosen, "arguments": ""}}]}}]},
+                    {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": arguments}}]}}]},
+                    {"choices": [{"index": 0, "finish_reason": "tool_calls"}]},
+                ]
+        blob = b"".join(sse(chunk) for chunk in chunks) + b"data: [DONE]\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(blob)))
+        self.end_headers()
+        self.wfile.write(blob)
+
+ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+PY
+  python3 "$WORK/mock_model.py" >"$WORK/mock.log" 2>&1 &
+  MOCK_PID=$!
+  sleep 0.2
+  python3 - "$PROFILE/config.toml" "$port" <<'PY'
+import sys
+from pathlib import Path
+path, port = Path(sys.argv[1]), sys.argv[2]
+path.parent.mkdir(parents=True, exist_ok=True)
+text = path.read_text() if path.exists() else ""
+if 'backend = "openrouter"' in text:
+    text = text.replace('backend = "openrouter"', 'backend = "local"', 1)
+elif "[ai]" not in text:
+    text = '[ai]\nbackend = "local"\n' + text
+elif 'backend = "local"' not in text:
+    text = text.replace("[ai]\n", '[ai]\nbackend = "local"\n', 1)
+marker = "\n# seal e2e local mock\n"
+if marker not in text:
+    text += f"""{marker}
+[ai.local]
+base_url = "http://127.0.0.1:{port}"
+model_low = "mock-seal"
+model_medium = "mock-seal"
+model_high = "mock-seal"
+"""
+path.write_text(text)
+PY
+  local ws="$WORK/ws-click"
+  mkdir -p "$ws"
+  echo "starting host on $DISPLAY for the permission click"
+  "$BIN" host stop >/dev/null 2>&1 || true
+  rm -f "$SOCKET"
+  if ! "$BIN" host start --ephemeral --timeout-secs 90 --pane "cwd=$ws" >"$WORK/host-start.out" 2>"$WORK/host-start.err"; then
+    echo "error: host start failed" >&2
+    cat "$WORK/host-start.err" >&2 || true
+    exit 1
+  fi
+  "$BIN" context set-root "$ws" >"$WORK/set-root.out" 2>"$WORK/set-root.err" || {
+    echo "error: context set-root failed" >&2
+    cat "$WORK/set-root.err" >&2
+    exit 1
+  }
+  "$BIN" app install "$ROOT/apps/permissions" --yes >"$WORK/perm-install.out" 2>"$WORK/perm-install.err" || {
+    echo "error: Permissions app install failed" >&2
+    cat "$WORK/perm-install.err" >&2
+    exit 1
+  }
+  "$BIN" app open assistant >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
+  local assist=""
+  for _ in $(seq 1 20); do
+    "$BIN" pane list >"$WORK/panes.json" 2>/dev/null || true
+    assist="$(python3 - "$WORK/panes.json" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+hits=[str(r["id"]) for r in rows if r.get("type")=="app" and "assistant" in str(r.get("title","")).lower()]
+print(hits[-1] if hits else "")
+PY
+)"
+    [[ -n "$assist" ]] && break
+    sleep 1
+  done
+  if [[ -z "$assist" ]]; then
+    echo "error: assistant pane did not open" >&2
+    cat "$WORK/open-assistant.err" "$WORK/panes.json" >&2 || true
+    exit 1
+  fi
+  "$BIN" pane focus "$assist" >/dev/null 2>&1 || true
+  "$BIN" assistant send --pane-id "$assist" --text "List panes." --request-id seal-grant --json >"$WORK/grant-send.json" 2>"$WORK/grant-send.err" &
+  local send_pid=$!
+  local pending=""
+  for _ in $(seq 1 45); do
+    "$BIN" assistant permission list >"$WORK/grant-pending.json" 2>/dev/null || true
+    pending="$(python3 - "$WORK/grant-pending.json" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit
+for row in data.get("pending") or []:
+    blob=json.dumps(row)
+    if "panes.list" in blob:
+        print(row.get("pending_request_id",""))
+        raise SystemExit
+print("")
+PY
+)"
+    [[ -n "$pending" ]] && break
+    sleep 1
+  done
+  if [[ -z "$pending" ]]; then
+    echo "error: no pending grant for the Permissions app" >&2
+    cat "$WORK/grant-pending.json" "$WORK/grant-send.err" >&2 || true
+    wait "$send_pid" || true
+    exit 1
+  fi
+  echo "HUMAN_APPROVE grant pending $pending"
+  if ! HUMAN_APPROVE "$pending" always; then
+    echo "error: HUMAN_APPROVE did not grant $pending" >&2
+    wait "$send_pid" || true
+    exit 1
+  fi
+  wait "$send_pid" || true
+  local grant_id=""
+  for _ in $(seq 1 20); do
+    "$BIN" permissions list --json >"$WORK/grant-list.json" 2>/dev/null || true
+    grant_id="$(python3 - "$WORK/grant-list.json" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+items=rows if isinstance(rows, list) else rows.get("entries") or rows.get("permissions") or []
+for row in items:
+    if row.get("kind")=="allow" and "panes.list" in json.dumps(row):
+        print(row.get("id",""))
+        raise SystemExit
+print("")
+PY
+)"
+    [[ -n "$grant_id" ]] && break
+    sleep 0.5
+  done
+  if [[ -z "$grant_id" ]]; then
+    echo "error: permissions list has no allow row after the click" >&2
+    cat "$WORK/grant-list.json" >&2 || true
+    exit 1
+  fi
+  "$BIN" app open permissions >"$WORK/open-permissions.out" 2>"$WORK/open-permissions.err" || true
+  local saw_app=0
+  for _ in $(seq 1 30); do
+    "$BIN" pane list >"$WORK/perm-panes.json" 2>/dev/null || true
+    local perm_pane
+    perm_pane="$(python3 - "$WORK/perm-panes.json" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+hits=[str(r["id"]) for r in rows if r.get("type")=="app" and "permission" in str(r.get("title","")).lower()]
+print(hits[-1] if hits else "")
+PY
+)"
+    if [[ -n "$perm_pane" ]]; then
+      "$BIN" pane state "$perm_pane" >"$WORK/perm-state.json" 2>/dev/null || true
+      if grep -q "$grant_id" "$WORK/perm-state.json"; then
+        saw_app=1
+        break
+      fi
+    fi
+    sleep 1
+  done
+  if [[ "$saw_app" != 1 ]]; then
+    echo "error: Permissions app did not show grant $grant_id" >&2
+    cat "$WORK/open-permissions.err" "$WORK/perm-state.json" >&2 || true
+    exit 1
+  fi
+  echo "permissions list and the Permissions app show $grant_id"
+  python3 - "$MOCK_CONTROL" 'permissions.revoke' "$(python3 -c 'import json,sys; print(json.dumps({"id": sys.argv[1]}))' "$grant_id")" <<'PY'
+import json, sys
+open(sys.argv[1], "w").write(json.dumps({"tool_substr": sys.argv[2], "arguments": json.loads(sys.argv[3])}))
+PY
+  "$BIN" assistant send --pane-id "$assist" --text "Revoke that grant." --request-id seal-revoke --json >"$WORK/revoke-send.json" 2>"$WORK/revoke-send.err" &
+  send_pid=$!
+  local revoke_pending=""
+  for _ in $(seq 1 45); do
+    "$BIN" assistant permission list >"$WORK/revoke-pending.json" 2>/dev/null || true
+    revoke_pending="$(python3 - "$WORK/revoke-pending.json" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit
+for row in data.get("pending") or []:
+    blob=json.dumps(row)
+    if "permissions.revoke" in blob:
+        print(row.get("pending_request_id",""))
+        raise SystemExit
+print("")
+PY
+)"
+    [[ -n "$revoke_pending" ]] && break
+    sleep 1
+  done
+  if [[ -z "$revoke_pending" ]]; then
+    echo "error: no pending revoke" >&2
+    cat "$WORK/revoke-pending.json" "$WORK/revoke-send.err" >&2 || true
+    wait "$send_pid" || true
+    exit 1
+  fi
+  echo "HUMAN_APPROVE revoke pending $revoke_pending"
+  if ! HUMAN_APPROVE "$revoke_pending" once; then
+    echo "error: HUMAN_APPROVE did not revoke $revoke_pending" >&2
+    wait "$send_pid" || true
+    exit 1
+  fi
+  wait "$send_pid" || true
+  "$BIN" permissions list --json >"$WORK/after-revoke.json"
+  if grep -q "$grant_id" "$WORK/after-revoke.json"; then
+    echo "error: grant $grant_id still listed after revoke" >&2
+    cat "$WORK/after-revoke.json" >&2
+    exit 1
+  fi
+  python3 - "$MOCK_CONTROL" <<'PY'
+import json, sys
+open(sys.argv[1], "w").write(json.dumps({"tool_substr": "panes.list", "arguments": {}}))
+PY
+  "$BIN" assistant send --pane-id "$assist" --text "List panes again." --request-id seal-ask-again --json >"$WORK/again-send.json" 2>"$WORK/again-send.err" &
+  send_pid=$!
+  local again=""
+  for _ in $(seq 1 30); do
+    "$BIN" assistant permission list >"$WORK/again-pending.json" 2>/dev/null || true
+    again="$(python3 - "$WORK/again-pending.json" <<'PY'
+import json, sys
+try:
+    data=json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit
+for row in data.get("pending") or []:
+    if "panes.list" in json.dumps(row):
+        print(row.get("pending_request_id",""))
+        raise SystemExit
+print("")
+PY
+)"
+    [[ -n "$again" ]] && break
+    sleep 1
+  done
+  if [[ -z "$again" ]]; then
+    echo "error: the next call did not ask" >&2
+    cat "$WORK/again-pending.json" "$WORK/again-send.err" >&2 || true
+    wait "$send_pid" || true
+    exit 1
+  fi
+  echo "next call asks again ($again)"
+  # Leave the ask pending. A deny click closes the turn without granting.
+  HUMAN_DENY "$again" || true
+  wait "$send_pid" || true
+  "$BIN" host stop >/dev/null 2>&1 || true
+  echo "grant and revoke were HUMAN_APPROVE clicks"
+}
+
+if [[ -n "${SAVED_BUS:-}" || "$(uname -s)" != "Linux" ]]; then
+  click_grant_and_revoke
 fi
 
 echo "permissions-seal-e2e passed"
