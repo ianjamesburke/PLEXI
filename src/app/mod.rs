@@ -841,6 +841,7 @@ pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> Vec<u32> {
 /// `LOCAL_PEERPID` is a `SOL_LOCAL` option. On macOS that level is 0, and the
 /// call is only valid for an `AF_UNIX` (`1`) `SOCK_STREAM` (`1`). Any other
 /// fd returns `ENOTSOCK` / `EINVAL` and must not be queried.
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn local_peerpid_level(domain: i32, sock_type: i32) -> Option<i32> {
     const AF_UNIX: i32 = 1;
     const SOCK_STREAM: i32 = 1;
@@ -853,6 +854,7 @@ pub(crate) fn local_peerpid_level(domain: i32, sock_type: i32) -> Option<i32> {
 
 /// First failure is a warning. Later failures on other connections are debug,
 /// so a kernel that rejects the option cannot fill `plexi.log`.
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn take_peer_pid_warning(already: &std::sync::atomic::AtomicBool) -> bool {
     !already.swap(true, std::sync::atomic::Ordering::Relaxed)
 }

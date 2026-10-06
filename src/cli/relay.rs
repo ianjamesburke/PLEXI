@@ -1119,6 +1119,7 @@ fn try_session_lock() -> Result<fs::File, String> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)
         .map_err(|error| format!("relay lock: {error}"))?;
     match file.try_lock() {
