@@ -95,7 +95,7 @@ Open an Assistant pane bound to one head in the active context.
 
 ### `command_view`
 
-Read or steer the command view. `op` is `list` or `open` here; later steer ops share this request.
+Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`. Send starts a real lead turn. Cancel sto...
 
 | Field | Type | Required |
 |-------|------|----------|
