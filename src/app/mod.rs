@@ -3220,6 +3220,11 @@ impl eframe::App for PlexiApp {
         // next uncovered (stint 0505 fix round 3).
         self.update_preamble(ctx);
 
+        // Change-set preview is host state the editor and `plexi changes`
+        // both read. It has to run off the paint path so an occluded window
+        // still publishes open buffers and a pending diff.
+        self.sync_editor_change_sets();
+
         // Hot reload (#83): drain any pending file-watcher reload requests.
         // Each `ReloadRequest` causes the matching pane's WASM runtime to be
         // dropped (sending Shutdown + reaping the child) and replaced with

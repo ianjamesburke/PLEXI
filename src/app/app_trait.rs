@@ -374,6 +374,17 @@ pub trait App: Send {
         Err("this app does not accept file drops".to_string())
     }
 
+    /// Pull a prepared file edit into this pane. The text editor previews it
+    /// and leaves the buffer alone until a pointer click accepts it.
+    fn sync_change_set(&mut self) -> bool {
+        false
+    }
+
+    /// Open-buffer snapshot for change-set conflict checks. Other apps have none.
+    fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
+        None
+    }
+
     /// Concrete-type access for host tests that assert on app-internal state
     /// through `AppRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer
     /// is `HostHarness` (`src/testing/`), which is `#[cfg(test)]`.

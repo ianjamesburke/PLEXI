@@ -2070,6 +2070,40 @@ pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>
     }
 }
 
+/// Run one Assistant host tool on the connected host and print the JSON reply.
+/// Exit 0 when the tool ran, 2 when the gate is waiting on a decision, 1 otherwise.
+pub fn assistant_tool_cli(name: &str, input_json: &str) -> i32 {
+    let response_file = crate::rpc::response_file("assistant-tool", "json");
+    let payload = serde_json::json!({
+        "type": "assistant_host_tool",
+        "name": name,
+        "input_json": input_json,
+        "response_file": response_file,
+    });
+    log::info!("assistant_tool:cli: name={name}");
+    let content = match super::request_with(
+        payload,
+        "assistant-tool",
+        "assistant tool",
+        std::time::Duration::from_secs(30),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|item| item.as_bool()) == Some(true) => 0,
+        Ok(value)
+            if value.get("error_code").and_then(|item| item.as_str())
+                == Some("permission_required") =>
+        {
+            2
+        }
+        Ok(_) => 1,
+        Err(_) => 1,
+    }
+}
+
 /// Fields of `submit_assistant_turn`. There is no approval, grant, or
 /// permission field: the host permission gate is the only authorizer.
 pub(crate) struct AssistantSendFields<'a> {

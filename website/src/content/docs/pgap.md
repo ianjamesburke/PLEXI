@@ -84,6 +84,16 @@ Open an Assistant pane bound to one head in the active context.
 | `head` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `assistant_host_tool`
+
+Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …) through the same permission gate the desktop ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `input_json` | `string` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `command_view`
 
 Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`. Send starts a real lead turn. Cancel sto...
