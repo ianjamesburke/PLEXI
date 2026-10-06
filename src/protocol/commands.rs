@@ -100,8 +100,8 @@ pub enum AppRequest {
         context_id: Option<u64>,
         response_file: String,
     },
-    /// Read or steer the command view. `op` is `list` or `open` here; later
-    /// steer ops share this request.
+    /// Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`.
+    /// Send starts a real lead turn. Cancel stops that run before the next tool.
     CommandView {
         op: String,
         #[serde(default)]

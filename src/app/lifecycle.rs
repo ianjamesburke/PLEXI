@@ -263,14 +263,33 @@ impl PlexiApp {
                 let workspace = payload.get("workspace").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
                     .or_else(crate::config::active_workspace_root)
                     .unwrap_or_else(|| self.router.active().root.clone());
+                let mut defer_reply = false;
                 let body = match op.as_str() {
                     "open" => match self.open_command_view(&workspace) {
                         Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
                         Err(error) => serde_json::json!({"ok": false, "error": error}),
                     },
+                    "send" => {
+                        let lead = payload.get("lead").and_then(|value| value.as_str()).unwrap_or("");
+                        let text = payload.get("text").and_then(|value| value.as_str()).unwrap_or("");
+                        let request_id = payload.get("request_id").and_then(|value| value.as_str()).unwrap_or("command-view");
+                        log::info!("command_view: send lead={lead} request_id={request_id}");
+                        let accepted = crate::agent::leads::submit_turn(&workspace, lead, text, request_id, response_file, None);
+                        if accepted.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+                            defer_reply = true;
+                        }
+                        accepted
+                    }
+                    "cancel" => {
+                        let run = payload.get("run").and_then(|value| value.as_str()).unwrap_or("");
+                        log::info!("command_view: cancel run={run}");
+                        crate::agent::queue::request_cancel_run(&workspace, run)
+                    }
                     _ => crate::agent::leads::projection(&workspace),
                 };
-                write_json_response(response_file, body);
+                if !defer_reply {
+                    write_json_response(response_file, body);
+                }
             }
             crate::protocol::AppRequest::AgentQueue { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agent_queue op={op}");

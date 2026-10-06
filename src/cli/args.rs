@@ -46,13 +46,17 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
-    /// Show every lead and its latest transcript line.
+    /// Show every lead, its runs, and its queue. Send and cancel steer those leads.
     ///
-    /// The rows come from the agents API head records and each head's
-    /// conversation. `open` shows the same projection in a pane.
+    /// The rows come from the agents API head records, runs, and each head's
+    /// conversation. `open` shows the same projection in a pane. `send` runs a
+    /// real model turn. `cancel` stops that run. `resolve` and `allow` never
+    /// grant, and an agent pane is refused.
     ///
     /// Example: plexi command-view --json
     /// Example: plexi command-view open
+    /// Example: plexi command-view send lead-a "status?"
+    /// Example: plexi command-view cancel run_example
     #[command(name = "command-view")]
     CommandView {
         #[command(subcommand)]
@@ -277,6 +281,37 @@ pub enum Commands {
 pub enum CommandViewCmd {
     /// Open the command view pane in the active context.
     Open,
+    /// Send text to a lead. The turn runs in that head's conversation.
+    ///
+    /// Example: plexi command-view send lead-a "status?"
+    Send {
+        /// Lead id
+        lead: String,
+        /// Prompt for that lead
+        text: String,
+    },
+    /// Stop a live run before its next tool call.
+    ///
+    /// Example: plexi command-view cancel run_example
+    Cancel {
+        /// Run id from `command-view --json`
+        run: String,
+    },
+    /// Resolve a pending approval. An agent pane is refused, and this command does not grant.
+    ///
+    /// Example: plexi command-view resolve pending_example
+    Resolve {
+        /// Pending request id
+        id: String,
+    },
+    /// Record an allow. An agent pane is refused, and this command does not grant.
+    ///
+    /// Example: plexi command-view allow --tool assistant.turn
+    Allow {
+        /// Tool name. Ignored. The command does not write a grant.
+        #[arg(long)]
+        tool: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

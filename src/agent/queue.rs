@@ -229,6 +229,107 @@ pub fn request_cancel(workspace: &Path, task_id: &str) -> Value {
     }
 }
 
+fn cancelled_path(workspace: &Path) -> PathBuf {
+    crate::agent::workspace_agents_dir(workspace).join("cancelled-runs.json")
+}
+
+fn with_cancelled<T>(
+    workspace: &Path,
+    write: bool,
+    body: impl FnOnce(&mut Vec<String>) -> T,
+) -> Result<T, String> {
+    let workspace = crate::platform::path::canonical_or_self(workspace);
+    let _guard = store().lock().unwrap_or_else(|error| error.into_inner());
+    let lock = lock_queue(&workspace)?;
+    let path = cancelled_path(&workspace);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    let mut ids = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        if raw.trim().is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&raw)
+                .map_err(|error| format!("parse {}: {error}", path.display()))?
+        }
+    } else {
+        Vec::new()
+    };
+    let value = body(&mut ids);
+    if write {
+        let raw = serde_json::to_string_pretty(&ids).map_err(|error| error.to_string())?;
+        let tmp = path.with_extension("json.tmp");
+        {
+            let mut file = fs::File::create(&tmp)
+                .map_err(|error| format!("create {}: {error}", tmp.display()))?;
+            file.write_all(raw.as_bytes())
+                .map_err(|error| format!("write {}: {error}", tmp.display()))?;
+            file.sync_all()
+                .map_err(|error| format!("sync {}: {error}", tmp.display()))?;
+        }
+        fs::rename(&tmp, &path).map_err(|error| format!("rename {}: {error}", path.display()))?;
+    }
+    drop(lock);
+    Ok(value)
+}
+
+/// Stop a live run. The model loop reads this before it admits the next tool.
+pub fn request_cancel_run(workspace: &Path, run_id: &str) -> Value {
+    let workspace = crate::platform::path::canonical_or_self(workspace);
+    if run_id.is_empty() {
+        return json!({"ok": false, "error_code": "invalid_argument", "error": "run id is required"});
+    }
+    let shown = crate::agent::heads::handle_request(
+        "show_run",
+        &json!({"workspace": workspace, "id": run_id}),
+    );
+    if shown.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return shown;
+    }
+    let stored = with_cancelled(&workspace, true, |ids| {
+        if !ids.iter().any(|id| id == run_id) {
+            ids.push(run_id.to_string());
+        }
+    });
+    if let Err(error) = stored {
+        return json!({"ok": false, "error_code": "io_error", "error": error});
+    }
+    let _ = with_tasks(&workspace, true, |tasks| {
+        for task in tasks.iter_mut() {
+            if task.run_id == run_id && task.state == "running" {
+                task.cancel = true;
+                task.updated_at = now();
+            }
+        }
+    });
+    log::info!("queue: cancel run={run_id}");
+    json!({"ok": true, "run_id": run_id, "state": "cancelled"})
+}
+
+pub fn run_cancel_requested(workspace: &Path, run_id: &str) -> bool {
+    if run_id.is_empty() {
+        return false;
+    }
+    let workspace = crate::platform::path::canonical_or_self(workspace);
+    with_cancelled(&workspace, false, |ids| ids.iter().any(|id| id == run_id)).unwrap_or(false)
+}
+
+pub fn attach_run(workspace: &Path, task_id: &str, run_id: &str) {
+    let workspace = crate::platform::path::canonical_or_self(workspace);
+    let result = with_tasks(&workspace, true, |tasks| {
+        if let Some(task) = tasks.iter_mut().find(|task| task.id == task_id) {
+            task.run_id = run_id.to_string();
+            task.updated_at = now();
+        }
+    });
+    if let Err(error) = result {
+        log::error!("queue: attach run {run_id} to {task_id} failed: {error}");
+    }
+}
+
 pub fn cancel_requested(workspace: &Path, task_id: &str) -> bool {
     let workspace = crate::platform::path::canonical_or_self(workspace);
     with_tasks(&workspace, false, |tasks| {

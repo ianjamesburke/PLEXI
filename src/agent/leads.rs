@@ -308,6 +308,19 @@ pub fn pane_lines(workspace: &Path) -> Vec<String> {
             lines.push(format!("task {id} {head} {state}"));
         }
     }
+    if let Some(runs) = body.get("runs").and_then(|value| value.as_array()) {
+        for run in runs {
+            if run.get("active").and_then(|value| value.as_bool()) != Some(true) {
+                continue;
+            }
+            let id = run.get("id").and_then(|value| value.as_str()).unwrap_or("");
+            let head = run
+                .get("head_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            lines.push(format!("run {id} {head} running"));
+        }
+    }
     if lines.is_empty() {
         lines.push("no leads".to_string());
     }
@@ -467,11 +480,17 @@ fn run_job(job: &Job) -> Value {
             "head": job.head,
         });
     }
+    if let Some(task_id) = job.task_id.as_deref() {
+        if !run_id.is_empty() {
+            crate::agent::queue::attach_run(&job.workspace, task_id, &run_id);
+        }
+    }
     let done = run_model_turn(
         &job.workspace,
         &job.head,
         &job.text,
         job.task_id.as_deref(),
+        Some(run_id.as_str()).filter(|id| !id.is_empty()),
         &mut http_complete,
     );
     if let Some(task_id) = &job.task_id {
@@ -518,6 +537,7 @@ fn run_model_turn(
     head: &str,
     text: &str,
     task_id: Option<&str>,
+    run_id: Option<&str>,
     model: &mut dyn FnMut(&[Value]) -> Result<ModelReply, String>,
 ) -> TurnDone {
     let workspace_buf = canonical_workspace(workspace);
@@ -584,7 +604,7 @@ fn run_model_turn(
     }
 
     for round in 0..MAX_TOOL_ROUNDS {
-        if stop_if_cancelled(workspace, head, task_id) {
+        if stop_if_cancelled(workspace, head, task_id, run_id) {
             return TurnDone {
                 state: "cancelled",
                 reply: String::new(),
@@ -617,7 +637,7 @@ fn run_model_turn(
             messages.push(json!({"role": "assistant", "content": reply.text}));
         }
         for call in reply.tool_calls {
-            if stop_if_cancelled(workspace, head, task_id) {
+            if stop_if_cancelled(workspace, head, task_id, run_id) {
                 return TurnDone {
                     state: "cancelled",
                     reply: String::new(),
@@ -816,14 +836,22 @@ fn admit(workspace: &Path, actor: &str, tool: &str, input_json: &str, call_id: &
     })
 }
 
-fn stop_if_cancelled(workspace: &Path, head: &str, task_id: Option<&str>) -> bool {
-    let Some(task_id) = task_id else {
-        return false;
-    };
-    if !crate::agent::queue::cancel_requested(workspace, task_id) {
+fn stop_if_cancelled(
+    workspace: &Path,
+    head: &str,
+    task_id: Option<&str>,
+    run_id: Option<&str>,
+) -> bool {
+    let task_hit = task_id.is_some_and(|id| crate::agent::queue::cancel_requested(workspace, id));
+    let run_hit = run_id.is_some_and(|id| crate::agent::queue::run_cancel_requested(workspace, id));
+    if !task_hit && !run_hit {
         return false;
     }
-    log::info!("lead: cancelled before the next tool head={head} task={task_id}");
+    log::info!(
+        "lead: cancelled before the next tool head={head} task={} run={}",
+        task_id.unwrap_or(""),
+        run_id.unwrap_or("")
+    );
     true
 }
 
@@ -1049,8 +1077,22 @@ mod tests {
         let fixture = Fixture::new();
         fixture.create("lead-a", &["assistant.turn=allow"]);
         fixture.create("lead-b", &["assistant.turn=allow"]);
-        let a = run_model_turn(fixture.ws(), "lead-a", "remember 7", None, &mut scripted);
-        let b = run_model_turn(fixture.ws(), "lead-b", "what number?", None, &mut scripted);
+        let a = run_model_turn(
+            fixture.ws(),
+            "lead-a",
+            "remember 7",
+            None,
+            None,
+            &mut scripted,
+        );
+        let b = run_model_turn(
+            fixture.ws(),
+            "lead-b",
+            "what number?",
+            None,
+            None,
+            &mut scripted,
+        );
         assert_eq!(a.state, "succeeded");
         assert_eq!(a.reply, "Noted 7");
         assert_eq!(b.state, "succeeded");
@@ -1080,7 +1122,14 @@ mod tests {
             &["assistant.turn=allow", "leads.conversation.read=allow"],
         );
         fixture.create("lead-b", &["assistant.turn=allow"]);
-        run_model_turn(fixture.ws(), "lead-b", "remember 7", None, &mut scripted);
+        run_model_turn(
+            fixture.ws(),
+            "lead-b",
+            "remember 7",
+            None,
+            None,
+            &mut scripted,
+        );
         let mut model = |messages: &[Value]| {
             let blob = serde_json::to_string(messages).unwrap_or_default();
             if blob.contains("read-other") && !blob.contains("a lead cannot read another lead") {
@@ -1100,6 +1149,7 @@ mod tests {
             fixture.ws(),
             "lead-a",
             "read-other lead-b",
+            None,
             None,
             &mut model,
         );
@@ -1135,7 +1185,7 @@ mod tests {
                 }],
             })
         };
-        let done = run_model_turn(fixture.ws(), "lead-a", "write it", None, &mut model);
+        let done = run_model_turn(fixture.ws(), "lead-a", "write it", None, None, &mut model);
         assert_eq!(done.state, "permission_required");
         assert!(!fixture.ws().join("secret.txt").exists());
     }
@@ -1176,6 +1226,7 @@ mod tests {
             fixture.ws(),
             "lead-a",
             "write then message",
+            None,
             None,
             &mut model,
         );
@@ -1228,6 +1279,7 @@ mod tests {
             "lead-a",
             "long-task",
             Some(&task_id),
+            None,
             &mut model,
         );
         assert_eq!(done.state, "cancelled", "{:?}", done.error);
@@ -1235,5 +1287,73 @@ mod tests {
             .unwrap_or_default();
         let uses = audit.matches("\"operation_id\":\"lead.step\"").count();
         assert_eq!(uses, 1, "{audit}");
+    }
+
+    #[test]
+    fn cancel_run_stops_before_the_next_tool_is_admitted() {
+        let fixture = Fixture::new();
+        fixture.create("lead-a", &["assistant.turn=allow", "lead.step=allow"]);
+        let spawned = crate::agent::heads::handle_request(
+            "spawn_run",
+            &json!({
+                "workspace": fixture.ws(),
+                "head": "lead-a",
+                "kind": "output",
+                "admission": "adm-cancel-run",
+            }),
+        );
+        assert_eq!(
+            spawned.get("ok").and_then(|value| value.as_bool()),
+            Some(true),
+            "{spawned}"
+        );
+        let run_id = spawned["run"]["id"].as_str().unwrap().to_string();
+        let mut calls = 0;
+        let ws = fixture.ws().to_path_buf();
+        let flag = run_id.clone();
+        let mut model = move |_messages: &[Value]| {
+            calls += 1;
+            if calls == 1 {
+                Ok(ModelReply {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_step_1".to_string(),
+                        name: "lead.step".to_string(),
+                        arguments: r#"{"n":0}"#.to_string(),
+                    }],
+                })
+            } else {
+                let cancelled = crate::agent::queue::request_cancel_run(&ws, &flag);
+                assert_eq!(
+                    cancelled.get("ok").and_then(|value| value.as_bool()),
+                    Some(true),
+                    "{cancelled}"
+                );
+                Ok(ModelReply {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_step_2".to_string(),
+                        name: "lead.step".to_string(),
+                        arguments: r#"{"n":1}"#.to_string(),
+                    }],
+                })
+            }
+        };
+        let done = run_model_turn(
+            fixture.ws(),
+            "lead-a",
+            "long-task",
+            None,
+            Some(&run_id),
+            &mut model,
+        );
+        assert_eq!(done.state, "cancelled", "{:?}", done.error);
+        let audit = fs::read_to_string(fixture.profile().join("permission-audit.jsonl"))
+            .unwrap_or_default();
+        assert_eq!(
+            audit.matches("\"operation_id\":\"lead.step\"").count(),
+            1,
+            "{audit}"
+        );
     }
 }
