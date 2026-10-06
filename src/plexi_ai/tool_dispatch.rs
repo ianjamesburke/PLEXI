@@ -359,6 +359,19 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
+/// Whether `pane_id` currently has tools in the process-global registry.
+/// Harnesses wait on this after the first render: `ExposeTools` can land a
+/// frame later when several guests start at once, and a call before that
+/// answers `tool_not_found`.
+#[cfg(test)]
+pub(crate) fn pane_has_registered_tools(pane_id: u64) -> bool {
+    global_registry()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .entries
+        .contains_key(&pane_id)
+}
+
 // ── Pending calls ────────────────────────────────────────────────────────────
 
 /// Result returned to the broker by a completed tool call.
