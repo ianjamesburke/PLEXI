@@ -188,7 +188,7 @@ if [[ "$DENIED_TEXT" == *"blocked"* && "$DENIED_TEXT" == *"permission_denied"* ]
   fi
 fi
 
-if DUMP="$(docker exec "$AGENT" python -c 'import os, pathlib, sys
+if docker exec "$AGENT" python -c 'import os, pathlib, sys
 roots = ["/tenant", "/opt/house", "/root", "/home", "/etc"]
 for key, value in os.environ.items():
     sys.stdout.write(f"{key}={value}\n")
@@ -201,11 +201,11 @@ for root in roots:
             continue
         sys.stdout.buffer.write(item.read_bytes())
         sys.stdout.buffer.write(b"\n")
-')"; then
+' > /tmp/house-dump.bin; then
   MOUNTS="$(docker inspect -f '{{range .Mounts}}{{.Type}} {{.Source}} {{.Destination}}{{println}}{{end}}' "$AGENT")"
   echo "mounts: $MOUNTS"
-  if [[ "$DUMP" != *"$CANARY"* \
-    && "$MOUNTS" != *"$TMP_HOME"* \
+  if ! grep -a -q -F "$CANARY" /tmp/house-dump.bin \
+    && [[ "$MOUNTS" != *"$TMP_HOME"* \
     && "$MOUNTS" != *"docker.sock"* \
     && "$MOUNTS" == *"volume"* \
     && "$MOUNTS" == *"/tenant"* \
