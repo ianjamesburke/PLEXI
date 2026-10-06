@@ -1187,7 +1187,7 @@ fn spawn_real_terminal_pane(
     context_id: u64,
 ) -> Option<(crate::spatial::tiling::PaneId, u32, u64, u64)> {
     let before = h.app.windows.len();
-    h.app.create_page_at(grid_x, grid_y, context_id, None, false, None);
+    h.app.create_page_at(grid_x, grid_y, context_id, None, false, None, false);
     if h.app.windows.len() == before {
         return None; // no PTY in this environment
     }
