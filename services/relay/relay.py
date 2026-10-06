@@ -13,7 +13,7 @@ last_seen, revoked, a hash of the host token, and queued-envelope metadata
 pairing code, or a raw token. Unset, the registry stays in memory.
 `PairingRegistry.retain` deletes rows older than 30 days.
 
-This process does not deploy itself. See DEPLOY.md for the staging note.
+This process does not deploy itself.
 """
 
 from __future__ import annotations
