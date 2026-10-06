@@ -15,7 +15,23 @@ HOME_DIR="$WORK/home"
 DIR_A="$WORK/A"
 DIR_B="$WORK/B"
 DIR_SIB="$WORK/A-extra"
-PROFILE="$HOME_DIR/.plexi"
+# Same rule as channel_suffix_from_basename in src/config/mod.rs. A PR
+# install is `plexi-pr-<N>` and writes `~/.plexi-pr-<N>`, not `~/.plexi`.
+profile_dirname() {
+  local base suffix
+  base="$(basename "$1")"
+  base="${base%.exe}"
+  base="${base%.EXE}"
+  if [[ "$base" == plexi-* ]]; then
+    suffix="${base#plexi-}"
+    if [[ -n "$suffix" ]]; then
+      printf '.plexi-%s' "$suffix"
+      return
+    fi
+  fi
+  printf '.plexi'
+}
+PROFILE="$HOME_DIR/$(profile_dirname "$PLEXI")"
 KEY_DIR="$HOME_DIR/.local/share/plexi"
 SECRET=""
 HOST_STARTED=0

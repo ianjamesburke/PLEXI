@@ -314,9 +314,26 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        let workspace_root = working_directory
-            .and_then(crate::app::registry::resolve_workspace_root)
-            .or_else(crate::config::active_workspace_root);
+        // An explicit spawn cwd is the only directory this environment is
+        // about. Falling back to the process cwd (often the login home, which
+        // holds `~/.plexi-<channel>` and is not a workspace) injects that
+        // directory's terminal secrets into a pane that was not started there.
+        let workspace_root = match working_directory {
+            Some(dir) => {
+                log::info!("shell::build_env: spawn cwd {}", dir.display());
+                match crate::app::registry::resolve_workspace_root(dir) {
+                    Some(root) => Some(root),
+                    None => {
+                        log::info!(
+                            "shell::build_env: no workspace above spawn cwd {}; not using the process directory",
+                            dir.display()
+                        );
+                        None
+                    }
+                }
+            }
+            None => crate::config::active_workspace_root(),
+        };
         if let Some(root) = workspace_root {
             let store = crate::workspace::secrets::system_store();
             match crate::workspace::secrets::resolve_terminal_env(&root, store) {

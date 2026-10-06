@@ -37,9 +37,13 @@ pub trait NonDestructiveStore: Send + Sync {
     /// reads from `secrets-index.json`.
     fn list_with_prefix(&self, prefix: &str) -> Vec<String>;
     /// Enumerate every account in the backend itself, bypassing the index
-    /// cache. Attributes-only on macOS — never reads values, so it never
-    /// crosses the keychain ACL prompt boundary (value reads of items another
-    /// binary wrote are what prompt; attribute enumeration does not).
+    /// cache. The default macOS keychain query is attributes-only and never
+    /// reads values, so it does not cross the keychain ACL prompt boundary
+    /// (value reads of items another binary wrote are what prompt; attribute
+    /// enumeration does not). An explicit `PLEXI_KEYCHAIN_PATH` file is not
+    /// on the search list; confirming an index account there uses
+    /// `SecKeychainFindGenericPassword`, drops the password immediately, and
+    /// does not log it.
     fn scan_accounts(&self) -> Result<Vec<String>, SecretError>;
 }
 
@@ -121,7 +125,10 @@ fn keychain_status_message(code: i32, fallback: &str) -> String {
 /// (`SecKeychainSetUserInteractionAllowed(false)`). A missing default
 /// keychain returns [`SecretError::Backend`] instead of the system
 /// "Keychain Not Found" dialog. `PLEXI_KEYCHAIN_PATH`, when set, selects
-/// that file only.
+/// that file only. Value reads and writes on that file use
+/// `SecKeychainFindGenericPassword` and `SecKeychainAddGenericPassword`,
+/// which take the keychain reference. `SecItemCopyMatching` does not return
+/// items from a keychain that was never added to the user search list.
 ///
 /// Private, non-constructible outside this module, and absent from test
 /// builds entirely — [`system_store`] is the only handle.
@@ -152,8 +159,8 @@ fn silence_keychain_ui() -> Result<(), SecretError> {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
-fn open_explicit_keychain()
--> Result<Option<security_framework::os::macos::keychain::SecKeychain>, SecretError> {
+fn open_explicit_keychain(
+) -> Result<Option<security_framework::os::macos::keychain::SecKeychain>, SecretError> {
     use security_framework::os::macos::keychain::{CreateOptions, SecKeychain};
     use zeroize::Zeroizing;
 
@@ -166,9 +173,10 @@ fn open_explicit_keychain()
     // `SecKeychainOpen`, and `SecKeychainUnlock` take a path and a password.
     // They do not call `SecKeychainSetSearchList` or `SecKeychainSetDefault`.
     // `security create-keychain` is the CLI that adds a new file to the
-    // search list; this process never invokes it. Query-time
-    // `kSecMatchSearchList` / `kSecUseKeychain` name this same reference and
-    // do not write the user's list.
+    // search list; this process never invokes it. Later value calls pass
+    // this `SecKeychain` into `SecKeychainFindGenericPassword` and
+    // `SecKeychainAddGenericPassword`. Those APIs address the file directly.
+    // They do not write the user's list.
     silence_keychain_ui()?;
     let password =
         explicit_keychain_password(std::env::var("PLEXI_KEYCHAIN_PASSWORD").ok().as_deref())
@@ -229,9 +237,7 @@ fn read_password(
     account: &str,
     keychain: Option<&security_framework::os::macos::keychain::SecKeychain>,
 ) -> Result<Option<Zeroizing<String>>, SecretError> {
-    use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
-
-    if keychain.is_none() {
+    let Some(keychain) = keychain else {
         use security_framework::passwords::get_generic_password;
         return match get_generic_password(KEYCHAIN_SERVICE, account) {
             Ok(data) => Ok(Some(Zeroizing::new(
@@ -240,28 +246,24 @@ fn read_password(
             Err(error) if error.code() == -25300 => Ok(None),
             Err(error) => Err(explain_keychain(error)),
         };
-    }
-    let mut search = ItemSearchOptions::new();
-    search
-        .class(ItemClass::generic_password())
-        .service(KEYCHAIN_SERVICE)
-        .account(account)
-        .load_data(true)
-        .limit(Limit::All);
-    if let Some(keychain) = keychain {
-        search.keychains(std::slice::from_ref(keychain));
-    }
-    match search.search() {
-        Ok(results) => {
-            for result in results {
-                if let SearchResult::Data(data) = result {
-                    return Ok(Some(Zeroizing::new(
-                        String::from_utf8_lossy(&data).trim().to_string(),
-                    )));
-                }
-            }
-            Ok(None)
-        }
+    };
+    // `SecItemCopyMatching` + `kSecMatchSearchList` misses a keychain that is
+    // not on the user search list. `SecKeychainFindGenericPassword` takes the
+    // reference from `SecKeychainOpen` and finds the item there.
+    read_explicit_password(keychain, account)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn read_explicit_password(
+    keychain: &security_framework::os::macos::keychain::SecKeychain,
+    account: &str,
+) -> Result<Option<Zeroizing<String>>, SecretError> {
+    match keychain.find_generic_password(KEYCHAIN_SERVICE, account) {
+        Ok((password, _item)) => Ok(Some(Zeroizing::new(
+            String::from_utf8_lossy(password.as_ref())
+                .trim()
+                .to_string(),
+        ))),
         Err(error) if error.code() == -25300 => Ok(None),
         Err(error) => Err(explain_keychain(error)),
     }
@@ -275,10 +277,7 @@ fn write_password(
     create_only: bool,
 ) -> Result<(), SecretError> {
     use core_foundation::data::CFData;
-    use security_framework::item::{
-        ItemAddOptions, ItemAddValue, ItemClass, ItemSearchOptions, ItemUpdateOptions,
-        ItemUpdateValue, Location,
-    };
+    use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass, Location};
 
     let Some(keychain) = keychain else {
         if create_only {
@@ -302,33 +301,30 @@ fn write_password(
         return set_generic_password(KEYCHAIN_SERVICE, account, value.as_bytes())
             .map_err(explain_keychain);
     };
+    write_explicit_password(keychain, account, value, create_only)
+}
 
-    let added = ItemAddOptions::new(ItemAddValue::Data {
-        class: ItemClass::generic_password(),
-        data: CFData::from_buffer(value.as_bytes()),
-    })
-    .set_service(KEYCHAIN_SERVICE)
-    .set_account_name(account)
-    .set_location(Location::FileKeychain((*keychain).clone()))
-    .add();
-    match added {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == -25299 && create_only => {
-            Err(SecretError::AlreadyExists(account.to_string()))
-        }
-        Err(error) if error.code() == -25299 => {
-            let mut search = ItemSearchOptions::new();
-            search
-                .class(ItemClass::generic_password())
-                .service(KEYCHAIN_SERVICE)
-                .account(account)
-                .keychains(std::slice::from_ref(keychain));
-            let mut update = ItemUpdateOptions::new();
-            update.set_value(ItemUpdateValue::Data(CFData::from_buffer(value.as_bytes())));
-            security_framework::item::update_item(&search, &update).map_err(explain_keychain)
-        }
-        Err(error) => Err(explain_keychain(error)),
+#[cfg(all(target_os = "macos", not(test)))]
+fn write_explicit_password(
+    keychain: &security_framework::os::macos::keychain::SecKeychain,
+    account: &str,
+    value: &str,
+    create_only: bool,
+) -> Result<(), SecretError> {
+    if create_only {
+        return keychain
+            .add_generic_password(KEYCHAIN_SERVICE, account, value.as_bytes())
+            .map_err(|error| {
+                if error.code() == -25299 {
+                    SecretError::AlreadyExists(account.to_string())
+                } else {
+                    explain_keychain(error)
+                }
+            });
     }
+    keychain
+        .set_generic_password(KEYCHAIN_SERVICE, account, value.as_bytes())
+        .map_err(explain_keychain)
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -336,25 +332,27 @@ fn remove_password(
     account: &str,
     keychain: Option<&security_framework::os::macos::keychain::SecKeychain>,
 ) -> Result<(), SecretError> {
-    if keychain.is_none() {
+    let Some(keychain) = keychain else {
         use security_framework::passwords::delete_generic_password;
         return match delete_generic_password(KEYCHAIN_SERVICE, account) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == -25300 => Ok(()),
             Err(error) => Err(explain_keychain(error)),
         };
-    }
-    use security_framework::item::{ItemClass, ItemSearchOptions};
-    let mut search = ItemSearchOptions::new();
-    search
-        .class(ItemClass::generic_password())
-        .service(KEYCHAIN_SERVICE)
-        .account(account);
-    if let Some(keychain) = keychain {
-        search.keychains(std::slice::from_ref(keychain));
-    }
-    match search.delete() {
-        Ok(()) => Ok(()),
+    };
+    remove_explicit_password(keychain, account)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn remove_explicit_password(
+    keychain: &security_framework::os::macos::keychain::SecKeychain,
+    account: &str,
+) -> Result<(), SecretError> {
+    match keychain.find_generic_password(KEYCHAIN_SERVICE, account) {
+        Ok((_password, item)) => {
+            item.delete();
+            Ok(())
+        }
         Err(error) if error.code() == -25300 => Ok(()),
         Err(error) => Err(explain_keychain(error)),
     }
@@ -423,9 +421,12 @@ impl NonDestructiveStore for MacKeychain {
             .collect()
     }
 
-    /// Attributes-only: the query asks for `kSecReturnAttributes` and never
-    /// `kSecReturnData`, so it reads item metadata without unlocking any
-    /// value and never raises a keychain-access prompt.
+    /// Attributes-only on the default keychain: the query asks for
+    /// `kSecReturnAttributes` and never `kSecReturnData`. An explicit test
+    /// keychain is not on the search list, so accounts the index already
+    /// names are confirmed with `SecKeychainFindGenericPassword`. That call
+    /// reads the value into a buffer which is dropped before the account is
+    /// recorded, and the value is not logged.
     fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
         use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
 
@@ -440,27 +441,31 @@ impl NonDestructiveStore for MacKeychain {
         if let Some(keychain) = keychain.as_ref() {
             search.keychains(std::slice::from_ref(keychain));
         }
-        let results = match search.search() {
-            Ok(results) => results,
-            // errSecItemNotFound — no Plexi secrets stored yet.
-            Err(error) if error.code() == -25300 => return Ok(Vec::new()),
+        let mut accounts = Vec::new();
+        match search.search() {
+            Ok(results) => {
+                for result in &results {
+                    match result.simplify_dict().and_then(|d| d.get("acct").cloned()) {
+                        Some(account) => accounts.push(account),
+                        None => log::warn!(
+                            "workspace_secrets::scan: keychain item under service '{KEYCHAIN_SERVICE}' \
+                             has no account attribute; skipping"
+                        ),
+                    }
+                }
+            }
+            // errSecItemNotFound — no Plexi secrets stored yet, or the
+            // explicit keychain is invisible to SecItemCopyMatching.
+            Err(error) if error.code() == -25300 => {}
             Err(error) => {
                 return Err(SecretError::Backend(format!(
                     "keychain scan for service '{KEYCHAIN_SERVICE}' failed: {}",
                     keychain_status_message(error.code(), &error.to_string())
                 )))
             }
-        };
-
-        let mut accounts = Vec::with_capacity(results.len());
-        for result in &results {
-            match result.simplify_dict().and_then(|d| d.get("acct").cloned()) {
-                Some(account) => accounts.push(account),
-                None => log::warn!(
-                    "workspace_secrets::scan: keychain item under service '{KEYCHAIN_SERVICE}' \
-                     has no account attribute; skipping"
-                ),
-            }
+        }
+        if let Some(keychain) = keychain.as_ref() {
+            confirm_explicit_index_accounts(keychain, &mut accounts)?;
         }
         log::info!(
             "workspace_secrets::scan: found {} keychain item(s) under service '{KEYCHAIN_SERVICE}'",
@@ -468,6 +473,31 @@ impl NonDestructiveStore for MacKeychain {
         );
         Ok(accounts)
     }
+}
+
+/// `SecItemCopyMatching` does not see a keychain that is not on the user
+/// search list. Confirm index accounts with `SecKeychainFindGenericPassword`
+/// so a reconcile does not drop secrets that are in the opened file. The
+/// password buffer is dropped immediately and never logged.
+#[cfg(all(target_os = "macos", not(test)))]
+fn confirm_explicit_index_accounts(
+    keychain: &security_framework::os::macos::keychain::SecKeychain,
+    accounts: &mut Vec<String>,
+) -> Result<(), SecretError> {
+    for account in super::index::index_read() {
+        if accounts.iter().any(|have| have == &account) {
+            continue;
+        }
+        match keychain.find_generic_password(KEYCHAIN_SERVICE, &account) {
+            Ok((password, _item)) => {
+                drop(password);
+                accounts.push(account);
+            }
+            Err(error) if error.code() == -25300 => {}
+            Err(error) => return Err(explain_keychain(error)),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
