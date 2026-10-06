@@ -21,17 +21,25 @@ SECRET=""
 HOST_STARTED=0
 PASS_N=0
 FAIL_N=0
+KEYCHAIN=""
+SEARCH_FILE=""
+DEFAULT_KC=""
 
 unset PLEXI_SOCKET PLEXI_CHANNEL PLEXI_CONTEXT_ROOT PLEXI_CONTEXT_ID \
   PLEXI_CONTEXT_NAME PLEXI_RUNNING PLEXI_PANE_ID PLEXI_CALL_CREDENTIAL \
-  PLEXI_HOST_MCP_PORT PLEXI_HOST_MCP_TOKEN
+  PLEXI_HOST_MCP_PORT PLEXI_HOST_MCP_TOKEN PLEXI_KEYCHAIN_PATH
 # The pane check opens a real window. Keep the caller's X cookie; a private
 # HOME would otherwise hide ~/.Xauthority and the host could not connect.
 if [[ -z "${XAUTHORITY:-}" ]]; then
   if [[ -n "${HOME:-}" && -f "$HOME/.Xauthority" ]]; then
     export XAUTHORITY="$HOME/.Xauthority"
   else
-    login_home="$(getent passwd "$(id -un)" | cut -d: -f6 || true)"
+    login_home=""
+    if command -v getent >/dev/null 2>&1; then
+      login_home="$(getent passwd "$(id -un)" | cut -d: -f6 || true)"
+    elif [[ "$(uname -s)" == "Darwin" ]] && command -v dscl >/dev/null 2>&1; then
+      login_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '/NFSHomeDirectory:/ {print $2}' || true)"
+    fi
     if [[ -n "$login_home" && -f "$login_home/.Xauthority" ]]; then
       export XAUTHORITY="$login_home/.Xauthority"
     fi
@@ -42,22 +50,71 @@ if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -d "${XDG_RUNTIME_DIR:-}" ]]; then
   mkdir -p "$XDG_RUNTIME_DIR"
   chmod 700 "$XDG_RUNTIME_DIR"
 fi
-export HOME="$HOME_DIR"
-export XDG_DATA_HOME="$HOME_DIR/.local/share"
-export XDG_CONFIG_HOME="$HOME_DIR/.config"
-export XDG_CACHE_HOME="$HOME_DIR/.cache"
-export HISTFILE=/dev/null
-set +o history
-
-mkdir -p "$HOME_DIR" "$DIR_A" "$DIR_B" "$DIR_SIB" "$KEY_DIR"
 
 pass() { PASS_N=$((PASS_N + 1)); printf 'PASS: %s\n' "$1"; }
 fail() { FAIL_N=$((FAIL_N + 1)); printf 'FAIL: %s\n' "$1" >&2; }
+
+restore_keychain_search() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  [[ -f "${SEARCH_FILE:-}" ]] || return 0
+  local -a paths=()
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && paths+=("$line")
+  done <"$SEARCH_FILE"
+  if ((${#paths[@]})); then
+    security list-keychains -d user -s "${paths[@]}" >/dev/null
+  fi
+  if [[ -n "${DEFAULT_KC:-}" ]]; then
+    security default-keychain -s "$DEFAULT_KC" >/dev/null 2>&1 || true
+  fi
+}
+
+# Snapshot the real user's keychain list, create a throwaway keychain, then
+# put the list and the default keychain back. `security create-keychain` adds
+# the new file to the search list; the restore runs before HOME changes so
+# the login keychain is what it was.
+isolate_macos_keychain() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  KEYCHAIN="$WORK/test.keychain-db"
+  SEARCH_FILE="$WORK/keychain-search.txt"
+  : >"$SEARCH_FILE"
+  local line pw
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%\"}"
+    line="${line#\"}"
+    [[ -n "$line" ]] && printf '%s\n' "$line" >>"$SEARCH_FILE"
+  done < <(security list-keychains -d user)
+  DEFAULT_KC="$(security default-keychain 2>/dev/null | tr -d '"' | awk '{$1=$1; print}' || true)"
+  pw="$(openssl rand -hex 24)"
+  if ! security create-keychain -p "$pw" "$KEYCHAIN"; then
+    echo "FAIL: could not create an isolated keychain" >&2
+    exit 1
+  fi
+  restore_keychain_search
+  if ! security unlock-keychain -p "$pw" "$KEYCHAIN"; then
+    echo "FAIL: could not unlock the isolated keychain" >&2
+    exit 1
+  fi
+  security set-keychain-settings -t 3600 "$KEYCHAIN" >/dev/null
+  unset pw
+  export PLEXI_KEYCHAIN_PATH="$KEYCHAIN"
+  if security list-keychains -d user | grep -F "$KEYCHAIN" >/dev/null; then
+    echo "FAIL: isolated keychain is still on the user search list" >&2
+    exit 1
+  fi
+}
 
 cleanup() {
   stty echo 2>/dev/null || true
   if [[ "$HOST_STARTED" == 1 ]]; then
     "$PLEXI" host stop >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$KEYCHAIN" ]]; then
+    restore_keychain_search
+    security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || rm -f "$KEYCHAIN"
+    KEYCHAIN=""
   fi
   if [[ -n "$SECRET" ]]; then
     # Drop the value before removing the work tree so a crash dump of the
@@ -67,6 +124,18 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+mkdir -p "$HOME_DIR" "$DIR_A" "$DIR_B" "$DIR_SIB" "$KEY_DIR"
+# Create the keychain while HOME is still the caller's, then restore the
+# search list and the default keychain. The binary reads PLEXI_KEYCHAIN_PATH
+# and does not open the login keychain.
+isolate_macos_keychain
+export HOME="$HOME_DIR"
+export XDG_DATA_HOME="$HOME_DIR/.local/share"
+export XDG_CONFIG_HOME="$HOME_DIR/.config"
+export XDG_CACHE_HOME="$HOME_DIR/.cache"
+export HISTFILE=/dev/null
+set +o history
 
 contains_secret() {
   local text="$1"
@@ -156,7 +225,23 @@ pane_marker() {
   fi
 }
 
-if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+# A window is optional. macOS does not need X. Headless runs, and
+# PLEXI_E2E_SKIP_PANES=1, skip the pane check instead of failing it.
+pane_gui=0
+if [[ "${PLEXI_E2E_SKIP_PANES:-}" == 1 ]]; then
+  printf 'SKIP: pane checks (PLEXI_E2E_SKIP_PANES=1)\n'
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  if pgrep -q WindowServer; then
+    pane_gui=1
+  else
+    printf 'SKIP: pane checks (no WindowServer)\n'
+  fi
+elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  pane_gui=1
+else
+  printf 'SKIP: pane checks (no display)\n'
+fi
+if [[ "$pane_gui" == 1 ]]; then
   start_out="$("$PLEXI" host start --ephemeral --timeout-secs 90 2>&1)" || true
   printf '%s\n' "$start_out" >"$WORK/host-start.txt"
   status_out="$("$PLEXI" host status --json 2>&1 || true)"
@@ -181,9 +266,6 @@ if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
     fail "pane in folder A sees the env var (host did not become ready)"
     fail "pane in folder B does not see the env var (host did not become ready)"
   fi
-else
-  fail "pane in folder A sees the env var (no display)"
-  fail "pane in folder B does not see the env var (no display)"
 fi
 
 # ── agent read without a grant ───────────────────────────────────────────────
