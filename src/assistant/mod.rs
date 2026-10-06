@@ -2628,7 +2628,7 @@ impl AssistantApp {
             self.execute_effects(effects);
             return;
         }
-        let parent = self.profile_dir.join("agents");
+        let parent = crate::agent::workspace_agents_dir(&self.workspace_root);
         let dir = parent.join(id);
         let mut created_dir = false;
         let result = (|| {
@@ -2669,7 +2669,7 @@ impl AssistantApp {
         }
         self.reload_agents();
         log::info!(
-            "assistant: created user agent '{}' at {}",
+            "assistant: created workspace agent '{}' at {}",
             id,
             dir.display()
         );
@@ -2696,7 +2696,7 @@ impl AssistantApp {
         let path = agent
             .path
             .clone()
-            .unwrap_or_else(|| self.profile_dir.join("agents").join(id));
+            .unwrap_or_else(|| crate::agent::workspace_agents_dir(&self.workspace_root).join(id));
         log::info!("assistant: edit agent '{}' at {}", id, path.display());
         let effects = self
             .model
@@ -4113,7 +4113,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let mut app = test_app(ws.path());
         app.cmd_create_agent("writer");
-        let dir = ws.path().join("agents").join("writer");
+        let dir = ws.path().join(".plexi/agents").join("writer");
         assert!(dir.join("AGENT.md").is_file());
         assert!(dir.join("settings.toml").is_file());
         app.cmd_edit_agent("writer");
@@ -4138,7 +4138,7 @@ enabled = ["allowed.tool"]
     #[test]
     fn create_agent_refuses_to_overwrite_partial_definition() {
         let ws = tempfile::tempdir().unwrap();
-        let dir = ws.path().join("agents").join("writer");
+        let dir = ws.path().join(".plexi/agents").join("writer");
         std::fs::create_dir_all(&dir).unwrap();
         let prompt_path = dir.join("AGENT.md");
         std::fs::write(&prompt_path, "Keep this prompt.\n").unwrap();
@@ -4171,7 +4171,7 @@ enabled = ["allowed.tool"]
             let store = app.grants();
             let record = store.records().last().unwrap();
             assert_eq!(record.actor_id, "writer");
-            assert_eq!(record.actor_scope, ActorScope::User);
+            assert_eq!(record.actor_scope, ActorScope::Workspace);
         }
         let tool = AiTool {
             name: "docs.write".to_string(),
