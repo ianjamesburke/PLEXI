@@ -54,9 +54,9 @@ mod keychain_prompt_guard {
 
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
-use crate::protocol::AppRequest;
 use crate::config::set_test_profile_dir;
 use crate::host::pane::{AppPane, AppRuntime, Pane};
+use crate::protocol::AppRequest;
 use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
@@ -138,10 +138,7 @@ fn reserve_pane_id_block() -> u64 {
 /// private per-user dir there.
 #[cfg(test)]
 pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "plexi-scratch-{label}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("plexi-scratch-{label}-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -294,7 +291,16 @@ impl HostHarness {
                 }
             }
         }
+        self.add_assistant_pane_with_broker(win_idx, Arc::new(InertBroker))
+    }
 
+    /// Like [`Self::add_assistant_pane_in_window`] with a caller-supplied broker,
+    /// so a host-command test can stub the model without a network provider.
+    pub fn add_assistant_pane_with_broker(
+        &mut self,
+        win_idx: usize,
+        broker: Arc<dyn crate::plexi_ai::broker::AiBroker>,
+    ) -> PaneId {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
         let workspace_root = self._workspace_dir.path().to_path_buf();
@@ -304,7 +310,7 @@ impl HostHarness {
         let context_id = self.app.windows[win_idx].context_id;
         let assistant = crate::assistant::AssistantApp::new(
             workspace_root.clone(),
-            Arc::new(InertBroker),
+            broker,
             &crate::config::config_dir(),
             context_id,
         );
@@ -783,13 +789,13 @@ impl HostHarness {
 #[cfg(test)]
 mod cargo_lease;
 #[cfg(test)]
+mod cloud_assistant_tests;
+#[cfg(test)]
 mod daw_gate;
 #[cfg(test)]
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
-#[cfg(test)]
-mod cloud_assistant_tests;
 
 #[cfg(test)]
 mod profile_isolation_tests {

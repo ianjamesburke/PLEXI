@@ -55,7 +55,12 @@ pub(crate) fn paint_badge(
 
 /// Allocate and paint a badge inline in the current layout. The label color
 /// is whichever of the theme's foregrounds reads legibly on `fill`.
-pub(crate) fn badge(ui: &mut egui::Ui, text: &str, fill: Color32, colors: &Colors) -> egui::Response {
+pub(crate) fn badge(
+    ui: &mut egui::Ui,
+    text: &str,
+    fill: Color32,
+    colors: &Colors,
+) -> egui::Response {
     let fg = colors.text_on(fill);
     let galley = badge_galley(ui, text, fg);
     let size = badge_size(galley.size());

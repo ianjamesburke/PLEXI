@@ -100,7 +100,10 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
     for events in [background_events, inactive_events, parked_events] {
         let events = events.lock().expect("event recorder");
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], crate::protocol::PlexiEvent::Theme { .. }));
+        assert!(matches!(
+            events[0],
+            crate::protocol::PlexiEvent::Theme { .. }
+        ));
     }
 }
 
@@ -788,7 +791,10 @@ fn open_note_entries_lists_only_notes_open_in_a_pane() {
         2,
         "one entry per open note, deduped across panes: {paths:?}"
     );
-    assert!(paths.contains(&opened), "open note must be listed: {paths:?}");
+    assert!(
+        paths.contains(&opened),
+        "open note must be listed: {paths:?}"
+    );
     assert!(
         paths.contains(&opened_twice),
         "note open in two panes must be listed once: {paths:?}"

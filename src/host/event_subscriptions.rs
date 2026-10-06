@@ -24,13 +24,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
-use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionPosture, PermissionRequest, ResourceScope, TargetType,
 };
 use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
 use crate::host::event_log;
+use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 
 pub fn app_subscriber_id(pane_id: u64) -> String {
     format!("app-pane:{pane_id}")
@@ -538,7 +538,11 @@ impl HostSubscriptionService {
         &self,
         req: HostSubscribeRequest,
     ) -> Option<PendingEventConsent> {
-        if req.cancelled.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        if req
+            .cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
             return None;
         }
         let (subscriber_type, subscriber_id) = match &req.subscriber_override {
@@ -604,13 +608,22 @@ impl HostSubscriptionService {
                     req.resource_id,
                     GrantDuration::Session,
                 );
-                if req.reply.send(HostSubscribeReply::Ok {
-                    subscription_id,
-                    subscriber_type,
-                    subscriber_id: subscriber_id.clone(),
-                }).is_err() {
-                    self.timeline.lock().unwrap().clear_subscriber(subscriber_type, &subscriber_id);
-                    log::info!("event_subscriptions: disconnected before approval reply: {subscriber_id}");
+                if req
+                    .reply
+                    .send(HostSubscribeReply::Ok {
+                        subscription_id,
+                        subscriber_type,
+                        subscriber_id: subscriber_id.clone(),
+                    })
+                    .is_err()
+                {
+                    self.timeline
+                        .lock()
+                        .unwrap()
+                        .clear_subscriber(subscriber_type, &subscriber_id);
+                    log::info!(
+                        "event_subscriptions: disconnected before approval reply: {subscriber_id}"
+                    );
                 }
                 None
             }
@@ -657,7 +670,9 @@ impl HostSubscriptionService {
         choice: ConsentChoice,
         config_dir: &Path,
     ) {
-        if consent.is_cancelled() { return; }
+        if consent.is_cancelled() {
+            return;
+        }
         let PendingEventConsent {
             subscriber_type,
             subscriber_id,
@@ -981,9 +996,9 @@ impl HostSubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppEventActor, EventStreamDecl};
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource, ResourceScope};
     use crate::host::app_timeline::EmittedEvent;
+    use crate::protocol::{AppEventActor, EventStreamDecl};
 
     /// Fixed owning/viewer context for tests that don't exercise
     /// cross-context behavior (that's `app_timeline.rs`'s job) — keeps every

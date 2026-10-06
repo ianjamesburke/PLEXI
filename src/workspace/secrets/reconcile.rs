@@ -286,7 +286,10 @@ pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     Ok(reconcile(&scanned, &scanned, store))
 }
 
-#[cfg(any(all(any(target_os = "macos", target_os = "linux"), test), all(windows, not(test))))]
+#[cfg(any(
+    all(any(target_os = "macos", target_os = "linux"), test),
+    all(windows, not(test))
+))]
 pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     let store = system_store();
     let scanned = store.scan_accounts()?;

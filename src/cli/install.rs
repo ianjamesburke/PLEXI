@@ -292,13 +292,23 @@ pub fn install_workspace_pack_cli() -> i32 {
 pub fn plexi_uninstall_cli(_keep_data: bool, assume_yes: bool) -> i32 {
     let result = (|| -> Result<(), String> {
         let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
-        println!("Remove Plexi channel {} from {}. User data will be retained.", receipt.channel, receipt.root.display());
+        println!(
+            "Remove Plexi channel {} from {}. User data will be retained.",
+            receipt.channel,
+            receipt.root.display()
+        );
         if !assume_yes {
             eprint!("Continue? [y/N]: ");
-            io::stderr().flush().map_err(|e| format!("write confirmation: {e}"))?;
+            io::stderr()
+                .flush()
+                .map_err(|e| format!("write confirmation: {e}"))?;
             let mut answer = String::new();
-            io::stdin().read_line(&mut answer).map_err(|e| format!("read confirmation: {e}"))?;
-            if !matches!(answer.trim(), "y" | "Y" | "yes") { return Err("Uninstall cancelled.".into()); }
+            io::stdin()
+                .read_line(&mut answer)
+                .map_err(|e| format!("read confirmation: {e}"))?;
+            if !matches!(answer.trim(), "y" | "Y" | "yes") {
+                return Err("Uninstall cancelled.".into());
+            }
         }
         if super::host::running_build_info().is_some() && super::host::host_stop_cli() != 0 {
             return Err("could not stop the channel host before uninstall".into());
@@ -307,18 +317,47 @@ pub fn plexi_uninstall_cli(_keep_data: bool, assume_yes: bool) -> i32 {
         plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
         #[cfg(windows)]
         {
-            let helper = std::env::temp_dir().join(format!("plexi-uninstall-{}.exe", uuid::Uuid::new_v4()));
-            std::fs::copy(receipt.active.path.join("plexi-installer.exe"), &helper).map_err(|e| format!("stage removal helper: {e}"))?;
-            let log = std::fs::File::create(receipt.root.join("uninstall.log")).map_err(|e| format!("create uninstall log: {e}"))?;
-            let stderr = log.try_clone().map_err(|e| format!("clone uninstall log: {e}"))?;
-            std::process::Command::new(helper).arg("remove").arg("--receipt").arg(&receipt.root).arg("--wait-pid").arg(std::process::id().to_string())
-                .stdin(std::process::Stdio::null()).stdout(log).stderr(stderr).spawn().map_err(|e| format!("schedule uninstall: {e}"))?;
-            println!("Removal will finish after this command exits; details: {}", receipt.root.join("uninstall.log").display());
+            let helper =
+                std::env::temp_dir().join(format!("plexi-uninstall-{}.exe", uuid::Uuid::new_v4()));
+            std::fs::copy(receipt.active.path.join("plexi-installer.exe"), &helper)
+                .map_err(|e| format!("stage removal helper: {e}"))?;
+            let log = std::fs::File::create(receipt.root.join("uninstall.log"))
+                .map_err(|e| format!("create uninstall log: {e}"))?;
+            let stderr = log
+                .try_clone()
+                .map_err(|e| format!("clone uninstall log: {e}"))?;
+            std::process::Command::new(helper)
+                .arg("remove")
+                .arg("--receipt")
+                .arg(&receipt.root)
+                .arg("--wait-pid")
+                .arg(std::process::id().to_string())
+                .stdin(std::process::Stdio::null())
+                .stdout(log)
+                .stderr(stderr)
+                .spawn()
+                .map_err(|e| format!("schedule uninstall: {e}"))?;
+            println!(
+                "Removal will finish after this command exits; details: {}",
+                receipt.root.join("uninstall.log").display()
+            );
         }
-        log::info!("uninstall: managed removal requested for {}", receipt.channel);
+        log::info!(
+            "uninstall: managed removal requested for {}",
+            receipt.channel
+        );
         Ok(())
     })();
-    match result { Ok(()) => { println!("User data retained."); 0 }, Err(error) => { eprintln!("error: {error}"); 1 } }
+    match result {
+        Ok(()) => {
+            println!("User data retained.");
+            0
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            1
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -495,7 +534,8 @@ fn run_self_update() -> Result<String, String> {
     );
 
     let current_version_raw = crate::distribution::installed()?
-        .map(|receipt| receipt.active.tag).unwrap_or_else(crate::distribution::build_tag);
+        .map(|receipt| receipt.active.tag)
+        .unwrap_or_else(crate::distribution::build_tag);
     println!("Checking for updates...");
     println!("Current: {current_version_raw}");
 
@@ -535,30 +575,57 @@ pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<
     let current = crate::distribution::installed()?;
     let expected_build = current.as_ref().map(|r| r.active.build_id.clone());
     let temp = tempfile::tempdir().map_err(|e| format!("stage update: {e}"))?;
-    let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(15)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .build();
     let platform = release::platform().map_err(|e| e.to_string())?;
-    release::download_package(&agent, release::DOWNLOAD_URL, tag_name, &platform, channel, temp.path()).map_err(|e| e.to_string())?;
+    release::download_package(
+        &agent,
+        release::DOWNLOAD_URL,
+        tag_name,
+        &platform,
+        channel,
+        temp.path(),
+    )
+    .map_err(|e| e.to_string())?;
     let package = Package::load(&temp.path().join("package")).map_err(|e| e.to_string())?;
-    if package.manifest.tag != tag_name { return Err("downloaded package tag differs from requested update".into()); }
+    if package.manifest.tag != tag_name {
+        return Err("downloaded package tag differs from requested update".into());
+    }
     let options = match current {
-        Some(r) => transaction::InstallOptions { channel: r.channel, root: r.root, bin_dir: r.bin_dir, applications_dir: r.applications_dir },
+        Some(r) => transaction::InstallOptions {
+            channel: r.channel,
+            root: r.root,
+            bin_dir: r.bin_dir,
+            applications_dir: r.applications_dir,
+        },
         None => transaction::InstallOptions::for_channel(channel).map_err(|e| e.to_string())?,
     };
     let receipt = match expected_build {
         Some(expected) => transaction::update(&package, options, &expected),
         None => transaction::install(&package, options),
-    }.map_err(|e| e.to_string())?;
-    log::info!("update: verified installed build={} tag={}", receipt.active.build_id, receipt.active.tag);
+    }
+    .map_err(|e| e.to_string())?;
+    log::info!(
+        "update: verified installed build={} tag={}",
+        receipt.active.build_id,
+        receipt.active.tag
+    );
     Ok(())
 }
 
 /// `plexi update` — thin CLI wrapper around `run_self_update`.
 pub fn self_update_cli(rollback: bool) -> i32 {
     let result = if rollback {
-        crate::distribution::installed().and_then(|r| r.ok_or_else(|| "no managed installation".to_string()))
-            .and_then(|r| plexi_distribution::transaction::rollback(&r.root).map_err(|e| e.to_string()))
+        crate::distribution::installed()
+            .and_then(|r| r.ok_or_else(|| "no managed installation".to_string()))
+            .and_then(|r| {
+                plexi_distribution::transaction::rollback(&r.root).map_err(|e| e.to_string())
+            })
             .map(|r| format!("Restored {}. Restart Plexi to apply.", r.active.tag))
-    } else { run_self_update() };
+    } else {
+        run_self_update()
+    };
     match result {
         Ok(msg) => {
             println!("{msg}");

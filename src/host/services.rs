@@ -312,14 +312,13 @@ impl PickerService for RfdPickerService {
             dialog = dialog.add_filter("files", &extensions);
         }
         let paths: Vec<std::path::PathBuf> = match request.mode {
-            FilePickerMode::Open if request.multiple => {
-                block_on_dialog(dialog.pick_files()).map_or_else(Vec::new, |handles| {
+            FilePickerMode::Open if request.multiple => block_on_dialog(dialog.pick_files())
+                .map_or_else(Vec::new, |handles| {
                     handles
                         .iter()
                         .map(|handle| handle.path().to_path_buf())
                         .collect()
-                })
-            }
+                }),
             FilePickerMode::Open => block_on_dialog(dialog.pick_file())
                 .map_or_else(Vec::new, |handle| vec![handle.path().to_path_buf()]),
             FilePickerMode::Folder => block_on_dialog(dialog.pick_folder())
@@ -487,8 +486,7 @@ fn picker_override() -> Option<std::sync::Arc<dyn PickerService>> {
 }
 
 #[cfg(test)]
-fn picker_override_slot()
--> &'static std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>> {
+fn picker_override_slot() -> &'static std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>> {
     static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>>> =
         std::sync::OnceLock::new();
     SLOT.get_or_init(|| std::sync::Mutex::new(None))
@@ -598,6 +596,9 @@ mod tests {
         let error = ScriptedPickerService::from_script_file(&script)
             .err()
             .expect("malformed script entry must fail");
-        assert!(error.contains("picks.json"), "error names the file: {error}");
+        assert!(
+            error.contains("picks.json"),
+            "error names the file: {error}"
+        );
     }
 }

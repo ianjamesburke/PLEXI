@@ -112,11 +112,7 @@ struct FileOperationClipboard {
 /// Paint `texture` centered in `slot`, scaled down to fit without cropping or
 /// distortion. Never scales up: a small image sits at its native size in the
 /// middle of the slot rather than turning into a blurry stretch.
-fn paint_fitted_texture(
-    painter: &egui::Painter,
-    slot: egui::Rect,
-    texture: &egui::TextureHandle,
-) {
+fn paint_fitted_texture(painter: &egui::Painter, slot: egui::Rect, texture: &egui::TextureHandle) {
     let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
     let scale = (slot.width() / tex_size.x)
         .min(slot.height() / tex_size.y)
@@ -134,7 +130,6 @@ fn paint_fitted_texture(
 enum PendingFileOperation {
     MoveToTrash { paths: Vec<PathBuf> },
 }
-
 
 fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui::Key) -> bool {
     input.events().iter().any(

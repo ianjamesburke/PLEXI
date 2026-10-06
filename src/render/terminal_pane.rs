@@ -9,8 +9,8 @@
 //! background — only the exit-message rect, which gets its own fill to cover
 //! any stale terminal glyphs underneath.
 
-use crate::protocol::AgentState;
 use crate::host::pane::TerminalPane;
+use crate::protocol::AgentState;
 use crate::spatial::tiling::{paint_tab_bar, PaneId, TabBarAction, TabGroupInfo, TAB_BAR_HEIGHT};
 use crate::ui::theme::{self, Colors};
 use egui::Vec2;
@@ -262,9 +262,7 @@ fn is_terminal_outside_workspace(
     if terminal.outside_workspace_root.as_deref() == Some(root)
         && terminal
             .outside_workspace_checked_at
-            .is_some_and(|checked_at| {
-                checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL
-            })
+            .is_some_and(|checked_at| checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL)
     {
         return terminal.outside_workspace_cached;
     }

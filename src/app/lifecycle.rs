@@ -1,7 +1,7 @@
 //! Lifecycle methods — per-frame drain and tick operations on PlexiApp.
 
-use egui_term::PtyEvent;
 use crate::host::pane_lifecycle::{ExitStatus, PaneLifecycleEvent, Provenance, Source};
+use egui_term::PtyEvent;
 
 use super::PendingNotification;
 use super::PlexiApp;
@@ -119,7 +119,8 @@ impl PlexiApp {
     /// are reloaded from disk first so a just-granted permission applies without
     /// a host restart.
     fn drain_event_subscribe_channel(&mut self) {
-        self.pending_event_consents.retain(|consent| !consent.is_cancelled());
+        self.pending_event_consents
+            .retain(|consent| !consent.is_cancelled());
         self.observe_pane_spawns();
         // Pull all pending requests before touching the grant store so the
         // reload happens at most once per frame regardless of request count.
@@ -216,23 +217,60 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id } => {
+            crate::protocol::AppRequest::SubmitAssistantTurn {
+                text,
+                request_id,
+                response_file,
+                pane_id,
+                context_id,
+                conversation_id,
+                join_desktop,
+                status_for,
+            } => {
                 let mut submitted = false;
                 let mut failure = None;
                 for window in &mut self.windows {
-                    if context_id.is_some_and(|id| window.context_id != id) { continue; }
+                    if context_id.is_some_and(|id| window.context_id != id) {
+                        continue;
+                    }
                     for (id, pane) in &mut window.panes {
-                        if pane_id.is_some_and(|wanted| wanted != *id) { continue; }
-                        let Some(app) = pane.as_app_mut() else { continue; };
-                        if app.runtime.type_id() != "assistant" { continue; }
+                        if pane_id.is_some_and(|wanted| wanted != *id) {
+                            continue;
+                        }
+                        let Some(app) = pane.as_app_mut() else {
+                            continue;
+                        };
+                        if app.runtime.type_id() != "assistant" {
+                            continue;
+                        }
                         submitted = true;
-                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone()) { failure = Some(error); }
+                        if let Err(error) = app.runtime.submit_external_turn(
+                            text.clone(),
+                            request_id.clone(),
+                            response_file.clone(),
+                            conversation_id.clone(),
+                            *join_desktop,
+                            status_for.clone(),
+                        ) {
+                            failure = Some(error);
+                        }
                         break;
                     }
-                    if submitted { break; }
+                    if submitted {
+                        break;
+                    }
                 }
-                if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
-                else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
+                if let Some(error) = failure {
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"request_id": request_id, "state":"failed", "error":error}),
+                    );
+                } else if !submitted {
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
+                    );
+                }
             }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
@@ -296,7 +334,10 @@ impl PlexiApp {
                 }
             }
             crate::protocol::AppRequest::GetBuildInfo { response_file } => {
-                log::info!("host: reporting running build identity {}", env!("PLEXI_BUILD_ID"));
+                log::info!(
+                    "host: reporting running build identity {}",
+                    env!("PLEXI_BUILD_ID")
+                );
                 let mut value = crate::distribution::build_info();
                 value["pid"] = serde_json::json!(std::process::id());
                 write_json_response(response_file, value);
@@ -700,10 +741,17 @@ impl PlexiApp {
                     }),
                 );
                 match std::fs::read(&absolute) {
-                    Ok(value) => self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::SlotChanged {
-                        name: slot_name.clone(), value,
-                    }),
-                    Err(error) => log::error!("pane_lifecycle: cannot read committed slot {}: {error}", absolute.display()),
+                    Ok(value) => self.emit_pane_lifecycle(
+                        *pane_id,
+                        PaneLifecycleEvent::SlotChanged {
+                            name: slot_name.clone(),
+                            value,
+                        },
+                    ),
+                    Err(error) => log::error!(
+                        "pane_lifecycle: cannot read committed slot {}: {error}",
+                        absolute.display()
+                    ),
                 }
                 // The write path is the only thing that changes a slot's
                 // value, so it is where parked waiters are answered.
@@ -2345,24 +2393,44 @@ impl PlexiApp {
                 }
                 if found {
                     let provenance = Provenance {
-                        source: if event.is_some() { Source::Hook } else { Source::LegacyReport },
-                        agent_label: agent.clone(), session_id: session_id.clone(), raw_event: event.clone(),
+                        source: if event.is_some() {
+                            Source::Hook
+                        } else {
+                            Source::LegacyReport
+                        },
+                        agent_label: agent.clone(),
+                        session_id: session_id.clone(),
+                        raw_event: event.clone(),
                     };
-                    let fact = PaneLifecycleEvent::from_report(state, provenance.clone(), *blocked_reason);
-                    let session_started = matches!(&fact, PaneLifecycleEvent::SessionStarted { .. });
+                    let fact =
+                        PaneLifecycleEvent::from_report(state, provenance.clone(), *blocked_reason);
+                    let session_started =
+                        matches!(&fact, PaneLifecycleEvent::SessionStarted { .. });
                     let session_ended = matches!(&fact, PaneLifecycleEvent::SessionEnded { .. });
-                    let boot_failed = session_ended || matches!(&fact, PaneLifecycleEvent::TurnFailed { .. });
+                    let boot_failed =
+                        session_ended || matches!(&fact, PaneLifecycleEvent::TurnFailed { .. });
                     let idle = *state == crate::protocol::AgentState::Idle
-                        && matches!(&fact, PaneLifecycleEvent::TurnFinished { .. } | PaneLifecycleEvent::SessionStarted { .. });
+                        && matches!(
+                            &fact,
+                            PaneLifecycleEvent::TurnFinished { .. }
+                                | PaneLifecycleEvent::SessionStarted { .. }
+                        );
                     self.emit_pane_lifecycle(*pane_id, fact);
                     if idle {
-                        self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::AgentIdle { provenance: provenance.clone() });
+                        self.emit_pane_lifecycle(
+                            *pane_id,
+                            PaneLifecycleEvent::AgentIdle {
+                                provenance: provenance.clone(),
+                            },
+                        );
                     }
                     if session_ended {
                         if let Some(tracked) = self.host.pane_lifecycle.get_mut(pane_id) {
                             tracked.booted = false;
                         }
-                    } else if *state == crate::protocol::AgentState::Idle && (session_started || event.is_none()) {
+                    } else if *state == crate::protocol::AgentState::Idle
+                        && (session_started || event.is_none())
+                    {
                         self.emit_agent_booted(*pane_id, provenance);
                     }
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
@@ -2487,9 +2555,7 @@ impl PlexiApp {
                 // fallback that produced that case is exactly the forgeable
                 // input this stint removes.
                 let effective_scope = match scope.unwrap_or_default() {
-                    crate::protocol::NotifyScope::Global => {
-                        crate::protocol::NotifyScope::Global
-                    }
+                    crate::protocol::NotifyScope::Global => crate::protocol::NotifyScope::Global,
                     crate::protocol::NotifyScope::Context if caller_context_id.is_some() => {
                         crate::protocol::NotifyScope::Context
                     }
@@ -2517,10 +2583,12 @@ impl PlexiApp {
                 // drives auto-dismiss-on-focus (`notifications.rs`), which
                 // CLI notifications opt out of on purpose.
                 let dismiss_owner_pane_id = resolved.map(|(pane_id, ..)| pane_id).unwrap_or(0);
-                let is_invalid_choice = matches!(kind, crate::protocol::NotifyKind::Choice)
-                    && options.is_empty();
+                let is_invalid_choice =
+                    matches!(kind, crate::protocol::NotifyKind::Choice) && options.is_empty();
                 if is_invalid_choice {
-                    log::warn!("pane_ipc: notify id={internal_id:?} has no choices; resolving explicitly");
+                    log::warn!(
+                        "pane_ipc: notify id={internal_id:?} has no choices; resolving explicitly"
+                    );
                     self.deliver_notify_action(
                         0,
                         internal_id,
@@ -2530,30 +2598,30 @@ impl PlexiApp {
                         None,
                     );
                 } else {
-                self.enqueue_notification(
-                    crate::app::notifications::NotifySource::Cli,
-                    PendingNotification {
-                        notify_id: internal_id,
-                        dismiss_owner_pane_id,
-                        // 0 = no context / no window, the same sentinel
-                        // host-internal notifications use. Real ids start at 1.
-                        source_context_id: caller_context_id.unwrap_or(0),
-                        source_window_id: caller_window_id.unwrap_or(0),
-                        scope: effective_scope,
-                        title: title.clone(),
-                        body: body.clone(),
-                        kind: kind.clone(),
-                        options: options.clone(),
-                        input_prompt: input_prompt.clone(),
-                        required: *required,
-                        image_inline: image_inline.clone(),
-                        image_pipe_id: image_pipe_id.clone(),
-                        response_file: response_file.clone(),
-                        timeout_secs: *timeout_secs,
-                        on_dismiss: on_dismiss.clone(),
-                        ..Default::default()
-                    },
-                );
+                    self.enqueue_notification(
+                        crate::app::notifications::NotifySource::Cli,
+                        PendingNotification {
+                            notify_id: internal_id,
+                            dismiss_owner_pane_id,
+                            // 0 = no context / no window, the same sentinel
+                            // host-internal notifications use. Real ids start at 1.
+                            source_context_id: caller_context_id.unwrap_or(0),
+                            source_window_id: caller_window_id.unwrap_or(0),
+                            scope: effective_scope,
+                            title: title.clone(),
+                            body: body.clone(),
+                            kind: kind.clone(),
+                            options: options.clone(),
+                            input_prompt: input_prompt.clone(),
+                            required: *required,
+                            image_inline: image_inline.clone(),
+                            image_pipe_id: image_pipe_id.clone(),
+                            response_file: response_file.clone(),
+                            timeout_secs: *timeout_secs,
+                            on_dismiss: on_dismiss.clone(),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             crate::protocol::AppRequest::DismissNotification {
@@ -3703,7 +3771,12 @@ impl PlexiApp {
                         }
                     }
                     if newly_exited {
-                        self.emit_pane_lifecycle(id, PaneLifecycleEvent::Exited { status: ExitStatus::Unknown });
+                        self.emit_pane_lifecycle(
+                            id,
+                            PaneLifecycleEvent::Exited {
+                                status: ExitStatus::Unknown,
+                            },
+                        );
                     }
                 }
                 PtyEvent::Title(title) => {

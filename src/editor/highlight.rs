@@ -204,8 +204,7 @@ fn kind_of(stack: &ScopeStack) -> TokenKind {
             || name.starts_with("storage.type")
         {
             TokenKind::Keyword
-        } else if name.starts_with("entity.name.function") || name.starts_with("support.function")
-        {
+        } else if name.starts_with("entity.name.function") || name.starts_with("support.function") {
             TokenKind::Function
         } else if name.starts_with("entity.name.type")
             || name.starts_with("entity.name")
@@ -326,7 +325,10 @@ mod tests {
         // edit: opening a block comment on line 0 re-classifies line 1.
         let commented = buffer("/* start\nlet x = 1;\n// changed");
         let spans = h.line_spans(&commented, 1, 2).to_vec();
-        assert!(spans.iter().all(|s| s.kind == TokenKind::Comment), "{spans:?}");
+        assert!(
+            spans.iter().all(|s| s.kind == TokenKind::Comment),
+            "{spans:?}"
+        );
     }
 
     #[test]

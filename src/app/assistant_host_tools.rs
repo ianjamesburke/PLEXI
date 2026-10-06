@@ -1284,8 +1284,11 @@ mod tests {
                 .starts_with("net_host_not_allowed"),
             "file:// must be refused under an empty allowlist"
         );
-        assert!(refusal(&mut harness, r#"{"url":"https://example.com","method":"TRACE"}"#)
-            .starts_with("invalid_input"));
+        assert!(refusal(
+            &mut harness,
+            r#"{"url":"https://example.com","method":"TRACE"}"#
+        )
+        .starts_with("invalid_input"));
 
         let missing_pane = {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -1319,7 +1322,10 @@ mod tests {
                 "{url} must be rejected, got: {error}"
             );
         }
-        assert_eq!(super::fetch_destination_rejected("https://example.com/x"), None);
+        assert_eq!(
+            super::fetch_destination_rejected("https://example.com/x"),
+            None
+        );
     }
 
     /// The allowlist gating `host.net.fetch` is the pane's own

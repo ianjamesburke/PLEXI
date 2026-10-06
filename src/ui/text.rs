@@ -136,9 +136,15 @@ mod tests {
             let path = "/Users/someone/Documents/GitHub/plexi/src";
             let leading = elide(ui, path, font.clone(), 120.0, Side::Leading);
             let trailing = elide(ui, path, font.clone(), 120.0, Side::Trailing);
-            assert!(leading.starts_with(ELLIPSIS), "leading elision marks the head");
+            assert!(
+                leading.starts_with(ELLIPSIS),
+                "leading elision marks the head"
+            );
             assert!(leading.ends_with("src"), "leading elision keeps the leaf");
-            assert!(trailing.ends_with(ELLIPSIS), "trailing elision marks the tail");
+            assert!(
+                trailing.ends_with(ELLIPSIS),
+                "trailing elision marks the tail"
+            );
             assert!(trailing.starts_with('/'), "trailing elision keeps the root");
         });
     }

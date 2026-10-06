@@ -318,7 +318,7 @@ impl AssistantStore {
                 continue;
             };
             let turns = self.load_turns(id);
-            let title = turns
+            let raw_title = turns
                 .iter()
                 .find(|turn| matches!(turn.role, super::model::TurnRole::User))
                 .map(|turn| turn.text.chars().take(60).collect())
@@ -330,9 +330,14 @@ impl AssistantStore {
             {
                 continue;
             }
+            let title = if id.starts_with("phone-") {
+                "Phone".to_string()
+            } else {
+                history.name.unwrap_or(raw_title)
+            };
             items.push(ConversationSummary {
                 id: id.to_string(),
-                title: history.name.unwrap_or(title),
+                title,
                 turn_count: turns.len(),
                 active: active.as_deref() == Some(id),
                 updated_at: history.updated_at,
@@ -344,6 +349,15 @@ impl AssistantStore {
                 .then_with(|| b.id.cmp(&a.id))
         });
         Ok(items)
+    }
+
+    /// The phone relay's conversation, newest first. Desktop `/phone` opens it.
+    pub fn newest_phone_conversation(&self) -> Result<Option<String>, String> {
+        Ok(self
+            .list_conversations()?
+            .into_iter()
+            .find(|item| item.id.starts_with("phone-"))
+            .map(|item| item.id))
     }
 
     pub fn load_history(&self, id: &str) -> Result<ConversationHistory, String> {
@@ -470,6 +484,28 @@ impl AssistantStore {
 mod tests {
     use super::*;
     use crate::assistant::model::TurnRole;
+
+    #[test]
+    fn phone_conversations_are_listed_as_phone() {
+        let ws = tempfile::tempdir().unwrap();
+        let store = AssistantStore::new(ws.path(), 1);
+        store
+            .write_turns(
+                "phone-host-1",
+                &[Turn::now(TurnRole::User, "from the phone")],
+            )
+            .unwrap();
+        store
+            .write_turns("desk", &[Turn::now(TurnRole::User, "from the desktop")])
+            .unwrap();
+        let items = store.list_conversations().unwrap();
+        let phone = items.iter().find(|item| item.id == "phone-host-1").unwrap();
+        assert_eq!(phone.title, "Phone");
+        assert_eq!(
+            store.newest_phone_conversation().unwrap().as_deref(),
+            Some("phone-host-1")
+        );
+    }
 
     #[test]
     fn round_trip_resumes_the_same_conversation() {
@@ -691,9 +727,7 @@ mod tests {
             .set_active_conversation("legacy", None, "default", None)
             .unwrap();
         let a_list = ctx_a.list_conversations().unwrap();
-        assert!(a_list
-            .iter()
-            .any(|item| item.id == "legacy" && item.active));
+        assert!(a_list.iter().any(|item| item.id == "legacy" && item.active));
         let b_list = ctx_b.list_conversations().unwrap();
         assert!(
             b_list.iter().all(|item| item.id != "legacy"),

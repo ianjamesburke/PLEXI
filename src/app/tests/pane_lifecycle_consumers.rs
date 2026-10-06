@@ -1,10 +1,10 @@
 use crate::app::ui_mailbox::{EguiWake, UiMailbox};
 use crate::host::event_subscriptions::ConsentChoice;
 use crate::testing::HostHarness;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 struct Connection {

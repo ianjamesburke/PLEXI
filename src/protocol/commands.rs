@@ -90,6 +90,17 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// Caller-owned conversation. Absent means the host mints one.
+        /// Ignored when `join_desktop` is true.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+        /// Opt in to the desktop Assistant transcript. Default is a separate conversation.
+        #[serde(default)]
+        join_desktop: bool,
+        /// Read the finished status of a turn that already returned
+        /// `waiting_for_permission`. Does not submit a new prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_for: Option<String>,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
@@ -2827,7 +2838,7 @@ mod tests {
         assert!(is_reserved_shortcut("h"));
         assert!(is_reserved_shortcut("l"));
         assert!(is_reserved_shortcut("J")); // case-insensitive
-        // Digit-select keys — reserved
+                                            // Digit-select keys — reserved
         assert!(is_reserved_shortcut("1"));
         assert!(is_reserved_shortcut("9"));
         // 0 is NOT reserved (1-9 only)

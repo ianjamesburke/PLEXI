@@ -6,8 +6,8 @@
 //! same file-handling code written twice, down to the log wording. That
 //! handling lives here now; each store keeps only its own payload and rules.
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// `label` prefixes every log line this store emits, so the messages stay

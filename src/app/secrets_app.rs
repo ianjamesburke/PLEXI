@@ -62,9 +62,7 @@ fn reconcile_status_line(report: &crate::workspace::secrets::ReconcileReport) ->
 fn load_entries() -> (Vec<ManagedSecret>, Option<String>) {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        use crate::workspace::secrets::{
-            reconcile_index_with_keychain, system_store,
-        };
+        use crate::workspace::secrets::{reconcile_index_with_keychain, system_store};
         let (accounts, status) = match reconcile_index_with_keychain() {
             Ok(report) => {
                 let status = reconcile_status_line(&report);
@@ -204,8 +202,7 @@ impl SecretsApp {
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
             use crate::workspace::secrets::{
-                keychain_user_name, keychain_workspace_name, system_store,
-                WorkspaceConfig,
+                keychain_user_name, keychain_workspace_name, system_store, WorkspaceConfig,
             };
 
             // Resolve scope: workspace-scoped if cwd is inside an initialized workspace.

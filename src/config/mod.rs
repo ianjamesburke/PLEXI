@@ -838,9 +838,15 @@ pub fn set_profile(name: Option<String>) {
 pub fn lock_profile_initialization() -> Result<std::fs::File, String> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-        .open(dir.join("initialization.lock")).map_err(|e| format!("open profile initialization lock: {e}"))?;
-    lock.lock().map_err(|e| format!("lock profile initialization: {e}"))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("initialization.lock"))
+        .map_err(|e| format!("open profile initialization lock: {e}"))?;
+    lock.lock()
+        .map_err(|e| format!("lock profile initialization: {e}"))?;
     Ok(lock)
 }
 
@@ -1330,7 +1336,6 @@ pub fn open_workspace_config_file(workspace_root: &Path) {
 }
 
 fn open_config_file_at(path: &Path) {
-
     if !path.exists() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -1829,7 +1834,10 @@ mod tests {
 
     #[test]
     fn windows_executable_suffix_does_not_become_part_of_the_channel() {
-        assert_eq!(channel_suffix_from_basename("plexi-alpha.exe"), ".plexi-alpha");
+        assert_eq!(
+            channel_suffix_from_basename("plexi-alpha.exe"),
+            ".plexi-alpha"
+        );
         assert_eq!(channel_from_basename("plexi-alpha.exe"), Some("alpha"));
         assert_eq!(
             resolve_channel_dir("plexi-alpha.exe", Some("beta")),
@@ -1840,10 +1848,7 @@ mod tests {
     #[test]
     fn only_numbered_pr_channels_are_test_channels() {
         assert!(is_matching_test_channel(Some("pr-1"), Some("pr-1")));
-        assert!(is_matching_test_channel(
-            Some("pr-2493"),
-            Some("pr-2493")
-        ));
+        assert!(is_matching_test_channel(Some("pr-2493"), Some("pr-2493")));
 
         for (compiled, runtime) in [
             (None, Some("pr-1")),
@@ -2438,6 +2443,9 @@ mod distribution_profile_tests {
         std::fs::write(dir.path().join("installed_tag"), "v0.3.4").unwrap();
         assert!(super::ensure_profile_initialized());
         assert!(!super::ensure_profile_initialized());
-        assert_eq!(std::fs::read_to_string(dir.path().join("sdk/.sdk_version")).unwrap(), env!("PLEXI_BUILD_ID"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sdk/.sdk_version")).unwrap(),
+            env!("PLEXI_BUILD_ID")
+        );
     }
 }

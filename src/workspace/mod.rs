@@ -492,15 +492,13 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("read JSON"))
                 .expect("prior workspace remains loadable");
         assert_eq!(loaded.version, 2);
-        assert!(
-            std::fs::read_dir(directory.path())
-                .expect("read workspace directory")
-                .all(|entry| !entry
-                    .expect("directory entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".tmp-"))
-        );
+        assert!(std::fs::read_dir(directory.path())
+            .expect("read workspace directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")));
     }
 
     /// `SavedPaneKind` must serialise every Pane variant produced by mirror-split

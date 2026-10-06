@@ -223,7 +223,10 @@ pub fn plan_newline(buffer: &TextBuffer, selection: Selection) -> Option<Markdow
         let start = buffer.line_to_char(caret.line);
         let prefix = format!("{}{}", marker.indent, marker.marker);
         let deleted = prefix.chars().count();
-        let mut ops = vec![EditOperation::Delete { pos: start, text: prefix }];
+        let mut ops = vec![EditOperation::Delete {
+            pos: start,
+            text: prefix,
+        }];
         if let Some(n) = marker.ordered {
             renumber_following(
                 buffer,
@@ -289,11 +292,7 @@ fn renumber_following(
             break;
         }
         if n != expected {
-            let old_digits: String = m
-                .marker
-                .chars()
-                .take_while(char::is_ascii_digit)
-                .collect();
+            let old_digits: String = m.marker.chars().take_while(char::is_ascii_digit).collect();
             let new_digits = expected.to_string();
             let pos = (buffer.line_to_char(l) + indent.chars().count()) as isize + offset;
             let pos = usize::try_from(pos).unwrap_or(0);

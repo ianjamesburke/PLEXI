@@ -142,8 +142,8 @@ fn pane_info_and_list_include_agent_state() {
         agent: "claude-code".to_string(),
         detail: Some("Bash: cargo test".to_string()),
         session_id: Some("session-33".to_string()),
-            event: None,
-            blocked_reason: None,
+        event: None,
+        blocked_reason: None,
     });
     h.app.drain_pane_cmd_channel();
 
@@ -198,8 +198,8 @@ fn get_agent_states_collects_state_from_panes() {
         agent: "claude-code".to_string(),
         detail: None,
         session_id: None,
-            event: None,
-            blocked_reason: None,
+        event: None,
+        blocked_reason: None,
     });
     h.app.drain_pane_cmd_channel();
 
@@ -967,7 +967,10 @@ fn assistant_open_spawns_second_instance_in_other_context() {
     let _cleanup = Cleanup(marker);
     let workspace_root =
         crate::config::active_workspace_root().expect("marker dir must make cwd a workspace root");
-    assert_eq!(workspace_root, cwd, "workspace root must resolve to the repo checkout");
+    assert_eq!(
+        workspace_root, cwd,
+        "workspace root must resolve to the repo checkout"
+    );
 
     let mut h = HostHarness::new();
     let (pane_a_tile, _pane_a) = h.app.add_test_pane(); // window 0, context 1

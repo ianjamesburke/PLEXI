@@ -753,8 +753,8 @@ mod tests {
 
     #[test]
     fn pane_credential_lists_and_calls_only_context_app_tools() {
-        use crate::protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+        use crate::protocol::{AiTool, PlexiEvent};
 
         let (port, _test_token) = start_test_server(None);
         let context_a = 100u64;
@@ -876,8 +876,8 @@ mod tests {
     #[test]
     #[ignore = "requires a Pi install; see doc comment"]
     fn pi_session_calls_context_app_tool_through_host_mcp() {
-        use crate::protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+        use crate::protocol::{AiTool, PlexiEvent};
         use std::process::{Command, Stdio};
 
         let pi_cli = std::env::var("PLEXI_PI_CLI").expect("set PLEXI_PI_CLI to Pi's cli.js");
@@ -997,7 +997,15 @@ export default function (pi: ExtensionAPI) {
 
         let output = Command::new(&runtime)
             .arg(&pi_cli)
-            .args(["-p", "--no-session", "--offline", "-ne", "-e", "builtin:mcp", "-e"])
+            .args([
+                "-p",
+                "--no-session",
+                "--offline",
+                "-ne",
+                "-e",
+                "builtin:mcp",
+                "-e",
+            ])
             .arg(&plexi_ext)
             .arg("-e")
             .arg(&faux_ext)
@@ -1013,7 +1021,10 @@ export default function (pi: ExtensionAPI) {
             .expect("spawn Pi");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "pi failed\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            output.status.success(),
+            "pi failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
 
         let (name, input_json, caller_id) = responder.join().unwrap();
         assert_eq!(name, "move");
@@ -1034,8 +1045,8 @@ export default function (pi: ExtensionAPI) {
     /// tool returns the event.
     #[test]
     fn subscribe_and_wait_delivers_emitted_event() {
-        use crate::protocol::{AppEventActor, EventStreamDecl};
         use crate::host::app_timeline::EmittedEvent;
+        use crate::protocol::{AppEventActor, EventStreamDecl};
         let app = "mcp-it-app";
         let stream = "it.tick";
         // `start_test_server` registers its pane credential with `context_id

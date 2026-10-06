@@ -11,8 +11,7 @@ pub struct HostPane {
     pub group: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct HostContext {
     pub panes: Vec<HostPane>,
     pub focused_pane: Option<PaneId>,
@@ -23,7 +22,6 @@ pub struct HostContext {
     /// Parent context_id for sub-contexts. None = top-level.
     pub parent_id: Option<u64>,
 }
-
 
 #[derive(Debug, Default)]
 pub struct HostModel {

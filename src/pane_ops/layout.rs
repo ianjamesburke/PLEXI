@@ -3,7 +3,7 @@
 
 use crate::app::PlexiApp;
 use crate::host::command::{HostAction, Placement};
-use crate::host::context::{Window, replace_child};
+use crate::host::context::{replace_child, Window};
 use crate::host::effect::HostEffect;
 use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
@@ -91,9 +91,7 @@ pub(crate) fn build_squad_tree(
     } else {
         match layout {
             crate::protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
-            crate::protocol::SubContextLayout::Columns => {
-                tiles.insert_horizontal_tile(pane_tiles)
-            }
+            crate::protocol::SubContextLayout::Columns => tiles.insert_horizontal_tile(pane_tiles),
         }
     };
     (egui_tiles::Tree::new("plexi", root, tiles), first_tile)

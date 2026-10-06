@@ -109,10 +109,9 @@ impl<'a> ActionModal<'a> {
                 .actions
                 .iter()
                 .map(|action| {
-                    action
-                        .shortcut
-                        .as_ref()
-                        .map_or(0.0, |shortcut| shortcuts::key_combo_width(ui, shortcut.keys))
+                    action.shortcut.as_ref().map_or(0.0, |shortcut| {
+                        shortcuts::key_combo_width(ui, shortcut.keys)
+                    })
                 })
                 .fold(0.0_f32, f32::max);
 

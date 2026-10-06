@@ -277,15 +277,11 @@ pub(crate) fn restore_app_pane(
     match launch {
         crate::workspace::SavedAppLaunch::Python { app_dir, args } => {
             if !app_dir.is_dir() {
-                return Err(format!(
-                    "app directory not found at {}",
-                    app_dir.display()
-                ));
+                return Err(format!("app directory not found at {}", app_dir.display()));
             }
-            let config =
-                crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
+            let config = crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
             let mut permissions = crate::app::permissions::AppPermissions::from_capability_strings(
                 &config.capabilities,
             );
@@ -302,9 +298,7 @@ pub(crate) fn restore_app_pane(
             let name = saved_name
                 .map(String::from)
                 .unwrap_or_else(|| runtime.display_name());
-            log::info!(
-                "workspace_restore: restored python app_id={app_id} pane_id={pane_id}"
-            );
+            log::info!("workspace_restore: restored python app_id={app_id} pane_id={pane_id}");
             let pane = Pane::App(Box::new(crate::host::pane::AppPane {
                 pip_status: None,
                 id: pane_id,
@@ -384,9 +378,7 @@ pub(crate) fn restore_app_pane(
             let name = saved_name
                 .map(String::from)
                 .unwrap_or_else(|| live.display_name());
-            log::info!(
-                "workspace_restore: restored wasm app_id={manifest_id} pane_id={pane_id}"
-            );
+            log::info!("workspace_restore: restored wasm app_id={manifest_id} pane_id={pane_id}");
             let pane = Pane::App(Box::new(crate::host::pane::AppPane {
                 pip_status: None,
                 id: pane_id,

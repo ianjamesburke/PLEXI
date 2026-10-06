@@ -872,9 +872,8 @@ fn expand_scene_tmp(raw: String) -> Result<(String, Option<tempfile::TempDir>), 
     if !raw.contains("{tmp}") {
         return Ok((raw, None));
     }
-    let dir = tempfile::tempdir().map_err(|error| {
-        SceneError::new("scene_tmp", format!("create scene temp dir: {error}"))
-    })?;
+    let dir = tempfile::tempdir()
+        .map_err(|error| SceneError::new("scene_tmp", format!("create scene temp dir: {error}")))?;
     let expanded = raw.replace("{tmp}", &dir.path().display().to_string());
     Ok((expanded, Some(dir)))
 }
@@ -3309,15 +3308,21 @@ mod tests {
         // A stopped channel in attach mode is a hard error — never a silent
         // owned replacement (a crashed gate host must fail the gate).
         assert_eq!(
-            live_start_action(HostStatusClass::Stopped, true).unwrap_err().0,
+            live_start_action(HostStatusClass::Stopped, true)
+                .unwrap_err()
+                .0,
             "live_attach_host_missing"
         );
         assert_eq!(
-            live_start_action(HostStatusClass::Running, false).unwrap_err().0,
+            live_start_action(HostStatusClass::Running, false)
+                .unwrap_err()
+                .0,
             "live_host_already_running"
         );
         assert_eq!(
-            live_start_action(HostStatusClass::Unknown, true).unwrap_err().0,
+            live_start_action(HostStatusClass::Unknown, true)
+                .unwrap_err()
+                .0,
             "live_status_invalid"
         );
     }

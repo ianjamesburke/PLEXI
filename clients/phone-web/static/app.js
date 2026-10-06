@@ -2,7 +2,18 @@
 // No credentials are stored; the draft stays in the composer until the server accepts it.
 
 const POLL_MS = 1000;
-const TERMINAL = new Set(["succeeded", "failed", "cancelled", "expired"]);
+const TERMINAL = new Set(["succeeded", "failed", "cancelled", "expired", "waiting_for_permission", "waiting_on_desktop"]);
+
+function receiptLabel(state) {
+  if (state === "waiting_for_permission" || state === "waiting_on_desktop") return "waiting on desktop";
+  return state;
+}
+
+function connectionFromStatus(body) {
+  if (body.host === "desktop_offline" || body.desktop === "offline") return ["offline", "desktop offline"];
+  if (body.host === "not_connected") return ["online", "Online · local stub, no host"];
+  return ["online", "Online"];
+}
 
 const els = {
   connection: document.getElementById("connection"),
@@ -11,7 +22,14 @@ const els = {
   message: document.getElementById("message"),
   send: document.getElementById("send"),
   cancel: document.getElementById("cancel"),
+  desktop: document.getElementById("desktop"),
 };
+
+const DESKTOP_KEY = "plexiPhoneJoinDesktop";
+els.desktop.checked = localStorage.getItem(DESKTOP_KEY) === "1";
+els.desktop.addEventListener("change", () => {
+  localStorage.setItem(DESKTOP_KEY, els.desktop.checked ? "1" : "0");
+});
 
 let cursor = 0;
 let online = false;
@@ -51,11 +69,12 @@ function render(event) {
   li.dataset.requestId = event.request_id;
   if (event.kind === "receipt") {
     const state = document.createElement("div");
-    state.textContent = event.state;
+    state.textContent = receiptLabel(event.state);
     li.append(state);
-    if (event.error) {
+    const note = event.status || event.error;
+    if (note) {
       const error = document.createElement("small");
-      error.textContent = event.error.slice(0, 240);
+      error.textContent = note.slice(0, 240);
       li.append(error);
     }
   } else {
@@ -76,12 +95,11 @@ function render(event) {
 
 async function poll() {
   try {
-    if (!online) {
-      const status = await fetch("/api/status", { cache: "no-store", headers: apiHeaders() });
-      if (!status.ok) throw new Error(`status ${status.status}`);
-      const body = await status.json();
-      setConnection("online", body.host === "not_connected" ? "Online · local stub, no host" : "Online");
-    }
+    const status = await fetch("/api/status", { cache: "no-store", headers: apiHeaders() });
+    if (!status.ok) throw new Error(`status ${status.status}`);
+    const body = await status.json();
+    const [state, label] = connectionFromStatus(body);
+    setConnection(state, label);
     const res = await fetch(`/api/conversation?after=${cursor}`, { cache: "no-store", headers: apiHeaders() });
     if (!res.ok) throw new Error(`conversation ${res.status}`);
     const page = await res.json();
@@ -110,11 +128,18 @@ els.form.addEventListener("submit", async (e) => {
         schema_version: 1,
         request_id: id,
         conversation_id: "local-stub",
+        join_desktop: els.desktop.checked,
         content: [{ type: "text", text }],
       }),
     });
     const receipt = await res.json();
-    if (!res.ok) throw new Error(receipt.error || `turn ${res.status}`);
+    if (!res.ok) {
+      if (receipt.error === "desktop_offline") {
+        setConnection("offline", "desktop offline");
+        return;
+      }
+      throw new Error(receipt.error || `turn ${res.status}`);
+    }
     if (!TERMINAL.has(receipt.state) && !activeRequestIds.includes(id)) activeRequestIds.push(id);
     els.message.value = "";
   } catch (err) {
