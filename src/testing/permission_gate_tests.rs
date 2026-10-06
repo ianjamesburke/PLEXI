@@ -60,6 +60,16 @@ fn commits_for(start: usize, op: &str) -> usize {
         .count()
 }
 
+/// The socket reply can return before `chess.move_committed` is on the
+/// process-global timeline. A slow runner (macos-x64) observed revision 1
+/// with `commits_for` still 0.
+fn expect_commits(h: &mut HostHarness, start: usize, op: &str, n: usize) {
+    if n > 0 && commits_for(start, op) < n {
+        pump_until(h, |_| commits_for(start, op) >= n);
+    }
+    assert_eq!(commits_for(start, op), n, "commits for {op}");
+}
+
 fn mcp_error_code(body: &serde_json::Value) -> Option<String> {
     let text = body.pointer("/result/content/0/text")?.as_str()?;
     let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
@@ -294,7 +304,7 @@ fn run_ingress(ingress: Ingress) {
         Ingress::Mcp => assert!(actor.starts_with("mcp:pane:"), "{output}"),
         Ingress::Socket => assert_eq!(actor, format!("pane:{pane}"), "{output}"),
     }
-    assert_eq!(commits_for(start, &op), 1, "one commit");
+    expect_commits(&mut h, start, &op, 1);
     let intruder = h.add_test_pane();
     let intruder_credential =
         mon.issue_credential(Some(intruder), ctx, &workspace, &format!("pane:{intruder}"));
@@ -763,7 +773,7 @@ fn chess_receipt_survives_lost_reply() {
     // The caller drops that reply. The retry is the same operation.
     let recovered = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
     assert_eq!(recovered["output"]["duplicate"], true, "{recovered}");
-    assert_eq!(commits_for(start, op), 1);
+    expect_commits(&mut h, start, op, 1);
 
     mon.fail_audit(true);
     let blocked = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
@@ -850,6 +860,7 @@ fn second_chess_pane_routes_by_instance() {
         .expect("forced second chess pane")
         .expect("pane id");
     h.wait_for_first_render(second);
+    h.wait_for_exposed_tools(second);
     pump_until(&mut h, |harness| {
         chess_play_names(harness)
             .iter()
@@ -898,7 +909,7 @@ fn second_chess_pane_routes_by_instance() {
     );
     assert_eq!(committed["output"]["revision_after"], 1, "{committed}");
     assert_eq!(committed["output"]["actor"], format!("pane:{first}"));
-    assert_eq!(commits_for(start, "route-e4"), 1);
+    expect_commits(&mut h, start, "route-e4", 1);
     log::info!("permission_gate: second chess pane addressed by instance");
 }
 

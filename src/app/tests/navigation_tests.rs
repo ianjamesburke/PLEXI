@@ -20,7 +20,7 @@ fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     }
 }
 
-fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
+fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_below");
     let tile = tree.tiles.insert_pane(pane_id);
     tree.root = Some(tile);
@@ -34,11 +34,11 @@ fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
         grid_x: 0,
         grid_y: 1,
         window_id,
-        context_id: 1, // same workspace as window 0
+        context_id,
     }
 }
 
-fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
+fn same_workspace_window_bottom(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_bottom");
     let tile = tree.tiles.insert_pane(pane_id);
     tree.root = Some(tile);
@@ -52,7 +52,7 @@ fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
         grid_x: 0,
         grid_y: 2,
         window_id,
-        context_id: 1,
+        context_id,
     }
 }
 
@@ -227,8 +227,9 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
     let mut h = HostHarness::new();
     let pane_a = h.add_test_pane();
     // Three windows: grid_y 0 (window 0), 1 (window 1), 2 (window 2).
-    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+    let context_id = h.app.windows[0].context_id;
+    h.app.windows.push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app.windows.push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     assert!(
         h.app.pane_navigate(pane_a),
@@ -250,8 +251,9 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
 fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
-    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+    let context_id = h.app.windows[0].context_id;
+    h.app.windows.push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app.windows.push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     // Start from the middle window.
     assert_eq!(h.app.active_window, 0);
@@ -327,7 +329,7 @@ fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
         "moving within a page must exit zoom"
     );
 
-    let mut other_page = same_workspace_window_below(2, 9910);
+    let mut other_page = same_workspace_window_below(h.app.windows[0].context_id, 2, 9910);
     let other_page_tile = other_page.tree.root.expect("other page must have a tile");
     other_page.zoom_to(other_page_tile);
     h.app.windows.push(other_page);
@@ -893,11 +895,12 @@ fn assistant_open_focuses_existing_in_same_window() {
 fn assistant_open_focuses_existing_across_windows_of_same_context() {
     let _channel = crate::config::set_test_channel("pr-0538");
     let mut h = HostHarness::new();
-    let _pane_a = h.add_test_pane(); // window 0, context 1
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
     let (assistant_tile, assistant_pane) = h.app.add_app_pane_in_window(0, "assistant");
 
-    // Window B of the SAME context 1, caller side.
-    h.app.windows.push(empty_window(1, 2));
+    // Window B of the same context, caller side.
+    h.app.windows.push(empty_window(context_id, 2));
     let _other = h.app.add_app_pane_in_window(1, "test");
     h.app.active_window = 1;
 
@@ -915,7 +918,7 @@ fn assistant_open_focuses_existing_across_windows_of_same_context() {
     assert_eq!(h.app.windows[0].focused_pane, Some(assistant_tile));
     assert_eq!(
         h.app
-            .find_app_pane_by_type("assistant", Some(1))
+            .find_app_pane_by_type("assistant", Some(context_id))
             .map(|(p, _)| p),
         Some(assistant_pane)
     );
@@ -970,10 +973,11 @@ fn assistant_open_spawns_second_instance_in_other_context() {
     assert_eq!(workspace_root, cwd, "workspace root must resolve to the repo checkout");
 
     let mut h = HostHarness::new();
-    let (pane_a_tile, _pane_a) = h.app.add_test_pane(); // window 0, context 1
+    let (pane_a_tile, _pane_a) = h.app.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
     h.app.windows[0].focused_pane = Some(pane_a_tile);
 
-    // First open spawns in context 1.
+    // First open spawns in the harness context.
     h.app.open_assistant_pane();
     assert_eq!(assistant_pane_count(&h.app), 1);
 
@@ -984,8 +988,8 @@ fn assistant_open_spawns_second_instance_in_other_context() {
     h.app.jump_to_context(1, 2, None);
     h.app.windows[1].focused_pane = Some(pane_b_tile);
 
-    // Opening from context 2 must NOT focus context 1's instance — it spawns
-    // a second one in the current window.
+    // Opening from context 2 must not focus the first context's instance — it
+    // spawns a second one in the current window.
     h.app.open_assistant_pane();
     assert_eq!(
         assistant_pane_count(&h.app),
@@ -1004,9 +1008,12 @@ fn assistant_open_spawns_second_instance_in_other_context() {
     // Each context persisted its own conversation pointer in its store,
     // anchored at that context's root (stint 0651: the root is the anchor —
     // the cwd-walk workspace fallback is gone).
-    let root_ctx1 = h.app.context_root_for(1).expect("context 1 root");
+    let root_ctx1 = h
+        .app
+        .context_root_for(context_id)
+        .expect("caller context root");
     let root_ctx2 = h.app.context_root_for(2).expect("context 2 root");
-    let store_ctx1 = crate::assistant::store::AssistantStore::new(&root_ctx1, 1);
+    let store_ctx1 = crate::assistant::store::AssistantStore::new(&root_ctx1, context_id);
     let store_ctx2 = crate::assistant::store::AssistantStore::new(&root_ctx2, 2);
     let conv1 = store_ctx1
         .active_conversation()

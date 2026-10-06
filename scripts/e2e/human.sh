@@ -169,16 +169,39 @@ PY
   return "$code"
 }
 
+# Screen origin of the window's client area. xdotool getwindowgeometry
+# reports X/Y that include the reparented frame offset a second time, so a
+# click aimed at an accesskit rect lands below the button.
+human__window_origin() {
+  local wid="$1"
+  local origin=""
+  if command -v xwininfo >/dev/null 2>&1; then
+    origin="$(xwininfo -id "$wid" 2>/dev/null | awk '
+      /Absolute upper-left X:/ { x = $NF }
+      /Absolute upper-left Y:/ { y = $NF }
+      END { if (x != "" && y != "") print x, y }
+    ')"
+  fi
+  if [[ -n "$origin" ]]; then
+    printf '%s' "$origin"
+    return 0
+  fi
+  local geo
+  geo="$(xdotool getwindowgeometry --shell "$wid" 2>/dev/null || true)"
+  # shellcheck disable=SC2086
+  eval "$geo"
+  printf '%s %s' "${X:-0}" "${Y:-0}"
+}
+
 human__click_window() {
   local wid="$1" x="$2" y="$3" _mode="${4:-screen}"
   xdotool windowactivate --sync "$wid" >/dev/null 2>&1 || true
-  local geo
-  geo="$(xdotool getwindowgeometry --shell "$wid")"
-  # shellcheck disable=SC2086
-  eval "$geo"
-  local sx sy
-  sx="$(python3 -c "print(int(float('$X') + float('$x')))")"
-  sy="$(python3 -c "print(int(float('$Y') + float('$y')))")"
+  local origin ox oy sx sy
+  origin="$(human__window_origin "$wid")"
+  ox="${origin%% *}"
+  oy="${origin##* }"
+  sx="$(python3 -c "print(int(float('$ox') + float('$x')))")"
+  sy="$(python3 -c "print(int(float('$oy') + float('$y')))")"
   # XTEST pointer events. `click --window` is XSendEvent, which winit drops,
   # so the press never reaches the permission sheet.
   xdotool mousemove --sync "$sx" "$sy"

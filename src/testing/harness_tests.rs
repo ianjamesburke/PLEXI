@@ -189,6 +189,79 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
     crate::plexi_ai::tool_dispatch::unregister(provider_pane_id);
 }
 
+/// Two harnesses in one process must not collapse `chess.play` into one
+/// namespace. The registry is process-global; isolation is the context id
+/// assigned in `HostHarness::new`.
+#[test]
+fn two_harnesses_do_not_share_a_chess_tool_namespace() {
+    fn register_play(h: &mut HostHarness) -> u64 {
+        let (_, pane_id) = h.app.add_app_pane_in_window(0, "chess");
+        let origin = h
+            .app
+            .origin_for_pane(pane_id)
+            .expect("origin_for_pane must resolve");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        crate::plexi_ai::tool_dispatch::register(
+            pane_id,
+            "chess".to_string(),
+            vec![crate::protocol::AiTool {
+                name: "chess.play".to_string(),
+                description: "play".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: serde_json::json!({"type": "object"}),
+                timeout_ms: Some(1_000),
+                read_only: false,
+            }],
+            crate::plexi_ai::tool_dispatch::AppEventSender::Channel(tx),
+            origin,
+        );
+        pane_id
+    }
+
+    fn visible_play_names(h: &HostHarness) -> Vec<String> {
+        let ctx = h.app.windows[0].context_id;
+        let scope = crate::plexi_ai::tool_dispatch::DispatchScope::new(
+            0,
+            "probe",
+            h.workspace_root(),
+            ctx,
+        );
+        let mut names: Vec<String> = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
+            scope,
+            crate::broker::gate::PermissionMonitor::ephemeral(),
+        )
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .filter(|name| name.contains("chess.play"))
+        .collect();
+        names.sort();
+        names
+    }
+
+    let mut a = HostHarness::new();
+    let mut b = HostHarness::new();
+    assert_ne!(a.app.windows[0].context_id, b.app.windows[0].context_id);
+    assert_eq!(
+        a.app.windows[0].context_id,
+        a.app.router.active().context_id
+    );
+    let pane_a = register_play(&mut a);
+    let pane_b = register_play(&mut b);
+    assert_eq!(
+        visible_play_names(&a),
+        vec!["chess__chess.play".to_string()],
+        "harness A must see one bare chess.play"
+    );
+    assert_eq!(
+        visible_play_names(&b),
+        vec!["chess__chess.play".to_string()],
+        "harness B must see one bare chess.play"
+    );
+    crate::plexi_ai::tool_dispatch::unregister(pane_a);
+    crate::plexi_ai::tool_dispatch::unregister(pane_b);
+}
+
 // -- DrawCommand routing --------------------------------------------------
 
 /// Regression guard for PR #536: `AiQuery` was silently dropped into
@@ -5585,6 +5658,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         name: None,
         agent_cmd: None,
         boot_timeout_secs: None,
+        peer_ancestry: None,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
     // skips ui for an occluded window. At this point no text surface has
@@ -6918,6 +6992,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
 
         let reply = read_json_response(&response);
@@ -6965,6 +7040,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
 
         let reply = read_json_response(&response);
@@ -7390,6 +7466,7 @@ mod agent_boot {
             name: Some("agent".to_string()),
             agent_cmd: Some(agent_cmd.to_string()),
             boot_timeout_secs,
+            peer_ancestry: None,
         });
         response
     }
@@ -7600,6 +7677,7 @@ mod agent_boot {
             name: None,
             agent_cmd: Some("c-large".to_string()),
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
         h.run_frames(1);
 

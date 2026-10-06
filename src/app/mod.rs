@@ -619,6 +619,16 @@ pub(crate) fn handle_socket_line(
                         p.len()
                     );
                 }
+                crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. } => {
+                    // Same rule as CallAppTool: the wire value is never the
+                    // caller's identity. None when this process has no peer
+                    // capture (tests that enqueue the request directly).
+                    *p = peer_ancestry.map(<[u32]>::to_vec);
+                    log::info!(
+                        "pane_ipc: stamped SpawnPane peer ancestry ({} pid(s))",
+                        p.as_ref().map(|pids| pids.len()).unwrap_or(0)
+                    );
+                }
                 _ => {}
             }
             if needs_identity_ack {
@@ -2528,6 +2538,20 @@ impl PlexiApp {
         self.windows[win_idx].focused_pane = saved;
     }
 
+    /// Move the empty window `new_for_test` builds off context 1 onto
+    /// `context_id`. Harnesses call this before any pane exists so the
+    /// process-global tool registry keeps each test in its own namespace.
+    #[cfg(test)]
+    pub(crate) fn set_initial_context_id_for_test(&mut self, context_id: u64) {
+        assert!(
+            self.windows.len() == 1 && self.windows[0].panes.is_empty(),
+            "set_initial_context_id_for_test runs before panes exist"
+        );
+        self.windows[0].context_id = context_id;
+        self.router.get_mut(0).context_id = context_id;
+        log::info!("test harness: isolated tool namespace context_id={context_id}");
+    }
+
     /// Create a `PlexiApp` for headless tests. No workspace restore, no macOS
     /// menu setup, no PTY or audio hardware. Initialises a single empty window
     /// so `state().open_panes` is empty and the harness can add panes via
@@ -3735,7 +3759,7 @@ impl eframe::App for PlexiApp {
                     self.step_focus_history_forward();
                 }
                 Action::NewTab => {
-                    self.new_tab(self.active_window, None, false, None);
+                    self.new_tab(self.active_window, None, false, None, true);
                     self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {

@@ -35,6 +35,8 @@
 //! helpers, [`system_store`], and the re-exports every caller reaches through.
 
 mod file;
+mod folder;
+mod folder_store;
 mod migrate;
 mod reconcile;
 mod resolver;
@@ -60,6 +62,13 @@ pub use reconcile::reconcile_index_with_keychain;
 pub use reconcile::AccountRename;
 pub use reconcile::ReconcileReport;
 
+pub use folder::{
+    canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,
+    grant_folder_secret, list_folder_secrets, read_folder_secret, read_through_host_gate,
+    remove_folder_secret, set_folder_secret, take_folder_secret_sheet, FolderSecretMeta,
+    ReadResult, SecretActor, SECRET_READ_TOOL,
+};
+pub use folder_store::backend_label;
 pub use resolver::{
     resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,
@@ -121,6 +130,27 @@ pub fn system_store() -> &'static dyn SecretStore {
     {
         static STORE: std::sync::OnceLock<InMemoryKeychain> = std::sync::OnceLock::new();
         STORE.get_or_init(InMemoryKeychain::new)
+    }
+}
+
+/// Store for folder-scoped secrets. Tests get a process-local memory store.
+/// Production uses the OS keychain, or on Linux the Secret Service with a
+/// labeled encrypted-file fallback. This is not [`system_store`]: the Linux
+/// workspace [`system_store`] is an unencrypted file, and folder secrets must
+/// not use it.
+pub fn folder_store() -> &'static dyn SecretStore {
+    #[cfg(test)]
+    {
+        static STORE: std::sync::OnceLock<InMemoryKeychain> = std::sync::OnceLock::new();
+        STORE.get_or_init(InMemoryKeychain::new)
+    }
+    #[cfg(all(not(test), target_os = "linux"))]
+    {
+        folder_store::platform_folder_store()
+    }
+    #[cfg(all(not(test), any(target_os = "macos", windows)))]
+    {
+        system_store()
     }
 }
 
