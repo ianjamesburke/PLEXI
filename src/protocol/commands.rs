@@ -767,6 +767,16 @@ pub enum AppRequest {
         approve: bool,
         response_file: String,
     },
+    /// Agents API: heads, runs, delegation, and gated tool calls.
+    /// `op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,
+    /// `show_run`, `finish_run`, or `delegate`. `payload` carries the
+    /// workspace path and the op's fields. The host writes the JSON result
+    /// to `response_file`.
+    AgentsApi {
+        op: String,
+        payload: serde_json::Value,
+        response_file: String,
+    },
     /// Call an app-exposed tool through the host tool dispatcher. Sent by
     /// `plexi app call`. The host resolves the viewer context from
     /// `caller_pane_id` (the credential's context when absent), stamps the

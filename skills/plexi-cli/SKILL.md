@@ -90,10 +90,17 @@ CLI or app SDK; do not inspect Plexi profile files directly.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
   project secrets and routines: `plexi workspace --help`, `plexi run --help`,
   `plexi secret --help`, and `plexi routine --help`.
-- **Agents** — install workspace definitions and report or inspect agent state:
-  `plexi agent --help`. `agent report --event` preserves a provider lifecycle
-  event separately from its UI state; `--blocked-reason` supplies a typed reason.
-  Read `agent report --help` before using these optional fields.
+- **Agents** — install workspace definitions, report or inspect agent state,
+  and operate agent heads: `plexi agent --help`. `agent head create` stores a
+  named head under `.plexi/agents` with `--grant tool=allow|ask|deny`. `AGENT.md`
+  is guidance and grants nothing. `agent run spawn` starts a run; repeat the
+  same `--admission` to get that run back, and a second admission while it is
+  active returns `assignment_conflict`. `agent run finish` stops it. `agent delegate`
+  starts a temporary child with a subset of the parent run's grants. Ask-tier
+  calls wait on `plexi assistant permission list`. `agent report --event` preserves
+  a provider lifecycle event separately from its UI state; `--blocked-reason`
+  supplies a typed reason. Read `agent report --help` before using these optional
+  fields.
 - **AI ledger** — totals for tokens, cost, runs, and wall time from this
   channel's ledger, grouped by client or kind: `plexi ledger summary --help`.
   The command reads the local ledger file and does not need a running host.
@@ -283,6 +290,21 @@ tagged is the null group.
 ```bash
 plexi ledger summary --by client --since 2026-01-01 --json
 plexi assistant send --text "hello" --client narrative --kind output
+```
+
+### Create an agent head and claim a run
+
+Heads live in the workspace `.plexi/agents` directory. Grants are the permission
+gate's authority. The same admission id returns the original run.
+
+```bash
+plexi agent head create lead --display-name Lead --description 'Lead agent' --grant agents.ping=allow --grant agents.review=ask --json
+plexi agent head list --all --json
+plexi agent run spawn --head lead --admission adm-1 --client-ref acme --kind output --input-tokens 11 --output-tokens 4 --json
+plexi agent run list --json
+plexi agent run show run_example --json
+plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+plexi agent run finish run_example --json
 ```
 
 ## Installation health

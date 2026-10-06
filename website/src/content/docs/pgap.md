@@ -616,6 +616,16 @@ Resolve one needs-you item exactly once. `approve` false denies it.
 | `id` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `agents_api`
+
+Agents API: heads, runs, delegation, and gated tool calls. `op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`, `show_run`, `finish_run`, or `delegate`. `payload` carries the workspace path and the op's fields.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | yes |
+| `response_file` | `string` | yes |
+
 ### `call_app_tool`
 
 Call an app-exposed tool through the host tool dispatcher. Sent by `plexi app call`. The host resolves the viewer con...

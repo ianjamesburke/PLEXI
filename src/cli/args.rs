@@ -1922,6 +1922,126 @@ pub enum AgentCmd {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Create or list an agent head stored under `.plexi/agents`.
+    ///
+    /// A head is a named definition. `AGENT.md` is guidance and grants nothing.
+    /// `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+    ///
+    /// Example: plexi agent head create lead --grant agents.ping=allow --json
+    Head {
+        #[command(subcommand)]
+        cmd: AgentHeadCmd,
+    },
+    /// Spawn, list, or finish a run of an agent head.
+    ///
+    /// The same `--admission` returns the original run. A different admission
+    /// while that run is active is `assignment_conflict`.
+    ///
+    /// Example: plexi agent run spawn --head lead --admission adm-1 --json
+    Run {
+        #[command(subcommand)]
+        cmd: AgentRunCmd,
+    },
+    /// Start a child run whose grants are a subset of the parent run.
+    ///
+    /// A grant the parent does not hold is refused and audited. The child is
+    /// temporary and does not appear in `agent head list` unless `--all`.
+    ///
+    /// Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+    Delegate {
+        /// Active parent run id
+        #[arg(long)]
+        parent_run: String,
+        /// Child head name
+        #[arg(long)]
+        name: String,
+        /// Grant to copy, as `tool=allow|ask|deny`. Repeatable.
+        #[arg(long = "grant")]
+        grant: Vec<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentHeadCmd {
+    /// Create a head in the current workspace.
+    Create {
+        /// Head id (lowercase slug)
+        name: String,
+        /// Display name. Defaults to the head id on the host when omitted.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Short description stored on the head card
+        #[arg(long)]
+        description: Option<String>,
+        /// Grant, as `tool=allow|ask|deny`. Repeatable.
+        #[arg(long = "grant")]
+        grant: Vec<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// List heads in the current workspace.
+    List {
+        /// Include temporary delegated children
+        #[arg(long)]
+        all: bool,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentRunCmd {
+    /// Claim a run of a head and append a ledger row.
+    Spawn {
+        /// Head id to run
+        #[arg(long)]
+        head: String,
+        /// Admission id. The same id returns the existing run.
+        #[arg(long)]
+        admission: Option<String>,
+        /// Client tag stored on the run and the ledger row
+        #[arg(long)]
+        client_ref: Option<String>,
+        /// `system` or `output`
+        #[arg(long)]
+        kind: Option<String>,
+        /// Input tokens recorded on the ledger row
+        #[arg(long)]
+        input_tokens: Option<u32>,
+        /// Output tokens recorded on the ledger row
+        #[arg(long)]
+        output_tokens: Option<u32>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// List runs in the current workspace.
+    List {
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one run.
+    Show {
+        /// Run id
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark a run finished so another admission can claim the head.
+    Finish {
+        /// Run id
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

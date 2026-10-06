@@ -335,6 +335,9 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `report` | Report agent state for this pane to the host |
 | `status` | Show current agent state for all panes |
 | `hook` | Install or uninstall agent hook integrations |
+| `head` | Create or list an agent head stored under `.plexi/agents` |
+| `run` | Spawn, list, or finish a run of an agent head |
+| `delegate` | Start a child run whose grants are a subset of the parent run |
 
 ### `plexi agent init`
 
@@ -442,6 +445,110 @@ Remove PLEXI agent-state hook integrations
 | `--claude-code` | flag | no | Remove Claude Code hooks |
 | `--codex` | flag | no | Remove Codex hooks |
 | `--pi` | flag | no | Remove Pi extension hooks |
+
+### `plexi agent head`
+
+Create or list an agent head stored under `.plexi/agents`.
+
+A head is a named definition. `AGENT.md` is guidance and grants nothing. `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+
+Example: plexi agent head create lead --grant agents.ping=allow --json
+
+| Subcommand | Description |
+|---|---|
+| `create` | Create a head in the current workspace |
+| `list` | List heads in the current workspace |
+
+#### `plexi agent head create`
+
+Create a head in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Head id (lowercase slug) |
+| `--display-name` | string | no | Display name. Defaults to the head id on the host when omitted |
+| `--description` | string | no | Short description stored on the head card |
+| `--grant` | string (repeatable) | no | Grant, as `tool=allow|ask|deny`. Repeatable |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent head list`
+
+List heads in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--all` | flag | no | Include temporary delegated children |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent run`
+
+Spawn, list, or finish a run of an agent head.
+
+The same `--admission` returns the original run. A different admission while that run is active is `assignment_conflict`.
+
+Example: plexi agent run spawn --head lead --admission adm-1 --json
+
+| Subcommand | Description |
+|---|---|
+| `spawn` | Claim a run of a head and append a ledger row |
+| `list` | List runs in the current workspace |
+| `show` | Show one run |
+| `finish` | Mark a run finished so another admission can claim the head |
+
+#### `plexi agent run spawn`
+
+Claim a run of a head and append a ledger row
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head id to run |
+| `--admission` | string | no | Admission id. The same id returns the existing run |
+| `--client-ref` | string | no | Client tag stored on the run and the ledger row |
+| `--kind` | string | no | `system` or `output` |
+| `--input-tokens` | string | no | Input tokens recorded on the ledger row |
+| `--output-tokens` | string | no | Output tokens recorded on the ledger row |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run list`
+
+List runs in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run show`
+
+Show one run
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run finish`
+
+Mark a run finished so another admission can claim the head
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent delegate`
+
+Start a child run whose grants are a subset of the parent run.
+
+A grant the parent does not hold is refused and audited. The child is temporary and does not appear in `agent head list` unless `--all`.
+
+Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--parent-run` | string | yes | Active parent run id |
+| `--name` | string | yes | Child head name |
+| `--grant` | string (repeatable) | no | Grant to copy, as `tool=allow|ask|deny`. Repeatable |
+| `--json` | flag | no | Print the host JSON reply |
 
 ## `plexi context`
 

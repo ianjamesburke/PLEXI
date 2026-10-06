@@ -402,6 +402,19 @@ fn main() -> eframe::Result {
                             working,
                             idle,
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
+                        AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
+                        AgentCmd::Delegate {
+                            parent_run,
+                            name,
+                            grant,
+                            json,
+                        } => std::process::exit(cli::agent_delegate_cli(
+                            &parent_run,
+                            &name,
+                            &grant,
+                            json,
+                        )),
                         AgentCmd::Hook { action } => match action {
                             HookAction::Install {
                                 claude_code,

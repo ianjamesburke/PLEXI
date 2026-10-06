@@ -165,9 +165,21 @@ pub struct LedgerRow {
     /// Cost in USD cents, rounded. `0` for subscription billing or unknown
     /// token counts. The issue (#284) requires this on every broker row.
     pub cost_cents: u64,
+    /// Agent run that this usage belongs to. Absent on assistant broker rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Head that owned the run (`agent:<id>`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Agents-API client tag, or `internal/unallocated` when the run is not billable work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
     /// Free-form project tag (`narrative`, `du`, `personal`). Null when neither
     /// the run nor `[ai] client` set one. Always serialized so a migrated row
     /// is distinguishable from a row that has not been migrated.
+    /// Agent-run rows copy `client_ref` here so `ledger summary --by client` sees them.
     pub client: Option<String>,
     /// `system` or `output`. Null only on rows migrated from before tags
     /// existed; new rows always set it (`output` when the run did not).
@@ -216,8 +228,44 @@ impl LedgerRow {
             output_tokens,
             cost_usd,
             cost_cents,
+            run_id: None,
+            agent_id: None,
+            client_ref: None,
+            parent_run_id: None,
             client: None,
             kind: Some(RunKind::Output),
+            wall_ms: None,
+        }
+    }
+
+    /// A run row. Token counts are the usage reported for that run. Tags are
+    /// the client and the work kind (`system` or `output`).
+    pub fn for_agent_run(
+        run_id: &str,
+        agent_id: &str,
+        client_ref: &str,
+        kind: &str,
+        parent_run_id: Option<&str>,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) -> Self {
+        let parsed = RunKind::parse(kind).unwrap_or(RunKind::Output);
+        Self {
+            ts: chrono::Utc::now().to_rfc3339(),
+            backend: "agents".to_string(),
+            billing: "metered",
+            app_id: Some(agent_id.to_string()),
+            model: None,
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+            cost_usd: None,
+            cost_cents: 0,
+            run_id: Some(run_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            client_ref: Some(client_ref.to_string()),
+            parent_run_id: parent_run_id.map(str::to_string),
+            client: Some(client_ref.to_string()),
+            kind: Some(parsed),
             wall_ms: None,
         }
     }
@@ -240,6 +288,14 @@ fn ledger_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub fn append(row: &LedgerRow) {
+    if let Err(error) = append_result(row) {
+        log::warn!("plexi_ai ledger: {error}");
+    }
+}
+
+/// Append `row` and return the I/O or encode error. Agent runs use this so a
+/// missing ledger line is a failed spawn, not a silent zero.
+pub fn append_result(row: &LedgerRow) -> Result<(), String> {
     let _guard = ledger_lock();
     // One-shot for files written before tags existed; a no-op once every
     // object already has `client` and `kind`. Runs under the same lock as
@@ -248,37 +304,29 @@ pub fn append(row: &LedgerRow) {
     let path = ledger_path();
 
     if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::warn!(
-                "plexi_ai ledger: failed to create dir {}: {e}",
-                parent.display()
-            );
-            return;
-        }
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("failed to create dir {}: {error}", parent.display())
+        })?;
     }
 
-    let line = match serde_json::to_string(row) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("plexi_ai ledger: failed to serialize row: {e}");
-            return;
-        }
-    };
+    let line = serde_json::to_string(row).map_err(|error| format!("failed to serialize row: {error}"))?;
 
-    match std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-    {
-        Ok(mut file) => {
-            if let Err(e) = writeln!(file, "{line}") {
-                log::warn!("plexi_ai ledger: write error: {e}");
-            }
-        }
-        Err(e) => {
-            log::warn!("plexi_ai ledger: failed to open {}: {e}", path.display());
-        }
-    }
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    writeln!(file, "{line}").map_err(|error| format!("write error: {error}"))?;
+    log::info!(
+        "plexi_ai ledger: appended run_id={} agent_id={} client_ref={} kind={} tokens={}/{}",
+        row.run_id.as_deref().unwrap_or("-"),
+        row.agent_id.as_deref().unwrap_or("-"),
+        row.client_ref.as_deref().unwrap_or("-"),
+        row.kind.map(RunKind::as_str).unwrap_or("-"),
+        row.input_tokens.unwrap_or(0),
+        row.output_tokens.unwrap_or(0),
+    );
+    Ok(())
 }
 
 /// Returns the ledger path, migrating from the old `agent-ledger.jsonl` name
