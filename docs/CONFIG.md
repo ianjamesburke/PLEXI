@@ -251,7 +251,14 @@ model_high   = "anthropic/claude-fable-5"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart
-# retention_days = 30
+# retention_days = 30          # dated plexi-YYYY-MM-DD.log archives. The live plexi.log stays.
+
+# [cloud]
+# Local use never needs an account. Signing in only links this desktop to
+# relay and cloud features. Unset, local ledger rows and assistant
+# conversations are kept. Relay registry rows, queued envelopes, and the log
+# archives above are still pruned.
+# retain_local_history = false
 
 # [keybindings]
 # toggle_command_palette = "cmd+p"
@@ -275,8 +282,8 @@ tips = true
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. "plexi" enables plexiapp.com accounts; unset / "none" =
-# login fails closed. Accounts are only ever needed to publish or buy paid apps —
-# free apps install without one.
+# login fails closed. An account is optional: local use never needs one. A
+# session only links this desktop to relay and cloud features.
 # account_backend = "plexi"
 # Accounts service base URL. Unset = the official plexiapp.com service. Override
 # only to point `plexi account login` at a private deployment.

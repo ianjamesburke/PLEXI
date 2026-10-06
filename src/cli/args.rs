@@ -122,7 +122,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AppCmd,
     },
-    /// Manage your Plexi marketplace account (only needed to publish or buy paid apps).
+    /// Optional account that links this desktop to relay and cloud features.
     ///
     /// Free apps install without an account. Login requires the accounts backend
     /// enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails
