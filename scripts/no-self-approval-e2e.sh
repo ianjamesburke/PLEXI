@@ -4,6 +4,14 @@
 # An agent pane asks chess to move, then every terminal and synthetic-input
 # resolve is refused. The board does not change until HUMAN_APPROVE clicks
 # the real approval banner and the same call is retried.
+#
+# Linux writes the sealed permission audit only when Secret Service is up.
+# Acceptance clears the session bus; start a private one so a desktop click
+# can record the grant and the use. An agent allow files Needs you and does
+# not grant, and it does not add a refused-resolve row.
+if [[ "$(uname -s)" == "Linux" && -z "${NOSELF_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env NOSELF_E2E_INNER=1 "$0" "$@"
+fi
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +48,8 @@ record() {
 }
 
 cleanup() {
+  # The [ai] backend rewrite below is only for this run. Put the profile
+  # config back so a later ledger check still sees backend = "openrouter".
   if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" && -n "${PROFILE:-}" ]]; then
     cp -f "$CONFIG_BACKUP" "$PROFILE/config.toml" 2>/dev/null || true
   fi
@@ -336,7 +346,12 @@ LOG_PLAYED=0
 if [[ -f "$LOG" ]] && tail -c +"$((LOG_AT + 1))" "$LOG" | grep -q 'played e2e4'; then
   LOG_PLAYED=1
 fi
-if [[ "$ROWS" -ge 8 ]] && [[ "$LOG_PLAYED" -eq 0 ]] && ! printf '%s' "$STATE_BEFORE" | grep -Eq '"revision"[[:space:]]*:[[:space:]]*1'; then
+ALLOW_BODY="$(cat "$EVID/logs/allow.json" "$EVID/logs/allow.err" 2>/dev/null || true)"
+NEED_ROWS=8
+if printf '%s' "$ALLOW_BODY" | grep -q '"status":"needs_you"'; then
+  NEED_ROWS=7
+fi
+if [[ "$ROWS" -ge "$NEED_ROWS" ]] && [[ "$LOG_PLAYED" -eq 0 ]] && ! printf '%s' "$STATE_BEFORE" | grep -Eq '"revision"[[:space:]]*:[[:space:]]*1'; then
   record PASS step8 "board unchanged, $ROWS refused-resolve rows"
 else
   record FAIL step8 "rows=$ROWS played=$LOG_PLAYED state=$STATE_BEFORE"
