@@ -2,7 +2,7 @@
 
 Reference branch `plexi-v1-integration`. Do not merge it. Replay these choices when each PR rebases onto alpha and squash-merges, one at a time, in the order below.
 
-Base is alpha `58c32232` (`Port Assistant token ledger and run tags onto alpha (#2710)`). That tree matches PR #2710 head `7708f965`. Do not merge #2710 again. #2707 is superseded by #2715–#2717; skip it.
+The branch started at alpha `58c32232` (`Port Assistant token ledger and run tags onto alpha (#2710)`). That tree matches PR #2710 head `7708f965`. Do not merge #2710 again. #2707 is superseded by #2715–#2717; skip it. The refreshed tree includes alpha `60060531` (`test(e2e): chess permission gate check on alpha (W16) (#2714)`). See "Refresh onto alpha 60060531" below.
 
 The gate does not get weaker at any step. An agent-originated approval stays refused. A terminal resolve stays refused. A phone approve never grants a permission.
 
@@ -146,4 +146,42 @@ Stacked signatures cross `clippy::too_many_arguments` only after the train is to
 
 ### Skill fence
 
-`skills/plexi-cli/SKILL.md` closes the folder-secret `bash` block before the connector heading. An unclosed fence inverts later fences, and `skill_surface_matches_cli` then treats prose as a bare reference block. `skill_version` is `5.0.12`.
+`skills/plexi-cli/SKILL.md` closes the folder-secret `bash` block before the connector heading. An unclosed fence inverts later fences, and `skill_surface_matches_cli` then treats prose as a bare reference block. `skill_version` is `5.0.13`.
+
+## Refresh onto alpha 60060531
+
+Alpha `60060531` is #2714 plus the squashed #2703 and #2709 commits. The sealed phone relay stays (ciphertext, not the plaintext threat-model wording from the #2703 squash). `scripts/permission-gate-e2e.sh` keeps the `config.toml` restore. `docs/security/cloud-hosting-guardrails.md` keeps the retention paragraph once.
+
+Rebased heads that only replayed ledger and cloud onto a feature already on this branch were recorded without replacing the integrated CLI: #2704 `25569f7e`, #2711 `dda2318c`, #2712 `24af8306` (plus the socket chunk below), #2719 `16684196`, #2722 `bb3700c9`, #2728 `44bb6b6e`.
+
+### #2705 `b6857cb9`
+
+A human Allow once spends exactly one folder-secret read (`approve_pending(Once)` / `consume_once`). `secret grant` still returns `permission_denied` and does not record an allow. The assistant pumps isolated turns and adopts the folder-secret sheet. `needs_background_tick` stays true for a busy lead and for a pending folder-secret sheet. `PermissionChoice::DenyAlways` is the word `deny_always`, which `wait_for_human_choice` maps to `ApprovalChoice::DenyAlways`. `force_new` and `agent_pane` stay on the pane signatures. `scripts/folder-secrets-e2e.sh` approves the pending read with `HUMAN_APPROVE` and still starts Xvfb when Linux has no display.
+
+### #2712 `24af8306` and #2711 `dda2318c`
+
+`send_line_to_socket` writes at most 16 KiB per syscall and rechecks the deadline between chunks. #2711 carries the same fix. Duplicate-pane addressing was already on the branch.
+
+### #2720 `c37f2416` and #2722 `bb3700c9`
+
+`scripts/permission-gate-e2e.sh` and `scripts/no-self-approval-e2e.sh` require Pillow and, on Linux, a private session bus. They still restore `config.toml`, and `pane click --` still separates a negative coordinate from flags. The skill lint still ignores a line that says resolve is refused.
+
+### #2728 `44bb6b6e`
+
+Terminal `needs-you resolve` stays on `assistant_permission_cli` and is refused. `--from-phone` still may answer a question or a blocked run and must not grant. The skill keeps the sentence that names those commands as refused. It does not drop the Needs you bullet.
+
+### #2724 `21de6363`
+
+`scripts/change-sets-e2e.sh` starts the host on a private session bus and approves a change set with a human click.
+
+### #2708 `e8cbed6c`
+
+`ignores_unrelated_files` proves the watcher saw `config.toml` before it asserts that another file stays quiet. The sealed relay already keeps the 30-day pairing retention and stores no message body.
+
+### #2700 `4808ad65` and #2718 `f2c2e4b3`
+
+#2700 is an ancestor of this #2718 head. Land #2700 first in the squash train, then the commits on #2718 that are not in #2700. The journal HMAC is still `seal::mac_key_bytes`. `existing_mac_key` does not create a key. Seal and app-share e2e approve with a real click. One profile-integrity row still carries `bad mac` and still writes the audit fact.
+
+### #2721 `df0ed176`
+
+`scripts/v1-acceptance.sh` runs against a channel binary (`scripts/e2e/plexi-bin.sh`), fails a bypass, points the acceptance home at the CPython WASI bundle, trusts `scripts/skill-check.sh` for V1-14, and preflights Pillow, Docker, and an unlocked keyring. The skill lint skip for a refusal line stays.

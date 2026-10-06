@@ -2201,6 +2201,7 @@ impl AssistantApp {
             PermissionChoice::AllowOnce => "once",
             PermissionChoice::AllowSession => "session",
             PermissionChoice::AllowAlways => "always",
+            PermissionChoice::DenyAlways => "deny_always",
             PermissionChoice::Deny => "deny",
         };
         if !crate::workspace::secrets::deliver_folder_secret_choice(word) {
