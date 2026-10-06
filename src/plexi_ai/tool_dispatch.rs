@@ -674,6 +674,20 @@ impl ToolDispatcher {
         }
     }
 
+    /// Manifest requirement for this tool, if the declaration raised one.
+    fn personal_signoff_tier(&self, name: &str) -> Option<crate::broker::signoff::SignoffTier> {
+        let declared = self
+            .host_tools
+            .get(name)
+            .or_else(|| self.tools.get(name).map(|(_, _, tool)| tool));
+        declared.and_then(|tool| {
+            crate::broker::signoff::tier_from_manifest(
+                tool.requires.as_deref(),
+                tool.signoff.as_deref(),
+            )
+        })
+    }
+
     /// Dispatch a single tool call. The permission monitor admits the call
     /// before any handler runs. Hooks only observe a call that was admitted.
     pub fn dispatch_call(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
@@ -684,6 +698,9 @@ impl ToolDispatcher {
                 self.caller_app_id
             ));
             return self.dispatch_inner(call_id, name, input_json, None);
+        }
+        if let Some(tier) = self.personal_signoff_tier(name) {
+            self.monitor.note_manifest(name, tier);
         }
         let (package, instance) = self.provider_of(name);
         let target_type = if self.host_tools.contains_key(name) {
@@ -706,7 +723,30 @@ impl ToolDispatcher {
             target_type,
         });
         if let crate::broker::gate::Admission::Required { pending_request_id } = &admission {
-            if let Some(presenter) = &self.presenter {
+            if self.monitor.pending_requires_signoff(pending_request_id) {
+                let pending_request_id = pending_request_id.clone();
+                if self.monitor.sign_pending(&pending_request_id).is_err() {
+                    return ToolCallResult::coded(
+                        "permission_denied",
+                        &call_id,
+                        Some(&pending_request_id),
+                    );
+                }
+                admission = self.monitor.admit(crate::broker::gate::AdmitRequest {
+                    call_id: &call_id,
+                    tool: name,
+                    input_json: &input_json,
+                    actor_type: self.scope.actor_type,
+                    actor_id: &self.scope.caller_app_id,
+                    actor_scope: self.scope.actor_scope,
+                    trust_origin: &self.scope.trust_origin,
+                    workspace_root: &self.scope.workspace_root,
+                    context_id: self.scope.context_id,
+                    package_id: &package,
+                    instance_id: instance,
+                    target_type,
+                });
+            } else if let Some(presenter) = &self.presenter {
                 let (_, resource_id) = crate::broker::gate::resource_of(name, &input_json);
                 let choice = presenter.present(
                     pending_request_id,
@@ -1057,6 +1097,8 @@ mod tests {
             output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: Some(100),
             read_only: false,
+            requires: None,
+            signoff: None,
         }
     }
 

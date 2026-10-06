@@ -93,6 +93,14 @@ pub struct AiTool {
     /// prompt; the broker still records every call in the audit trail.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// `personal_signoff` raises the tool above a click approval. Absent
+    /// means the normal click tier. Nothing else can lower a set requirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires: Option<String>,
+    /// `each_time` or `time_boxed` when `requires` is `personal_signoff`.
+    /// An unknown value stays on each-time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signoff: Option<String>,
 }
 
 /// Coarse model tier requested by the app. The host maps each tier to a
@@ -197,6 +205,8 @@ mod tests {
             }),
             timeout_ms: Some(2_000),
             read_only: true,
+            requires: None,
+            signoff: None,
         };
         let wire = serde_json::to_value(&tool).unwrap();
         assert_eq!(wire["input_schema"]["type"], "object");
