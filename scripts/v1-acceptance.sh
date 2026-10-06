@@ -368,32 +368,53 @@ invoke_script() {
   fi
 }
 
-# Run one or more scripts. required missing → NOT-LANDED.
+# Run one or more scripts. A required path that is missing → NOT-LANDED.
+# Paths after --any are alternates (a later PR renamed the script): the item
+# is landed when any one of them exists, and every one that exists is run.
+# Paths after --optional run when present and are never required.
 # requires_human=1: a green run that never called HUMAN_APPROVE is bypass.
 run_scripts() {
   local id="$1" title="$2" requires_human="$3"
   shift 3
-  local -a required=() optional=()
+  local -a required=() alternates=() optional=()
   local section="required"
   local arg
   for arg in "$@"; do
+    if [[ "$arg" == "--any" ]]; then
+      section="any"
+      continue
+    fi
     if [[ "$arg" == "--optional" ]]; then
       section="optional"
       continue
     fi
     if [[ "$section" == "required" ]]; then
       required+=("$arg")
+    elif [[ "$section" == "any" ]]; then
+      alternates+=("$arg")
     else
       optional+=("$arg")
     fi
   done
 
-  local path missing=""
+  local path missing="" any_hit=0
   for path in "${required[@]}"; do
     if [[ ! -f "$REPO/$path" ]]; then
       missing+=" $path"
     fi
   done
+  if [[ ${#alternates[@]} -gt 0 ]]; then
+    for path in "${alternates[@]}"; do
+      if [[ -f "$REPO/$path" ]]; then
+        any_hit=1
+      fi
+    done
+    if [[ "$any_hit" -eq 0 ]]; then
+      for path in "${alternates[@]}"; do
+        missing+=" $path"
+      done
+    fi
+  fi
   if [[ -n "$missing" ]]; then
     note_row "$id" "NOT-LANDED" "missing:${missing# }"
     return
@@ -407,6 +428,11 @@ run_scripts() {
   local -a present=()
   for path in "${required[@]}"; do
     present+=("$path")
+  done
+  for path in "${alternates[@]}"; do
+    if [[ -f "$REPO/$path" ]]; then
+      present+=("$path")
+    fi
   done
   for path in "${optional[@]}"; do
     if [[ -f "$REPO/$path" ]]; then
@@ -768,16 +794,31 @@ run_one() {
     shift
   fi
   rest=("$@")
-  local missing="" path section="required"
+  local missing="" path section="required" any_hit=0
+  local -a alternates=()
   for path in "${rest[@]}"; do
+    if [[ "$path" == "--any" ]]; then
+      section="any"
+      continue
+    fi
     if [[ "$path" == "--optional" ]]; then
       section="optional"
       continue
     fi
     if [[ "$section" == "required" && ! -f "$REPO/$path" ]]; then
       missing+=" $path"
+    elif [[ "$section" == "any" ]]; then
+      alternates+=("$path")
+      if [[ -f "$REPO/$path" ]]; then
+        any_hit=1
+      fi
     fi
   done
+  if [[ ${#alternates[@]} -gt 0 && "$any_hit" -eq 0 ]]; then
+    for path in "${alternates[@]}"; do
+      missing+=" $path"
+    done
+  fi
   if [[ -n "$missing" ]]; then
     note_row "$id" "NOT-LANDED" "missing:${missing# }"
     return
@@ -813,17 +854,33 @@ echo "evidence  $EVID"
 echo
 
 item_v1_01
+# Paths are the files those PRs actually add. --any lists a rename: either
+# file lands the item, and every file that is present is run.
+#   V1-02 #2720 scripts/permission-gate-e2e.sh (driver: #2709 scripts/e2e/human.sh)
+#   V1-03 #2720 scripts/no-self-approval-e2e.sh
+#   V1-04 #2718 scripts/permissions-seal-e2e.sh
+#   V1-05 #2704 scripts/needs-you-e2e.sh + #2713 scripts/needs-you-persist-e2e.sh
+#   V1-06 #2705/#2719 scripts/folder-secrets-e2e.sh (same path)
+#   V1-07 #2710 scripts/e2e/ledger/run.sh
+#   V1-08 #2708 services/relay/e2e_installed.sh
+#   V1-09 #2706 scripts/e2e_agents_api_installed.sh
+#   V1-10 #2715 scripts/multi-lead-e2e.sh + #2716 scripts/headless-queue-e2e.sh
+#   V1-11 #2717 scripts/command-view-steer-e2e.sh (#2707 command-view-e2e.sh superseded)
+#   V1-12 #2724 scripts/change-sets-e2e.sh (#2695 assistant-editor-change-set-e2e.sh superseded)
+#   V1-13 #2703 scripts/cloud-basics-e2e.sh
+#   V1-14 #2722 scripts/skill-check.sh
+#   V1-15 #2718 scripts/app-share-e2e.sh
 run_one V1-02 1 --probe assistant permission -- scripts/permission-gate-e2e.sh
 run_one V1-03 1 -- scripts/no-self-approval-e2e.sh
 run_one V1-04 1 --probe permissions -- scripts/permissions-seal-e2e.sh
-run_one V1-05 1 --probe needs-you -- scripts/needs-you-e2e.sh --optional scripts/needs-you-persist-e2e.sh
+run_one V1-05 1 --probe needs-you -- scripts/needs-you-e2e.sh scripts/needs-you-persist-e2e.sh
 run_one V1-06 1 -- scripts/folder-secrets-e2e.sh
 run_one V1-07 0 --probe ledger -- scripts/e2e/ledger/run.sh
 run_one V1-08 1 -- services/relay/e2e_installed.sh
 run_one V1-09 1 --probe agent head -- scripts/e2e_agents_api_installed.sh
-run_one V1-10 0 --probe agent head -- scripts/multi-lead-e2e.sh --optional scripts/headless-queue-e2e.sh
-run_one V1-11 0 --probe command-view -- scripts/command-view-e2e.sh --optional scripts/command-view-steer-e2e.sh
-run_one V1-12 1 --probe changes -- scripts/change-sets-e2e.sh scripts/assistant-editor-change-set-e2e.sh
+run_one V1-10 0 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
+run_one V1-11 0 --probe command-view -- --any scripts/command-view-steer-e2e.sh scripts/command-view-e2e.sh
+run_one V1-12 1 --probe changes -- --any scripts/change-sets-e2e.sh scripts/assistant-editor-change-set-e2e.sh
 run_one V1-13 0 -- scripts/cloud-basics-e2e.sh
 item_v1_14
 run_one V1-15 1 --probe app package -- scripts/app-share-e2e.sh
