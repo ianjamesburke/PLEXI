@@ -101,7 +101,7 @@ impl ScriptedCall {
         Self {
             name: name.into(),
             arguments,
-            permission: None,
+            permission: Some(HarnessPermission::AllowOnce),
             result: ToolCallResult::ok_value(output),
         }
     }
@@ -114,7 +114,7 @@ impl ScriptedCall {
         Self {
             name: name.into(),
             arguments,
-            permission: None,
+            permission: Some(HarnessPermission::AllowOnce),
             result: ToolCallResult::err(error),
         }
     }

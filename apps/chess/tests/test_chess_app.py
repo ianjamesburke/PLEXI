@@ -51,8 +51,17 @@ class Host:
     def init(self, args=()) -> list:
         return self.apply(chess.init((640.0, 640.0), list(args)))
 
-    def call(self, name: str, caller: str = WHITE, **arguments) -> dict:
-        effects = self.apply(chess.update(ToolCall("c1", name, json.dumps(arguments), caller)))
+    def call(self, name: str, caller: str = WHITE, authorization="auto", **arguments) -> dict:
+        auth = authorization
+        if auth == "auto":
+            auth = {
+                "schema_version": 1, "actor": caller, "package": "chess",
+                "game_id": arguments.get("game_id", "game-1"),
+                "grant_id": "grant-test", "human_interaction": False,
+            }
+        raw = None if auth is None else json.dumps(auth)
+        effects = self.apply(chess.update(ToolCall(
+            "c1", name, json.dumps(arguments), caller, authorization=raw)))
         result = next(e for e in effects if isinstance(e, ToolResult))
         if result.error:
             return {"error": result.error}
@@ -77,7 +86,7 @@ def test_init_declares_streams_exposes_tools_and_publishes_game_started():
     names = {t.name for t in next(e for e in effects if isinstance(e, ExposeTools)).tools}
     assert names == {"chess.state", "chess.legal_moves", "chess.play", "chess.new_game"}
     assert [e.event for e in host.emitted] == [domain.GAME_STARTED]
-    assert host.game()["seats"] == {"white": WHITE, "black": BLACK}
+    assert host.game()["seats"] == {"white": None, "black": None}
     assert host.game()["outbox"] == []
 
 
@@ -109,12 +118,20 @@ def test_duplicate_stale_and_unauthorized_calls_do_not_mutate_or_emit():
     stale = host.call("chess.play", caller=BLACK, game_id="game-1",
                       expected_revision=0, operation_id="op-2", move="e7e5")
     assert stale["error"].startswith("ChessError: stale_revision")
-    intruder = host.call("chess.play", caller="agent:intruder", game_id="game-1",
-                         expected_revision=1, operation_id="op-3", move="e7e5")
-    assert intruder["error"].startswith("ChessError: unauthorized")
-    wrong = host.call("chess.play", caller=WHITE, game_id="game-1",
-                      expected_revision=1, operation_id="op-4", move="d2d4")
-    assert wrong["error"].startswith("ChessError: wrong_side")
+    intruder = host.call("chess.play", caller="agent:intruder", authorization=None,
+                         game_id="game-1", expected_revision=1, operation_id="op-3",
+                         move="e7e5")
+    assert "permission_denied" in intruder["error"]
+    wrong = host.call(
+        "chess.play", caller=WHITE, game_id="game-1", expected_revision=1,
+        operation_id="op-4", move="d2d4",
+        authorization={
+            "schema_version": 1, "actor": WHITE, "package": "chess",
+            "game_id": "game-1", "grant_id": "grant-test", "side": "white",
+            "human_interaction": False,
+        },
+    )
+    assert "wrong_side" in wrong["error"]
     assert host.game() == before
     assert host.emitted == []
 
@@ -124,13 +141,13 @@ def test_forged_caller_argument_is_ignored():
     out = host.call("chess.play", caller="agent:intruder", caller_id=WHITE,
                     game_id="game-1", expected_revision=0, operation_id="op-1",
                     move="e2e4")
-    assert out["error"].startswith("ChessError: unauthorized")
+    assert out["actor"] == "agent:intruder" and out["move"] == "e2e4"
 
 
 def test_new_game_tool_is_privileged():
     host = _seated()
     out = host.call("chess.new_game", caller=WHITE, game_id="game-2", white="", black="")
-    assert out["error"].startswith("ChessError: unauthorized")
+    assert "permission_denied" in out["error"]
     assert host.game()["game_id"] == "game-1"
 
 
@@ -156,7 +173,10 @@ def test_crash_between_commit_and_publication_republishes_once_on_restart():
     host = _seated()
     effects = chess.update(ToolCall("c1", "chess.play", json.dumps({
         "game_id": "game-1", "expected_revision": 0, "operation_id": "op-1",
-        "move": "e2e4"}), WHITE))
+        "move": "e2e4"}), WHITE, authorization=json.dumps({
+            "schema_version": 1, "actor": WHITE, "package": "chess",
+            "game_id": "game-1", "grant_id": "grant-test", "human_interaction": False,
+        })))
     # Apply only the ToolResult and the first PersistState (move + outbox).
     first_persist = next(i for i, e in enumerate(effects) if isinstance(e, PersistState))
     host.apply(effects, upto=first_persist + 1)

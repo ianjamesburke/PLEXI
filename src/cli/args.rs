@@ -282,6 +282,25 @@ pub enum AssistantCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Observe and resolve pending permission requests. This is not `plexi agent request`.
+    Permission {
+        #[command(subcommand)]
+        cmd: AssistantPermissionCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AssistantPermissionCmd {
+    /// List pending permission requests as JSON.
+    List,
+    /// Show one pending permission request as JSON.
+    Show { id: String },
+    /// Resolve one pending request: once, session, always, or deny.
+    Resolve {
+        id: String,
+        #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
+        choice: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -873,8 +892,9 @@ pub enum AppCmd {
     ///
     /// Runs through the same tool dispatcher the Assistant uses, scoped to the
     /// calling pane's context (the active context when run outside a pane).
-    /// The host stamps the caller identity: `pane:<id>` inside a pane, `user`
-    /// outside one. The app sees that identity, never one taken from the input.
+    /// The host stamps the caller identity from the pane credential or peer
+    /// ancestry (`pane:<id>`). A missing pane is never the human `user`.
+    /// The app sees that identity, never one taken from the input.
     /// Exits 1 with `error: <message>` when the tool or the app rejects the call.
     ///
     /// Example: plexi app call chess chess.state
@@ -888,6 +908,12 @@ pub enum AppCmd {
         /// Tool input as a JSON object
         #[arg(long, default_value = "{}")]
         input: String,
+        /// Print the host reply, including structured permission errors.
+        #[arg(long)]
+        json: bool,
+        /// Pane that owns the tool when more than one instance of the app is open.
+        #[arg(long)]
+        pane: Option<u64>,
     },
 }
 

@@ -9,6 +9,8 @@
 //! capability path. Event streams, undo, model routing enforcement, and the
 //! `/permissions` UI surface come later; their target types exist as data only.
 
+pub mod gate;
+
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
 use serde::{Deserialize, Serialize};
@@ -150,6 +152,34 @@ pub struct GrantRecord {
     /// Unix seconds; `None` = no expiry.
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// `0` is a legacy row and never authorizes a tool, host tool, or subscription.
+    /// Exact grants are schema `1`.
+    #[serde(default)]
+    pub binding_schema: u32,
+    #[serde(default)]
+    pub grant_id: String,
+    /// SHA-256 of the canonical argument JSON. Empty never matches.
+    #[serde(default)]
+    pub args_fingerprint: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub package_id: String,
+    #[serde(default)]
+    pub instance_id: Option<u64>,
+    #[serde(default)]
+    pub context_id: Option<u64>,
+    /// Host-stamped trust origin (`host`, `user`, `managed`). Compared on exact grants.
+    #[serde(default)]
+    pub trust_origin: String,
+    #[serde(default)]
+    pub revocation_epoch: u64,
+    /// A consumed one-shot no longer authorizes a new commit.
+    #[serde(default)]
+    pub consumed: bool,
+    /// Operation id that consumed a one-shot, for receipt recovery only.
+    #[serde(default)]
+    pub bound_operation_id: Option<String>,
 }
 
 impl GrantRecord {
@@ -175,12 +205,86 @@ impl GrantRecord {
             source: GrantSource::User,
             created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
+            ..Self::unbound()
         }
     }
 
-    /// True when this record answers the given request (identity match — the
-    /// decision tiers are applied by `GrantStore::evaluate`).
-    fn matches(&self, req: &PermissionRequest, now: i64) -> bool {
+    /// Schema-0 placeholder. Spreading this into a struct literal fills the
+    /// exact-binding fields with values that do not authorize a tool call.
+    pub fn unbound() -> Self {
+        Self {
+            actor_type: ActorType::System,
+            actor_id: String::new(),
+            actor_scope: ActorScope::User,
+            workspace_root: None,
+            target_type: TargetType::Capability,
+            target_id: String::new(),
+            resource_scope: ResourceScope::Global,
+            resource_id: None,
+            decision: Decision::Deny,
+            duration: GrantDuration::Once,
+            source: GrantSource::Session,
+            created_at: 0,
+            expires_at: None,
+            binding_schema: 0,
+            grant_id: String::new(),
+            args_fingerprint: String::new(),
+            session_id: None,
+            package_id: String::new(),
+            instance_id: None,
+            context_id: None,
+            trust_origin: String::new(),
+            revocation_epoch: 0,
+            consumed: false,
+            bound_operation_id: None,
+        }
+    }
+
+    /// An exact schema-1 grant. `workspace_root: None` is not representable.
+    pub fn from_binding(
+        binding: &ExactBinding,
+        decision: Decision,
+        duration: GrantDuration,
+        source: GrantSource,
+        grant_id: &str,
+    ) -> Self {
+        Self {
+            actor_type: binding.actor_type,
+            actor_id: binding.actor_id.clone(),
+            actor_scope: binding.actor_scope,
+            workspace_root: Some(crate::platform::path::canonical_or_self(
+                &binding.workspace_root,
+            )),
+            target_type: binding.target_type,
+            target_id: binding.target_id.clone(),
+            resource_scope: binding.resource_scope,
+            resource_id: binding.resource_id.clone(),
+            decision,
+            duration,
+            source,
+            created_at: crate::platform::clock::now_secs() as i64,
+            expires_at: None,
+            binding_schema: 1,
+            grant_id: grant_id.to_string(),
+            args_fingerprint: binding.args_fingerprint.clone(),
+            session_id: binding.session_id.clone(),
+            package_id: binding.package_id.clone(),
+            instance_id: binding.instance_id,
+            context_id: binding.context_id,
+            trust_origin: binding.trust_origin.clone(),
+            revocation_epoch: 0,
+            consumed: false,
+            bound_operation_id: None,
+        }
+    }
+
+    /// True when this record answers the given request.
+    ///
+    /// A missing workspace is never a wildcard. Schema-0 rows answer only
+    /// capability containment (WASM), never a tool, host tool, or event
+    /// subscription. Exact grants compare actor trust, resource, package,
+    /// instance, context, session, and the argument fingerprint.
+    pub fn matches(&self, req: &PermissionRequest, now: i64) -> bool {
         if let Some(expires) = self.expires_at {
             if now >= expires {
                 return false;
@@ -194,10 +298,143 @@ impl GrantRecord {
             return false;
         }
         match (&self.workspace_root, &req.workspace_root) {
-            (None, _) => true, // global grant matches any workspace
-            (Some(_), None) => false,
-            (Some(g), Some(r)) => g == r,
+            (Some(grant_ws), Some(req_ws)) if grant_ws == req_ws => {}
+            _ => return false,
         }
+        let toolish = matches!(
+            self.target_type,
+            TargetType::AppConnector
+                | TargetType::HostTool
+                | TargetType::McpTool
+                | TargetType::AppEventStream
+        );
+        if self.binding_schema < 1 || req.binding_schema < 1 {
+            // A coarse deny still withholds a named tool from discovery. It does
+            // not authorize a call, and it does not answer an exact tool request.
+            if self.decision == Decision::Deny
+                && self.binding_schema < 1
+                && req.binding_schema < 1
+                && toolish
+            {
+                return true;
+            }
+            // Legacy capability rows stay containment-only. They are not translated.
+            return !toolish
+                && self.target_type == TargetType::Capability
+                && req.target_type == TargetType::Capability;
+        }
+        if self.args_fingerprint.is_empty() || self.args_fingerprint != req.args_fingerprint {
+            return false;
+        }
+        if self.resource_scope != req.resource_scope || self.resource_id != req.resource_id {
+            return false;
+        }
+        if self.actor_scope != req.actor_scope || self.trust_origin != req.trust_origin {
+            return false;
+        }
+        if self.package_id != req.package_id
+            || self.instance_id != req.instance_id
+            || self.context_id != req.context_id
+        {
+            return false;
+        }
+        if self.duration == GrantDuration::Session {
+            match (&self.session_id, &req.session_id) {
+                (Some(grant_session), Some(req_session)) if grant_session == req_session => {}
+                _ => return false,
+            }
+        }
+        if self.duration == GrantDuration::Once && self.consumed {
+            return self.bound_operation_id.as_deref() == Some(req.operation_id.as_str())
+                && !req.operation_id.is_empty();
+        }
+        true
+    }
+}
+
+/// Every field an exact grant and the call that uses it must share.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExactBinding {
+    pub actor_type: ActorType,
+    pub actor_id: String,
+    pub actor_scope: ActorScope,
+    pub trust_origin: String,
+    pub workspace_root: PathBuf,
+    pub target_type: TargetType,
+    pub target_id: String,
+    pub resource_scope: ResourceScope,
+    pub resource_id: Option<String>,
+    pub args_fingerprint: String,
+    pub session_id: Option<String>,
+    pub package_id: String,
+    pub instance_id: Option<u64>,
+    pub context_id: Option<u64>,
+    pub call_id: String,
+    pub operation_id: String,
+}
+
+impl ExactBinding {
+    /// Shared binding for an event-stream grant and the question that uses it.
+    /// Workspace is required. A missing session id does not match a session grant.
+    pub fn event_stream(
+        actor_type: ActorType,
+        actor_id: &str,
+        actor_scope: ActorScope,
+        target_id: &str,
+        workspace: &Path,
+        session_id: Option<String>,
+    ) -> Self {
+        Self {
+            actor_type,
+            actor_id: actor_id.to_string(),
+            actor_scope,
+            trust_origin: "host".to_string(),
+            workspace_root: workspace.to_path_buf(),
+            target_type: TargetType::AppEventStream,
+            target_id: target_id.to_string(),
+            resource_scope: ResourceScope::Global,
+            resource_id: None,
+            args_fingerprint: crate::broker::gate::stream_fingerprint(target_id),
+            session_id,
+            package_id: String::new(),
+            instance_id: None,
+            context_id: None,
+            call_id: String::new(),
+            operation_id: String::new(),
+        }
+    }
+}
+
+impl GrantRecord {
+    /// Exact schema-1 allow for one event stream. Old broad rows are not translated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn event_stream_allow(
+        actor_type: ActorType,
+        actor_id: &str,
+        actor_scope: ActorScope,
+        target_id: &str,
+        workspace: &Path,
+        duration: GrantDuration,
+        source: GrantSource,
+        session_id: Option<String>,
+    ) -> Self {
+        let binding = ExactBinding::event_stream(
+            actor_type,
+            actor_id,
+            actor_scope,
+            target_id,
+            workspace,
+            session_id.clone(),
+        );
+        let mut record = Self::from_binding(
+            &binding,
+            Decision::Allow,
+            duration,
+            source,
+            &format!("grant-stream-{}", uuid::Uuid::new_v4()),
+        );
+        record.session_id = session_id;
+        record
     }
 }
 
@@ -210,8 +447,21 @@ pub struct PermissionRequest {
     pub actor_id: String,
     pub target_type: TargetType,
     pub target_id: String,
-    /// Canonicalized workspace the action happens in; `None` = global action.
+    /// Canonicalized workspace the action happens in. `None` matches nothing.
     pub workspace_root: Option<PathBuf>,
+    /// `0` for a coarse question that must not match an exact tool grant.
+    pub binding_schema: u32,
+    pub actor_scope: ActorScope,
+    pub trust_origin: String,
+    pub resource_scope: ResourceScope,
+    pub resource_id: Option<String>,
+    pub args_fingerprint: String,
+    pub session_id: Option<String>,
+    pub package_id: String,
+    pub instance_id: Option<u64>,
+    pub context_id: Option<u64>,
+    pub call_id: String,
+    pub operation_id: String,
 }
 
 impl PermissionRequest {
@@ -228,6 +478,44 @@ impl PermissionRequest {
             target_type,
             target_id: target_id.to_string(),
             workspace_root: workspace_root.map(crate::platform::path::canonical_or_self),
+            // Coarse questions do not match exact grants.
+            binding_schema: 0,
+            actor_scope: ActorScope::User,
+            trust_origin: String::new(),
+            resource_scope: ResourceScope::Global,
+            resource_id: None,
+            args_fingerprint: String::new(),
+            session_id: None,
+            package_id: String::new(),
+            instance_id: None,
+            context_id: None,
+            call_id: String::new(),
+            operation_id: String::new(),
+        }
+    }
+
+    /// Exact tool/subscription question. Every field participates in `matches`.
+    pub fn exact(binding: &ExactBinding) -> Self {
+        Self {
+            actor_type: binding.actor_type,
+            actor_id: binding.actor_id.clone(),
+            target_type: binding.target_type,
+            target_id: binding.target_id.clone(),
+            workspace_root: Some(crate::platform::path::canonical_or_self(
+                &binding.workspace_root,
+            )),
+            binding_schema: 1,
+            actor_scope: binding.actor_scope,
+            trust_origin: binding.trust_origin.clone(),
+            resource_scope: binding.resource_scope,
+            resource_id: binding.resource_id.clone(),
+            args_fingerprint: binding.args_fingerprint.clone(),
+            session_id: binding.session_id.clone(),
+            package_id: binding.package_id.clone(),
+            instance_id: binding.instance_id,
+            context_id: binding.context_id,
+            call_id: binding.call_id.clone(),
+            operation_id: binding.operation_id.clone(),
         }
     }
 
@@ -436,9 +724,16 @@ impl GrantStore {
         self.file.data.records.retain(|r| {
             !(r.actor_type == record.actor_type
                 && r.actor_id == record.actor_id
+                && r.actor_scope == record.actor_scope
                 && r.target_type == record.target_type
                 && r.target_id == record.target_id
                 && r.workspace_root == record.workspace_root
+                && r.resource_scope == record.resource_scope
+                && r.resource_id == record.resource_id
+                && r.args_fingerprint == record.args_fingerprint
+                && r.package_id == record.package_id
+                && r.instance_id == record.instance_id
+                && r.context_id == record.context_id
                 && r.source == record.source)
         });
         log::info!(
@@ -489,6 +784,12 @@ impl GrantStore {
     /// All persisted records (read-only).
     pub fn records(&self) -> &[GrantRecord] {
         &self.file.data.records
+    }
+
+    /// Mutable records. Callers that revoke or consume a one-shot hold the
+    /// monitor admission lock first.
+    pub fn records_mut(&mut self) -> &mut Vec<GrantRecord> {
+        &mut self.file.data.records
     }
 
     /// Atomically write to disk. No-op for path-less test stores.
@@ -544,14 +845,17 @@ impl GrantStore {
         // 7. actor ask
         {
             Decision::Ask
-        } else if has(Decision::Allow, true) || has(Decision::Allow, false) // 8/10. persisted allow
-            || posture.is_some_and(|p| PermissionPosture::lists_contain(&p.allow, &req.target_id))
-        // 9. actor allow
-        {
+        } else if has(Decision::Allow, true) || has(Decision::Allow, false) {
+            // Persisted exact allows authorize. A posture allow-list does not.
             Decision::Allow
+        } else if posture.is_some_and(|p| p.default_posture == Decision::Deny)
+            && !posture.is_some_and(|p| PermissionPosture::lists_contain(&p.allow, &req.target_id))
+            && !posture.is_some_and(|p| PermissionPosture::lists_contain(&p.ask, &req.target_id))
+        {
+            Decision::Deny
         } else {
-            // 11. default posture fallback.
-            posture.map_or(Decision::Ask, |p| p.default_posture)
+            // Posture allow and an Allow default are not authorization.
+            Decision::Ask
         };
 
         log::info!(
@@ -623,32 +927,39 @@ impl GrantStore {
 mod tests {
     use super::*;
 
-    fn agent_grant(decision: Decision, source: GrantSource) -> GrantRecord {
-        GrantRecord {
+    fn agent_binding() -> ExactBinding {
+        ExactBinding {
             actor_type: ActorType::Agent,
             actor_id: "chess-opponent".to_string(),
             actor_scope: ActorScope::Workspace,
-            workspace_root: None,
+            trust_origin: "host".to_string(),
+            workspace_root: PathBuf::from("/grant-ws"),
             target_type: TargetType::AppConnector,
             target_id: "chess.make_move".to_string(),
             resource_scope: ResourceScope::Game,
             resource_id: Some("game-1".to_string()),
-            decision,
-            duration: GrantDuration::Session,
-            source,
-            created_at: crate::platform::clock::now_secs() as i64,
-            expires_at: None,
+            args_fingerprint: "fp-move".to_string(),
+            session_id: None,
+            package_id: "chess".to_string(),
+            instance_id: Some(7),
+            context_id: Some(3),
+            call_id: "call-1".to_string(),
+            operation_id: String::new(),
         }
     }
 
-    fn agent_request() -> PermissionRequest {
-        PermissionRequest::new(
-            ActorType::Agent,
-            "chess-opponent",
-            TargetType::AppConnector,
-            "chess.make_move",
-            None,
+    fn agent_grant(decision: Decision, source: GrantSource) -> GrantRecord {
+        GrantRecord::from_binding(
+            &agent_binding(),
+            decision,
+            GrantDuration::Always,
+            source,
+            "grant-1",
         )
+    }
+
+    fn agent_request() -> PermissionRequest {
+        PermissionRequest::exact(&agent_binding())
     }
 
     #[test]
@@ -710,12 +1021,13 @@ mod tests {
         );
         assert_eq!(
             store.evaluate(&req("host.panes.read"), Some(&posture)),
-            Decision::Allow
+            Decision::Ask,
+            "a posture allow-list is not a grant"
         );
         assert_eq!(
             store.evaluate(&req("anything.else"), Some(&posture)),
-            Decision::Allow,
-            "unlisted target falls back to default_posture"
+            Decision::Ask,
+            "an Allow default is not authorization"
         );
     }
 

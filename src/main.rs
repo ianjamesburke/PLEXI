@@ -272,7 +272,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ConnectorCmd, ContextCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -290,6 +290,21 @@ fn main() -> eframe::Result {
                         AssistantCmd::Send { text, request_id, pane_id, context_id, json: _ } => {
                             std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id))
                         }
+                        AssistantCmd::Permission { cmd } => match cmd {
+                            AssistantPermissionCmd::List => {
+                                std::process::exit(cli::assistant_permission_cli("list", None, None))
+                            }
+                            AssistantPermissionCmd::Show { id } => {
+                                std::process::exit(cli::assistant_permission_cli("show", Some(&id), None))
+                            }
+                            AssistantPermissionCmd::Resolve { id, choice } => {
+                                std::process::exit(cli::assistant_permission_cli(
+                                    "resolve",
+                                    Some(&id),
+                                    Some(&choice),
+                                ))
+                            }
+                        },
                     },
                     Commands::Run {
                         command,
@@ -725,7 +740,11 @@ fn main() -> eframe::Result {
                                 app_id,
                                 tool,
                                 input,
-                            } => std::process::exit(cli::app_call_cli(&app_id, &tool, &input)),
+                                json,
+                                pane,
+                            } => std::process::exit(cli::app_call_cli(
+                                &app_id, &tool, &input, json, pane,
+                            )),
                         }
                     }
                     Commands::Uninstall { keep_data, yes } => {

@@ -1874,7 +1874,13 @@ pub(crate) const APP_CALL_HOST_TIMEOUT: std::time::Duration = std::time::Duratio
 
 /// `plexi app call <app_id> <tool> [--input JSON]` — invoke an app tool through
 /// the host's tool dispatcher and print its JSON output on stdout.
-pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
+pub fn app_call_cli(
+    app_id: &str,
+    tool: &str,
+    input: &str,
+    json: bool,
+    target_pane: Option<u64>,
+) -> i32 {
     let input_value: serde_json::Value = match serde_json::from_str(input) {
         Ok(value @ serde_json::Value::Object(_)) => value,
         Ok(_) => {
@@ -1903,6 +1909,15 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     if let Some(pane_id) = caller_pane_id {
         payload["caller_pane_id"] = serde_json::json!(pane_id);
     }
+    if let Some(pane) = target_pane {
+        payload["target_pane_id"] = serde_json::json!(pane);
+        log::info!("app_call:cli: target_pane={pane}");
+    }
+    if let Ok(credential) = std::env::var("PLEXI_CALL_CREDENTIAL") {
+        if !credential.is_empty() {
+            payload["call_credential"] = serde_json::json!(credential);
+        }
+    }
     let content = match super::request_with(
         payload,
         "app-call-response",
@@ -1917,6 +1932,10 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
     }
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => {
+            if json {
+                println!("{reply}");
+                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) { 1 } else { 0 };
+            }
             let output = reply.get("output").cloned().unwrap_or(serde_json::Value::Null);
             println!("{output}");
             0
@@ -1925,6 +1944,31 @@ pub fn app_call_cli(app_id: &str, tool: &str, input: &str) -> i32 {
             eprintln!("error: host reply is not JSON: {error}");
             1
         }
+    }
+}
+
+/// `plexi assistant permission list|show|resolve` — observation seam for pending grants.
+pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>) -> i32 {
+    let response_file = crate::rpc::response_file("assistant-permission", "json");
+    let payload = match op {
+        "list" => serde_json::json!({"type":"list_permission_requests","response_file":response_file}),
+        "show" => serde_json::json!({"type":"show_permission_request","pending_request_id":id.unwrap_or(""),"response_file":response_file}),
+        "resolve" => serde_json::json!({"type":"resolve_permission_request","pending_request_id":id.unwrap_or(""),"choice":choice.unwrap_or(""),"response_file":response_file}),
+        _ => {
+            eprintln!("error: unknown permission operation");
+            return 1;
+        }
+    };
+    log::info!("assistant_permission:cli: op={op} id={id:?}");
+    let content = match super::request_with(payload, "assistant-permission", "assistant permission", std::time::Duration::from_secs(15)) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(_) => 1,
+        Err(_) => 1,
     }
 }
 

@@ -97,10 +97,9 @@ struct TurnOutcome {
 
 /// The worker's answer channel for one ask-gated tool call.
 enum PermissionReply {
-    /// Run the call. `remember` lets the in-turn gate skip re-asking for the
-    /// same tool (session/always grants).
+    /// Run the call. The monitor records an exact grant for this choice.
     Allow {
-        remember: bool,
+        choice: model::PermissionChoice,
     },
     Deny,
 }
@@ -129,6 +128,8 @@ enum ToolFlowEvent {
         input_json: String,
         actor_id: String,
         actor_scope: ActorScope,
+        pending_request_id: String,
+        resource_id: String,
         reply: SyncSender<PermissionReply>,
     },
     /// A host tool call (`host.events.*`) for the pane to execute on the UI
@@ -147,51 +148,59 @@ enum ToolFlowEvent {
 /// until the UI thread answers. PGAP and `AgentHost` dispatchers install no
 /// hooks and are unaffected.
 struct AssistantToolHooks {
-    /// Tools whose broker decision was `Ask` at snapshot time.
-    ask_tools: HashSet<String>,
-    /// Tools the user allowed with "remember" during this turn.
-    session_allowed: Mutex<HashSet<String>>,
     /// Input summary per in-flight tool, stashed in `before_call` so
     /// `after_call` (which is not handed the input) can attach it to the
     /// finished row. Keyed by tool name — calls within one turn run
     /// sequentially, so a name is in flight at most once.
     in_flight_inputs: Mutex<HashMap<String, String>>,
     flow_tx: Sender<ToolFlowEvent>,
-    actor_id: String,
+}
+
+struct AssistantPresenter {
+    flow_tx: Sender<ToolFlowEvent>,
     actor_scope: ActorScope,
 }
 
-impl ToolCallHooks for AssistantToolHooks {
-    fn before_call(&self, name: &str, input_json: &str) -> Result<(), String> {
-        let needs_ask =
-            self.ask_tools.contains(name) && !self.session_allowed.lock().unwrap().contains(name);
-        if needs_ask {
-            let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-            self.flow_tx
-                .send(ToolFlowEvent::Ask {
-                    tool: name.to_string(),
-                    input_json: input_json.to_string(),
-                    actor_id: self.actor_id.clone(),
-                    actor_scope: self.actor_scope,
-                    reply: reply_tx,
-                })
-                .map_err(|_| "permission_denied: assistant pane closed".to_string())?;
-            match reply_rx.recv() {
-                Ok(PermissionReply::Allow { remember }) => {
-                    if remember {
-                        self.session_allowed
-                            .lock()
-                            .unwrap()
-                            .insert(name.to_string());
-                    }
-                }
-                Ok(PermissionReply::Deny) | Err(_) => {
-                    return Err("permission_denied: the user denied this tool call".to_string());
-                }
-            }
+impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter {
+    fn present(
+        &self,
+        pending_id: &str,
+        tool: &str,
+        summary: &str,
+        actor: &str,
+        resource: &str,
+    ) -> crate::broker::gate::ApprovalChoice {
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        if self
+            .flow_tx
+            .send(ToolFlowEvent::Ask {
+                tool: tool.to_string(),
+                input_json: summary.to_string(),
+                actor_id: actor.to_string(),
+                actor_scope: self.actor_scope,
+                pending_request_id: pending_id.to_string(),
+                resource_id: resource.to_string(),
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            return crate::broker::gate::ApprovalChoice::Deny;
         }
-        // Compact one-liner for the running row; the multi-line key/value
-        // detail is stashed for the finished row's caret body (stint 0460).
+        match reply_rx.recv() {
+            Ok(PermissionReply::Allow { choice }) => match choice {
+                model::PermissionChoice::AllowOnce => crate::broker::gate::ApprovalChoice::Once,
+                model::PermissionChoice::AllowSession => crate::broker::gate::ApprovalChoice::Session,
+                model::PermissionChoice::AllowAlways => crate::broker::gate::ApprovalChoice::Always,
+                model::PermissionChoice::Deny => crate::broker::gate::ApprovalChoice::Deny,
+            },
+            _ => crate::broker::gate::ApprovalChoice::Deny,
+        }
+    }
+}
+
+impl ToolCallHooks for AssistantToolHooks {
+    fn before_call(&self, name: &str, input_json: &str) {
+        // Observation only. Authorization is the permission monitor.
         let input_summary = summarize_input(input_json);
         self.in_flight_inputs
             .lock()
@@ -201,7 +210,6 @@ impl ToolCallHooks for AssistantToolHooks {
             tool: name.to_string(),
             input_summary,
         });
-        Ok(())
     }
 
     fn after_call(&self, name: &str, error: Option<&str>, output_json: Option<&str>) {
@@ -366,6 +374,13 @@ fn render_json_object_lines(json: &str) -> Option<String> {
 
 /// Compact single-line summary of a tool input for sheets and audit lines.
 fn summarize_input(input_json: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(input_json) {
+        let app = value.get("app").and_then(|item| item.as_str());
+        let event = value.get("event").and_then(|item| item.as_str());
+        if let (Some(app), Some(event)) = (app, event) {
+            return format!("{app}::{event}");
+        }
+    }
     let decoded = serde_json::from_str::<serde_json::Value>(input_json)
         .map(|value| render_json_value(&value))
         .unwrap_or_else(|_| input_json.to_string());
@@ -463,6 +478,52 @@ fn deterministic_context_summary(turns: &[model::Turn], budget: usize) -> String
     out
 }
 
+/// One scripted tool call per model turn. The call runs through the turn's
+/// real dispatcher, so the permission monitor still admits it.
+#[cfg(test)]
+struct ScriptedToolBroker {
+    queue: Arc<Mutex<VecDeque<(String, String)>>>,
+}
+
+#[cfg(test)]
+impl AiBroker for ScriptedToolBroker {
+    fn dispatch(
+        &self,
+        request: AiBrokerRequest,
+        _on_delta: &mut dyn FnMut(TurnDelta<'_>),
+    ) -> crate::plexi_ai::broker::AiBrokerResponse {
+        let Some(dispatcher) = request.tool_dispatcher.clone() else {
+            return crate::plexi_ai::broker::AiBrokerResponse::err(
+                "no tool dispatcher".to_string(),
+            );
+        };
+        let Some((name, input)) = self
+            .queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front()
+        else {
+            return crate::plexi_ai::broker::AiBrokerResponse::ok(
+                "no scripted tool call".to_string(),
+                0,
+                0,
+            );
+        };
+        log::info!("assistant: scripted model calling {name}");
+        let result = dispatcher.dispatch_call(
+            format!("script-{}", uuid::Uuid::new_v4()),
+            &name,
+            input,
+        );
+        let text = result
+            .error
+            .clone()
+            .or(result.output_json)
+            .unwrap_or_default();
+        crate::plexi_ai::broker::AiBrokerResponse::ok(text, 0, 0)
+    }
+}
+
 /// The host Assistant pane: model + store + broker + grant wiring.
 pub struct AssistantApp {
     pub(crate) model: AssistantModel,
@@ -489,9 +550,8 @@ pub struct AssistantApp {
     session_overrides: SessionOverrides,
     settings: AssistantSettings,
     settings_errors: Vec<SettingsLoadError>,
-    /// Unified broker grants (same `grants.toml` shape as `AgentHost`).
-    /// Session grants are recorded in memory only; "always" grants are saved.
-    grant_store: GrantStore,
+    /// Exact-grant monitor. Also the grant store for this profile.
+    monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
     audit: AuditLog,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
@@ -503,6 +563,12 @@ pub struct AssistantApp {
     /// Reply channel for the worker blocked on the pending permission sheet.
     pending_reply: Option<SyncSender<PermissionReply>>,
     pending_connector_actor: Option<(String, ActorScope)>,
+    /// Raw input of the tool call parked on the permission sheet.
+    pending_tool_input: Option<String>,
+    /// Subscribe results prepared on the UI thread when the sheet resolves.
+    /// The host-tool handler returns one of these so the worker does not
+    /// wait for a second gate.
+    prepared_host_calls: Arc<Mutex<HashMap<String, ToolCallResult>>>,
     /// Shared app event timeline (production: the global instance).
     timeline: Arc<Mutex<AppTimeline>>,
     /// Live event-stream subscriptions: `(target_id, subscription_id)` where
@@ -530,6 +596,10 @@ pub struct AssistantApp {
     /// host binary in production (host and CLI are one binary, so the channel
     /// is inherently correct). Tests point it at a stub.
     pub(crate) build_exe: PathBuf,
+    /// Calls a scene or harness queues for the scripted model. Production
+    /// turns never read it.
+    #[cfg(test)]
+    scripted_tools: Arc<Mutex<std::collections::VecDeque<(String, String)>>>,
 }
 
 /// An ask-gated subscribe waiting on the permission sheet.
@@ -643,7 +713,7 @@ impl AssistantApp {
             session_overrides,
             settings: settings_report.settings,
             settings_errors: settings_report.errors,
-            grant_store: GrantStore::load_or_default(profile_dir),
+            monitor: crate::broker::gate::PermissionMonitor::for_profile(profile_dir),
             audit: AuditLog::new(profile_dir.join("audit.jsonl")),
             outcome_tx,
             outcome_rx,
@@ -653,6 +723,8 @@ impl AssistantApp {
             flow_rx,
             pending_reply: None,
             pending_connector_actor: None,
+            pending_tool_input: None,
+            prepared_host_calls: Arc::new(Mutex::new(HashMap::new())),
             timeline,
             live_subs: Vec::new(),
             pending_subscribe: None,
@@ -667,6 +739,8 @@ impl AssistantApp {
                 );
                 PathBuf::from("plexi")
             }),
+            #[cfg(test)]
+            scripted_tools: Arc::new(Mutex::new(VecDeque::new())),
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
@@ -690,7 +764,7 @@ impl AssistantApp {
     /// grants. Runs on pane open so subscriptions survive restarts.
     fn resubscribe_granted_streams(&mut self) {
         let targets: Vec<String> = self
-            .grant_store
+            .grants()
             .records()
             .iter()
             .filter(|r| {
@@ -857,6 +931,26 @@ impl AssistantApp {
             .unwrap_or_else(|| (ASSISTANT_ACTOR_ID.to_string(), ActorScope::BuiltIn))
     }
 
+    #[cfg(test)]
+    pub(crate) fn queue_scripted_tool(&mut self, name: &str, input_json: &str) {
+        self.scripted_tools
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push_back((name.to_string(), input_json.to_string()));
+        let queue = Arc::clone(&self.scripted_tools);
+        self.broker = Arc::new(ScriptedToolBroker { queue });
+        log::info!("assistant: queued scripted tool {name}");
+    }
+
+    fn audit_actor(&self) -> String {
+        let (id, _) = self.connector_actor();
+        if id.starts_with("agent:") {
+            id
+        } else {
+            format!("agent:{id}")
+        }
+    }
+
     fn active_posture(&self) -> crate::broker::PermissionPosture {
         let settings = self.settings.permissions.broker_posture();
         let Some(agent) = self.active_agent().map(|agent| &agent.posture) else {
@@ -907,7 +1001,7 @@ impl AssistantApp {
             Some(&self.workspace_root),
         );
         let posture = self.active_posture();
-        self.grant_store.evaluate(&req, Some(&posture))
+        self.grants().evaluate(&req, Some(&posture))
     }
 
     /// Evaluate one app connector tool for the assistant actor.
@@ -932,12 +1026,14 @@ impl AssistantApp {
         };
         let posture = self.active_posture();
         crate::host::event_subscriptions::evaluate_subscription(
-            &self.grant_store,
+            &self.grants(),
             Some(&posture),
             Some(&self.workspace_root),
             app,
             ActorType::Agent,
             ASSISTANT_ACTOR_ID,
+            ActorScope::User,
+            Some(self.monitor.session_id()),
             &event_names,
         )
     }
@@ -957,19 +1053,26 @@ impl AssistantApp {
             .collect()
     }
 
-    /// Build the broker-gated dispatcher for one turn: denied tools are
-    /// stripped (invisible and uninvocable), ask tools stay visible behind
-    /// the permission-sheet hook, allowed tools pass through.
+    fn grants(&self) -> std::sync::MutexGuard<'_, GrantStore> {
+        self.monitor.store()
+    }
+
+    /// Build the dispatcher for one turn. Discovery filters are configuration
+    /// (declared tools and settings). They do not authorize. `read_only` does
+    /// not skip the monitor. Explicit deny grants stay invisible.
     fn gated_dispatcher(&self) -> ToolDispatcher {
+        let (actor_id, actor_scope) = self.connector_actor();
         let mut dispatcher = ToolDispatcher::from_registry(
-            0,
-            format!("agent:{}", self.connector_actor().0),
-            self.context_id,
+            crate::plexi_ai::tool_dispatch::DispatchScope::new(
+                0,
+                format!("agent:{actor_id}"),
+                self.workspace_root.clone(),
+                self.context_id,
+            ),
+            Arc::clone(&self.monitor),
         );
         let mut allowed = HashSet::new();
-        let mut ask_tools = HashSet::new();
         let mut denied = 0usize;
-        let mut ro_auto = 0usize;
         let declared_tools = self
             .active_agent()
             .map(|agent| agent.tools.as_slice())
@@ -982,37 +1085,18 @@ impl AssistantApp {
                 denied += 1;
                 continue;
             }
-            match self.tool_decision(&tool) {
-                // Read-only tools skip the ask prompt (no permission sheet) but
-                // still respect explicit Deny grants — an admin deny wins.
-                Decision::Allow | Decision::Ask if tool.read_only => {
-                    log::info!(
-                        "assistant: tool '{}' auto-allowed (read-only, no prompt needed)",
-                        tool.name
-                    );
-                    allowed.insert(tool.name);
-                    ro_auto += 1;
-                }
-                Decision::Allow => {
-                    allowed.insert(tool.name);
-                }
-                Decision::Ask => {
-                    ask_tools.insert(tool.name.clone());
-                    allowed.insert(tool.name);
-                }
-                Decision::Deny => {
-                    log::info!("assistant: tool '{}' withheld from turn (deny)", tool.name);
-                    denied += 1;
-                }
+            if self.tool_decision(&tool) == Decision::Deny {
+                log::info!("assistant: tool '{}' withheld from turn (deny)", tool.name);
+                denied += 1;
+                continue;
             }
+            allowed.insert(tool.name);
         }
         log::info!(
-            "assistant: connector discovery — {} tool(s) visible ({ro_auto} read-only auto, {} ask-gated, {denied} denied)",
+            "assistant: connector discovery — {} tool(s) visible, {denied} denied",
             allowed.len(),
-            ask_tools.len(),
         );
         dispatcher.retain_allowed(&allowed);
-        let (actor_id, actor_scope) = self.connector_actor();
         let native_tools = Self::host_tools();
         let mut visible_host_tools = Vec::new();
         for tool in native_tools {
@@ -1025,29 +1109,35 @@ impl AssistantApp {
                 );
                 continue;
             }
-            match self.host_tool_decision(&tool) {
-                Decision::Deny => {
-                    log::info!("assistant: host tool '{}' withheld (deny)", tool.name)
-                }
-                Decision::Ask if !tool.read_only => {
-                    ask_tools.insert(tool.name.clone());
-                    visible_host_tools.push(tool);
-                }
-                Decision::Allow | Decision::Ask => visible_host_tools.push(tool),
+            if self.host_tool_decision(&tool) == Decision::Deny {
+                log::info!("assistant: host tool '{}' withheld (deny)", tool.name);
+                continue;
             }
+            visible_host_tools.push(tool);
         }
         dispatcher.set_hooks(Arc::new(AssistantToolHooks {
-            ask_tools,
-            session_allowed: Mutex::new(HashSet::new()),
             in_flight_inputs: Mutex::new(HashMap::new()),
             flow_tx: self.flow_tx.clone(),
-            actor_id,
+        }));
+        dispatcher.set_presenter(Arc::new(AssistantPresenter {
+            flow_tx: self.flow_tx.clone(),
             actor_scope,
         }));
-        // Host event tools: always visible; subscribing is ask-gated
-        // per-stream inside the pane's host-call handler, not here.
+        // Host event tools stay visible. `host.events.subscribe` is admitted
+        // by the permission monitor like every other tool. Approving that
+        // sheet records the stream grant and leaves the result here so the
+        // worker finishes without a second prompt.
         let flow_tx = self.flow_tx.clone();
+        let prepared = Arc::clone(&self.prepared_host_calls);
         let handler: HostToolHandler = Arc::new(move |name, input_json| {
+            if let Some(ready) = prepared
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(input_json)
+            {
+                log::info!("assistant: host tool '{name}' completed from the permission decision");
+                return ready;
+            }
             let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
             let sent = flow_tx.send(ToolFlowEvent::HostCall {
                 tool: name.to_string(),
@@ -1392,7 +1482,7 @@ impl AssistantApp {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(build_exec::DEFAULT_BUILD_TIMEOUT_MS)
             .min(build_exec::MAX_BUILD_TIMEOUT_MS);
-        self.audit.append(&AuditEvent::now(
+        let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
             "build_command",
             HOST_TOOL_BUILD_RUN,
             "requested",
@@ -1461,7 +1551,7 @@ impl AssistantApp {
         if !matches!(tool, HOST_TOOL_SUBSCRIBE | HOST_TOOL_UNSUBSCRIBE) {
             log::info!("assistant: queueing native host tool '{tool}'");
             if tool == HOST_TOOL_TERMINALS_RUN {
-                self.audit.append(&AuditEvent::now(
+                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                     "terminal_command",
                     HOST_TOOL_TERMINALS_RUN,
                     "requested",
@@ -1469,7 +1559,7 @@ impl AssistantApp {
                 ));
             }
             if tool == HOST_TOOL_NET_FETCH {
-                self.audit.append(&AuditEvent::now(
+                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                     "network_request",
                     HOST_TOOL_NET_FETCH,
                     "requested",
@@ -1477,7 +1567,7 @@ impl AssistantApp {
                 ));
             }
             if matches!(tool, HOST_TOOL_FILES_WRITE | HOST_TOOL_FILES_EDIT) {
-                self.audit.append(&AuditEvent::now(
+                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                     "file_mutation",
                     tool,
                     "requested",
@@ -1529,14 +1619,14 @@ impl AssistantApp {
                 match self.event_stream_decision(&app, &event) {
                     Decision::Allow => {
                         self.subscribe_stream(&app, &event);
-                        self.audit
-                            .append(&AuditEvent::now("subscribe", &target, "ok", "granted"));
+                        let _ = self.audit
+                            .append(&AuditEvent::now(&self.audit_actor(), "subscribe", &target, "ok", "granted"));
                         let _ = reply.send(ok(format!("subscribed to {target}")));
                     }
                     Decision::Deny => {
                         log::info!("assistant: subscribe to '{target}' denied by grant");
-                        self.audit
-                            .append(&AuditEvent::now("subscribe", &target, "deny", "grant"));
+                        let _ = self.audit
+                            .append(&AuditEvent::now(&self.audit_actor(), "subscribe", &target, "deny", "grant"));
                         let _ = reply.send(err(format!(
                             "permission_denied: subscription to {target} is denied"
                         )));
@@ -1556,7 +1646,7 @@ impl AssistantApp {
             }
             HOST_TOOL_UNSUBSCRIBE => {
                 let removed = self.unsubscribe_stream(&target);
-                self.audit.append(&AuditEvent::now(
+                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                     "unsubscribe",
                     &target,
                     if removed > 0 { "ok" } else { "noop" },
@@ -1836,7 +1926,7 @@ impl AssistantApp {
                 } else {
                     Self::connector_target(&tool)
                 };
-                self.audit.append(&AuditEvent::now(
+                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                     "tool_call",
                     &audit_target,
                     if error.is_none() { "ok" } else { "error" },
@@ -1856,13 +1946,23 @@ impl AssistantApp {
                 input_json,
                 actor_id,
                 actor_scope,
+                pending_request_id,
+                resource_id,
                 reply,
             } => {
-                log::info!("assistant: permission sheet shown for '{tool}'");
-                self.model
-                    .permission_requested(&tool, &summarize_input(&input_json));
+                log::info!(
+                    "assistant: permission sheet shown for '{tool}' pending={pending_request_id} actor={actor_id} resource={resource_id}"
+                );
+                self.model.permission_requested_scoped(
+                    &tool,
+                    &summarize_input(&input_json),
+                    &actor_id,
+                    &resource_id,
+                    &pending_request_id,
+                );
                 self.pending_reply = Some(reply);
                 self.pending_connector_actor = Some((actor_id, actor_scope));
+                self.pending_tool_input = Some(input_json);
             }
             ToolFlowEvent::HostCall {
                 tool,
@@ -1951,7 +2051,7 @@ impl AssistantApp {
     /// are already in the transcript, so the turn's history ends with them.
     fn start_event_turn(&mut self, line_count: usize) {
         log::info!("assistant: auto-starting turn for {line_count} delivered event(s)");
-        self.audit.append(&AuditEvent::now(
+        let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
             "auto_turn",
             "app_events",
             "ok",
@@ -2003,6 +2103,7 @@ impl AssistantApp {
             let _ = tx.send(PermissionReply::Deny);
         }
         self.pending_connector_actor = None;
+        self.pending_tool_input = None;
         if let Some(pending) = self.pending_subscribe.take() {
             let _ = pending.reply.send(ToolCallResult::err(reason));
         }
@@ -2010,7 +2111,7 @@ impl AssistantApp {
 
     /// Apply the user's permission-sheet decision: record the grant per its
     /// duration, audit it, and unblock the worker thread.
-    fn resolve_permission(&mut self, choice: PermissionChoice) {
+    pub(crate) fn resolve_permission(&mut self, choice: PermissionChoice) {
         if self.pending_subscribe.is_some() {
             self.resolve_subscribe_permission(choice);
             return;
@@ -2019,11 +2120,6 @@ impl AssistantApp {
             return;
         };
         let is_host_tool = pending.tool.starts_with("host.");
-        let target_type = if is_host_tool {
-            TargetType::HostTool
-        } else {
-            TargetType::AppConnector
-        };
         let target = if is_host_tool {
             pending.tool.clone()
         } else {
@@ -2031,39 +2127,62 @@ impl AssistantApp {
         };
         let (decision_str, reply) = match choice {
             PermissionChoice::Deny => ("deny", PermissionReply::Deny),
-            PermissionChoice::AllowOnce => {
-                ("allow_once", PermissionReply::Allow { remember: false })
-            }
-            PermissionChoice::AllowSession => {
-                self.record_connector_grant(
-                    target_type,
-                    &target,
-                    GrantDuration::Session,
-                    GrantSource::Session,
-                );
-                ("allow_session", PermissionReply::Allow { remember: true })
-            }
-            PermissionChoice::AllowAlways => {
-                self.record_connector_grant(
-                    target_type,
-                    &target,
-                    GrantDuration::Always,
-                    GrantSource::User,
-                );
-                self.grant_store.save();
-                ("allow_always", PermissionReply::Allow { remember: true })
-            }
+            PermissionChoice::AllowOnce => (
+                "allow_once",
+                PermissionReply::Allow { choice: PermissionChoice::AllowOnce },
+            ),
+            PermissionChoice::AllowSession => (
+                "allow_session",
+                PermissionReply::Allow {
+                    choice: PermissionChoice::AllowSession,
+                },
+            ),
+            PermissionChoice::AllowAlways => (
+                "allow_always",
+                PermissionReply::Allow {
+                    choice: PermissionChoice::AllowAlways,
+                },
+            ),
         };
         log::info!(
             "assistant: permission sheet decision for '{}' = {decision_str}",
             pending.tool
         );
-        self.audit.append(&AuditEvent::now(
-            "permission_decision",
-            &target,
-            decision_str,
-            &pending.input_summary,
-        ));
+        if self
+            .audit
+            .append(&AuditEvent::now(
+                &self.audit_actor(),
+                "permission_decision",
+                &target,
+                decision_str,
+                &pending.input_summary,
+            ))
+            .is_err()
+            && choice != PermissionChoice::Deny
+        {
+            log::error!(
+                "assistant: audit write failed before '{}' — the call is denied",
+                pending.tool
+            );
+            if let Some(tx) = self.pending_reply.take() {
+                let _ = tx.send(PermissionReply::Deny);
+            }
+            self.pending_connector_actor = None;
+            self.pending_tool_input = None;
+            let effects = self.model.permission_resolved(PermissionChoice::Deny);
+            self.execute_effects(effects);
+            return;
+        }
+        let tool_input = self.pending_tool_input.take();
+        if choice != PermissionChoice::Deny && pending.tool == HOST_TOOL_SUBSCRIBE {
+            match tool_input.as_deref() {
+                Some(input) => self.arm_subscribe_from_approval(input, choice),
+                None => log::warn!(
+                    "assistant: subscribe approval for '{}' had no tool input",
+                    pending.tool
+                ),
+            }
+        }
         match self.pending_reply.take() {
             Some(tx) => {
                 let _ = tx.send(reply);
@@ -2076,6 +2195,82 @@ impl AssistantApp {
         self.pending_connector_actor = None;
         let effects = self.model.permission_resolved(choice);
         self.execute_effects(effects);
+    }
+
+    /// The dispatcher already admitted `host.events.subscribe`. Record the
+    /// stream grant for that same choice and leave the tool result where the
+    /// worker's host-tool handler will pick it up.
+    fn arm_subscribe_from_approval(&mut self, input_json: &str, choice: PermissionChoice) {
+        let outcome = self.subscribe_approval_result(input_json, choice);
+        self.prepared_host_calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(input_json.to_string(), outcome);
+    }
+
+    fn subscribe_approval_result(
+        &mut self,
+        input_json: &str,
+        choice: PermissionChoice,
+    ) -> ToolCallResult {
+        let value = match serde_json::from_str::<serde_json::Value>(input_json) {
+            Ok(value) => value,
+            Err(error) => {
+                let message = format!("invalid_input: {error}");
+                log::info!("assistant: subscribe approval rejected: {message}");
+                return ToolCallResult::err(message);
+            }
+        };
+        let app = value
+            .get("app")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let event = value
+            .get("event")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if app.is_empty() || event.is_empty() {
+            let message = "invalid_input: 'app' and 'event' must be non-empty".to_string();
+            log::info!("assistant: subscribe approval rejected: {message}");
+            return ToolCallResult::err(message);
+        }
+        let target = format!("{app}::{event}");
+        let (duration, source, decision_str) = match choice {
+            PermissionChoice::AllowOnce => (GrantDuration::Once, GrantSource::Session, "allow_once"),
+            PermissionChoice::AllowSession => {
+                (GrantDuration::Session, GrantSource::Session, "allow_session")
+            }
+            PermissionChoice::AllowAlways => (GrantDuration::Always, GrantSource::User, "allow_always"),
+            PermissionChoice::Deny => {
+                let message =
+                    format!("permission_denied: the user denied the subscription to {target}");
+                log::info!("assistant: subscribe approval rejected: {message}");
+                return ToolCallResult::err(message);
+            }
+        };
+        self.record_assistant_grant(TargetType::AppEventStream, &target, duration, source);
+        if choice == PermissionChoice::AllowAlways {
+            self.grants().save();
+        }
+        self.subscribe_stream(&app, &event);
+        let _ = self.audit.append(&AuditEvent::now(
+            &self.audit_actor(),
+            "subscribe",
+            &target,
+            "ok",
+            decision_str,
+        ));
+        log::info!(
+            "assistant: subscribe '{target}' authorized by the permission gate ({decision_str})"
+        );
+        ToolCallResult::ok_value(serde_json::json!({
+            "ok": true,
+            "detail": format!("subscribed to {target}"),
+        }))
     }
 
     /// Apply the user's permission-sheet decision for an ask-gated
@@ -2110,12 +2305,12 @@ impl AssistantApp {
                     GrantDuration::Always,
                     GrantSource::User,
                 );
-                self.grant_store.save();
+                self.grants().save();
                 "allow_always"
             }
         };
         log::info!("assistant: permission sheet decision for stream '{target}' = {decision_str}");
-        self.audit.append(&AuditEvent::now(
+        let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
             "permission_decision",
             &target,
             decision_str,
@@ -2127,8 +2322,8 @@ impl AssistantApp {
             ))
         } else {
             self.subscribe_stream(&app, &event);
-            self.audit
-                .append(&AuditEvent::now("subscribe", &target, "ok", decision_str));
+            let _ = self.audit
+                .append(&AuditEvent::now(&self.audit_actor(), "subscribe", &target, "ok", decision_str));
             ToolCallResult::ok_value(
                 serde_json::json!({"ok": true, "detail": format!("subscribed to {target}")}),
             )
@@ -2138,6 +2333,7 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
+    #[cfg(test)]
     fn record_connector_grant(
         &mut self,
         target_type: TargetType,
@@ -2214,7 +2410,27 @@ impl AssistantApp {
             .workspace_root
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
-        self.grant_store.record(GrantRecord {
+        if target_type == TargetType::AppEventStream {
+            let session_id = if duration == GrantDuration::Session {
+                Some(self.monitor.session_id().to_string())
+            } else {
+                None
+            };
+            let mut record = GrantRecord::event_stream_allow(
+                ActorType::Agent,
+                actor_id,
+                ActorScope::User,
+                target,
+                &workspace_root,
+                duration,
+                source,
+                session_id,
+            );
+            record.decision = decision;
+            self.grants().record(record);
+            return;
+        }
+        self.grants().record(GrantRecord {
             actor_type: ActorType::Agent,
             actor_id: actor_id.to_string(),
             actor_scope,
@@ -2228,6 +2444,7 @@ impl AssistantApp {
             source,
             created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
+            ..GrantRecord::unbound()
         });
     }
 
@@ -2411,7 +2628,7 @@ impl AssistantApp {
             self.execute_effects(effects);
             return;
         }
-        let parent = self.profile_dir.join("agents");
+        let parent = crate::agent::workspace_agents_dir(&self.workspace_root);
         let dir = parent.join(id);
         let mut created_dir = false;
         let result = (|| {
@@ -2452,7 +2669,7 @@ impl AssistantApp {
         }
         self.reload_agents();
         log::info!(
-            "assistant: created user agent '{}' at {}",
+            "assistant: created workspace agent '{}' at {}",
             id,
             dir.display()
         );
@@ -2479,7 +2696,7 @@ impl AssistantApp {
         let path = agent
             .path
             .clone()
-            .unwrap_or_else(|| self.profile_dir.join("agents").join(id));
+            .unwrap_or_else(|| crate::agent::workspace_agents_dir(&self.workspace_root).join(id));
         log::info!("assistant: edit agent '{}' at {}", id, path.display());
         let effects = self
             .model
@@ -2945,9 +3162,13 @@ impl AssistantApp {
     /// `/tools`: discovered app connector tools with their broker decisions.
     fn cmd_list_tools(&mut self) {
         let dispatcher = ToolDispatcher::from_registry(
-            0,
-            format!("agent:{ASSISTANT_ACTOR_ID}"),
-            self.context_id,
+            crate::plexi_ai::tool_dispatch::DispatchScope::new(
+                0,
+                format!("agent:{ASSISTANT_ACTOR_ID}"),
+                self.workspace_root.clone(),
+                self.context_id,
+            ),
+            Arc::clone(&self.monitor),
         );
         let mut tools = dispatcher.all_tools();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -3201,7 +3422,7 @@ impl AssistantApp {
     /// host tools, and shared event streams), as editable overlay rows.
     fn assistant_grant_rows(&self) -> Vec<GrantRow> {
         let connector_actor_id = self.connector_actor().0;
-        self.grant_store
+        self.grants()
             .records()
             .iter()
             .filter(|r| {
@@ -3250,13 +3471,13 @@ impl AssistantApp {
             match row.decision {
                 Decision::Ask => {
                     let removed =
-                        self.grant_store
+                        self.grants()
                             .revoke(ActorType::Agent, &actor_id, &row.target_id);
                     let unsubscribed = self.unsubscribe_stream(&row.target_id);
                     if removed > 0 {
-                        self.grant_store.save();
+                        self.grants().save();
                     }
-                    self.audit.append(&AuditEvent::now(
+                    let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                         "revoke",
                         &row.target_id,
                         "revoked",
@@ -3270,7 +3491,7 @@ impl AssistantApp {
                     // each has a record whose metadata we mirror with the new
                     // decision.
                     let meta = self
-                        .grant_store
+                        .grants()
                         .records()
                         .iter()
                         .find(|r| {
@@ -3295,8 +3516,8 @@ impl AssistantApp {
                         source,
                         row.decision,
                     );
-                    self.grant_store.save();
-                    self.audit.append(&AuditEvent::now(
+                    self.grants().save();
+                    let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                         "permission_set",
                         &row.target_id,
                         row.decision.as_str(),
@@ -3353,16 +3574,16 @@ impl AssistantApp {
             ASSISTANT_ACTOR_ID.to_string()
         };
         let removed = self
-            .grant_store
+            .grants()
             .revoke(ActorType::Agent, &actor_id, target_id);
         let unsubscribed = self.unsubscribe_stream(target_id);
         let text = if removed == 0 && unsubscribed == 0 {
             format!("No grants found for '{target_id}'. See /permissions for target ids.")
         } else {
             if removed > 0 {
-                self.grant_store.save();
+                self.grants().save();
             }
-            self.audit.append(&AuditEvent::now(
+            let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
                 "revoke",
                 target_id,
                 "revoked",
@@ -3886,7 +4107,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let mut app = test_app(ws.path());
         app.cmd_create_agent("writer");
-        let dir = ws.path().join("agents").join("writer");
+        let dir = ws.path().join(".plexi/agents").join("writer");
         assert!(dir.join("AGENT.md").is_file());
         assert!(dir.join("settings.toml").is_file());
         app.cmd_edit_agent("writer");
@@ -3911,7 +4132,7 @@ enabled = ["allowed.tool"]
     #[test]
     fn create_agent_refuses_to_overwrite_partial_definition() {
         let ws = tempfile::tempdir().unwrap();
-        let dir = ws.path().join("agents").join("writer");
+        let dir = ws.path().join(".plexi/agents").join("writer");
         std::fs::create_dir_all(&dir).unwrap();
         let prompt_path = dir.join("AGENT.md");
         std::fs::write(&prompt_path, "Keep this prompt.\n").unwrap();
@@ -3940,9 +4161,12 @@ enabled = ["allowed.tool"]
             GrantSource::Session,
         );
 
-        let record = app.grant_store.records().last().unwrap();
-        assert_eq!(record.actor_id, "writer");
-        assert_eq!(record.actor_scope, ActorScope::User);
+        {
+            let store = app.grants();
+            let record = store.records().last().unwrap();
+            assert_eq!(record.actor_id, "writer");
+            assert_eq!(record.actor_scope, ActorScope::Workspace);
+        }
         let tool = AiTool {
             name: "docs.write".to_string(),
             description: "write docs".to_string(),
@@ -3951,7 +4175,9 @@ enabled = ["allowed.tool"]
             timeout_ms: None,
             read_only: false,
         };
-        assert_eq!(app.tool_decision(&tool), Decision::Allow);
+        // A name-only session row is not an authorization. The actor and
+        // scope are recorded; the call still has to match an exact binding.
+        assert_eq!(app.tool_decision(&tool), Decision::Ask);
     }
 
     #[test]
@@ -4431,7 +4657,7 @@ enabled = ["allowed.tool"]
             .workspace_root
             .canonicalize()
             .unwrap_or_else(|_| app.workspace_root.clone());
-        app.grant_store.record(GrantRecord {
+        app.grants().record(GrantRecord {
             actor_type: ActorType::Agent,
             actor_id,
             actor_scope,
@@ -4445,6 +4671,7 @@ enabled = ["allowed.tool"]
             source: GrantSource::User,
             created_at: 0,
             expires_at: None,
+                    ..GrantRecord::unbound()
         });
     }
 
@@ -4556,10 +4783,16 @@ enabled = ["allowed.tool"]
                 .iter()
                 .any(|t| t.status == Some(ToolStatus::Succeeded))
         });
-        // Allow-once persists nothing.
+        // Allow-once is an in-memory consumed grant. It is not written to disk.
         assert!(
-            app.grant_store.records().is_empty(),
-            "allow-once must not persist a grant"
+            app.grants().records().iter().any(|record| {
+                record.duration == GrantDuration::Once && record.consumed
+            }),
+            "allow-once records a consumed grant"
+        );
+        assert!(
+            !ws.path().join("grants.toml").is_file(),
+            "allow-once must not persist a grant file"
         );
         // Audit: one permission decision + one tool call.
         let events = app.audit.tail(10);
@@ -4594,14 +4827,16 @@ enabled = ["allowed.tool"]
         assert!(result.error.is_none());
 
         // Grant persisted in the store and on disk.
-        let record = app
-            .grant_store
-            .records()
-            .iter()
-            .find(|r| r.target_id == "app.gated.tool")
-            .expect("allow-always must persist a grant");
-        assert_eq!(record.decision, Decision::Allow);
-        assert_eq!(record.duration, GrantDuration::Always);
+        {
+            let store = app.grants();
+            let record = store
+                .records()
+                .iter()
+                .find(|r| r.target_id == "gated.tool" || r.target_id == "app.gated.tool")
+                .expect("allow-always must persist a grant");
+            assert_eq!(record.decision, Decision::Allow);
+            assert_eq!(record.duration, GrantDuration::Always);
+        }
         assert!(
             ws.path().join("grants.toml").is_file(),
             "grant must be saved to disk"
@@ -4656,7 +4891,7 @@ enabled = ["allowed.tool"]
         assert_eq!(events[0].kind, "permission_decision");
         assert_eq!(events[0].decision, "deny");
         assert!(
-            app.grant_store.records().is_empty(),
+            app.grants().records().is_empty(),
             "deny persists nothing"
         );
 
@@ -4674,7 +4909,10 @@ enabled = ["allowed.tool"]
         let effects = app.model.submit();
         app.execute_effects(effects);
         let tools_row = &app.model.turns.last().unwrap().text;
-        assert!(tools_row.contains("app.view.tool — allow"), "{tools_row}");
+        assert!(
+            tools_row.contains("app.view.tool — ask"),
+            "a name-only grant is not an authorization: {tools_row}"
+        );
 
         // `/permissions` now opens the interactive manager, populated from the
         // grant store, instead of dumping text.
@@ -4701,7 +4939,7 @@ enabled = ["allowed.tool"]
             .unwrap()
             .text
             .contains("Revoked 1 grant(s)"));
-        assert!(app.grant_store.records().is_empty());
+        assert!(app.grants().records().is_empty());
 
         app.model.composer = "/audit".to_string();
         let effects = app.model.submit();
@@ -4731,8 +4969,8 @@ enabled = ["allowed.tool"]
         app.confirm_overlay();
 
         assert!(!app.model.overlay_active());
-        let record = app
-            .grant_store
+        let store = app.grants();
+        let record = store
             .records()
             .iter()
             .find(|r| r.target_id == "app.view.tool")
@@ -4765,7 +5003,7 @@ enabled = ["allowed.tool"]
         app.confirm_overlay();
 
         assert!(
-            app.grant_store.records().is_empty(),
+            app.grants().records().is_empty(),
             "set-to-ask removes the persisted grant"
         );
         let audited = app
@@ -4790,8 +5028,8 @@ enabled = ["allowed.tool"]
         app.model.cancel_overlay();
 
         assert!(!app.model.overlay_active());
-        let record = app
-            .grant_store
+        let store = app.grants();
+        let record = store
             .records()
             .iter()
             .find(|r| r.target_id == "app.view.tool")
@@ -4894,7 +5132,7 @@ enabled = ["allowed.tool"]
                 GrantDuration::Always,
                 GrantSource::User,
             );
-            first.grant_store.save();
+            first.grants().save();
         }
         assert!(ws.path().join("grants.toml").is_file());
 
@@ -4941,22 +5179,18 @@ enabled = ["allowed.tool"]
         {
             let mut first = test_app_with_timeline(ws.path(), timeline.clone());
             first.subscribe_stream("chess", "*");
-            first.grant_store.record(GrantRecord {
-                actor_type: ActorType::Agent,
-                actor_id: ASSISTANT_ACTOR_ID.to_string(),
-                actor_scope: ActorScope::BuiltIn,
-                workspace_root: Some(ws.path().canonicalize().unwrap()),
-                target_type: TargetType::AppEventStream,
-                target_id: "chess::*".to_string(),
-                resource_scope: ResourceScope::Workspace,
-                resource_id: None,
-                decision: Decision::Allow,
-                duration: GrantDuration::Always,
-                source: GrantSource::User,
-                created_at: 0,
-                expires_at: None,
-            });
-            first.grant_store.save();
+            let workspace = first.workspace_root.clone();
+            first.grants().record(GrantRecord::event_stream_allow(
+                ActorType::Agent,
+                ASSISTANT_ACTOR_ID,
+                ActorScope::User,
+                "chess::*",
+                &workspace,
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+            ));
+            first.grants().save();
         }
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
         // An event lands while no pane is open: queued against the leaked sub.
@@ -5220,14 +5454,16 @@ enabled = ["allowed.tool"]
         assert!(result.error.is_none(), "{:?}", result.error);
 
         // Grant persisted on disk; live subscription created.
-        let record = app
-            .grant_store
-            .records()
-            .iter()
-            .find(|r| r.target_id == "chess::move.played")
-            .expect("allow-always must persist the stream grant");
-        assert_eq!(record.target_type, TargetType::AppEventStream);
-        assert_eq!(record.duration, GrantDuration::Always);
+        {
+            let store = app.grants();
+            let record = store
+                .records()
+                .iter()
+                .find(|r| r.target_id == "chess::move.played")
+                .expect("allow-always must persist the stream grant");
+            assert_eq!(record.target_type, TargetType::AppEventStream);
+            assert_eq!(record.duration, GrantDuration::Always);
+        }
         assert!(ws.path().join("grants.toml").is_file());
         assert_eq!(app.live_subs.len(), 1);
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
@@ -5253,7 +5489,7 @@ enabled = ["allowed.tool"]
             app.model.turns.last().unwrap().text
         );
         assert!(app
-            .grant_store
+            .grants()
             .records()
             .iter()
             .all(|r| r.target_type != TargetType::AppEventStream));
@@ -5297,7 +5533,7 @@ enabled = ["allowed.tool"]
         assert!(app.live_subs.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
         assert!(
-            app.grant_store.records().is_empty(),
+            app.grants().records().is_empty(),
             "deny persists nothing"
         );
     }
@@ -5333,7 +5569,7 @@ enabled = ["allowed.tool"]
     }
 
     #[test]
-    fn plan_posture_allows_read_only_event_subscription_when_rule_allows() {
+    fn plan_posture_allow_list_does_not_subscribe_without_a_grant() {
         let ws = tempfile::tempdir().unwrap();
         let settings_path = ws.path().join("agents/settings.toml");
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
@@ -5352,12 +5588,13 @@ enabled = ["allowed.tool"]
             tx,
         );
 
-        let result = rx
-            .try_recv()
-            .expect("an allowed subscription replies synchronously");
-        assert!(result.error.is_none(), "{:?}", result.error);
-        assert_eq!(app.live_subs.len(), 1);
-        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+        assert!(
+            rx.try_recv().is_err(),
+            "a posture allow-list does not subscribe by itself"
+        );
+        assert!(app.model.pending_permission.is_some());
+        assert!(app.live_subs.is_empty());
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
     }
 
     #[test]

@@ -1,0 +1,79 @@
+# One pending chess move, the exact actor and resource, an attributed
+# result, then a human move that makes the still-pending reply stale.
+suite = false
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "process", path = "apps/chess", as = "chess" }
+
+[[steps]]
+open = { kind = "builtin", id = "assistant", as = "assistant" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+chess_approval = { phase = "pending", chess = "chess", assistant = "assistant", move = "e2e4", revision = 0 }
+
+[[steps]]
+assert_label = { target = "assistant", label = "Permission required" }
+
+[[steps]]
+assert_label = { target = "assistant", label = "Allow once" }
+
+[[steps]]
+assert_label = { target = "assistant", label = "agent:default wants to run 'chess.play' on game-1" }
+
+[[steps]]
+assert_label = { target = "assistant", label = "move e2e4" }
+
+[[steps]]
+shot = "agents-chess-approval-pending.png"
+
+[[steps]]
+key = { target = "assistant", value = "left" }
+
+[[steps]]
+key = { target = "assistant", value = "left" }
+
+[[steps]]
+key = { target = "assistant", value = "left" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+chess_approval = { phase = "wait", chess = "chess", assistant = "assistant", expect = "actor: agent:default" }
+
+[[steps]]
+assert_label = { target = "assistant", label = "actor: agent:default" }
+
+[[steps]]
+shot = "agents-chess-approval-attributed.png"
+
+[[steps]]
+chess_approval = { phase = "pending", chess = "chess", assistant = "assistant", move = "e7e5", revision = 1 }
+
+[[steps]]
+chess_approval = { phase = "human", chess = "chess", assistant = "assistant", move = "e7e5" }
+
+[[steps]]
+key = { target = "assistant", value = "left" }
+
+[[steps]]
+key = { target = "assistant", value = "left" }
+
+[[steps]]
+key = { target = "assistant", value = "left" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+chess_approval = { phase = "wait", chess = "chess", assistant = "assistant", expect = "stale revision" }
+
+[[steps]]
+assert_label = { target = "assistant", label = "stale revision" }
+
+[[steps]]
+shot = "agents-chess-approval-stale.png"

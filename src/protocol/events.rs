@@ -317,6 +317,10 @@ pub enum PlexiEvent {
         /// an app id). The SDK stamps `caused_by` on events emitted while
         /// this call is being serviced.
         caller_id: String,
+        /// Host-stamped authorization envelope. Absent on legacy WASM guests;
+        /// Python apps receive it beside the model arguments.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization: Option<String>,
     },
     /// Response to a `DrawCommand::ListAudioDevices` request (#277).
     /// Both vectors are always present — empty when enumeration finds no

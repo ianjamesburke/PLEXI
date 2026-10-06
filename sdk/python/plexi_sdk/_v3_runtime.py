@@ -175,6 +175,7 @@ class V3AppRuntime:
                 name=ev.get("name", ""),
                 input_json=ev.get("input_json", ""),
                 caller_id=ev.get("caller_id", ""),
+                authorization=ev.get("authorization"),
             ))
         elif t == "app_events_subscribed":
             self._dispatch(events.EventSubscriptionResult(
@@ -727,6 +728,8 @@ class V3AppRuntime:
                     payload["output_json"] = effect.output_json
                 if effect.error is not None:
                     payload["error"] = effect.error
+                if effect.error_code is not None:
+                    payload["error_code"] = effect.error_code
                 _emit(payload)
             elif isinstance(effect, effects.DeclareEventStreams):
                 _emit({

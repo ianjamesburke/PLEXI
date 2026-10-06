@@ -336,6 +336,29 @@ pub enum Step {
     AssertLabel { assert_label: AssertLabelSpec },
     /// Save a headless screenshot to `<out_dir>/<name>`.
     Shot { shot: String },
+    /// Chess approval through the production assistant turn, plus a human
+    /// move through `KeyPane` when `phase` is `human`.
+    ChessApproval { chess_approval: ChessApprovalSpec },
+}
+
+/// One phase of the chess approval scene. `pending` queues a scripted
+/// `chess.play` and waits for the sheet. `human` plays `move` from the
+/// board's keyboard path. `wait` pumps until the attributed or stale result
+/// is on screen.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ChessApprovalSpec {
+    pub phase: String,
+    pub chess: String,
+    pub assistant: String,
+    #[serde(default, rename = "move")]
+    pub move_uci: Option<String>,
+    #[serde(default)]
+    pub revision: Option<i64>,
+    /// Label the `wait` phase must observe. Keeps an earlier attributed row
+    /// from satisfying a later stale-result wait.
+    #[serde(default)]
+    pub expect: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1723,6 +1746,10 @@ impl LiveBackend {
             Step::Assert { assert } => self.check_eventually(assert).map(|()| None),
             Step::Expect { expect } => self.expect(expect),
             Step::Shot { shot } => self.capture_shot(shot, shots),
+            Step::ChessApproval { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "chess_approval is a headless scene verb",
+            )),
             Step::SwitchContext { switch_context } => {
                 let contexts = self.json(&["context", "list"])?;
                 let entries = contexts.as_array().ok_or_else(|| {
@@ -2309,6 +2336,9 @@ fn step_label(step: &Step) -> String {
             )
         }
         Step::Shot { shot } => format!("shot {shot}"),
+        Step::ChessApproval { chess_approval } => {
+            format!("chess_approval {}", chess_approval.phase)
+        }
     }
 }
 
@@ -2741,6 +2771,173 @@ impl HeadlessBackend {
                     message: path.display().to_string(),
                 }))
             }
+            Step::ChessApproval { chess_approval } => self.chess_approval(chess_approval),
+        }
+    }
+
+    fn chess_approval(
+        &mut self,
+        spec: &ChessApprovalSpec,
+    ) -> Result<Option<StepDetail>, SceneError> {
+        #[cfg(test)]
+        {
+            self.chess_approval_test(spec)
+        }
+        #[cfg(not(test))]
+        {
+            let _ = spec;
+            Err(SceneError::new(
+                "unsupported_live_verb",
+                "chess_approval runs in the headless test harness",
+            ))
+        }
+    }
+
+    #[cfg(test)]
+    fn chess_approval_test(
+        &mut self,
+        spec: &ChessApprovalSpec,
+    ) -> Result<Option<StepDetail>, SceneError> {
+        use crate::app::app_trait::App;
+        let chess = self.handles.resolve(&spec.chess)?;
+        let assistant = self.handles.resolve(&spec.assistant)?;
+        match spec.phase.as_str() {
+            "pending" => {
+                let workspace = self.h.workspace_root().to_path_buf();
+                let context_id = self
+                    .h
+                    .with_app(|app| app.windows[app.active_window].context_id);
+                let ready = Instant::now();
+                loop {
+                    let visible = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(
+                        crate::plexi_ai::tool_dispatch::DispatchScope::new(
+                            0,
+                            "agent:default",
+                            workspace.clone(),
+                            context_id,
+                        ),
+                        crate::broker::gate::PermissionMonitor::ephemeral(),
+                    )
+                    .all_tools()
+                    .iter()
+                    .any(|tool| tool.name == "chess.play");
+                    if visible {
+                        break;
+                    }
+                    self.h.step();
+                    if ready.elapsed() > Duration::from_secs(40) {
+                        return Err(SceneError::new(
+                            "approval_timeout",
+                            "chess.play was not registered before the approval turn",
+                        ));
+                    }
+                }
+                let mv = spec.move_uci.clone().unwrap_or_else(|| "e2e4".to_string());
+                let revision = spec.revision.unwrap_or(0);
+                let input = serde_json::json!({
+                    "game_id": "game-1",
+                    "expected_revision": revision,
+                    "operation_id": format!("scene-{mv}-{revision}"),
+                    "move": mv,
+                });
+                let reply = self.h.workspace_root().join(format!(
+                    "scene-reply-{revision}-{}.json",
+                    uuid::Uuid::new_v4()
+                ));
+                self.h.with_app_mut(|app| {
+                    let pane = app
+                        .windows
+                        .iter_mut()
+                        .find_map(|window| window.panes.get_mut(&assistant))
+                        .expect("assistant pane");
+                    let app_pane = pane.as_app_mut().expect("assistant is an app");
+                    let AppRuntime::Builtin(builtin) = &mut app_pane.runtime else {
+                        panic!("assistant is not a builtin");
+                    };
+                    let assistant_app = builtin
+                        .as_any_mut()
+                        .downcast_mut::<crate::assistant::AssistantApp>()
+                        .expect("assistant app");
+                    assistant_app.queue_scripted_tool("chess.play", &input.to_string());
+                    assistant_app
+                        .submit_external_turn(
+                            format!("play {mv}"),
+                            format!("scene-{revision}-{mv}"),
+                            reply.display().to_string(),
+                        )
+                        .expect("assistant accepts the scripted turn");
+                });
+                let started = Instant::now();
+                while !self.h.pane_has_label(assistant, "Permission required") {
+                    self.h.step();
+                    if started.elapsed() > Duration::from_secs(40) {
+                        return Err(SceneError::new(
+                            "approval_timeout",
+                            "permission sheet did not appear",
+                        ));
+                    }
+                }
+                log::info!("scene: chess approval pending move={mv} revision={revision}");
+                Ok(Some(StepDetail::Message {
+                    message: format!("pending {mv}"),
+                }))
+            }
+            "human" => {
+                let keys: &[&str] = if spec.move_uci.as_deref() == Some("e7e5") {
+                    &[
+                        "up", "up", "up", "up", "up", "enter", "down", "down", "enter",
+                    ]
+                } else {
+                    &["enter", "up", "up", "enter"]
+                };
+                for key in keys {
+                    let response = self
+                        .h
+                        .workspace_root()
+                        .join(format!("chess-key-{key}-{}.json", uuid::Uuid::new_v4()));
+                    self.h.with_app_mut(|app| {
+                        app.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
+                            pane_id: chess,
+                            key: (*key).to_string(),
+                            response_file: Some(response.to_string_lossy().into_owned()),
+                        });
+                    });
+                    self.h.run_steps(6);
+                }
+                log::info!("scene: chess human move via KeyPane");
+                Ok(Some(StepDetail::Message {
+                    message: "human move".to_string(),
+                }))
+            }
+            "wait" => {
+                let expect = spec
+                    .expect
+                    .clone()
+                    .unwrap_or_else(|| "actor: agent:default".to_string());
+                let started = Instant::now();
+                loop {
+                    self.h.step();
+                    let ready = self.h.pane_has_label(assistant, &expect);
+                    let pending = self.h.pane_has_label(assistant, "Permission required");
+                    if ready && !pending {
+                        break;
+                    }
+                    if started.elapsed() > Duration::from_secs(40) {
+                        return Err(SceneError::new(
+                            "approval_timeout",
+                            "attributed or stale result did not appear",
+                        ));
+                    }
+                }
+                log::info!("scene: chess approval settled");
+                Ok(Some(StepDetail::Message {
+                    message: "settled".to_string(),
+                }))
+            }
+            other => Err(SceneError::new(
+                "invalid_phase",
+                format!("unknown chess_approval phase {other}"),
+            )),
         }
     }
 

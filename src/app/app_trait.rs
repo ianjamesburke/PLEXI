@@ -36,6 +36,7 @@ pub enum AppCommand {
         call_id: String,
         output_json: Option<String>,
         error: Option<String>,
+        error_code: Option<String>,
     },
     /// Route one app-event request through the host-owned timeline and broker.
     AppEventRequest {

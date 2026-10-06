@@ -1,9 +1,9 @@
-"""Local stub server for the Plexi phone shell.
+"""Local server for the Plexi phone shell.
 
-Serves the static phone page and a stand-in turn API on one origin. This is
-NOT the intake contract: no authentication, no host connection, no
-persistence. Accepted turns are queued in memory and echoed back after a short
-delay so the page's send / cancel / transcript paths can be exercised.
+Serves the static phone page and a turn API on one origin. The default mode
+is an in-memory echo. Host mode runs `plexi assistant send` and requires a
+bearer token even on loopback. LAN mode is plain HTTP. Receipts stay in
+memory. This is not a phone relay and not the intake contract.
 
 The request body loosely follows the proposed turn envelope
 (schema_version, request_id, conversation_id, content) so the page will not

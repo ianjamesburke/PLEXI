@@ -199,6 +199,7 @@ class ToolCall:
     name: str
     input_json: str
     caller_id: str
+    authorization: Optional[str] = None
 
 
 @dataclass

@@ -65,6 +65,7 @@ class _Registered:
     decl: AiTool
     fn: Callable[..., Any]
     caller: bool = False
+    authorization: bool = False
 
 
 _REGISTRY: "dict[str, _Registered]" = {}
@@ -96,6 +97,7 @@ def tool(
     *,
     read_only: bool = False,
     caller: bool = False,
+    authorization: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register the decorated function as the handler for tool ``name``.
 
@@ -108,6 +110,9 @@ def tool(
     ``caller=True`` also passes ``caller_id``: the identity the host stamped on
     the call (for example ``agent:assistant``). It is never taken from the
     caller's arguments, so an app may use it for its own resource policy.
+
+    ``authorization=True`` passes the host authorization envelope. Model
+    arguments cannot supply it.
     """
     if not name:
         raise ValueError("tool name must be non-empty")
@@ -123,7 +128,7 @@ def tool(
     )
 
     def register(fn: Callable[..., Any]) -> Callable[..., Any]:
-        _REGISTRY[name] = _Registered(decl, fn, caller)
+        _REGISTRY[name] = _Registered(decl, fn, caller, authorization)
         return fn
 
     return register
@@ -163,9 +168,22 @@ def dispatch(event: Any) -> Optional[list]:
         if entry.caller:
             arguments.pop("caller_id", None)
             arguments["caller_id"] = event.caller_id
+        if entry.authorization:
+            arguments.pop("authorization", None)
+            raw = getattr(event, "authorization", None)
+            if raw:
+                parsed = json.loads(raw)
+                arguments["authorization"] = parsed if isinstance(parsed, dict) else None
+            else:
+                arguments["authorization"] = None
         reply = entry.fn(**arguments)
     except Exception as exc:  # surfaced to the Assistant, never crashes the app
-        return [ToolResult(event.call_id, error=f"{type(exc).__name__}: {exc}")]
+        code = getattr(exc, "code", None)
+        return [ToolResult(
+            event.call_id,
+            error=f"{type(exc).__name__}: {exc}",
+            error_code=code if isinstance(code, str) else None,
+        )]
 
     if isinstance(reply, Reply):
         output, effects = reply.output, list(reply.effects)

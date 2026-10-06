@@ -3,10 +3,9 @@
 domain operations.
 
 Board clicks and `chess.play` tool calls both commit through
-`chess_domain.play`, so revision checks, seat ownership, operation dedup, and
-receipts are identical for a human and an agent. The game (moves, revision,
-seats, receipts, event outbox) is this context's `[state]`; the cursor and
-selection are process-local UI state.
+`chess_domain.play`. The host stamps the actor and the authorization
+envelope. The game (moves, revision, receipts, event outbox) is this
+context's `[state]`; the cursor and selection are process-local UI state.
 
 Every committed move is published as `chess.move_committed` on the host event
 bus. The event is written to the game's outbox in the same state value as the
@@ -88,16 +87,15 @@ def _ui() -> dict:
     }
 
 
-def _seats_from_args(args: Any) -> dict:
-    """`--white=<actor>` / `--black=<actor>` launch arguments seat agents."""
-    seats: dict = {}
-    for arg in args or []:
-        text = str(arg)
-        for side in domain.SIDES:
-            prefix = f"--{side}="
-            if text.startswith(prefix) and text[len(prefix):]:
-                seats[side] = text[len(prefix):]
-    return seats
+def _human_authorization(game_id: str) -> dict:
+    return {
+        "schema_version": 1,
+        "actor": domain.LOCAL_USER,
+        "package": "chess",
+        "game_id": game_id,
+        "grant_id": "human",
+        "human_interaction": True,
+    }
 
 
 def _publish(game: dict) -> list:
@@ -162,16 +160,17 @@ def _tool_legal_moves(game_id: str, revision: int) -> dict:
 
 
 @tools.tool("chess.play",
-            "Play one UCI move (e.g. e2e4, e7e8q) for the seat you hold. Requires the "
+            "Play one UCI move (e.g. e2e4, e7e8q) after the host approves it. Requires the "
             "current revision and a unique operation_id; repeating an operation_id "
             "returns its original receipt without moving again.",
             {"game_id": str, "expected_revision": int, "operation_id": str, "move": str},
-            caller=True)
+            caller=True, authorization=True)
 def _tool_play(game_id: str, expected_revision: int, operation_id: str, move: str,
-               caller_id: str) -> tools.Reply:
+               caller_id: str, authorization: Optional[dict] = None) -> tools.Reply:
     outcome = domain.play(_require_game(), actor=caller_id, game_id=game_id,
                           expected_revision=expected_revision,
-                          operation_id=operation_id, move=move)
+                          operation_id=operation_id, move=move,
+                          authorization=authorization)
     if outcome.duplicate:
         log.info(f"chess: duplicate operation {operation_id} from {caller_id}; no mutation")
         return tools.Reply(outcome.receipt)
@@ -210,19 +209,13 @@ def init(size, args) -> list:
         tools.expose(),
     ]
     game = _game()
-    seats = _seats_from_args(args)
     if game is None:
-        game = domain.new_game(DEFAULT_GAME_ID, seats)
-        log.info(f"chess: new game {game['game_id']} seats={game['seats']}")
+        game = domain.new_game(DEFAULT_GAME_ID)
+        log.info(f"chess: new game {game['game_id']}")
         effects += _publish(game)
     elif game.get("outbox"):
         # Committed before the last shutdown but never confirmed published.
         log.info(f"chess: re-publishing {len(game['outbox'])} pending event(s) after restart")
-        effects += _publish(game)
-    elif seats and game["revision"] == 0 and seats != {
-            k: v for k, v in game["seats"].items() if v}:
-        # Launch-time seating applies only to an unplayed game.
-        game = domain.new_game(game["game_id"], seats, game["start_fen"])
         effects += _publish(game)
     log.info(f"chess: ready game={game['game_id']} rev={game['revision']}")
     effects.append(SetStatus(_status_text(game)))
@@ -321,7 +314,8 @@ def _select_or_move(ui: dict) -> list:
         outcome = domain.play(game, actor=domain.LOCAL_USER, game_id=game["game_id"],
                               expected_revision=game["revision"],
                               operation_id=f"ui:{game['game_id']}:{game['revision']}:{uci}",
-                              move=uci)
+                              move=uci,
+                              authorization=_human_authorization(game["game_id"]))
     except domain.ChessError as err:
         return _set_ui(dict(ui, selected=None, message=err.message))
     log.info(f"chess: board move {uci} rev {outcome.receipt['revision_after']}")
