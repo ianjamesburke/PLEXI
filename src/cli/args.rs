@@ -1914,7 +1914,7 @@ pub enum AgentHeadCmd {
 
 #[derive(Subcommand)]
 pub enum AgentRunCmd {
-    /// Claim a run of a head and append a ledger row.
+    /// Claim a run of a head, append a ledger row, and run a model turn.
     Spawn {
         /// Head id to run
         #[arg(long)]
@@ -1934,6 +1934,9 @@ pub enum AgentRunCmd {
         /// Output tokens recorded on the ledger row
         #[arg(long)]
         output_tokens: Option<u32>,
+        /// Prompt for the model turn. Defaults to `run` on the host.
+        #[arg(long)]
+        text: Option<String>,
         /// Print the host JSON reply
         #[arg(long)]
         json: bool,

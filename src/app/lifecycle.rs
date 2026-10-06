@@ -283,7 +283,22 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");
-                let mut value = crate::agent::heads::handle_request(op, payload);
+                let mut payload = payload.clone();
+                if op == "create_head" {
+                    if let Some(pane_id) = payload.get("caller_pane").and_then(|value| value.as_u64()) {
+                        let head = self.bound_head_for_pane(pane_id).unwrap_or_default();
+                        log::info!(
+                            "agents_api: create_head caller_pane={pane_id} caller_head={head}"
+                        );
+                        if let Some(obj) = payload.as_object_mut() {
+                            obj.insert(
+                                "caller_head".to_string(),
+                                serde_json::json!(head),
+                            );
+                        }
+                    }
+                }
+                let mut value = crate::agent::heads::handle_request(op, &payload);
                 if let Some(port) = crate::app::host_mcp::bound_port() {
                     if let Some(obj) = value.as_object_mut() {
                         obj.insert("mcp_port".to_string(), serde_json::json!(port));

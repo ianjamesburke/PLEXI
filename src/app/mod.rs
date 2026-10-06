@@ -2059,6 +2059,15 @@ impl PlexiApp {
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
     }
 
+    /// Head bound to this pane, when the pane is an Assistant for that head.
+    /// A terminal pane holds no grants.
+    pub(crate) fn bound_head_for_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<String> {
+        let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
+        let pane = self.windows.get(win_idx)?.panes.get(&pane_id)?;
+        pane.as_app()
+            .and_then(|app| app.runtime.bound_head().map(str::to_string))
+    }
+
     /// Resolve a notify-socket peer's pre-captured ancestor chain
     /// (`capture_peer_ancestry`) to the pane that owns it, by matching each
     /// candidate pid against every live terminal pane's shell pid
