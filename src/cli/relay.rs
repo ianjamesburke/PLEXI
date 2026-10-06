@@ -1727,7 +1727,7 @@ mod tests {
 
     #[test]
     fn a_second_session_does_not_open_another_socket() {
-        let _session = SESSION_TEST.lock().unwrap();
+        let _session = session_lock();
         let profile = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         STOP.store(false, Ordering::SeqCst);
@@ -1757,7 +1757,7 @@ mod tests {
 
     #[test]
     fn echo_round_trip_correlates_request_and_conversation() {
-        let _session = SESSION_TEST.lock().unwrap();
+        let _session = session_lock();
         let profile = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         STOP.store(false, Ordering::SeqCst);
@@ -1774,7 +1774,7 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("python3");
-        wait_until(Duration::from_secs(5), || health(port));
+        wait_for_relay(&mut child, port);
         let profile_path = profile.path().to_path_buf();
         let url = format!("ws://127.0.0.1:{port}/v1/desktop");
         let worker = thread::spawn(move || {
@@ -1841,7 +1841,7 @@ mod tests {
 
     #[test]
     fn reconnect_resumes_the_paired_device_without_a_new_code() {
-        let _session = SESSION_TEST.lock().unwrap();
+        let _session = session_lock();
         let profile = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         STOP.store(false, Ordering::SeqCst);
@@ -1856,7 +1856,7 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("python3");
-        wait_until(Duration::from_secs(5), || health(port));
+        wait_for_relay(&mut child, port);
         let url = format!("ws://127.0.0.1:{port}/v1/desktop");
         let profile_path = profile.path().to_path_buf();
         let worker = thread::spawn({
@@ -2074,15 +2074,47 @@ mod tests {
         status == 200 && body["ok"] == true
     }
 
-    fn wait_until(budget: Duration, mut ready: impl FnMut() -> bool) {
-        let start = Instant::now();
+    fn session_lock() -> std::sync::MutexGuard<'static, ()> {
+        SESSION_TEST
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A loaded macOS runner can take longer than a fixed 5s to exec Python
+    /// and bind the relay. Scale the wait, and keep the process stderr when
+    /// it never answers.
+    fn wait_for_relay(child: &mut std::process::Child, port: u16) {
+        let budget = crate::testing::load_aware_timeout(Duration::from_secs(15));
+        let start = std::time::Instant::now();
         while start.elapsed() < budget {
-            if ready() {
+            if health(port) {
                 return;
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => panic!(
+                    "relay exited {status} before /healthz: {}",
+                    relay_stderr(child)
+                ),
+                Ok(None) => {}
+                Err(error) => panic!("relay wait failed: {error}"),
             }
             thread::sleep(Duration::from_millis(30));
         }
-        panic!("timed out");
+        let _ = child.kill();
+        panic!(
+            "relay /healthz timed out after {}s on port {port}: {}",
+            budget.as_secs(),
+            relay_stderr(child)
+        );
+    }
+
+    fn relay_stderr(child: &mut std::process::Child) -> String {
+        let Some(stderr) = child.stderr.as_mut() else {
+            return String::new();
+        };
+        let mut buf = String::new();
+        let _ = std::io::Read::read_to_string(stderr, &mut buf);
+        buf
     }
 
     fn wait_status(profile: &Path, key: &str) -> Value {

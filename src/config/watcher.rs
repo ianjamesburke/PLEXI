@@ -137,26 +137,6 @@ mod tests {
     }
 
     /// Absorb the `config.toml` create that `start` may deliver late, then
-    /// wait out one debounce of silence.
-    ///
-    /// A fixed sleep plus a single drain loses to FSEvents latency on a loaded
-    /// macOS runner. The create's debounced signal then lands in the next
-    /// assertion and looks like an unrelated file woke the watcher.
-    fn settle_initial_events(rx: &MailboxReceiver<()>) {
-        let _ = poll_for_signal(rx, Duration::from_secs(2));
-        let quiet = crate::testing::load_aware_timeout(Duration::from_millis(DEBOUNCE_MS + 200));
-        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
-        let mut quiet_since = Instant::now();
-        while Instant::now() < deadline {
-            if rx.try_recv().is_ok() {
-                quiet_since = Instant::now();
-            } else if quiet_since.elapsed() >= quiet {
-                return;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-    }
-
     #[test]
     fn fires_on_config_change() {
         let dir = tempdir().unwrap();
@@ -188,8 +168,24 @@ mod tests {
         fs::write(&config, "# v1\n").unwrap();
 
         let (watcher, rx) =
-            start(config, Arc::new(RecordingWake::new())).expect("watcher should start");
-        settle_initial_events(&rx);
+            start(config.clone(), Arc::new(RecordingWake::new())).expect("watcher should start");
+        // macOS FSEvents can deliver the create of config.toml well after
+        // the watcher starts. Prove the watcher is live on that file, drain
+        // the burst, and only then write something it must ignore.
+        fs::write(&config, "# v2\n").unwrap();
+        assert!(
+            poll_for_signal(&rx, Duration::from_secs(3)),
+            "watcher should see config.toml before the unrelated write"
+        );
+        let quiet = crate::testing::load_aware_timeout(Duration::from_millis(400));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
+        let mut quiet_since = Instant::now();
+        while Instant::now() < deadline && quiet_since.elapsed() < quiet {
+            if rx.try_recv().is_ok() {
+                quiet_since = Instant::now();
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
 
         fs::write(dir.path().join("other.txt"), "noise\n").unwrap();
         assert!(
