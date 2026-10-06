@@ -97,11 +97,38 @@ plexi skill install --agent codex
   Integrity, questions, and blocked runs do not mint a grant. Do not edit
   profile files to create or approve an item. Do not resolve an item from
   the terminal.
+
+  one live instance when several panes of that app are open. A rejection exits 1.
+- **Assistant send** — submit a turn through the same composer and permission
+  sheet as the desktop Assistant: `plexi assistant send --text "..."`. Omit
+  `--conversation` to start a new conversation that is not the desktop
+  transcript. `--conversation <id>` continues one caller-owned conversation
+  (the phone relay uses this). `--desktop` appends to the desktop transcript
+  and conflicts with `--conversation`. `--status-for <turn-id>` reads a turn
+  that already returned `waiting_for_permission` and does not submit a prompt.
+- **Assistant permission** — list, show, or resolve a pending grant:
+  `plexi assistant permission list`, `plexi assistant permission show <id>`,
+  `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
+  `always`, `deny`, and `revoke` are the choices. This is the observation
+  seam for the desktop permission sheet.
+- **Needs you** — one list of everything waiting on the human:
+  `plexi needs-you list --json` and
+  `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, and blocked runs share that record.
+  Resolving an id resolves it everywhere exactly once. Expired items are
+  auto-denied. A repeat resolve returns the existing resolution.
+  A paired phone passes `--from-phone` and may approve a question or a blocked run.
+  An approval click is irreversible: the phone's approve returns `waiting on desktop` and the desktop sheet stays the grant. Deny is allowed from the phone.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
   can never supply argv. `plexi app open --mcp` is a different thing: it wraps a
   server in a viewer pane and exposes nothing to the assistant.
+- **Phone relay** — pair a phone to this desktop: `plexi relay enable --url <wss-or-loopback-ws>`,
+  then `plexi relay confirm` after comparing the fingerprint the phone shows.
+  `relay pair` adds another phone. `relay revoke <device-id>` drops one phone.
+  `relay status` prints the desktop session. `relay connect` attaches to the
+  host's socket. `relay disable` stops the host from connecting on startup.
+  Message bodies are sealed; the relay stores no plaintext.
 - **Notifications** — show scoped information to the person using the host:
   `plexi notify --help`.
 - **Workspace tools** — initialize a workspace, run named commands, and manage
@@ -173,6 +200,23 @@ pane
 pane slot
 context
 app
+assistant
+assistant send
+assistant permission
+assistant permission list
+assistant permission show
+assistant permission resolve
+needs-you
+needs-you list
+needs-you resolve
+relay
+relay connect
+relay confirm
+relay revoke
+relay pair
+relay enable
+relay disable
+relay status
 notify
 workspace
 run

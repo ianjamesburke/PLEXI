@@ -82,6 +82,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PermissionsCmd,
     },
+    /// Pair a phone through the Plexi relay and deliver its messages to this desktop.
+    Relay {
+        #[command(subcommand)]
+        cmd: RelayCmd,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -373,8 +378,9 @@ pub enum CommandViewCmd {
 pub enum AssistantCmd {
     /// Submit through the same composer, model, and permission path as the desktop Assistant.
     Send {
-        #[arg(long)]
-        text: String,
+        /// Prompt text. Omitted when `--status-for` only reads a pending turn.
+        #[arg(long, required_unless_present = "status_for")]
+        text: Option<String>,
         /// Lead id. The turn runs in that head's conversation.
         #[arg(long)]
         head: Option<String>,
@@ -390,6 +396,17 @@ pub enum AssistantCmd {
         /// Ledger run kind: `system` or `output`. Omitted means `output`.
         #[arg(long)]
         kind: Option<String>,
+        /// Caller-owned conversation. A phone session passes one stable id.
+        /// Omit to start a new conversation that is not the desktop transcript.
+        #[arg(long, conflicts_with = "desktop")]
+        conversation: Option<String>,
+        /// Append this turn to the desktop Assistant conversation.
+        #[arg(long, conflicts_with = "conversation")]
+        desktop: bool,
+        /// Read the outcome of a turn that already returned waiting_for_permission.
+        /// Does not submit a new prompt.
+        #[arg(long, conflicts_with_all = ["text", "desktop", "conversation"])]
+        status_for: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -409,6 +426,38 @@ pub enum AssistantCmd {
 }
 
 #[derive(Subcommand)]
+pub enum RelayCmd {
+    /// Connect outbound to a phone relay and forward paired messages to the Assistant.
+    Connect {
+        /// Relay websocket URL (`ws://` locally, `wss://` in production).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Confirm a phone that redeemed the pairing code shown by `relay connect`.
+    Confirm {
+        /// Pairing id. Omit to confirm the phone currently waiting.
+        pairing_id: Option<String>,
+    },
+    /// Revoke a paired phone. It must pair again and be confirmed.
+    Revoke {
+        /// Device id printed when the phone was confirmed.
+        device_id: String,
+    },
+    /// Start a pairing code for another phone. Phones already paired stay paired.
+    Pair,
+    /// Remember the relay URL and connect it from the host on startup.
+    Enable {
+        /// Relay websocket URL (`ws://` locally, `wss://` in production).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Stop connecting to the relay when the host starts.
+    Disable,
+    /// Print the desktop's relay status.
+    Status,
+}
+
+#[derive(Subcommand)]
 pub enum NeedsYouCmd {
     /// List open items waiting on you as JSON.
     List {
@@ -416,15 +465,22 @@ pub enum NeedsYouCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Ask the host to resolve an item. The host refuses. This does not grant.
+    /// Ask the host to resolve an item. Without `--from-phone` the host refuses
+    /// and this does not grant. A paired phone may answer a question or a
+    /// blocked run. An approval click and a permission widen stay on the desktop.
     Resolve {
         id: String,
-        /// Request approval. The host still refuses.
+        /// Request approval. A terminal is still refused. A phone is refused
+        /// when the item would grant.
         #[arg(long, conflicts_with = "deny")]
         approve: bool,
-        /// Request denial. The host still refuses.
+        /// Request denial. A terminal is still refused.
         #[arg(long, conflicts_with = "approve")]
         deny: bool,
+        /// The caller is a paired phone. Approval clicks and permission widens
+        /// are refused, so phone approve never grants.
+        #[arg(long)]
+        from_phone: bool,
     },
 }
 

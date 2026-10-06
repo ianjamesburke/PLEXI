@@ -724,23 +724,10 @@ impl AssistantRenderer {
                 ui.scope(|ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.set_max_width(ui.available_width());
-                    let who = if pending.actor_id.is_empty() {
-                        "assistant (medium)".to_string()
-                    } else {
-                        pending.actor_id.clone()
-                    };
-                    let resource = if pending.resource_id.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" on {}", pending.resource_id)
-                    };
                     ui.label(
-                        RichText::new(format!(
-                            "{who} wants to run '{tool}'{resource}",
-                            tool = pending.tool
-                        ))
-                        .size(style::TEXT_BODY)
-                        .color(colors.text_primary),
+                        RichText::new(pending.prompt_line())
+                            .size(style::TEXT_BODY)
+                            .color(colors.text_primary),
                     );
                     if let Some(mv) = move_label(&pending.input_summary) {
                         ui.label(

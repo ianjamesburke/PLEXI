@@ -400,7 +400,7 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Submit one text turn to a host Assistant pane.",
+          "description": "Submit one text turn to a host Assistant pane.\nSubmit one text turn to an existing Assistant pane. The pane owns the\nnormal composer, model, and permission-gate path and writes the terminal JSON reply.",
           "properties": {
             "client": {
               "description": "Ledger client tag for this run. Absent uses `[ai] client`.",
@@ -424,12 +424,24 @@
                 "null"
               ]
             },
+            "conversation_id": {
+              "description": "Caller-owned conversation. Absent means the host mints one.\nIgnored when `join_desktop` is true.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "kind": {
               "description": "Ledger run kind: `system` or `output`. Absent means `output`.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "join_desktop": {
+              "default": false,
+              "description": "Opt in to the desktop Assistant transcript. Default is a separate conversation.",
+              "type": "boolean"
             },
             "pane_id": {
               "format": "uint64",
@@ -444,6 +456,13 @@
             },
             "response_file": {
               "type": "string"
+            },
+            "status_for": {
+              "description": "Read the finished status of a turn that already returned\n`waiting_for_permission`. Does not submit a new prompt.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "text": {
               "type": "string"
@@ -2236,9 +2255,13 @@
         },
         {
           "additionalProperties": false,
-          "description": "Resolve one needs-you item exactly once. `approve` false denies it.",
+          "description": "Resolve one needs-you item exactly once. `approve` false denies it.\n`from_phone` refuses approval of an irreversible click.",
           "properties": {
             "approve": {
+              "type": "boolean"
+            },
+            "from_phone": {
+              "default": false,
               "type": "boolean"
             },
             "id": {

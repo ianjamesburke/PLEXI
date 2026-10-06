@@ -290,7 +290,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ConnectorCmd, ContextCmd, LedgerCmd, NeedsYouCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ConnectorCmd, ContextCmd, LedgerCmd, NeedsYouCmd, RelayCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         PermissionsCmd, RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
@@ -305,16 +305,31 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, head, request_id, pane_id, context_id, client, kind, json: _ } => {
+                        AssistantCmd::Send {
+                            text,
+                            head,
+                            request_id,
+                            pane_id,
+                            context_id,
+                            client,
+                            kind,
+                            conversation,
+                            desktop,
+                            status_for,
+                            json: _,
+                        } => {
                             exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
                             std::process::exit(cli::assistant_send_cli(
-                                &text,
+                                text.as_deref(),
                                 head.as_deref(),
                                 request_id.as_deref(),
                                 pane_id,
                                 context_id,
                                 client.as_deref(),
                                 kind.as_deref(),
+                                conversation.as_deref(),
+                                desktop,
+                                status_for.as_deref(),
                             ))
                         }
                         AssistantCmd::Open { head } => {
@@ -339,17 +354,32 @@ fn main() -> eframe::Result {
                     },
                     Commands::NeedsYou { cmd } => match cmd {
                         NeedsYouCmd::List { json: _ } => {
-                            std::process::exit(cli::needs_you_cli("list", None, None))
+                            std::process::exit(cli::needs_you_cli("list", None, None, false))
                         }
-                        // Same refuse path as `assistant permission resolve`.
-                        // Listing stays; a terminal resolve never grants.
-                        NeedsYouCmd::Resolve { id, approve: _, deny } => {
-                            let choice = if deny { "deny" } else { "once" };
-                            std::process::exit(cli::assistant_permission_cli(
-                                "resolve",
-                                Some(&id),
-                                Some(choice),
-                            ))
+                        // A terminal resolve never grants. `--from-phone` is the
+                        // paired-phone path: it may answer a question or a blocked
+                        // run, and the host refuses an approval or a widen.
+                        NeedsYouCmd::Resolve {
+                            id,
+                            approve,
+                            deny,
+                            from_phone,
+                        } => {
+                            if from_phone {
+                                std::process::exit(cli::needs_you_cli(
+                                    "resolve",
+                                    Some(&id),
+                                    Some(approve && !deny),
+                                    true,
+                                ))
+                            } else {
+                                let choice = if deny { "deny" } else { "once" };
+                                std::process::exit(cli::assistant_permission_cli(
+                                    "resolve",
+                                    Some(&id),
+                                    Some(choice),
+                                ))
+                            }
                         }
                     },
                     Commands::Skill { cmd } => match cmd {
@@ -399,6 +429,23 @@ fn main() -> eframe::Result {
                             None => std::process::exit(cli::command_view_cli("list", json)),
                         }
                     }
+                    Commands::Relay { cmd } => match cmd {
+                        RelayCmd::Connect { url } => {
+                            std::process::exit(cli::relay::relay_connect_cli(url))
+                        }
+                        RelayCmd::Confirm { pairing_id } => {
+                            std::process::exit(cli::relay::relay_confirm_cli(pairing_id))
+                        }
+                        RelayCmd::Revoke { device_id } => {
+                            std::process::exit(cli::relay::relay_revoke_cli(&device_id))
+                        }
+                        RelayCmd::Pair => std::process::exit(cli::relay::relay_pair_cli()),
+                        RelayCmd::Enable { url } => {
+                            std::process::exit(cli::relay::relay_enable_cli(url))
+                        }
+                        RelayCmd::Disable => std::process::exit(cli::relay::relay_disable_cli()),
+                        RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
+                    },
                     Commands::Run {
                         command,
                         extra_args,

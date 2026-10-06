@@ -1347,6 +1347,7 @@ impl PlexiApp {
             event_subscribe_mailbox.clone(),
             event_publish_mailbox,
         );
+        crate::cli::relay::start_host_relay();
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
             crate::host::app_timeline::global(),

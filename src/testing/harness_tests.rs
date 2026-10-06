@@ -58,6 +58,9 @@ fn assistant_send_without_a_pane_creates_a_hidden_one() {
         head: None,
         client: None,
         kind: None,
+        conversation_id: None,
+        join_desktop: false,
+        status_for: None,
     });
     let missing_body = std::fs::read_to_string(&missing).unwrap_or_default();
     assert!(
@@ -79,6 +82,9 @@ fn assistant_send_without_a_pane_creates_a_hidden_one() {
         head: None,
         client: None,
         kind: None,
+        conversation_id: None,
+        join_desktop: false,
+        status_for: None,
     });
     let panes = assistant_panes(&h);
     assert_eq!(panes.len(), 1, "one hidden assistant: {panes:?}");

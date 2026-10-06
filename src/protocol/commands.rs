@@ -85,7 +85,9 @@ pub enum AppRequest {
     /// phone, relay, or CLI caller does not need `app open assistant` first.
     /// A `pane_id` that does not exist still fails with
     /// `assistant_pane_not_found`. The pane owns the normal composer path and
-    /// writes the terminal JSON reply.
+    /// writes the terminal JSON reply. A `conversation_id` keeps the turn off
+    /// the desktop transcript. `join_desktop` opts into that transcript.
+    /// `status_for` reads a turn that is waiting on a desktop approval.
     SubmitAssistantTurn {
         text: String,
         request_id: String,
@@ -103,6 +105,17 @@ pub enum AppRequest {
         /// Ledger run kind: `system` or `output`. Absent means `output`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        /// Caller-owned conversation. Absent on a phone turn means the host mints one.
+        /// Ignored when `join_desktop` is true. A desktop or ledger turn leaves this empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+        /// Opt in to the desktop Assistant transcript. Default for a phone turn is a separate conversation.
+        #[serde(default)]
+        join_desktop: bool,
+        /// Read the finished status of a turn that already returned
+        /// `waiting_for_permission`. Does not submit a new prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_for: Option<String>,
     },
     /// Open an Assistant pane bound to one head in the active context.
     OpenAssistantHead {
@@ -804,9 +817,12 @@ pub enum AppRequest {
     /// List items waiting on the human. The host expires due items first.
     ListNeedsYou { response_file: String },
     /// Resolve one needs-you item exactly once. `approve` false denies it.
+    /// `from_phone` refuses approval of an irreversible click and never grants.
     ResolveNeedsYou {
         id: String,
         approve: bool,
+        #[serde(default)]
+        from_phone: bool,
         response_file: String,
     },
     /// Agents API: heads, runs, delegation, and gated tool calls.

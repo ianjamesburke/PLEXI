@@ -60,17 +60,18 @@ Messages the app sends to request host services.
 
 ### `submit_assistant_turn`
 
-Submit one text turn to a host Assistant pane.
+Submit one text turn to a host Assistant pane. Submit one text turn to an existing Assistant pane. The pane owns the ...
 
 | Field | Type | Required |
 |-------|------|----------|
-| `client` | `string?` | no |
 | `context_id` | `integer?` | no |
 | `head` | `string?` | no |
-| `kind` | `string?` | no |
+| `conversation_id` | `string?` | no |
+| `join_desktop` | `boolean` | no |
 | `pane_id` | `integer?` | no |
 | `request_id` | `string` | yes |
 | `response_file` | `string` | yes |
+| `status_for` | `string?` | no |
 | `text` | `string` | yes |
 
 ### `open_assistant_head`
@@ -642,7 +643,7 @@ List items waiting on the human. The host expires due items first.
 
 ### `resolve_needs_you`
 
-Resolve one needs-you item exactly once. `approve` false denies it.
+Resolve one needs-you item exactly once. `approve` false denies it. `from_phone` refuses approval of an irreversible ...
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -652,12 +653,16 @@ Resolve one needs-you item exactly once. `approve` false denies it.
 
 ### `agents_api`
 
-Agents API: heads, runs, delegation, and gated tool calls. `op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`, `show_run`, `finish_run`, or `delegate`. `payload` carries the workspace path and the op's fields.
+Agents API: heads, runs, delegation, and gated tool calls. `op` is `create_head`, `list_heads`, `spawn_run`, `list_ru...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `op` | `string` | yes |
 | `payload` | `any` | yes |
+| `response_file` | `string` | yes |
+
+| `from_phone` | `boolean` | no |
+| `id` | `string` | yes |
 | `response_file` | `string` | yes |
 
 ### `call_app_tool`

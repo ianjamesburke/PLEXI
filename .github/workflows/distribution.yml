@@ -76,6 +76,9 @@ jobs:
             # bin test target contains Unix-only socket/permission fixtures.
             cargo test --test windows_host_launch
           else
+            # Phone seal tests shell out to phone_crypto.py, which imports
+            # cryptography. The relay process itself does not.
+            python3 -m pip install --user -r services/relay/requirements-phone-crypto.txt
             cargo test --bin plexi
           fi
           cargo clippy --bin plexi -- -D warnings

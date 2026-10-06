@@ -2874,6 +2874,9 @@ impl HeadlessBackend {
                             format!("play {mv}"),
                             format!("scene-{revision}-{mv}"),
                             reply.display().to_string(),
+                            None,
+                            true,
+                            None,
                         )
                         .expect("assistant accepts the scripted turn");
                 });

@@ -216,42 +216,106 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, head, client, kind } => {
+            crate::protocol::AppRequest::SubmitAssistantTurn {
+                text,
+                request_id,
+                response_file,
+                pane_id,
+                context_id,
+                head,
+                client,
+                kind,
+                conversation_id,
+                join_desktop,
+                status_for,
+            } => {
                 if let Some(head) = head {
                     let workspace = context_id
                         .and_then(|id| self.context_root_for(id))
                         .or_else(crate::config::active_workspace_root)
                         .unwrap_or_else(|| self.router.active().root.clone());
                     log::info!("pane_ipc: kind=submit_assistant_turn head={head}");
-                    let accepted = crate::agent::leads::submit_turn(&workspace, head, text, request_id, response_file, None);
+                    let accepted = crate::agent::leads::submit_turn(
+                        &workspace,
+                        head,
+                        text,
+                        request_id,
+                        response_file,
+                        None,
+                    );
                     if accepted.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                        write_json_response(response_file, serde_json::json!({
-                            "request_id": request_id,
-                            "state": "failed",
-                            "error": accepted.get("error").cloned().unwrap_or(serde_json::json!("lead turn was not accepted")),
-                            "error_code": accepted.get("error_code").cloned().unwrap_or(serde_json::json!("failed")),
-                        }));
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({
+                                "request_id": request_id,
+                                "state": "failed",
+                                "error": accepted.get("error").cloned().unwrap_or(serde_json::json!("lead turn was not accepted")),
+                                "error_code": accepted.get("error_code").cloned().unwrap_or(serde_json::json!("failed")),
+                            }),
+                        );
                     }
                 } else {
-                if pane_id.is_none() {
-                    let _ = self.ensure_headless_assistant(*context_id);
-                }
-                let mut submitted = false;
-                let mut failure = None;
-                for window in &mut self.windows {
-                    if context_id.is_some_and(|id| window.context_id != id) { continue; }
-                    for (id, pane) in &mut window.panes {
-                        if pane_id.is_some_and(|wanted| wanted != *id) { continue; }
-                        let Some(app) = pane.as_app_mut() else { continue; };
-                        if app.runtime.type_id() != "assistant" { continue; }
-                        submitted = true;
-                        if let Err(error) = app.runtime.submit_tagged_turn(text.clone(), request_id.clone(), response_file.clone(), client.clone(), kind.clone()) { failure = Some(error); }
-                        break;
+                    if pane_id.is_none() && status_for.is_none() {
+                        let _ = self.ensure_headless_assistant(*context_id);
                     }
-                    if submitted { break; }
-                }
-                if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
-                else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
+                    let phone_turn =
+                        status_for.is_some() || conversation_id.is_some() || *join_desktop;
+                    let mut submitted = false;
+                    let mut failure = None;
+                    for window in &mut self.windows {
+                        if context_id.is_some_and(|id| window.context_id != id) {
+                            continue;
+                        }
+                        for (id, pane) in &mut window.panes {
+                            if pane_id.is_some_and(|wanted| wanted != *id) {
+                                continue;
+                            }
+                            let Some(app) = pane.as_app_mut() else { continue };
+                            if app.runtime.type_id() != "assistant" {
+                                continue;
+                            }
+                            submitted = true;
+                            let result = if phone_turn {
+                                log::info!(
+                                    "pane_ipc: kind=submit_assistant_turn phone conversation_id={conversation_id:?} join_desktop={join_desktop} status_for={status_for:?}"
+                                );
+                                app.runtime.submit_external_turn(
+                                    text.clone(),
+                                    request_id.clone(),
+                                    response_file.clone(),
+                                    conversation_id.clone(),
+                                    *join_desktop,
+                                    status_for.clone(),
+                                )
+                            } else {
+                                app.runtime.submit_tagged_turn(
+                                    text.clone(),
+                                    request_id.clone(),
+                                    response_file.clone(),
+                                    client.clone(),
+                                    kind.clone(),
+                                )
+                            };
+                            if let Err(error) = result {
+                                failure = Some(error);
+                            }
+                            break;
+                        }
+                        if submitted {
+                            break;
+                        }
+                    }
+                    if let Some(error) = failure {
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({"request_id": request_id, "state":"failed", "error":error}),
+                        );
+                    } else if !submitted {
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
+                        );
+                    }
                 }
             }
             crate::protocol::AppRequest::OpenAssistantHead { head, context_id, response_file } => {
@@ -330,10 +394,21 @@ impl PlexiApp {
                 );
             }
             crate::protocol::AppRequest::ListNeedsYou { response_file } => {
-                self.observe_needs_you("list", None, None, response_file);
+                self.observe_needs_you("list", None, None, false, response_file);
             }
-            crate::protocol::AppRequest::ResolveNeedsYou { id, approve, response_file } => {
-                self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
+            crate::protocol::AppRequest::ResolveNeedsYou {
+                id,
+                approve,
+                from_phone,
+                response_file,
+            } => {
+                self.observe_needs_you(
+                    "resolve",
+                    Some(id),
+                    Some(*approve),
+                    *from_phone,
+                    response_file,
+                );
             }
             crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");

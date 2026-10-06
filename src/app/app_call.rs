@@ -161,29 +161,53 @@ impl PlexiApp {
         op: &str,
         id: Option<&String>,
         approve: Option<bool>,
+        from_phone: bool,
         response_file: &str,
     ) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         let body = match op {
             "list" => {
-                let items = monitor.list_needs_you();
-                log::info!("needs_you: host list count={}", items.len());
+                let items = if from_phone {
+                    crate::broker::gate::needs_you_phone_items(&monitor.list_needs_you())
+                } else {
+                    monitor
+                        .list_needs_you()
+                        .into_iter()
+                        .map(|row| serde_json::to_value(row).unwrap_or(serde_json::Value::Null))
+                        .collect::<Vec<_>>()
+                };
+                log::info!("needs_you: host list count={} from_phone={from_phone}", items.len());
                 serde_json::json!({"ok": true, "items": items})
             }
             "resolve" => {
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
-                let grants = monitor
-                    .list_needs_you()
-                    .iter()
-                    .any(|row| {
+                let phone_blocked = from_phone
+                    && monitor.open_needs_you().iter().any(|row| {
                         row.id == id
-                            && matches!(row.kind, crate::broker::gate::NeedsYouKind::ApprovalClick | crate::broker::gate::NeedsYouKind::PermissionChange)
+                            && (matches!(row.kind, crate::broker::gate::NeedsYouKind::Integrity)
+                                || (approve && !row.kind.phone_may_approve()))
+                    });
+                let grants = !from_phone
+                    && (monitor.list_needs_you().iter().any(|row| {
+                        row.id == id
+                            && matches!(
+                                row.kind,
+                                crate::broker::gate::NeedsYouKind::ApprovalClick
+                                    | crate::broker::gate::NeedsYouKind::PermissionChange
+                            )
+                    }) || monitor.show_pending(id).is_some());
+                if phone_blocked {
+                    // Phone approve never grants. Integrity stays on the desktop.
+                    log::info!("needs_you: phone refused irreversible id={id} approve={approve}");
+                    serde_json::json!({
+                        "ok": false,
+                        "error": "waiting on desktop",
+                        "id": id,
                     })
-                    || monitor.show_pending(id).is_some();
-                if grants {
-                    // Socket and phone resolves never mint a grant. The desktop
+                } else if grants {
+                    // Socket and CLI resolves never mint a grant. The desktop
                     // banner calls approve_pending directly, and only when the
                     // click was not synthetic.
                     log::info!("needs_you: refused socket resolve {id} approve={approve}");
@@ -195,7 +219,7 @@ impl PlexiApp {
                         "id": id,
                     })
                 } else {
-                    log::info!("needs_you: host resolve {id} approve={approve}");
+                    log::info!("needs_you: host resolve {id} approve={approve} from_phone={from_phone}");
                     match monitor.resolve_needs_you(id, approve) {
                         Ok(receipt) => serde_json::json!({
                             "ok": !receipt.already,

@@ -348,6 +348,9 @@ pub trait App: Send {
         _text: String,
         _request_id: String,
         _response_file: String,
+        _conversation_id: Option<String>,
+        _join_desktop: bool,
+        _status_for: Option<String>,
     ) -> Result<(), String> {
         Err("this app does not accept external turns".to_string())
     }
@@ -363,7 +366,7 @@ pub trait App: Send {
         kind: Option<String>,
     ) -> Result<(), String> {
         let _ = (client, kind);
-        self.submit_external_turn(text, request_id, response_file)
+        self.submit_external_turn(text, request_id, response_file, None, false, None)
     }
 
     /// Deliver a host file/URL drop through the app's production handler.

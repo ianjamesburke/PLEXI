@@ -71,6 +71,32 @@ impl NeedsYouKind {
     fn is_approval(self) -> bool {
         matches!(self, Self::ApprovalClick)
     }
+
+    /// A paired phone may answer a question or a blocked run. Those
+    /// resolutions do not mint a grant. An approval click, a permission
+    /// widen, and an integrity item stay on the desktop: phone approve
+    /// never grants.
+    pub fn phone_may_approve(self) -> bool {
+        matches!(self, Self::Question | Self::BlockedRun)
+    }
+}
+
+/// List rows plus `phone_can_approve`, so a phone can hide Approve
+/// on an irreversible click without a second policy.
+pub fn needs_you_phone_items(items: &[NeedsYouRecord]) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|item| {
+            let mut value = serde_json::to_value(item).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "phone_can_approve".to_string(),
+                    serde_json::Value::Bool(item.kind.phone_may_approve()),
+                );
+            }
+            value
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -2771,6 +2797,27 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn phone_may_approve_questions_and_blocked_runs_only() {
+        assert!(!NeedsYouKind::ApprovalClick.phone_may_approve());
+        assert!(NeedsYouKind::Question.phone_may_approve());
+        assert!(NeedsYouKind::BlockedRun.phone_may_approve());
+        assert!(!NeedsYouKind::PermissionChange.phone_may_approve());
+        assert!(!NeedsYouKind::Integrity.phone_may_approve());
+        let items = needs_you_phone_items(&[NeedsYouRecord {
+            id: "ny-1".to_string(),
+            kind: NeedsYouKind::ApprovalClick,
+            actor: "agent:chess".to_string(),
+            resource: "chess.play".to_string(),
+            summary: "play e2e4".to_string(),
+            created_at: 0,
+            expires_at: None,
+            run_tag: None,
+            resolution: None,
+        }]);
+        assert_eq!(items[0]["phone_can_approve"], serde_json::json!(false));
+    }
 
     fn binding(fingerprint: &str) -> ExactBinding {
         ExactBinding {

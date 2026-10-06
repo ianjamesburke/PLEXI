@@ -83,7 +83,7 @@ class NeedsYouApiTest(unittest.TestCase):
             self.assertFalse(resolved["already"])
             log_text = log.read_text()
             self.assertIn("needs-you list --json", log_text)
-            self.assertIn("needs-you resolve req_1 --approve", log_text)
+            self.assertIn("needs-you resolve req_1 --approve --from-phone", log_text)
         finally:
             httpd.shutdown()
 
