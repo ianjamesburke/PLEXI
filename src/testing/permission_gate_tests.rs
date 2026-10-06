@@ -866,11 +866,19 @@ fn second_chess_pane_routes_by_instance() {
     let start = event_len();
     let input = play(0, "route-e4", "e2e4", "game-1");
     let ambiguous = socket_call(&mut h, Some(first), Some(&credential), &[], input.clone());
-    assert!(
-        ambiguous.to_string().contains("ambiguous_instance"),
+    assert_eq!(
+        ambiguous["error_code"], "ambiguous_instance",
         "bare chess.play must not guess a pane: {ambiguous}"
     );
     assert!(!ambiguous.to_string().contains("tool_not_found"), "{ambiguous}");
+    let named = ambiguous["panes"]
+        .as_array()
+        .expect("ambiguous reply names the panes");
+    assert!(
+        named.iter().any(|pane| pane.as_u64() == Some(first))
+            && named.iter().any(|pane| pane.as_u64() == Some(second)),
+        "ambiguity must name both instances: {ambiguous}"
+    );
     assert_eq!(commits_for(start, "route-e4"), 0);
     assert!(gate_log_contains("ambiguous"), "ambiguous route is logged");
 

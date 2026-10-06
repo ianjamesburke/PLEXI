@@ -207,7 +207,7 @@ pub fn app_init(
                     let path_str = app_dir.to_string_lossy().to_string();
                     log::info!("app_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
                     let exit_code =
-                        super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
+                        super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None, false);
                     if exit_code != 0 {
                         eprintln!(
                             "warning: app created but could not auto-open (exit {exit_code})"
@@ -1927,14 +1927,19 @@ pub fn app_call_cli(
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => {
             if json {
                 println!("{reply}");
-                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) { 1 } else { 0 };
+                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+                    1
+                } else {
+                    0
+                };
+            }
+            if let Some(msg) = reply.get("error").and_then(|v| v.as_str()) {
+                eprintln!("error: {msg}");
+                return 1;
             }
             let output = reply.get("output").cloned().unwrap_or(serde_json::Value::Null);
             println!("{output}");

@@ -549,6 +549,7 @@ Default placement is a sibling split to the right — the calling pane is never 
 | `--window` | flag | no | New window |
 | `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
+| `--new` | flag | no | Spawn another instance instead of focusing one that is already open.  Use this when two panes of the same app must stay addressable. `plexi app call --pane <id>` then names which instance receives the tool. |
 
 ### `plexi app trust`
 
@@ -786,7 +787,7 @@ Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /s
 
 Call a tool an app exposes and print its JSON result.
 
-Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity from the pane credential or peer ancestry (`pane:<id>`). A missing pane is never the human `user`. The app sees that identity, never one taken from the input. Exits 1 with `error: <message>` when the tool or the app rejects the call.
+Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity from the pane credential or peer ancestry (`pane:<id>`). A missing pane is never the human `user`. The app sees that identity, never one taken from the input. When more than one instance of the app is open, pass `--pane` or the call fails with `error_code` `ambiguous_instance` and does not pick one. Exits 1 with `error: <message>` when the tool or the app rejects the call.
 
 Example: plexi app call chess chess.state Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
 

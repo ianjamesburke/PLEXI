@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -64,7 +64,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `pane:<id>` from the host credential or peer; a missing pane is never
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
-  one live instance when several panes of that app are open. A rejection exits 1.
+  one live instance when several panes of that app are open. Without `--pane`,
+  two or more instances return `error_code` `ambiguous_instance` and a `panes`
+  list; the call does not choose one. `plexi app open --new <app>` opens another
+  instance when a later open would otherwise focus the one already up. A
+  rejection exits 1.
 - **Assistant permission** — list, show, or resolve a pending grant:
   `plexi assistant permission list`, `plexi assistant permission show <id>`,
   `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
