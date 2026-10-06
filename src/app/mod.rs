@@ -1,4 +1,5 @@
 pub mod account;
+pub mod command_view_app;
 mod app_call;
 pub mod app_trait;
 pub(crate) mod assistant_host_tools;
@@ -150,6 +151,14 @@ pub(crate) struct PaneHeartbeat {
     pub next_fire: std::time::Instant,
 }
 
+/// A host-chrome approval button, in window points, for the human-intent driver.
+#[derive(Clone, Debug)]
+pub(crate) struct ApprovalButton {
+    pub label: String,
+    pub bounds: [f32; 4],
+    pub pending_request_id: String,
+}
+
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
@@ -197,6 +206,10 @@ pub struct PlexiApp {
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `AppRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
+    /// Banner buttons drawn last frame. `assistant permission list` publishes them.
+    pub(crate) approval_buttons: Vec<ApprovalButton>,
+    /// This frame's raw input includes socket-injected pane events.
+    pub(crate) synthetic_input_frame: bool,
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
@@ -607,6 +620,16 @@ pub(crate) fn handle_socket_line(
                         p.len()
                     );
                 }
+                crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. } => {
+                    // Same rule as CallAppTool: the wire value is never the
+                    // caller's identity. None when this process has no peer
+                    // capture (tests that enqueue the request directly).
+                    *p = peer_ancestry.map(<[u32]>::to_vec);
+                    log::info!(
+                        "pane_ipc: stamped SpawnPane peer ancestry ({} pid(s))",
+                        p.as_ref().map(|pids| pids.len()).unwrap_or(0)
+                    );
+                }
                 _ => {}
             }
             if needs_identity_ack {
@@ -794,6 +817,16 @@ fn handle_socket_connection(
             }
             Some("events_list") => {
                 handle_events_list(write_half, &val);
+                return;
+            }
+            Some("command_view_follow") => {
+                let workspace = val
+                    .get("workspace")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                log::info!("command_view: follow connected");
+                crate::host::command_view::serve_follow(write_half, workspace);
                 return;
             }
             Some("events_declare") | Some("events_emit") => {
@@ -1306,11 +1339,15 @@ impl PlexiApp {
         // wakeups and drains queued IPC in one late burst (stint 0479).
         #[cfg(target_os = "macos")]
         crate::platform::app_nap::disable_app_nap();
+        // File a death/tamper item and leave a running stamp before any client
+        // can connect. A kill skips `exit_host`, so the next start can see it.
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         spawn_socket_listener(
             pane_ipc_mailbox,
             event_subscribe_mailbox.clone(),
             event_publish_mailbox,
         );
+        crate::cli::relay::start_host_relay();
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
             crate::host::app_timeline::global(),
@@ -1534,6 +1571,7 @@ impl PlexiApp {
                             &ctx_desc,
                             ctx_root,
                             ctx_depth,
+                            false,
                         );
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
@@ -1645,6 +1683,8 @@ impl PlexiApp {
                     prev_screen_rect: None,
                     drag_window_last_seen: None,
                     pending_screenshots: Vec::new(),
+                    approval_buttons: Vec::new(),
+                    synthetic_input_frame: false,
                     pending_slot_waits: Vec::new(),
                     pending_agent_boots: Vec::new(),
                     pending_submits: Vec::new(),
@@ -1921,6 +1961,8 @@ impl PlexiApp {
             prev_screen_rect: None,
             drag_window_last_seen: None,
             pending_screenshots: Vec::new(),
+            approval_buttons: Vec::new(),
+            synthetic_input_frame: false,
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -2033,7 +2075,7 @@ impl PlexiApp {
         let seed_cwd = app.windows[0].path.clone();
         let seed_context = app.pane_context_env_for_window(0);
         if app
-            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false)
+            .seed_window_root_pane(0, &seed_context, seed_cwd, None, false, true, false)
             .is_some()
         {
             log::info!("first boot: seeded base root pane in context 1");
@@ -2056,6 +2098,15 @@ impl PlexiApp {
             .iter()
             .enumerate()
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
+    }
+
+    /// Head bound to this pane, when the pane is an Assistant for that head.
+    /// A terminal pane holds no grants.
+    pub(crate) fn bound_head_for_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<String> {
+        let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
+        let pane = self.windows.get(win_idx)?.panes.get(&pane_id)?;
+        pane.as_app()
+            .and_then(|app| app.runtime.bound_head().map(str::to_string))
     }
 
     /// Resolve a notify-socket peer's pre-captured ancestor chain
@@ -2512,6 +2563,20 @@ impl PlexiApp {
         self.windows[win_idx].focused_pane = saved;
     }
 
+    /// Move the empty window `new_for_test` builds off context 1 onto
+    /// `context_id`. Harnesses call this before any pane exists so the
+    /// process-global tool registry keeps each test in its own namespace.
+    #[cfg(test)]
+    pub(crate) fn set_initial_context_id_for_test(&mut self, context_id: u64) {
+        assert!(
+            self.windows.len() == 1 && self.windows[0].panes.is_empty(),
+            "set_initial_context_id_for_test runs before panes exist"
+        );
+        self.windows[0].context_id = context_id;
+        self.router.get_mut(0).context_id = context_id;
+        log::info!("test harness: isolated tool namespace context_id={context_id}");
+    }
+
     /// Create a `PlexiApp` for headless tests. No workspace restore, no macOS
     /// menu setup, no PTY or audio hardware. Initialises a single empty window
     /// so `state().open_panes` is empty and the harness can add panes via
@@ -2636,6 +2701,8 @@ impl PlexiApp {
                 prev_screen_rect: None,
                 drag_window_last_seen: None,
                 pending_screenshots: Vec::new(),
+                approval_buttons: Vec::new(),
+                synthetic_input_frame: false,
                 pending_slot_waits: Vec::new(),
                 pending_agent_boots: Vec::new(),
                 pending_submits: Vec::new(),
@@ -2874,10 +2941,12 @@ impl PlexiApp {
         context_description: &str,
         context_root: Option<&PathBuf>,
         context_depth: u32,
+        agent_pane: bool,
     ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
         log::info!(
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
-             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
+             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
+             agent_pane={agent_pane}"
         );
         let mut env = shell::build_env(working_directory.as_deref());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
@@ -2917,6 +2986,7 @@ impl PlexiApp {
             );
         }
         env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
+        crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
         (
             BackendSettings {
                 shell: shell::detect_shell(),
@@ -3038,7 +3108,10 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
         | AppCommand::InsertPathToken { .. }
         | AppCommand::OpenArtifact { .. } => true,
         AppCommand::AssistantHostTool { name, .. } => {
-            !matches!(name.as_str(), "host.panes.list" | "host.panes.state")
+            !matches!(
+                name.as_str(),
+                "host.panes.list" | "host.panes.state" | "host.introspect"
+            )
         }
         AppCommand::DeliverNotifyAction { host_action, .. } => host_action
             .as_deref()
@@ -3066,6 +3139,7 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
@@ -3105,6 +3179,9 @@ impl eframe::App for PlexiApp {
                     "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
                 );
             } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
+                if !batches.is_empty() {
+                    self.synthetic_input_frame = true;
+                }
                 for batch in batches {
                     raw_input.modifiers = batch.modifiers;
                     raw_input.events.extend(batch.events);
@@ -3115,6 +3192,7 @@ impl eframe::App for PlexiApp {
             // multi-frame trajectory instead of a same-frame click.
             if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
                 if let Some(batch) = frames.pop_front() {
+                    self.synthetic_input_frame = true;
                     raw_input.events.extend(batch.events);
                 }
                 if frames.is_empty() {
@@ -3142,6 +3220,11 @@ impl eframe::App for PlexiApp {
         // next uncovered (stint 0505 fix round 3).
         self.update_preamble(ctx);
 
+        // Change-set preview is host state the editor and `plexi changes`
+        // both read. It has to run off the paint path so an occluded window
+        // still publishes open buffers and a pending diff.
+        self.sync_editor_change_sets();
+
         // Hot reload (#83): drain any pending file-watcher reload requests.
         // Each `ReloadRequest` causes the matching pane's WASM runtime to be
         // dropped (sending Shutdown + reaping the child) and replaced with
@@ -3162,6 +3245,23 @@ impl eframe::App for PlexiApp {
             if report.moved > 0 || report.failed > 0 || !report.left_behind.is_empty() {
                 log::info!("notes_migration: {report:?}");
             }
+        }
+
+        // Expired needs-you items auto-deny even while the window is hidden.
+        // A queue file left by the previous process is opened once. A frame
+        // with no file does not create a profile store.
+        let profile = crate::config::config_dir();
+        if crate::broker::gate::PermissionMonitor::loaded(&profile).is_none()
+            && crate::broker::gate::PermissionMonitor::has_persisted_queue(&profile)
+        {
+            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+            log::info!(
+                "needs_you: host opened restored queue count={}",
+                monitor.open_needs_you().len()
+            );
+        }
+        if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) {
+            monitor.expire_needs_you();
         }
 
         // Screenshot capture is an external-client request path, not UI: the
@@ -3257,6 +3357,26 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("agent_host.tick", || self.agent_host.tick());
         if self.agent_host.turns_in_flight() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        for (head, context_id) in crate::agent::leads::take_open_panes() {
+            log::info!("lead: opening assistant pane head={head} context={context_id}");
+            if let Err(error) = self.open_assistant_for_head(&head, Some(context_id)) {
+                log::error!("lead: open pane head={head} failed: {error}");
+            }
+        }
+        let mut queue_roots = Vec::new();
+        if let Some(root) = crate::config::active_workspace_root() {
+            queue_roots.push(root);
+        }
+        for window in &self.windows {
+            if let Some(root) = self.context_root_for(window.context_id) {
+                queue_roots.push(root);
+            }
+        }
+        queue_roots.sort();
+        queue_roots.dedup();
+        for root in queue_roots {
+            crate::agent::queue::pump(&root);
         }
 
         // App panes are external clients too: they answer assistant tool calls
@@ -3712,7 +3832,7 @@ impl eframe::App for PlexiApp {
                     self.step_focus_history_forward();
                 }
                 Action::NewTab => {
-                    self.new_tab(self.active_window, None, false, None);
+                    self.new_tab(self.active_window, None, false, None, true, false);
                     self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {
@@ -4169,6 +4289,7 @@ impl eframe::App for PlexiApp {
         // terminal only ever sees what the global allowlist left behind.
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
         self.render_panels(ui, focused_terminal_input);
+        self.draw_approval_banner(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.

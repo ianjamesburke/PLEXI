@@ -20,10 +20,22 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import phone_crypto  # noqa: E402
 import relay  # noqa: E402
 
 CANARY = "CANARY-plexi-relay-9f3a2c1b"
 STATIC = Path(__file__).resolve().parents[2] / "clients" / "phone-web" / "static"
+
+
+def sealed_envelope(request_id: str, text: str, **extra: object) -> tuple[dict, str]:
+    sealed = phone_crypto.opaque_body(text)
+    body = {
+        "schema_version": 1,
+        "request_id": request_id,
+        "content": [{"type": "sealed", "body": sealed}],
+    }
+    body.update(extra)
+    return body, sealed
 WS_GUID = relay.WS_GUID
 
 
@@ -247,7 +259,7 @@ class RelayHttpTest(unittest.TestCase):
         status, turns, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-early", "content": [{"type": "text", "text": "hi"}]},
+            sealed_envelope("req-early", "hi")[0],
         )
         self.assertEqual(status, 401)
 
@@ -266,7 +278,7 @@ class RelayHttpTest(unittest.TestCase):
         status, denied_turns, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-ok", "content": [{"type": "text", "text": "hello"}]},
+            sealed_envelope("req-ok", "hello")[0],
             cookie=cookie,
         )
         self.assertEqual(status, 202, denied_turns)
@@ -290,7 +302,7 @@ class RelayHttpTest(unittest.TestCase):
         status, queued, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-resume", "content": [{"type": "text", "text": "still paired"}]},
+            sealed_envelope("req-resume", "still paired")[0],
             cookie=cookie,
         )
         self.assertEqual(status, 202, queued)
@@ -302,12 +314,7 @@ class RelayHttpTest(unittest.TestCase):
         status, queued, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {
-                "schema_version": 1,
-                "request_id": "req-desk",
-                "join_desktop": True,
-                "content": [{"type": "text", "text": "continue on the desktop"}],
-            },
+            sealed_envelope("req-desk", "continue on the desktop", join_desktop=True)[0],
             cookie=cookie,
         )
         self.assertEqual(status, 202, queued)
@@ -334,14 +341,14 @@ class RelayHttpTest(unittest.TestCase):
         status, rejected, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-revoked", "content": [{"type": "text", "text": "nope"}]},
+            sealed_envelope("req-revoked", "nope")[0],
             cookie=second,
         )
         self.assertEqual(status, 401, rejected)
         status, kept, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-kept", "content": [{"type": "text", "text": "still here"}]},
+            sealed_envelope("req-kept", "still here")[0],
             cookie=first,
         )
         self.assertEqual(status, 202, kept)
@@ -355,16 +362,18 @@ class RelayHttpTest(unittest.TestCase):
         self.assertEqual(state["host"], "online")
 
         text = "round trip hello"
+        payload, sealed = sealed_envelope("req-1", text, conversation_id="browser-supplied")
         status, queued, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-1", "conversation_id": "browser-supplied", "content": [{"type": "text", "text": text}]},
+            payload,
             cookie=cookie,
         )
         self.assertEqual(status, 202, queued)
         delivered = desk.recv()
         self.assertEqual(delivered["type"], "deliver")
-        self.assertEqual(delivered["text"], text)
+        self.assertEqual(delivered["text"], sealed)
+        self.assertNotIn(text, delivered["text"])
         self.assertTrue(delivered["conversation_id"].startswith("phone-"))
         self.assertNotEqual(delivered["conversation_id"], "browser-supplied")
         self.assertIs(delivered["join_desktop"], False)
@@ -397,7 +406,7 @@ class RelayHttpTest(unittest.TestCase):
         status, refused, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-off", "content": [{"type": "text", "text": CANARY}]},
+            sealed_envelope("req-off", CANARY)[0],
             cookie=cookie,
         )
         self.assertEqual(status, 409, refused)
@@ -409,14 +418,18 @@ class RelayHttpTest(unittest.TestCase):
         desk = Desktop(self.port)
         self.addCleanup(desk.close)
         cookie = self._pair(desk)
+        payload, sealed = sealed_envelope("req-canary", CANARY)
+        self.assertNotIn(CANARY, sealed)
         status, queued, _ = _http(
             "POST",
             f"{self.base}/api/turns",
-            {"schema_version": 1, "request_id": "req-canary", "content": [{"type": "text", "text": CANARY}]},
+            payload,
             cookie=cookie,
         )
         self.assertEqual(status, 202, queued)
         delivered = desk.recv()
+        self.assertEqual(delivered["text"], sealed)
+        self.assertNotIn(CANARY, json.dumps(delivered))
         desk.send({"type": "ack", "delivery_id": delivered["delivery_id"]})
         desk.send(
             {
@@ -424,14 +437,122 @@ class RelayHttpTest(unittest.TestCase):
                 "delivery_id": delivered["delivery_id"],
                 "request_id": "req-canary",
                 "state": "succeeded",
-                "reply": CANARY,
+                "reply": sealed,
             }
         )
         self.assertTrue(self._wait(lambda: self.relay.deliveries[delivered["delivery_id"]].body is None))
         status, page, _ = _http("GET", f"{self.base}/api/conversation?after=0", cookie=cookie)
-        self.assertTrue(any(event.get("text") == CANARY for event in page["events"]))
+        self.assertTrue(any(event.get("text") == sealed for event in page["events"]))
+        self.assertNotIn(CANARY, json.dumps(page))
         self.assertNotIn(CANARY, self.logs.text)
+        self.assertNotIn(CANARY, self.relay.memory_text())
         self.assertIsNone(self.relay.deliveries[delivered["delivery_id"]].body)
+
+    def test_phone_needs_you_refuses_an_irreversible_click(self) -> None:
+        desk = Desktop(self.port)
+        self.addCleanup(desk.close)
+        cookie = self._pair(desk)
+
+        listed: dict = {}
+
+        def fetch_list() -> None:
+            status, body, _ = _http("GET", f"{self.base}/api/needs-you", cookie=cookie)
+            listed["status"] = status
+            listed["body"] = body
+
+        thread = threading.Thread(target=fetch_list)
+        thread.start()
+        asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_list")
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": True,
+                "items": [
+                    {
+                        "id": "click-1",
+                        "kind": "approval_click",
+                        "summary": "write a file",
+                        "phone_can_approve": False,
+                    },
+                    {
+                        "id": "q-1",
+                        "kind": "question",
+                        "summary": "which file",
+                        "phone_can_approve": True,
+                    },
+                ],
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(listed["status"], 200)
+        self.assertEqual(listed["body"]["items"][0]["phone_can_approve"], False)
+        self.assertEqual(listed["body"]["items"][1]["kind"], "question")
+
+        refused: dict = {}
+
+        def approve_click() -> None:
+            status, body, _ = _http(
+                "POST",
+                f"{self.base}/api/needs-you/click-1/resolve",
+                {"decision": "approve"},
+                cookie=cookie,
+            )
+            refused["status"] = status
+            refused["body"] = body
+
+        thread = threading.Thread(target=approve_click)
+        thread.start()
+        asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_resolve")
+        self.assertEqual(asked["id"], "click-1")
+        self.assertTrue(asked["approve"])
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": False,
+                "error": "waiting on desktop",
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(refused["status"], 403)
+        self.assertEqual(refused["body"]["message"], "waiting on desktop")
+
+        allowed: dict = {}
+
+        def approve_question() -> None:
+            status, body, _ = _http(
+                "POST",
+                f"{self.base}/api/needs-you/q-1/resolve",
+                {"decision": "approve"},
+                cookie=cookie,
+            )
+            allowed["status"] = status
+            allowed["body"] = body
+
+        thread = threading.Thread(target=approve_question)
+        thread.start()
+        asked = desk.recv()
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": True,
+                "id": "q-1",
+                "resolution": "approved",
+                "already": False,
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(allowed["status"], 200)
+        self.assertEqual(allowed["body"]["resolution"], "approved")
+
+        desk.close()
+        self.assertTrue(self._wait(lambda: "host-1" not in self.relay.links))
+        status, body, _ = _http("GET", f"{self.base}/api/needs-you", cookie=cookie)
+        self.assertEqual(status, 503, body)
 
     def test_approval_is_waiting_on_desktop(self) -> None:
         desk = Desktop(self.port)
@@ -568,17 +689,18 @@ class TtlTest(unittest.TestCase):
         assert token is not None
         device = box.device_for_token(token)
         assert device is not None
-        status, queued = box.submit(
-            device,
-            {"schema_version": 1, "request_id": "req-ttl", "content": [{"type": "text", "text": CANARY}]},
-        )
+        payload, sealed = sealed_envelope("req-ttl", CANARY)
+        self.assertNotIn(CANARY, sealed)
+        status, queued = box.submit(device, payload)
         self.assertEqual(status, 202, queued)
-        self.assertIn(CANARY, box.memory_text())
+        self.assertIn(sealed, box.memory_text())
+        self.assertNotIn(CANARY, box.memory_text())
         clock.advance(119)
         box.purge()
-        self.assertIn(CANARY, box.memory_text())
+        self.assertIn(sealed, box.memory_text())
         clock.advance(2)
         box.purge()
+        self.assertNotIn(sealed, box.memory_text())
         self.assertNotIn(CANARY, box.memory_text())
         self.assertIsNone(box.deliveries[queued["delivery_id"]].body)
         self.assertEqual(box.deliveries[queued["delivery_id"]].state, "expired")
@@ -598,7 +720,7 @@ class TtlTest(unittest.TestCase):
         assert device is not None
         status, queued = box.submit(
             device,
-            {"schema_version": 1, "request_id": "req-ack", "content": [{"type": "text", "text": CANARY}]},
+            sealed_envelope("req-ack", CANARY)[0],
         )
         self.assertEqual(status, 202)
         box.ack("host-ack", queued["delivery_id"])
@@ -626,13 +748,13 @@ class RegistryTest(unittest.TestCase):
         assert token is not None
         device = first.device_for_token(token)
         assert device is not None
-        status, queued = first.submit(
-            device,
-            {"schema_version": 1, "request_id": "req-keep", "content": [{"type": "text", "text": CANARY}]},
-        )
+        payload, sealed = sealed_envelope("req-keep", CANARY)
+        self.assertNotIn(CANARY, sealed)
+        status, queued = first.submit(device, payload)
         self.assertEqual(status, 202, queued)
         stored = Path(path).read_bytes()
         self.assertNotIn(CANARY.encode(), stored)
+        self.assertNotIn(sealed.encode(), stored)
         self.assertNotIn(token.encode(), stored)
         self.assertNotIn(b"host-secret", stored)
         second = relay.Relay(clock=clock, public_origin="http://127.0.0.1", state_path=path)
@@ -891,29 +1013,33 @@ class SecurityTest(unittest.TestCase):
     def test_inflight_turns_are_capped(self) -> None:
         box = relay.Relay(public_origin="http://127.0.0.1")
         device, _token = _paired_device(box, "host-cap", "token-cap")
-        for index in range(relay.MAX_INFLIGHT_PER_DEVICE):
-            status, queued = box.submit(
-                device,
-                {"schema_version": 1, "request_id": f"req-{index}", "content": [{"type": "text", "text": "x" * 20}]},
-            )
+        first = sealed_envelope("req-0", "x" * 20)[0]
+        status, queued = box.submit(device, first)
+        self.assertEqual(status, 202, queued)
+        for index in range(1, relay.MAX_INFLIGHT_PER_DEVICE):
+            status, queued = box.submit(device, sealed_envelope(f"req-{index}", "x" * 20)[0])
             self.assertEqual(status, 202, queued)
-        status, rejected = box.submit(
-            device,
-            {"schema_version": 1, "request_id": "req-over", "content": [{"type": "text", "text": "one more"}]},
-        )
+        status, rejected = box.submit(device, sealed_envelope("req-over", "one more")[0])
         self.assertEqual((status, rejected["error"]), (429, "too_many_pending"))
-        status, again = box.submit(
-            device,
-            {"schema_version": 1, "request_id": "req-0", "content": [{"type": "text", "text": "x" * 20}]},
-        )
+        status, again = box.submit(device, first)
         self.assertEqual(status, 200, again)
 
     def test_text_and_negative_length_are_rejected(self) -> None:
         self.assertEqual(
             relay.validate_envelope(
-                {"schema_version": 1, "request_id": "req", "content": [{"type": "text", "text": "y" * (relay.MAX_TEXT_CHARS + 1)}]}
+                {"schema_version": 1, "request_id": "req", "content": [{"type": "text", "text": "hello"}]}
             ),
-            "invalid_text",
+            "plaintext_rejected",
+        )
+        self.assertEqual(
+            relay.validate_envelope(
+                {
+                    "schema_version": 1,
+                    "request_id": "req",
+                    "content": [{"type": "sealed", "body": "a" * (relay.MAX_SEALED_CHARS + 1)}],
+                }
+            ),
+            "invalid_sealed",
         )
 
     def test_log_guard_drops_tokens(self) -> None:
@@ -933,16 +1059,15 @@ class SecurityTest(unittest.TestCase):
         box = relay.Relay(public_origin="http://127.0.0.1")
         device_a, _token_a = _paired_device(box, "host-a", "token-a")
         _device_b, _token_b = _paired_device(box, "host-b", "token-b")
-        status, queued = box.submit(
-            device_a,
-            {"schema_version": 1, "request_id": "req-a", "content": [{"type": "text", "text": "only-for-a"}]},
-        )
+        payload, sealed = sealed_envelope("req-a", "only-for-a")
+        status, queued = box.submit(device_a, payload)
         self.assertEqual(status, 202, queued)
         link_b = box.links["host-b"]
         stolen = _drain(link_b)
-        self.assertFalse(any(item.get("text") == "only-for-a" for item in stolen))
+        self.assertFalse(any(item.get("text") == sealed or item.get("text") == "only-for-a" for item in stolen))
         delivered = next(item for item in _drain(box.links["host-a"]) if item.get("type") == "deliver")
-        self.assertEqual(delivered["text"], "only-for-a")
+        self.assertEqual(delivered["text"], sealed)
+        self.assertNotIn("only-for-a", delivered["text"])
         self.assertEqual(delivered["device_id"], device_a.device_id)
         box.reply("host-b", {"type": "reply", "delivery_id": delivered["delivery_id"], "state": "succeeded", "reply": "from-b"})
         page = box.conversation(device_a, 0)
@@ -954,7 +1079,7 @@ class SecurityTest(unittest.TestCase):
         device, token = _paired_device(box, "host-rev", "token-rev")
         status, queued = box.submit(
             device,
-            {"schema_version": 1, "request_id": "req-rev", "content": [{"type": "text", "text": "hold"}]},
+            sealed_envelope("req-rev", "hold")[0],
         )
         self.assertEqual(status, 202, queued)
         code, body = box.approve(device)
@@ -964,6 +1089,49 @@ class SecurityTest(unittest.TestCase):
         self.assertEqual(revoked["type"], "revoked")
         self.assertIsNone(box.device_for_token(token))
         self.assertEqual(box.revoke("host-other", device.device_id)["type"], "error")
+
+
+class PhoneCryptoTest(unittest.TestCase):
+    def test_tamper_replay_and_swapped_key_are_rejected(self) -> None:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+        desk = X25519PrivateKey.generate()
+        private = desk.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        public = desk.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        phone = phone_crypto.PhoneState(public)
+        canary = "secret-canary-not-for-the-relay"
+        handshake = phone.seal_turn(canary, "req-1", False)
+        self.assertNotIn(canary, handshake)
+        opened, key, _phone_pub = phone_crypto.open_handshake(private, public, phone_crypto.b64u_decode(handshake))
+        self.assertEqual(opened["text"], canary)
+        self.assertIs(opened["join_desktop"], False)
+
+        swapped = bytearray(phone_crypto.b64u_decode(handshake))
+        swapped[3] ^= 0x01
+        with self.assertRaises(phone_crypto.SealError) as swapped_error:
+            phone_crypto.open_handshake(private, public, bytes(swapped))
+        self.assertEqual(swapped_error.exception.outcome, "tamper")
+
+        data = phone.seal_turn("second", "req-2", True)
+        payload, counter = phone_crypto.open_data(key, phone_crypto.b64u_decode(data), "req-2", 0, phone_crypto.DIR_PHONE)
+        self.assertEqual(payload["text"], "second")
+        self.assertIs(payload["join_desktop"], True)
+        with self.assertRaises(phone_crypto.SealError) as replay:
+            phone_crypto.open_data(key, phone_crypto.b64u_decode(data), "req-2", counter, phone_crypto.DIR_PHONE)
+        self.assertEqual(replay.exception.outcome, "replay")
+        tampered = bytearray(phone_crypto.b64u_decode(data))
+        tampered[-1] ^= 0x01
+        with self.assertRaises(phone_crypto.SealError) as tamper:
+            phone_crypto.open_data(key, bytes(tampered), "req-2", 0, phone_crypto.DIR_PHONE)
+        self.assertEqual(tamper.exception.outcome, "tamper")
 
 
 def _paired_device(box: relay.Relay, host_id: str, token: str) -> tuple[relay.Device, str]:

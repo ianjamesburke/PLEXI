@@ -85,7 +85,9 @@ pub enum AppRequest {
     /// phone, relay, or CLI caller does not need `app open assistant` first.
     /// A `pane_id` that does not exist still fails with
     /// `assistant_pane_not_found`. The pane owns the normal composer path and
-    /// writes the terminal JSON reply.
+    /// writes the terminal JSON reply. A `conversation_id` keeps the turn off
+    /// the desktop transcript. `join_desktop` opts into that transcript.
+    /// `status_for` reads a turn that is waiting on a desktop approval.
     SubmitAssistantTurn {
         text: String,
         request_id: String,
@@ -94,12 +96,56 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// Lead (head) id. When set, the turn runs in that head's conversation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
         /// Ledger client tag for this run. Absent uses `[ai] client`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client: Option<String>,
         /// Ledger run kind: `system` or `output`. Absent means `output`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        /// Caller-owned conversation. Absent on a phone turn means the host mints one.
+        /// Ignored when `join_desktop` is true. A desktop or ledger turn leaves this empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+        /// Opt in to the desktop Assistant transcript. Default for a phone turn is a separate conversation.
+        #[serde(default)]
+        join_desktop: bool,
+        /// Read the finished status of a turn that already returned
+        /// `waiting_for_permission`. Does not submit a new prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_for: Option<String>,
+    },
+    /// Open an Assistant pane bound to one head in the active context.
+    OpenAssistantHead {
+        head: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_id: Option<u64>,
+        response_file: String,
+    },
+    /// Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`.
+    /// Send starts a real lead turn. Cancel stops that run before the next tool.
+    CommandView {
+        op: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+        response_file: String,
+    },
+    /// Assign, cancel, or list headless queue tasks for a lead.
+    AgentQueue {
+        op: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+        response_file: String,
+    },
+    /// Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)
+    /// through the same permission gate the desktop Assistant uses. The host
+    /// writes `{"ok":true,"output":...}` or `{"ok":false,"error_code":...}`.
+    AssistantHostTool {
+        name: String,
+        input_json: String,
+        response_file: String,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
@@ -405,6 +451,16 @@ pub enum AppRequest {
         /// answering with a typed timeout. Requires `agent_cmd`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         boot_timeout_secs: Option<f64>,
+        /// Host-stamped ancestor pids of the socket peer. The client cannot
+        /// set this: `handle_socket_line` overwrites it from the kernel
+        /// credential captured at accept. `None` means the request did not
+        /// arrive on the command socket (spawn queue, in-process).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_ancestry: Option<Vec<u32>>,
+        /// Spawn another instance even when `[launch] on_launch` would focus
+        /// the one already open. Sent by `plexi app open --new`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force_new: bool,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -751,6 +807,40 @@ pub enum AppRequest {
         pending_request_id: String,
         /// `once`, `session`, `always`, or `deny`.
         choice: String,
+        response_file: String,
+    },
+    /// Read or change the permission monitor. `op` is `list`, `reset`,
+    /// `revoke`, or `allow`. A pane id or a call credential marks an agent.
+    /// Agents may revoke. Reset and allow from an agent file Needs you.
+    Permissions {
+        op: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<String>,
+        response_file: String,
+    },
+    /// List items waiting on the human. The host expires due items first.
+    ListNeedsYou { response_file: String },
+    /// Resolve one needs-you item exactly once. `approve` false denies it.
+    /// `from_phone` refuses approval of an irreversible click and never grants.
+    ResolveNeedsYou {
+        id: String,
+        approve: bool,
+        #[serde(default)]
+        from_phone: bool,
+        response_file: String,
+    },
+    /// Agents API: heads, runs, delegation, and gated tool calls.
+    /// `op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,
+    /// `show_run`, `finish_run`, or `delegate`. `payload` carries the
+    /// workspace path and the op's fields. The host writes the JSON result
+    /// to `response_file`.
+    AgentsApi {
+        op: String,
+        payload: serde_json::Value,
         response_file: String,
     },
     /// Call an app-exposed tool through the host tool dispatcher. Sent by
@@ -2864,7 +2954,7 @@ mod tests {
         assert!(is_reserved_shortcut("h"));
         assert!(is_reserved_shortcut("l"));
         assert!(is_reserved_shortcut("J")); // case-insensitive
-        // Digit-select keys — reserved
+                                            // Digit-select keys — reserved
         assert!(is_reserved_shortcut("1"));
         assert!(is_reserved_shortcut("9"));
         // 0 is NOT reserved (1-9 only)

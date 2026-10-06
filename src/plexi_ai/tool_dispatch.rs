@@ -359,6 +359,37 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
+/// Tools currently exposed by live app panes: app id, pane id, tool name, description.
+pub(crate) fn live_exposed_tools() -> Vec<(String, u64, String, String)> {
+    let registry = global_registry().lock().unwrap_or_else(|error| error.into_inner());
+    let mut tools = Vec::new();
+    for (pane_id, entry) in &registry.entries {
+        for tool in &entry.tools {
+            tools.push((
+                entry.app_id.clone(),
+                *pane_id,
+                tool.name.clone(),
+                tool.description.clone(),
+            ));
+        }
+    }
+    tools.sort_by(|left, right| left.0.cmp(&right.0).then(left.2.cmp(&right.2)));
+    tools
+}
+
+/// Whether `pane_id` currently has tools in the process-global registry.
+/// Harnesses wait on this after the first render: `ExposeTools` can land a
+/// frame later when several guests start at once, and a call before that
+/// answers `tool_not_found`.
+#[cfg(test)]
+pub(crate) fn pane_has_registered_tools(pane_id: u64) -> bool {
+    global_registry()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .entries
+        .contains_key(&pane_id)
+}
+
 // ── Pending calls ────────────────────────────────────────────────────────────
 
 /// Result returned to the broker by a completed tool call.
@@ -510,6 +541,53 @@ pub trait PermissionPresenter: Send + Sync {
         actor: &str,
         resource: &str,
     ) -> crate::broker::gate::ApprovalChoice;
+}
+
+/// Why `app call` could not choose a single tool provider.
+#[derive(Debug)]
+pub(crate) enum AppToolRouteError {
+    /// Two or more panes expose the tool and the caller did not name one.
+    Ambiguous { message: String, panes: Vec<u64> },
+    /// The named pane does not expose the tool.
+    Missing { message: String },
+}
+
+impl AppToolRouteError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Ambiguous { .. } => "ambiguous_instance",
+            Self::Missing { .. } => "tool_not_found",
+        }
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Ambiguous { message, .. } | Self::Missing { message } => message,
+        }
+    }
+
+    pub(crate) fn panes(&self) -> &[u64] {
+        match self {
+            Self::Ambiguous { panes, .. } => panes,
+            Self::Missing { .. } => &[],
+        }
+    }
+}
+
+fn pane_ids_in_qualified_names(prefix: &str, names: &[String]) -> Vec<u64> {
+    let mut panes = Vec::new();
+    for name in names {
+        let Some(rest) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some((id, _)) = rest.split_once("__") else {
+            continue;
+        };
+        if let Ok(pane) = id.parse::<u64>() {
+            panes.push(pane);
+        }
+    }
+    panes
 }
 
 pub struct ToolDispatcher {
@@ -715,12 +793,17 @@ impl ToolDispatcher {
                     &self.scope.caller_app_id,
                     resource_id.as_deref().unwrap_or(""),
                 );
-                if choice == crate::broker::gate::ApprovalChoice::Deny {
-                    let _ = self.monitor.approve_pending(
-                        pending_request_id,
-                        crate::broker::gate::ApprovalChoice::Deny,
+                if matches!(
+                    choice,
+                    crate::broker::gate::ApprovalChoice::Deny
+                        | crate::broker::gate::ApprovalChoice::DenyAlways
+                ) {
+                    let _ = self.monitor.approve_pending(pending_request_id, choice);
+                    return ToolCallResult::coded(
+                        "permission_denied",
+                        &call_id,
+                        Some(pending_request_id),
                     );
-                    return ToolCallResult::coded("permission_denied", &call_id, Some(pending_request_id));
                 }
                 if self
                     .monitor
@@ -867,7 +950,7 @@ impl ToolDispatcher {
         app_id: &str,
         tool: &str,
         target_pane: Option<u64>,
-    ) -> Result<String, String> {
+    ) -> Result<String, AppToolRouteError> {
         let plain = format!("{app_id}__{tool}");
         if let Some(pane) = target_pane {
             let qualified = format!("{app_id}:{pane}__{tool}");
@@ -877,11 +960,14 @@ impl ToolDispatcher {
             }
             if let Some((provider, _, _)) = self.tools.get(&plain) {
                 if *provider == pane {
+                    log::info!("tool_dispatch: routed {plain} to pane {pane}");
                     return Ok(plain);
                 }
             }
             log::info!("tool_dispatch: pane {pane} does not expose {plain}");
-            return Err(format!("tool_not_found: pane {pane} does not expose {tool}"));
+            return Err(AppToolRouteError::Missing {
+                message: format!("tool_not_found: pane {pane} does not expose {tool}"),
+            });
         }
         if self.tools.contains_key(&plain) {
             return Ok(plain);
@@ -898,14 +984,18 @@ impl ToolDispatcher {
         if matches.is_empty() {
             return Ok(plain);
         }
+        let panes = pane_ids_in_qualified_names(&prefix, &matches);
         log::info!(
-            "tool_dispatch: ambiguous {plain}; address one of {}",
+            "tool_dispatch: ambiguous_instance {plain} panes={panes:?}; address {}",
             matches.join(", ")
         );
-        Err(format!(
-            "ambiguous_instance: {plain} is live on multiple panes; address {}",
-            matches.join(", ")
-        ))
+        Err(AppToolRouteError::Ambiguous {
+            message: format!(
+                "ambiguous_instance: {plain} is live on multiple panes; address {}",
+                matches.join(", ")
+            ),
+            panes,
+        })
     }
 
     fn provider_of(&self, name: &str) -> (String, u64) {

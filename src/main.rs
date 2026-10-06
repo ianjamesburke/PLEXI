@@ -17,6 +17,7 @@ mod cli;
 mod cloud;
 
 mod config;
+mod connectors;
 mod distribution;
 mod editor;
 mod features;
@@ -289,9 +290,11 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd, LedgerCmd,
-        DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
+        ChangesCmd, Cli, CommandViewCmd, Commands, ConfigCmd, ConnectorCmd, ContextCmd, LedgerCmd,
+        NeedsYouCmd, RelayCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd,
+        PaneCmd, PaneSlotCmd, PermissionsCmd, RegistryCmd, RoutineCmd, SecretCmd, SkillCmd,
+        WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -304,8 +307,39 @@ fn main() -> eframe::Result {
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, client, kind, json: _ } => {
-                            std::process::exit(cli::assistant_send_cli(&text, request_id.as_deref(), pane_id, context_id, client.as_deref(), kind.as_deref()))
+                        AssistantCmd::Send {
+                            text,
+                            head,
+                            request_id,
+                            pane_id,
+                            context_id,
+                            client,
+                            kind,
+                            conversation,
+                            desktop,
+                            status_for,
+                            json: _,
+                        } => {
+                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
+                            std::process::exit(cli::assistant_send_cli(
+                                text.as_deref(),
+                                head.as_deref(),
+                                request_id.as_deref(),
+                                pane_id,
+                                context_id,
+                                client.as_deref(),
+                                kind.as_deref(),
+                                conversation.as_deref(),
+                                desktop,
+                                status_for.as_deref(),
+                            ))
+                        }
+                        AssistantCmd::Open { head } => {
+                            exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
+                            std::process::exit(cli::assistant_open_head_cli(&head))
+                        }
+                        AssistantCmd::Tool { name, input } => {
+                            std::process::exit(cli::assistant_tool_cli(&name, &input))
                         }
                         AssistantCmd::Permission { cmd } => match cmd {
                             AssistantPermissionCmd::List => {
@@ -322,6 +356,100 @@ fn main() -> eframe::Result {
                                 ))
                             }
                         },
+                    },
+                    Commands::NeedsYou { cmd } => match cmd {
+                        NeedsYouCmd::List { json: _ } => {
+                            std::process::exit(cli::needs_you_cli("list", None, None, false))
+                        }
+                        // A terminal resolve never grants. `--from-phone` is the
+                        // paired-phone path: it may answer a question or a blocked
+                        // run, and the host refuses an approval or a widen.
+                        NeedsYouCmd::Resolve {
+                            id,
+                            approve,
+                            deny,
+                            from_phone,
+                        } => {
+                            if from_phone {
+                                std::process::exit(cli::needs_you_cli(
+                                    "resolve",
+                                    Some(&id),
+                                    Some(approve && !deny),
+                                    true,
+                                ))
+                            } else {
+                                let choice = if deny { "deny" } else { "once" };
+                                std::process::exit(cli::assistant_permission_cli(
+                                    "resolve",
+                                    Some(&id),
+                                    Some(choice),
+                                ))
+                            }
+                        }
+                    },
+                    Commands::Skill { cmd } => match cmd {
+                        SkillCmd::Install { agent } => {
+                            std::process::exit(cli::skill_install::skill_install_cli(&agent))
+                        }
+                    },
+                    Commands::Permissions { cmd } => match cmd {
+                        PermissionsCmd::List { json } => {
+                            std::process::exit(cli::permissions_cli("list", None, json))
+                        }
+                        PermissionsCmd::Reset { id } => {
+                            std::process::exit(cli::permissions_cli("reset", Some(&id), true))
+                        }
+                        PermissionsCmd::Revoke { id } => {
+                            std::process::exit(cli::permissions_cli("revoke", Some(&id), true))
+                        }
+                        PermissionsCmd::Allow { id } => {
+                            std::process::exit(cli::permissions_cli("allow", Some(&id), true))
+                        }
+                    },
+                    Commands::CommandView { cmd, json, follow } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Assistant);
+                        if follow && cmd.is_some() {
+                            eprintln!("error: --follow prints the live projection and takes no subcommand");
+                            std::process::exit(2);
+                        }
+                        if follow {
+                            std::process::exit(cli::command_view_follow_cli());
+                        }
+                        match cmd {
+                            Some(CommandViewCmd::Open) => {
+                                std::process::exit(cli::command_view_cli("open", json))
+                            }
+                            Some(CommandViewCmd::Send { lead, text }) => {
+                                std::process::exit(cli::command_view_send_cli(&lead, &text))
+                            }
+                            Some(CommandViewCmd::Cancel { run }) => {
+                                std::process::exit(cli::command_view_cancel_cli(&run))
+                            }
+                            Some(CommandViewCmd::Resolve { id: _ }) => {
+                                std::process::exit(cli::command_view_refused("resolve"))
+                            }
+                            Some(CommandViewCmd::Allow { tool: _ }) => {
+                                std::process::exit(cli::command_view_refused("allow"))
+                            }
+                            None => std::process::exit(cli::command_view_cli("list", json)),
+                        }
+                    }
+                    Commands::Relay { cmd } => match cmd {
+                        RelayCmd::Connect { url } => {
+                            std::process::exit(cli::relay::relay_connect_cli(url))
+                        }
+                        RelayCmd::Confirm { pairing_id } => {
+                            std::process::exit(cli::relay::relay_confirm_cli(pairing_id))
+                        }
+                        RelayCmd::Revoke { device_id } => {
+                            std::process::exit(cli::relay::relay_revoke_cli(&device_id))
+                        }
+                        RelayCmd::Pair => std::process::exit(cli::relay::relay_pair_cli()),
+                        RelayCmd::Enable { url } => {
+                            std::process::exit(cli::relay::relay_enable_cli(url))
+                        }
+                        RelayCmd::Disable => std::process::exit(cli::relay::relay_disable_cli()),
+                        RelayCmd::Status => std::process::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::Run {
                         command,
@@ -394,6 +522,28 @@ fn main() -> eframe::Result {
                             working,
                             idle,
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
+                        AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
+                        AgentCmd::Assign { head, input, json } => {
+                            std::process::exit(cli::agent_assign_cli(&head, &input, json))
+                        }
+                        AgentCmd::Cancel { id, json } => {
+                            std::process::exit(cli::agent_cancel_cli(&id, json))
+                        }
+                        AgentCmd::Conversation { head, as_head, json } => {
+                            std::process::exit(cli::agent_conversation_cli(&head, as_head.as_deref(), json))
+                        }
+                        AgentCmd::Delegate {
+                            parent_run,
+                            name,
+                            grant,
+                            json,
+                        } => std::process::exit(cli::agent_delegate_cli(
+                            &parent_run,
+                            &name,
+                            &grant,
+                            json,
+                        )),
                         AgentCmd::Hook { action } => match action {
                             HookAction::Install {
                                 claude_code,
@@ -415,18 +565,49 @@ fn main() -> eframe::Result {
                             )),
                         },
                     },
+                    Commands::Changes { cmd } => std::process::exit(match cmd {
+                        ChangesCmd::Allow {
+                            agent,
+                            file,
+                            old,
+                            new,
+                        } => cli::changes_allow_cli(&agent, &file, &old, &new),
+                        ChangesCmd::Propose {
+                            agent,
+                            file,
+                            old,
+                            new,
+                        } => cli::changes_propose_cli(&agent, &file, &old, &new),
+                        ChangesCmd::Preview { id } => cli::changes_preview_cli(&id),
+                        ChangesCmd::Accept { id } => cli::changes_accept_cli(&id),
+                        ChangesCmd::Refresh { id } => cli::changes_refresh_cli(&id),
+                        ChangesCmd::Revert { id } => cli::changes_revert_cli(&id),
+                        ChangesCmd::Profile => cli::changes_profile_cli(),
+                    }),
                     Commands::Secret { cmd } => match cmd {
                         SecretCmd::Set {
                             friendly_name,
                             from_env,
                             global,
                             alias,
-                        } => std::process::exit(cli::workspace_secret_set(
-                            &friendly_name,
-                            from_env,
-                            global,
-                            alias.as_deref(),
-                        )),
+                            folder,
+                        } => {
+                            if let Some(folder) = folder.as_deref() {
+                                std::process::exit(cli::folder_secret_set(
+                                    &friendly_name,
+                                    from_env,
+                                    global,
+                                    alias.as_deref(),
+                                    folder,
+                                ))
+                            }
+                            std::process::exit(cli::workspace_secret_set(
+                                &friendly_name,
+                                from_env,
+                                global,
+                                alias.as_deref(),
+                            ))
+                        }
                         SecretCmd::Get {
                             friendly_name,
                             global,
@@ -440,7 +621,59 @@ fn main() -> eframe::Result {
                         } => {
                             std::process::exit(cli::workspace_secret_delete(&friendly_name, global))
                         }
+                        SecretCmd::Rm { name, folder } => {
+                            std::process::exit(cli::folder_secret_rm(&name, &folder))
+                        }
+                        SecretCmd::Grant {
+                            name,
+                            agent,
+                            app,
+                            folder,
+                        } => std::process::exit(cli::folder_secret_grant(
+                            &name,
+                            agent.as_deref(),
+                            app.as_deref(),
+                            folder.as_deref(),
+                        )),
+                        SecretCmd::Read {
+                            name,
+                            agent,
+                            app,
+                            folder,
+                        } => std::process::exit(cli::folder_secret_read(
+                            &name,
+                            agent.as_deref(),
+                            app.as_deref(),
+                            folder.as_deref(),
+                        )),
+                        SecretCmd::Exec { cwd, command } => {
+                            std::process::exit(cli::folder_secret_exec(&cwd, &command))
+                        }
                     },
+                    Commands::Connector { cmd } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Connectors);
+                        std::process::exit(match cmd {
+                            ConnectorCmd::Login {
+                                connector,
+                                issuer,
+                                no_browser,
+                                timeout,
+                                surface,
+                            } => cli::connector_login_cli(
+                                &connector,
+                                issuer.as_deref(),
+                                no_browser,
+                                timeout,
+                                surface,
+                            ),
+                            ConnectorCmd::Status { connector, surface } => {
+                                cli::connector_status_cli(&connector, surface)
+                            }
+                            ConnectorCmd::Revoke { connector, surface } => {
+                                cli::connector_revoke_cli(&connector, surface)
+                            }
+                        })
+                    }
                     Commands::App { cmd } => {
                         match cmd {
                             AppCmd::Open {
@@ -455,6 +688,7 @@ fn main() -> eframe::Result {
                                 window,
                                 from: from_pane_id,
                                 extra_args,
+                                new: force_new,
                             } => {
                                 let layout: Option<String> = if down {
                                     Some("split_v".into())
@@ -512,23 +746,25 @@ fn main() -> eframe::Result {
                                             ));
                                         }
                                         cli::OpenPrefix::App(name) => {
-                                            log::info!("app_open:cli: prefix-routed app:{name}");
+                                            log::info!("app_open:cli: prefix-routed app:{name} force_new={force_new}");
                                             std::process::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
                                                 layout.as_deref(),
                                                 from_pane_id,
                                                 None,
+                                                force_new,
                                             ));
                                         }
                                         cli::OpenPrefix::Bare(name) => {
-                                            log::info!("app_open:cli: opening app type_id={name}");
+                                            log::info!("app_open:cli: opening app type_id={name} force_new={force_new}");
                                             std::process::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
                                                 layout.as_deref(),
                                                 from_pane_id,
                                                 None,
+                                                force_new,
                                             ));
                                         }
                                     }
@@ -551,6 +787,7 @@ fn main() -> eframe::Result {
                                         &[],
                                         None,
                                         None,
+                                        false,
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
@@ -1113,6 +1350,7 @@ fn main() -> eframe::Result {
                                 &[],
                                 None,
                                 agent.as_ref(),
+                                false,
                             ));
                         }
                     },
@@ -1347,11 +1585,17 @@ fn main() -> eframe::Result {
                     Commands::Note { text } => {
                         std::process::exit(cli::notes::note_capture_cli(&text))
                     }
-                    Commands::Ledger { cmd } => match cmd {
-                        LedgerCmd::Summary { by, since, json } => std::process::exit(
-                            cli::ledger_summary_cli(by.as_deref(), since.as_deref(), json),
-                        ),
-                    },
+                    Commands::Ledger { cmd } => {
+                        let (by, since, json) = match cmd {
+                            Some(LedgerCmd::Summary { by, since, json }) => (by, since, json),
+                            None => (None, None, false),
+                        };
+                        std::process::exit(cli::ledger_summary_cli(
+                            by.as_deref(),
+                            since.as_deref(),
+                            json,
+                        ));
+                    }
                     Commands::Ai { cmd } => match cmd {
                         AiCmd::Onboard => std::process::exit(cli::ai_onboard_cli()),
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
@@ -1495,7 +1739,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
     // Skip argv[0] (binary name).
     let _ = iter.next();
     while let Some((_, a)) = iter.next() {
-        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" {
+        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" || a == "--socket" {
             // Skip the value paired with this flag.
             let _ = iter.next();
             continue;
@@ -1703,6 +1947,23 @@ mod cli_tests {
         let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
             .expect("flag-only argv should resolve");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn plexi_path_arg_skips_socket_flag_value() {
+        let sock = std::env::temp_dir().join(format!("plexi-sock-{}", std::process::id()));
+        fs::write(&sock, b"").unwrap();
+        let path = sock.to_string_lossy().to_string();
+        let resolved = parse_workspace_path_arg(&argv(&[
+            "--socket",
+            &path,
+            "assistant",
+            "permission",
+            "list",
+        ]))
+        .expect("a --socket path is not a workspace");
+        assert!(resolved.is_none());
+        let _ = fs::remove_file(&sock);
     }
 
     #[test]

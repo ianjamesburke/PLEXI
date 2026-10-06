@@ -207,7 +207,7 @@ pub fn app_init(
                     let path_str = app_dir.to_string_lossy().to_string();
                     log::info!("app_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
                     let exit_code =
-                        super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
+                        super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None, false);
                     if exit_code != 0 {
                         eprintln!(
                             "warning: app created but could not auto-open (exit {exit_code})"
@@ -1296,6 +1296,30 @@ fn persist_wasm_install_review(
         &selected,
     );
     store.save();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(config_dir);
+    for capability_id in &report.wasm_required_capabilities {
+        monitor.grant_capability_id(
+            &report.id,
+            workspace_root,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
+    for capability_id in &report.wasm_optional_capabilities {
+        let decision = if selected.contains(capability_id) {
+            crate::broker::Decision::Allow
+        } else {
+            crate::broker::Decision::Ask
+        };
+        monitor.grant_capability_id(
+            &report.id,
+            workspace_root,
+            capability_id,
+            decision,
+            crate::broker::GrantSource::User,
+        );
+    }
     Some(summary)
 }
 
@@ -1466,6 +1490,11 @@ pub fn app_info(id: &str) -> i32 {
         eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
         return 1;
     };
+    let app_dir = installed
+        .bin_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| installed.bin_path.clone());
     let m = &installed.manifest;
     println!("id:          {}", m.id);
     println!("name:        {}", m.name);
@@ -1480,6 +1509,16 @@ pub fn app_info(id: &str) -> i32 {
     if let Some(ref repo) = m.repo {
         println!("repo:        {repo}");
     }
+    let tools = crate::cli::introspect::declared_tools(&app_dir);
+    println!("tools:");
+    if tools.is_empty() {
+        println!("  (none declared)");
+    } else {
+        for (name, description) in &tools {
+            println!("  {name}  {description}");
+        }
+    }
+    log::info!("app_info: id={id} tools={}", tools.len());
     0
 }
 
@@ -1677,6 +1716,24 @@ pub fn app_render(
         &capabilities,
         &allowed_hosts,
     );
+    let seed_state = if seed_state.is_none() && app_id == "permissions" {
+        let entries = crate::broker::gate::PermissionMonitor::for_profile(
+            &crate::config::config_dir(),
+        )
+        .list_entries();
+        log::info!(
+            "app_render: seeding permissions inventory count={}",
+            entries.len()
+        );
+        Some(serde_json::json!({
+            "entries": entries,
+            "selected": 0,
+            "mode": "list",
+            "notice": "",
+        }))
+    } else {
+        seed_state
+    };
     let tree = match crate::host::wasm_python::run_headless_frame(
         &launch_config,
         (width as f32, height as f32),
@@ -1927,14 +1984,19 @@ pub fn app_call_cli(
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => {
             if json {
                 println!("{reply}");
-                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) { 1 } else { 0 };
+                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+                    1
+                } else {
+                    0
+                };
+            }
+            if let Some(msg) = reply.get("error").and_then(|v| v.as_str()) {
+                eprintln!("error: {msg}");
+                return 1;
             }
             let output = reply.get("output").cloned().unwrap_or(serde_json::Value::Null);
             println!("{output}");
@@ -1944,6 +2006,42 @@ pub fn app_call_cli(
             eprintln!("error: host reply is not JSON: {error}");
             1
         }
+    }
+}
+
+/// `plexi needs-you list --json` and `plexi needs-you resolve <id> --approve|--deny`.
+/// `--from-phone` refuses approval of an irreversible click and never grants.
+pub fn needs_you_cli(op: &str, id: Option<&str>, approve: Option<bool>, from_phone: bool) -> i32 {
+    let response_file = crate::rpc::response_file("needs-you", "json");
+    let payload = match op {
+        "list" => serde_json::json!({"type":"list_needs_you","response_file":response_file}),
+        "resolve" => serde_json::json!({
+            "type": "resolve_needs_you",
+            "id": id.unwrap_or(""),
+            "approve": approve.unwrap_or(false),
+            "from_phone": from_phone,
+            "response_file": response_file,
+        }),
+        _ => {
+            eprintln!("error: unknown needs-you operation");
+            return 1;
+        }
+    };
+    log::info!("needs_you:cli: op={op} id={id:?} approve={approve:?} from_phone={from_phone}");
+    let content = match super::request_with(
+        payload,
+        "needs-you",
+        "needs-you",
+        std::time::Duration::from_secs(15),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(_) => 1,
+        Err(_) => 1,
     }
 }
 
@@ -1972,26 +2070,186 @@ pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>
     }
 }
 
-/// Submit one turn to the host Assistant and print its terminal JSON envelope.
-pub fn assistant_send_cli(text: &str, request_id: Option<&str>, pane_id: Option<u64>, context_id: Option<u64>, client: Option<&str>, kind: Option<&str>) -> i32 {
-    if let Some(kind) = kind {
-        if let Err(error) = crate::plexi_ai::ledger::RunKind::parse(kind) {
-            eprintln!("error: {error}");
-            return 1;
+/// Run one Assistant host tool on the connected host and print the JSON reply.
+/// Exit 0 when the tool ran, 2 when the gate is waiting on a decision, 1 otherwise.
+pub fn assistant_tool_cli(name: &str, input_json: &str) -> i32 {
+    let response_file = crate::rpc::response_file("assistant-tool", "json");
+    let payload = serde_json::json!({
+        "type": "assistant_host_tool",
+        "name": name,
+        "input_json": input_json,
+        "response_file": response_file,
+    });
+    log::info!("assistant_tool:cli: name={name}");
+    let content = match super::request_with(
+        payload,
+        "assistant-tool",
+        "assistant tool",
+        std::time::Duration::from_secs(30),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|item| item.as_bool()) == Some(true) => 0,
+        Ok(value)
+            if value.get("error_code").and_then(|item| item.as_str())
+                == Some("permission_required") =>
+        {
+            2
         }
+        Ok(_) => 1,
+        Err(_) => 1,
     }
-    let request_id = request_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let response_file = crate::rpc::response_file("assistant-send", "json");
-    let mut payload = serde_json::json!({"type":"submit_assistant_turn","text":text,"request_id":request_id,"response_file":response_file,"pane_id":pane_id,"context_id":context_id});
-    if let Some(client) = client.map(str::trim).filter(|client| !client.is_empty()) {
+}
+
+/// Fields of `submit_assistant_turn`. There is no approval, grant, or
+/// permission field: the host permission gate is the only authorizer.
+pub(crate) struct AssistantSendFields<'a> {
+    pub text: &'a str,
+    pub head: Option<&'a str>,
+    pub request_id: &'a str,
+    pub response_file: &'a str,
+    pub pane_id: Option<u64>,
+    pub context_id: Option<u64>,
+    pub client: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub conversation: Option<&'a str>,
+    pub join_desktop: bool,
+    pub status_for: Option<&'a str>,
+}
+
+pub(crate) fn assistant_send_payload(fields: &AssistantSendFields<'_>) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "type": "submit_assistant_turn",
+        "text": fields.text,
+        "request_id": fields.request_id,
+        "response_file": fields.response_file,
+        "pane_id": fields.pane_id,
+        "context_id": fields.context_id,
+        "join_desktop": fields.join_desktop,
+    });
+    if let Some(head) = fields.head.map(str::trim).filter(|head| !head.is_empty()) {
+        payload["head"] = serde_json::json!(head);
+    }
+    if let Some(client) = fields.client.map(str::trim).filter(|client| !client.is_empty()) {
         payload["client"] = serde_json::json!(client);
     }
-    if let Some(kind) = kind.map(str::trim).filter(|kind| !kind.is_empty()) {
+    if let Some(kind) = fields.kind.map(str::trim).filter(|kind| !kind.is_empty()) {
         payload["kind"] = serde_json::json!(kind);
     }
-    let content = match super::request_with(payload, "assistant-send", "assistant send", std::time::Duration::from_secs(120)) { Ok(content) => content, Err(code) => return code };
-    println!("{content}");
-    match serde_json::from_str::<serde_json::Value>(&content) { Ok(value) if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") => 0, Ok(_) => 2, Err(_) => 1 }
+    if let Some(conversation) = fields.conversation.map(str::trim).filter(|id| !id.is_empty()) {
+        payload["conversation_id"] = serde_json::json!(conversation);
+    }
+    if let Some(status_for) = fields.status_for.map(str::trim).filter(|id| !id.is_empty()) {
+        payload["status_for"] = serde_json::json!(status_for);
+    }
+    payload
+}
+
+/// Submit one turn, or poll `--status-for`, and return the host JSON envelope.
+///
+/// `conversation` selects the phone relay's own conversation. `join_desktop`
+/// opts into the desktop transcript. `status_for` reads a turn that already
+/// returned `waiting_for_permission` and does not submit a prompt. A phone
+/// turn never carries a grant; the desktop permission gate still admits tools.
+/// `head`, `client`, and `kind` are the desktop and ledger path.
+#[allow(clippy::too_many_arguments)]
+pub fn assistant_send_result(
+    text: Option<&str>,
+    head: Option<&str>,
+    request_id: Option<&str>,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    client: Option<&str>,
+    kind: Option<&str>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+    status_for: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if let Some(kind) = kind {
+        crate::plexi_ai::ledger::RunKind::parse(kind).map_err(|error| error.to_string())?;
+    }
+    let request_id = request_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let response_file = crate::rpc::response_file("assistant-send", "json");
+    if let Some(turn_id) = status_for {
+        log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
+    } else {
+        log::info!(
+            "assistant_send:cli: submit request_id={request_id} head={head:?} client={client:?} kind={kind:?} join_desktop={join_desktop} conversation={}",
+            conversation.unwrap_or("")
+        );
+    }
+    let payload = assistant_send_payload(&AssistantSendFields {
+        text: text.unwrap_or(""),
+        head,
+        request_id: &request_id,
+        response_file: &response_file,
+        pane_id,
+        context_id,
+        client,
+        kind,
+        conversation,
+        join_desktop,
+        status_for,
+    });
+    let content = super::request_with(
+        payload,
+        "assistant-send",
+        "assistant send",
+        std::time::Duration::from_secs(120),
+    )
+    .map_err(|code| format!("assistant_send_exit_{code}"))?;
+    serde_json::from_str(&content).map_err(|_| "assistant_send_bad_json".to_string())
+}
+
+/// Submit one turn to the host Assistant and print its terminal JSON envelope.
+#[allow(clippy::too_many_arguments)]
+pub fn assistant_send_cli(
+    text: Option<&str>,
+    head: Option<&str>,
+    request_id: Option<&str>,
+    pane_id: Option<u64>,
+    context_id: Option<u64>,
+    client: Option<&str>,
+    kind: Option<&str>,
+    conversation: Option<&str>,
+    join_desktop: bool,
+    status_for: Option<&str>,
+) -> i32 {
+    match assistant_send_result(
+        text,
+        head,
+        request_id,
+        pane_id,
+        context_id,
+        client,
+        kind,
+        conversation,
+        join_desktop,
+        status_for,
+    ) {
+        Ok(value) => {
+            println!("{value}");
+            if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") {
+                0
+            } else {
+                2
+            }
+        }
+        Err(error) => {
+            if let Some(code) = error.strip_prefix("assistant_send_exit_") {
+                if let Ok(code) = code.parse::<i32>() {
+                    return code;
+                }
+            }
+            eprintln!("error: {error}");
+            1
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2097,7 +2355,6 @@ mod install_confirm_tests {
         trust_sheet_lines, InstallConfirm,
     };
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
-    use crate::app::permissions::{PermissionState, PermissionStore};
     use std::io::Cursor;
 
     fn report() -> PackageReport {
@@ -2318,28 +2575,33 @@ mod install_confirm_tests {
         assert_eq!(summary.optional_granted, 1);
         assert_eq!(summary.optional_deferred, 1);
 
-        let store = PermissionStore::load_or_default(config.path());
+        let stored = |capability: &str, root: &std::path::Path| {
+            let monitor = crate::broker::gate::PermissionMonitor::open_profile(config.path());
+            let workspace_root = crate::platform::path::canonical_or_self(root);
+            let store = monitor.store();
+            store.records().iter().find_map(|record| {
+                (record.actor_id == "wasm-install-review"
+                    && record.target_id == capability
+                    && record.workspace_root.as_deref() == Some(workspace_root.as_path()))
+                .then_some(record.decision)
+            })
+        };
         assert_eq!(
-            store.get_wasm("wasm-install-review", workspace.path(), "state:read-write"),
-            Some(PermissionState::Green)
+            stored("state:read-write", workspace.path()),
+            Some(crate::broker::Decision::Allow)
         );
         assert_eq!(
-            store.get_wasm("wasm-install-review", workspace.path(), "ai.query"),
-            Some(PermissionState::Yellow)
+            stored("ai.query", workspace.path()),
+            Some(crate::broker::Decision::Ask)
         );
         assert_eq!(
-            store.get_wasm(
-                "wasm-install-review",
-                workspace.path(),
-                "net:fetch:api.example.com"
-            ),
-            Some(PermissionState::Green)
+            stored("net:fetch:api.example.com", workspace.path()),
+            Some(crate::broker::Decision::Allow)
         );
         assert_eq!(
-            store.get_wasm(
-                "wasm-install-review",
-                tempfile::tempdir().unwrap().path(),
-                "net:fetch:api.example.com"
+            stored(
+                "net:fetch:api.example.com",
+                tempfile::tempdir().unwrap().path()
             ),
             None,
             "raw WASM install grants must remain workspace-scoped"

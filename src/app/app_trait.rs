@@ -222,8 +222,18 @@ pub trait App: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
 
+    /// Pending approval this app is showing, when it is an approval surface.
+    fn approval_request_id(&self) -> Option<String> {
+        None
+    }
+
     /// Human-readable display name shown in the pane title.
     fn display_name(&self) -> String;
+
+    /// Head id when this pane is one lead's Assistant. `None` for every other app.
+    fn bound_head(&self) -> Option<&str> {
+        None
+    }
 
     /// Render the app into the given Ui region. `pending_click` (stint 0469) is
     /// a synthetic pointer click queued by `plexi pane click --node` /
@@ -338,6 +348,9 @@ pub trait App: Send {
         _text: String,
         _request_id: String,
         _response_file: String,
+        _conversation_id: Option<String>,
+        _join_desktop: bool,
+        _status_for: Option<String>,
     ) -> Result<(), String> {
         Err("this app does not accept external turns".to_string())
     }
@@ -353,12 +366,23 @@ pub trait App: Send {
         kind: Option<String>,
     ) -> Result<(), String> {
         let _ = (client, kind);
-        self.submit_external_turn(text, request_id, response_file)
+        self.submit_external_turn(text, request_id, response_file, None, false, None)
     }
 
     /// Deliver a host file/URL drop through the app's production handler.
     fn drop_file(&mut self, _path_or_url: &str) -> Result<serde_json::Value, String> {
         Err("this app does not accept file drops".to_string())
+    }
+
+    /// Pull a prepared file edit into this pane. The text editor previews it
+    /// and leaves the buffer alone until a pointer click accepts it.
+    fn sync_change_set(&mut self) -> bool {
+        false
+    }
+
+    /// Open-buffer snapshot for change-set conflict checks. Other apps have none.
+    fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
+        None
     }
 
     /// Concrete-type access for host tests that assert on app-internal state

@@ -15,6 +15,9 @@ python_compat = true
 scopes = ["context"]
 
 [launch]
+# One board per context unless the caller passes `app open --new`.
+# A plain second open focuses the open board. `--new` spawns another
+# instance, which `app call --pane` addresses.
 # One board per context. A second `app open chess` focuses that board
 # instead of stacking a pane whose tools the host cannot address.
 on_launch = "focus_existing_in_context"

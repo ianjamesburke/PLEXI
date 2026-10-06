@@ -153,6 +153,7 @@ pub fn pane_new_cli(
     extra_args: &[String],
     context_name: Option<&str>,
     agent: Option<&AgentBootRequest>,
+    force_new: bool,
 ) -> i32 {
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
@@ -218,7 +219,10 @@ pub fn pane_new_cli(
                 payload["boot_timeout_secs"] = serde_json::json!(secs);
             }
         }
-        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?}", agent.map(|a| &a.command));
+        if force_new {
+            payload["force_new"] = serde_json::Value::Bool(true);
+        }
+        log::info!("pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} force_new={force_new} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?}", agent.map(|a| &a.command));
         let response_file = match super::send_request(payload, "spawn-pane-response", "pane") {
             Ok(response_file) => response_file,
             Err(code) => return code,
@@ -271,7 +275,10 @@ pub fn pane_new_cli(
     if let Some(ctx) = context_name {
         queue_payload["context_name"] = serde_json::Value::String(ctx.to_string());
     }
-    log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?}");
+    if force_new {
+        queue_payload["force_new"] = serde_json::Value::Bool(true);
+    }
+    log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} force_new={force_new} cwd={cwd:?}");
     match crate::cli::queue_spawn(queue_payload, "pane new", &format!("open {type_id}")) {
         Ok(()) => 0,
         Err(code) => code,
@@ -380,6 +387,7 @@ fn open_descriptor_in_renderer(
         &[path],
         None,
         None,
+        false,
     )
 }
 
@@ -437,6 +445,7 @@ pub fn open_mcp_by_name(
                 &[],
                 None,
                 None,
+                false,
             )
         }
         None => {
@@ -522,7 +531,8 @@ fn review_raw_wasm_open_with_reader(
     let config_dir = crate::config::config_dir();
     let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
     let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
-    let (granted, blocked) = store.build_wasm_permission_sets(&app_id, &workspace_root, &declared);
+    let (granted, blocked) = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
+        .materialize_wasm_sets(&app_id, &workspace_root, &declared);
     let blocked_required: Vec<String> = required_caps
         .iter()
         .filter(|cap| blocked.contains(*cap))
@@ -542,15 +552,25 @@ fn review_raw_wasm_open_with_reader(
     if !prompt_raw_wasm_review(&app_id, &workspace_root, &missing, is_tty, reader)? {
         return Err("raw WASM launch cancelled".to_string());
     }
-    for capability_id in missing {
+    for capability_id in &missing {
         store.set_wasm(
             &app_id,
             &workspace_root,
-            &capability_id,
+            capability_id,
             crate::app::permissions::PermissionState::Green,
         );
     }
     store.save();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
+    for capability_id in &missing {
+        monitor.grant_capability_id(
+            &app_id,
+            &workspace_root,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
     log::info!(
         "open:cli: raw wasm review app={} path={} workspace={} grants={:?}",
         app_id,
@@ -599,6 +619,16 @@ fn trust_raw_wasm_open(path: &Path) -> Result<(), String> {
         );
     }
     store.save();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
+    for capability_id in &granted {
+        monitor.grant_capability_id(
+            &app_id,
+            &workspace_root,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
     log::info!(
         "open:cli: app trust granted app={} path={} workspace={} grants={:?}",
         app_id,
@@ -643,6 +673,7 @@ pub fn open_cli(
     layout: Option<&str>,
     from_pane_id: Option<u64>,
     cwd: Option<&str>,
+    force_new: bool,
 ) -> i32 {
     // Intercept github: prefix for ephemeral open-without-install.
     if type_id.starts_with("github:") {
@@ -665,8 +696,8 @@ pub fn open_cli(
     };
     if resolved.join("manifest.toml").exists() {
         let abs_path = resolved.to_string_lossy().to_string();
-        log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path} force_new={force_new}");
+        return open_app_by_path(&abs_path, args, layout, from_pane_id, force_new);
     }
 
     // A `.wasm` file is a sandboxed component app launched through the same
@@ -682,7 +713,7 @@ pub fn open_cli(
         }
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected .wasm component, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        return open_app_by_path(&abs_path, args, layout, from_pane_id, force_new);
     }
 
     pane_new_cli(
@@ -698,6 +729,7 @@ pub fn open_cli(
         args,
         None,
         None,
+        force_new,
     )
 }
 
@@ -707,6 +739,7 @@ fn open_app_by_path(
     args: &[String],
     layout: Option<&str>,
     from_pane_id: Option<u64>,
+    force_new: bool,
 ) -> i32 {
     // Leave layout unset when no flag is given so the host applies its placement
     // default (manifest `[launch] placement`, else a sibling split) instead of
@@ -715,7 +748,8 @@ fn open_app_by_path(
     let spec = match PaneLaunchSpec::path(abs_path, args.to_vec()) {
         Ok(spec) => spec
             .with_layout(layout.map(str::to_string))
-            .with_from_pane_id(from_pane_id),
+            .with_from_pane_id(from_pane_id)
+            .with_force_new(force_new),
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
@@ -738,7 +772,7 @@ fn open_app_by_path(
                 "response_file": response_file,
             })
         });
-        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout:?} from_pane_id={from_pane_id:?}");
+        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout:?} force_new={force_new} from_pane_id={from_pane_id:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -761,7 +795,7 @@ fn open_app_by_path(
             "layout": layout,
         })
     });
-    log::info!("open_app_by_path: queued path={abs_path}");
+    log::info!("open_app_by_path: queued path={abs_path} force_new={force_new}");
     match crate::cli::queue_spawn(queue_payload, "open", &format!("open {abs_path}")) {
         Ok(()) => 0,
         Err(code) => code,
@@ -796,7 +830,12 @@ mod open_cli_tests {
                 .expect("read open payload");
             let payload: Value = serde_json::from_str(&line).expect("open payload json");
             if let Some(response_file) = payload.get("response_file").and_then(|v| v.as_str()) {
-                std::fs::write(response_file, r#"{"pane_id":123}"#).expect("write open response");
+                // The CLI returns as soon as the path exists. A plain write can
+                // be observed empty; the host's atomic rename is the contract.
+                assert!(
+                    crate::rpc::write_response(response_file, br#"{"pane_id":123}"#),
+                    "write open response"
+                );
             }
             payload
         });
@@ -813,7 +852,7 @@ mod open_cli_tests {
         // sibling split) rather than forcing an overlay takeover (stint 0330).
         let env = socket_env_guard();
         let (code, payload) =
-            capture_spawn_payload(&env, || open_cli("balls", &[], None, None, None));
+            capture_spawn_payload(&env, || open_cli("balls", &[], None, None, None, false));
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
@@ -829,7 +868,7 @@ mod open_cli_tests {
     fn app_open_explicit_tab_layout_is_preserved() {
         let env = socket_env_guard();
         let (code, payload) = capture_spawn_payload(&env, || {
-            open_cli("file_browser", &[], Some("tab"), None, None)
+            open_cli("file_browser", &[], Some("tab"), None, None, false)
         });
 
         assert_eq!(code, 0);
@@ -874,7 +913,7 @@ mod open_cli_tests {
         let args = vec!["--sample".to_string(), "96".to_string()];
 
         let (code, payload) =
-            capture_spawn_payload(&env, || open_cli(&wasm_path_str, &args, None, None, None));
+            capture_spawn_payload(&env, || open_cli(&wasm_path_str, &args, None, None, None, false));
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
@@ -915,11 +954,19 @@ mod open_cli_tests {
         review_raw_wasm_open_with_reader(&fixture, true, &mut reader)
             .expect("tty approval should persist review");
 
-        let store = crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        let monitor = crate::broker::gate::PermissionMonitor::open_profile(config_dir.path());
+        let workspace = crate::platform::path::canonical_or_self(workspace_root);
+        let store = monitor.store();
         for capability_id in required {
+            let decision = store.records().iter().find_map(|record| {
+                (record.actor_id == app_id
+                    && record.target_id == capability_id
+                    && record.workspace_root.as_deref() == Some(workspace.as_path()))
+                .then_some(record.decision)
+            });
             assert_eq!(
-                store.get_wasm(app_id, workspace_root, &capability_id),
-                Some(crate::app::permissions::PermissionState::Green),
+                decision,
+                Some(crate::broker::Decision::Allow),
                 "{capability_id} should be remembered"
             );
         }
@@ -943,15 +990,23 @@ mod open_cli_tests {
 
         super::trust_raw_wasm_open(&fixture).expect("trust should persist grants");
 
-        let store = crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        let monitor = crate::broker::gate::PermissionMonitor::open_profile(config_dir.path());
+        let workspace = crate::platform::path::canonical_or_self(workspace_root);
+        let store = monitor.store();
         let mut expected = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
             .expect("inspect fixture grants")
             .capability_ids();
         expected.push("fs.pick".to_string());
         for capability_id in expected {
+            let decision = store.records().iter().find_map(|record| {
+                (record.actor_id == app_id
+                    && record.target_id == capability_id
+                    && record.workspace_root.as_deref() == Some(workspace.as_path()))
+                .then_some(record.decision)
+            });
             assert_eq!(
-                store.get_wasm(app_id, workspace_root, &capability_id),
-                Some(crate::app::permissions::PermissionState::Green),
+                decision,
+                Some(crate::broker::Decision::Allow),
                 "{capability_id} should be trusted"
             );
         }
@@ -1155,6 +1210,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            false,
         );
 
         assert_eq!(code, 1);
@@ -1184,7 +1240,10 @@ mod agent_boot_tests {
             let response_file = payload["response_file"]
                 .as_str()
                 .expect("spawn payload must carry a response file");
-            std::fs::write(response_file, r#"{"pane_id":7}"#).expect("write spawn reply");
+            assert!(
+                crate::rpc::write_response(response_file, br#"{"pane_id":7}"#),
+                "write spawn reply"
+            );
             tx.send(payload).ok();
         });
 
@@ -1205,6 +1264,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            false,
         );
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -1237,7 +1297,10 @@ mod agent_boot_tests {
             let payload: serde_json::Value =
                 serde_json::from_str(&line).expect("spawn payload json");
             let response_file = payload["response_file"].as_str().expect("response file");
-            std::fs::write(response_file, r#"{"pane_id":7}"#).expect("write spawn reply");
+            assert!(
+                crate::rpc::write_response(response_file, br#"{"pane_id":7}"#),
+                "write spawn reply"
+            );
             tx.send(payload).ok();
         });
 
@@ -1258,6 +1321,7 @@ mod agent_boot_tests {
             &[],
             None,
             Some(&agent),
+            false,
         );
         let payload = rx
             .recv_timeout(std::time::Duration::from_secs(5))

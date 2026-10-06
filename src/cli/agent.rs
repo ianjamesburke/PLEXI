@@ -193,7 +193,7 @@ pub fn agent_list() -> i32 {
 }
 
 /// Resolve the workspace root from the current directory.
-fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
+pub(crate) fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -752,7 +752,7 @@ fn install_pi_extension(script_str: &str) -> i32 {
     0
 }
 
-fn pi_extension_script(script_str: &str) -> String {
+pub(crate) fn pi_extension_script(script_str: &str) -> String {
     format!(
         r#"// Plexi-managed agent state extension.
 import {{ spawn }} from "node:child_process";
@@ -786,7 +786,24 @@ function report(eventName: string, payload: Record<string, unknown>, ctx: any) {
   }}
 }}
 
+// Plexi's host MCP server is the pane's tool boundary: the host injects a
+// pane-scoped bearer, and the server lists and dispatches only the app tools
+// reachable from this pane's context. Pi's built-in MCP client connects it;
+// the token stays in the environment, never in the registered config.
+function registerPlexiHostMcp(pi: ExtensionAPI) {{
+  const port = process.env.PLEXI_HOST_MCP_PORT;
+  if (!port || !process.env.PLEXI_HOST_MCP_TOKEN) return;
+  if (typeof pi.registerMcpServer !== "function") return;
+  pi.registerMcpServer("plexi", {{
+    url: `http://127.0.0.1:${{port}}/mcp`,
+    headers: {{ Authorization: "Bearer ${{PLEXI_HOST_MCP_TOKEN}}" }},
+    exposure: "direct",
+    description: "Plexi host: app tools and event streams in this pane's context",
+  }});
+}}
+
 export default function (pi: ExtensionAPI) {{
+  registerPlexiHostMcp(pi);
   pi.on("session_start", (event, ctx) => report("session_start", {{ reason: event.reason }}, ctx));
   pi.on("before_agent_start", (_event, ctx) => report("before_agent_start", {{}}, ctx));
   pi.on("agent_start", (_event, ctx) => report("agent_start", {{}}, ctx));
@@ -1131,6 +1148,11 @@ mod agent_tests {
         assert!(pi.contains("PLEXI_AGENT_NAME: \"pi\""));
         assert!(pi.contains("pi.on(\"tool_call\""));
         assert!(pi.contains("pi.on(\"agent_end\""));
+        // Pi reaches app tools through the existing host MCP server, with the
+        // pane-scoped bearer read from the environment rather than embedded.
+        assert!(pi.contains("pi.registerMcpServer(\"plexi\""));
+        assert!(pi.contains("http://127.0.0.1:${port}/mcp"));
+        assert!(pi.contains("Bearer ${PLEXI_HOST_MCP_TOKEN}"));
     }
 
     #[test]

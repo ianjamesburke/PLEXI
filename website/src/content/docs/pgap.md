@@ -60,15 +60,59 @@ Messages the app sends to request host services.
 
 ### `submit_assistant_turn`
 
-Submit one text turn to a host Assistant pane.
+Submit one text turn to a host Assistant pane. Submit one text turn to an existing Assistant pane. The pane owns the ...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `context_id` | `integer?` | no |
+| `head` | `string?` | no |
+| `conversation_id` | `string?` | no |
+| `join_desktop` | `boolean` | no |
 | `pane_id` | `integer?` | no |
 | `request_id` | `string` | yes |
 | `response_file` | `string` | yes |
+| `status_for` | `string?` | no |
 | `text` | `string` | yes |
+
+### `open_assistant_head`
+
+Open an Assistant pane bound to one head in the active context.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `context_id` | `integer?` | no |
+| `head` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `assistant_host_tool`
+
+Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …) through the same permission gate the desktop ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `input_json` | `string` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `command_view`
+
+Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`. Send starts a real lead turn. Cancel sto...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | no |
+| `response_file` | `string` | yes |
+
+### `agent_queue`
+
+Assign, cancel, or list headless queue tasks for a lead.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | no |
+| `response_file` | `string` | yes |
 
 ### `capability_request`
 
@@ -271,6 +315,7 @@ Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps. Requires 
 | `context_name` | `string?` | no |
 | `cwd` | `string?` | no |
 | `ephemeral` | `boolean` | no |
+| `force_new` | `boolean` | no |
 | `from_pane_id` | `integer?` | no |
 | `layout` | `string?` | no |
 | `name` | `string?` | no |
@@ -596,6 +641,38 @@ Resolve one pending permission request from the desktop observation seam.
 |-------|------|----------|
 | `choice` | `string` | yes |
 | `pending_request_id` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `list_needs_you`
+
+List items waiting on the human. The host expires due items first.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `resolve_needs_you`
+
+Resolve one needs-you item exactly once. `approve` false denies it. `from_phone` refuses approval of an irreversible ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `approve` | `boolean` | yes |
+| `id` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `agents_api`
+
+Agents API: heads, runs, delegation, and gated tool calls. `op` is `create_head`, `list_heads`, `spawn_run`, `list_ru...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | yes |
+| `response_file` | `string` | yes |
+
+| `from_phone` | `boolean` | no |
+| `id` | `string` | yes |
 | `response_file` | `string` | yes |
 
 ### `call_app_tool`

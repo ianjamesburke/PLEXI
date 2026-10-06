@@ -17,6 +17,8 @@ Submit a text turn to the running host Assistant
 | Subcommand | Description |
 |---|---|
 | `send` | Submit through the same composer, model, and permission path as the desktop Assistant |
+| `open` | Open an Assistant pane bound to a head |
+| `tool` | Run one Assistant host tool through the host permission gate |
 | `permission` | Observe and resolve pending permission requests. This is not `plexi agent request` |
 
 ### `plexi assistant send`
@@ -25,13 +27,38 @@ Submit through the same composer, model, and permission path as the desktop Assi
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--text` | string | yes |  |
+| `--text` | string | no | Prompt text. Omitted when `--status-for` only reads a pending turn |
+| `--head` | string | no | Lead id. The turn runs in that head's conversation |
 | `--request-id` | string | no |  |
 | `--pane-id` | string | no |  |
 | `--context-id` | string | no |  |
 | `--client` | string | no | Ledger client tag for this run. Omitted uses `[ai] client` |
 | `--kind` | string | no | Ledger run kind: `system` or `output`. Omitted means `output` |
+| `--conversation` | string | no | Caller-owned conversation. A phone session passes one stable id. Omit to start a new conversation that is not the desktop transcript |
+| `--desktop` | flag | no | Append this turn to the desktop Assistant conversation |
+| `--status-for` | string | no | Read the outcome of a turn that already returned waiting_for_permission. Does not submit a new prompt |
 | `--json` | flag | no |  |
+
+### `plexi assistant open`
+
+Open an Assistant pane bound to a head.
+
+Example: plexi assistant open --head lead-b
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head id created with `agent head create` |
+
+### `plexi assistant tool`
+
+Run one Assistant host tool through the host permission gate.
+
+Example: plexi assistant tool host.files.edit --input '{"path":"/tmp/note.md","old_string":"a","new_string":"b"}'
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Tool name, for example `host.editors.list` or `host.files.edit` |
+| `--input` | string | yes | JSON object passed as the tool input |
 
 ### `plexi assistant permission`
 
@@ -41,7 +68,7 @@ Observe and resolve pending permission requests. This is not `plexi agent reques
 |---|---|
 | `list` | List pending permission requests as JSON |
 | `show` | Show one pending permission request as JSON |
-| `resolve` | Resolve one pending request: once, session, always, or deny |
+| `resolve` | Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal |
 
 #### `plexi assistant permission list`
 
@@ -57,12 +84,146 @@ Show one pending permission request as JSON
 
 #### `plexi assistant permission resolve`
 
-Resolve one pending request: once, session, always, or deny
+Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
+
+## `plexi command-view`
+
+Show every lead, its runs, and its queue. Send and cancel steer those leads.
+
+The rows come from the agents API head records, runs, and each head's conversation. `open` shows the same projection in a pane. `send` runs a real model turn. `cancel` stops that run. `resolve` and `allow` never grant, and an agent pane is refused.
+
+Example: plexi command-view --json Example: plexi command-view --follow Example: plexi command-view open Example: plexi command-view send lead-a "status?" Example: plexi command-view cancel run_example
+
+| Subcommand | Description |
+|---|---|
+| `open` | Open the command view pane in the active context |
+| `send` | Send text to a lead. The turn runs in that head's conversation |
+| `cancel` | Stop a live run before its next tool call |
+| `resolve` | Resolve a pending approval. An agent pane is refused, and this command does not grant |
+| `allow` | Record an allow. An agent pane is refused, and this command does not grant |
+
+### `plexi command-view open`
+
+Open the command view pane in the active context
+
+### `plexi command-view send`
+
+Send text to a lead. The turn runs in that head's conversation.
+
+Example: plexi command-view send lead-a "status?"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<lead>` | string | yes | Lead id |
+| `<text>` | string | yes | Prompt for that lead |
+
+### `plexi command-view cancel`
+
+Stop a live run before its next tool call.
+
+Example: plexi command-view cancel run_example
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<run>` | string | yes | Run id from `command-view --json` |
+
+### `plexi command-view resolve`
+
+Resolve a pending approval. An agent pane is refused, and this command does not grant.
+
+Example: plexi command-view resolve pending_example
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Pending request id |
+
+### `plexi command-view allow`
+
+Record an allow. An agent pane is refused, and this command does not grant.
+
+Example: plexi command-view allow --tool assistant.turn
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--tool` | string | no | Tool name. Ignored. The command does not write a grant |
+
+## `plexi permissions`
+
+Permission grants. Allowing from the terminal is refused
+
+| Subcommand | Description |
+|---|---|
+| `allow` | Ask the host to allow a pending request. The host refuses |
+
+### `plexi permissions allow`
+
+Ask the host to allow a pending request. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+## `plexi relay`
+
+Pair a phone through the Plexi relay and deliver its messages to this desktop
+
+| Subcommand | Description |
+|---|---|
+| `connect` | Connect outbound to a phone relay and forward paired messages to the Assistant |
+| `confirm` | Confirm a phone that redeemed the pairing code shown by `relay connect` |
+| `revoke` | Revoke a paired phone. It must pair again and be confirmed |
+| `pair` | Start a pairing code for another phone. Phones already paired stay paired |
+| `enable` | Remember the relay URL and connect it from the host on startup |
+| `disable` | Stop connecting to the relay when the host starts |
+| `status` | Print the desktop's relay status |
+
+### `plexi relay connect`
+
+Connect outbound to a phone relay and forward paired messages to the Assistant
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
+
+### `plexi relay confirm`
+
+Confirm a phone that redeemed the pairing code shown by `relay connect`
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pairing_id>` | string | no | Pairing id. Omit to confirm the phone currently waiting |
+
+### `plexi relay revoke`
+
+Revoke a paired phone. It must pair again and be confirmed
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<device_id>` | string | yes | Device id printed when the phone was confirmed |
+
+### `plexi relay pair`
+
+Start a pairing code for another phone. Phones already paired stay paired
+
+### `plexi relay enable`
+
+Remember the relay URL and connect it from the host on startup
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
+
+### `plexi relay disable`
+
+Stop connecting to the relay when the host starts
+
+### `plexi relay status`
+
+Print the desktop's relay status
 
 ## `plexi run`
 
@@ -102,11 +263,89 @@ Remove pane slot files for panes that are no longer open
 |---|---|---|---|
 | `--dry-run` | flag | no | Print slot directories that would be removed without deleting them |
 
+## `plexi changes`
+
+Preview and accept an agent's file edit before it is written.
+
+`propose` stores a change set and does not modify the file. `preview` prints the diff. `accept` writes it after the permission gate admits the same edit. If the file changed since propose, accept reports `stale` until `refresh`. `revert` restores a committed set.
+
+| Subcommand | Description |
+|---|---|
+| `allow` | Record a permission-gate allow for one exact edit |
+| `propose` | Prepare an edit. The file is not modified |
+| `preview` | Print the prepared diff and whether the set is stale |
+| `accept` | Write a pending change set after the permission gate admits it |
+| `refresh` | Rebase a stale change set onto the file's current text |
+| `revert` | Restore the file to the text from before accept |
+| `profile` | Print this binary's profile directory |
+
+### `plexi changes allow`
+
+Record a permission-gate allow for one exact edit
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--agent` | string | yes | Agent id the grant and the later audit row name |
+| `--file` | string | yes | File the edit applies to |
+| `--old` | string | yes | Exact text to replace. It must occur once |
+| `--new` | string | yes | Replacement text |
+
+### `plexi changes propose`
+
+Prepare an edit. The file is not modified
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--agent` | string | yes | Agent id recorded on the change set |
+| `--file` | string | yes | File the edit applies to |
+| `--old` | string | yes | Exact text to replace. It must occur once |
+| `--new` | string | yes | Replacement text |
+
+### `plexi changes preview`
+
+Print the prepared diff and whether the set is stale
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes accept`
+
+Write a pending change set after the permission gate admits it
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes refresh`
+
+Rebase a stale change set onto the file's current text
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes revert`
+
+Restore the file to the text from before accept
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Change set id from `propose` |
+
+### `plexi changes profile`
+
+Print this binary's profile directory.
+
+Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`). Scripts should ask here instead of assuming `~/.plexi`.
+
 ## `plexi secret`
 
-Store and retrieve secrets (API keys, passwords, tokens) for your project.
+Store and retrieve secrets (API keys, passwords, tokens).
 
-On macOS, secrets are saved to the system keychain. On Linux, they are saved in a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as environment variables when you run commands. Use `plexi workspace init` first to scope secrets to a project.
+Workspace secrets (`secret set` without `--folder`) are saved to the system keychain on macOS. On Linux those workspace entries are a mode-`0600` profile file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`) are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file fallback. Their values are never written in plaintext under `.plexi`. A new terminal pane whose working directory is inside that folder receives the name as an environment variable. Agents and app tools read it only with a grant.
+
+Same-user native processes are not isolated from each other. A process running as this user can still read a value that a pane already holds. Folder secrets stop accidental injection into the wrong directory.
 
 | Subcommand | Description |
 |---|---|
@@ -114,6 +353,10 @@ On macOS, secrets are saved to the system keychain. On Linux, they are saved in 
 | `get` | Print a stored secret's value to stdout |
 | `list` | Show stored secrets |
 | `delete` | Delete a stored secret |
+| `rm` | Remove a folder-scoped secret |
+| `grant` | Ask for an allow on a folder secret. This command does not record one |
+| `read` | Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
+| `exec` | Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory |
 
 ### `plexi secret set`
 
@@ -129,6 +372,7 @@ Use --from-env to read the value from an existing environment variable instead o
 | `--from-env` | flag | no | Read the value from the environment variable named FRIENDLY_NAME instead of prompting |
 | `--global` | flag | no | Store this secret globally so it's available in all projects, not just this one |
 | `--alias` | string | no | Use a different platform-store entry name than the canonical env var name. On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal |
+| `--folder` | string | no | Bind the secret to this directory. The value is stored in the OS keychain (or the labeled encrypted-file fallback) and injected into panes whose cwd is this directory or a subdirectory |
 
 ### `plexi secret get`
 
@@ -161,6 +405,95 @@ Use --global to delete a globally-stored secret (one stored with `secret set --g
 |---|---|---|---|
 | `<friendly_name>` | string | yes |  |
 | `--global` | flag | no | Delete from the global store instead of the project-scoped store |
+
+### `plexi secret rm`
+
+Remove a folder-scoped secret
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--folder` | string | yes | Directory the secret was bound to |
+
+### `plexi secret grant`
+
+Ask for an allow on a folder secret. This command does not record one.
+
+Returns `permission_denied` and writes an audit row with the secret name and folder, never the value. This process does not record an allow. An agent pane cannot grant itself a secret, including a secret bound to another folder.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--agent` | string | no | Agent id. Stored as `agent:<id>` |
+| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
+
+### `plexi secret read`
+
+Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--agent` | string | no | Agent id. Stored as `agent:<id>` |
+| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
+
+### `plexi secret exec`
+
+Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory.
+
+Refused with `permission_denied` when the caller is a pane agent, including a child of that pane that cleared `PLEXI_PANE_ID`. The command is not started and no secret value is printed. Same-user native processes are not isolated from each other.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--cwd` | string | yes | Working directory of the spawned command, and the pane cwd used for injection |
+| `<command>` | string (repeatable) | no | Command and arguments |
+## `plexi connector`
+
+Connect third-party services over OAuth.
+
+Sign-in runs in your browser; the resulting token is kept in the platform secret store and is never printed — commands report only a credential reference. Revoke removes it locally and at the issuer.
+
+| Subcommand | Description |
+|---|---|
+| `login` | Sign in to a connector and store its credential |
+| `status` | Show a connector's stored credential reference as JSON (never the token) |
+| `revoke` | Revoke a connector's credential at the issuer and delete it locally |
+
+### `plexi connector login`
+
+Sign in to a connector and store its credential.
+
+Opens the issuer's sign-in page in your browser and waits for it to redirect back to a one-time loopback address. Prints the stored credential reference as JSON. Exit 0 connected, 2 timed out, 1 denied or failed.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes | Connector id (currently only `stub`, a local test issuer) |
+| `--issuer` | string | no | Base URL of the stub issuer; must be a loopback address |
+| `--no-browser` | flag | no | Print the sign-in URL instead of opening a browser |
+| `--timeout` | string | no | Seconds to wait for the browser to redirect back Default: `300`. |
+| `--surface` | string | no | Default: `desktop`. |
+
+### `plexi connector status`
+
+Show a connector's stored credential reference as JSON (never the token)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes |  |
+| `--surface` | string | no | Default: `desktop`. |
+
+### `plexi connector revoke`
+
+Revoke a connector's credential at the issuer and delete it locally.
+
+The local credential is deleted even when the issuer cannot be reached; that case exits 1 and says so.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<connector>` | string | yes |  |
+| `--surface` | string | no | Default: `desktop`. |
 
 ## `plexi routine`
 
@@ -284,6 +617,12 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `report` | Report agent state for this pane to the host |
 | `status` | Show current agent state for all panes |
 | `hook` | Install or uninstall agent hook integrations |
+| `head` | Create or list an agent head stored under `.plexi/agents` |
+| `run` | Spawn, list, or finish a run of an agent head |
+| `assign` | Assign work to a head. The task is stored even when no pane is open |
+| `cancel` | Stop a queued or running headless task before the next tool call |
+| `conversation` | Read one head's conversation |
+| `delegate` | Start a child run whose grants are a subset of the parent run |
 
 ### `plexi agent init`
 
@@ -391,6 +730,150 @@ Remove PLEXI agent-state hook integrations
 | `--claude-code` | flag | no | Remove Claude Code hooks |
 | `--codex` | flag | no | Remove Codex hooks |
 | `--pi` | flag | no | Remove Pi extension hooks |
+
+### `plexi agent head`
+
+Create or list an agent head stored under `.plexi/agents`.
+
+A head is a named definition. `AGENT.md` is guidance and grants nothing. `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+
+Example: plexi agent head create lead --grant agents.ping=allow --json
+
+| Subcommand | Description |
+|---|---|
+| `create` | Create a head in the current workspace |
+| `list` | List heads in the current workspace |
+
+#### `plexi agent head create`
+
+Create a head in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Head id (lowercase slug) |
+| `--display-name` | string | no | Display name. Defaults to the head id on the host when omitted |
+| `--description` | string | no | Short description stored on the head card |
+| `--grant` | string (repeatable) | no | Grant, as `tool=allow|ask|deny`. Repeatable |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent head list`
+
+List heads in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--all` | flag | no | Include temporary delegated children |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent run`
+
+Spawn, list, or finish a run of an agent head.
+
+The same `--admission` returns the original run. A different admission while that run is active is `assignment_conflict`.
+
+Example: plexi agent run spawn --head lead --admission adm-1 --json
+
+| Subcommand | Description |
+|---|---|
+| `spawn` | Claim a run of a head, append a ledger row, and run a model turn |
+| `list` | List runs in the current workspace |
+| `show` | Show one run |
+| `finish` | Mark a run finished so another admission can claim the head |
+
+#### `plexi agent run spawn`
+
+Claim a run of a head, append a ledger row, and run a model turn
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head id to run |
+| `--admission` | string | no | Admission id. The same id returns the existing run |
+| `--client-ref` | string | no | Client tag stored on the run and the ledger row |
+| `--kind` | string | no | `system` or `output` |
+| `--input-tokens` | string | no | Input tokens recorded on the ledger row |
+| `--output-tokens` | string | no | Output tokens recorded on the ledger row |
+| `--text` | string | no | Prompt for the model turn. Defaults to `run` on the host |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run list`
+
+List runs in the current workspace
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run show`
+
+Show one run
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+#### `plexi agent run finish`
+
+Mark a run finished so another admission can claim the head
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent assign`
+
+Assign work to a head. The task is stored even when no pane is open.
+
+The input file is JSON `{"text":"..."}` or a plain prompt. A running host starts it. A stopped host leaves it queued until the next start.
+
+Example: plexi agent assign --head lead-b --input task.json --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head that should run the task |
+| `--input` | string | yes | Task file. JSON with a `text` field, or the prompt itself |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent cancel`
+
+Stop a queued or running headless task before the next tool call.
+
+Example: plexi agent cancel --id task_example --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--id` | string | yes | Task id returned by `agent assign` |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent conversation`
+
+Read one head's conversation.
+
+`--as` names the lead that is asking. A lead cannot read another lead's conversation. Omit `--as` to read as the operator.
+
+Example: plexi agent conversation --head lead-b --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head whose conversation to read |
+| `--as` | string | no | Lead id to act as. A different head is refused |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent delegate`
+
+Start a child run whose grants are a subset of the parent run.
+
+A grant the parent does not hold is refused and audited. The child is temporary and does not appear in `agent head list` unless `--all`.
+
+Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--parent-run` | string | yes | Active parent run id |
+| `--name` | string | yes | Child head name |
+| `--grant` | string (repeatable) | no | Grant to copy, as `tool=allow|ask|deny`. Repeatable |
+| `--json` | flag | no | Print the host JSON reply |
 
 ## `plexi context`
 
@@ -551,6 +1034,7 @@ Default placement is a sibling split to the right — the calling pane is never 
 | `--window` | flag | no | New window |
 | `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
+| `--new` | flag | no | Spawn another instance instead of focusing one that is already open.  Use this when two panes of the same app must stay addressable. `plexi app call --pane <id>` then names which instance receives the tool. |
 
 ### `plexi app trust`
 
@@ -788,7 +1272,7 @@ Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /s
 
 Call a tool an app exposes and print its JSON result.
 
-Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity from the pane credential or peer ancestry (`pane:<id>`). A missing pane is never the human `user`. The app sees that identity, never one taken from the input. Exits 1 with `error: <message>` when the tool or the app rejects the call.
+Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity from the pane credential or peer ancestry (`pane:<id>`). A missing pane is never the human `user`. The app sees that identity, never one taken from the input. When more than one instance of the app is open, pass `--pane` or the call fails with `error_code` `ambiguous_instance` and does not pick one. Exits 1 with `error: <message>` when the tool or the app rejects the call.
 
 Example: plexi app call chess chess.state Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
 
@@ -1276,6 +1760,34 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
+## `plexi needs-you`
+
+Items waiting on the person at the desktop. The terminal can list them. Resolving from the terminal is refused and does not grant.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List open items waiting on you as JSON |
+| `resolve` | Ask the host to resolve an item. The host refuses |
+
+### `plexi needs-you list`
+
+List open items waiting on you as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi needs-you resolve`
+
+Ask the host to resolve an item. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Request approval. The host still refuses |
+| `--deny` | flag | no | Request denial. The host still refuses |
+| `--from-phone` | flag | no | The caller is a paired phone. An approval or a permission widen is refused, so phone approve never grants |
+
 ## `plexi notify`
 
 Send a notification to the Plexi UI
@@ -1330,11 +1842,31 @@ Walks through Ollama installation detection, model recommendation based on your 
 
 Example: plexi ai setup
 
+## `plexi skill`
+
+Install the agent skill compiled into this binary.
+
+Writes `SKILL.md` where Claude Code (`~/.claude/skills`) and Codex (`~/.codex/skills`) load user skills. The bytes are the copy embedded at build time, so the installed `plexi_version` matches this binary.
+
+Example: plexi skill install --agent claude
+
+| Subcommand | Description |
+|---|---|
+| `install` | Write this binary's skill for one agent CLI, or both |
+
+### `plexi skill install`
+
+Write this binary's skill for one agent CLI, or both
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--agent` | string | yes | Which agent CLI loads the skill: claude, codex, or all |
+
 ## `plexi ledger`
 
 Summarize recorded AI usage from this channel's ledger.
 
-Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
+With no subcommand, prints per-client totals for tokens, cost, runs, and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. A token count is a positive number or the word `unknown`. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
 
 | Subcommand | Description |
 |---|---|

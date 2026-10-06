@@ -216,26 +216,178 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, client, kind } => {
-                if pane_id.is_none() {
-                    let _ = self.ensure_headless_assistant(*context_id);
-                }
-                let mut submitted = false;
-                let mut failure = None;
-                for window in &mut self.windows {
-                    if context_id.is_some_and(|id| window.context_id != id) { continue; }
-                    for (id, pane) in &mut window.panes {
-                        if pane_id.is_some_and(|wanted| wanted != *id) { continue; }
-                        let Some(app) = pane.as_app_mut() else { continue; };
-                        if app.runtime.type_id() != "assistant" { continue; }
-                        submitted = true;
-                        if let Err(error) = app.runtime.submit_tagged_turn(text.clone(), request_id.clone(), response_file.clone(), client.clone(), kind.clone()) { failure = Some(error); }
-                        break;
+            crate::protocol::AppRequest::SubmitAssistantTurn {
+                text,
+                request_id,
+                response_file,
+                pane_id,
+                context_id,
+                head,
+                client,
+                kind,
+                conversation_id,
+                join_desktop,
+                status_for,
+            } => {
+                if let Some(head) = head {
+                    let workspace = context_id
+                        .and_then(|id| self.context_root_for(id))
+                        .or_else(crate::config::active_workspace_root)
+                        .unwrap_or_else(|| self.router.active().root.clone());
+                    log::info!("pane_ipc: kind=submit_assistant_turn head={head}");
+                    let accepted = crate::agent::leads::submit_turn(
+                        &workspace,
+                        head,
+                        text,
+                        request_id,
+                        response_file,
+                        None,
+                    );
+                    if accepted.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({
+                                "request_id": request_id,
+                                "state": "failed",
+                                "error": accepted.get("error").cloned().unwrap_or(serde_json::json!("lead turn was not accepted")),
+                                "error_code": accepted.get("error_code").cloned().unwrap_or(serde_json::json!("failed")),
+                            }),
+                        );
                     }
-                    if submitted { break; }
+                } else {
+                    if pane_id.is_none() && status_for.is_none() {
+                        let _ = self.ensure_headless_assistant(*context_id);
+                    }
+                    let phone_turn =
+                        status_for.is_some() || conversation_id.is_some() || *join_desktop;
+                    let mut submitted = false;
+                    let mut failure = None;
+                    for window in &mut self.windows {
+                        if context_id.is_some_and(|id| window.context_id != id) {
+                            continue;
+                        }
+                        for (id, pane) in &mut window.panes {
+                            if pane_id.is_some_and(|wanted| wanted != *id) {
+                                continue;
+                            }
+                            let Some(app) = pane.as_app_mut() else { continue };
+                            if app.runtime.type_id() != "assistant" {
+                                continue;
+                            }
+                            submitted = true;
+                            let result = if phone_turn {
+                                log::info!(
+                                    "pane_ipc: kind=submit_assistant_turn phone conversation_id={conversation_id:?} join_desktop={join_desktop} status_for={status_for:?}"
+                                );
+                                app.runtime.submit_external_turn(
+                                    text.clone(),
+                                    request_id.clone(),
+                                    response_file.clone(),
+                                    conversation_id.clone(),
+                                    *join_desktop,
+                                    status_for.clone(),
+                                )
+                            } else {
+                                app.runtime.submit_tagged_turn(
+                                    text.clone(),
+                                    request_id.clone(),
+                                    response_file.clone(),
+                                    client.clone(),
+                                    kind.clone(),
+                                )
+                            };
+                            if let Err(error) = result {
+                                failure = Some(error);
+                            }
+                            break;
+                        }
+                        if submitted {
+                            break;
+                        }
+                    }
+                    if let Some(error) = failure {
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({"request_id": request_id, "state":"failed", "error":error}),
+                        );
+                    } else if !submitted {
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
+                        );
+                    }
                 }
-                if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
-                else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
+            }
+            crate::protocol::AppRequest::OpenAssistantHead { head, context_id, response_file } => {
+                log::info!("pane_ipc: kind=open_assistant_head head={head}");
+                match self.open_assistant_for_head(head, *context_id) {
+                    Ok(pane_id) => write_json_response(response_file, serde_json::json!({"ok": true, "pane_id": pane_id, "head": head})),
+                    Err(error) => write_json_response(response_file, serde_json::json!({"ok": false, "error": error})),
+                };
+            }
+            crate::protocol::AppRequest::CommandView { op, payload, response_file } => {
+                log::info!("pane_ipc: kind=command_view op={op}");
+                let workspace = payload.get("workspace").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+                    .or_else(crate::config::active_workspace_root)
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                let mut defer_reply = false;
+                let body = match op.as_str() {
+                    "open" => match self.open_command_view(&workspace) {
+                        Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
+                        Err(error) => serde_json::json!({"ok": false, "error": error}),
+                    },
+                    "send" => {
+                        let lead = payload.get("lead").and_then(|value| value.as_str()).unwrap_or("");
+                        let text = payload.get("text").and_then(|value| value.as_str()).unwrap_or("");
+                        let request_id = payload.get("request_id").and_then(|value| value.as_str()).unwrap_or("command-view");
+                        log::info!("command_view: send lead={lead} request_id={request_id}");
+                        let accepted = crate::agent::leads::submit_turn(&workspace, lead, text, request_id, response_file, None);
+                        if accepted.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+                            defer_reply = true;
+                        }
+                        accepted
+                    }
+                    "cancel" => {
+                        let run = payload.get("run").and_then(|value| value.as_str()).unwrap_or("");
+                        log::info!("command_view: cancel run={run}");
+                        crate::agent::queue::request_cancel_run(&workspace, run)
+                    }
+                    _ => crate::agent::leads::projection(&workspace),
+                };
+                if !defer_reply {
+                    write_json_response(response_file, body);
+                }
+            }
+            crate::protocol::AppRequest::AgentQueue { op, payload, response_file } => {
+                log::info!("pane_ipc: kind=agent_queue op={op}");
+                let workspace = payload
+                    .get("workspace")
+                    .and_then(|value| value.as_str())
+                    .map(std::path::PathBuf::from)
+                    .or_else(crate::config::active_workspace_root)
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                let body = crate::agent::queue::handle(&workspace, op, payload);
+                write_json_response(response_file, body);
+            }
+            crate::protocol::AppRequest::AssistantHostTool { name, input_json, response_file } => {
+                log::info!("assistant_host_tool: ipc name={name}");
+                let result = self.dispatch_assistant_host_tool(name, input_json);
+                let body = if let Some(error) = result.error.as_deref() {
+                    serde_json::json!({
+                        "ok": false,
+                        "error": error,
+                        "error_code": result.error_code,
+                        "pending_request_id": result.pending_request_id,
+                    })
+                } else {
+                    let output = result
+                        .output_json
+                        .as_deref()
+                        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    serde_json::json!({"ok": true, "output": output})
+                };
+                write_json_response(response_file, body);
             }
             crate::protocol::AppRequest::ListPermissionRequests { response_file } => {
                 self.observe_permissions("list", None, None, response_file);
@@ -245,6 +397,63 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
+            }
+            crate::protocol::AppRequest::Permissions {
+                op,
+                id,
+                pane_id,
+                credential,
+                response_file,
+            } => {
+                self.permissions_cli_request(
+                    op,
+                    id.as_deref(),
+                    *pane_id,
+                    credential.as_deref(),
+                    response_file,
+                );
+            }
+            crate::protocol::AppRequest::ListNeedsYou { response_file } => {
+                self.observe_needs_you("list", None, None, false, response_file);
+            }
+            crate::protocol::AppRequest::ResolveNeedsYou {
+                id,
+                approve,
+                from_phone,
+                response_file,
+            } => {
+                self.observe_needs_you(
+                    "resolve",
+                    Some(id),
+                    Some(*approve),
+                    *from_phone,
+                    response_file,
+                );
+            }
+            crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
+                log::info!("pane_ipc: kind=agents_api op={op}");
+                let mut payload = payload.clone();
+                if op == "create_head" {
+                    if let Some(pane_id) = payload.get("caller_pane").and_then(|value| value.as_u64()) {
+                        let head = self.bound_head_for_pane(pane_id).unwrap_or_default();
+                        log::info!(
+                            "agents_api: create_head caller_pane={pane_id} caller_head={head}"
+                        );
+                        if let Some(obj) = payload.as_object_mut() {
+                            obj.insert(
+                                "caller_head".to_string(),
+                                serde_json::json!(head),
+                            );
+                        }
+                    }
+                }
+                let mut value = crate::agent::heads::handle_request(op, &payload);
+                if let Some(port) = crate::app::host_mcp::bound_port() {
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("mcp_port".to_string(), serde_json::json!(port));
+                    }
+                }
+                crate::rpc::write_json_response(response_file, value);
             }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
@@ -1047,17 +1256,29 @@ impl PlexiApp {
                     }
                 };
                 log::info!(
-                    "pane_ipc: kind=spawn_pane target={} layout={:?} args={:?} ephemeral={} no_focus={} from_pane_id={:?} cwd={:?} workspace_root={:?} response_file={:?}",
+                    "pane_ipc: kind=spawn_pane target={} layout={:?} args={:?} ephemeral={} no_focus={} force_new={} from_pane_id={:?} cwd={:?} workspace_root={:?} response_file={:?}",
                     spec.target_for_log(),
                     spec.layout,
                     spec.args,
                     spec.ephemeral,
                     spec.no_focus,
+                    spec.force_new,
                     spec.from_pane_id,
                     spec.cwd,
                     spec.workspace_root,
                     spec.response_file
                 );
+                let requester_is_pane = spec
+                    .peer_ancestry
+                    .as_deref()
+                    .filter(|pids| !pids.is_empty())
+                    .is_some_and(|pids| self.resolve_socket_peer_pane(pids).is_some());
+                let inject_folder_secrets = !requester_is_pane;
+                if requester_is_pane {
+                    log::info!(
+                        "pane_ipc: spawn_pane requester is a pane; withholding folder secrets"
+                    );
+                }
                 let mut response_pane_id = self.host.next_pane_id();
 
                 let active = self.active_window;
@@ -1124,6 +1345,8 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             spec.no_focus,
+                            inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if let Some(ref pane_name) = spec.name {
                             if !pane_name.is_empty() {
@@ -1160,6 +1383,8 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1182,6 +1407,8 @@ impl PlexiApp {
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                             cwd_override,
+                            inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.restore_window_focused_pane(target_win_idx, original_focused);
@@ -1225,6 +1452,8 @@ impl PlexiApp {
                                             initial_cmd.as_deref(),
                                             spec.ephemeral,
                                             cwd_override,
+                                            inject_folder_secrets,
+                                            spec.agent.is_some(),
                                         ) {
                                             Some(seeded_id) => response_pane_id = seeded_id,
                                             None => {
@@ -1272,6 +1501,8 @@ impl PlexiApp {
                                 initial_cmd.as_deref(),
                                 spec.ephemeral,
                                 cwd_override,
+                                inject_folder_secrets,
+                                spec.agent.is_some(),
                             ) {
                                 Some(seeded_id) => response_pane_id = seeded_id,
                                 None => launch_result = Err("failed to seed root pane".into()),
@@ -1304,6 +1535,8 @@ impl PlexiApp {
                             spec.ephemeral,
                             cwd_override,
                             keep_focus,
+                            inject_folder_secrets,
+                            spec.agent.is_some(),
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -1314,13 +1547,21 @@ impl PlexiApp {
                 {
                     let (target_win, orig_focused_in_target) =
                         self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
-                    launch_result = self
-                        .launch_app_by_path_with_layout_no_review_modal(
+                    launch_result = if spec.force_new {
+                        self.launch_app_by_path_forced_no_review_modal(
                             &app_path.to_string_lossy(),
                             spec.layout.clone(),
                             spec.workspace_root.clone(),
                             &spec.args,
                         )
+                    } else {
+                        self.launch_app_by_path_with_layout_no_review_modal(
+                            &app_path.to_string_lossy(),
+                            spec.layout.clone(),
+                            spec.workspace_root.clone(),
+                            &spec.args,
+                        )
+                    }
                         .map(|pane_id| {
                             if let Some(pane_id) = pane_id {
                                 response_pane_id = pane_id;
@@ -1358,13 +1599,21 @@ impl PlexiApp {
                             .view_for_context(target_context_id, &self.router)
                             .placement_for(type_id),
                     );
-                    launch_result = self
-                        .launch_app_by_id_with_layout(
+                    launch_result = if spec.force_new {
+                        self.launch_app_by_id_with_layout_forced(
                             type_id,
                             Some(placement),
                             &spec.args,
                             cwd_override,
                         )
+                    } else {
+                        self.launch_app_by_id_with_layout(
+                            type_id,
+                            Some(placement),
+                            &spec.args,
+                            cwd_override,
+                        )
+                    }
                         .map(|existing_id| {
                             // A dedup focused a live instance; the response must
                             // report that pane, not the predicted id (#0336).
@@ -1569,6 +1818,14 @@ impl PlexiApp {
                     "pane_ipc: kind=key_pane pane_id={pane_id} key_chars={}",
                     key.chars().count()
                 );
+                if self.refuse_synthetic_approval(
+                    *pane_id,
+                    Some(key),
+                    None,
+                    response_file.as_deref(),
+                ) {
+                    // Sheet keys from the socket never reach the approval widget.
+                } else {
                 let mut passthrough_raw = None;
                 // Mirror the live dispatch gate (stint 0456): while this
                 // pane's TextInput holds egui focus, keys belong to the
@@ -1683,6 +1940,7 @@ impl PlexiApp {
                     };
                     write_response(rf, json.as_bytes());
                 }
+                }
             }
             crate::protocol::AppRequest::DropFile {
                 pane_id,
@@ -1733,6 +1991,21 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=click_pane pane_id={pane_id} x={x} y={y} button={button:?}"
                 );
+                let click_abs = self.find_pane_in_any_window(*pane_id).and_then(|(win, tile)| {
+                    self.windows[win]
+                        .tree
+                        .tiles
+                        .rect(tile)
+                        .map(|rect| rect.min + egui::vec2(*x, *y))
+                });
+                if self.refuse_synthetic_approval(
+                    *pane_id,
+                    None,
+                    click_abs,
+                    response_file.as_deref(),
+                ) {
+                    // A socket click on an approval button or surface is not a grant.
+                } else {
                 let result: Result<serde_json::Value, String> = (|| {
                     let Some((win_idx, tile_id)) = self.find_pane_in_any_window(*pane_id) else {
                         return Err(format!("pane {pane_id} not found"));
@@ -1832,6 +2105,7 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     write_response(rf, json.as_bytes());
+                }
                 }
             }
             crate::protocol::AppRequest::ClickPaneNode {
@@ -2284,6 +2558,53 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} args={args:?}"
                 );
+                let approval_verb = {
+                    let name = action.to_ascii_lowercase();
+                    ["allow", "approve", "resolve", "grant", "deny", "revoke"]
+                        .iter()
+                        .any(|word| name == *word || name.contains(word))
+                };
+                if approval_verb
+                    && self.refuse_synthetic_approval(
+                        *pane_id,
+                        None,
+                        None,
+                        response_file.as_deref(),
+                    )
+                {
+                    // The surface itself refused.
+                } else if approval_verb {
+                    let pending_id = self
+                        .synthetic_approval_target(*pane_id, None, None)
+                        .or_else(|| {
+                            crate::broker::gate::PermissionMonitor::for_profile(
+                                &crate::config::config_dir(),
+                            )
+                            .list_pending()
+                            .into_iter()
+                            .next()
+                            .map(|row| row.pending_request_id)
+                        })
+                        .unwrap_or_else(|| "none".to_string());
+                    crate::broker::gate::PermissionMonitor::for_profile(
+                        &crate::config::config_dir(),
+                    )
+                    .refuse_client_resolve(&pending_id);
+                    log::info!(
+                        "permission_monitor: refused synthetic action pane={pane_id} action={action} pending={pending_id}"
+                    );
+                    if let Some(path) = response_file.as_deref() {
+                        crate::rpc::write_json_response(
+                            path,
+                            serde_json::json!({
+                                "ok": false,
+                                "error_code": "permission_denied",
+                                "error": "synthetic input cannot resolve a permission",
+                                "pending_request_id": pending_id,
+                            }),
+                        );
+                    }
+                } else {
                 let result = match self
                     .windows
                     .iter_mut()
@@ -2312,6 +2633,7 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     write_response(rf, json.as_bytes());
+                }
                 }
             }
             crate::protocol::AppRequest::CallAppTool {
@@ -2384,6 +2706,32 @@ impl PlexiApp {
                         self.emit_agent_booted(*pane_id, provenance);
                     }
                     log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
+                    if *state == crate::protocol::AgentState::Blocked
+                        && *blocked_reason != Some(crate::protocol::AgentBlockedReason::PermissionPrompt)
+                    {
+                        let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
+                            format!("{agent} is blocked")
+                        });
+                        let kind = if event.as_deref() == Some("AskQuestion") {
+                            crate::broker::gate::NeedsYouKind::Question
+                        } else {
+                            crate::broker::gate::NeedsYouKind::BlockedRun
+                        };
+                        let filed = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        )
+                        .file_needs_you(crate::broker::gate::NeedsYouFile {
+                            kind,
+                            actor: agent.clone(),
+                            resource: format!("pane:{pane_id}"),
+                            summary,
+                            expires_at: None,
+                            run_tag: session_id.clone().or_else(|| Some(format!("pane:{pane_id}"))),
+                        });
+                        if let Err(error) = filed {
+                            log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
+                        }
+                    }
                     // Fast path: answer a parked `pane new --agent` spawn the
                     // frame the hook report lands. The host-observed detector
                     // path is picked up by the level-triggered re-check in
@@ -2760,6 +3108,8 @@ impl PlexiApp {
                             Some(cmd.as_str()),
                             false,
                             None,
+                            true,
+                            false,
                         );
                     }
                 }
@@ -3172,17 +3522,13 @@ impl PlexiApp {
             store.set(app_id, &ws, cap, new_state);
             store.save();
 
-            // Dual-write the unified broker store so grants.toml stays in
-            // lockstep with the legacy permissions.toml until all call sites
-            // read through the broker (permissions-broker spec, Phase A).
-            let mut grants = crate::broker::GrantStore::load_or_default(&self.permission_store_dir);
-            grants.record_app_capability(
-                app_id,
-                &ws,
-                cap,
-                crate::broker::Decision::from_permission_state(new_state),
-            );
-            grants.save();
+            crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
+                .grant_app_capability(
+                    app_id,
+                    &ws,
+                    cap,
+                    crate::broker::Decision::from_permission_state(new_state),
+                );
 
             // Live-update every running instance of this app in this workspace.
             let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
@@ -3563,6 +3909,8 @@ impl PlexiApp {
                 ephemeral,
                 cwd,
                 false,
+                true,
+                false,
             )
         });
 
@@ -3631,6 +3979,8 @@ impl PlexiApp {
                 // `pane new --agent` requires PLEXI_SOCKET for this reason.
                 agent_cmd: None,
                 boot_timeout_secs: None,
+                peer_ancestry: None,
+                force_new: val["force_new"].as_bool().unwrap_or(false),
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
             else {

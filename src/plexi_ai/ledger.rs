@@ -6,7 +6,8 @@
 //!
 //! Row format (cost_usd is null for subscription billing; client is null when
 //! the run and `[ai] client` both leave it unset; wall_ms is omitted until a
-//! run measures it):
+//! run measures it). A token count is a positive number or the string
+//! `"unknown"` — a missing or zero reading is never stored as `0`:
 //! ```json
 //! {"ts":"2026-04-16T12:00:00Z","backend":"openrouter","billing":"metered",
 //!  "model":"anthropic/claude-haiku-4-5","input_tokens":234,"output_tokens":512,
@@ -129,8 +130,8 @@ impl LedgerSummary {
                 serde_json::json!({
                     name: group.key,
                     "runs": group.runs,
-                    "input_tokens": group.input_tokens,
-                    "output_tokens": group.output_tokens,
+                    "input_tokens": token_total_value(group.input_tokens),
+                    "output_tokens": token_total_value(group.output_tokens),
                     "cost_usd": group.cost_usd,
                     "wall_ms": group.wall_ms,
                 })
@@ -159,15 +160,33 @@ pub struct LedgerRow {
     /// Concrete model id resolved by the broker (e.g. "claude-haiku-4-5").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Prompt tokens. A positive count, or `None` when the provider did not
+    /// report a usable count. Serialized as that number or the string
+    /// `"unknown"`.
+    #[serde(serialize_with = "serialize_token_count")]
     pub input_tokens: Option<u32>,
+    /// Completion tokens. Same contract as [`Self::input_tokens`].
+    #[serde(serialize_with = "serialize_token_count")]
     pub output_tokens: Option<u32>,
     pub cost_usd: Option<f64>,
     /// Cost in USD cents, rounded. `0` for subscription billing or unknown
     /// token counts. The issue (#284) requires this on every broker row.
     pub cost_cents: u64,
+    /// Agent run that this usage belongs to. Absent on assistant broker rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Head that owned the run (`agent:<id>`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Agents-API client tag, or `internal/unallocated` when the run is not billable work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
     /// Free-form project tag (`narrative`, `du`, `personal`). Null when neither
     /// the run nor `[ai] client` set one. Always serialized so a migrated row
     /// is distinguishable from a row that has not been migrated.
+    /// Agent-run rows copy `client_ref` here so `ledger summary --by client` sees them.
     pub client: Option<String>,
     /// `system` or `output`. Null only on rows migrated from before tags
     /// existed; new rows always set it (`output` when the run did not).
@@ -212,12 +231,48 @@ impl LedgerRow {
             },
             app_id,
             model,
-            input_tokens,
-            output_tokens,
+            input_tokens: known_tokens(input_tokens),
+            output_tokens: known_tokens(output_tokens),
             cost_usd,
             cost_cents,
+            run_id: None,
+            agent_id: None,
+            client_ref: None,
+            parent_run_id: None,
             client: None,
             kind: Some(RunKind::Output),
+            wall_ms: None,
+        }
+    }
+
+    /// A run row. Token counts are the usage reported for that run. Tags are
+    /// the client and the work kind (`system` or `output`).
+    pub fn for_agent_run(
+        run_id: &str,
+        agent_id: &str,
+        client_ref: &str,
+        kind: &str,
+        parent_run_id: Option<&str>,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) -> Self {
+        let parsed = RunKind::parse(kind).unwrap_or(RunKind::Output);
+        Self {
+            ts: chrono::Utc::now().to_rfc3339(),
+            backend: "agents".to_string(),
+            billing: "metered",
+            app_id: Some(agent_id.to_string()),
+            model: None,
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+            cost_usd: None,
+            cost_cents: 0,
+            run_id: Some(run_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            client_ref: Some(client_ref.to_string()),
+            parent_run_id: parent_run_id.map(str::to_string),
+            client: Some(client_ref.to_string()),
+            kind: Some(parsed),
             wall_ms: None,
         }
     }
@@ -240,6 +295,14 @@ fn ledger_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub fn append(row: &LedgerRow) {
+    if let Err(error) = append_result(row) {
+        log::warn!("plexi_ai ledger: {error}");
+    }
+}
+
+/// Append `row` and return the I/O or encode error. Agent runs use this so a
+/// missing ledger line is a failed spawn, not a silent zero.
+pub fn append_result(row: &LedgerRow) -> Result<(), String> {
     let _guard = ledger_lock();
     // One-shot for files written before tags existed; a no-op once every
     // object already has `client` and `kind`. Runs under the same lock as
@@ -248,37 +311,30 @@ pub fn append(row: &LedgerRow) {
     let path = ledger_path();
 
     if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::warn!(
-                "plexi_ai ledger: failed to create dir {}: {e}",
-                parent.display()
-            );
-            return;
-        }
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("failed to create dir {}: {error}", parent.display())
+        })?;
     }
 
-    let line = match serde_json::to_string(row) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("plexi_ai ledger: failed to serialize row: {e}");
-            return;
-        }
-    };
+    let line = serde_json::to_string(row).map_err(|error| format!("failed to serialize row: {error}"))?;
 
-    match std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-    {
-        Ok(mut file) => {
-            if let Err(e) = writeln!(file, "{line}") {
-                log::warn!("plexi_ai ledger: write error: {e}");
-            }
-        }
-        Err(e) => {
-            log::warn!("plexi_ai ledger: failed to open {}: {e}", path.display());
-        }
-    }
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    writeln!(file, "{line}").map_err(|error| format!("write error: {error}"))?;
+    log::info!(
+        "plexi_ai ledger: appended run_id={} agent_id={} client_ref={} client={} kind={} input_tokens={} output_tokens={}",
+        row.run_id.as_deref().unwrap_or("-"),
+        row.agent_id.as_deref().unwrap_or("-"),
+        row.client_ref.as_deref().unwrap_or("-"),
+        row.client.as_deref().unwrap_or("(none)"),
+        row.kind.map(RunKind::as_str).unwrap_or("(none)"),
+        token_log(row.input_tokens),
+        token_log(row.output_tokens),
+    );
+    Ok(())
 }
 
 /// Returns the ledger path, migrating from the old `agent-ledger.jsonl` name
@@ -549,8 +605,14 @@ pub fn summary(by: SummaryBy, since: Option<&str>) -> Result<LedgerSummary, Stri
             });
         let group = &mut groups[idx];
         group.runs = group.runs.saturating_add(1);
-        add_u64(&mut group.input_tokens, json_u64(value.get("input_tokens")));
-        add_u64(&mut group.output_tokens, json_u64(value.get("output_tokens")));
+        add_u64(
+            &mut group.input_tokens,
+            json_token_count(value.get("input_tokens")),
+        );
+        add_u64(
+            &mut group.output_tokens,
+            json_token_count(value.get("output_tokens")),
+        );
         if let Some(cost) = value.get("cost_usd").and_then(serde_json::Value::as_f64) {
             group.cost_usd = Some(group.cost_usd.unwrap_or(0.0) + cost);
         }
@@ -597,6 +659,57 @@ fn tag_key(value: &serde_json::Value, field: &str) -> Option<String> {
     match value.get(field) {
         Some(serde_json::Value::String(text)) => nonempty(Some(text)),
         _ => None,
+    }
+}
+
+/// A measured token count. `"unknown"`, JSON null, a missing field, and
+/// numeric `0` do not add into a group total. Wall time uses [`json_u64`]
+/// because a measured `0` is a real duration.
+fn json_token_count(value: Option<&serde_json::Value>) -> Option<u64> {
+    let value = value?;
+    let count = match value {
+        serde_json::Value::Number(number) => number.as_u64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .map(|n| n as u64)
+        }),
+        serde_json::Value::String(text) if text == "unknown" => None,
+        _ => None,
+    };
+    count.filter(|count| *count > 0)
+}
+
+fn token_total_value(value: Option<u64>) -> serde_json::Value {
+    match value {
+        Some(count) if count > 0 => serde_json::Value::from(count),
+        _ => serde_json::Value::String("unknown".to_string()),
+    }
+}
+
+/// Positive counts stay numbers. `None` and `Some(0)` are the literal
+/// `"unknown"` so a row never persists a zero token count.
+fn known_tokens(value: Option<u32>) -> Option<u32> {
+    match value {
+        Some(count) if count > 0 => Some(count),
+        _ => None,
+    }
+}
+
+fn serialize_token_count<S: serde::Serializer>(
+    value: &Option<u32>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(count) if *count > 0 => serializer.serialize_u32(*count),
+        _ => serializer.serialize_str("unknown"),
+    }
+}
+
+fn token_log(value: Option<u32>) -> String {
+    match value {
+        Some(count) if count > 0 => count.to_string(),
+        _ => "unknown".to_string(),
     }
 }
 
@@ -1018,6 +1131,9 @@ mod ledger_tests {
         assert_eq!(value["since"], "2026-01-01");
         assert_eq!(value["groups"][1]["client"], "narrative");
         assert_eq!(value["groups"][1]["runs"], 2);
+        assert_eq!(value["groups"][1]["input_tokens"], 15);
+        assert_eq!(value["groups"][0]["input_tokens"], "unknown");
+        assert_eq!(value["groups"][0]["output_tokens"], "unknown");
         assert_eq!(value["groups"][0]["wall_ms"], serde_json::Value::Null);
 
         let by_kind = summary(SummaryBy::Kind, Some("2026-01-01")).expect("kind summary");
@@ -1105,5 +1221,70 @@ not json\n\
         );
         assert!(!fill_cost(&ledger_file(), &missing.ts, 9.0));
         assert_eq!(std::fs::read_to_string(ledger_file()).unwrap(), after);
+    }
+
+    #[test]
+    fn zero_token_counts_serialize_as_unknown_and_do_not_sum() {
+        let row = LedgerRow::with_attribution(
+            "openrouter",
+            BillingModel::Metered,
+            Some("assistant".to_string()),
+            Some("xiaomi/mimo-v2.5".to_string()),
+            Some(0),
+            Some(0),
+            None,
+        );
+        assert!(row.input_tokens.is_none());
+        assert!(row.output_tokens.is_none());
+        let line = serde_json::to_string(&row).expect("serialise");
+        assert!(
+            line.contains(r#""input_tokens":"unknown""#)
+                && line.contains(r#""output_tokens":"unknown""#),
+            "a zero count must be the literal unknown: {line}"
+        );
+        assert!(
+            !line.contains(r#""input_tokens":0"#) && !line.contains(r#""input_tokens":null"#),
+            "a row must not persist a zero or null token count: {line}"
+        );
+
+        let (_dir, _guard) = isolated_ledger();
+        let lines = [
+            r#"{"ts":"2026-02-01T00:00:00Z","backend":"openrouter","billing":"metered","input_tokens":10,"output_tokens":4,"cost_usd":0.1,"cost_cents":10,"client":"narrative","kind":"output","wall_ms":0}"#,
+            r#"{"ts":"2026-02-01T01:00:00Z","backend":"openrouter","billing":"metered","input_tokens":"unknown","output_tokens":"unknown","cost_usd":0.1,"cost_cents":10,"client":"narrative","kind":"output"}"#,
+            r#"{"ts":"2026-02-01T02:00:00Z","backend":"openrouter","billing":"metered","input_tokens":0,"output_tokens":0,"cost_usd":0.1,"cost_cents":10,"client":"narrative","kind":"output"}"#,
+            r#"{"ts":"2026-02-01T03:00:00Z","backend":"openrouter","billing":"metered","input_tokens":"unknown","output_tokens":"unknown","cost_usd":null,"cost_cents":0,"client":"du","kind":"output"}"#,
+        ];
+        std::fs::write(ledger_file(), lines.join("\n") + "\n").unwrap();
+        let report = summary(SummaryBy::Client, None).expect("summary");
+        let narrative = report
+            .groups
+            .iter()
+            .find(|group| group.key.as_deref() == Some("narrative"))
+            .expect("narrative");
+        assert_eq!(narrative.runs, 3);
+        assert_eq!(narrative.input_tokens, Some(10));
+        assert_eq!(narrative.output_tokens, Some(4));
+        assert_eq!(
+            narrative.wall_ms,
+            Some(0),
+            "a measured wall time of 0 is a duration"
+        );
+        let du = report
+            .groups
+            .iter()
+            .find(|group| group.key.as_deref() == Some("du"))
+            .expect("du");
+        assert_eq!(du.runs, 1);
+        assert!(du.input_tokens.is_none());
+        assert!(du.output_tokens.is_none());
+        let value = report.to_value();
+        let du_json = value["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["client"] == "du")
+            .unwrap();
+        assert_eq!(du_json["input_tokens"], "unknown");
+        assert_eq!(du_json["output_tokens"], "unknown");
     }
 }

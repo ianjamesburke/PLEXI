@@ -6,14 +6,14 @@ type = "app"
 name = "Permissions"
 entry = "main.py"
 version = "0.1.0"
-description = "View and manage capability permissions for every app"
+description = "Review and change live tool permission decisions"
 watch = true
 
 [runtime]
 python_compat = true
 
 [app.capabilities]
-capabilities = ["permissions.manage"]
+capabilities = []
 
 [launch]
 

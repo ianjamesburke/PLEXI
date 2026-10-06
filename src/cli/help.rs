@@ -6,14 +6,27 @@ use crate::release::ReleaseFeature;
 const HELP_GROUPS: &[(&str, &[&str])] = &[
     (
         "Workspace",
-        &["run", "workspace", "secret", "routine", "agent", "context"],
+        &["run", "workspace", "secret", "connector", "routine", "agent", "context"],
     ),
     ("Apps", &["app", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),
-    ("AI", &["assistant", "ai", "ledger"]),
+    (
+        "AI",
+        &[
+            "ai",
+            "assistant",
+            "changes",
+            "command-view",
+            "ledger",
+            "needs-you",
+            "permissions",
+            "relay",
+        ],
+    ),
     (
         "System",
         &[
+            "skill",
             "completions",
             "host",
             "config",
@@ -67,6 +80,9 @@ pub fn gate_command(cmd: clap::Command, enabled: impl Fn(ReleaseFeature) -> bool
     }
     if !enabled(ReleaseFeature::Routines) {
         cmd = cmd.mut_subcommand("routine", |routine| routine.hide(true));
+    }
+    if !enabled(ReleaseFeature::Connectors) {
+        cmd = cmd.mut_subcommand("connector", |connector| connector.hide(true));
     }
     if !enabled(ReleaseFeature::AppWrappers) {
         cmd = cmd.mut_subcommand("app", |app| {

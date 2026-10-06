@@ -61,8 +61,12 @@ pub enum ComposerEvent {
     Submit,
     /// The user decided the pending permission sheet.
     Permission(PermissionChoice),
+    /// Open the Permissions app from a denied tool row.
+    ReviewPermissions,
     /// Enter pressed in an open picker/manager overlay: apply the selection.
     OverlayConfirm,
+    /// Header action: create another lead and open its Assistant pane.
+    NewLead,
 }
 
 /// Row label for a permission decision — "block" reads clearer than "deny" in
@@ -252,13 +256,24 @@ impl AssistantRenderer {
                 }
             });
 
+        let mut transcript_event = None;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(style::SPACE_MD as i8, 0)),
             )
             .show_inside(ui, |ui| {
-                Self::draw_transcript(ui, model, md_cache, text_cache, colors);
+                ui.horizontal(|ui| {
+                    let title = model.session_name.as_deref().unwrap_or("Assistant");
+                    ui.label(RichText::new(format!("lead {title}")).strong().color(colors.text_primary));
+                    if ui.button("New lead").clicked() {
+                        event = Some(ComposerEvent::NewLead);
+                    }
+                });
+                transcript_event = Self::draw_transcript(ui, model, md_cache, text_cache, colors);
             });
+        if event.is_none() {
+            event = transcript_event;
+        }
 
         if let Some(rect) = composer_rect {
             if model.overlay_active() {
@@ -277,7 +292,7 @@ impl AssistantRenderer {
         md_cache: &mut egui_commonmark::CommonMarkCache,
         text_cache: &mut MarkdownTextCache,
         colors: &Colors,
-    ) {
+    ) -> Option<ComposerEvent> {
         // Native cross-widget text selection: a drag started in one bubble must
         // extend through the gaps into the next, so the user can copy a span
         // across several messages. egui's multi-widget selection is already on
@@ -309,7 +324,7 @@ impl AssistantRenderer {
                     .turn_anchor
                     .unwrap_or(model.turns.len())
                     .min(model.turns.len());
-                Self::draw_turn_range(
+                let mut review = Self::draw_turn_range(
                     ui,
                     md_cache,
                     text_cache,
@@ -336,7 +351,7 @@ impl AssistantRenderer {
                         Self::draw_streaming_row(ui, model, md_cache, colors);
                     });
                 }
-                Self::draw_turn_range(
+                review = review.or(Self::draw_turn_range(
                     ui,
                     md_cache,
                     text_cache,
@@ -345,9 +360,11 @@ impl AssistantRenderer {
                     colors,
                     &model.turns[anchor..],
                     model.show_thoughts,
-                );
+                ));
                 ui.add_space(style::SPACE_SM);
-            });
+                review
+            })
+            .inner
     }
 
     /// Egui intentionally ignores wheel input while a child widget owns a
@@ -379,10 +396,11 @@ impl AssistantRenderer {
         colors: &Colors,
         turns: &[super::model::Turn],
         show_thoughts: bool,
-    ) {
+    ) -> Option<ComposerEvent> {
+        let mut event = None;
         for (i, turn) in turns.iter().enumerate() {
             ui.push_id(index_offset + i, |ui| {
-                Self::draw_turn_row(
+                let row = Self::draw_turn_row(
                     ui,
                     md_cache,
                     text_cache,
@@ -392,8 +410,12 @@ impl AssistantRenderer {
                     turn,
                     show_thoughts,
                 );
+                if event.is_none() {
+                    event = row;
+                }
             });
         }
+        event
     }
 
     /// One completed tool call: a caret dropdown headed by status icon +
@@ -402,7 +424,11 @@ impl AssistantRenderer {
     /// 0455). Failures open by default and render in the danger hue — a
     /// failure must never hide. Rows persisted before the dropdown payloads
     /// existed render as a plain line (no caret over an empty body).
-    fn draw_tool_call_row(ui: &mut egui::Ui, colors: &Colors, turn: &super::model::Turn) {
+    fn draw_tool_call_row(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        turn: &super::model::Turn,
+    ) -> Option<ComposerEvent> {
         let failed = turn.status == Some(ToolStatus::Failed);
         let (icon, color) = if failed {
             ("✗", colors.danger)
@@ -434,24 +460,30 @@ impl AssistantRenderer {
             turn.input_summary.is_some() || turn.output_preview.is_some() || turn.detail.is_some();
         if !has_body {
             ui.label(header);
-            ui.add_space(style::SPACE_SM);
-            return;
+        } else {
+            egui::CollapsingHeader::new(header)
+                .id_salt("tool_call")
+                .default_open(failed)
+                .show(ui, |ui| {
+                    if let Some(input) = &turn.input_summary {
+                        Self::draw_preview_block(ui, colors, "in", input);
+                    }
+                    if let Some(output) = &turn.output_preview {
+                        Self::draw_preview_block(ui, colors, "out", output);
+                    }
+                    if let Some(diff) = &turn.detail {
+                        Self::draw_diff_block(ui, colors, diff);
+                    }
+                });
         }
-        egui::CollapsingHeader::new(header)
-            .id_salt("tool_call")
-            .default_open(failed)
-            .show(ui, |ui| {
-                if let Some(input) = &turn.input_summary {
-                    Self::draw_preview_block(ui, colors, "in", input);
-                }
-                if let Some(output) = &turn.output_preview {
-                    Self::draw_preview_block(ui, colors, "out", output);
-                }
-                if let Some(diff) = &turn.detail {
-                    Self::draw_diff_block(ui, colors, diff);
-                }
-            });
+        let review = if turn.text.contains("plexi permissions list") {
+            let response = chrome_button(ui, "Review permissions", ButtonKind::Secondary, colors, 0.0);
+            response.clicked().then_some(ComposerEvent::ReviewPermissions)
+        } else {
+            None
+        };
         ui.add_space(style::SPACE_SM);
+        review
     }
 
     /// A labeled multi-line preview (tool input/output, stint 0460): real
@@ -547,7 +579,7 @@ impl AssistantRenderer {
         colors: &Colors,
         turn: &super::model::Turn,
         show_thoughts: bool,
-    ) {
+    ) -> Option<ComposerEvent> {
         let text = turn.text.as_str();
         match turn.role {
             // Delivered app events are compact single-line rows.
@@ -562,7 +594,7 @@ impl AssistantRenderer {
             }
             // Completed tool calls are caret-dropdown rows (stint 0455).
             TurnRole::Tool => {
-                Self::draw_tool_call_row(ui, colors, turn);
+                return Self::draw_tool_call_row(ui, colors, turn);
             }
             // User turns sit right-aligned in an outlined bubble, like every
             // mainstream chat client. The body is a galley measured up-front at
@@ -617,6 +649,7 @@ impl AssistantRenderer {
                 ui.add_space(style::SPACE_MD);
             }
         }
+        None
     }
 
     /// A tool call currently running inside the in-flight turn. The input
@@ -691,23 +724,10 @@ impl AssistantRenderer {
                 ui.scope(|ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.set_max_width(ui.available_width());
-                    let who = if pending.actor_id.is_empty() {
-                        "assistant (medium)".to_string()
-                    } else {
-                        pending.actor_id.clone()
-                    };
-                    let resource = if pending.resource_id.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" on {}", pending.resource_id)
-                    };
                     ui.label(
-                        RichText::new(format!(
-                            "{who} wants to run '{tool}'{resource}",
-                            tool = pending.tool
-                        ))
-                        .size(style::TEXT_BODY)
-                        .color(colors.text_primary),
+                        RichText::new(pending.prompt_line())
+                            .size(style::TEXT_BODY)
+                            .color(colors.text_primary),
                     );
                     if let Some(mv) = move_label(&pending.input_summary) {
                         ui.label(
@@ -724,7 +744,7 @@ impl AssistantRenderer {
                     });
                 }
                 ui.add_space(style::SPACE_XS);
-                let actions: [(&str, ButtonKind, PermissionChoice); 4] = [
+                let actions: [(&str, ButtonKind, PermissionChoice); 5] = [
                     (
                         "Allow once",
                         ButtonKind::Accent,
@@ -739,6 +759,11 @@ impl AssistantRenderer {
                         "Always allow",
                         ButtonKind::Primary,
                         PermissionChoice::AllowAlways,
+                    ),
+                    (
+                        "Always deny",
+                        ButtonKind::Danger,
+                        PermissionChoice::DenyAlways,
                     ),
                     ("Deny", ButtonKind::Danger, PermissionChoice::Deny),
                 ];

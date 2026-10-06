@@ -46,6 +46,47 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
+    /// Show every lead, its runs, and its queue. Send and cancel steer those leads.
+    ///
+    /// The rows come from the agents API head records, runs, and each head's
+    /// conversation. `open` shows the same projection in a pane. `send` runs a
+    /// real model turn. `cancel` stops that run. `resolve` and `allow` never
+    /// grant, and an agent pane is refused.
+    ///
+    /// Example: plexi command-view --json
+    /// Example: plexi command-view --follow
+    /// Example: plexi command-view open
+    /// Example: plexi command-view send lead-a "status?"
+    /// Example: plexi command-view cancel run_example
+    #[command(name = "command-view")]
+    CommandView {
+        #[command(subcommand)]
+        cmd: Option<CommandViewCmd>,
+        /// Print the projection as JSON.
+        #[arg(long, global = true)]
+        json: bool,
+        /// Stream `command.view` events from `plexi.host.command` until interrupted.
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Items waiting on the person at the desktop. The terminal can list them.
+    /// Resolving from the terminal is refused and does not grant.
+    #[command(name = "needs-you")]
+    NeedsYou {
+        #[command(subcommand)]
+        cmd: NeedsYouCmd,
+    },
+    /// Permission grants. `list` is observation. Reset and allow from the
+    /// terminal file Needs you and do not grant. Revoke narrows.
+    Permissions {
+        #[command(subcommand)]
+        cmd: PermissionsCmd,
+    },
+    /// Pair a phone through the Plexi relay and deliver its messages to this desktop.
+    Relay {
+        #[command(subcommand)]
+        cmd: RelayCmd,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -68,16 +109,42 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: WorkspaceCmd,
     },
-    /// Store and retrieve secrets (API keys, passwords, tokens) for your project.
+    /// Preview and accept an agent's file edit before it is written.
     ///
-    /// On macOS, secrets are saved to the system keychain. On Linux, they are saved in
-    /// a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as
-    /// environment variables when you run commands. Use `plexi workspace init` first
-    /// to scope secrets to a project.
+    /// `propose` stores a change set and does not modify the file. `preview`
+    /// prints the diff. `accept` writes it after the permission gate admits
+    /// the same edit. If the file changed since propose, accept reports
+    /// `stale` until `refresh`. `revert` restores a committed set.
+    Changes {
+        #[command(subcommand)]
+        cmd: ChangesCmd,
+    },
+    /// Store and retrieve secrets (API keys, passwords, tokens).
+    ///
+    /// Workspace secrets (`secret set` without `--folder`) are saved to the system
+    /// keychain on macOS. On Linux those workspace entries are a mode-`0600` profile
+    /// file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`)
+    /// are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file
+    /// fallback. Their values are never written in plaintext under `.plexi`. A new
+    /// terminal pane whose working directory is inside that folder receives the name
+    /// as an environment variable. Agents and app tools read it only with a grant.
+    ///
+    /// Same-user native processes are not isolated from each other. A process
+    /// running as this user can still read a value that a pane already holds.
+    /// Folder secrets stop accidental injection into the wrong directory.
     #[command(alias = "secrets")]
     Secret {
         #[command(subcommand)]
         cmd: SecretCmd,
+    },
+    /// Connect third-party services over OAuth.
+    ///
+    /// Sign-in runs in your browser; the resulting token is kept in the platform
+    /// secret store and is never printed — commands report only a credential
+    /// reference. Revoke removes it locally and at the issuer.
+    Connector {
+        #[command(subcommand)]
+        cmd: ConnectorCmd,
     },
     /// Manage workspace routines — scheduled shell commands.
     ///
@@ -165,19 +232,32 @@ pub enum Commands {
     },
     /// Summarize recorded AI usage from this channel's ledger.
     ///
-    /// Reads `ai-ledger.jsonl` in the channel profile. Does not require a
-    /// running host. Rows written before run tags existed are migrated in
+    /// With no subcommand, prints per-client totals for tokens, cost, runs,
+    /// and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does
+    /// not require a running host. A token count is a positive number or the
+    /// word `unknown`. Rows written before run tags existed are migrated in
     /// place to explicit null `client` and `kind`.
     Ledger {
         #[command(subcommand)]
-        cmd: LedgerCmd,
+        cmd: Option<LedgerCmd>,
     },
 
     // ── System ────────────────────────────────────────────────────────────────
+    /// Install the agent skill compiled into this binary.
+    ///
+    /// Writes `SKILL.md` where Claude Code (`~/.claude/skills`) and Codex
+    /// (`~/.codex/skills`) load user skills. The bytes are the copy embedded
+    /// at build time, so the installed `plexi_version` matches this binary.
+    ///
+    /// Example: plexi skill install --agent claude
+    #[command(next_help_heading = "System")]
+    Skill {
+        #[command(subcommand)]
+        cmd: SkillCmd,
+    },
     /// Print a shell completion script to stdout.
     ///
     /// Example: plexi completions zsh >> ~/.zshrc
-    #[command(next_help_heading = "System")]
     Completions {
         /// Shell name: zsh, bash, or fish
         shell: Option<String>,
@@ -268,11 +348,52 @@ pub enum Commands {
 }
 
 #[derive(Subcommand)]
+pub enum CommandViewCmd {
+    /// Open the command view pane in the active context.
+    Open,
+    /// Send text to a lead. The turn runs in that head's conversation.
+    ///
+    /// Example: plexi command-view send lead-a "status?"
+    Send {
+        /// Lead id
+        lead: String,
+        /// Prompt for that lead
+        text: String,
+    },
+    /// Stop a live run before its next tool call.
+    ///
+    /// Example: plexi command-view cancel run_example
+    Cancel {
+        /// Run id from `command-view --json`
+        run: String,
+    },
+    /// Resolve a pending approval. An agent pane is refused, and this command does not grant.
+    ///
+    /// Example: plexi command-view resolve pending_example
+    Resolve {
+        /// Pending request id
+        id: String,
+    },
+    /// Record an allow. An agent pane is refused, and this command does not grant.
+    ///
+    /// Example: plexi command-view allow --tool assistant.turn
+    Allow {
+        /// Tool name. Ignored. The command does not write a grant.
+        #[arg(long)]
+        tool: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AssistantCmd {
     /// Submit through the same composer, model, and permission path as the desktop Assistant.
     Send {
+        /// Prompt text. Omitted when `--status-for` only reads a pending turn.
+        #[arg(long, required_unless_present = "status_for")]
+        text: Option<String>,
+        /// Lead id. The turn runs in that head's conversation.
         #[arg(long)]
-        text: String,
+        head: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
         #[arg(long)]
@@ -285,13 +406,101 @@ pub enum AssistantCmd {
         /// Ledger run kind: `system` or `output`. Omitted means `output`.
         #[arg(long)]
         kind: Option<String>,
+        /// Caller-owned conversation. A phone session passes one stable id.
+        /// Omit to start a new conversation that is not the desktop transcript.
+        #[arg(long, conflicts_with = "desktop")]
+        conversation: Option<String>,
+        /// Append this turn to the desktop Assistant conversation.
+        #[arg(long, conflicts_with = "conversation")]
+        desktop: bool,
+        /// Read the outcome of a turn that already returned waiting_for_permission.
+        /// Does not submit a new prompt.
+        #[arg(long, conflicts_with_all = ["text", "desktop", "conversation"])]
+        status_for: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+    /// Open an Assistant pane bound to a head.
+    ///
+    /// Example: plexi assistant open --head lead-b
+    Open {
+        /// Head id created with `agent head create`.
+        #[arg(long)]
+        head: String,
+    },
+    /// Run one Assistant host tool through the host permission gate.
+    ///
+    /// Example: plexi assistant tool host.files.edit --input '{"path":"/tmp/note.md","old_string":"a","new_string":"b"}'
+    Tool {
+        /// Tool name, for example `host.editors.list` or `host.files.edit`.
+        name: String,
+        /// JSON object passed as the tool input.
+        #[arg(long)]
+        input: String,
     },
     /// Observe and resolve pending permission requests. This is not `plexi agent request`.
     Permission {
         #[command(subcommand)]
         cmd: AssistantPermissionCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RelayCmd {
+    /// Connect outbound to a phone relay and forward paired messages to the Assistant.
+    Connect {
+        /// Relay websocket URL (`ws://` locally, `wss://` in production).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Confirm a phone that redeemed the pairing code shown by `relay connect`.
+    Confirm {
+        /// Pairing id. Omit to confirm the phone currently waiting.
+        pairing_id: Option<String>,
+    },
+    /// Revoke a paired phone. It must pair again and be confirmed.
+    Revoke {
+        /// Device id printed when the phone was confirmed.
+        device_id: String,
+    },
+    /// Start a pairing code for another phone. Phones already paired stay paired.
+    Pair,
+    /// Remember the relay URL and connect it from the host on startup.
+    Enable {
+        /// Relay websocket URL (`ws://` locally, `wss://` in production).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Stop connecting to the relay when the host starts.
+    Disable,
+    /// Print the desktop's relay status.
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum NeedsYouCmd {
+    /// List open items waiting on you as JSON.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask the host to resolve an item. Without `--from-phone` the host refuses
+    /// and this does not grant. A paired phone may answer a question or a
+    /// blocked run. An approval click and a permission widen stay on the desktop.
+    Resolve {
+        id: String,
+        /// Request approval. A terminal is still refused. A phone is refused
+        /// when the item would grant.
+        #[arg(long, conflicts_with = "deny")]
+        approve: bool,
+        /// Request denial. A terminal is still refused.
+        #[arg(long, conflicts_with = "approve")]
+        deny: bool,
+        /// The caller is a paired phone. Approval clicks and permission widens
+        /// are refused, so phone approve never grants.
+        #[arg(long)]
+        from_phone: bool,
     },
 }
 
@@ -312,16 +521,113 @@ pub enum LedgerCmd {
 }
 
 #[derive(Subcommand)]
+pub enum PermissionsCmd {
+    /// List live permission decisions.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear a stored denial so the next call asks again.
+    /// A terminal files Needs you and does not grant.
+    Reset {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Remove an allow, or refuse a pending ask.
+    Revoke {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+    /// Ask to turn a denial or a pending ask into an allow.
+    /// A terminal files Needs you and does not grant. The Permissions app applies a click.
+    Allow {
+        /// Decision id from `plexi permissions list`.
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AssistantPermissionCmd {
     /// List pending permission requests as JSON.
     List,
     /// Show one pending permission request as JSON.
     Show { id: String },
-    /// Resolve one pending request: once, session, always, or deny.
+    /// Resolve one pending request: once, session, always, deny, or deny_always.
+    /// The host refuses every choice from the terminal.
     Resolve {
         id: String,
-        #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
+        #[arg(long, value_parser = ["once", "session", "always", "deny", "deny_always", "revoke"])]
         choice: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ChangesCmd {
+    /// Record a permission-gate allow for one exact edit.
+    Allow {
+        /// Agent id the grant and the later audit row name.
+        #[arg(long)]
+        agent: String,
+        /// File the edit applies to.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Exact text to replace. It must occur once.
+        #[arg(long)]
+        old: String,
+        /// Replacement text.
+        #[arg(long)]
+        new: String,
+    },
+    /// Prepare an edit. The file is not modified.
+    Propose {
+        /// Agent id recorded on the change set.
+        #[arg(long)]
+        agent: String,
+        /// File the edit applies to.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Exact text to replace. It must occur once.
+        #[arg(long)]
+        old: String,
+        /// Replacement text.
+        #[arg(long)]
+        new: String,
+    },
+    /// Print the prepared diff and whether the set is stale.
+    Preview {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Write a pending change set after the permission gate admits it.
+    Accept {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Rebase a stale change set onto the file's current text.
+    Refresh {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Restore the file to the text from before accept.
+    Revert {
+        /// Change set id from `propose`.
+        id: String,
+    },
+    /// Print this binary's profile directory.
+    ///
+    /// Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`).
+    /// Scripts should ask here instead of assuming `~/.plexi`.
+    Profile,
+}
+
+#[derive(Subcommand)]
+pub enum SkillCmd {
+    /// Write this binary's skill for one agent CLI, or both.
+    Install {
+        /// Which agent CLI loads the skill: claude, codex, or all.
+        #[arg(long, value_parser = ["claude", "codex", "all"])]
+        agent: String,
     },
 }
 
@@ -514,6 +820,11 @@ pub enum SecretCmd {
         /// On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal
         #[arg(long)]
         alias: Option<String>,
+        /// Bind the secret to this directory. The value is stored in the OS keychain
+        /// (or the labeled encrypted-file fallback) and injected into panes whose
+        /// cwd is this directory or a subdirectory.
+        #[arg(long, conflicts_with_all = ["global", "alias"])]
+        folder: Option<std::path::PathBuf>,
     },
     /// Print a stored secret's value to stdout.
     ///
@@ -545,6 +856,112 @@ pub enum SecretCmd {
         /// Delete from the global store instead of the project-scoped store
         #[arg(long)]
         global: bool,
+    },
+    /// Remove a folder-scoped secret.
+    Rm {
+        /// Environment variable name
+        name: String,
+        /// Directory the secret was bound to
+        #[arg(long)]
+        folder: std::path::PathBuf,
+    },
+    /// Ask for an allow on a folder secret. This command does not record one.
+    ///
+    /// Returns `permission_denied` and writes an audit row with the secret name
+    /// and folder, never the value. This process does not record an allow. An
+    /// agent pane cannot grant itself a secret, including a secret bound to
+    /// another folder.
+    Grant {
+        /// Environment variable name
+        name: String,
+        /// Agent id. Stored as `agent:<id>`.
+        #[arg(long, conflicts_with = "app")]
+        agent: Option<String>,
+        /// App id. Stored as `app:<id>`.
+        #[arg(long, conflicts_with = "agent")]
+        app: Option<String>,
+        /// Directory the secret was bound to. Required when the name exists in more than one folder.
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+    },
+    /// Read a folder secret as an agent or app. Without a grant this prints
+    /// `permission_required` and writes an audit row that names the secret
+    /// but not its value.
+    Read {
+        /// Environment variable name
+        name: String,
+        /// Agent id. Stored as `agent:<id>`.
+        #[arg(long, conflicts_with = "app")]
+        agent: Option<String>,
+        /// App id. Stored as `app:<id>`.
+        #[arg(long, conflicts_with = "agent")]
+        app: Option<String>,
+        /// Directory the secret was bound to. Required when the name exists in more than one folder.
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+    },
+    /// Run a command with the environment a new terminal pane in `--cwd` receives,
+    /// including folder secrets for that directory.
+    ///
+    /// Refused with `permission_denied` when the caller is a pane agent, including
+    /// a child of that pane that cleared `PLEXI_PANE_ID`. The command is not
+    /// started and no secret value is printed. Same-user native processes are
+    /// not isolated from each other.
+    Exec {
+        /// Working directory of the spawned command, and the pane cwd used for injection.
+        #[arg(long)]
+        cwd: std::path::PathBuf,
+        /// Command and arguments.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+}
+
+/// Which host surface runs a connector sign-in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ConnectorSurface {
+    #[default]
+    Desktop,
+    /// Not yet supported: every operation reports so.
+    Mobile,
+}
+
+#[derive(Subcommand)]
+pub enum ConnectorCmd {
+    /// Sign in to a connector and store its credential.
+    ///
+    /// Opens the issuer's sign-in page in your browser and waits for it to redirect
+    /// back to a one-time loopback address. Prints the stored credential reference
+    /// as JSON. Exit 0 connected, 2 timed out, 1 denied or failed.
+    Login {
+        /// Connector id (currently only `stub`, a local test issuer)
+        connector: String,
+        /// Base URL of the stub issuer; must be a loopback address
+        #[arg(long)]
+        issuer: Option<String>,
+        /// Print the sign-in URL instead of opening a browser
+        #[arg(long)]
+        no_browser: bool,
+        /// Seconds to wait for the browser to redirect back
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
+    },
+    /// Show a connector's stored credential reference as JSON (never the token).
+    Status {
+        connector: String,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
+    },
+    /// Revoke a connector's credential at the issuer and delete it locally.
+    ///
+    /// The local credential is deleted even when the issuer cannot be reached;
+    /// that case exits 1 and says so.
+    Revoke {
+        connector: String,
+        #[arg(long, value_enum, default_value_t)]
+        surface: ConnectorSurface,
     },
 }
 
@@ -599,6 +1016,12 @@ pub enum AppCmd {
         /// Extra arguments passed through to the app (only valid with an app id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
+        /// Spawn another instance instead of focusing one that is already open.
+        ///
+        /// Use this when two panes of the same app must stay addressable.
+        /// `plexi app call --pane <id>` then names which instance receives the tool.
+        #[arg(long)]
+        new: bool,
     },
     /// Pre-approve a raw `.wasm` component's host imports without a prompt.
     ///
@@ -869,6 +1292,8 @@ pub enum AppCmd {
     /// The host stamps the caller identity from the pane credential or peer
     /// ancestry (`pane:<id>`). A missing pane is never the human `user`.
     /// The app sees that identity, never one taken from the input.
+    /// When more than one instance of the app is open, pass `--pane` or the
+    /// call fails with `error_code` `ambiguous_instance` and does not pick one.
     /// Exits 1 with `error: <message>` when the tool or the app rejects the call.
     ///
     /// Example: plexi app call chess chess.state
@@ -1822,6 +2247,174 @@ pub enum AgentCmd {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Create or list an agent head stored under `.plexi/agents`.
+    ///
+    /// A head is a named definition. `AGENT.md` is guidance and grants nothing.
+    /// `--grant tool=allow|ask|deny` is the authority the permission gate enforces.
+    ///
+    /// Example: plexi agent head create lead --grant agents.ping=allow --json
+    Head {
+        #[command(subcommand)]
+        cmd: AgentHeadCmd,
+    },
+    /// Spawn, list, or finish a run of an agent head.
+    ///
+    /// The same `--admission` returns the original run. A different admission
+    /// while that run is active is `assignment_conflict`.
+    ///
+    /// Example: plexi agent run spawn --head lead --admission adm-1 --json
+    Run {
+        #[command(subcommand)]
+        cmd: AgentRunCmd,
+    },
+    /// Assign work to a head. The task is stored even when no pane is open.
+    ///
+    /// The input file is JSON `{"text":"..."}` or a plain prompt. A running
+    /// host starts it. A stopped host leaves it queued until the next start.
+    ///
+    /// Example: plexi agent assign --head lead-b --input task.json --json
+    Assign {
+        /// Head that should run the task
+        #[arg(long)]
+        head: String,
+        /// Task file. JSON with a `text` field, or the prompt itself.
+        #[arg(long)]
+        input: std::path::PathBuf,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a queued or running headless task before the next tool call.
+    ///
+    /// Example: plexi agent cancel --id task_example --json
+    Cancel {
+        /// Task id returned by `agent assign`
+        #[arg(long)]
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read one head's conversation.
+    ///
+    /// `--as` names the lead that is asking. A lead cannot read another
+    /// lead's conversation. Omit `--as` to read as the operator.
+    ///
+    /// Example: plexi agent conversation --head lead-b --json
+    Conversation {
+        /// Head whose conversation to read
+        #[arg(long)]
+        head: String,
+        /// Lead id to act as. A different head is refused.
+        #[arg(long = "as")]
+        as_head: Option<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start a child run whose grants are a subset of the parent run.
+    ///
+    /// A grant the parent does not hold is refused and audited. The child is
+    /// temporary and does not appear in `agent head list` unless `--all`.
+    ///
+    /// Example: plexi agent delegate --parent-run run_example --name scout --grant agents.ping=allow --json
+    Delegate {
+        /// Active parent run id
+        #[arg(long)]
+        parent_run: String,
+        /// Child head name
+        #[arg(long)]
+        name: String,
+        /// Grant to copy, as `tool=allow|ask|deny`. Repeatable.
+        #[arg(long = "grant")]
+        grant: Vec<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentHeadCmd {
+    /// Create a head in the current workspace.
+    Create {
+        /// Head id (lowercase slug)
+        name: String,
+        /// Display name. Defaults to the head id on the host when omitted.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Short description stored on the head card
+        #[arg(long)]
+        description: Option<String>,
+        /// Grant, as `tool=allow|ask|deny`. Repeatable.
+        #[arg(long = "grant")]
+        grant: Vec<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// List heads in the current workspace.
+    List {
+        /// Include temporary delegated children
+        #[arg(long)]
+        all: bool,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentRunCmd {
+    /// Claim a run of a head, append a ledger row, and run a model turn.
+    Spawn {
+        /// Head id to run
+        #[arg(long)]
+        head: String,
+        /// Admission id. The same id returns the existing run.
+        #[arg(long)]
+        admission: Option<String>,
+        /// Client tag stored on the run and the ledger row
+        #[arg(long)]
+        client_ref: Option<String>,
+        /// `system` or `output`
+        #[arg(long)]
+        kind: Option<String>,
+        /// Input tokens recorded on the ledger row
+        #[arg(long)]
+        input_tokens: Option<u32>,
+        /// Output tokens recorded on the ledger row
+        #[arg(long)]
+        output_tokens: Option<u32>,
+        /// Prompt for the model turn. Defaults to `run` on the host.
+        #[arg(long)]
+        text: Option<String>,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// List runs in the current workspace.
+    List {
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one run.
+    Show {
+        /// Run id
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark a run finished so another admission can claim the head.
+    Finish {
+        /// Run id
+        id: String,
+        /// Print the host JSON reply
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1919,8 +2512,7 @@ mod tests {
     #[test]
     fn notify_rejects_removed_level_flag() {
         assert!(
-            Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--level", "info"])
-                .is_err(),
+            Cli::try_parse_from(["plexi", "notify", "--title", "Done", "--level", "info"]).is_err(),
             "removed notification level flag must fail loudly"
         );
     }
@@ -2187,5 +2779,32 @@ mod tests {
         assert_eq!(name, None);
         assert_eq!(wasm.as_deref(), Some("counter"));
         assert_eq!(lang, "python");
+    }
+
+    #[test]
+    fn bare_ledger_is_the_per_client_summary() {
+        let cli = Cli::try_parse_from(["plexi", "ledger"]).expect("bare ledger parses");
+        assert!(matches!(cli.command, Some(Commands::Ledger { cmd: None })));
+
+        let summary = Cli::try_parse_from([
+            "plexi",
+            "ledger",
+            "summary",
+            "--by",
+            "kind",
+            "--since",
+            "2026-01-01",
+            "--json",
+        ])
+        .expect("ledger summary parses");
+        let Some(Commands::Ledger {
+            cmd: Some(super::LedgerCmd::Summary { by, since, json }),
+        }) = summary.command
+        else {
+            panic!("expected ledger summary");
+        };
+        assert_eq!(by.as_deref(), Some("kind"));
+        assert_eq!(since.as_deref(), Some("2026-01-01"));
+        assert!(json);
     }
 }

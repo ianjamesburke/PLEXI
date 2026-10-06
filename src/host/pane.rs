@@ -854,6 +854,30 @@ pub enum AppRuntime {
 }
 
 impl AppRuntime {
+    pub fn submit_external_turn(
+        &mut self,
+        text: String,
+        request_id: String,
+        response_file: String,
+        conversation_id: Option<String>,
+        join_desktop: bool,
+        status_for: Option<String>,
+    ) -> Result<(), String> {
+        match self {
+            AppRuntime::Builtin(app) => app.submit_external_turn(
+                text,
+                request_id,
+                response_file,
+                conversation_id,
+                join_desktop,
+                status_for,
+            ),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
+                Err("this app does not accept external turns".to_string())
+            }
+        }
+    }
+
     pub fn submit_tagged_turn(
         &mut self,
         text: String,
@@ -978,6 +1002,13 @@ impl AppRuntime {
     }
 
     /// Deliver the CLI/host semantic action contract to every app runtime.
+    pub fn approval_request_id(&self) -> Option<String> {
+        match self {
+            AppRuntime::Builtin(app) => app.approval_request_id(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+        }
+    }
+
     pub fn send_app_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
         match self {
             AppRuntime::Wasm(app) => {
@@ -1023,6 +1054,20 @@ impl AppRuntime {
     pub(crate) fn semantic_details(&self) -> Option<serde_json::Value> {
         match self {
             AppRuntime::Builtin(app) => app.semantic_state(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+        }
+    }
+
+    pub(crate) fn sync_change_set(&mut self) -> bool {
+        match self {
+            AppRuntime::Builtin(app) => app.sync_change_set(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+        }
+    }
+
+    pub(crate) fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
+        match self {
+            AppRuntime::Builtin(app) => app.editor_buffer(),
             AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
         }
     }
@@ -1089,6 +1134,13 @@ impl AppRuntime {
             AppRuntime::Builtin(app) => app.display_name(),
             AppRuntime::Python(app) => app.display_name(),
             AppRuntime::Wasm(app) => app.display_name(),
+        }
+    }
+
+    pub fn bound_head(&self) -> Option<&str> {
+        match self {
+            AppRuntime::Builtin(app) => app.bound_head(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
         }
     }
 

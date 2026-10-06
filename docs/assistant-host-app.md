@@ -4,7 +4,7 @@ Status: active.
 Stint: `0439`, `0381`, `0382`.
 Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md).
 Authority plane: [`assistant-authority-model.md`](assistant-authority-model.md).
-Last updated: 2026-07-27.
+Last updated: 2026-10-04.
 
 This document defines the first-party Plexi Assistant as a host app, not a PGAP app. It is the workspace operator: it can reason about panes, apps, files, permissions, installed skills, and app-exposed tools because the host owns those things.
 
@@ -294,6 +294,25 @@ The UI should expose the simple control first: `low`, `medium`, `high`. Advanced
 Agents can switch tiers during a task when policy allows it. A switch from `low` to `high` should be visible in the transcript and audit log, with a short reason. Switching concrete providers or using a more expensive tier may require confirmation if cost settings require it.
 
 Exact model pointers are for power users and package authors. Marketplace packages may recommend tier mappings but cannot silently write API keys or force a paid provider.
+
+## Backends, Tools, And MCP
+
+Decided 2026-10-04 (Ian's direction, reconciled against source). Vocabulary: a **tool** is a typed `AiTool` — exposed by an app through `ExposeTools` or provided by the host as `host.*`. **MCP** is the wire format a tool crosses at the host process boundary. A tool is not an MCP server, and an app does not become one.
+
+- **The Assistant's loop backend may be Pi.** Today the loop is in-process: `AssistantApp` runs each turn through `AiBroker`, which streams from an `AiBackend` (`openrouter`, `ollama`, `local`) and dispatches tool calls through the turn's `gated_dispatcher` snapshot. A Pi backend runs Pi's agent loop (`pi --mode rpc`) as the session's reasoning engine. It is an additional backend selected per agent. The in-process loop stays and remains the default.
+- **Tools and external agents speak MCP.** Everything outside the host process — Claude Code, Codex, Pi in a terminal pane, and a Pi-backed Assistant session — reaches Plexi tools through the host MCP server (`src/app/host_mcp.rs`): `tools/list` and `tools/call` authenticated by a host-minted bearer, dispatched through `ToolDispatcher`. A new external tool client extends that server. It does not get a second protocol, a bespoke socket verb, or its own RPC.
+- **The internal bus stays as it is.** The three inter-pane planes in the root `AGENTS.md` (*Inter-Pane Communication*) are unchanged. Apps keep exposing tools through `ExposeTools` and answering `ToolCall` events. The in-process Assistant calls `ToolDispatcher` directly and never loops back through MCP.
+- **MCP adapts the external boundary; it does not replace internal communication.** An MCP request is translated at the edge into the same `ToolDispatcher` and `HostSubscriptionService` calls the in-process path uses. Caller identity is stamped from the credential (`mcp:pane:<id>`), never from arguments. The host decides authority on every call regardless of transport ([`assistant-authority-model.md`](assistant-authority-model.md)).
+
+**Pi in a terminal pane uses this path today.** The Plexi-managed Pi extension (`pi_extension_script`, installed by `plexi agent hook install --pi`) registers the host MCP server with Pi's built-in MCP client from the pane's `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`. The pane's context app tools appear in Pi as `mcp__plexi__<app>__<tool>`. The ignored test `pi_session_calls_context_app_tool_through_host_mcp` proves a real Pi session calling one.
+
+**Missing before Pi can back the Assistant pane:**
+
+1. **An Assistant-session credential.** Host MCP credentials are minted only while building a terminal pane's environment (`discovery_for_pane`), with actor `mcp:pane:<id>`. A Pi-backed Assistant needs a credential bound to the Assistant pane, its context, and its active agent.
+2. **Gating parity on the MCP path.** Host MCP `tools/call` dispatches through `ToolDispatcher::from_namespaced_registry`, which checks context reach only. The Assistant's `gated_dispatcher` also applies broker grants, the agent and settings tool allowlists, the ask-sheet hook, and the `host.*` tools. An Assistant-session credential must dispatch through that same gated snapshot. Otherwise moving the loop to Pi silently widens authority (no ask prompts) and drops the host tools.
+3. **A Pi session driver.** Spawn `pi --mode rpc`, map its events onto the Assistant transcript (answer and reasoning deltas, tool rows), and forward cancellation. None exists.
+
+A Pi backend moves the loop out of process but leaves authority in the host. Pi only proposes calls; the host evaluates each one at the MCP edge and renders every permission prompt. This qualifies the authority model's *Runtime Boundary Decision* and is listed there for sign-off.
 
 ## Unified Permissions
 

@@ -6,4 +6,3 @@ Pass the event's game_id and revision_after as expected_revision, a fresh operat
 Use chess.legal_moves with that revision if you are unsure which moves are legal.
 If chess.play reports stale_revision, read chess.state before trying again; never retry the same move blindly.
 Do not coach the user unless asked.
-Do not undo moves unless the user asks.

@@ -2353,11 +2353,13 @@ fn resolve(path: &str) -> PathBuf {
     }
 }
 
-/// Seeds the in-process test profile's `PermissionStore` with Green grants for
-/// a headless scene fixture's raw-WASM imports so the scene never stalls on an
-/// unanswerable capability review. Headless only: the in-process host and this
-/// call share the same (test-isolated) profile. The live backend cannot use
-/// this — a `#[cfg(test)]` binary is walled off from real channel profiles
+/// Seeds the in-process test profile's grant store with Allow rows for a
+/// headless scene fixture's raw-WASM imports so the scene never stalls on an
+/// unanswerable capability review. Enforcement reads that store. The legacy
+/// `permissions.toml` write stays so a later import of a fresh profile sees
+/// the same rows. Headless only: the in-process host and this call share the
+/// same (test-isolated) profile. The live backend cannot use this — a
+/// `#[cfg(test)]` binary is walled off from real channel profiles
 /// (`assert_test_profile_is_isolated`) — so it pre-approves through the real
 /// channel binary with `plexi app trust` instead.
 fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
@@ -2368,8 +2370,9 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
         .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
-    let mut store =
-        crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
+    let config_dir = crate::config::config_dir();
+    let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
     // Link-time host-interface grants (state/pipes/gpu/audio) come from the
     // component's imports. `fs.pick` is not an import — it gates the picker
     // effect at runtime — so preapprove it unconditionally: a scene never opens
@@ -2387,6 +2390,13 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
             &workspace_root,
             &capability_id,
             crate::app::permissions::PermissionState::Green,
+        );
+        monitor.grant_capability_id(
+            app_id,
+            &workspace_root,
+            &capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
         );
     }
     store.save();
@@ -2864,6 +2874,9 @@ impl HeadlessBackend {
                             format!("play {mv}"),
                             format!("scene-{revision}-{mv}"),
                             reply.display().to_string(),
+                            None,
+                            true,
+                            None,
                         )
                         .expect("assistant accepts the scripted turn");
                 });

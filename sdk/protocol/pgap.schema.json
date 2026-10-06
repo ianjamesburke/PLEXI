@@ -400,8 +400,15 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Submit one text turn to a host Assistant pane.",
+          "description": "Submit one text turn to a host Assistant pane.\nSubmit one text turn to an existing Assistant pane. The pane owns the\nnormal composer, model, and permission-gate path and writes the terminal JSON reply.",
           "properties": {
+            "client": {
+              "description": "Ledger client tag for this run. Absent uses `[ai] client`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "context_id": {
               "format": "uint64",
               "minimum": 0,
@@ -409,6 +416,32 @@
                 "integer",
                 "null"
               ]
+            },
+            "head": {
+              "description": "Lead (head) id. When set, the turn runs in that head's conversation.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "conversation_id": {
+              "description": "Caller-owned conversation. Absent means the host mints one.\nIgnored when `join_desktop` is true.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Ledger run kind: `system` or `output`. Absent means `output`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "join_desktop": {
+              "default": false,
+              "description": "Opt in to the desktop Assistant transcript. Default is a separate conversation.",
+              "type": "boolean"
             },
             "pane_id": {
               "format": "uint64",
@@ -424,6 +457,13 @@
             "response_file": {
               "type": "string"
             },
+            "status_for": {
+              "description": "Read the finished status of a turn that already returned\n`waiting_for_permission`. Does not submit a new prompt.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "text": {
               "type": "string"
             },
@@ -436,6 +476,112 @@
             "type",
             "text",
             "request_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open an Assistant pane bound to one head in the active context.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "head": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "open_assistant_head",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "head",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Run one Assistant host tool (`host.files.edit`, `host.editors.list`, …)\nthrough the same permission gate the desktop Assistant uses. The host\nwrites {\"ok\":true,\"output\":...} or {\"ok\":false,\"error_code\":...}.",
+          "properties": {
+            "input_json": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "assistant_host_tool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "input_json",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read or steer the command view. `op` is `list`, `open`, `send`, or `cancel`.\nSend starts a real lead turn. Cancel stops that run before the next tool.",
+          "properties": {
+            "op": {
+              "type": "string"
+            },
+            "payload": {
+              "default": null
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "command_view",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Assign, cancel, or list headless queue tasks for a lead.",
+          "properties": {
+            "op": {
+              "type": "string"
+            },
+            "payload": {
+              "default": null
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_queue",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
             "response_file"
           ],
           "type": "object"
@@ -1044,6 +1190,10 @@
               ]
             },
             "ephemeral": {
+              "type": "boolean"
+            },
+            "force_new": {
+              "description": "Spawn another instance even when `[launch] on_launch` would focus\nthe one already open. Sent by `plexi app open --new`.",
               "type": "boolean"
             },
             "from_pane_id": {
@@ -2065,6 +2215,120 @@
             "type",
             "pending_request_id",
             "choice",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
+          "properties": {
+            "credential": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "permissions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "List items waiting on the human. The host expires due items first.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resolve one needs-you item exactly once. `approve` false denies it.\n`from_phone` refuses approval of an irreversible click.",
+          "properties": {
+            "approve": {
+              "type": "boolean"
+            },
+            "from_phone": {
+              "default": false,
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "resolve_needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "approve",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Agents API: heads, runs, delegation, and gated tool calls.\n`op` is `create_head`, `list_heads`, `spawn_run`, `list_runs`,\n`show_run`, `finish_run`, or `delegate`. `payload` carries the\nworkspace path and the op's fields. The host writes the JSON result\nto `response_file`.",
+          "properties": {
+            "op": {
+              "type": "string"
+            },
+            "payload": true,
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agents_api",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "payload",
             "response_file"
           ],
           "type": "object"
