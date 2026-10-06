@@ -411,7 +411,9 @@ STILL_WAITING=""
 PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"
 if [[ -n "$PAGE" ]] && python3 -c 'import json,sys; page=json.loads(sys.argv[1]);
 rows=[e for e in page.get("events") or [] if e.get("request_id")=="req-approve"]
-raise SystemExit(0 if rows and all(e.get("state")=="waiting_for_permission" for e in rows) and not any(e.get("state")=="succeeded" for e in rows) else 1)' "$PAGE"; then
+waiting=any(e.get("kind")=="receipt" and e.get("state")=="waiting_for_permission" for e in rows)
+granted=any(e.get("state")=="succeeded" for e in rows)
+raise SystemExit(0 if waiting and not granted else 1)' "$PAGE"; then
   STILL_WAITING=1
 fi
 if [[ "$APPROVE_CODE" == "403" && -n "$STILL_WAITING" ]] && grep -q "waiting on desktop" /tmp/relay-e2e-body; then
