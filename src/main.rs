@@ -290,8 +290,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd, LedgerCmd,
-        DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        DescriptorCmd, EventsCmd, HookAction, HostCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
+        PermissionsCmd, RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -322,6 +322,25 @@ fn main() -> eframe::Result {
                                 ))
                             }
                         },
+                    },
+                    Commands::NeedsYou { cmd } => match cmd {
+                        NeedsYouCmd::Resolve { id, approve: _, deny } => {
+                            let choice = if deny { "deny" } else { "once" };
+                            std::process::exit(cli::assistant_permission_cli(
+                                "resolve",
+                                Some(&id),
+                                Some(choice),
+                            ))
+                        }
+                    },
+                    Commands::Permissions { cmd } => match cmd {
+                        PermissionsCmd::Allow { id } => {
+                            std::process::exit(cli::assistant_permission_cli(
+                                "resolve",
+                                Some(&id),
+                                Some("once"),
+                            ))
+                        }
                     },
                     Commands::Run {
                         command,
@@ -1501,7 +1520,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
     // Skip argv[0] (binary name).
     let _ = iter.next();
     while let Some((_, a)) = iter.next() {
-        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" {
+        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" || a == "--socket" {
             // Skip the value paired with this flag.
             let _ = iter.next();
             continue;
@@ -1709,6 +1728,23 @@ mod cli_tests {
         let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
             .expect("flag-only argv should resolve");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn plexi_path_arg_skips_socket_flag_value() {
+        let sock = std::env::temp_dir().join(format!("plexi-sock-{}", std::process::id()));
+        fs::write(&sock, b"").unwrap();
+        let path = sock.to_string_lossy().to_string();
+        let resolved = parse_workspace_path_arg(&argv(&[
+            "--socket",
+            &path,
+            "assistant",
+            "permission",
+            "list",
+        ]))
+        .expect("a --socket path is not a workspace");
+        assert!(resolved.is_none());
+        let _ = fs::remove_file(&sock);
     }
 
     #[test]

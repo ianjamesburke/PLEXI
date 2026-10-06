@@ -46,6 +46,17 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
+    /// Items waiting on the person at the desktop. The terminal cannot resolve them.
+    #[command(name = "needs-you")]
+    NeedsYou {
+        #[command(subcommand)]
+        cmd: NeedsYouCmd,
+    },
+    /// Permission grants. Allowing from the terminal is refused.
+    Permissions {
+        #[command(subcommand)]
+        cmd: PermissionsCmd,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -320,11 +331,32 @@ pub enum AssistantPermissionCmd {
     /// Show one pending permission request as JSON.
     Show { id: String },
     /// Resolve one pending request: once, session, always, or deny.
+    /// The host refuses every choice from the terminal.
     Resolve {
         id: String,
         #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
         choice: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum NeedsYouCmd {
+    /// Ask the host to resolve an item. The host refuses.
+    Resolve {
+        id: String,
+        /// Request approval. The host still refuses.
+        #[arg(long)]
+        approve: bool,
+        /// Request denial. The host still refuses.
+        #[arg(long)]
+        deny: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PermissionsCmd {
+    /// Ask the host to allow a pending request. The host refuses.
+    Allow { id: String },
 }
 
 #[derive(Subcommand)]
