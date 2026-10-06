@@ -607,6 +607,16 @@ pub(crate) fn handle_socket_line(
                         p.len()
                     );
                 }
+                crate::protocol::AppRequest::SpawnPane { peer_ancestry: p, .. } => {
+                    // Same rule as CallAppTool: the wire value is never the
+                    // caller's identity. None when this process has no peer
+                    // capture (tests that enqueue the request directly).
+                    *p = peer_ancestry.map(<[u32]>::to_vec);
+                    log::info!(
+                        "pane_ipc: stamped SpawnPane peer ancestry ({} pid(s))",
+                        p.as_ref().map(|pids| pids.len()).unwrap_or(0)
+                    );
+                }
                 _ => {}
             }
             if needs_identity_ack {
@@ -3712,7 +3722,7 @@ impl eframe::App for PlexiApp {
                     self.step_focus_history_forward();
                 }
                 Action::NewTab => {
-                    self.new_tab(self.active_window, None, false, None);
+                    self.new_tab(self.active_window, None, false, None, true);
                     self.mark_workspace_dirty();
                 }
                 Action::ToggleZoom => {

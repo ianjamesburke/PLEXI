@@ -106,6 +106,8 @@ Store and retrieve secrets (API keys, passwords, tokens).
 
 Workspace secrets (`secret set` without `--folder`) are saved to the system keychain on macOS. On Linux those workspace entries are a mode-`0600` profile file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`) are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file fallback. Their values are never written in plaintext under `.plexi`. A new terminal pane whose working directory is inside that folder receives the name as an environment variable. Agents and app tools read it only with a grant.
 
+Same-user native processes are not isolated from each other. A process running as this user can still read a value that a pane already holds. Folder secrets stop accidental injection into the wrong directory.
+
 | Subcommand | Description |
 |---|---|
 | `set` | Save a secret to the platform secret store |
@@ -113,7 +115,7 @@ Workspace secrets (`secret set` without `--folder`) are saved to the system keyc
 | `list` | Show stored secrets |
 | `delete` | Delete a stored secret |
 | `rm` | Remove a folder-scoped secret |
-| `grant` | Allow an agent or app to read a folder secret through the permission gate |
+| `grant` | Ask for an allow on a folder secret. This command does not record one |
 | `read` | Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
 | `exec` | Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory |
 
@@ -176,9 +178,9 @@ Remove a folder-scoped secret
 
 ### `plexi secret grant`
 
-Allow an agent or app to read a folder secret through the permission gate.
+Ask for an allow on a folder secret. This command does not record one.
 
-The grant's resource is the secret name plus the folder. It does not contain the value.
+Returns `permission_denied` and writes an audit row with the secret name and folder, never the value. This process does not record an allow. An agent pane cannot grant itself a secret, including a secret bound to another folder.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -200,7 +202,9 @@ Read a folder secret as an agent or app. Without a grant this prints `permission
 
 ### `plexi secret exec`
 
-Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory
+Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory.
+
+Refused with `permission_denied` when the caller is a pane agent, including a child of that pane that cleared `PLEXI_PANE_ID`. The command is not started and no secret value is printed. Same-user native processes are not isolated from each other.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|

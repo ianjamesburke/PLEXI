@@ -621,7 +621,28 @@ mod tests {
         set_folder_secret(super::super::folder_store(), name, &folder_a, value).unwrap();
         let inside = crate::host::shell::build_env(Some(&folder_a));
         assert_eq!(inside.get(name).map(String::as_str), Some(value));
+        assert!(
+            inside
+                .keys()
+                .all(|key| !key.starts_with("PLEXI_TERMINAL_ENV_VALUE_")),
+            "folder secrets must not be copied into PLEXI_TERMINAL_ENV_VALUE_*"
+        );
         let outside = crate::host::shell::build_env(Some(&folder_b));
         assert!(!outside.contains_key(name));
+        assert_eq!(
+            super::super::backend_label(),
+            "in-memory",
+            "this test must use the in-memory folder store"
+        );
+
+        let mut withheld = inside;
+        crate::host::shell::withhold_folder_secrets(&mut withheld, Some(&folder_a));
+        assert!(
+            !withheld.contains_key(name),
+            "a pane-requested spawn must not keep the folder secret"
+        );
+        assert!(withheld
+            .keys()
+            .all(|key| !key.starts_with("PLEXI_TERMINAL_ENV_VALUE_")));
     }
 }
