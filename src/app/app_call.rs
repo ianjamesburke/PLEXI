@@ -108,6 +108,39 @@ impl PlexiApp {
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }
 
+    pub(crate) fn observe_needs_you(
+        &mut self,
+        op: &str,
+        id: Option<&String>,
+        approve: Option<bool>,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let body = match op {
+            "list" => {
+                let items = monitor.list_needs_you();
+                log::info!("needs_you: host list count={}", items.len());
+                serde_json::json!({"ok": true, "items": items})
+            }
+            "resolve" => {
+                // The socket cannot resolve. A desktop input event calls
+                // `approve_pending` / `resolve_needs_you` directly.
+                let id = id.map(String::as_str).unwrap_or("");
+                let _approve = approve.unwrap_or(false);
+                monitor.refuse_client_resolve(id);
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "permission_denied",
+                    "error": "only the person at the desktop can resolve a permission",
+                    "pending_request_id": id,
+                })
+            }
+            _ => serde_json::json!({"ok": false, "error": "unknown needs-you operation"}),
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_app_tool(
         &mut self,

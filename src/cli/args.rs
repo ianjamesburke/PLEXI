@@ -307,6 +307,26 @@ pub enum AssistantCmd {
 }
 
 #[derive(Subcommand)]
+pub enum NeedsYouCmd {
+    /// List open items waiting on you as JSON.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask the host to resolve an item. The host refuses.
+    Resolve {
+        id: String,
+        /// Request approval. The host still refuses.
+        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        approve: bool,
+        /// Request denial. The host still refuses.
+        #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
+        deny: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum LedgerCmd {
     /// Totals for tokens, cost, run count, and wall time.
     Summary {
@@ -334,20 +354,6 @@ pub enum AssistantPermissionCmd {
         id: String,
         #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
         choice: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum NeedsYouCmd {
-    /// Ask the host to resolve an item. The host refuses.
-    Resolve {
-        id: String,
-        /// Request approval. The host still refuses.
-        #[arg(long)]
-        approve: bool,
-        /// Request denial. The host still refuses.
-        #[arg(long)]
-        deny: bool,
     },
 }
 

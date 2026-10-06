@@ -267,6 +267,10 @@ Proposed `dispatch_call` execution sequence:
    can produce an executable dispatcher without its monitor handle.
 4. On Ask, persist an exact pending request and return `permission_required`.
    A host decision resolves that request; clients cannot substitute arguments.
+   Click approvals, agent questions, and blocked runs are one host record.
+   `plexi needs-you list` reads those rows. A desktop click calls
+   `approve_pending`. The terminal cannot resolve them. The phone
+   `/api/needs-you` route reads the same rows.
 5. On approval/resume, recheck identity, expiry, revocation and resource binding;
    then send an opaque `AuthorizedCall` to the selected adapter. No fresh ambient
    lookup may redirect the operation after authorization.

@@ -60,11 +60,13 @@ Messages the app sends to request host services.
 
 ### `submit_assistant_turn`
 
-Submit one text turn to a host Assistant pane.
+Submit one text turn to the Assistant. With `pane_id` omitted the host reuses an Assistant in the context or creates ...
 
 | Field | Type | Required |
 |-------|------|----------|
+| `client` | `string?` | no |
 | `context_id` | `integer?` | no |
+| `kind` | `string?` | no |
 | `pane_id` | `integer?` | no |
 | `request_id` | `string` | yes |
 | `response_file` | `string` | yes |
@@ -596,6 +598,24 @@ Resolve one pending permission request from the desktop observation seam.
 |-------|------|----------|
 | `choice` | `string` | yes |
 | `pending_request_id` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `list_needs_you`
+
+List items waiting on the human. The host expires due items first.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `resolve_needs_you`
+
+Resolve one needs-you item exactly once. `approve` false denies it.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `approve` | `boolean` | yes |
+| `id` | `string` | yes |
 | `response_file` | `string` | yes |
 
 ### `call_app_tool`

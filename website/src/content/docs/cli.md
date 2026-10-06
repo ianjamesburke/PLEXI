@@ -70,7 +70,16 @@ Items waiting on the person at the desktop. The terminal cannot resolve them
 
 | Subcommand | Description |
 |---|---|
+| `list` | List open items waiting on you as JSON |
 | `resolve` | Ask the host to resolve an item. The host refuses |
+
+### `plexi needs-you list`
+
+List open items waiting on you as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
 
 ### `plexi needs-you resolve`
 

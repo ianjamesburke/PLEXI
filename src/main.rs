@@ -324,12 +324,14 @@ fn main() -> eframe::Result {
                         },
                     },
                     Commands::NeedsYou { cmd } => match cmd {
-                        NeedsYouCmd::Resolve { id, approve: _, deny } => {
-                            let choice = if deny { "deny" } else { "once" };
-                            std::process::exit(cli::assistant_permission_cli(
+                        NeedsYouCmd::List { json: _ } => {
+                            std::process::exit(cli::needs_you_cli("list", None, None))
+                        }
+                        NeedsYouCmd::Resolve { id, approve, deny } => {
+                            std::process::exit(cli::needs_you_cli(
                                 "resolve",
                                 Some(&id),
-                                Some(choice),
+                                Some(approve && !deny),
                             ))
                         }
                     },
