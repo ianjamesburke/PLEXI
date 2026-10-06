@@ -92,7 +92,7 @@ fn migrate_legacy_value(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub fn migrate_legacy_global_secrets(_store: &dyn NonDestructiveStore) -> usize {
     0
 }

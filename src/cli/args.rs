@@ -185,10 +185,21 @@ pub enum Commands {
     },
 
     // ── System ────────────────────────────────────────────────────────────────
+    /// Install the agent skill compiled into this binary.
+    ///
+    /// Writes `SKILL.md` where Claude Code (`~/.claude/skills`) and Codex
+    /// (`~/.codex/skills`) load user skills. The bytes are the copy embedded
+    /// at build time, so the installed `plexi_version` matches this binary.
+    ///
+    /// Example: plexi skill install --agent claude
+    #[command(next_help_heading = "System")]
+    Skill {
+        #[command(subcommand)]
+        cmd: SkillCmd,
+    },
     /// Print a shell completion script to stdout.
     ///
     /// Example: plexi completions zsh >> ~/.zshrc
-    #[command(next_help_heading = "System")]
     Completions {
         /// Shell name: zsh, bash, or fish
         shell: Option<String>,
@@ -348,6 +359,16 @@ pub enum NeedsYouCmd {
         /// Request denial. The host still refuses.
         #[arg(long)]
         deny: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SkillCmd {
+    /// Write this binary's skill for one agent CLI, or both.
+    Install {
+        /// Which agent CLI loads the skill: claude, codex, or all.
+        #[arg(long, value_parser = ["claude", "codex", "all"])]
+        agent: String,
     },
 }
 

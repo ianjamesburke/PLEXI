@@ -202,6 +202,7 @@ pub mod registry;
 pub mod setup;
 #[cfg(test)]
 mod skill_surface;
+pub mod skill_install;
 pub mod subprocess;
 #[cfg(test)]
 pub mod test_env;

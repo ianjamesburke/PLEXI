@@ -291,7 +291,7 @@ fn main() -> eframe::Result {
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd, LedgerCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NeedsYouCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
-        PermissionsCmd, RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
+        PermissionsCmd, RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -331,6 +331,11 @@ fn main() -> eframe::Result {
                                 Some(&id),
                                 Some(choice),
                             ))
+                        }
+                    },
+                    Commands::Skill { cmd } => match cmd {
+                        SkillCmd::Install { agent } => {
+                            std::process::exit(cli::skill_install::skill_install_cli(&agent))
                         }
                     },
                     Commands::Permissions { cmd } => match cmd {
