@@ -60,14 +60,17 @@ Messages the app sends to request host services.
 
 ### `submit_assistant_turn`
 
-Submit one text turn to a host Assistant pane.
+Submit one text turn to a host Assistant pane. Submit one text turn to an existing Assistant pane. The pane owns the ...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `context_id` | `integer?` | no |
+| `conversation_id` | `string?` | no |
+| `join_desktop` | `boolean` | no |
 | `pane_id` | `integer?` | no |
 | `request_id` | `string` | yes |
 | `response_file` | `string` | yes |
+| `status_for` | `string?` | no |
 | `text` | `string` | yes |
 
 ### `capability_request`
@@ -596,6 +599,25 @@ Resolve one pending permission request from the desktop observation seam.
 |-------|------|----------|
 | `choice` | `string` | yes |
 | `pending_request_id` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `list_needs_you`
+
+List items waiting on the human. The host expires due items first.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
+### `resolve_needs_you`
+
+Resolve one needs-you item exactly once. `approve` false denies it. `from_phone` refuses approval of an irreversible ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `approve` | `boolean` | yes |
+| `from_phone` | `boolean` | no |
+| `id` | `string` | yes |
 | `response_file` | `string` | yes |
 
 ### `call_app_tool`

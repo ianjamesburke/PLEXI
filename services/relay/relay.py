@@ -469,6 +469,9 @@ class Relay:
         self.by_request: dict[tuple[str, str], str] = {}  # (device_id, request_id) -> delivery_id
         self.events: dict[str, list[PhoneEvent]] = {}
         self.cursors: dict[str, int] = {}
+        # request_id -> {"event": Event, "body": dict | None}. Phone needs-you
+        # waits here until the desktop answers on its socket.
+        self.asks: dict[str, dict] = {}
         self.registry: PairingRegistry | None = None
         path = (state_path or "").strip()
         if path:
@@ -1030,6 +1033,75 @@ class Relay:
         trace("approval_refused", device_id=device.device_id, host_id=device.host_id, outcome="waiting_on_desktop")
         return 403, {"error": "waiting_on_desktop", "message": "waiting on desktop"}
 
+    def ask_desktop(self, host_id: str, message: dict, timeout: float = 8.0) -> dict | None:
+        """Push one request to the desktop socket and wait for needs_you_result."""
+        request_id = secrets.token_hex(8)
+        event = threading.Event()
+        with self.lock:
+            link = self.links.get(host_id)
+            if link is None or not link.alive:
+                trace("needs_you", host_id=host_id, outcome="desktop_offline")
+                return None
+            self.asks[request_id] = {"event": event, "body": None}
+            payload = dict(message)
+            payload["request_id"] = request_id
+            link.push(payload)
+        if not event.wait(timeout):
+            with self.lock:
+                self.asks.pop(request_id, None)
+            trace("needs_you", host_id=host_id, outcome="timeout")
+            return None
+        with self.lock:
+            slot = self.asks.pop(request_id, None)
+        body = slot.get("body") if isinstance(slot, dict) else None
+        return body if isinstance(body, dict) else None
+
+    def complete_ask(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self.lock:
+            slot = self.asks.get(request_id)
+            if slot is None:
+                return
+            slot["body"] = message
+            slot["event"].set()
+
+    def needs_you_list(self, device: Device) -> tuple[int, dict]:
+        body = self.ask_desktop(device.host_id, {"type": "needs_you_list"})
+        if body is None:
+            return 503, {"ok": False, "error": "desktop_offline"}
+        items = body.get("items") if isinstance(body.get("items"), list) else []
+        trace("needs_you", host_id=device.host_id, device_id=device.device_id, outcome="listed", status=str(len(items)))
+        return 200, {"ok": True, "items": items}
+
+    def needs_you_resolve(self, device: Device, item_id: str, decision: str) -> tuple[int, dict]:
+        if decision not in {"approve", "deny"}:
+            return 400, {"ok": False, "error": "invalid_decision"}
+        body = self.ask_desktop(
+            device.host_id,
+            {"type": "needs_you_resolve", "id": item_id, "approve": decision == "approve"},
+        )
+        if body is None:
+            return 503, {"ok": False, "error": "desktop_offline"}
+        error = body.get("error")
+        if error in {"waiting on desktop", "irreversible"}:
+            trace(
+                "needs_you",
+                host_id=device.host_id,
+                device_id=device.device_id,
+                outcome="waiting_on_desktop",
+            )
+            return 403, {"ok": False, "error": "waiting_on_desktop", "message": "waiting on desktop"}
+        if body.get("ok") is False:
+            trace("needs_you", host_id=device.host_id, device_id=device.device_id, outcome="refused")
+            return 409, {"ok": False, "error": error or "not_resolved"}
+        trace("needs_you", host_id=device.host_id, device_id=device.device_id, outcome=decision)
+        return 200, {
+            "ok": True,
+            "id": body.get("id", item_id),
+            "resolution": body.get("resolution"),
+            "already": bool(body.get("already")),
+        }
+
     def _append(self, device_id: str, event: PhoneEvent) -> None:
         cursor = self.cursors.get(device_id, 0) + 1
         self.cursors[device_id] = cursor
@@ -1224,6 +1296,13 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
                     return
                 self._json(200, relay.status_for(device))
                 return
+            if url.path == "/api/needs-you":
+                device = self._device()
+                if device is None:
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                self._json(*relay.needs_you_list(device))
+                return
             if url.path == "/api/conversation":
                 device = self._device()
                 if device is None:
@@ -1287,6 +1366,18 @@ def make_handler(relay: Relay, static_dir: Path, secure_cookie: bool) -> type[Ba
             device = self._device()
             if device is None:
                 self._json(401, {"error": "unauthorized"})
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "needs-you"] and parts[3] == "resolve":
+                try:
+                    body = json.loads(raw or b"null")
+                except json.JSONDecodeError:
+                    self._json(400, {"error": "invalid_json"})
+                    return
+                decision = body.get("decision") if isinstance(body, dict) else None
+                if decision not in {"approve", "deny"}:
+                    self._json(400, {"error": "invalid_decision"})
+                    return
+                self._json(*relay.needs_you_resolve(device, parts[2], str(decision)))
                 return
             if parts == ["api", "turns"]:
                 try:
@@ -1564,6 +1655,9 @@ def handle_desktop_message(relay: Relay, host_id: str, message: dict) -> dict | 
         return None
     if kind == "reply":
         relay.reply(host_id, message)
+        return None
+    if kind == "needs_you_result":
+        relay.complete_ask(message)
         return None
     trace("desktop_frame_ignored", host_id=host_id, outcome="unknown_type")
     return {"type": "error", "error": "unknown_type"}

@@ -17,7 +17,7 @@ const desk = generateIdentity();
 const desktopPub = b64uEncode(desk.publicKey);
 const python = spawnSync(
   "python3",
-  ["services/relay/phone_crypto.py", "handshake-for", desktopPub],
+  ["services/relay/phone_crypto.py", "handshake-for", "--", desktopPub],
   { cwd: root, encoding: "utf8" },
 );
 if (python.status !== 0) {

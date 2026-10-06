@@ -19,6 +19,8 @@ SKIP=(
   "doctor"       # diagnostic tool, no standalone docs yet
   "events"       # developer API, covered in sdk-emitter
   "lock"         # build-recipe primitive; generated CLI reference + plexi-cli skill are canonical
+  "needs-you"    # waiting-on-you record; generated CLI reference + plexi-cli skill are canonical
+  "relay"        # phone relay; generated CLI reference + plexi-cli skill are canonical
   "note"         # alias for notes, covered in quick-note
   "notify"       # developer API, covered in sdk-emitter
   "registry"     # internal developer tool

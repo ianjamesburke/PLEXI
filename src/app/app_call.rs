@@ -100,6 +100,57 @@ impl PlexiApp {
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }
 
+    pub(crate) fn observe_needs_you(
+        &mut self,
+        op: &str,
+        id: Option<&String>,
+        approve: Option<bool>,
+        from_phone: bool,
+        response_file: &str,
+    ) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let body = match op {
+            "list" => {
+                let items = crate::broker::gate::needs_you_phone_items(&monitor.list_needs_you());
+                log::info!("needs_you: host list count={}", items.len());
+                serde_json::json!({"ok": true, "items": items})
+            }
+            "resolve" => {
+                let id = id.map(String::as_str).unwrap_or("");
+                let approve = approve.unwrap_or(false);
+                log::info!("needs_you: host resolve {id} approve={approve} from_phone={from_phone}");
+                if approve
+                    && from_phone
+                    && monitor.open_needs_you().iter().any(|row| {
+                        row.id == id && !row.kind.phone_may_approve()
+                    })
+                {
+                    log::info!("needs_you: phone refused irreversible id={id}");
+                    serde_json::json!({
+                        "ok": false,
+                        "error": "waiting on desktop",
+                    })
+                } else {
+                    match monitor.resolve_needs_you(id, approve) {
+                        Ok(receipt) => serde_json::json!({
+                            "ok": !receipt.already,
+                            "id": receipt.id,
+                            "resolution": receipt.resolution.as_str(),
+                            "already": receipt.already,
+                        }),
+                        Err(error) => serde_json::json!({
+                            "ok": false,
+                            "error": error,
+                        }),
+                    }
+                }
+            }
+            _ => serde_json::json!({"ok": false, "error": "unknown needs-you operation"}),
+        };
+        crate::rpc::write_response(response_file, body.to_string().as_bytes());
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_app_tool(
         &mut self,

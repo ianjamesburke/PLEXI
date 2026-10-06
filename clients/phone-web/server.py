@@ -317,6 +317,13 @@ class StubStore:
         with self.lock:
             return {"cursor": len(self.events), "events": [dict(e) for e in self.events[cursor:]]}
 
+    def needs_you(self) -> tuple[int, dict]:
+        return 200, {"ok": True, "items": []}
+
+    def resolve_needs_you(self, item_id: str, decision: str) -> tuple[int, dict]:
+        log.info("needs-you resolve refused item_id=%s outcome=no_host", item_id)
+        return 503, {"ok": False, "error": "needs-you requires the host", "decision": decision}
+
 
 class HostStore(StubStore):
     """In-memory phone receipts backed by the installed host CLI."""
@@ -461,6 +468,40 @@ class HostStore(StubStore):
             self._commit_host_result(request_id, state, reply, turn_id, error, status)
             return
 
+    def needs_you(self) -> tuple[int, dict]:
+        return self._needs_you_cli(["list", "--json"])
+
+    def resolve_needs_you(self, item_id: str, decision: str) -> tuple[int, dict]:
+        if decision not in {"approve", "deny"}:
+            return 400, {"ok": False, "error": "invalid_decision"}
+        flag = "--approve" if decision == "approve" else "--deny"
+        return self._needs_you_cli(["resolve", item_id, flag, "--from-phone"])
+
+    def _needs_you_cli(self, args: list[str]) -> tuple[int, dict]:
+        log.info("needs-you cli %s", " ".join(args))
+        try:
+            proc = subprocess.run(
+                [self.plexi_bin, "needs-you", *args],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.info("needs-you cli failed outcome=%s", exc.__class__.__name__)
+            return 502, {"ok": False, "error": "host_unavailable"}
+        try:
+            body = json.loads(proc.stdout.strip() or "null")
+        except json.JSONDecodeError:
+            return 502, {"ok": False, "error": "bad_host_reply"}
+        if not isinstance(body, dict):
+            return 502, {"ok": False, "error": "bad_host_reply"}
+        if body.get("error") == "waiting on desktop":
+            return 403, body
+        if body.get("ok") is False:
+            return 409, body
+        return 200, body
+
 
 def validate_envelope(body: object) -> str | None:
     if not isinstance(body, dict):
@@ -523,6 +564,9 @@ def make_handler(store: StubStore, token: str | None = None) -> type[BaseHTTPReq
         def do_GET(self) -> None:  # noqa: N802
             url = urlparse(self.path)
             if not self._api_auth(url.path): return
+            if url.path == "/api/needs-you":
+                self._json(*store.needs_you())
+                return
             if url.path == "/api/status":
                 self._json(200, {"mode": "host" if isinstance(store, HostStore) else "local_stub", "host": "configured" if isinstance(store, HostStore) else "not_connected", "intake_contract": None})
                 return
@@ -549,6 +593,18 @@ def make_handler(store: StubStore, token: str | None = None) -> type[BaseHTTPReq
                 self._json(413, {"error": "body_too_large"})
                 return
             raw = self.rfile.read(length) if length else b""
+            if len(parts) == 4 and parts[:2] == ["api", "needs-you"] and parts[3] == "resolve":
+                try:
+                    body = json.loads(raw or b"null")
+                except json.JSONDecodeError:
+                    self._json(400, {"error": "invalid_json"})
+                    return
+                decision = body.get("decision") if isinstance(body, dict) else None
+                if decision not in {"approve", "deny"}:
+                    self._json(400, {"error": "invalid_decision"})
+                    return
+                self._json(*store.resolve_needs_you(parts[2], str(decision)))
+                return
             if parts == ["api", "turns"]:
                 try:
                     body = json.loads(raw or b"null")

@@ -17,6 +17,8 @@ pub mod render;
 pub mod settings;
 pub mod skills;
 pub mod store;
+#[cfg(test)]
+mod send_tests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};

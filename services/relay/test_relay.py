@@ -448,6 +448,112 @@ class RelayHttpTest(unittest.TestCase):
         self.assertNotIn(CANARY, self.relay.memory_text())
         self.assertIsNone(self.relay.deliveries[delivered["delivery_id"]].body)
 
+    def test_phone_needs_you_refuses_an_irreversible_click(self) -> None:
+        desk = Desktop(self.port)
+        self.addCleanup(desk.close)
+        cookie = self._pair(desk)
+
+        listed: dict = {}
+
+        def fetch_list() -> None:
+            status, body, _ = _http("GET", f"{self.base}/api/needs-you", cookie=cookie)
+            listed["status"] = status
+            listed["body"] = body
+
+        thread = threading.Thread(target=fetch_list)
+        thread.start()
+        asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_list")
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": True,
+                "items": [
+                    {
+                        "id": "click-1",
+                        "kind": "approval_click",
+                        "summary": "write a file",
+                        "phone_can_approve": False,
+                    },
+                    {
+                        "id": "q-1",
+                        "kind": "question",
+                        "summary": "which file",
+                        "phone_can_approve": True,
+                    },
+                ],
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(listed["status"], 200)
+        self.assertEqual(listed["body"]["items"][0]["phone_can_approve"], False)
+        self.assertEqual(listed["body"]["items"][1]["kind"], "question")
+
+        refused: dict = {}
+
+        def approve_click() -> None:
+            status, body, _ = _http(
+                "POST",
+                f"{self.base}/api/needs-you/click-1/resolve",
+                {"decision": "approve"},
+                cookie=cookie,
+            )
+            refused["status"] = status
+            refused["body"] = body
+
+        thread = threading.Thread(target=approve_click)
+        thread.start()
+        asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_resolve")
+        self.assertEqual(asked["id"], "click-1")
+        self.assertTrue(asked["approve"])
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": False,
+                "error": "waiting on desktop",
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(refused["status"], 403)
+        self.assertEqual(refused["body"]["message"], "waiting on desktop")
+
+        allowed: dict = {}
+
+        def approve_question() -> None:
+            status, body, _ = _http(
+                "POST",
+                f"{self.base}/api/needs-you/q-1/resolve",
+                {"decision": "approve"},
+                cookie=cookie,
+            )
+            allowed["status"] = status
+            allowed["body"] = body
+
+        thread = threading.Thread(target=approve_question)
+        thread.start()
+        asked = desk.recv()
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": True,
+                "id": "q-1",
+                "resolution": "approved",
+                "already": False,
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(allowed["status"], 200)
+        self.assertEqual(allowed["body"]["resolution"], "approved")
+
+        desk.close()
+        self.assertTrue(self._wait(lambda: "host-1" not in self.relay.links))
+        status, body, _ = _http("GET", f"{self.base}/api/needs-you", cookie=cookie)
+        self.assertEqual(status, 503, body)
+
     def test_approval_is_waiting_on_desktop(self) -> None:
         desk = Desktop(self.port)
         self.addCleanup(desk.close)

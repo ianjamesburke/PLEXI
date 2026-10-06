@@ -135,6 +135,28 @@ pub struct PendingPermission {
     pub source: Option<String>,
 }
 
+impl PendingPermission {
+    /// Sentence the desktop sheet shows for this ask.
+    pub fn prompt_line(&self) -> String {
+        let who = if self.actor_id.is_empty() {
+            "assistant (medium)".to_string()
+        } else {
+            self.actor_id.clone()
+        };
+        let resource = if self.resource_id.is_empty() {
+            String::new()
+        } else {
+            format!(" on {}", self.resource_id)
+        };
+        let source = self
+            .source
+            .as_deref()
+            .map(|source| format!(" — requested from a {source} turn"))
+            .unwrap_or_default();
+        format!("{who} wants to run '{}'{resource}{source}", self.tool)
+    }
+}
+
 /// What the user chose on the permission sheet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionChoice {

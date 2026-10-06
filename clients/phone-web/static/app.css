@@ -9,6 +9,14 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 #connection[data-state="online"]::before { content: "● "; color: #3fb950; }
 #connection[data-state="offline"]::before { content: "● "; color: #f85149; }
 main { flex: 1; overflow-y: auto; padding: .75rem 1rem; }
+#needs-you { margin-bottom: 1rem; }
+#needs-you h2 { font-size: .9rem; margin: 0 0 .4rem; color: var(--muted); }
+#needs-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; }
+#needs-list li { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; padding: .5rem .75rem; border-radius: .75rem; background: var(--panel); }
+#needs-list p { flex: 1; margin: 0; }
+#needs-list button { min-height: 44px; padding: 0 .8rem; font: inherit; border: 0; border-radius: .5rem; background: var(--accent); color: #fff; }
+#needs-list button.deny { background: #3a3d45; }
+#needs-list small { color: var(--muted); }
 #transcript { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
 #transcript li { max-width: 85%; padding: .5rem .75rem; border-radius: .75rem; background: var(--panel); overflow-wrap: anywhere; white-space: pre-wrap; }
 #transcript li.user { align-self: flex-end; background: var(--accent); color: #fff; }

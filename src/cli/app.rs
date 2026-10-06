@@ -1947,6 +1947,42 @@ pub fn app_call_cli(
     }
 }
 
+/// `plexi needs-you list --json` and `plexi needs-you resolve <id> --approve|--deny`.
+/// `--from-phone` refuses approval of an irreversible click.
+pub fn needs_you_cli(op: &str, id: Option<&str>, approve: Option<bool>, from_phone: bool) -> i32 {
+    let response_file = crate::rpc::response_file("needs-you", "json");
+    let payload = match op {
+        "list" => serde_json::json!({"type":"list_needs_you","response_file":response_file}),
+        "resolve" => serde_json::json!({
+            "type": "resolve_needs_you",
+            "id": id.unwrap_or(""),
+            "approve": approve.unwrap_or(false),
+            "from_phone": from_phone,
+            "response_file": response_file,
+        }),
+        _ => {
+            eprintln!("error: unknown needs-you operation");
+            return 1;
+        }
+    };
+    log::info!("needs_you:cli: op={op} id={id:?} approve={approve:?} from_phone={from_phone}");
+    let content = match super::request_with(
+        payload,
+        "needs-you",
+        "needs-you",
+        std::time::Duration::from_secs(15),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(_) => 1,
+        Err(_) => 1,
+    }
+}
+
 /// `plexi assistant permission list|show|resolve` — observation seam for pending grants.
 pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>) -> i32 {
     let response_file = crate::rpc::response_file("assistant-permission", "json");

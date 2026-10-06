@@ -271,7 +271,7 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd, RelayCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd, Cli, Commands, ConfigCmd, ContextCmd, NeedsYouCmd, RelayCmd,
         DescriptorCmd, EventsCmd, HookAction, HostCmd, NotesCmd, NotifyCmd, PaneCmd, PaneSlotCmd,
         RegistryCmd, RoutineCmd, SecretCmd, WorkspaceCmd,
     };
@@ -312,6 +312,24 @@ fn main() -> eframe::Result {
                                 ))
                             }
                         },
+                    },
+                    Commands::NeedsYou { cmd } => match cmd {
+                        NeedsYouCmd::List { json: _ } => {
+                            std::process::exit(cli::needs_you_cli("list", None, None, false))
+                        }
+                        NeedsYouCmd::Resolve {
+                            id,
+                            approve,
+                            deny,
+                            from_phone,
+                        } => {
+                            std::process::exit(cli::needs_you_cli(
+                                "resolve",
+                                Some(&id),
+                                Some(approve && !deny),
+                                from_phone,
+                            ))
+                        }
                     },
                     Commands::Relay { cmd } => match cmd {
                         RelayCmd::Connect { url } => std::process::exit(cli::relay::relay_connect_cli(url)),

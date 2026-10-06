@@ -755,6 +755,17 @@ pub enum AppRequest {
         choice: String,
         response_file: String,
     },
+    /// List items waiting on the human. The host expires due items first.
+    ListNeedsYou { response_file: String },
+    /// Resolve one needs-you item exactly once. `approve` false denies it.
+    /// `from_phone` refuses approval of an irreversible click.
+    ResolveNeedsYou {
+        id: String,
+        approve: bool,
+        #[serde(default)]
+        from_phone: bool,
+        response_file: String,
+    },
     /// Call an app-exposed tool through the host tool dispatcher. Sent by
     /// `plexi app call`. The host resolves the viewer context from
     /// `caller_pane_id` (the credential's context when absent), stamps the

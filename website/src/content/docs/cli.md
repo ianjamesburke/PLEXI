@@ -25,10 +25,13 @@ Submit through the same composer, model, and permission path as the desktop Assi
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--text` | string | yes |  |
+| `--text` | string | no | Prompt text. Omitted when `--status-for` only reads a pending turn |
 | `--request-id` | string | no |  |
 | `--pane-id` | string | no |  |
 | `--context-id` | string | no |  |
+| `--conversation` | string | no | Caller-owned conversation. A phone session passes one stable id. Omit to start a new conversation that is not the desktop transcript |
+| `--desktop` | flag | no | Append this turn to the desktop Assistant conversation |
+| `--status-for` | string | no | Read the outcome of a turn that already returned waiting_for_permission. Does not submit a new prompt |
 | `--json` | flag | no |  |
 
 ### `plexi assistant permission`
@@ -61,6 +64,64 @@ Resolve one pending request: once, session, always, or deny
 |---|---|---|---|
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
+
+## `plexi relay`
+
+Pair a phone through the Plexi relay and deliver its messages to this desktop
+
+| Subcommand | Description |
+|---|---|
+| `connect` | Connect outbound to a phone relay and forward paired messages to the Assistant |
+| `confirm` | Confirm a phone that redeemed the pairing code shown by `relay connect` |
+| `revoke` | Revoke a paired phone. It must pair again and be confirmed |
+| `pair` | Start a pairing code for another phone. Phones already paired stay paired |
+| `enable` | Remember the relay URL and connect it from the host on startup |
+| `disable` | Stop connecting to the relay when the host starts |
+| `status` | Print the desktop's relay status |
+
+### `plexi relay connect`
+
+Connect outbound to a phone relay and forward paired messages to the Assistant
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
+
+### `plexi relay confirm`
+
+Confirm a phone that redeemed the pairing code shown by `relay connect`
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pairing_id>` | string | no | Pairing id. Omit to confirm the phone currently waiting |
+
+### `plexi relay revoke`
+
+Revoke a paired phone. It must pair again and be confirmed
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<device_id>` | string | yes | Device id printed when the phone was confirmed |
+
+### `plexi relay pair`
+
+Start a pairing code for another phone. Phones already paired stay paired
+
+### `plexi relay enable`
+
+Remember the relay URL and connect it from the host on startup
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
+
+### `plexi relay disable`
+
+Stop connecting to the relay when the host starts
+
+### `plexi relay status`
+
+Print the desktop's relay status
 
 ## `plexi run`
 
@@ -1273,6 +1334,36 @@ Print the host MCP server config for an MCP-aware agent.
 Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
+
+## `plexi needs-you`
+
+List and resolve everything waiting on you.
+
+One host record covers click approvals, agent questions, and blocked runs. Resolving an id from here, the desktop badge, or the phone page resolves it everywhere, exactly once.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List open items waiting on you as JSON |
+| `resolve` | Resolve one item. Approve lets a click-gated tool proceed; deny refuses it. A phone may approve a question or a blocked run. An approval click is irreversible and stays on the desktop |
+
+### `plexi needs-you list`
+
+List open items waiting on you as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Print JSON |
+
+### `plexi needs-you resolve`
+
+Resolve one item. Approve lets a click-gated tool proceed; deny refuses it. A phone may approve a question or a blocked run. An approval click is irreversible and stays on the desktop
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--approve` | flag | no | Approve the item |
+| `--deny` | flag | no | Deny the item |
+| `--from-phone` | flag | no | The caller is a paired phone. Irreversible approval clicks are refused |
 
 ## `plexi notify`
 

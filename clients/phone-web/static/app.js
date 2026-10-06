@@ -23,6 +23,8 @@ function connectionFromStatus(body) {
 
 const els = {
   connection: document.getElementById("connection"),
+  needsSection: document.getElementById("needs-you"),
+  needs: document.getElementById("needs-list"),
   transcript: document.getElementById("transcript"),
   form: document.getElementById("composer"),
   message: document.getElementById("message"),
@@ -124,6 +126,56 @@ function render(event) {
   }
 }
 
+function phoneCanApprove(item) {
+  if (item.phone_can_approve === false || item.kind === "approval_click") return false;
+  return true;
+}
+
+async function refreshNeeds() {
+  if (!els.needs) return;
+  const res = await fetch("/api/needs-you", { cache: "no-store", credentials: "same-origin", headers: apiHeaders() });
+  if (!res.ok) return;
+  const body = await res.json();
+  const items = body.items || [];
+  els.needs.replaceChildren();
+  if (els.needsSection) els.needsSection.hidden = items.length === 0;
+  for (const item of items) {
+    const li = document.createElement("li");
+    const text = document.createElement("p");
+    text.textContent = item.summary || item.kind || item.id;
+    li.append(text);
+    const canApprove = phoneCanApprove(item);
+    if (!canApprove) {
+      const note = document.createElement("small");
+      note.textContent = "waiting on desktop";
+      li.append(note);
+    }
+    const decisions = canApprove ? ["approve", "deny"] : ["deny"];
+    for (const decision of decisions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = decision;
+      button.textContent = decision === "approve" ? "Approve" : "Deny";
+      button.addEventListener("click", () => resolveNeeds(item.id, decision));
+      li.append(button);
+    }
+    els.needs.append(li);
+  }
+}
+
+async function resolveNeeds(id, decision) {
+  const res = await fetch(`/api/needs-you/${encodeURIComponent(id)}/resolve`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ decision }),
+  });
+  if (!res.ok && res.status !== 409) {
+    console.warn("needs-you resolve failed", res.status);
+  }
+  await refreshNeeds();
+}
+
 async function poll() {
   try {
     const status = await fetch("/api/status", { cache: "no-store", credentials: "same-origin", headers: apiHeaders() });
@@ -131,6 +183,7 @@ async function poll() {
     const body = await status.json();
     const [state, label] = connectionFromStatus(body);
     setConnection(state, label);
+    await refreshNeeds();
     const res = await fetch(`/api/conversation?after=${cursor}`, { cache: "no-store", credentials: "same-origin", headers: apiHeaders() });
     if (!res.ok) throw new Error(`conversation ${res.status}`);
     const page = await res.json();
