@@ -692,6 +692,7 @@ impl GrantStore {
         }
         let mut untrusted = Vec::new();
         if let Some(fault) = loaded.fault {
+            seal::note_integrity_fault(config_dir, fault.clone());
             untrusted.push(fault);
         }
         let mut store = Self {
@@ -705,6 +706,7 @@ impl GrantStore {
                 "grant_store: skipped legacy migration; permissions.toml failed integrity ({})",
                 fault.reason
             );
+            seal::note_integrity_fault(config_dir, fault.clone());
             store.untrusted.push(fault);
         } else {
             let migrated = store.migrate_legacy(&legacy);

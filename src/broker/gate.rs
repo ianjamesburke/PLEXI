@@ -303,6 +303,18 @@ impl PermissionMonitor {
     fn open(dir: &Path) -> Self {
         let store = GrantStore::load_or_default(dir);
         let mut faults = store.integrity_faults().to_vec();
+        // `AgentHost::production` and `HostSubscriptionService::new` load the
+        // grant file during startup, before this monitor exists. That load
+        // quarantines a bad MAC. The fault is noted so this open still files
+        // Needs you after the file is already gone.
+        for fault in super::seal::take_integrity_faults(dir) {
+            if !faults
+                .iter()
+                .any(|have| have.file == fault.file && have.reason == fault.reason)
+            {
+                faults.push(fault);
+            }
+        }
         let audit = dir.join("permission-audit.jsonl");
         if let Err(reason) = super::seal::verify_audit(&audit) {
             super::seal::reject_untrusted_audit(&audit, &reason);
@@ -2527,6 +2539,14 @@ mod tests {
         );
         std::fs::write(victim.path().join("grants.toml"), &forged).unwrap();
 
+        // A startup loader can quarantine the file before any monitor exists.
+        // The later monitor must still fail closed and file Needs you.
+        let preloaded = GrantStore::load_or_default(victim.path());
+        assert!(preloaded.records().is_empty());
+        assert!(
+            !victim.path().join("grants.toml").exists(),
+            "the startup load quarantines a forged grants file"
+        );
         let monitor = PermissionMonitor::open_profile(victim.path());
         assert!(monitor.store().records().is_empty());
         let req = PermissionRequest::app_capability(
