@@ -27,6 +27,11 @@ fn stop(error: GateStop) -> i32 {
     }
 }
 
+pub fn changes_profile_cli() -> i32 {
+    println!("{}", crate::config::config_dir().display());
+    0
+}
+
 pub fn changes_allow_cli(agent: &str, file: &Path, old: &str, new: &str) -> i32 {
     match changes::allow_edit(agent, file, old, new) {
         Ok(()) => {

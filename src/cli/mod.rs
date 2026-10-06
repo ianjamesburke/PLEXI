@@ -1302,8 +1302,8 @@ pub use routine::{routine_add, routine_list, routine_remove, routine_run, routin
 pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;
 pub use changes::{
-    changes_accept_cli, changes_allow_cli, changes_preview_cli, changes_propose_cli,
-    changes_refresh_cli, changes_revert_cli,
+    changes_accept_cli, changes_allow_cli, changes_preview_cli, changes_profile_cli,
+    changes_propose_cli, changes_refresh_cli, changes_revert_cli,
 };
 pub use workspace::{
     workspace_clean_cli, workspace_init, workspace_secret_delete, workspace_secret_get,

@@ -531,6 +531,11 @@ pub enum ChangesCmd {
         /// Change set id from `propose`.
         id: String,
     },
+    /// Print this binary's profile directory.
+    ///
+    /// Channel-suffixed binaries use their own directory (`~/.plexi-pr-N`).
+    /// Scripts should ask here instead of assuming `~/.plexi`.
+    Profile,
 }
 
 #[derive(Subcommand)]

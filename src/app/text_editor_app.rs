@@ -143,6 +143,42 @@ pub struct TextEditorApp {
     /// Anchors spawned link-target panes next to this note, not whatever
     /// pane happens to be focused at dispatch time.
     host_pane_id: Option<u64>,
+    /// Agent change set for this file. Pending and stale sets are a preview;
+    /// they do not replace the buffer.
+    change_view: Option<ChangeView>,
+    /// `(id, status)` of the committed or reverted set already applied here.
+    applied_change: Option<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ChangeView {
+    id: String,
+    status: String,
+    diff: String,
+    conflict: Option<String>,
+}
+
+fn disk_differs_from_base(set: &crate::host::changes::ChangeSet) -> bool {
+    match std::fs::read_to_string(&set.path) {
+        Ok(text) => text != set.base_text,
+        Err(_) => !set.base_text.is_empty(),
+    }
+}
+
+fn pick_change_set(sets: &[crate::host::changes::ChangeSet]) -> Option<crate::host::changes::ChangeSet> {
+    let rank = |status: &str| match status {
+        "pending" => 3,
+        "stale" => 2,
+        "committed" | "reverted" => 1,
+        _ => 0,
+    };
+    let best = sets.iter().map(|set| rank(&set.status)).max().unwrap_or(0);
+    if best == 0 {
+        return None;
+    }
+    sets.iter()
+        .find(|set| rank(&set.status) == best)
+        .cloned()
 }
 
 impl TextEditorApp {
@@ -195,6 +231,8 @@ impl TextEditorApp {
             pending_commands: Vec::new(),
             image_cache: ImageCache::default(),
             host_pane_id: None,
+            change_view: None,
+            applied_change: None,
         }
     }
 
@@ -264,6 +302,285 @@ impl TextEditorApp {
                 self.path
             );
         }
+    }
+
+    /// Pull the newest change set for this file into the pane.
+    ///
+    /// A pending set whose base matches the buffer becomes a diff preview and
+    /// does not write. Buffer text that differs from that base is a conflict:
+    /// the set is marked stale and the buffer is left alone. Accept and revert
+    /// that land on disk update the buffer only when it still matches the
+    /// revision those commands expected.
+    pub(crate) fn apply_change_set(&mut self) -> bool {
+        let sets = crate::host::changes::sets_for_path(&self.path);
+        let Some(set) = pick_change_set(&sets) else {
+            return self.set_change_view(None);
+        };
+        let body = self.composed();
+        let diff = crate::host::changes::diff_for(&set);
+        let diverged = body != set.base_text;
+        let view = match set.status.as_str() {
+            "pending" if diverged => {
+                if let Err(error) =
+                    crate::host::changes::mark_stale(&set.id, "unsaved editor buffer")
+                {
+                    log::warn!(
+                        "changes: editor could not mark stale id={} path={}: {error}",
+                        set.id,
+                        set.path
+                    );
+                }
+                Some(ChangeView {
+                    id: set.id,
+                    status: "stale".to_string(),
+                    diff,
+                    conflict: Some("unsaved".to_string()),
+                })
+            }
+            "pending" if disk_differs_from_base(&set) => {
+                if let Err(error) = crate::host::changes::mark_stale(&set.id, "disk changed") {
+                    log::warn!(
+                        "changes: editor could not mark stale id={} path={}: {error}",
+                        set.id,
+                        set.path
+                    );
+                }
+                Some(ChangeView {
+                    id: set.id,
+                    status: "stale".to_string(),
+                    diff,
+                    conflict: None,
+                })
+            }
+            "pending" => Some(ChangeView {
+                id: set.id,
+                status: "pending".to_string(),
+                diff,
+                conflict: None,
+            }),
+            "stale" => {
+                let conflict = diverged.then(|| "unsaved".to_string());
+                Some(ChangeView {
+                    id: set.id,
+                    status: "stale".to_string(),
+                    diff,
+                    conflict,
+                })
+            }
+            "committed" => {
+                if self.already_applied(&set.id, "committed") {
+                    if body == set.proposed_text {
+                        return self.set_change_view(None);
+                    }
+                    return false;
+                }
+                if body == set.proposed_text || body == set.base_text {
+                    if body != set.proposed_text {
+                        self.replace_body(&set.proposed_text);
+                    }
+                    self.applied_change = Some((set.id.clone(), "committed".to_string()));
+                    log::info!(
+                        "changes: editor buffer updated id={} path={} status=committed",
+                        set.id,
+                        set.path
+                    );
+                    return self.set_change_view(None);
+                }
+                log::info!(
+                    "changes: editor kept local text id={} path={} status=committed",
+                    set.id,
+                    set.path
+                );
+                self.applied_change = Some((set.id.clone(), "committed".to_string()));
+                Some(ChangeView {
+                    id: set.id,
+                    status: "stale".to_string(),
+                    diff,
+                    conflict: Some("unsaved".to_string()),
+                })
+            }
+            "reverted" => {
+                if self.already_applied(&set.id, "reverted") {
+                    if body == set.base_text {
+                        return self.set_change_view(None);
+                    }
+                    return false;
+                }
+                if body == set.base_text || body == set.proposed_text {
+                    if body != set.base_text {
+                        self.replace_body(&set.base_text);
+                    }
+                    self.applied_change = Some((set.id.clone(), "reverted".to_string()));
+                    log::info!(
+                        "changes: editor buffer updated id={} path={} status=reverted",
+                        set.id,
+                        set.path
+                    );
+                    return self.set_change_view(None);
+                }
+                log::info!(
+                    "changes: editor kept local text id={} path={} status=reverted",
+                    set.id,
+                    set.path
+                );
+                self.applied_change = Some((set.id.clone(), "reverted".to_string()));
+                Some(ChangeView {
+                    id: set.id,
+                    status: "stale".to_string(),
+                    diff,
+                    conflict: Some("unsaved".to_string()),
+                })
+            }
+            _ => None,
+        };
+        let changed = self.set_change_view(view);
+        if changed {
+            if let Some(view) = &self.change_view {
+                log::info!(
+                    "changes: editor preview path={} id={} status={} conflict={}",
+                    self.path.display(),
+                    view.id,
+                    view.status,
+                    view.conflict.as_deref().unwrap_or("none")
+                );
+            }
+        }
+        changed
+    }
+
+    fn already_applied(&self, id: &str, status: &str) -> bool {
+        self.applied_change
+            .as_ref()
+            .is_some_and(|(applied_id, applied_status)| applied_id == id && applied_status == status)
+    }
+
+    fn set_change_view(&mut self, view: Option<ChangeView>) -> bool {
+        if self.change_view == view {
+            return false;
+        }
+        self.change_view = view;
+        true
+    }
+
+    fn replace_body(&mut self, full_text: &str) {
+        if self.is_note {
+            let (header, content, title) = split_note(true, full_text.to_string());
+            self.note_header = header;
+            self.note_title = title;
+            self.doc = Document::new(&content);
+        } else {
+            self.doc = Document::new(full_text);
+        }
+        self.view = ViewState::default();
+        self.last_edit = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_unsaved(&mut self, text: &str) {
+        self.doc = Document::new(text);
+        self.last_edit = Some(Instant::now());
+    }
+
+    pub(crate) fn open_buffer(&self) -> crate::host::changes::OpenEditorBuffer {
+        crate::host::changes::OpenEditorBuffer {
+            path: self.path.display().to_string(),
+            text: self.composed(),
+            dirty: self.last_edit.is_some(),
+        }
+    }
+
+    fn accept_visible_change(&mut self) {
+        let Some(id) = self.change_view.as_ref().map(|view| view.id.clone()) else {
+            return;
+        };
+        match crate::host::changes::accept_gated(&id) {
+            Ok(set) => {
+                self.replace_body(&set.proposed_text);
+                self.applied_change = Some((set.id.clone(), "committed".to_string()));
+                self.change_view = None;
+                log::info!(
+                    "changes: editor accepted id={} path={}",
+                    set.id,
+                    set.path
+                );
+            }
+            Err(error) => {
+                log::info!("changes: editor accept refused id={id} error={error:?}");
+                self.apply_change_set();
+            }
+        }
+    }
+
+    fn reject_visible_change(&mut self) {
+        let Some(id) = self.change_view.as_ref().map(|view| view.id.clone()) else {
+            return;
+        };
+        match crate::host::changes::reject_pending(&id) {
+            Ok(set) => {
+                self.change_view = None;
+                log::info!("changes: editor rejected id={} path={}", set.id, set.path);
+            }
+            Err(error) => {
+                log::info!("changes: editor reject refused id={id} error={error:?}");
+            }
+        }
+    }
+
+    fn show_change_banner(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+        let Some(view) = self.change_view.clone() else {
+            return;
+        };
+        let stale = view.status == "stale";
+        let title = if stale {
+            "Change set stale"
+        } else {
+            "Change set pending"
+        };
+        let title_color = if stale { colors.warning } else { colors.accent };
+        ui.label(
+            egui::RichText::new(format!("{title} {}", view.id))
+                .size(crate::ui::style::TEXT_BODY)
+                .color(title_color),
+        );
+        if view.conflict.is_some() {
+            ui.label(
+                egui::RichText::new("unsaved edits — accept refused")
+                    .size(crate::ui::style::TEXT_CAPTION)
+                    .color(colors.warning),
+            );
+        }
+        ui.label(
+            egui::RichText::new(&view.diff)
+                .monospace()
+                .size(crate::ui::style::TEXT_CAPTION)
+                .color(colors.text_primary),
+        );
+        ui.horizontal(|ui| {
+            if view.status == "pending" && view.conflict.is_none() {
+                let accept = crate::ui::button::chrome_button(
+                    ui,
+                    "Accept",
+                    crate::ui::button::ButtonKind::Accent,
+                    colors,
+                    72.0,
+                );
+                if accept.clicked() {
+                    self.accept_visible_change();
+                }
+            }
+            if view.status == "pending" || view.status == "stale" {
+                let reject = crate::ui::button::chrome_button(
+                    ui,
+                    "Reject",
+                    crate::ui::button::ButtonKind::Danger,
+                    colors,
+                    72.0,
+                );
+                if reject.clicked() {
+                    self.reject_visible_change();
+                }
+            }
+        });
     }
 
     /// Full on-disk document: frontmatter (when held out) + editable body.
@@ -998,6 +1315,14 @@ fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> s
 }
 
 impl App for TextEditorApp {
+    fn sync_change_set(&mut self) -> bool {
+        self.apply_change_set()
+    }
+
+    fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
+        Some(self.open_buffer())
+    }
+
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -1279,6 +1604,9 @@ impl App for TextEditorApp {
                 }
             }
         }
+
+        self.sync_change_set();
+        self.show_change_banner(ui, colors);
 
         // When the find bar is open, reserve its height at the bottom before
         // laying out the editor so it doesn't overlap the bar.
@@ -1696,6 +2024,12 @@ impl App for TextEditorApp {
             "input_released": self.input_released,
             "last_drop_result": self.last_drop_result,
             "path": self.path,
+            "change_set": self.change_view.as_ref().map(|view| serde_json::json!({
+                "id": view.id,
+                "status": view.status,
+                "diff": view.diff,
+                "conflict": view.conflict,
+            })),
         }))
     }
 
@@ -1891,9 +2225,35 @@ impl Drop for TextEditorApp {
     }
 }
 
+impl super::PlexiApp {
+    /// Show change-set previews on open text editors and publish their buffers
+    /// so `plexi changes accept` can refuse an unsaved conflict.
+    pub(super) fn sync_editor_change_sets(&mut self) -> bool {
+        let mut changed = false;
+        let mut buffers = Vec::new();
+        for window in &mut self.windows {
+            for pane in window.panes.values_mut() {
+                let Some(app) = pane.as_app_mut() else {
+                    continue;
+                };
+                let crate::host::pane::AppRuntime::Builtin(runtime) = &mut app.runtime else {
+                    continue;
+                };
+                changed |= runtime.sync_change_set();
+                if let Some(buffer) = runtime.editor_buffer() {
+                    buffers.push(buffer);
+                }
+            }
+        }
+        crate::host::changes::publish_editor_buffers(&buffers);
+        changed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::app_trait::App;
     use crate::editor::Cursor;
 
     fn unique_temp_dir(name: &str) -> PathBuf {
@@ -1902,6 +2262,92 @@ mod tests {
 
     fn unique_suffix() -> u128 {
         crate::platform::clock::now_nanos()
+    }
+
+    fn isolated_editor(
+        body: &str,
+    ) -> (
+        tempfile::TempDir,
+        crate::config::TestProfileDirGuard,
+        PathBuf,
+        TextEditorApp,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let guard = crate::config::set_test_profile_dir(profile);
+        let file = dir.path().join("draft.txt");
+        std::fs::write(&file, body).unwrap();
+        let app = TextEditorApp::new(file.clone());
+        (dir, guard, file, app)
+    }
+
+    #[test]
+    fn pending_change_previews_in_the_editor_and_accept_revert_update_the_buffer() {
+        let (_dir, _guard, file, mut app) = isolated_editor("alpha\n");
+        crate::host::changes::allow_edit("editor-bot", &file, "alpha", "beta").unwrap();
+        let prepared =
+            crate::host::changes::propose_gated("editor-bot", &file, "alpha", "beta").unwrap();
+        app.sync_change_set();
+        let state = app.semantic_state().expect("editor state");
+        assert_eq!(state["source_text"], "alpha\n");
+        assert_eq!(state["dirty"], false);
+        assert_eq!(state["change_set"]["status"], "pending");
+        let diff = state["change_set"]["diff"].as_str().unwrap();
+        assert!(diff.contains("-alpha\n"), "{diff}");
+        assert!(diff.contains("+beta\n"), "{diff}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+
+        app.accept_visible_change();
+        let accepted = app.semantic_state().unwrap();
+        assert_eq!(accepted["source_text"], "beta\n");
+        assert!(accepted["change_set"].is_null());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
+
+        crate::host::changes::revert_gated(&prepared.id).unwrap();
+        app.sync_change_set();
+        assert_eq!(app.semantic_state().unwrap()["source_text"], "alpha\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+    }
+
+    #[test]
+    fn disk_change_shows_stale_and_unsaved_buffer_is_not_overwritten() {
+        let (_dir, _guard, file, mut app) = isolated_editor("alpha\n");
+        crate::host::changes::allow_edit("editor-bot", &file, "alpha", "beta").unwrap();
+        let prepared =
+            crate::host::changes::propose_gated("editor-bot", &file, "alpha", "beta").unwrap();
+        std::fs::write(&file, "alpha\nextra\n").unwrap();
+        app.sync_change_set();
+        let state = app.semantic_state().unwrap();
+        assert_eq!(state["source_text"], "alpha\n");
+        assert_eq!(state["change_set"]["status"], "stale");
+        let refused = crate::host::changes::accept_gated(&prepared.id).unwrap_err();
+        let crate::host::changes::GateStop::Failed(message) = refused else {
+            panic!("expected stale");
+        };
+        assert!(message.starts_with("stale:"), "{message}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\nextra\n");
+        assert_eq!(app.semantic_state().unwrap()["source_text"], "alpha\n");
+
+        app.test_set_unsaved("alpha!\n");
+        let file2 = file.clone();
+        std::fs::write(&file2, "alpha\n").unwrap();
+        crate::host::changes::allow_edit("editor-bot", &file2, "alpha", "beta").unwrap();
+        let second =
+            crate::host::changes::propose_gated("editor-bot", &file2, "alpha", "beta").unwrap();
+        app.sync_change_set();
+        crate::host::changes::publish_editor_buffers(&[app.open_buffer()]);
+        let unsaved = app.semantic_state().unwrap();
+        assert_eq!(unsaved["source_text"], "alpha!\n");
+        assert_eq!(unsaved["change_set"]["status"], "stale");
+        assert_eq!(unsaved["change_set"]["conflict"], "unsaved");
+        let refused = crate::host::changes::accept_gated(&second.id).unwrap_err();
+        let crate::host::changes::GateStop::Failed(message) = refused else {
+            panic!("expected stale");
+        };
+        assert!(message.starts_with("stale:"), "{message}");
+        assert_eq!(app.semantic_state().unwrap()["source_text"], "alpha!\n");
+        assert_eq!(std::fs::read_to_string(&file2).unwrap(), "alpha\n");
     }
 
     #[test]

@@ -415,6 +415,7 @@ fn main() -> eframe::Result {
                         ChangesCmd::Accept { id } => cli::changes_accept_cli(&id),
                         ChangesCmd::Refresh { id } => cli::changes_refresh_cli(&id),
                         ChangesCmd::Revert { id } => cli::changes_revert_cli(&id),
+                        ChangesCmd::Profile => cli::changes_profile_cli(),
                     }),
                     Commands::Secret { cmd } => match cmd {
                         SecretCmd::Set {

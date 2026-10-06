@@ -73,7 +73,7 @@ same reason.
 
 ## Change sets
 
-`host.files.edit` and `host.files.write` prepare a change set in `host::changes` and do not write the target file. `plexi changes accept` is the disk write. It re-admits the same `host.files.edit` grant; it does not consult a second permission store. The agent id is the audit actor and the `agent_id` field of `change-ledger.jsonl`. A digest mismatch marks the set `stale` and accept refuses it until `refresh` rebases that same edit.
+`host.files.edit` and `host.files.write` prepare a change set in `host::changes` and do not write the target file. `plexi changes accept` is the disk write. It re-admits the same `host.files.edit` grant; it does not consult a second permission store. The agent id is the audit actor and the `agent_id` field of `change-ledger.jsonl`. A digest mismatch marks the set `stale` and accept refuses it until `refresh` rebases that same edit. An open text editor for that path shows the pending diff (Accept / Reject) before the buffer changes. Accept and revert update the open buffer when it still matches the set's base or committed text. Buffer text that differs from the base is a conflict: the set is marked `stale` and neither the buffer nor, on accept, the file is overwritten.
 
 ## Traps
 

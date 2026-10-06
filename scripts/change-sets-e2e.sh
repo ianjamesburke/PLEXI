@@ -22,6 +22,9 @@ unset PLEXI_SOCKET PLEXI_CHANNEL || true
 FILE="$WORK/draft.txt"
 printf 'alpha\n' > "$FILE"
 AGENT="editor-bot"
+PROFILE="$("$BIN" changes profile)"
+AUDIT="$PROFILE/permission-audit.jsonl"
+LEDGER="$PROFILE/change-ledger.jsonl"
 PASS=0
 FAIL=0
 
@@ -53,8 +56,6 @@ else
 fi
 
 "$BIN" changes accept "$CS" >/dev/null
-AUDIT="$HOME/.plexi/permission-audit.jsonl"
-LEDGER="$HOME/.plexi/change-ledger.jsonl"
 AFTER="$(printf 'beta\n' | sha256sum | awk '{print $1}')"
 if [[ "$(bytes)" == "$AFTER" && -f "$AUDIT" && -f "$LEDGER" ]] \
   && grep -q 'agent:editor-bot' "$AUDIT" \

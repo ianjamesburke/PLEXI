@@ -3133,6 +3133,9 @@ impl eframe::App for PlexiApp {
         // `ui`, a fully covered host serviced no pane IPC at all: wakes fired,
         // logic-only passes ran, and queued commands sat until the window was
         // next uncovered (stint 0505 fix round 3).
+        if self.sync_editor_change_sets() {
+            ctx.request_repaint();
+        }
         self.update_preamble(ctx);
 
         // Hot reload (#83): drain any pending file-watcher reload requests.
@@ -4186,6 +4189,7 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Exit,
         );
         log::info!("quit_phase: on_exit begin");
+        crate::host::changes::clear_editor_buffers();
         self.bank_final_focus_segment();
         log::info!("quit_phase: on_exit complete");
         // eframe stops here: it has destroyed the window but will only end the

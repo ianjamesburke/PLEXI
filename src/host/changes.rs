@@ -293,6 +293,196 @@ pub fn load_set(id: &str) -> Result<ChangeSet, String> {
         .map_err(|error| format!("change_set_not_found: {}: {error}", path.display()))
 }
 
+pub fn diff_for(set: &ChangeSet) -> String {
+    unified_diff(&set.base_text, &set.proposed_text, &set.path)
+}
+
+/// Change sets whose file is `path`, newest first.
+pub fn sets_for_path(path: &Path) -> Vec<ChangeSet> {
+    let Ok(want) = std::fs::canonicalize(path) else {
+        return Vec::new();
+    };
+    let want = want.display().to_string();
+    let Ok(entries) = std::fs::read_dir(sets_dir()) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let file = entry.path();
+        if file.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(body) = std::fs::read(&file) else {
+            continue;
+        };
+        let Ok(set) = serde_json::from_slice::<ChangeSet>(&body) else {
+            continue;
+        };
+        let set_path = std::fs::canonicalize(&set.path)
+            .map(|canonical| canonical.display().to_string())
+            .unwrap_or_else(|_| set.path.clone());
+        if set_path == want {
+            let mtime = entry.metadata().and_then(|meta| meta.modified()).ok();
+            found.push((mtime, set));
+        }
+    }
+    found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    found.into_iter().map(|(_, set)| set).collect()
+}
+
+/// Mark a not-yet-committed set stale. Committed and reverted sets are left alone.
+pub fn mark_stale(id: &str, reason: &str) -> Result<ChangeSet, String> {
+    let mut set = load_set(id)?;
+    if set.status == "committed" || set.status == "reverted" || set.status == "rejected" {
+        return Ok(set);
+    }
+    if set.status != "stale" {
+        set.status = "stale".to_string();
+        save_set(&set)?;
+        log::info!(
+            "changes: stale id={} agent={} path={} reason={reason}",
+            set.id,
+            set.agent_id,
+            set.path
+        );
+    }
+    Ok(set)
+}
+
+/// Drop a pending or stale set without writing the file.
+pub fn reject_pending(id: &str) -> Result<ChangeSet, String> {
+    let mut set = load_set(id)?;
+    if set.status != "pending" && set.status != "stale" {
+        return Err(format!(
+            "change_set_not_pending: {} is {}",
+            set.id, set.status
+        ));
+    }
+    set.status = "rejected".to_string();
+    save_set(&set)?;
+    log::info!(
+        "changes: rejected id={} agent={} path={}",
+        set.id,
+        set.agent_id,
+        set.path
+    );
+    Ok(set)
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct EditorBufferFile {
+    pid: u32,
+    buffers: Vec<EditorBufferRecord>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct EditorBufferRecord {
+    path: String,
+    text: String,
+    dirty: bool,
+}
+
+/// One open text-editor buffer the host publishes so a later `accept` can see
+/// unsaved text without a second permission store.
+#[derive(Clone, Debug)]
+pub struct OpenEditorBuffer {
+    pub path: String,
+    pub text: String,
+    pub dirty: bool,
+}
+
+fn editor_buffers_path() -> PathBuf {
+    crate::config::config_dir().join("editor-buffers.json")
+}
+
+fn canonical_text(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map(|canonical| canonical.display().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+/// Replace the host's snapshot of open editor buffers. A dead pid is ignored
+/// by [`editor_buffer_conflicts`].
+pub fn publish_editor_buffers(buffers: &[OpenEditorBuffer]) {
+    if buffers.is_empty() {
+        clear_editor_buffers();
+        return;
+    }
+    let path = editor_buffers_path();
+    if let Some(parent) = path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            log::warn!(
+                "changes: editor buffer snapshot dir {}: {error}",
+                parent.display()
+            );
+            return;
+        }
+    }
+    let payload = EditorBufferFile {
+        pid: std::process::id(),
+        buffers: buffers
+            .iter()
+            .map(|buffer| EditorBufferRecord {
+                path: canonical_text(&buffer.path),
+                text: buffer.text.clone(),
+                dirty: buffer.dirty,
+            })
+            .collect(),
+    };
+    let body = match serde_json::to_vec(&payload) {
+        Ok(body) => body,
+        Err(error) => {
+            log::warn!("changes: editor buffer snapshot serialize: {error}");
+            return;
+        }
+    };
+    if std::fs::read(&path).ok().as_deref() == Some(body.as_slice()) {
+        return;
+    }
+    let tmp = path.with_extension("json.tmp");
+    if let Err(error) = std::fs::write(&tmp, &body) {
+        log::warn!("changes: editor buffer snapshot write: {error}");
+        return;
+    }
+    if let Err(error) = std::fs::rename(&tmp, &path) {
+        log::warn!("changes: editor buffer snapshot rename: {error}");
+    }
+}
+
+pub fn clear_editor_buffers() {
+    let path = editor_buffers_path();
+    if path.exists() {
+        if let Err(error) = std::fs::remove_file(&path) {
+            log::warn!(
+                "changes: editor buffer snapshot remove {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// True when a live host has this file open with buffer text other than `base_text`.
+pub fn editor_buffer_conflicts(path: &str, base_text: &str) -> bool {
+    let raw = match std::fs::read_to_string(editor_buffers_path()) {
+        Ok(raw) => raw,
+        Err(_) => return false,
+    };
+    let parsed: EditorBufferFile = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            log::warn!("changes: editor buffer snapshot parse: {error}");
+            return false;
+        }
+    };
+    if !crate::host::pane_liveness::pid_is_alive(parsed.pid) {
+        return false;
+    }
+    let want = canonical_text(path);
+    parsed.buffers.iter().any(|buffer| {
+        canonical_text(&buffer.path) == want && buffer.text != base_text
+    })
+}
+
 fn append_ledger(set: &ChangeSet, action: &str, before: &str, after: &str) -> Result<(), String> {
     let path = ledger_path();
     if let Some(parent) = path.parent() {
@@ -555,6 +745,18 @@ pub fn propose_gated(agent: &str, path: &Path, old: &str, new: &str) -> Result<P
 
 pub fn accept_gated(id: &str) -> Result<ChangeSet, GateStop> {
     let set = load_set(id).map_err(GateStop::Failed)?;
+    if set.status == "pending" && editor_buffer_conflicts(&set.path, &set.base_text) {
+        let _ = mark_stale(id, "unsaved editor buffer");
+        log::info!(
+            "changes: stale id={} agent={} path={} accept refused reason=unsaved editor buffer",
+            set.id,
+            set.agent_id,
+            set.path
+        );
+        return Err(GateStop::Failed(format!(
+            "stale: {id} conflicts with unsaved editor text"
+        )));
+    }
     let (edit, admitted) = gate_edit(
         &set.agent_id,
         Path::new(&set.path),
@@ -718,5 +920,26 @@ mod tests {
             .starts_with("status=pending\n"));
         accept_gated(&prepared.id).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\nextra\n");
+    }
+
+    #[test]
+    fn unsaved_editor_buffer_refuses_accept_without_writing() {
+        let (dir, _guard) = isolate();
+        let file = sample(dir.path());
+        allow_edit("editor-bot", &file, "alpha", "beta").unwrap();
+        let prepared = propose_gated("editor-bot", &file, "alpha", "beta").unwrap();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        publish_editor_buffers(&[OpenEditorBuffer {
+            path: canonical.display().to_string(),
+            text: "alpha!\n".to_string(),
+            dirty: true,
+        }]);
+        let refused = accept_gated(&prepared.id).unwrap_err();
+        match refused {
+            GateStop::Failed(message) => assert!(message.starts_with("stale:"), "{message}"),
+            GateStop::Required { .. } => panic!("accept should be granted"),
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+        assert!(preview(&prepared.id).unwrap().starts_with("status=stale\n"));
     }
 }
