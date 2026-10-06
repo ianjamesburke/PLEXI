@@ -364,6 +364,7 @@ impl AppPermissions {
     /// Unknown capability strings are logged and dropped — manifest loaders
     /// should validate with `parse_capability_strings` first and refuse to
     /// install an app that names an unknown capability.
+    #[cfg(test)]
     pub fn from_capability_strings(strings: &[String]) -> Self {
         let mut capabilities = HashSet::new();
         for s in strings {
@@ -491,6 +492,16 @@ impl PermissionStore {
         Some((app_id, workspace, cap_str))
     }
 
+    /// Raw WASM rows as `(app_id, workspace_path, capability_id, state)`.
+    pub fn iter_wasm_entries(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, &str, PermissionState)> + '_ {
+        self.file.data.wasm_entries.iter().filter_map(|(key, &state)| {
+            let (app_id, workspace, capability_id) = Self::parse_entry_key(key)?;
+            Some((app_id, workspace, capability_id, state))
+        })
+    }
+
     /// Iterate all stored entries as `(app_id, workspace_path, capability, state)`.
     /// Entries with malformed keys or unknown capability strings are skipped
     /// (logged at warn). Used by the `ListPermissions` host handler.
@@ -581,6 +592,7 @@ impl PermissionStore {
     }
 
     /// Get the stored state for a (app, workspace, capability) triple.
+    #[cfg(test)]
     pub fn get(
         &self,
         app_id: &str,
@@ -609,6 +621,7 @@ impl PermissionStore {
     }
 
     /// Get the stored state for a raw WASM capability id.
+    #[cfg(test)]
     pub fn get_wasm(
         &self,
         app_id: &str,
@@ -653,6 +666,7 @@ impl PermissionStore {
     /// - Declared + Yellow → not pre-granted (will prompt on CapabilityRequest)
     /// - Declared + Red → blocked (blocked set)
     /// - Previously runtime-granted (Green, not in declared) → also added to capabilities
+    #[cfg(test)]
     pub fn build_permission_sets(
         &self,
         app_id: &str,
@@ -721,6 +735,7 @@ impl PermissionStore {
 
     /// Apply stored state for raw WASM capability ids. Raw ids include scoped
     /// host access such as `fs:read:/project` and `net:fetch:api.example.com`.
+    #[cfg(test)]
     pub fn build_wasm_permission_sets(
         &self,
         app_id: &str,

@@ -654,6 +654,19 @@ impl WasmPane {
                     granted
                 );
             }
+            let decision = if granted {
+                crate::broker::Decision::Allow
+            } else {
+                crate::broker::Decision::Deny
+            };
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .grant_capability_id(
+                    self.app.app_id(),
+                    &self.permission_workspace_root,
+                    &capability_id,
+                    decision,
+                    crate::broker::GrantSource::User,
+                );
         }
         log::info!(
             "wasm capability: decision app_id={} capability={} granted={}",

@@ -103,6 +103,9 @@ sysinfo = "0.32"
 arboard = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Session-bus client for the host seal key. Pure Rust so the key never lands
+# in secrets.json. Unit tests do not construct it; they use an in-memory mock.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 # Linux window backends for winit. The base `eframe` entry above runs
 # `default-features = false`, which drops `x11` and `wayland`; with neither,
 # the host compiles and links cleanly and then finds no display at runtime.

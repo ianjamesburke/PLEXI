@@ -233,6 +233,22 @@ pub fn workspace_secret_set(
                 return 1;
             }
         };
+        if crate::workspace::secrets::workspace_id_is_reserved(&cfg.id)
+            || crate::workspace::secrets::secret_account_is_reserved(&keychain_workspace_name(
+                &cfg.id,
+                effective_friendly,
+            ))
+        {
+            log::info!(
+                "secret_set:cli: refused reserved namespace workspace_id={} friendly={effective_friendly}",
+                cfg.id
+            );
+            eprintln!(
+                "error: {}",
+                crate::workspace::secrets::reserved_secret_error(&cfg.id)
+            );
+            return 1;
+        }
         let account = keychain_workspace_name(&cfg.id, effective_friendly);
         match store.set(&account, &value) {
             Ok(()) => {
@@ -406,6 +422,21 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
 
         // Try workspace-scoped first, then global fallback.
         if let Ok((root, cfg)) = require_workspace() {
+            if crate::workspace::secrets::workspace_id_is_reserved(&cfg.id)
+                || crate::workspace::secrets::secret_account_is_reserved(&keychain_workspace_name(
+                    &cfg.id, friendly,
+                ))
+            {
+                log::info!(
+                    "secret_get:cli: refused reserved namespace workspace_id={} friendly={friendly}",
+                    cfg.id
+                );
+                eprintln!(
+                    "error: {}",
+                    crate::workspace::secrets::reserved_secret_error(&cfg.id)
+                );
+                return 1;
+            }
             let account = keychain_workspace_name(&cfg.id, friendly);
             if let Some(value) = store.get(&account) {
                 log::info!(
