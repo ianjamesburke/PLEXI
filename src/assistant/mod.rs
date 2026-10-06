@@ -3915,6 +3915,16 @@ impl AssistantApp {
         self.launch_turn(conversation_id, turn_id, text, Some(messages));
     }
 
+    /// A phone or CLI turn is in the broker, or one is queued behind it.
+    ///
+    /// The active pane is painted from `ui`, and an idle visible host does
+    /// not get another frame unless this frame asks for one. The broker
+    /// thread only pushes the outcome onto a channel, so without that ask
+    /// the reply sits until the next unrelated wake (a quit, a key).
+    fn isolated_reply_pending(&self) -> bool {
+        self.side_in_flight.is_some() || !self.side_queue.is_empty()
+    }
+
     fn pump_isolated_turns(&mut self) {
         while let Ok(event) = self.side_flow_rx.try_recv() {
             self.handle_isolated_flow_event(event);
@@ -4088,8 +4098,7 @@ impl App for AssistantApp {
 
     fn needs_background_tick(&self) -> bool {
         self.model.streaming.in_flight
-            || self.side_in_flight.is_some()
-            || !self.side_queue.is_empty()
+            || self.isolated_reply_pending()
             || self.compact_pending
             || !self.pending_commands.is_empty()
     }
@@ -4182,7 +4191,10 @@ impl App for AssistantApp {
         if compact_visible_this_frame && self.run_pending_compaction() {
             ui.ctx().request_repaint();
         }
-        if self.model.streaming.in_flight || self.compact_pending {
+        // Phone turns finish on a worker thread. Keep painting until the
+        // outcome is written, or an idle visible host never delivers it.
+        if self.model.streaming.in_flight || self.isolated_reply_pending() || self.compact_pending
+        {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -6332,6 +6344,41 @@ enabled = ["allowed.tool"]
         let output = &app.model.turns.last().unwrap().text;
         assert!(output.contains("Active workspace context"));
         assert!(output.contains("text-editor (pane 42)"));
+    }
+
+    #[test]
+    fn isolated_phone_reply_is_written_without_another_user_event() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let response = ws.path().join("reply.json");
+        let turn_id = "turn-phone".to_string();
+        app.side_in_flight = Some(turn_id.clone());
+        app.side_conversation = Some("phone-host".to_string());
+        app.side_transcripts
+            .insert("phone-host".to_string(), Vec::new());
+        app.external_replies.insert(
+            turn_id.clone(),
+            vec![ExternalWait {
+                request_id: "req-phone".to_string(),
+                response_file: response.display().to_string(),
+                conversation_id: "phone-host".to_string(),
+            }],
+        );
+        assert!(app.isolated_reply_pending());
+        assert!(App::needs_background_tick(&app));
+        app.side_outcome_tx
+            .send(TurnOutcome {
+                conversation_id: "phone-host".to_string(),
+                turn_id,
+                text: Some("mock-reply".to_string()),
+                error: None,
+            })
+            .unwrap();
+        App::background_tick(&mut app);
+        let body = std::fs::read_to_string(&response).unwrap();
+        assert!(body.contains("\"state\":\"succeeded\""), "{body}");
+        assert!(body.contains("mock-reply"), "{body}");
+        assert!(!app.isolated_reply_pending());
     }
 
     #[test]
