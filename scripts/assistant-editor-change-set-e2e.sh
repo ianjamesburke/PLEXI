@@ -102,10 +102,11 @@ fi
 EDIT_INPUT="$(python3 -c 'import json,sys; print(json.dumps({"path":sys.argv[1],"old_string":"alpha\n","new_string":"beta\n"}))' "$FILE")"
 EDITED="$(run_tool host.files.edit "$EDIT_INPUT")"
 CS="$(python3 -c 'import json,sys; body=json.load(sys.stdin); out=body["output"]; assert out.get("applied") is False; print(out["change_set_id"])' <<<"$EDITED")"
-if [[ "$(cat "$FILE")" == $'alpha\n' ]]; then
+if python3 -c 'import pathlib,sys; sys.exit(0 if pathlib.Path(sys.argv[1]).read_bytes()==b"alpha\n" else 1)' "$FILE"; then
   ok "propose leaves the file unchanged"
 else
   bad "propose leaves the file unchanged"
+  python3 -c 'import pathlib,sys; print(repr(pathlib.Path(sys.argv[1]).read_bytes()))' "$FILE"
 fi
 
 PENDING=0
@@ -135,7 +136,7 @@ set +e
 ACCEPT_OUT="$("$BIN" changes accept "$CS" 2>"$WORK/accept.err")"
 ACCEPT_CODE=$?
 set -e
-if [[ "$ACCEPT_CODE" -eq 0 && "$(cat "$FILE")" == $'beta\n' ]]; then
+if [[ "$ACCEPT_CODE" -eq 0 ]] && python3 -c 'import pathlib,sys; sys.exit(0 if pathlib.Path(sys.argv[1]).read_bytes()==b"beta\n" else 1)' "$FILE"; then
   ok "accept writes the one-line change"
 else
   bad "accept writes the one-line change"
