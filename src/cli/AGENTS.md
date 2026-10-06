@@ -60,6 +60,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
   replacement chord until the host keymap defines one.
 - **Routines are post-v1.** `plexi routine` stays compiled for beta and
   worktree development but is release-gated and hidden from stable help.
+- **Folder secrets stay out of the profile plaintext.** `plexi secret set NAME --folder <path>` stores a directory-scoped secret through `folder_store` (contract: `src/workspace/AGENTS.md`). `secret list` prints names and folders. `secret rm` removes one binding. `secret grant NAME --agent <id>` records a permission-gate allow for that actor, name, and folder. `secret read` admits through the same gate and prints `permission_required` (exit 2) until the grant exists. `secret exec --cwd <path>` runs a command with the environment `shell::build_env` would give a new pane there. The value is never logged.
 - **Connector OAuth keeps tokens host-side.** `plexi connector login stub
   --issuer <loopback-url>` uses a browser loopback callback and prints only a
   credential reference; `status` likewise never exposes tokens, and `revoke`

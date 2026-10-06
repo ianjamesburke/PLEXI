@@ -338,7 +338,10 @@ pub fn workspace_secret_list(global: bool) -> i32 {
             SecretListScope::UserOnly => (None, Vec::new()),
         };
         let user_entries = store.list_with_prefix(&user_prefix);
-        if workspace_entries.is_empty() && user_entries.is_empty() {
+        let folders = crate::workspace::secrets::list_folder_secrets(
+            crate::workspace::secrets::folder_store(),
+        );
+        if workspace_entries.is_empty() && user_entries.is_empty() && folders.is_empty() {
             println!("No secrets stored.");
             return 0;
         }
@@ -361,6 +364,7 @@ pub fn workspace_secret_list(global: bool) -> i32 {
                 }
             }
         }
+        print_folder_secrets(&folders);
         0
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -516,6 +520,315 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
         let _ = (friendly, global);
         eprintln!("error: keychain not available on this platform");
         1
+    }
+}
+
+fn print_folder_secrets(folders: &[crate::workspace::secrets::FolderSecretMeta]) {
+    if folders.is_empty() {
+        return;
+    }
+    eprintln!(
+        "folder secrets backend: {}",
+        crate::workspace::secrets::backend_label()
+    );
+    println!("Folder scope:");
+    for meta in folders {
+        println!("  {}  {}", meta.name, meta.folder.display());
+    }
+    log::info!(
+        "folder_secrets: list count={} backend={}",
+        folders.len(),
+        crate::workspace::secrets::backend_label()
+    );
+}
+
+fn read_secret_value(name: &str, from_env: bool) -> Result<zeroize::Zeroizing<String>, i32> {
+    let value = if from_env {
+        match std::env::var(name) {
+            Ok(value) => value,
+            Err(_) => {
+                log::warn!("folder_secrets: env var {name} is not set");
+                eprintln!("error: env var {name} is not set");
+                return Err(1);
+            }
+        }
+    } else {
+        eprint!("Enter value for {name}: ");
+        let _ = io::stderr().flush();
+        match read_secret_from_stdin() {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!("folder_secrets: stdin read failed: {err}");
+                eprintln!("\nerror: failed to read secret: {err}");
+                return Err(1);
+            }
+        }
+    };
+    if value.is_empty() {
+        eprintln!("error: empty value, nothing stored");
+        return Err(1);
+    }
+    Ok(zeroize::Zeroizing::new(value))
+}
+
+fn actor_from_flags(
+    agent: Option<&str>,
+    app: Option<&str>,
+) -> Result<crate::workspace::secrets::SecretActor, i32> {
+    match (agent, app) {
+        (Some(id), None) => Ok(crate::workspace::secrets::SecretActor::agent(id)),
+        (None, Some(id)) => Ok(crate::workspace::secrets::SecretActor::app(id)),
+        _ => {
+            eprintln!("error: pass --agent <id> or --app <id>");
+            Err(1)
+        }
+    }
+}
+
+fn resolve_secret_folder(
+    name: &str,
+    folder: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, i32> {
+    if let Some(folder) = folder {
+        return crate::workspace::secrets::canonical_folder(folder).map_err(|err| {
+            eprintln!("error: {err}");
+            1
+        });
+    }
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => {
+            eprintln!("error: current directory: {err}");
+            return Err(1);
+        }
+    };
+    let store = crate::workspace::secrets::folder_store();
+    let matches: Vec<_> = crate::workspace::secrets::list_folder_secrets(store)
+        .into_iter()
+        .filter(|meta| meta.name == name && cwd.starts_with(&meta.folder))
+        .collect();
+    if matches.len() == 1 {
+        return Ok(matches[0].folder.clone());
+    }
+    let named: Vec<_> = crate::workspace::secrets::list_folder_secrets(store)
+        .into_iter()
+        .filter(|meta| meta.name == name)
+        .collect();
+    if named.len() == 1 {
+        return Ok(named[0].folder.clone());
+    }
+    if named.is_empty() {
+        eprintln!("error: secret '{name}' not found");
+    } else {
+        eprintln!("error: secret '{name}' is set on more than one folder; pass --folder");
+    }
+    Err(1)
+}
+
+/// `plexi secret set NAME --folder <path>`.
+pub fn folder_secret_set(
+    name: &str,
+    from_env: bool,
+    global: bool,
+    alias: Option<&str>,
+    folder: &std::path::Path,
+) -> i32 {
+    if global {
+        eprintln!("error: --folder cannot be combined with --global");
+        return 1;
+    }
+    if alias.is_some() {
+        eprintln!("error: --folder cannot be combined with --alias");
+        return 1;
+    }
+    let value = match read_secret_value(name, from_env) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    {
+        match crate::workspace::secrets::set_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            name,
+            folder,
+            value.as_str(),
+        ) {
+            Ok(canon) => {
+                println!(
+                    "Stored '{name}' for {} ({})",
+                    canon.display(),
+                    crate::workspace::secrets::backend_label()
+                );
+                0
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                1
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (name, folder, value);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
+
+/// `plexi secret rm NAME --folder <path>`.
+pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    {
+        match crate::workspace::secrets::remove_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            name,
+            folder,
+        ) {
+            Ok(()) => {
+                println!("Removed '{name}'");
+                0
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                1
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (name, folder);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
+
+/// `plexi secret grant NAME --agent <id>`.
+pub fn folder_secret_grant(
+    name: &str,
+    agent: Option<&str>,
+    app: Option<&str>,
+    folder: Option<&std::path::Path>,
+) -> i32 {
+    let actor = match actor_from_flags(agent, app) {
+        Ok(actor) => actor,
+        Err(code) => return code,
+    };
+    let folder = match resolve_secret_folder(name, folder) {
+        Ok(folder) => folder,
+        Err(code) => return code,
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    {
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        match crate::workspace::secrets::grant_folder_secret(
+            &monitor,
+            crate::workspace::secrets::folder_store(),
+            &actor,
+            name,
+            &folder,
+        ) {
+            Ok(grant_id) => {
+                println!(
+                    "Granted '{name}' in {} to {} ({grant_id})",
+                    folder.display(),
+                    actor.id
+                );
+                0
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                1
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (name, actor, folder);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
+
+/// `plexi secret read NAME --agent <id>`.
+pub fn folder_secret_read(
+    name: &str,
+    agent: Option<&str>,
+    app: Option<&str>,
+    folder: Option<&std::path::Path>,
+) -> i32 {
+    let actor = match actor_from_flags(agent, app) {
+        Ok(actor) => actor,
+        Err(code) => return code,
+    };
+    let folder = match resolve_secret_folder(name, folder) {
+        Ok(folder) => folder,
+        Err(code) => return code,
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    {
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        match crate::workspace::secrets::read_folder_secret(
+            &monitor,
+            crate::workspace::secrets::folder_store(),
+            &actor,
+            name,
+            &folder,
+        ) {
+            Ok(crate::workspace::secrets::ReadResult::Value(value)) => {
+                println!("{}", value.as_str());
+                0
+            }
+            Ok(crate::workspace::secrets::ReadResult::PermissionRequired { pending_id }) => {
+                println!("permission_required");
+                println!("pending_request_id={pending_id}");
+                2
+            }
+            Ok(crate::workspace::secrets::ReadResult::Denied) => {
+                println!("permission_denied");
+                1
+            }
+            Ok(crate::workspace::secrets::ReadResult::NotFound) => {
+                eprintln!("error: secret '{name}' not found");
+                1
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                1
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (name, actor, folder);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
+
+/// Run `command` with the environment [`crate::host::shell::build_env`] builds
+/// for a new terminal pane whose cwd is `cwd`.
+pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
+    if command.is_empty() {
+        eprintln!("error: secret exec needs a command");
+        return 1;
+    }
+    let pane_env = crate::host::shell::build_env(Some(cwd));
+    log::info!(
+        "folder_secrets: exec cwd={} program={}",
+        cwd.display(),
+        command[0]
+    );
+    let mut child = std::process::Command::new(&command[0]);
+    child.args(&command[1..]).current_dir(cwd);
+    for (key, value) in &pane_env {
+        child.env(key, value);
+    }
+    match child.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(err) => {
+            eprintln!("error: failed to spawn {}: {err}", command[0]);
+            1
+        }
     }
 }
 

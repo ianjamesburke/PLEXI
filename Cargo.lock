@@ -4176,6 +4176,7 @@ dependencies = [
  "pulldown-cmark",
  "regex",
  "rfd",
+ "ring",
  "rodio",
  "ropey",
  "schemars",
