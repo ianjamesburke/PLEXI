@@ -64,20 +64,24 @@ note "binary: $BIN ($("$BIN" --version 2>&1 || true))"
 note "sha: $(git -C "$REPO" rev-parse HEAD)"
 
 python3 - "$PROFILE/config.toml" "$MOCK_PORT" <<'PY'
-import sys
+import re, sys, tomllib
 from pathlib import Path
 path, port = Path(sys.argv[1]), sys.argv[2]
 path.parent.mkdir(parents=True, exist_ok=True)
 text = path.read_text() if path.exists() else ""
+text = re.sub(r"(?m)^# w1[56] (?:human-approve|gate) mock\n", "", text)
+# A second [ai.local] or [log] table makes the whole file fail to parse,
+# and the host then boots with no [ai] section at all.
+text = re.sub(r"(?ms)^\[ai\.local\][^\n]*\n(?:(?!\s*\[).*\n)*", "", text)
+text = re.sub(r"(?ms)^\[log\][^\n]*\n(?:(?!\s*\[).*\n)*", "", text)
 if 'backend = "openrouter"' in text:
     text = text.replace('backend = "openrouter"', 'backend = "local"', 1)
 elif "[ai]" not in text:
     text = '[ai]\nbackend = "local"\n' + text
 elif 'backend = "local"' not in text:
     text = text.replace("[ai]\n", '[ai]\nbackend = "local"\n', 1)
-marker = "\n# w16 gate mock\n"
-if marker not in text:
-    text += f"""{marker}
+text = text.rstrip() + f"""
+
 [ai.local]
 base_url = "http://127.0.0.1:{port}"
 model_low = "mock-chess"
@@ -87,7 +91,12 @@ model_high = "mock-chess"
 [log]
 level = "info"
 """
+parsed = tomllib.loads(text)
+local = parsed.get("ai", {}).get("local", {})
+assert parsed.get("ai", {}).get("backend") == "local", parsed.get("ai")
+assert local.get("model_low") == "mock-chess", local
 path.write_text(text)
+print("config: local mock-chess")
 PY
 
 export MOCK_CONTROL MOCK_PORT
@@ -131,7 +140,9 @@ fi
   record FAIL chess-install "$(tail -20 "$EVID/logs/app-install.err")"
   exit 1
 }
-"$BIN" app open chess >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
+# A sibling split, not an overlay, so the seed terminal can be closed
+# and the board can fill the window for the human's clicks.
+"$BIN" app open chess --right >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
 
 "$BIN" pane list >"$EVID/logs/panes.json"
 TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
@@ -174,6 +185,33 @@ done
 [[ "$READY" -eq 1 ]] || { record FAIL chess-ready "$(cat "$EVID/logs/chess-state.json" "$EVID/logs/chess-state.err" 2>/dev/null)"; exit 1; }
 note "chess tool registered"
 
+# Drop every terminal so the chess pane is the window. A thin split clips
+# the board to a few pixels and the click lands on the terminal.
+"$BIN" pane list >"$EVID/logs/panes.json"
+while read -r id; do
+  [[ -n "$id" ]] || continue
+  "$BIN" pane close "$id" >"$EVID/logs/close-$id.out" 2>"$EVID/logs/close-$id.err" || true
+done < <(python3 - "$EVID/logs/panes.json" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+for row in rows:
+    if row.get("type")=="terminal":
+        print(row["id"])
+PY
+)
+sleep 0.6
+"$BIN" pane list >"$EVID/logs/panes-chess.json"
+CHESS="$(python3 - "$EVID/logs/panes-chess.json" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+hits=[str(r["id"]) for r in rows if r.get("type")=="app" and "chess" in str(r.get("title","")).lower()]
+print(hits[-1] if hits else "")
+PY
+)"
+[[ -n "$CHESS" ]] || { record FAIL chess-pane "no chess pane after closing terminals"; exit 1; }
+"$BIN" pane focus "$CHESS" >/dev/null 2>&1 || true
+sleep 0.4
+
 # ── 1. Human plays e2e4 ──────────────────────────────────────────────────────
 LOG_AT=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 if HUMAN_PLAY_UCI e2e4; then
@@ -188,6 +226,19 @@ else
   "$BIN" host screenshot --output "$EVID/logs/step1.png" >/dev/null 2>&1 || true
   record FAIL step1 "HUMAN_PLAY_UCI e2e4 failed"
 fi
+
+# A fresh terminal for the in-pane calls. Chess stays on screen beside it.
+"$BIN" pane new >"$EVID/logs/pane-new-step2.out" 2>"$EVID/logs/pane-new-step2.err" || true
+sleep 0.6
+"$BIN" pane list >"$EVID/logs/panes.json"
+TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1]))
+terms=[str(r["id"]) for r in rows if r.get("type")=="terminal"]
+print(terms[-1] if terms else "")
+PY
+)"
+[[ -n "$TERM" ]] || { record FAIL panes "no terminal after the human move"; exit 1; }
 
 # ── 2. Ungranted app call does not move ──────────────────────────────────────
 PLAY_G1=$(python3 - <<'PY'
@@ -206,16 +257,8 @@ else
 fi
 
 # ── 3. MCP tools/call with the pane bearer is refused ────────────────────────
-"$BIN" pane new >"$EVID/logs/pane-new.out" 2>"$EVID/logs/pane-new.err" || true
-sleep 1
-"$BIN" pane list >"$EVID/logs/panes.json"
-TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
-import json, sys
-rows=json.load(open(sys.argv[1]))
-terms=[str(r["id"]) for r in rows if r.get("type")=="terminal"]
-print(terms[-1] if terms else "")
-PY
-)"
+# The terminal opened after the human move is fresh, so it carries the
+# host MCP port and bearer. Reuse it instead of splitting the board again.
 in_pane "mcp-env" "printf '%s\n' \"\$PLEXI_HOST_MCP_PORT\" > '$EVID/logs/mcp.port'; printf '%s\n' \"\$PLEXI_HOST_MCP_TOKEN\" > '$EVID/logs/mcp.token'" || true
 MCP_PORT="$(tr -d '[:space:]' < "$EVID/logs/mcp.port" 2>/dev/null || true)"
 MCP_TOKEN="$(tr -d '[:space:]' < "$EVID/logs/mcp.token" 2>/dev/null || true)"
@@ -238,7 +281,9 @@ fi
 
 # ── 4. Assistant proposes e7e5; a real click approves it ─────────────────────
 arm 1 assistant-e7e5 e7e5
-"$BIN" app open assistant >"$EVID/logs/open-assistant.out" 2>"$EVID/logs/open-assistant.err" || true
+# Split beside the board so the sheet and the squares are both on screen.
+"$BIN" pane focus "$CHESS" >/dev/null 2>&1 || true
+"$BIN" app open assistant --right >"$EVID/logs/open-assistant.out" 2>"$EVID/logs/open-assistant.err" || true
 ASSIST=""
 for _ in $(seq 1 20); do
   "$BIN" pane list >"$EVID/logs/panes.json"
