@@ -12,7 +12,7 @@
 //! drained by `App::logic`, so the call runs on a worker thread and writes the
 //! reply file itself — the frame loop never waits on a guest.
 
-use super::PlexiApp;
+use super::{ApprovalButton, PlexiApp};
 
 /// The identity an app sees for a verified socket caller. No pane is never
 /// the human `user`.
@@ -41,10 +41,39 @@ impl PlexiApp {
                     "permission_monitor: list pending count={}",
                     pending.len()
                 );
+                let buttons: Vec<serde_json::Value> = self
+                    .approval_buttons
+                    .iter()
+                    .map(|button| {
+                        serde_json::json!({
+                            "label": button.label,
+                            "bounds": button.bounds,
+                            "pending_request_id": button.pending_request_id,
+                        })
+                    })
+                    .collect();
+                let mut panes = Vec::new();
+                for window in &self.windows {
+                    for (pane_id, pane) in &window.panes {
+                        let Some(tile) = window.tree.tiles.find_pane(pane_id) else {
+                            continue;
+                        };
+                        let Some(rect) = window.tree.tiles.rect(tile) else {
+                            continue;
+                        };
+                        panes.push(serde_json::json!({
+                            "id": pane_id,
+                            "manifest_id": pane.as_app().map(|app| app.manifest_id.as_str()).unwrap_or(""),
+                            "bounds": [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                        }));
+                    }
+                }
                 serde_json::json!({
                     "ok": true,
                     "pending": pending,
                     "audit": monitor.audit_records(),
+                    "buttons": buttons,
+                    "panes": panes,
                 })
             }
             "show" => {
@@ -62,38 +91,17 @@ impl PlexiApp {
                 }
             }
             "resolve" => {
+                // No CLI or socket path resolves. The desktop banner and a
+                // paired device are the only principals that call approve_pending.
                 let id = pending_id.map(String::as_str).unwrap_or("");
-                let raw = choice.map(String::as_str).unwrap_or("");
-                if raw == "revoke" {
-                    let removed = monitor.revoke_grant_id(id);
-                    log::info!("permission_monitor: revoke grant {id} removed={removed}");
-                    serde_json::json!({"ok": removed, "grant_id": id})
-                } else {
-                let parsed = match raw {
-                    "once" => Some(crate::broker::gate::ApprovalChoice::Once),
-                    "session" => Some(crate::broker::gate::ApprovalChoice::Session),
-                    "always" => Some(crate::broker::gate::ApprovalChoice::Always),
-                    "deny" => Some(crate::broker::gate::ApprovalChoice::Deny),
-                    _ => None,
-                };
-                match parsed {
-                    Some(choice) => match monitor.approve_pending(id, choice) {
-                        Ok(()) => {
-                            log::info!("permission_monitor: resolved pending {id} via observation seam");
-                            serde_json::json!({"ok": true, "pending_request_id": id})
-                        }
-                        Err(error) => serde_json::json!({
-                            "ok": false,
-                            "error_code": "permission_denied",
-                            "error": error,
-                        }),
-                    },
-                    None => serde_json::json!({
-                        "ok": false,
-                        "error": "choice must be once, session, always, deny, or revoke",
-                    }),
-                }
-                }
+                let _choice = choice.map(String::as_str).unwrap_or("");
+                monitor.refuse_client_resolve(id);
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "permission_denied",
+                    "error": "only the person at the desktop can resolve a permission",
+                    "pending_request_id": id,
+                })
             }
             _ => serde_json::json!({"ok": false, "error": "unknown permission operation"}),
         };
@@ -281,6 +289,138 @@ impl PlexiApp {
         if let Err(error) = spawned {
             log::error!("app_call: failed to spawn worker thread: {error}");
         }
+    }
+
+    /// Floating Allow once control for a pending app call. Real pointer
+    /// clicks approve. Socket-injected input is ignored for the frame.
+    pub(crate) fn draw_approval_banner(&mut self, ctx: &egui::Context) {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let pending = monitor.list_pending();
+        self.approval_buttons.clear();
+        if pending.is_empty() {
+            return;
+        }
+        let pending_id = pending[0].pending_request_id.clone();
+        let caption = format!("{} wants {}", pending[0].actor_id, pending[0].tool);
+        let synthetic = self.synthetic_input_frame;
+        let mut clicked = false;
+        let mut rect = None;
+        egui::Area::new(egui::Id::new("approval_banner"))
+            .fixed_pos(egui::pos2(12.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(caption);
+                    let response = ui.add(egui::Button::new("Allow once"));
+                    rect = Some(response.rect);
+                    clicked = response.clicked();
+                });
+            });
+        if let Some(rect) = rect {
+            self.approval_buttons.push(ApprovalButton {
+                label: "Allow once".to_string(),
+                bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                pending_request_id: pending_id.clone(),
+            });
+        }
+        if clicked && !synthetic {
+            match monitor.approve_pending(
+                &pending_id,
+                crate::broker::gate::ApprovalChoice::Once,
+            ) {
+                Ok(()) => {
+                    log::info!("permission_monitor: banner approved {pending_id}")
+                }
+                Err(error) => {
+                    log::warn!("permission_monitor: banner approve {pending_id} failed: {error}")
+                }
+            }
+        } else if clicked {
+            log::info!("permission_monitor: ignored synthetic banner click {pending_id}");
+        }
+    }
+
+    fn oldest_pending_id(&self) -> Option<String> {
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .list_pending()
+            .into_iter()
+            .next()
+            .map(|row| row.pending_request_id)
+    }
+
+    /// Pending id a synthetic key, click, or approval verb must not resolve.
+    pub(crate) fn synthetic_approval_target(
+        &self,
+        pane_id: u64,
+        key: Option<&str>,
+        click_abs: Option<egui::Pos2>,
+    ) -> Option<String> {
+        if let Some(pos) = click_abs {
+            for button in &self.approval_buttons {
+                let [x0, y0, x1, y1] = button.bounds;
+                if pos.x >= x0 && pos.x < x1 && pos.y >= y0 && pos.y < y1 {
+                    return Some(button.pending_request_id.clone());
+                }
+            }
+        }
+        let app = self
+            .windows
+            .iter()
+            .find_map(|window| window.panes.get(&pane_id).and_then(|pane| pane.as_app()));
+        let app = app?;
+        if app.manifest_id == "permissions" {
+            return Some(
+                self.oldest_pending_id()
+                    .unwrap_or_else(|| "permissions".to_string()),
+            );
+        }
+        if let Some(id) = app.runtime.approval_request_id() {
+            if !id.is_empty() {
+                return Some(id);
+            }
+        }
+        let sheet_key = key.is_some_and(|raw| {
+            matches!(
+                raw.to_ascii_lowercase().as_str(),
+                "right" | "left" | "up" | "down" | "enter" | "return" | "space" | "tab" | "escape"
+            )
+        });
+        if app.runtime.type_id() == "assistant" && sheet_key {
+            return self.oldest_pending_id();
+        }
+        None
+    }
+
+    /// Write `permission_denied` and an audit row. Returns true when the
+    /// event must not be injected.
+    pub(crate) fn refuse_synthetic_approval(
+        &mut self,
+        pane_id: u64,
+        key: Option<&str>,
+        click_abs: Option<egui::Pos2>,
+        response_file: Option<&str>,
+    ) -> bool {
+        let Some(pending_id) = self.synthetic_approval_target(pane_id, key, click_abs) else {
+            return false;
+        };
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .refuse_client_resolve(&pending_id);
+        log::info!(
+            "permission_monitor: refused synthetic input pane={pane_id} pending={pending_id}"
+        );
+        if let Some(path) = response_file {
+            crate::rpc::write_json_response(
+                path,
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "permission_denied",
+                    "error": "synthetic input cannot resolve a permission",
+                    "pending_request_id": pending_id,
+                }),
+            );
+        }
+        true
     }
 }
 

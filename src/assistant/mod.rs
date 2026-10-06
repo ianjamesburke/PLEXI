@@ -3764,6 +3764,14 @@ impl App for AssistantApp {
         "assistant"
     }
 
+    fn approval_request_id(&self) -> Option<String> {
+        self.model
+            .pending_permission
+            .as_ref()
+            .map(|pending| pending.pending_request_id.clone())
+            .filter(|id| !id.is_empty())
+    }
+
     fn submit_external_turn(
         &mut self,
         text: String,

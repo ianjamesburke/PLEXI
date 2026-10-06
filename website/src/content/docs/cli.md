@@ -53,7 +53,7 @@ Observe and resolve pending permission requests. This is not `plexi agent reques
 |---|---|
 | `list` | List pending permission requests as JSON |
 | `show` | Show one pending permission request as JSON |
-| `resolve` | Resolve one pending request: once, session, always, or deny |
+| `resolve` | Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal |
 
 #### `plexi assistant permission list`
 
@@ -69,7 +69,7 @@ Show one pending permission request as JSON
 
 #### `plexi assistant permission resolve`
 
-Resolve one pending request: once, session, always, or deny
+Resolve one pending request: once, session, always, or deny. The host refuses every choice from the terminal
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -136,6 +136,22 @@ Example: plexi command-view allow --tool assistant.turn
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--tool` | string | no | Tool name. Ignored. The command does not write a grant |
+
+## `plexi permissions`
+
+Permission grants. Allowing from the terminal is refused
+
+| Subcommand | Description |
+|---|---|
+| `allow` | Ask the host to allow a pending request. The host refuses |
+
+### `plexi permissions allow`
+
+Ask the host to allow a pending request. The host refuses
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
 
 ## `plexi run`
 
@@ -1552,14 +1568,14 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 ## `plexi needs-you`
 
-List and resolve everything waiting on you.
+List everything waiting on the person at the desktop. The terminal cannot resolve an item.
 
-One host record covers click approvals, agent questions, and blocked runs. Resolving an id from here, the desktop badge, or the phone page resolves it everywhere, exactly once.
+One host record covers click approvals, agent questions, blocked runs, and a host integrity item. A desktop click resolves an id. `needs-you resolve` from the terminal is refused.
 
 | Subcommand | Description |
 |---|---|
 | `list` | List open items waiting on you as JSON |
-| `resolve` | Resolve one item. Approve lets a click-gated tool proceed; deny refuses it |
+| `resolve` | Ask the host to resolve an item. The host refuses |
 
 ### `plexi needs-you list`
 
@@ -1571,13 +1587,13 @@ List open items waiting on you as JSON
 
 ### `plexi needs-you resolve`
 
-Resolve one item. Approve lets a click-gated tool proceed; deny refuses it
+Ask the host to resolve an item. The host refuses
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes |  |
-| `--approve` | flag | no | Approve the item |
-| `--deny` | flag | no | Deny the item |
+| `--approve` | flag | no | Request approval. The host still refuses |
+| `--deny` | flag | no | Request denial. The host still refuses |
 
 ## `plexi notify`
 

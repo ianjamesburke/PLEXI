@@ -65,21 +65,17 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
-- **Assistant permission** — list, show, or resolve a pending grant:
-  `plexi assistant permission list`, `plexi assistant permission show <id>`,
-  `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
-  `always`, `deny`, and `revoke` are the choices. This is the observation
-  seam for the desktop permission sheet.
+- **Assistant permission** — list or show a pending grant:
+  `plexi assistant permission list`, `plexi assistant permission show <id>`.
+  When a tool call returns permission_required, print the pending_request_id
+  and wait for the person at the desktop to decide. `assistant permission resolve`
+  is refused by the host. Do not approve, deny, or widen a grant from the terminal.
 - **Needs you** — one list of everything waiting on the human:
-  `plexi needs-you list --json` and
-  `plexi needs-you resolve <id> --approve` or `--deny`. Click approvals, agent questions, blocked runs, and a host integrity item share that record.
+  `plexi needs-you list --json`. Click approvals, agent questions, blocked runs, and a host integrity item share that record.
   An integrity item appears after a start when the previous host did not exit cleanly or the permission profile changed while it was down.
-  Resolving an id resolves it everywhere exactly once. Expired items are
-  auto-denied. A repeat resolve returns the existing resolution. Integrity, questions, and blocked runs do not mint a grant. Open items
-  survive a host restart. The resolve JSON includes `run_outcome`:
-  `unblocked` when this host process still has the run, and `outcome_unknown`
-  when that run was filed by a previous process. Do not edit profile files to
-  create or approve an item.
+  `plexi needs-you resolve` and `plexi permissions allow` are refuse-only: the host
+  returns `permission_denied` and leaves the pending in place. A real desktop click grants.
+  Open items survive a host restart. Do not edit profile files to create or approve an item.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app

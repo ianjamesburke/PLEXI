@@ -69,6 +69,11 @@ pub enum Commands {
         #[arg(long)]
         follow: bool,
     },
+    /// Permission grants. Allowing from the terminal is refused.
+    Permissions {
+        #[command(subcommand)]
+        cmd: PermissionsCmd,
+    },
     // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
@@ -178,11 +183,10 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: EventsCmd,
     },
-    /// List and resolve everything waiting on you.
+    /// List everything waiting on the person at the desktop.
     ///
     /// One host record covers click approvals, agent questions, and blocked
-    /// runs. Resolving an id from here, the desktop
-    /// badge, or the phone page resolves it everywhere, exactly once.
+    /// runs. The terminal cannot resolve an item. A desktop click does.
     #[command(name = "needs-you")]
     NeedsYou {
         #[command(subcommand)]
@@ -407,14 +411,14 @@ pub enum NeedsYouCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Resolve one item. Approve lets a click-gated tool proceed; deny refuses it.
+    /// Ask the host to resolve an item. The host refuses.
     Resolve {
         id: String,
-        /// Approve the item.
-        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        /// Request approval. The host still refuses.
+        #[arg(long, conflicts_with = "deny")]
         approve: bool,
-        /// Deny the item.
-        #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
+        /// Request denial. The host still refuses.
+        #[arg(long, conflicts_with = "approve")]
         deny: bool,
     },
 }
@@ -426,11 +430,18 @@ pub enum AssistantPermissionCmd {
     /// Show one pending permission request as JSON.
     Show { id: String },
     /// Resolve one pending request: once, session, always, or deny.
+    /// The host refuses every choice from the terminal.
     Resolve {
         id: String,
         #[arg(long, value_parser = ["once", "session", "always", "deny", "revoke"])]
         choice: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum PermissionsCmd {
+    /// Ask the host to allow a pending request. The host refuses.
+    Allow { id: String },
 }
 
 #[derive(Subcommand)]
