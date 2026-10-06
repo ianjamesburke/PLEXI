@@ -67,9 +67,10 @@ pub use reconcile::AccountRename;
 pub use reconcile::ReconcileReport;
 
 pub use folder::{
-    canonical_folder, env_for_cwd, grant_folder_secret, list_folder_secrets, read_folder_secret,
-    remove_folder_secret, set_folder_secret, FolderSecretMeta, ReadResult, SECRET_READ_TOOL,
-    SecretActor,
+    canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,
+    grant_folder_secret, list_folder_secrets, read_folder_secret, read_through_host_gate,
+    remove_folder_secret, set_folder_secret, take_folder_secret_sheet, FolderSecretMeta,
+    ReadResult, SECRET_READ_TOOL, SecretActor,
 };
 pub use folder_store::backend_label;
 pub use resolver::{

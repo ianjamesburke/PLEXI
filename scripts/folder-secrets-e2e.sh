@@ -16,7 +16,7 @@ if [[ "$(uname -s)" == "Linux" && -z "${FOLDER_E2E_INNER:-}" ]] && command -v db
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLEXI="${1:-$REPO_ROOT/target/release/plexi}"
+PLEXI="${PLEXI_BIN:-${1:-$REPO_ROOT/target/release/plexi}}"
 WORK="$(mktemp -d -t plexi-folder-secrets-XXXXXX)"
 HOME_DIR="$WORK/home"
 DIR_A="$WORK/A"
@@ -257,12 +257,11 @@ pane_marker() {
   fi
 }
 
-# A window is optional only when PLEXI_E2E_SKIP_PANES=1. macOS does not need
-# X. On Linux with no display, start Xvfb so the pane refusals still run.
+# Pane checks run when a display is available. On Linux with no display,
+# start Xvfb so the pane refusals still run. A pending read is approved
+# with HUMAN_APPROVE, not with `secret grant`.
 pane_gui=0
-if [[ "${PLEXI_E2E_SKIP_PANES:-}" == 1 ]]; then
-  printf 'SKIP: pane checks (PLEXI_E2E_SKIP_PANES=1)\n'
-elif [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "$(uname -s)" == "Darwin" ]]; then
   if pgrep -q WindowServer; then
     pane_gui=1
   else
@@ -466,7 +465,7 @@ else
 fi
 rm -f "$audit_pat"
 
-# ── grant, then read ─────────────────────────────────────────────────────────
+# ── CLI grant does not record an allow ──────────────────────────────────────
 grant_out="$("$PLEXI" secret grant FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/grant.err")" || grant_code=$?
 grant_code="${grant_code:-0}"
 grant_err="$(cat "$WORK/grant.err" 2>/dev/null || true)"
@@ -487,6 +486,67 @@ else
   fail "a refused grant does not let the next read return the value (exit ${got_code})"
 fi
 got=""
+
+# ── keyboard grant ───────────────────────────────────────────────────────────
+# The pending id came from the ungranted read. A click on Allow once is the
+# grant. `secret grant` above is the negative and is not this click.
+pending_id=""
+if [[ "$read_out" == *"pending_request_id="* ]]; then
+  pending_id="${read_out#*pending_request_id=}"
+  pending_id="${pending_id%%$'\n'*}"
+fi
+if [[ ! -f "$REPO_ROOT/scripts/e2e/human.sh" ]]; then
+  fail "human click grants the pending read (scripts/e2e/human.sh missing)"
+elif ! command -v xdotool >/dev/null 2>&1; then
+  fail "human click grants the pending read (xdotool missing)"
+elif [[ "$HOST_STARTED" != 1 ]]; then
+  fail "human click grants the pending read (host is not running)"
+elif [[ -z "$pending_id" ]]; then
+  fail "human click grants the pending read (no pending)"
+else
+  assist=""
+  for _i in $(seq 1 20); do
+    "$PLEXI" pane list >"$WORK/panes.json" 2>/dev/null || true
+    assist="$(python3 - "$WORK/panes.json" <<'PY'
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    raise SystemExit
+for row in rows:
+    title = str(row.get("title") or "")
+    manifest = str(row.get("manifest_id") or "")
+    if row.get("type") == "app" and (
+        title.lower() == "assistant" or manifest.lower() == "assistant"
+    ):
+        print(row.get("id", ""))
+        raise SystemExit
+print("")
+PY
+)"
+    [[ -n "$assist" ]] && break
+    sleep 0.3
+  done
+  if [[ -n "$assist" ]]; then
+    "$PLEXI" pane focus "$assist" >/dev/null 2>&1 || true
+  fi
+  export BIN="$PLEXI"
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/e2e/human.sh"
+  if HUMAN_APPROVE "$pending_id" once; then
+    clicked="$("$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/read-click.err")" || click_code=$?
+    click_code="${click_code:-0}"
+    if [[ "$click_code" -eq 0 && "$clicked" == "$SECRET" ]]; then
+      pass "human click grants the pending read"
+    else
+      fail "human click grants the pending read (exit ${click_code})"
+    fi
+    clicked=""
+  else
+    fail "human click grants the pending read"
+  fi
+fi
 
 # ── plaintext search ─────────────────────────────────────────────────────────
 pat="$(mktemp)"

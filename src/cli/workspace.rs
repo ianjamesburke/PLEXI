@@ -752,19 +752,20 @@ type HostFolderGrant = fn(
 ///
 /// The CLI does not write an allow. A pane agent (and any other socket
 /// client) used to open the permission monitor in this process and store a
-/// `User`/`Always` grant with no human present. The command now returns
+/// `User`/`Always` grant with no human present. The command returns
 /// `permission_denied`, audits the name and folder, and does not read the
-/// secret value. Recording a grant stays on
-/// [`crate::workspace::secrets::grant_folder_secret`], which the host calls
-/// when a person approves.
+/// secret value. A human Allow once is `approve_pending(ApprovalChoice::Once)`
+/// on the read's pending. This command does not call
+/// [`crate::workspace::secrets::grant_folder_secret`].
 pub fn folder_secret_grant(
     name: &str,
     agent: Option<&str>,
     app: Option<&str>,
     folder: Option<&std::path::Path>,
 ) -> i32 {
-    // Referenced, not called. `grant_folder_secret` is the host approval
-    // entry. This command must not invoke it.
+    // Referenced, not called. `grant_folder_secret` writes an Always grant.
+    // A human click uses `approve_pending(Once)` instead. This command must
+    // not invoke the function.
     let _host_grant: HostFolderGrant = crate::workspace::secrets::grant_folder_secret;
     let actor = match actor_from_flags(agent, app) {
         Ok(actor) => actor,
@@ -805,16 +806,40 @@ pub fn folder_secret_read(
         Ok(folder) => folder,
         Err(code) => return code,
     };
+    // A pane must not learn the pending id. Filing one here would let the
+    // pane approve its own read. The tester shell is not a pane agent, so
+    // its read still reaches the host gate.
+    if super::pane_caller::caller_is_pane_agent() {
+        let resource = format!("{name}@{}", folder.display());
+        let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
+        let actor_id = std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
+            .map(|id| format!("pane:{id}"))
+            .unwrap_or_else(|| "pane:ancestor".to_string());
+        audit_folder_denial(&actor_id, &resource, &call_id);
+        println!("permission_denied");
+        return 1;
+    }
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        match crate::workspace::secrets::read_folder_secret(
-            &monitor,
-            crate::workspace::secrets::folder_store(),
-            &actor,
-            name,
-            &folder,
-        ) {
+        let result = match crate::workspace::secrets::read_through_host_gate(&actor, name, &folder)
+        {
+            Some(proxied) => proxied,
+            None => {
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                );
+                crate::workspace::secrets::read_folder_secret(
+                    &monitor,
+                    crate::workspace::secrets::folder_store(),
+                    &actor,
+                    name,
+                    &folder,
+                )
+            }
+        };
+        match result {
             Ok(crate::workspace::secrets::ReadResult::Value(value)) => {
                 println!("{}", value.as_str());
                 0
