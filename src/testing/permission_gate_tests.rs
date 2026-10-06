@@ -564,6 +564,8 @@ fn all_dispatchers_require_monitor() {
             output_schema: serde_json::json!({"type":"object"}),
             timeout_ms: Some(1_000),
             read_only: true,
+            requires: None,
+            signoff: None,
         }],
         Arc::new(move |_name, _input| {
             hits_for_handler.fetch_add(1, Ordering::SeqCst);
@@ -589,6 +591,8 @@ fn all_dispatchers_require_monitor() {
             output_schema: serde_json::json!({"type":"object"}),
             timeout_ms: Some(1_000),
             read_only: true,
+            requires: None,
+            signoff: None,
         }],
         AppEventSender::Channel(tx),
         crate::host::scope::ScopeOrigin {

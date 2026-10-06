@@ -77,6 +77,8 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
             output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: Some(1_000),
             read_only: true,
+            requires: None,
+            signoff: None,
         }],
         crate::plexi_ai::tool_dispatch::AppEventSender::Channel(tx),
         origin,

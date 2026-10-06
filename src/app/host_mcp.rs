@@ -778,6 +778,8 @@ mod tests {
             output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: Some(1_000),
             read_only: true,
+            requires: None,
+            signoff: None,
         };
         tool_dispatch::register(
             7_002,
@@ -950,6 +952,8 @@ mod tests {
             output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: Some(5_000),
             read_only: false,
+            requires: None,
+            signoff: None,
         };
         tool_dispatch::register(
             7_102,
