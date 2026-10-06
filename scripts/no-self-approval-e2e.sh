@@ -238,17 +238,24 @@ note "pending $P"
 record PASS step1 "agent pane pending $P"
 LOG_AT=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 
-refuse_count() {
+# Print "named other". `named` refused this pending's id. `other` refused a
+# different still-open pending: pane key/click target the oldest sheet, which
+# on a shared acceptance profile is a leftover from the previous item.
+refuse_counts() {
   "$BIN" assistant permission list >"$EVID/logs/perm-list.json" 2>"$EVID/logs/perm-list.err" || true
   python3 - "$EVID/logs/perm-list.json" "$P" <<'PY'
 import json, sys
 data=json.load(open(sys.argv[1]))
 want=sys.argv[2]
-n=0
+named=other=0
 for row in data.get("audit") or []:
-    if row.get("kind")=="refuse" and row.get("decision")=="refused_resolve" and row.get("call_id")==want:
-        n+=1
-print(n)
+    if row.get("kind")!="refuse" or row.get("decision")!="refused_resolve":
+        continue
+    if row.get("call_id")==want:
+        named+=1
+    else:
+        other+=1
+print(f"{named} {other}")
 PY
 }
 
@@ -338,8 +345,16 @@ if [[ -n "${CLICK_PANE:-}" ]]; then
 fi
 
 # ── 8. Board unchanged, one refuse row per attempt ───────────────────────────
-ROWS="$(refuse_count)"
-note "refuse rows $ROWS"
+# Four commands pass this pending id (always, needs-you, socket, fork).
+# permissions allow files Needs you and does not write a refuse row.
+# Three synthetic inputs write a refuse row for the pending their surface
+# would have resolved. That is this id on a clean profile, and the oldest
+# restored pending when acceptance runs V1-02 and V1-03 in one HOME.
+read -r ROWS_NAMED ROWS_OTHER <<<"$(refuse_counts)"
+ROWS_NAMED="${ROWS_NAMED:-0}"
+ROWS_OTHER="${ROWS_OTHER:-0}"
+ROWS=$((ROWS_NAMED + ROWS_OTHER))
+note "refuse rows named=$ROWS_NAMED other=$ROWS_OTHER"
 in_pane "state" "\"$BIN\" app state get chess > '$EVID/logs/state-before.json' 2> '$EVID/logs/state-before.err' || true" || true
 STATE_BEFORE="$(cat "$EVID/logs/state-before.json" 2>/dev/null || true)"
 LOG_PLAYED=0
@@ -347,14 +362,16 @@ if [[ -f "$LOG" ]] && tail -c +"$((LOG_AT + 1))" "$LOG" | grep -q 'played e2e4';
   LOG_PLAYED=1
 fi
 ALLOW_BODY="$(cat "$EVID/logs/allow.json" "$EVID/logs/allow.err" 2>/dev/null || true)"
-NEED_ROWS=8
+NEED_NAMED=5
 if printf '%s' "$ALLOW_BODY" | grep -q '"status":"needs_you"'; then
-  NEED_ROWS=7
+  NEED_NAMED=4
 fi
-if [[ "$ROWS" -ge "$NEED_ROWS" ]] && [[ "$LOG_PLAYED" -eq 0 ]] && ! printf '%s' "$STATE_BEFORE" | grep -Eq '"revision"[[:space:]]*:[[:space:]]*1'; then
-  record PASS step8 "board unchanged, $ROWS refused-resolve rows"
+NEED_TOTAL=$((NEED_NAMED + 3))
+if [[ "$ROWS_NAMED" -ge "$NEED_NAMED" && "$ROWS" -ge "$NEED_TOTAL" && "$LOG_PLAYED" -eq 0 ]] \
+   && ! printf '%s' "$STATE_BEFORE" | grep -Eq '"revision"[[:space:]]*:[[:space:]]*1'; then
+  record PASS step8 "board unchanged, $ROWS refused-resolve rows ($ROWS_NAMED for this pending)"
 else
-  record FAIL step8 "rows=$ROWS played=$LOG_PLAYED state=$STATE_BEFORE"
+  record FAIL step8 "rows=$ROWS named=$ROWS_NAMED played=$LOG_PLAYED state=$STATE_BEFORE"
 fi
 
 if human__pending_present "$P"; then
