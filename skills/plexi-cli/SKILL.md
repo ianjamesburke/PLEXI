@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.9"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -70,9 +70,6 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   When a tool call returns permission_required, print the pending_request_id
   and wait for the person at the desktop to decide. Do not approve, deny,
   or widen a grant from the terminal.
-- **Needs you** — list what is waiting on the person at the desktop:
-  `plexi needs-you list --json`. Print the id and wait. Do not resolve,
-  approve, or deny an item from the terminal.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
@@ -128,7 +125,6 @@ agent
 config
 ai
 ledger
-needs-you
 doctor
 update
 account
