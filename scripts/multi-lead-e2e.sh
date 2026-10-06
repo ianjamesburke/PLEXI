@@ -224,18 +224,20 @@ from pathlib import Path
 before = {pane["id"] for pane in json.loads(sys.argv[1])}
 binary, work = sys.argv[2], Path(sys.argv[3])
 found = ""
-for _ in range(30):
+last = ""
+for _ in range(40):
     panes = json.loads(subprocess.check_output([binary, "pane", "list"], text=True))
     fresh = [pane for pane in panes if pane.get("id") not in before and pane.get("type") == "terminal"]
     for pane in fresh:
-        out = subprocess.check_output([binary, "pane", "capture", str(pane["id"]), "--plain"], text=True, stderr=subprocess.DEVNULL)
-        if "permission_denied" in out:
-            found = out
+        last = subprocess.check_output([binary, "pane", "capture", str(pane["id"]), "--plain"], text=True, stderr=subprocess.DEVNULL)
+        # A narrow pane wraps the JSON, so the token is not one screen line.
+        if "permission_denied" in "".join(last.split()):
+            found = last
             break
     if found:
         break
     time.sleep(0.4)
-assert found, "pane did not refuse the wider grant"
+assert found, "pane did not refuse the wider grant\n" + last
 assert not (work / ".plexi" / "agents" / "sneaky").exists()
 print("pane create refused a grant it does not hold")
 PY
