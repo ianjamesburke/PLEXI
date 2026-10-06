@@ -10,11 +10,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ),
     ("Apps", &["app", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),
-<<<<<<< HEAD
-    ("AI", &["assistant", "ai", "ledger", "needs-you"]),
-=======
-    ("AI", &["ai", "assistant", "needs-you", "permissions"]),
->>>>>>> 799c64d2 (feat(assistant): answer Plexi questions from live introspection)
+    ("AI", &["assistant", "ai", "ledger", "needs-you", "permissions"]),
     (
         "System",
         &[
