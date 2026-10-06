@@ -246,6 +246,16 @@ impl PlexiApp {
             crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
             }
+            crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
+                log::info!("pane_ipc: kind=agents_api op={op}");
+                let mut value = crate::agent::heads::handle_request(op, payload);
+                if let Some(port) = crate::app::host_mcp::bound_port() {
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("mcp_port".to_string(), serde_json::json!(port));
+                    }
+                }
+                crate::rpc::write_json_response(response_file, value);
+            }
             crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;

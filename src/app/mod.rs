@@ -150,7 +150,9 @@ pub(crate) struct PaneHeartbeat {
     pub next_fire: std::time::Instant,
 }
 
-/// A host-chrome approval button, in window points, for the human-intent driver.
+/// A host-chrome approval button, in window points, for the human-intent
+/// driver. The floating Allow once control publishes its bounds on
+/// `assistant permission list` so a real pointer click can find it.
 #[derive(Clone, Debug)]
 pub(crate) struct ApprovalButton {
     pub label: String,
@@ -557,6 +559,9 @@ pub struct PlexiApp {
     /// positions.
     pub(crate) pending_pane_pointer_frames:
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
+    /// Last pending id the banner logged, so a painted sheet is one info
+    /// line rather than one per frame.
+    approval_banner_logged: Option<String>,
 }
 
 struct PendingAppSubscriptionReply {
@@ -1771,6 +1776,7 @@ impl PlexiApp {
                     pending_pane_inputs: HashMap::new(),
                     pending_pane_drags: HashMap::new(),
                     pending_pane_pointer_frames: HashMap::new(),
+                    approval_banner_logged: None,
                 };
                 // Reconstruct depth_stack so Cmd+Escape works immediately when
                 // the workspace was saved while viewing a subcontext. The stack
@@ -2049,6 +2055,7 @@ impl PlexiApp {
             pending_pane_inputs: HashMap::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
+            approval_banner_logged: None,
         };
         // Seed the base root terminal so a fresh profile boots straight into a
         // live pane — identical in shape to a freshly created context (root pane
@@ -2790,6 +2797,7 @@ impl PlexiApp {
                 pending_pane_inputs: HashMap::new(),
                 pending_pane_drags: HashMap::new(),
                 pending_pane_pointer_frames: HashMap::new(),
+                approval_banner_logged: None,
             };
         // Launch paths allocate through HostModel, which otherwise starts at 1
         // in every test process. Seed a private block so a pane drop in one
