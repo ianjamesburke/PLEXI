@@ -410,6 +410,13 @@
                 "null"
               ]
             },
+            "head": {
+              "description": "Lead (head) id. When set, the turn runs in that head's conversation.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "pane_id": {
               "format": "uint64",
               "minimum": 0,
@@ -436,6 +443,61 @@
             "type",
             "text",
             "request_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open an Assistant pane bound to one head in the active context.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "head": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "open_assistant_head",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "head",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read or steer the command view. `op` is `list` or `open` here; later\nsteer ops share this request.",
+          "properties": {
+            "op": {
+              "type": "string"
+            },
+            "payload": {
+              "default": null
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "command_view",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
             "response_file"
           ],
           "type": "object"

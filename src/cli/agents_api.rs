@@ -60,6 +60,59 @@ pub fn agent_run_dispatch(cmd: AgentRunCmd) -> i32 {
     }
 }
 
+pub fn agent_conversation_cli(head: &str, as_head: Option<&str>, json: bool) -> i32 {
+    call(
+        "read_conversation",
+        json!({"head": head, "as_head": as_head}),
+        json,
+    )
+}
+
+pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    log::info!("command_view:cli: op={op} workspace={}", workspace.display());
+    let content = match super::request_with(
+        json!({"type": "command_view", "op": op, "payload": {"workspace": workspace}}),
+        "command-view",
+        "command-view",
+        std::time::Duration::from_secs(20),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) != Some(false) => {
+            let _ = json_out;
+            0
+        }
+        Ok(_) => 1,
+        Err(_) => 1,
+    }
+}
+
+pub fn assistant_open_head_cli(head: &str) -> i32 {
+    log::info!("assistant_open:cli: head={head}");
+    let content = match super::request_with(
+        json!({"type": "open_assistant_head", "head": head}),
+        "assistant-open",
+        "assistant open",
+        std::time::Duration::from_secs(20),
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    println!("{content}");
+    match serde_json::from_str::<Value>(&content) {
+        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(_) => 1,
+        Err(_) => 1,
+    }
+}
+
 pub fn agent_delegate_cli(parent_run: &str, name: &str, grant: &[String], json: bool) -> i32 {
     call(
         "delegate",

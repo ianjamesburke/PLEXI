@@ -89,6 +89,24 @@ pub enum AppRequest {
         pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        /// Lead (head) id. When set, the turn runs in that head's conversation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
+    },
+    /// Open an Assistant pane bound to one head in the active context.
+    OpenAssistantHead {
+        head: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_id: Option<u64>,
+        response_file: String,
+    },
+    /// Read or steer the command view. `op` is `list` or `open` here; later
+    /// steer ops share this request.
+    CommandView {
+        op: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+        response_file: String,
     },
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
