@@ -40,13 +40,15 @@ pub enum ApprovalChoice {
 /// One host record for everything waiting on the human.
 ///
 /// Each-time and time-boxed sign-off live on the Touch ID spike. This gate
-/// files click approvals, agent questions, and blocked runs.
+/// files click approvals, agent questions, blocked runs, and a host
+/// death/tamper integrity item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NeedsYouKind {
     ApprovalClick,
     Question,
     BlockedRun,
+    Integrity,
 }
 
 impl NeedsYouKind {
@@ -55,6 +57,7 @@ impl NeedsYouKind {
             Self::ApprovalClick => "approval_click",
             Self::Question => "question",
             Self::BlockedRun => "blocked_run",
+            Self::Integrity => "integrity",
         }
     }
 
@@ -236,6 +239,9 @@ impl PermissionMonitor {
     }
 
     fn open(dir: &Path) -> Self {
+        // Inspect before load. Migration can rewrite grants.toml, which would
+        // hide an edit made while the host was down.
+        let finding = crate::broker::integrity::inspect(dir);
         let store = GrantStore::load_or_default(dir);
         let audit = dir.join("permission-audit.jsonl");
         log::info!(
@@ -243,7 +249,22 @@ impl PermissionMonitor {
             dir.display(),
             audit.display()
         );
-        Self::new(store, Some(audit))
+        let monitor = Self::new(store, Some(audit));
+        if let Some(finding) = finding {
+            let filed = monitor.file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::Integrity,
+                actor: "host".to_string(),
+                resource: "permission-profile".to_string(),
+                summary: finding.summary,
+                expires_at: None,
+                run_tag: Some("permission-integrity".to_string()),
+            });
+            if let Err(error) = filed {
+                log::error!("integrity: could not file needs-you item: {error}");
+            }
+        }
+        crate::broker::integrity::mark_running(dir);
+        monitor
     }
 
     fn new(store: GrantStore, audit_path: Option<PathBuf>) -> Self {
@@ -680,7 +701,7 @@ impl PermissionMonitor {
                     return Err(error);
                 }
             }
-            NeedsYouKind::Question | NeedsYouKind::BlockedRun => {
+            NeedsYouKind::Question | NeedsYouKind::BlockedRun | NeedsYouKind::Integrity => {
                 let resolution = if approve {
                     NeedsYouResolution::Approved
                 } else {
@@ -1106,6 +1127,11 @@ impl PermissionMonitor {
                 log::error!("permission_monitor: audit write {}: {error}", path.display());
                 error.to_string()
             })?;
+            file.flush().map_err(|error| {
+                log::error!("permission_monitor: audit flush {}: {error}", path.display());
+                error.to_string()
+            })?;
+            crate::broker::integrity::note_saved_file(path);
         }
         trace_gate(format!(
             "permission_monitor: audit {} actor={} call_id={} grant_id={} resource={} op={}",

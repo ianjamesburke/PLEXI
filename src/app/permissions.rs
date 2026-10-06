@@ -626,6 +626,7 @@ impl PermissionStore {
     /// Atomically write to disk. No-op for a test store with no path.
     pub fn save(&self) {
         self.file.save();
+        crate::broker::integrity::note_saved_file(&self.file.path);
     }
 
     /// Apply stored state for a set of declared capabilities.
