@@ -848,6 +848,7 @@ fn second_chess_pane_routes_by_instance() {
         .expect("forced second chess pane")
         .expect("pane id");
     h.wait_for_first_render(second);
+    h.wait_for_exposed_tools(second);
     pump_until(&mut h, |harness| {
         chess_play_names(harness)
             .iter()
