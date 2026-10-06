@@ -7,19 +7,26 @@
 //! lives outside the Plexi profile. Plaintext values are never written under
 //! `.plexi`.
 
+#[cfg(any(test, target_os = "linux"))]
 use super::store::{NonDestructiveStore, SecretError, SecretStore};
 #[cfg(any(test, target_os = "linux"))]
 use ring::rand::SecureRandom;
+#[cfg(any(test, target_os = "linux"))]
 use std::collections::BTreeMap;
+#[cfg(any(test, target_os = "linux"))]
 use std::io::Write;
+#[cfg(any(test, target_os = "linux"))]
 use std::path::{Path, PathBuf};
+#[cfg(any(test, target_os = "linux"))]
 use std::sync::Mutex;
+#[cfg(any(test, target_os = "linux"))]
 use zeroize::Zeroizing;
 
 /// On-disk label for the Linux encrypted-file fallback. It is not a secret.
+#[cfg(any(test, target_os = "linux"))]
 pub const ENCRYPTED_FILE_LABEL: &str = "encrypted-file fallback: not Secret Service and not an OS keyring; ciphertext only; the unlock key is stored outside the Plexi profile";
 
-#[cfg(not(test))]
+#[cfg(all(target_os = "linux", not(test)))]
 const ENCRYPTED_FILE: &str = "folder-secrets.enc";
 #[cfg(all(target_os = "linux", not(test)))]
 const CHOICE_FILE: &str = "folder-secrets-backend.txt";
@@ -52,12 +59,12 @@ pub fn backend_label() -> String {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(target_os = "linux", not(test)))]
 fn profile_dir() -> PathBuf {
     crate::config::config_dir()
 }
 
-#[cfg(not(test))]
+#[cfg(all(target_os = "linux", not(test)))]
 fn key_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -65,6 +72,7 @@ fn key_path() -> PathBuf {
         .join("folder-secret.key")
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct EncryptedBlob {
     label: String,
