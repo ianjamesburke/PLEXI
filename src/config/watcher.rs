@@ -167,12 +167,24 @@ mod tests {
         fs::write(&config, "# v1\n").unwrap();
 
         let (watcher, rx) =
-            start(config, Arc::new(RecordingWake::new())).expect("watcher should start");
-        // Drain any initial FSEvents from the config.toml creation above.
-        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            500,
-        )));
-        while rx.try_recv().is_ok() {}
+            start(config.clone(), Arc::new(RecordingWake::new())).expect("watcher should start");
+        // macOS FSEvents can deliver the create of config.toml well after
+        // the watcher starts. Prove the watcher is live on that file, drain
+        // the burst, and only then write something it must ignore.
+        fs::write(&config, "# v2\n").unwrap();
+        assert!(
+            poll_for_signal(&rx, Duration::from_secs(3)),
+            "watcher should see config.toml before the unrelated write"
+        );
+        let quiet = crate::testing::load_aware_timeout(Duration::from_millis(400));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
+        let mut quiet_since = Instant::now();
+        while Instant::now() < deadline && quiet_since.elapsed() < quiet {
+            if rx.try_recv().is_ok() {
+                quiet_since = Instant::now();
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
 
         fs::write(dir.path().join("other.txt"), "noise\n").unwrap();
         assert!(
