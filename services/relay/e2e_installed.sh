@@ -101,6 +101,11 @@ unset PLEXI_CHANNEL
 
 "$BIN" host stop >/dev/null 2>&1 || true
 "$BIN" relay disable >/dev/null 2>&1 || true
+# Each `host start --pane` inserts another column into the saved tree.
+# A profile left over from an earlier run collapses the assistant to a
+# few pixels, and the permission sheet's buttons then lay out below the
+# window where a real click cannot land. This run owns a fresh tree.
+rm -f "$PROFILE/workspaces/"*.json
 if "$BIN" host start --pane 'cwd=/tmp' --timeout-secs 30 >"$LOG.host" 2>&1; then
   pass "host start"
 else
@@ -313,7 +318,7 @@ kill "$CONNECT_PID" 2>/dev/null || true
 wait "$CONNECT_PID" 2>/dev/null || true
 CONNECT_PID=""
 "$BIN" host stop >"$LOG.stop-persist" 2>&1 || true
-"$BIN" host start --pane 'cwd=/tmp' --timeout-secs 30 >"$LOG.host-persist" 2>&1 || true
+"$BIN" host start --timeout-secs 30 >"$LOG.host-persist" 2>&1 || true
 "$BIN" app open assistant >"$LOG.open-persist" 2>&1 || true
 PERSIST_OK=""
 for _ in $(seq 1 100); do
@@ -446,7 +451,7 @@ done
 if [[ -n "$EXPIRED" ]]; then pass "ttl purge"; else fail "ttl purge" "held turn did not expire"; fi
 
 # The enabled host reconnects on its own. Do not start a second client.
-"$BIN" host start --pane 'cwd=/tmp' --timeout-secs 30 >"$LOG.host2" 2>&1 || true
+"$BIN" host start --timeout-secs 30 >"$LOG.host2" 2>&1 || true
 "$BIN" app open assistant >"$LOG.open2" 2>&1 || true
 READY=""
 for _ in $(seq 1 100); do
