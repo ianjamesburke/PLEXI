@@ -1258,7 +1258,7 @@ pub use agent::{
     agent_report_cli, agent_status_cli, agent_update,
 };
 pub use agents_api::{
-    agent_conversation_cli, agent_delegate_cli, agent_head_dispatch, agent_run_dispatch,
+    agent_assign_cli, agent_cancel_cli, agent_conversation_cli, agent_delegate_cli, agent_head_dispatch, agent_run_dispatch,
     assistant_open_head_cli, command_view_cli,
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};

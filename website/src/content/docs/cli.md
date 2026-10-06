@@ -365,6 +365,8 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `hook` | Install or uninstall agent hook integrations |
 | `head` | Create or list an agent head stored under `.plexi/agents` |
 | `run` | Spawn, list, or finish a run of an agent head |
+| `assign` | Assign work to a head. The task is stored even when no pane is open |
+| `cancel` | Stop a queued or running headless task before the next tool call |
 | `conversation` | Read one head's conversation |
 | `delegate` | Start a child run whose grants are a subset of the parent run |
 
@@ -563,6 +565,31 @@ Mark a run finished so another admission can claim the head
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes | Run id |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent assign`
+
+Assign work to a head. The task is stored even when no pane is open.
+
+The input file is JSON `{"text":"..."}` or a plain prompt. A running host starts it. A stopped host leaves it queued until the next start.
+
+Example: plexi agent assign --head lead-b --input task.json --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--head` | string | yes | Head that should run the task |
+| `--input` | string | yes | Task file. JSON with a `text` field, or the prompt itself |
+| `--json` | flag | no | Print the host JSON reply |
+
+### `plexi agent cancel`
+
+Stop a queued or running headless task before the next tool call.
+
+Example: plexi agent cancel --id task_example --json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--id` | string | yes | Task id returned by `agent assign` |
 | `--json` | flag | no | Print the host JSON reply |
 
 ### `plexi agent conversation`

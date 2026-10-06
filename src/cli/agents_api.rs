@@ -88,7 +88,10 @@ pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
         Ok(root) => root,
         Err(code) => return code,
     };
-    log::info!("command_view:cli: op={op} workspace={}", workspace.display());
+    log::info!(
+        "command_view:cli: op={op} workspace={}",
+        workspace.display()
+    );
     let content = match super::request_with(
         json!({"type": "command_view", "op": op, "payload": {"workspace": workspace}}),
         "command-view",
@@ -259,4 +262,111 @@ fn grant_list(grants: Option<&Value>) -> String {
                 .join(",")
         })
         .unwrap_or_default()
+}
+
+fn task_text(path: &std::path::Path) -> Result<String, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+        if let Some(text) = value.get("text").and_then(|item| item.as_str()) {
+            return Ok(text.to_string());
+        }
+    }
+    Ok(raw.trim().to_string())
+}
+
+fn print_queue(body: &Value, json_out: bool) -> i32 {
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else if body.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+        if let Some(task) = body.get("task") {
+            println!(
+                "{}  {}",
+                task.get("id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("?"),
+                task.get("state")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("?")
+            );
+        } else {
+            println!("{body}");
+        }
+    } else {
+        let error = body
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("queue request failed");
+        eprintln!("error: {error}");
+    }
+    if body.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+        0
+    } else {
+        1
+    }
+}
+
+fn notify_host_pump(workspace: &std::path::Path) {
+    let Some(socket) = super::resolve_command_socket() else {
+        log::info!("queue: no command socket; task stays on disk");
+        return;
+    };
+    if crate::platform::ipc::IpcStream::connect(&socket).is_err() {
+        log::info!("queue: host is not accepting commands; task stays queued");
+        return;
+    }
+    let payload = json!({
+        "type": "agent_queue",
+        "op": "pump",
+        "payload": {"workspace": workspace},
+    });
+    match super::request_with(
+        payload,
+        "agent-queue",
+        "agent queue",
+        std::time::Duration::from_secs(20),
+    ) {
+        Ok(_) => log::info!("queue: host pumped {}", workspace.display()),
+        Err(code) => log::info!("queue: host pump returned {code}; the task remains on disk"),
+    }
+}
+
+pub fn agent_assign_cli(head: &str, input: &std::path::Path, json_out: bool) -> i32 {
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    let text = match task_text(input) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+    log::info!(
+        "agent_assign:cli: head={head} workspace={}",
+        workspace.display()
+    );
+    let body = crate::agent::queue::enqueue(&workspace, head, &text);
+    if body.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+        notify_host_pump(&workspace);
+    }
+    print_queue(&body, json_out)
+}
+
+pub fn agent_cancel_cli(id: &str, json_out: bool) -> i32 {
+    let workspace = match crate::cli::agent::resolve_workspace_cwd() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    log::info!(
+        "agent_cancel:cli: id={id} workspace={}",
+        workspace.display()
+    );
+    let body = crate::agent::queue::request_cancel(&workspace, id);
+    notify_host_pump(&workspace);
+    print_queue(&body, json_out)
 }

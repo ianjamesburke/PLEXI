@@ -417,6 +417,12 @@ fn main() -> eframe::Result {
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
                         AgentCmd::Head { cmd } => std::process::exit(cli::agent_head_dispatch(cmd)),
                         AgentCmd::Run { cmd } => std::process::exit(cli::agent_run_dispatch(cmd)),
+                        AgentCmd::Assign { head, input, json } => {
+                            std::process::exit(cli::agent_assign_cli(&head, &input, json))
+                        }
+                        AgentCmd::Cancel { id, json } => {
+                            std::process::exit(cli::agent_cancel_cli(&id, json))
+                        }
                         AgentCmd::Conversation { head, as_head, json } => {
                             std::process::exit(cli::agent_conversation_cli(&head, as_head.as_deref(), json))
                         }

@@ -102,7 +102,7 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   in that head's conversation. `assistant open --head <id>` opens an Assistant
   pane bound to that head. `agent conversation --head <id> --as <other>` is
   refused when the ids differ. `command-view` lists heads from the agents API;
-  `command-view open` shows the same rows in a pane. A lead cannot read, write,
+  `command-view open` shows the same rows in a pane. `agent assign --head <id> --input task.json` queues work with no pane open. `agent cancel --id <task>` stops it before the next tool. A lead cannot read, write,
   or message another lead. `agent report --event` preserves
   a provider lifecycle event separately from its UI state; `--blocked-reason`
   supplies a typed reason. Read `agent report --help` before using these optional
@@ -315,6 +315,8 @@ plexi assistant open --head lead
 plexi assistant send --head lead --text 'status?'
 plexi agent conversation --head lead --json
 plexi command-view --json
+plexi agent assign --head lead --input task.json --json
+plexi agent cancel --id task_example --json
 ```
 
 ## Installation health
