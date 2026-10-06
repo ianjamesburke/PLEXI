@@ -102,9 +102,9 @@ Remove pane slot files for panes that are no longer open
 
 ## `plexi secret`
 
-Store and retrieve secrets (API keys, passwords, tokens) for your project.
+Store and retrieve secrets (API keys, passwords, tokens).
 
-On macOS, secrets are saved to the system keychain. On Linux, they are saved in a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as environment variables when you run commands. Use `plexi workspace init` first to scope secrets to a project.
+Workspace secrets (`secret set` without `--folder`) are saved to the system keychain on macOS. On Linux those workspace entries are a mode-`0600` profile file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`) are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file fallback. Their values are never written in plaintext under `.plexi`. A new terminal pane whose working directory is inside that folder receives the name as an environment variable. Agents and app tools read it only with a grant.
 
 | Subcommand | Description |
 |---|---|
@@ -112,6 +112,10 @@ On macOS, secrets are saved to the system keychain. On Linux, they are saved in 
 | `get` | Print a stored secret's value to stdout |
 | `list` | Show stored secrets |
 | `delete` | Delete a stored secret |
+| `rm` | Remove a folder-scoped secret |
+| `grant` | Allow an agent or app to read a folder secret through the permission gate |
+| `read` | Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
+| `exec` | Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory |
 
 ### `plexi secret set`
 
@@ -127,6 +131,7 @@ Use --from-env to read the value from an existing environment variable instead o
 | `--from-env` | flag | no | Read the value from the environment variable named FRIENDLY_NAME instead of prompting |
 | `--global` | flag | no | Store this secret globally so it's available in all projects, not just this one |
 | `--alias` | string | no | Use a different platform-store entry name than the canonical env var name. On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal |
+| `--folder` | string | no | Bind the secret to this directory. The value is stored in the OS keychain (or the labeled encrypted-file fallback) and injected into panes whose cwd is this directory or a subdirectory |
 
 ### `plexi secret get`
 
@@ -159,6 +164,48 @@ Use --global to delete a globally-stored secret (one stored with `secret set --g
 |---|---|---|---|
 | `<friendly_name>` | string | yes |  |
 | `--global` | flag | no | Delete from the global store instead of the project-scoped store |
+
+### `plexi secret rm`
+
+Remove a folder-scoped secret
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--folder` | string | yes | Directory the secret was bound to |
+
+### `plexi secret grant`
+
+Allow an agent or app to read a folder secret through the permission gate.
+
+The grant's resource is the secret name plus the folder. It does not contain the value.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--agent` | string | no | Agent id. Stored as `agent:<id>` |
+| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
+
+### `plexi secret read`
+
+Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Environment variable name |
+| `--agent` | string | no | Agent id. Stored as `agent:<id>` |
+| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
+
+### `plexi secret exec`
+
+Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--cwd` | string | yes | Working directory of the spawned command, and the pane cwd used for injection |
+| `<command>` | string (repeatable) | no | Command and arguments |
 
 ## `plexi routine`
 
