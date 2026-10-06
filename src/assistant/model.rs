@@ -258,6 +258,8 @@ pub enum AssistantEffect {
     SetSessionEffort(Option<ReasoningEffort>),
     ListConversations,
     ResumeConversation(String),
+    /// `/phone`: open the newest phone conversation in this workspace.
+    ResumePhoneConversation,
     ShowHistory,
     RewindConversation(String),
     CompactConversation,
@@ -798,6 +800,7 @@ impl AssistantModel {
             "settings" | "config" => vec![AssistantEffect::ShowSettings],
             "resume" if cmd.args.is_empty() => vec![AssistantEffect::ListConversations],
             "resume" => vec![AssistantEffect::ResumeConversation(cmd.args.clone())],
+            "phone" => vec![AssistantEffect::ResumePhoneConversation],
             "history" => vec![AssistantEffect::ShowHistory],
             "rewind" if cmd.args.is_empty() => {
                 self.turns.push(Turn::now(
@@ -2090,6 +2093,10 @@ mod tests {
         assert_eq!(
             submitted(&mut model, "/resume 2"),
             vec![AssistantEffect::ResumeConversation("2".to_string())]
+        );
+        assert_eq!(
+            submitted(&mut model, "/phone"),
+            vec![AssistantEffect::ResumePhoneConversation]
         );
         assert_eq!(
             submitted(&mut model, "/history"),

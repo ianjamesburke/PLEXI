@@ -121,7 +121,7 @@ if curl -sf "$BASE/healthz" >/dev/null; then
 else
   fail "relay health" "healthz did not answer"
 fi
-if curl -sf "$BASE/" | grep -q "Pairing code" && curl -sf "$BASE/app.js" | grep -q "waiting on desktop"; then
+if curl -sf "$BASE/" | grep -q "Pairing code" && curl -sf "$BASE/app.js" | grep -q "waiting on desktop" && curl -sf "$BASE/app.js" | grep -q "join_desktop"; then
   pass "phone page served"
 else
   fail "phone page served" "pair page or app.js missing"

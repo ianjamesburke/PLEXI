@@ -328,14 +328,19 @@ class HostStore(StubStore):
     def submit(self, envelope: dict) -> tuple[int, dict]:
         status, receipt = super().submit(envelope)
         if status == 202:
-            threading.Thread(target=self._host_turn, args=(envelope["request_id"], envelope["content"][0]["text"]), daemon=True).start()
+            join_desktop = envelope.get("join_desktop") is True
+            threading.Thread(
+                target=self._host_turn,
+                args=(envelope["request_id"], envelope["content"][0]["text"], join_desktop),
+                daemon=True,
+            ).start()
         return status, receipt
 
     def _echo(self, request_id: str, text: str) -> None:
         # HostStore starts its own worker; the inherited timer is deliberately not used.
         return
 
-    def _host_turn(self, request_id: str, text: str) -> None:
+    def _host_turn(self, request_id: str, text: str, join_desktop: bool = False) -> None:
         with self.lock:
             self.receipts[request_id].update(state="running", updated_at=now())
             self._append({"kind": "receipt", "request_id": request_id, "state": "running"})
@@ -343,9 +348,14 @@ class HostStore(StubStore):
         status = None
         pending = None
         try:
+            command = [self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id]
+            if join_desktop:
+                command.append("--desktop")
+            else:
+                command.extend(["--conversation", self.conversation_id])
+            command.append("--json")
             proc = subprocess.run(
-                [self.plexi_bin, "assistant", "send", "--text", text, "--request-id", request_id,
-                 "--conversation", self.conversation_id, "--json"],
+                command,
                 capture_output=True, text=True, timeout=120, check=False,
             )
             if not proc.stdout.strip():

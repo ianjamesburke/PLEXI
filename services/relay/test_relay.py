@@ -255,6 +255,26 @@ class RelayHttpTest(unittest.TestCase):
         )
         self.assertEqual(status, 202, queued)
 
+    def test_join_desktop_is_opt_in_on_the_deliver_frame(self) -> None:
+        desk = Desktop(self.port)
+        self.addCleanup(desk.close)
+        cookie = self._pair(desk)
+        status, queued, _ = _http(
+            "POST",
+            f"{self.base}/api/turns",
+            {
+                "schema_version": 1,
+                "request_id": "req-desk",
+                "join_desktop": True,
+                "content": [{"type": "text", "text": "continue on the desktop"}],
+            },
+            cookie=cookie,
+        )
+        self.assertEqual(status, 202, queued)
+        delivered = desk.recv()
+        self.assertIs(delivered["join_desktop"], True)
+        self.assertTrue(delivered["conversation_id"].startswith("phone-"))
+
     def test_two_devices_and_revoking_one_leaves_the_other(self) -> None:
         desk = Desktop(self.port)
         self.addCleanup(desk.close)
@@ -307,6 +327,7 @@ class RelayHttpTest(unittest.TestCase):
         self.assertEqual(delivered["text"], text)
         self.assertTrue(delivered["conversation_id"].startswith("phone-"))
         self.assertNotEqual(delivered["conversation_id"], "browser-supplied")
+        self.assertIs(delivered["join_desktop"], False)
         desk.send({"type": "ack", "delivery_id": delivered["delivery_id"]})
         desk.send(
             {

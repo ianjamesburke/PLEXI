@@ -568,6 +568,7 @@ class Relay:
                 return 409, {"error": "desktop_offline", "message": "desktop offline"}
             delivery_id = "del-" + secrets.token_hex(8)
             conversation_id = f"phone-{device.host_id}"
+            join_desktop = envelope.get("join_desktop") is True
             delivery = Delivery(
                 delivery_id=delivery_id,
                 request_id=request_id,
@@ -593,6 +594,7 @@ class Relay:
                         "device_id": device.device_id,
                         "text": text,
                         "expires_at": _iso(delivery.expires_at),
+                        "join_desktop": join_desktop,
                     }
                 )
         trace(

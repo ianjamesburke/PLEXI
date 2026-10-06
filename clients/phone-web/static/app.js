@@ -22,7 +22,14 @@ const els = {
   message: document.getElementById("message"),
   send: document.getElementById("send"),
   cancel: document.getElementById("cancel"),
+  desktop: document.getElementById("desktop"),
 };
+
+const DESKTOP_KEY = "plexiPhoneJoinDesktop";
+els.desktop.checked = localStorage.getItem(DESKTOP_KEY) === "1";
+els.desktop.addEventListener("change", () => {
+  localStorage.setItem(DESKTOP_KEY, els.desktop.checked ? "1" : "0");
+});
 
 let cursor = 0;
 let online = false;
@@ -121,6 +128,7 @@ els.form.addEventListener("submit", async (e) => {
         schema_version: 1,
         request_id: id,
         conversation_id: "local-stub",
+        join_desktop: els.desktop.checked,
         content: [{ type: "text", text }],
       }),
     });

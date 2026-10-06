@@ -927,6 +927,7 @@ impl AssistantApp {
                 AssistantEffect::ResumeConversation(selector) => {
                     self.cmd_resume_conversation(&selector)
                 }
+                AssistantEffect::ResumePhoneConversation => self.cmd_resume_phone(),
                 AssistantEffect::ShowHistory => self.cmd_show_history(),
                 AssistantEffect::RewindConversation(selector) => {
                     self.cmd_rewind_conversation(&selector)
@@ -2961,6 +2962,29 @@ impl AssistantApp {
             [item] => Ok(item.id.clone()),
             [] => Err(format!("No conversation matches `{selector}`.")),
             _ => Err(format!("Conversation selector `{selector}` is ambiguous.")),
+        }
+    }
+
+    fn cmd_resume_phone(&mut self) {
+        match self.store.newest_phone_conversation() {
+            Ok(Some(id)) => {
+                log::info!("assistant: opening phone conversation {id}");
+                self.cmd_resume_conversation(&id);
+            }
+            Ok(None) => {
+                log::info!("assistant: no phone conversation to open");
+                let effects = self
+                    .model
+                    .push_error("No phone conversation yet.".to_string());
+                self.execute_effects(effects);
+            }
+            Err(error) => {
+                log::error!("assistant: phone conversation lookup failed: {error}");
+                let effects = self
+                    .model
+                    .push_error(format!("Could not open the phone conversation: {error}"));
+                self.execute_effects(effects);
+            }
         }
     }
 

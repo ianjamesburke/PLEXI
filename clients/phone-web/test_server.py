@@ -135,6 +135,11 @@ class StubServerTest(unittest.TestCase):
             self.assertEqual(len(lines), 2)
             needle = f"--conversation {store.conversation_id}"
             self.assertTrue(all(needle in line and "--desktop" not in line for line in lines))
+            store.submit({**envelope("c", "join"), "join_desktop": True})
+            time.sleep(0.3)
+            joined = argv_log.read_text().splitlines()[-1]
+            self.assertIn("--desktop", joined)
+            self.assertNotIn("--conversation", joined)
 
     def test_host_backend_appends_error_to_failed_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

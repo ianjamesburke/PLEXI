@@ -48,6 +48,7 @@ struct PendingTurn {
     request_id: String,
     conversation_id: String,
     text: String,
+    join_desktop: bool,
 }
 
 struct Inflight {
@@ -473,6 +474,10 @@ fn handle_relay_message(
                 request_id,
                 conversation_id,
                 text,
+                join_desktop: message
+                    .get("join_desktop")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
             });
         }
         "pong" | "error" => {
@@ -555,6 +560,7 @@ fn pump_assistant(session: &mut Session, socket: &mut Option<WsConn>) -> Result<
                     &pending.text,
                     &pending.request_id,
                     &pending.conversation_id,
+                    pending.join_desktop,
                     tx,
                 );
             });
@@ -619,25 +625,45 @@ fn forward_assistant_reply(
     send_json(conn, &reply)
 }
 
+/// Phone turns stay on `phone-<host>` unless the phone opted into the desktop.
+pub(crate) fn desktop_turn_target(
+    conversation_id: &str,
+    join_desktop: bool,
+) -> (Option<&str>, bool) {
+    if join_desktop {
+        (None, true)
+    } else {
+        (Some(conversation_id), false)
+    }
+}
+
 fn dispatch_turn(
     dispatch: Dispatch,
     text: &str,
     request_id: &str,
     conversation_id: &str,
+    join_desktop: bool,
     tx: mpsc::Sender<Value>,
 ) {
+    let (conversation, join_desktop) = desktop_turn_target(conversation_id, join_desktop);
     match dispatch {
         Dispatch::Echo => {
             let _ = tx.send(json!({
                 "request_id": request_id,
                 "turn_id": format!("turn-{request_id}"),
-                "conversation_id": conversation_id,
+                "conversation_id": conversation.unwrap_or("desktop"),
                 "state": "succeeded",
                 "reply": format!("echo:{text}"),
             }));
         }
         Dispatch::Host => {
-            let first = host_assistant_turn(Some(text), request_id, Some(conversation_id), None);
+            if join_desktop {
+                log::info!(
+                    "relay: phone turn continues the desktop conversation request_id={request_id}"
+                );
+            }
+            let first =
+                host_assistant_turn(Some(text), request_id, conversation, join_desktop, None);
             let state = first
                 .get("state")
                 .and_then(|item| item.as_str())
@@ -668,6 +694,7 @@ fn dispatch_turn(
                     None,
                     &uuid::Uuid::new_v4().to_string(),
                     None,
+                    false,
                     Some(&turn_id),
                 );
                 let polled_state = polled
@@ -687,6 +714,7 @@ fn host_assistant_turn(
     text: Option<&str>,
     request_id: &str,
     conversation_id: Option<&str>,
+    join_desktop: bool,
     status_for: Option<&str>,
 ) -> Value {
     match super::app::assistant_send_result(
@@ -695,7 +723,7 @@ fn host_assistant_turn(
         None,
         None,
         conversation_id,
-        false,
+        join_desktop,
         status_for,
     ) {
         Ok(mut value) => {
@@ -1212,6 +1240,15 @@ mod tests {
 
     /// `STOP` and the in-memory test keychain are process-global.
     static SESSION_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn phone_turns_stay_off_the_desktop_unless_opted_in() {
+        assert_eq!(
+            desktop_turn_target("phone-host", false),
+            (Some("phone-host"), false)
+        );
+        assert_eq!(desktop_turn_target("phone-host", true), (None, true));
+    }
 
     #[test]
     fn host_token_moves_out_of_the_profile_file() {
