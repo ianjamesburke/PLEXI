@@ -1113,6 +1113,13 @@ impl AppRuntime {
         }
     }
 
+    pub fn bound_head(&self) -> Option<&str> {
+        match self {
+            AppRuntime::Builtin(app) => app.bound_head(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+        }
+    }
+
     /// Seed text for the rename-pane overlay. See [`App::rename_seed`].
     pub fn rename_seed(&self) -> Option<String> {
         match self {

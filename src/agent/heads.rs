@@ -714,6 +714,12 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 }
             },
         ),
+        "read_conversation" => {
+            let head = payload.get("head").and_then(|v| v.as_str()).unwrap_or("");
+            let actor = payload.get("as_head").and_then(|v| v.as_str());
+            log::info!("agents_api: read_conversation head={head} as={actor:?}");
+            crate::agent::leads::read_conversation_as(&workspace, actor, head)
+        }
         "call" => invoke(
             &workspace,
             payload.get("run_id").and_then(|v| v.as_str()).unwrap_or(""),

@@ -13,6 +13,7 @@ SKIP=(
   "account"      # marketplace login, no standalone docs yet
   "agent"        # agent definitions, no standalone docs yet
   "ai"           # AI config, no standalone docs yet
+  "command-view" # lead projection; canonical in skills/plexi-cli and the agents API
   "ledger"       # local AI usage summary; generated CLI reference and the plexi-cli skill are canonical
   "completions"  # internal shell integration, documented in getting-started
   "context"      # context scoping, no standalone docs yet

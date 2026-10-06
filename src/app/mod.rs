@@ -1,4 +1,5 @@
 pub mod account;
+pub mod command_view_app;
 mod app_call;
 pub mod app_trait;
 pub(crate) mod assistant_host_tools;
@@ -3371,6 +3372,12 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("agent_host.tick", || self.agent_host.tick());
         if self.agent_host.turns_in_flight() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        for (head, context_id) in crate::agent::leads::take_open_panes() {
+            log::info!("lead: opening assistant pane head={head} context={context_id}");
+            if let Err(error) = self.open_assistant_for_head(&head, Some(context_id)) {
+                log::error!("lead: open pane head={head} failed: {error}");
+            }
         }
 
         // App panes are external clients too: they answer assistant tool calls

@@ -216,7 +216,23 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, client, kind } => {
+            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, client, kind, head } => {
+                if let Some(head) = head {
+                    let workspace = context_id
+                        .and_then(|id| self.context_root_for(id))
+                        .or_else(crate::config::active_workspace_root)
+                        .unwrap_or_else(|| self.router.active().root.clone());
+                    log::info!("pane_ipc: kind=submit_assistant_turn head={head}");
+                    let accepted = crate::agent::leads::submit_turn(&workspace, head, text, request_id, response_file);
+                    if accepted.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                        write_json_response(response_file, serde_json::json!({
+                            "request_id": request_id,
+                            "state": "failed",
+                            "error": accepted.get("error").cloned().unwrap_or(serde_json::json!("lead turn was not accepted")),
+                            "error_code": accepted.get("error_code").cloned().unwrap_or(serde_json::json!("failed")),
+                        }));
+                    }
+                } else {
                 if pane_id.is_none() {
                     let _ = self.ensure_headless_assistant(*context_id);
                 }
@@ -236,6 +252,28 @@ impl PlexiApp {
                 }
                 if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
                 else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
+                }
+            }
+            crate::protocol::AppRequest::OpenAssistantHead { head, context_id, response_file } => {
+                log::info!("pane_ipc: kind=open_assistant_head head={head}");
+                match self.open_assistant_for_head(head, *context_id) {
+                    Ok(pane_id) => write_json_response(response_file, serde_json::json!({"ok": true, "pane_id": pane_id, "head": head})),
+                    Err(error) => write_json_response(response_file, serde_json::json!({"ok": false, "error": error})),
+                };
+            }
+            crate::protocol::AppRequest::CommandView { op, payload, response_file } => {
+                log::info!("pane_ipc: kind=command_view op={op}");
+                let workspace = payload.get("workspace").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+                    .or_else(crate::config::active_workspace_root)
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                let body = match op.as_str() {
+                    "open" => match self.open_command_view(&workspace) {
+                        Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
+                        Err(error) => serde_json::json!({"ok": false, "error": error}),
+                    },
+                    _ => crate::agent::leads::projection(&workspace),
+                };
+                write_json_response(response_file, body);
             }
             crate::protocol::AppRequest::AssistantHostTool { name, input_json, response_file } => {
                 log::info!("assistant_host_tool: ipc name={name}");
