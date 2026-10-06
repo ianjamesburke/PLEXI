@@ -29,6 +29,12 @@ impl<'a> ListDropdownHeader<'a> {
             egui::Sense::hover(),
         );
         let response = ui.interact(rect, id, egui::Sense::click());
+        // The header paints its label as a galley. Scene queries and kittest
+        // clicks read the accessibility tree, so the label has to be reported
+        // here the same way `SidebarRow` reports a context name.
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, true, self.expanded, self.label)
+        });
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }

@@ -123,8 +123,24 @@ pub(crate) fn reserve_pane_id_block() -> u64 {
     NEXT_TEST_PANE_ID_BLOCK.fetch_add(10_000, std::sync::atomic::Ordering::SeqCst)
 }
 
-/// A private, per-process directory for a test fixture that needs a real
-/// context or workspace root.
+static NEXT_TEST_CONTEXT_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1_000_000);
+
+/// Reserve a context id for one harness window.
+///
+/// `plexi_ai::tool_dispatch::GLOBAL_REGISTRY` is process-global and namespaces
+/// tools by `context_id`. `new_for_test` starts every app at context 1, so
+/// concurrent chess tests otherwise see one namespace. Ids start at 1_000_000
+/// so they stay clear of the small ids fixtures still use for a second context.
+pub(crate) fn reserve_test_context_id() -> u64 {
+    NEXT_TEST_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+static NEXT_SCRATCH_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A private directory for a test fixture that needs a real context or
+/// workspace root. Each call gets its own directory: parallel tests that pass
+/// the same label must not share one.
 ///
 /// Never hand a fixture `std::env::temp_dir()` itself. Opening a context at a
 /// root makes the host write workspace state under it — `<root>/.plexi*/` —
@@ -135,8 +151,9 @@ pub(crate) fn reserve_pane_id_block() -> u64 {
 /// private per-user dir there.
 #[cfg(test)]
 pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
+    let n = NEXT_SCRATCH_DIR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
-        "plexi-scratch-{label}-{}",
+        "plexi-scratch-{label}-{}-{n}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -197,7 +214,12 @@ impl HostHarness {
         let shared_guard = crate::config::set_test_shared_dir(shared_dir.path().to_path_buf());
         let ctx = egui::Context::default();
         let frame_tick = Arc::new(AtomicU64::new(0));
-        let (app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        app.set_initial_context_id_for_test(reserve_test_context_id());
+        // `add_test_pane` draws from `next_pane_id`. Launches draw from
+        // `HostModel`. Seed a second block so two harnesses cannot register
+        // the same pane id into the process-global tool registry.
+        app.host.seed_next_pane_id(reserve_pane_id_block());
         Self {
             app,
             ctx,
@@ -592,7 +614,25 @@ impl HostHarness {
             .or(focused)
             .unwrap_or_else(|| panic!("a pane appears after launching {rel_dir}"));
         self.wait_for_first_render(pane_id);
+        self.wait_for_exposed_tools(pane_id);
         pane_id
+    }
+
+    /// Poll until `pane_id` has tools in the process-global registry.
+    ///
+    /// `launch_repo_app` is the chess launch path. Chess declares tools from
+    /// `init`, but under a parallel `cargo test` that declaration can arrive
+    /// after the first rendered tree. A call in that gap is `tool_not_found`.
+    pub fn wait_for_exposed_tools(&mut self, pane_id: PaneId) {
+        let start = std::time::Instant::now();
+        while !crate::plexi_ai::tool_dispatch::pane_has_registered_tools(pane_id) {
+            self.run_frames(1);
+            assert!(
+                start.elapsed() < load_aware_timeout(std::time::Duration::from_secs(30)),
+                "pane {pane_id} did not register tools"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// The harness's scratch workspace root.

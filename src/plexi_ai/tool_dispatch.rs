@@ -359,6 +359,18 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
+/// Whether `pane_id` has published at least one tool. Launch helpers poll
+/// this so a call cannot race the guest's `ExposeTools`.
+#[cfg(test)]
+pub(crate) fn pane_has_registered_tools(pane_id: u64) -> bool {
+    global_registry()
+        .lock()
+        .unwrap()
+        .entries
+        .get(&pane_id)
+        .is_some_and(|entry| !entry.tools.is_empty())
+}
+
 // ── Pending calls ────────────────────────────────────────────────────────────
 
 /// Result returned to the broker by a completed tool call.
@@ -417,6 +429,18 @@ static PENDING_CALLS: OnceLock<PendingCallMap> = OnceLock::new();
 
 fn pending_calls() -> &'static PendingCallMap {
     PENDING_CALLS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+/// Key for `PENDING_CALLS` and the `call_id` the guest echoes.
+///
+/// Callers mint ids like `script-call-0` from a per-broker counter. Those
+/// collide when two tests dispatch at once, and the second insert overwrites
+/// the first waiter. The monitor still records the caller's id; only the
+/// transport key has to be process-unique.
+fn transport_call_id(call_id: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{call_id}#{n}")
 }
 
 /// Called by `routing.rs` when `DrawCommand::ToolResult` arrives for a pane.
@@ -951,9 +975,10 @@ impl ToolDispatcher {
         };
 
         let timeout_ms = tool.timeout_ms.unwrap_or(30_000);
+        let transport_id = transport_call_id(&call_id);
 
         log::info!(
-            "tool_dispatch: caller={} caller_pane={} → tool={name:?} provider_pane={pane_id} call_id={call_id:?}",
+            "tool_dispatch: caller={} caller_pane={} → tool={name:?} provider_pane={pane_id} call_id={call_id:?} transport_id={transport_id:?}",
             self.caller_app_id, self.caller_pane_id,
         );
 
@@ -962,7 +987,7 @@ impl ToolDispatcher {
         pending_calls()
             .lock()
             .unwrap()
-            .insert(call_id.clone(), result_tx);
+            .insert(transport_id.clone(), result_tx);
 
         // Send ToolCall to the owning pane.
         let sent = {
@@ -970,7 +995,7 @@ impl ToolDispatcher {
             if let Some(sender) = registry.sender_for(*pane_id) {
                 sender
                     .send_event(&PlexiEvent::ToolCall {
-                        call_id: call_id.clone(),
+                        call_id: transport_id.clone(),
                         name: provider_tool_name.clone(),
                         input_json,
                         caller_id: self.caller_app_id.clone(),
@@ -984,9 +1009,9 @@ impl ToolDispatcher {
 
         if !sent {
             // Pane went away after we built the snapshot — clean up and return error.
-            pending_calls().lock().unwrap().remove(&call_id);
+            pending_calls().lock().unwrap().remove(&transport_id);
             log::warn!(
-                "tool_dispatch: provider pane {pane_id} gone for tool {name:?} call_id={call_id:?}"
+                "tool_dispatch: provider pane {pane_id} gone for tool {name:?} call_id={call_id:?} transport_id={transport_id:?}"
             );
             return ToolCallResult::err(format!(
                 "tool_pane_gone: pane {pane_id} for tool {name:?} is no longer registered"
@@ -997,7 +1022,7 @@ impl ToolDispatcher {
         match result_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(result) => {
                 log::info!(
-                    "tool_dispatch: tool={name:?} call_id={call_id:?} result={}",
+                    "tool_dispatch: tool={name:?} call_id={call_id:?} transport_id={transport_id:?} result={}",
                     if result.error.is_none() {
                         "ok"
                     } else {
@@ -1008,9 +1033,9 @@ impl ToolDispatcher {
             }
             Err(_) => {
                 // Clean up the stale pending entry.
-                pending_calls().lock().unwrap().remove(&call_id);
+                pending_calls().lock().unwrap().remove(&transport_id);
                 log::warn!(
-                    "tool_dispatch: tool {name:?} call_id={call_id:?} timed out after {timeout_ms}ms"
+                    "tool_dispatch: tool {name:?} call_id={call_id:?} transport_id={transport_id:?} timed out after {timeout_ms}ms"
                 );
                 ToolCallResult::err(format!(
                     "tool_timeout: tool {name:?} did not respond within {timeout_ms}ms"
@@ -1433,7 +1458,11 @@ mod tests {
         let crate::host::wasm_app::InputEvent::ToolCall(call) = event else {
             panic!("expected ToolCall, got {event:?}");
         };
-        assert_eq!(call.call_id, "wasm-call-1");
+        assert!(
+            call.call_id.starts_with("wasm-call-1#"),
+            "the guest echoes a process-unique transport id derived from the caller id, got {}",
+            call.call_id
+        );
         assert_eq!(call.name, "wasm.echo");
         assert_eq!(call.input_json, r#"{"value":7}"#);
         assert_eq!(call.caller_id, "agent:assistant");
