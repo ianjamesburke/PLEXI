@@ -1406,11 +1406,17 @@ fn main() -> eframe::Result {
                     Commands::Note { text } => {
                         std::process::exit(cli::notes::note_capture_cli(&text))
                     }
-                    Commands::Ledger { cmd } => match cmd {
-                        LedgerCmd::Summary { by, since, json } => std::process::exit(
-                            cli::ledger_summary_cli(by.as_deref(), since.as_deref(), json),
-                        ),
-                    },
+                    Commands::Ledger { cmd } => {
+                        let (by, since, json) = match cmd {
+                            Some(LedgerCmd::Summary { by, since, json }) => (by, since, json),
+                            None => (None, None, false),
+                        };
+                        std::process::exit(cli::ledger_summary_cli(
+                            by.as_deref(),
+                            since.as_deref(),
+                            json,
+                        ));
+                    }
                     Commands::Ai { cmd } => match cmd {
                         AiCmd::Onboard => std::process::exit(cli::ai_onboard_cli()),
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),

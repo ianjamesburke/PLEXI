@@ -1028,8 +1028,13 @@ mod tests {
         );
         let line = serde_json::to_string(&row).unwrap();
         assert!(
-            line.contains(r#""input_tokens":null"#) && line.contains(r#""output_tokens":null"#),
-            "ledger must serialize unknown counts as null: {line}"
+            line.contains(r#""input_tokens":"unknown""#)
+                && line.contains(r#""output_tokens":"unknown""#),
+            "ledger must serialize unknown counts as the string unknown: {line}"
+        );
+        assert!(
+            !line.contains(r#""input_tokens":0"#) && !line.contains(r#""input_tokens":null"#),
+            "ledger must not persist a zero or null token count: {line}"
         );
     }
 

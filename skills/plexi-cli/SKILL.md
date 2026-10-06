@@ -84,9 +84,11 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `plexi agent --help`. `agent report --event` preserves a provider lifecycle
   event separately from its UI state; `--blocked-reason` supplies a typed reason.
   Read `agent report --help` before using these optional fields.
-- **AI ledger** — totals for tokens, cost, runs, and wall time from this
-  channel's ledger, grouped by client or kind: `plexi ledger summary --help`.
-  The command reads the local ledger file and does not need a running host.
+- **AI ledger** — `plexi ledger` prints per-client totals for tokens, cost,
+  runs, and wall time from this channel's ledger. `plexi ledger summary --help`
+  groups by client or kind. A token count is a positive number or the word
+  `unknown`. The command reads the local ledger file and does not need a
+  running host.
   `assistant send --client` and `--kind` override the tags for one run;
   omitted, the client comes from `[ai] client` and the kind is `output`.
   Send does not require `app open assistant` first: with no pane named, the
@@ -265,12 +267,14 @@ plexi notify dismiss "$NOTICE"
 
 ### Summarize AI ledger usage
 
-Group this channel's ledger by client. `--since` keeps rows at or after a
-date. Each group reports runs, input and output tokens, cost, and wall time
-(`null` when that field was not recorded). A client or kind that was never
-tagged is the null group.
+`plexi ledger` prints this channel's per-client totals. `ledger summary`
+groups by client or kind. `--since` keeps rows at or after a date. Each group
+reports runs, input and output tokens, cost, and wall time. A token count that
+was not measured is the word `unknown`. Wall time is null in JSON when it was
+not recorded. A client or kind that was never tagged is the null group.
 
 ```bash
+plexi ledger
 plexi ledger summary --by client --since 2026-01-01 --json
 plexi assistant send --text "hello" --client narrative --kind output
 ```

@@ -1419,7 +1419,7 @@ Example: plexi ai setup
 
 Summarize recorded AI usage from this channel's ledger.
 
-Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
+With no subcommand, prints per-client totals for tokens, cost, runs, and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. A token count is a positive number or the word `unknown`. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
 
 | Subcommand | Description |
 |---|---|
