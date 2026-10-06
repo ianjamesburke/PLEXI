@@ -43,6 +43,18 @@ def _tool(name: str, arguments: dict, call_id: str = "call_mock") -> dict:
     }
 
 
+def _since_latest_user(messages: list, latest: str) -> str:
+    parts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user" and _text_of(message) == latest:
+            parts = []
+            continue
+        parts.append(_text_of(message))
+    return "\n".join(parts)
+
+
 def decide(messages: list) -> bytes:
     blob = "\n".join(_text_of(message) for message in messages if isinstance(message, dict))
     users = [
@@ -50,24 +62,27 @@ def decide(messages: list) -> bytes:
         for message in messages
         if isinstance(message, dict) and message.get("role") == "user"
     ]
-    latest = users[-1] if users else blob
-    if "a lead cannot read another lead" in blob:
-        return _reply("I could not read it")
-    if "wrote " in blob or "wrote the file" in blob:
-        return _reply("wrote the file")
-    read_other = re.search(r"read-other\s+([a-z0-9-]+)", latest)
-    if read_other:
-        return _reply(
-            None,
-            [_tool("leads.conversation.read", {"head": read_other.group(1)})],
-        )
+    latest = users[-1] if users else ""
+    # Tool results from this request only. Older turns stay in the transcript
+    # and must not satisfy a new prompt.
+    follow = _since_latest_user(messages, latest)
     if "write-file" in latest or "write file" in latest:
+        if "wrote " in follow:
+            return _reply("wrote the file")
         return _reply(
             None,
             [_tool("host.files.write", {"file": "out.txt", "content": "ok"})],
         )
-    if "long-task" in latest or "long-task" in blob:
-        done = len(re.findall(r"step \d+", blob))
+    read_other = re.search(r"read-other\s+([a-z0-9-]+)", latest)
+    if read_other:
+        if "a lead cannot read another lead" in follow:
+            return _reply("I could not read it")
+        return _reply(
+            None,
+            [_tool("leads.conversation.read", {"head": read_other.group(1)})],
+        )
+    if "long-task" in latest:
+        done = len(re.findall(r"step \d+", follow))
         if done >= 4:
             return _reply("long task done")
         return _reply(None, [_tool("lead.step", {"n": done})])
