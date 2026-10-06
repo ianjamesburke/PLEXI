@@ -10,6 +10,7 @@
 //! `/permissions` UI surface come later; their target types exist as data only.
 
 pub mod gate;
+mod needs_you_store;
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
@@ -353,7 +354,8 @@ impl GrantRecord {
 }
 
 /// Every field an exact grant and the call that uses it must share.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExactBinding {
     pub actor_type: ActorType,
     pub actor_id: String,
