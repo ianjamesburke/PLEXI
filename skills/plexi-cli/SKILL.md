@@ -133,6 +133,29 @@ note
 notes
 ```
 
+### Bind a secret to a folder
+
+`plexi secret set NAME --folder <path>` reads the value from stdin (or a hidden
+prompt) and stores it in the OS keychain, or in the labeled encrypted-file
+fallback when Secret Service is unavailable. `list` prints names and folders.
+A new pane a person starts inside that folder receives the name as an
+environment variable. Same-user native processes are not isolated from each
+other: a process running as this user can still read a value a pane already
+holds. Folder secrets stop accidental injection into the wrong directory.
+
+From a pane, `secret exec` and `secret grant` return `permission_denied`.
+They do not start a command, record an allow, or print the value. `secret
+read --agent <id>` returns `permission_required` until a person records an
+allow. A pane cannot spawn another pane that receives a folder secret.
+`list`, a refusal, and the audit log never print the value.
+
+```bash
+plexi secret set FOLDER_TOKEN --folder /path/to/project
+plexi secret list
+plexi secret read FOLDER_TOKEN --agent reader --folder /path/to/project
+plexi secret rm FOLDER_TOKEN --folder /path/to/project
+```
+
 ## Worked examples
 
 ### Initialize, open, and check an app

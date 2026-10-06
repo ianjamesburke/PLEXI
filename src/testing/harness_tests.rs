@@ -5658,6 +5658,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         name: None,
         agent_cmd: None,
         boot_timeout_secs: None,
+        peer_ancestry: None,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
     // skips ui for an occluded window. At this point no text surface has
@@ -6991,6 +6992,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
 
         let reply = read_json_response(&response);
@@ -7038,6 +7040,7 @@ mod routine_firing {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
 
         let reply = read_json_response(&response);
@@ -7463,6 +7466,7 @@ mod agent_boot {
             name: Some("agent".to_string()),
             agent_cmd: Some(agent_cmd.to_string()),
             boot_timeout_secs,
+            peer_ancestry: None,
         });
         response
     }
@@ -7673,6 +7677,7 @@ mod agent_boot {
             name: None,
             agent_cmd: Some("c-large".to_string()),
             boot_timeout_secs: None,
+            peer_ancestry: None,
         });
         h.run_frames(1);
 

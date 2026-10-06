@@ -136,6 +136,27 @@ mod tests {
         false
     }
 
+    /// Absorb the `config.toml` create that `start` may deliver late, then
+    /// wait out one debounce of silence.
+    ///
+    /// A fixed sleep plus a single drain loses to FSEvents latency on a loaded
+    /// macOS runner. The create's debounced signal then lands in the next
+    /// assertion and looks like an unrelated file woke the watcher.
+    fn settle_initial_events(rx: &MailboxReceiver<()>) {
+        let _ = poll_for_signal(rx, Duration::from_secs(2));
+        let quiet = crate::testing::load_aware_timeout(Duration::from_millis(DEBOUNCE_MS + 200));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
+        let mut quiet_since = Instant::now();
+        while Instant::now() < deadline {
+            if rx.try_recv().is_ok() {
+                quiet_since = Instant::now();
+            } else if quiet_since.elapsed() >= quiet {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn fires_on_config_change() {
         let dir = tempdir().unwrap();
@@ -168,11 +189,7 @@ mod tests {
 
         let (watcher, rx) =
             start(config, Arc::new(RecordingWake::new())).expect("watcher should start");
-        // Drain any initial FSEvents from the config.toml creation above.
-        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            500,
-        )));
-        while rx.try_recv().is_ok() {}
+        settle_initial_events(&rx);
 
         fs::write(dir.path().join("other.txt"), "noise\n").unwrap();
         assert!(

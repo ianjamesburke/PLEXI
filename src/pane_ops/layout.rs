@@ -253,7 +253,7 @@ impl PlexiApp {
             if self.windows[active].panes.is_empty() {
                 let context = self.pane_context_env_for_window(active);
                 if let Some((tree, panes, root_tile)) =
-                    self.create_single_pane_tree(&context, None, None, false)
+                    self.create_single_pane_tree(&context, None, None, false, true)
                 {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
@@ -479,6 +479,7 @@ impl PlexiApp {
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
+        inject_folder_secrets: bool,
     ) {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[target_win_idx].panes.is_empty() {
@@ -518,6 +519,11 @@ impl PlexiApp {
                 );
                 super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
             }
+            crate::host::shell::apply_folder_secret_injection(
+                &mut settings.env,
+                settings.working_directory.as_deref(),
+                inject_folder_secrets,
+            );
             let Some(mut pane) = TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
@@ -581,6 +587,11 @@ impl PlexiApp {
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
+        crate::host::shell::apply_folder_secret_injection(
+            &mut settings.env,
+            settings.working_directory.as_deref(),
+            inject_folder_secrets,
+        );
         let Some(mut pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),

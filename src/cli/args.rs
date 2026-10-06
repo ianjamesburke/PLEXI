@@ -79,12 +79,19 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: WorkspaceCmd,
     },
-    /// Store and retrieve secrets (API keys, passwords, tokens) for your project.
+    /// Store and retrieve secrets (API keys, passwords, tokens).
     ///
-    /// On macOS, secrets are saved to the system keychain. On Linux, they are saved in
-    /// a mode-`0600` profile file and are not encrypted at rest. Plexi injects them as
-    /// environment variables when you run commands. Use `plexi workspace init` first
-    /// to scope secrets to a project.
+    /// Workspace secrets (`secret set` without `--folder`) are saved to the system
+    /// keychain on macOS. On Linux those workspace entries are a mode-`0600` profile
+    /// file and are not encrypted at rest. Folder secrets (`secret set NAME --folder`)
+    /// are different: macOS Keychain, Linux Secret Service, or a labeled encrypted-file
+    /// fallback. Their values are never written in plaintext under `.plexi`. A new
+    /// terminal pane whose working directory is inside that folder receives the name
+    /// as an environment variable. Agents and app tools read it only with a grant.
+    ///
+    /// Same-user native processes are not isolated from each other. A process
+    /// running as this user can still read a value that a pane already holds.
+    /// Folder secrets stop accidental injection into the wrong directory.
     #[command(alias = "secrets")]
     Secret {
         #[command(subcommand)]
@@ -546,6 +553,11 @@ pub enum SecretCmd {
         /// On macOS this can reuse an existing Keychain entry. Example: plexi secret set OPENAI_API_KEY --alias openai_personal
         #[arg(long)]
         alias: Option<String>,
+        /// Bind the secret to this directory. The value is stored in the OS keychain
+        /// (or the labeled encrypted-file fallback) and injected into panes whose
+        /// cwd is this directory or a subdirectory.
+        #[arg(long, conflicts_with_all = ["global", "alias"])]
+        folder: Option<std::path::PathBuf>,
     },
     /// Print a stored secret's value to stdout.
     ///
@@ -577,6 +589,64 @@ pub enum SecretCmd {
         /// Delete from the global store instead of the project-scoped store
         #[arg(long)]
         global: bool,
+    },
+    /// Remove a folder-scoped secret.
+    Rm {
+        /// Environment variable name
+        name: String,
+        /// Directory the secret was bound to
+        #[arg(long)]
+        folder: std::path::PathBuf,
+    },
+    /// Ask for an allow on a folder secret. This command does not record one.
+    ///
+    /// Returns `permission_denied` and writes an audit row with the secret name
+    /// and folder, never the value. This process does not record an allow. An
+    /// agent pane cannot grant itself a secret, including a secret bound to
+    /// another folder.
+    Grant {
+        /// Environment variable name
+        name: String,
+        /// Agent id. Stored as `agent:<id>`.
+        #[arg(long, conflicts_with = "app")]
+        agent: Option<String>,
+        /// App id. Stored as `app:<id>`.
+        #[arg(long, conflicts_with = "agent")]
+        app: Option<String>,
+        /// Directory the secret was bound to. Required when the name exists in more than one folder.
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+    },
+    /// Read a folder secret as an agent or app. Without a grant this prints
+    /// `permission_required` and writes an audit row that names the secret
+    /// but not its value.
+    Read {
+        /// Environment variable name
+        name: String,
+        /// Agent id. Stored as `agent:<id>`.
+        #[arg(long, conflicts_with = "app")]
+        agent: Option<String>,
+        /// App id. Stored as `app:<id>`.
+        #[arg(long, conflicts_with = "agent")]
+        app: Option<String>,
+        /// Directory the secret was bound to. Required when the name exists in more than one folder.
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+    },
+    /// Run a command with the environment a new terminal pane in `--cwd` receives,
+    /// including folder secrets for that directory.
+    ///
+    /// Refused with `permission_denied` when the caller is a pane agent, including
+    /// a child of that pane that cleared `PLEXI_PANE_ID`. The command is not
+    /// started and no secret value is printed. Same-user native processes are
+    /// not isolated from each other.
+    Exec {
+        /// Working directory of the spawned command, and the pane cwd used for injection.
+        #[arg(long)]
+        cwd: std::path::PathBuf,
+        /// Command and arguments.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
     },
 }
 

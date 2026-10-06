@@ -69,6 +69,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
   does not exist still fails.
 - **Routines are post-v1.** `plexi routine` stays compiled for beta and
   worktree development but is release-gated and hidden from stable help.
+- **Folder secrets stay out of the profile plaintext.** `plexi secret set NAME --folder <path>` stores a directory-scoped secret through `folder_store` (contract: `src/workspace/AGENTS.md`). `secret list` prints names and folders. `secret rm` removes one binding. `secret read` admits through the permission gate and prints `permission_required` (exit 2) until a grant exists. `secret grant` does not write that grant: it prints `permission_denied`, audits the name and folder, and never reads the value. `grant_folder_secret` remains the host function that records an allow. `secret exec --cwd` runs `shell::build_env` only for a caller that is not a pane of this host; a pane, including a child that cleared `PLEXI_PANE_ID` while its ancestor still names this host's socket, gets `permission_denied` and the command is not started. A pane-requested terminal spawn withholds folder secrets. The value is never logged.
 
 ## Documentation Rule for CLI Changes
 
