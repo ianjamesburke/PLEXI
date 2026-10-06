@@ -509,20 +509,95 @@ class RelayHttpTest(unittest.TestCase):
         thread = threading.Thread(target=approve_click)
         thread.start()
         asked = desk.recv()
-        self.assertEqual(asked["type"], "needs_you_resolve")
-        self.assertEqual(asked["id"], "click-1")
-        self.assertTrue(asked["approve"])
+        self.assertEqual(asked["type"], "needs_you_list")
         desk.send(
             {
                 "type": "needs_you_result",
                 "request_id": asked["request_id"],
-                "ok": False,
-                "error": "waiting on desktop",
+                "ok": True,
+                "items": [
+                    {
+                        "id": "click-1",
+                        "kind": "approval_click",
+                        "summary": "write a file",
+                        "phone_can_approve": False,
+                    },
+                    {
+                        "id": "q-1",
+                        "kind": "question",
+                        "summary": "which file",
+                        "phone_can_approve": True,
+                    },
+                ],
             }
         )
         thread.join(timeout=5)
         self.assertEqual(refused["status"], 403)
         self.assertEqual(refused["body"]["message"], "waiting on desktop")
+        desk.sock.settimeout(0.3)
+        with self.assertRaises(TimeoutError):
+            desk.recv()
+        desk.sock.settimeout(5)
+
+        missing: dict = {}
+
+        def approve_missing() -> None:
+            status, body, _ = _http(
+                "POST",
+                f"{self.base}/api/needs-you/missing-1/resolve",
+                {"decision": "approve"},
+                cookie=cookie,
+            )
+            missing["status"] = status
+            missing["body"] = body
+
+        thread = threading.Thread(target=approve_missing)
+        thread.start()
+        asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_list")
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": True,
+                "items": [],
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(missing["status"], 403)
+        self.assertEqual(missing["body"]["message"], "waiting on desktop")
+
+        denied: dict = {}
+
+        def deny_click() -> None:
+            status, body, _ = _http(
+                "POST",
+                f"{self.base}/api/needs-you/click-1/resolve",
+                {"decision": "deny"},
+                cookie=cookie,
+            )
+            denied["status"] = status
+            denied["body"] = body
+
+        thread = threading.Thread(target=deny_click)
+        thread.start()
+        asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_resolve")
+        self.assertEqual(asked["id"], "click-1")
+        self.assertFalse(asked["approve"])
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": True,
+                "id": "click-1",
+                "resolution": "denied",
+                "already": False,
+            }
+        )
+        thread.join(timeout=5)
+        self.assertEqual(denied["status"], 200)
+        self.assertEqual(denied["body"]["resolution"], "denied")
 
         allowed: dict = {}
 
@@ -539,6 +614,26 @@ class RelayHttpTest(unittest.TestCase):
         thread = threading.Thread(target=approve_question)
         thread.start()
         asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_list")
+        desk.send(
+            {
+                "type": "needs_you_result",
+                "request_id": asked["request_id"],
+                "ok": True,
+                "items": [
+                    {
+                        "id": "q-1",
+                        "kind": "question",
+                        "summary": "which file",
+                        "phone_can_approve": True,
+                    }
+                ],
+            }
+        )
+        asked = desk.recv()
+        self.assertEqual(asked["type"], "needs_you_resolve")
+        self.assertEqual(asked["id"], "q-1")
+        self.assertTrue(asked["approve"])
         desk.send(
             {
                 "type": "needs_you_result",

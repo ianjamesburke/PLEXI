@@ -1190,6 +1190,34 @@ class Relay:
     def needs_you_resolve(self, device: Device, item_id: str, decision: str) -> tuple[int, dict]:
         if decision not in {"approve", "deny"}:
             return 400, {"ok": False, "error": "invalid_decision"}
+        if decision == "approve":
+            status, listed = self.needs_you_list(device)
+            if status != 200:
+                return status, listed
+            items = listed.get("items") if isinstance(listed.get("items"), list) else []
+            match = next(
+                (
+                    item
+                    for item in items
+                    if isinstance(item, dict) and str(item.get("id", "")) == item_id
+                ),
+                None,
+            )
+            # An answer is a question or a blocked run the desktop marked
+            # phone_can_approve. Anything else, including a missing id, must
+            # not be forwarded as approve or a stale desktop can grant it.
+            if not phone_may_answer(match):
+                trace(
+                    "needs_you",
+                    host_id=device.host_id,
+                    device_id=device.device_id,
+                    outcome="waiting_on_desktop",
+                )
+                return 403, {
+                    "ok": False,
+                    "error": "waiting_on_desktop",
+                    "message": "waiting on desktop",
+                }
         body = self.ask_desktop(
             device.host_id,
             {"type": "needs_you_resolve", "id": item_id, "approve": decision == "approve"},
@@ -1236,6 +1264,15 @@ class Relay:
                     if event.error:
                         chunks.append(event.error)
         return "\n".join(chunks)
+
+
+def phone_may_answer(item: object) -> bool:
+    """True only for a non-click item the desktop explicitly allows."""
+    if not isinstance(item, dict):
+        return False
+    if item.get("kind") == "approval_click":
+        return False
+    return item.get("phone_can_approve") is True
 
 
 def validate_envelope(body: object) -> str | None:

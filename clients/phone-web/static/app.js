@@ -127,8 +127,7 @@ function render(event) {
 }
 
 function phoneCanApprove(item) {
-  if (item.phone_can_approve === false || item.kind === "approval_click") return false;
-  return true;
+  return item.phone_can_approve === true && item.kind !== "approval_click";
 }
 
 async function refreshNeeds() {
@@ -155,7 +154,7 @@ async function refreshNeeds() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = decision;
-      button.textContent = decision === "approve" ? "Approve" : "Deny";
+      button.textContent = decision === "approve" ? "Answer" : "Deny";
       button.addEventListener("click", () => resolveNeeds(item.id, decision));
       li.append(button);
     }

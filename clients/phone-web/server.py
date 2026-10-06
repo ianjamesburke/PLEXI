@@ -474,6 +474,22 @@ class HostStore(StubStore):
     def resolve_needs_you(self, item_id: str, decision: str) -> tuple[int, dict]:
         if decision not in {"approve", "deny"}:
             return 400, {"ok": False, "error": "invalid_decision"}
+        if decision == "approve":
+            status, listed = self.needs_you()
+            if status != 200:
+                return status, listed
+            items = listed.get("items") if isinstance(listed.get("items"), list) else []
+            match = next(
+                (
+                    item
+                    for item in items
+                    if isinstance(item, dict) and str(item.get("id", "")) == item_id
+                ),
+                None,
+            )
+            if not phone_may_answer(match):
+                log.info("needs-you phone refused id=%s", item_id)
+                return 403, {"ok": False, "error": "waiting on desktop"}
         flag = "--approve" if decision == "approve" else "--deny"
         return self._needs_you_cli(["resolve", item_id, flag, "--from-phone"])
 
@@ -501,6 +517,15 @@ class HostStore(StubStore):
         if body.get("ok") is False:
             return 409, body
         return 200, body
+
+
+def phone_may_answer(item: object) -> bool:
+    """True only for a non-click item the desktop explicitly allows."""
+    if not isinstance(item, dict):
+        return False
+    if item.get("kind") == "approval_click":
+        return False
+    return item.get("phone_can_approve") is True
 
 
 def validate_envelope(body: object) -> str | None:

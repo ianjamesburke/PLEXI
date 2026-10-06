@@ -276,6 +276,62 @@ else
   fail "sealed round trip" "mock reply missing or canary visible: ${PAGE:0:400}"
 fi
 
+# A phone turn stays on its own conversation. The desktop transcript is the
+# assistant pane's conversation file, found from `pane list` rather than a
+# guessed profile path.
+if "$BIN" assistant send --desktop --text "desktop-turn-marker" --request-id desk-marker >"$LOG.desktop" 2>&1; then
+  pass "desktop turn"
+else
+  fail "desktop turn" "$(tail -c 300 "$LOG.desktop")"
+fi
+PONG_CODE="$(post_turn req-pong "reply PONG")"
+PONG_OK=""
+if [[ "$PONG_CODE" == "202" ]]; then
+  for _ in $(seq 1 160); do
+    PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"
+    if saw_reply "$PAGE" req-pong "mock-reply"; then PONG_OK=1; break; fi
+    sleep 0.25
+  done
+fi
+"$BIN" pane list >"$LOG.panes" 2>/dev/null || true
+PONG_ISOLATED="$(python3 - "$LOG.panes" ".$BIN_BASE" <<'PY'
+import json, pathlib, sys
+rows = json.loads(pathlib.Path(sys.argv[1]).read_text() or "[]")
+channel = sys.argv[2]
+cwd = ""
+for row in rows if isinstance(rows, list) else []:
+    title = str(row.get("title") or "").lower()
+    if row.get("type") == "app" and "assistant" in title:
+        cwd = str(row.get("cwd") or "")
+        break
+root = pathlib.Path(cwd) / channel / "assistant" / "conversations" if cwd else None
+if root is None or not root.is_dir():
+    print(f"no assistant conversation dir ({root})")
+    raise SystemExit(0)
+desktop = []
+phone_has_pong = False
+for path in root.glob("*.jsonl"):
+    text = path.read_text(errors="replace")
+    if "desktop-turn-marker" in text:
+        desktop.append(text)
+    if "reply PONG" in text and "desktop-turn-marker" not in text:
+        phone_has_pong = True
+if not desktop:
+    print("desktop transcript has no marker")
+elif any("PONG" in text for text in desktop):
+    print("PONG crossed the desktop transcript")
+elif not phone_has_pong:
+    print("phone conversation never stored PONG")
+else:
+    print("ok")
+PY
+)"
+if [[ -n "$PONG_OK" && "$PONG_ISOLATED" == "ok" ]]; then
+  pass "phone PONG stays off the desktop turn"
+else
+  fail "phone PONG stays off the desktop turn" "http ${PONG_CODE:-none} isolated=${PONG_ISOLATED:-missing}"
+fi
+
 # Restart the relay process. The phone cookie and the desktop pairing must
 # still work. The SQLite file must not contain the canary body.
 docker restart "$CONTAINER" >/dev/null
@@ -406,6 +462,26 @@ raise SystemExit(0 if any(e.get("request_id")=="req-approve" and e.get("state")=
   sleep 0.25
 done
 if [[ -n "$WAIT_OK" ]]; then pass "waiting on desktop"; else fail "waiting on desktop" "receipt did not appear"; fi
+NEEDS="$(curl -sf "$BASE/api/needs-you" -H "cookie: plexi_phone=$COOKIE" || true)"
+CLICK_ID="$(python3 -c 'import json,sys
+try:
+    body=json.loads(sys.argv[1] or "{}")
+except Exception:
+    body={}
+items=body.get("items") or []
+for item in items:
+    if item.get("kind")=="approval_click" or item.get("phone_can_approve") is False:
+        print(item.get("id") or "")
+        raise SystemExit(0)
+print("missing-click")' "$NEEDS")"
+IRREV_CODE="$(curl -s -o /tmp/relay-e2e-body -w '%{http_code}' -X POST "$BASE/api/needs-you/${CLICK_ID}/resolve" \
+  -H "cookie: plexi_phone=$COOKIE" -H 'content-type: application/json' \
+  -d '{"decision":"approve"}')"
+if [[ "$IRREV_CODE" == "403" ]] && grep -q "waiting on desktop" /tmp/relay-e2e-body; then
+  pass "irreversible approve returns waiting on desktop"
+else
+  fail "irreversible approve returns waiting on desktop" "http $IRREV_CODE id=${CLICK_ID:-missing} $(cat /tmp/relay-e2e-body 2>/dev/null)"
+fi
 APPROVE_CODE="$(curl -s -o /tmp/relay-e2e-body -w '%{http_code}' -X POST "$BASE/api/approvals" -H "cookie: plexi_phone=$COOKIE" -H 'content-type: application/json' -d '{"request_id":"req-approve"}')"
 STILL_WAITING=""
 PAGE="$(curl -sf "$BASE/api/conversation?after=0" -H "cookie: plexi_phone=$COOKIE" || true)"

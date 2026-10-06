@@ -14,6 +14,15 @@
 
 use super::PlexiApp;
 
+/// A phone approve is an answer, never a grant. A question or a blocked run
+/// may be closed. An approval click, and any id the phone cannot see, stays
+/// on the desktop.
+pub(crate) fn phone_may_answer(
+    kind: Option<crate::broker::gate::NeedsYouKind>,
+) -> bool {
+    kind.is_some_and(crate::broker::gate::NeedsYouKind::phone_may_approve)
+}
+
 /// The identity an app sees for a verified socket caller. No pane is never
 /// the human `user`.
 pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option<&str>) -> String {
@@ -121,12 +130,22 @@ impl PlexiApp {
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
                 log::info!("needs_you: host resolve {id} approve={approve} from_phone={from_phone}");
-                if approve
-                    && from_phone
-                    && monitor.open_needs_you().iter().any(|row| {
-                        row.id == id && !row.kind.phone_may_approve()
-                    })
-                {
+                // Fail closed. The old check only refused an open approval
+                // click, so a missing id or any other kind fell through into
+                // resolve_needs_you, and an approval click grants.
+                let phone_answer = from_phone && approve;
+                let may_answer = phone_answer
+                    && phone_may_answer(
+                        monitor
+                            .open_needs_you()
+                            .iter()
+                            .find(|row| row.id == id)
+                            .map(|row| row.kind),
+                    );
+                if phone_answer && may_answer {
+                    log::info!("needs_you: phone answered id={id}");
+                }
+                if phone_answer && !may_answer {
                     log::info!("needs_you: phone refused irreversible id={id}");
                     serde_json::json!({
                         "ok": false,
@@ -300,7 +319,16 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
-    use super::caller_identity;
+    use super::{caller_identity, phone_may_answer};
+    use crate::broker::gate::NeedsYouKind;
+
+    #[test]
+    fn phone_approve_answers_only_a_visible_non_click() {
+        assert!(phone_may_answer(Some(NeedsYouKind::Question)));
+        assert!(phone_may_answer(Some(NeedsYouKind::BlockedRun)));
+        assert!(!phone_may_answer(Some(NeedsYouKind::ApprovalClick)));
+        assert!(!phone_may_answer(None));
+    }
 
     #[test]
     fn socket_caller_identity_is_never_the_human() {
