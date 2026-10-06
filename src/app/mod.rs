@@ -3031,7 +3031,10 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
         | AppCommand::InsertPathToken { .. }
         | AppCommand::OpenArtifact { .. } => true,
         AppCommand::AssistantHostTool { name, .. } => {
-            !matches!(name.as_str(), "host.panes.list" | "host.panes.state")
+            !matches!(
+                name.as_str(),
+                "host.panes.list" | "host.panes.state" | "host.introspect"
+            )
         }
         AppCommand::DeliverNotifyAction { host_action, .. } => host_action
             .as_deref()

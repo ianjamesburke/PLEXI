@@ -82,7 +82,19 @@ const HOST_TOOL_FILES_EDIT: &str = "host.files.edit";
 const HOST_TOOL_FILES_GREP: &str = "host.files.grep";
 const HOST_TOOL_FILES_LIST: &str = "host.files.list";
 const HOST_TOOL_BUILD_RUN: &str = "host.build.run";
-const HOST_TOOL_HELP: &str = "host.help";
+const HOST_TOOL_INTROSPECT: &str = "host.introspect";
+
+/// The Assistant may name a Plexi control only after a tool result in this
+/// turn returned that text. Appended to every turn prompt.
+pub(crate) const GROUNDING_RULE: &str = "\
+Name a Plexi control, command, or setting only when a tool result in this turn returned that exact text. \
+Call host.introspect to read the live CLI, installed apps and their tools, open panes, and permission decisions. \
+If this turn's tool results do not name it, say you are not sure and offer to open the relevant pane.";
+
+pub(crate) fn push_grounding(system: &mut String) {
+    system.push_str("\n\n");
+    system.push_str(GROUNDING_RULE);
+}
 use crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH;
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
@@ -1202,9 +1214,9 @@ impl AssistantApp {
         });
         vec![
             AiTool {
-                name: HOST_TOOL_HELP.into(),
-                description: "Read verified Plexi steps. topic \"permissions\" explains how to undo a denied or allowed tool call. It does not describe controls that are not in that text.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"topic":{"type":"string","description":"permissions, or another topic. Unknown topics say so."}}}),
+                name: HOST_TOOL_INTROSPECT.into(),
+                description: "Read this build's live CLI commands, installed apps and their tools, open panes, and permission decisions. Pass query to narrow the result. Name a Plexi control only when this result includes it.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string","description":"Case-insensitive substring. Example: permissions."}}}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
@@ -1766,11 +1778,7 @@ impl AssistantApp {
             .as_ref()
             .is_some_and(|skill| skill.name == skills::APP_BUILD_SKILL_NAME);
         let mut system = agent.prompt;
-        system.push_str("\n\n");
-        system.push_str(crate::broker::gate::PERMISSION_GUIDANCE);
-        system.push_str(
-            "\nCall host.help with {\"topic\":\"permissions\"} when you need these steps again. ",
-        );
+        push_grounding(&mut system);
         system.push_str("\n\nCompaction status: ");
         system.push_str(&self.model.compaction_status());
         if let Some(skill) = selected_skill {
@@ -2322,7 +2330,7 @@ impl AssistantApp {
                 }
                 let message = format!(
                     "permission_denied: the user denied the subscription to {target}. {}",
-                    crate::broker::gate::PERMISSION_GUIDANCE
+                    crate::cli::introspect::permission_undo_text()
                 );
                 log::info!("assistant: subscribe approval rejected: {message}");
                 return ToolCallResult::err(message);
@@ -2411,7 +2419,7 @@ impl AssistantApp {
             }
             ToolCallResult::err(format!(
                 "permission_denied: the user denied the subscription to {target}. {}",
-                crate::broker::gate::PERMISSION_GUIDANCE
+                crate::cli::introspect::permission_undo_text()
             ))
         } else {
             self.subscribe_stream(&app, &event);
@@ -3871,6 +3879,22 @@ mod tests {
     use super::*;
     use crate::plexi_ai::broker::AiBrokerResponse;
 
+    #[test]
+    fn turn_prompt_grounds_on_this_turns_tool_results() {
+        let mut system = String::from("agent");
+        push_grounding(&mut system);
+        assert!(system.contains("host.introspect"), "{system}");
+        assert!(system.contains("this turn"), "{system}");
+        assert!(system.contains("not sure"), "{system}");
+        assert!(!system.contains("host.help"), "{system}");
+        assert!(!system.contains("gear"), "{system}");
+        assert!(!system.contains("Cmd+Shift+P"), "{system}");
+        assert!(
+            !system.contains("plexi permissions list"),
+            "the prompt must not pre-seed commands: {system}"
+        );
+    }
+
     /// A `ScopeOrigin` for a tool provider pane in `context_id` — stint 0724
     /// Phase C. Every field but `context_id`/`pane_id` is a deterministic
     /// placeholder never inspected by `evaluate_reach`. `test_app` always
@@ -4177,7 +4201,9 @@ enabled = ["allowed.tool"]
         assert_eq!(seen.len(), 2);
         assert_eq!(
             seen[0].system,
-            "Writer system prompt\n\nCompaction status: No compaction is running."
+            format!(
+                "Writer system prompt\n\n{GROUNDING_RULE}\n\nCompaction status: No compaction is running."
+            )
         );
         assert_eq!(seen[0].model_tier, ModelTier::Medium);
         assert_eq!(

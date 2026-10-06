@@ -1069,7 +1069,7 @@ impl AssistantModel {
                     format!(
                         "{} — {lead}. {}",
                         pending.tool,
-                        crate::broker::gate::PERMISSION_GUIDANCE
+                        crate::cli::introspect::permission_undo_text()
                     ),
                     ToolStatus::Failed,
                 ));
@@ -1847,7 +1847,8 @@ mod tests {
         assert_eq!(row.status, Some(ToolStatus::Failed));
         assert!(row.text.contains("denied by user"));
         assert!(row.text.contains("plexi permissions list"));
-        assert!(row.text.contains("plexi app open permissions"));
+        assert!(row.text.contains("plexi permissions reset"));
+        assert!(!row.text.contains("gear"));
         assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
 
         // Resolving with no pending sheet is a no-op.
