@@ -9,8 +9,10 @@ codes, or session tokens.
 
 Pairing records can outlive this process. When RELAY_STATE_PATH is set, SQLite
 stores host_id, device_id, a hash of the device token, fingerprint, created,
-last_seen, revoked, and a hash of the host token. It never stores a message
-body, a pairing code, or a raw token. Unset, the registry stays in memory.
+last_seen, revoked, a hash of the host token, and queued-envelope metadata
+(request_id, host_id, queued_at, size). It never stores a message body, a
+pairing code, or a raw token. Unset, the registry stays in memory.
+`PairingRegistry.retain` deletes rows older than 30 days.
 
 This process does not deploy itself. See DEPLOY.md for the staging note.
 """
@@ -318,7 +320,8 @@ class DesktopLink:
 _REGISTRY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS hosts (
     host_id TEXT PRIMARY KEY,
-    token_hash TEXT NOT NULL
+    token_hash TEXT NOT NULL,
+    created REAL
 );
 CREATE TABLE IF NOT EXISTS devices (
     device_id TEXT PRIMARY KEY,
@@ -328,6 +331,12 @@ CREATE TABLE IF NOT EXISTS devices (
     created REAL NOT NULL,
     last_seen REAL NOT NULL,
     revoked INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS envelopes (
+    request_id TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL,
+    queued_at REAL NOT NULL,
+    size INTEGER NOT NULL
 );
 """
 
@@ -354,8 +363,19 @@ class PairingRegistry:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(_REGISTRY_SCHEMA)
+        self._migrate()
         self.conn.commit()
         self._tighten()
+
+    def _migrate(self) -> None:
+        """Add columns the original registry shipped without.
+
+        `hosts.created` stays NULL on rows written before this column existed
+        so the first retention pass does not wipe every legacy desktop.
+        """
+        host_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(hosts)")}
+        if "created" not in host_cols:
+            self.conn.execute("ALTER TABLE hosts ADD COLUMN created REAL")
 
     def _tighten(self) -> None:
         for suffix in ("", "-wal", "-shm"):
@@ -367,6 +387,7 @@ class PairingRegistry:
                     raise OSError(f"relay registry {candidate} mode {mode:o} is not private")
 
     def load(self, now: float) -> tuple[dict[str, str], dict[str, Device], dict[str, str]]:
+        self.retain(now)
         hosts = {
             host_id: token_hash
             for host_id, token_hash in self.conn.execute("SELECT host_id, token_hash FROM hosts")
@@ -399,14 +420,88 @@ class PairingRegistry:
             trace("device_expired", device_id=device_id, outcome="idle")
         return hosts, devices, sessions
 
-    def upsert_host(self, host_id: str, token_hash: str) -> None:
+    def upsert_host(self, host_id: str, token_hash: str, created: float | None = None) -> None:
+        """Insert a host. A later upsert refreshes the token hash and leaves `created`."""
+        when = time.time() if created is None else created
         self.conn.execute(
-            "INSERT INTO hosts (host_id, token_hash) VALUES (?, ?) "
+            "INSERT INTO hosts (host_id, token_hash, created) VALUES (?, ?, ?) "
             "ON CONFLICT(host_id) DO UPDATE SET token_hash=excluded.token_hash",
-            (host_id, token_hash),
+            (host_id, token_hash, when),
         )
         self.conn.commit()
         self._tighten()
+
+    def note_envelope(self, request_id: str, host_id: str, queued_at: float, size: int) -> None:
+        """Record that an envelope was queued. The body is not a column."""
+        self.conn.execute(
+            "INSERT INTO envelopes (request_id, host_id, queued_at, size) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(request_id) DO UPDATE SET host_id=excluded.host_id, "
+            "queued_at=excluded.queued_at, size=excluded.size",
+            (request_id, host_id, queued_at, int(size)),
+        )
+        self.conn.commit()
+        self._tighten()
+
+    def retain(self, now: float) -> dict[str, list[str]]:
+        """Delete registry rows and queued-envelope metadata older than 30 days.
+
+        Devices use `last_seen`. Hosts use `created`; a NULL `created` (a row
+        from before that column) is kept. Deleting a host also deletes its
+        devices and envelope metadata. Envelope rows are ids and sizes only.
+        """
+        cutoff = now - DEVICE_IDLE_SECONDS
+        old_devices = [
+            row[0]
+            for row in self.conn.execute("SELECT device_id FROM devices WHERE last_seen < ?", (cutoff,))
+        ]
+        old_hosts = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT host_id FROM hosts WHERE created IS NOT NULL AND created < ?",
+                (cutoff,),
+            )
+        ]
+        cascaded = []
+        for host_id in old_hosts:
+            cascaded.extend(
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT device_id FROM devices WHERE host_id = ?",
+                    (host_id,),
+                )
+            )
+        old_envelopes = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT request_id FROM envelopes WHERE queued_at < ?",
+                (cutoff,),
+            )
+        ]
+        for host_id in old_hosts:
+            old_envelopes.extend(
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT request_id FROM envelopes WHERE host_id = ? AND queued_at >= ?",
+                    (host_id, cutoff),
+                )
+            )
+        for device_id in old_devices:
+            self.conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+        for host_id in old_hosts:
+            self.conn.execute("DELETE FROM devices WHERE host_id = ?", (host_id,))
+            self.conn.execute("DELETE FROM envelopes WHERE host_id = ?", (host_id,))
+            self.conn.execute("DELETE FROM hosts WHERE host_id = ?", (host_id,))
+        for request_id in old_envelopes:
+            self.conn.execute("DELETE FROM envelopes WHERE request_id = ?", (request_id,))
+        self.conn.commit()
+        device_ids = list(dict.fromkeys([*old_devices, *cascaded]))
+        envelope_ids = list(dict.fromkeys(old_envelopes))
+        trace(
+            "retention",
+            outcome="pruned",
+            status=f"h{len(old_hosts)}d{len(device_ids)}e{len(envelope_ids)}",
+        )
+        return {"hosts": old_hosts, "devices": device_ids, "envelopes": envelope_ids}
 
     def upsert_device(self, device: Device) -> None:
         self.conn.execute(
@@ -689,6 +784,7 @@ class Relay:
                 link.alive = False
                 trace("desktop_offline", host_id=host_id, outcome="heartbeat_timeout")
             self._expire_devices_locked(now)
+            self._retain_locked(now)
             self._purge_locked(now)
 
     def purge(self) -> None:
@@ -881,7 +977,22 @@ class Relay:
 
     def _persist_host_locked(self, host_id: str, token_hash: str) -> None:
         if self.registry is not None:
-            self.registry.upsert_host(host_id, token_hash)
+            self.registry.upsert_host(host_id, token_hash, self.now())
+
+    def _retain_locked(self, now: float) -> None:
+        if self.registry is None:
+            return
+        report = self.registry.retain(now)
+        for host_id in report["hosts"]:
+            if host_id not in self.links:
+                self.hosts.pop(host_id, None)
+        for device_id in report["devices"]:
+            device = self.devices.pop(device_id, None)
+            if device is None:
+                continue
+            dead = [token for token, bound in self.sessions.items() if bound == device_id]
+            for token in dead:
+                self.sessions.pop(token, None)
 
     def _persist_device_locked(self, device: Device) -> None:
         if self.registry is not None:
@@ -971,6 +1082,8 @@ class Relay:
             )
             self.deliveries[delivery_id] = delivery
             self.by_request[key] = delivery_id
+            if self.registry is not None:
+                self.registry.note_envelope(request_id, device.host_id, self.now(), len(text))
             self._append(device.device_id, PhoneEvent(0, "user", request_id, text=text))
             self._append(device.device_id, PhoneEvent(0, "receipt", request_id, state="queued"))
             link = self.links.get(device.host_id)

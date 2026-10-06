@@ -790,6 +790,91 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(reloaded.device_summaries("host-idle"), [])
         self.assertIsNone(reloaded.device_for_token(token))
 
+    def test_retention_drops_rows_older_than_thirty_days(self) -> None:
+        clock = Clock()
+        path = str(Path(os.environ.get("TMPDIR", "/tmp")) / f"relay-retain-{os.getpid()}.sqlite")
+        self.addCleanup(lambda: _unlink_sqlite(path))
+        box = relay.Relay(clock=clock, public_origin="http://127.0.0.1", state_path=path)
+        registry = box.registry
+        assert registry is not None
+        now = clock()
+        old = now - relay.DEVICE_IDLE_SECONDS - 10
+        fresh = now - 3600
+        edge = now - relay.DEVICE_IDLE_SECONDS
+        registry.upsert_host("host-old", "hash-old", created=old)
+        registry.upsert_host("host-new", "hash-new", created=fresh)
+        registry.upsert_host("host-edge", "hash-edge", created=edge)
+        registry.conn.execute(
+            "INSERT INTO hosts (host_id, token_hash, created) VALUES ('host-legacy', 'hash-legacy', NULL)"
+        )
+        registry.conn.commit()
+        registry.upsert_device(
+            relay.Device(
+                device_id="dev-old",
+                host_id="host-new",
+                label="phone",
+                fingerprint="fp-old",
+                created=old,
+                last_seen=old,
+                token_hash="th-old",
+            )
+        )
+        registry.upsert_device(
+            relay.Device(
+                device_id="dev-new",
+                host_id="host-new",
+                label="phone",
+                fingerprint="fp-new",
+                created=fresh,
+                last_seen=fresh,
+                token_hash="th-new",
+            )
+        )
+        registry.upsert_device(
+            relay.Device(
+                device_id="dev-edge",
+                host_id="host-new",
+                label="phone",
+                fingerprint="fp-edge",
+                created=edge,
+                last_seen=edge,
+                token_hash="th-edge",
+            )
+        )
+        registry.note_envelope("req-old", "host-new", old, len(CANARY))
+        registry.note_envelope("req-new", "host-new", fresh, 4)
+        registry.note_envelope("req-edge", "host-new", edge, 4)
+        columns = {row[1] for row in registry.conn.execute("PRAGMA table_info(envelopes)")}
+        self.assertEqual(columns, {"request_id", "host_id", "queued_at", "size"})
+        logs = LogCapture()
+        relay.install_log_guard()
+        relay.log.addHandler(logs)
+        self.addCleanup(relay.log.removeHandler, logs)
+        report = registry.retain(now)
+        self.assertIn("host-old", report["hosts"])
+        self.assertIn("dev-old", report["devices"])
+        self.assertIn("req-old", report["envelopes"])
+        self.assertNotIn("host-new", report["hosts"])
+        self.assertNotIn("host-edge", report["hosts"])
+        self.assertNotIn("host-legacy", report["hosts"])
+        hosts = {row[0] for row in registry.conn.execute("SELECT host_id FROM hosts")}
+        devices = {row[0] for row in registry.conn.execute("SELECT device_id FROM devices")}
+        envelopes = {row[0] for row in registry.conn.execute("SELECT request_id FROM envelopes")}
+        self.assertEqual(hosts, {"host-new", "host-edge", "host-legacy"})
+        self.assertEqual(devices, {"dev-new", "dev-edge"})
+        self.assertEqual(envelopes, {"req-new", "req-edge"})
+        stored = Path(path).read_bytes()
+        self.assertNotIn(CANARY.encode(), stored)
+        self.assertNotIn(CANARY, logs.text)
+        self.assertTrue(any(line.startswith("event=retention") for line in logs.lines))
+        reloaded = relay.Relay(clock=clock, public_origin="http://127.0.0.1", state_path=path)
+        self.assertIn("host-new", reloaded.hosts)
+        self.assertNotIn("host-old", reloaded.hosts)
+        self.assertEqual(
+            {device.device_id for device in reloaded.devices.values()},
+            {"dev-new", "dev-edge"},
+        )
+
     def test_unset_state_path_stays_in_memory(self) -> None:
         box = relay.Relay(public_origin="http://127.0.0.1")
         self.assertIsNone(box.registry)
