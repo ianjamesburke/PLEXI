@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.8"
+skill_version: "5.0.9"
 plexi_version: "0.3.5"
 last_verified: "2026-10-06"
 ---
@@ -69,7 +69,7 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `plexi assistant permission list`, `plexi assistant permission show <id>`.
   When a tool call returns permission_required, print the pending_request_id
   and wait for the person at the desktop to decide. Do not approve, deny,
-  or widen a grant from the terminal.
+  or widen a grant from the terminal. `assistant permission resolve`, `needs-you resolve`, and `permissions allow` are refused and do not grant.
 - **MCP servers** — bridge a configured MCP server's tools onto the assistant's
   connector plane. Servers are declared in the channel profile's
   `mcp_servers.toml` and named by id; the host resolves the command, so an app
