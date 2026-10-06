@@ -4,9 +4,8 @@
 //! the service to email a sign-in link, then polls until the user clicks it.
 //! This is a plain network client — it never touches the host socket. `logout`
 //! revokes the token server-side (best effort) and clears the local session;
-//! `status` reads the on-disk session. An account is only ever needed to
-//! publish, buy a paid app, or use the AI subscription — never to install a
-//! free app.
+//! `status` reads the on-disk session. Local use does not need an account. A
+//! session only links this desktop to relay and cloud features.
 
 use crate::app::account::{
     account_provider, device_poll, device_start, revoke_token, AccountError, AccountSession,
@@ -36,8 +35,8 @@ fn status_lines(session: Option<&AccountSession>) -> Vec<String> {
             format!("  since:    {}", s.issued_at),
         ],
         None => vec![
-            "Not logged in. Free apps install without an account.".to_string(),
-            "Run `plexi account login` to publish or buy paid apps.".to_string(),
+            "Not logged in. Local use does not need an account.".to_string(),
+            "An account only links this desktop to relay and cloud features. Run `plexi account login` to sign in.".to_string(),
         ],
     }
 }
