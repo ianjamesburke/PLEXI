@@ -396,7 +396,7 @@ PY
   for pane_id in $NEW_IDS; do
     CAPTURE+=$'\n'"$(cli pane capture "$pane_id" --plain 2>/dev/null || true)"
   done
-  if printf '%s\n' "$CAPTURE" | python3 -c 'import sys; raise SystemExit(0 if sys.stdin.read().count("agent_cannot_approve") >= 2 else 1)'; then
+  if printf '%s\n' "$CAPTURE" | python3 -c 'import sys; text="".join(sys.stdin.read().split()); raise SystemExit(0 if text.count("agent_cannot_approve") >= 2 else 1)'; then
     FOUND=1
     break
   fi
