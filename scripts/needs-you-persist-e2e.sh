@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Installed-binary check: a pending approval survives a host restart with the
-# same id, and approving it afterwards reports outcome_unknown (the original
-# run is gone) rather than dropping the item. A file an agent writes into the
-# profile is not a grant.
+# same id. A terminal resolve, including one after restart, does not grant it
+# and the row stays open. A file an agent writes into the profile is not a grant.
 set -euo pipefail
+
+# The journal HMAC is the host seal key. A private session bus is where that
+# key is stored on Linux. Without it the queue file is never written.
+if [[ "$(uname -s)" == "Linux" && -z "${NEEDS_YOU_PERSIST_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- env NEEDS_YOU_PERSIST_INNER=1 "$0" "$@"
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
@@ -24,8 +29,9 @@ fi
 export PLEXI_CHANNEL="needs-you-persist-e2e"
 unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING || true
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-ubuntu}"
-mkdir -p "$XDG_RUNTIME_DIR"
+export XDG_RUNTIME_DIR="$WORK/runtime"
+mkdir -p "$XDG_RUNTIME_DIR/keyring"
+chmod 700 "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 
 # A channel-named binary (`plexi-pr-N`) ignores PLEXI_CHANNEL and uses its own
 # profile. The bare binary follows PLEXI_CHANNEL.
@@ -178,16 +184,15 @@ host, profile, pending = sys.argv[1:]
 mode = stat.S_IMODE(os.stat(host).st_mode)
 if mode != 0o700:
     raise SystemExit(f"host dir mode is {oct(mode)}")
-for name in ("needs-you.json", "seal.key"):
-    file_mode = stat.S_IMODE(os.stat(os.path.join(host, name)).st_mode)
-    if file_mode != 0o600:
-        raise SystemExit(f"{name} mode is {oct(file_mode)}")
+journal_path = os.path.join(host, "needs-you.json")
+journal_mode = stat.S_IMODE(os.stat(journal_path).st_mode)
+if journal_mode != 0o600:
+    raise SystemExit(f"needs-you.json mode is {oct(journal_mode)}")
+if os.path.exists(os.path.join(host, "seal.key")):
+    raise SystemExit("seal key must live in the host seal store, not beside the journal")
 if os.path.exists(os.path.join(profile, "needs-you.json")):
     raise SystemExit("queue was written at the profile root")
-journal = open(os.path.join(host, "needs-you.json"), "rb").read()
-key = open(os.path.join(host, "seal.key"), "rb").read()
-if key in journal:
-    raise SystemExit("seal key is inside the journal")
+journal = open(journal_path, "rb").read()
 if pending.encode() not in journal:
     raise SystemExit("journal does not contain the pending id")
 PY
@@ -243,40 +248,35 @@ if text.strip():
         raise SystemExit(f"forged id resolved: {body}")
 PY
 
-echo "resolving $ID after restart"
-RESOLVE="$("$BIN" needs-you resolve "$ID" --approve)"
+echo "terminal resolve after restart must not grant"
+set +e
+RESOLVE="$("$BIN" needs-you resolve "$ID" --approve 2>"$WORK/resolve.err")"
+RESOLVE_CODE=$?
+set -e
 printf '%s\n' "$RESOLVE" >"$WORK/resolve.json"
-python3 - "$WORK/resolve.json" "$ID" <<'PY'
+python3 - "$WORK/resolve.json" "$RESOLVE_CODE" "$ID" <<'PY'
 import json, sys
-body = json.load(open(sys.argv[1]))
-if body.get("ok") is not True or body.get("id") != sys.argv[2]:
-    raise SystemExit(f"resolve failed: {body}")
-if body.get("resolution") != "approved":
-    raise SystemExit(f"resolve was not approved: {body}")
-if body.get("run_outcome") != "outcome_unknown":
-    raise SystemExit(f"restarted run must report outcome_unknown, got {body}")
-if body.get("already") is True:
-    raise SystemExit(f"first resolve was already settled: {body}")
+text, code, want = open(sys.argv[1]).read(), int(sys.argv[2]), sys.argv[3]
+body = {}
+start = text.find("{")
+if start >= 0:
+    try:
+        body = json.loads(text[start:])
+    except json.JSONDecodeError:
+        body = {}
+if code == 0 and body.get("ok") is True and body.get("resolution") == "approved" and body.get("id") == want:
+    raise SystemExit(f"terminal resolve granted after restart: {text}")
+print("terminal resolve did not grant")
 PY
 
-echo "item is closed, not dropped"
+echo "item stays open after the refused resolve"
 AFTER="$("$BIN" needs-you list --json)"
 python3 - "$AFTER" "$ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
-ids = [item["id"] for item in body.get("items", [])]
-if sys.argv[2] in ids:
-    raise SystemExit(f"resolved id still open: {body}")
-PY
-
-echo "checking audit"
-AUDIT="$PROFILE/permission-audit.jsonl"
-python3 - "$AUDIT" "$ID" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-needs = [row for row in rows if row.get("kind") == "needs_you" and row.get("operation_id") == sys.argv[2]]
-if not any(row.get("decision") == "outcome_unknown" for row in needs):
-    raise SystemExit(f"no outcome_unknown audit row for {sys.argv[2]}: {needs}")
+item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
+if item is None or item.get("resolution") is not None:
+    raise SystemExit(f"pending item was settled from the terminal: {body}")
 PY
 
 echo "overwriting the sealed queue from the pane"

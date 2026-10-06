@@ -109,6 +109,9 @@ arboard = "3"
 # Declared explicitly rather than inherited from another crate's default set,
 # so removing an unrelated dependency cannot silently take the window away.
 eframe = { version = "0.34.3", default-features = false, features = ["x11", "wayland"] }
+# Session-bus client for the host seal key (Secret Service). Tests use an
+# in-memory mock and do not construct this. No plaintext fallback.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 # Linux wgpu backends. The base entry names only `metal`; without these
 # `create_surface` reports `NoAvailableAdapter`. `gles` is the fallback for
 # machines with no Vulkan ICD — Mesa lavapipe covers the headless case.

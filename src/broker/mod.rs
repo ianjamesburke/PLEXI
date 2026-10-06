@@ -10,7 +10,9 @@
 //! `/permissions` UI surface come later; their target types exist as data only.
 
 pub mod gate;
+mod host_key;
 mod needs_you_store;
+mod seal;
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
