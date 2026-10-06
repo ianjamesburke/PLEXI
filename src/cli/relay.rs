@@ -37,6 +37,12 @@ struct Identity {
     label: String,
 }
 
+struct PairedDevice {
+    device_id: String,
+    label: String,
+    fingerprint: String,
+}
+
 struct PendingTurn {
     delivery_id: String,
     request_id: String,
@@ -56,7 +62,7 @@ struct Session {
     identity: Identity,
     dispatch: Dispatch,
     pairing_id: Option<String>,
-    device_id: Option<String>,
+    devices: Vec<PairedDevice>,
     control: String,
     queued: VecDeque<PendingTurn>,
     inflight: Option<Inflight>,
@@ -91,6 +97,10 @@ pub fn relay_revoke_cli(device_id: &str) -> i32 {
     control_roundtrip(json!({"type": "revoke", "device_id": device_id}))
 }
 
+pub fn relay_pair_cli() -> i32 {
+    control_roundtrip(json!({"type": "pair"}))
+}
+
 pub fn relay_status_cli() -> i32 {
     let path = status_path();
     match fs::read_to_string(&path) {
@@ -109,7 +119,7 @@ fn run_session(url: &str, dispatch: Dispatch) -> Result<(), String> {
     let parsed = relay_ws::parse_relay_url(url)?;
     fs::create_dir_all(crate::config::config_dir())
         .map_err(|error| format!("relay profile: {error}"))?;
-    let identity = load_or_create_identity()?;
+    let (identity, devices) = load_identity(crate::workspace::secrets::system_store())?;
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|error| format!("relay control: {error}"))?;
     let control = listener
@@ -124,7 +134,7 @@ fn run_session(url: &str, dispatch: Dispatch) -> Result<(), String> {
         identity,
         dispatch,
         pairing_id: None,
-        device_id: None,
+        devices,
         control: control.clone(),
         queued: VecDeque::new(),
         inflight: None,
@@ -235,8 +245,23 @@ fn handle_relay_message(
         .unwrap_or("");
     match kind {
         "hello_ok" => {
-            log::info!("relay: hello accepted host_id={}", session.identity.host_id);
-            send_json(conn, &json!({"type": "pair_start"}))?;
+            session.devices = devices_from_message(message);
+            persist_record(&session.identity, &session.devices)?;
+            log::info!(
+                "relay: hello accepted host_id={} devices={}",
+                session.identity.host_id,
+                session.devices.len()
+            );
+            if session.devices.is_empty() {
+                send_json(conn, &json!({"type": "pair_start"}))?;
+            } else {
+                write_status(session, "paired", None, None, None)?;
+                log::info!(
+                    "relay: resumed paired devices host_id={} devices={}",
+                    session.identity.host_id,
+                    session.devices.len()
+                );
+            }
         }
         "pair_code" => {
             let pairing_id = message
@@ -290,18 +315,30 @@ fn handle_relay_message(
                 .get("device_id")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
-            session.device_id = Some(device_id.to_string());
-            write_status(
-                session,
-                "confirmed",
-                None,
-                None,
-                message.get("fingerprint").and_then(|value| value.as_str()),
-            )?;
+            let fingerprint = message
+                .get("fingerprint")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !device_id.is_empty()
+                && !session
+                    .devices
+                    .iter()
+                    .any(|device| device.device_id == device_id)
+            {
+                session.devices.push(PairedDevice {
+                    device_id: device_id.to_string(),
+                    label: "phone".to_string(),
+                    fingerprint: fingerprint.clone(),
+                });
+            }
+            persist_record(&session.identity, &session.devices)?;
+            write_status(session, "confirmed", None, None, Some(&fingerprint))?;
             println!("Paired device {device_id}. Revoke with: plexi relay revoke {device_id}");
             log::info!(
-                "relay: phone paired host_id={} device_id={device_id}",
-                session.identity.host_id
+                "relay: phone paired host_id={} device_id={device_id} devices={}",
+                session.identity.host_id,
+                session.devices.len()
             );
         }
         "revoked" => {
@@ -309,14 +346,21 @@ fn handle_relay_message(
                 .get("device_id")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
-            if session.device_id.as_deref() == Some(device_id) {
-                session.device_id = None;
-            }
-            write_status(session, "revoked", None, None, None)?;
+            session
+                .devices
+                .retain(|device| device.device_id != device_id);
+            persist_record(&session.identity, &session.devices)?;
+            let phase = if session.devices.is_empty() {
+                "revoked"
+            } else {
+                "paired"
+            };
+            write_status(session, phase, None, None, None)?;
             println!("Revoked {device_id}");
             log::info!(
-                "relay: phone revoked host_id={} device_id={device_id}",
-                session.identity.host_id
+                "relay: phone revoked host_id={} device_id={device_id} devices={}",
+                session.identity.host_id,
+                session.devices.len()
             );
         }
         "deliver" => {
@@ -653,6 +697,15 @@ fn apply_control(
                 );
             }
         }
+        "pair" => {
+            if let Some(conn) = conn {
+                send_json(conn, &json!({"type": "pair_start"}))?;
+                log::info!(
+                    "relay: additional pairing requested host_id={}",
+                    session.identity.host_id
+                );
+            }
+        }
         "stop" => {
             STOP.store(true, Ordering::SeqCst);
         }
@@ -747,8 +800,17 @@ fn write_status(
     if let Some(pairing_id) = &session.pairing_id {
         value["pairing_id"] = json!(pairing_id);
     }
-    if let Some(device_id) = &session.device_id {
-        value["device_id"] = json!(device_id);
+    value["devices"] = json!(session
+        .devices
+        .iter()
+        .map(|device| json!({
+            "device_id": device.device_id,
+            "label": device.label,
+            "fingerprint": device.fingerprint,
+        }))
+        .collect::<Vec<_>>());
+    if let Some(device) = session.devices.last() {
+        value["device_id"] = json!(device.device_id);
     }
     if let Some(code) = code {
         value["code"] = json!(code);
@@ -787,24 +849,50 @@ fn write_status(
     )
 }
 
-fn load_or_create_identity() -> Result<Identity, String> {
+fn token_account(host_id: &str) -> String {
+    format!("plexi:user:relay-host-token:{host_id}")
+}
+
+fn load_identity(
+    store: &dyn crate::workspace::secrets::SecretStore,
+) -> Result<(Identity, Vec<PairedDevice>), String> {
     let path = identity_path();
     if let Ok(text) = fs::read_to_string(&path) {
         if let Ok(value) = serde_json::from_str::<Value>(&text) {
-            if let (Some(host_id), Some(host_token)) = (
-                value.get("host_id").and_then(|item| item.as_str()),
-                value.get("host_token").and_then(|item| item.as_str()),
-            ) {
+            if let Some(host_id) = value.get("host_id").and_then(|item| item.as_str()) {
                 let label = value
                     .get("label")
                     .and_then(|item| item.as_str())
                     .unwrap_or("desktop")
                     .to_string();
-                return Ok(Identity {
-                    host_id: host_id.to_string(),
-                    host_token: host_token.to_string(),
-                    label,
-                });
+                let devices = devices_from_message(&value);
+                let account = token_account(host_id);
+                if let Some(file_token) = value.get("host_token").and_then(|item| item.as_str()) {
+                    store
+                        .set(&account, file_token)
+                        .map_err(|error| format!("relay keychain: {error}"))?;
+                    let identity = Identity {
+                        host_id: host_id.to_string(),
+                        host_token: file_token.to_string(),
+                        label,
+                    };
+                    persist_record(&identity, &devices)?;
+                    log::info!("relay: moved host token into the keychain host_id={host_id}");
+                    return Ok((identity, devices));
+                }
+                if let Some(token) = store.get(&account) {
+                    return Ok((
+                        Identity {
+                            host_id: host_id.to_string(),
+                            host_token: token.to_string(),
+                            label,
+                        },
+                        devices,
+                    ));
+                }
+                return Err(format!(
+                    "relay host token for {host_id} is not in the keychain"
+                ));
             }
         }
     }
@@ -813,17 +901,59 @@ fn load_or_create_identity() -> Result<Identity, String> {
         host_token: uuid::Uuid::new_v4().to_string(),
         label: machine_label(),
     };
-    let body = json!({
-        "host_id": identity.host_id,
-        "host_token": identity.host_token,
-        "label": identity.label,
-    });
-    write_private(&path, &body.to_string())?;
+    store
+        .set(&token_account(&identity.host_id), &identity.host_token)
+        .map_err(|error| format!("relay keychain: {error}"))?;
+    persist_record(&identity, &[])?;
     log::info!(
         "relay: created desktop identity host_id={}",
         identity.host_id
     );
-    Ok(identity)
+    Ok((identity, Vec::new()))
+}
+
+fn persist_record(identity: &Identity, devices: &[PairedDevice]) -> Result<(), String> {
+    let body = json!({
+        "host_id": identity.host_id,
+        "label": identity.label,
+        "devices": devices.iter().map(|device| json!({
+            "device_id": device.device_id,
+            "label": device.label,
+            "fingerprint": device.fingerprint,
+        })).collect::<Vec<_>>(),
+    });
+    write_private(&identity_path(), &body.to_string())
+}
+
+fn devices_from_message(message: &Value) -> Vec<PairedDevice> {
+    message
+        .get("devices")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let device_id = item.get("device_id").and_then(|value| value.as_str())?;
+                    if device_id.is_empty() {
+                        return None;
+                    }
+                    Some(PairedDevice {
+                        device_id: device_id.to_string(),
+                        label: item
+                            .get("label")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("phone")
+                            .to_string(),
+                        fingerprint: item
+                            .get("fingerprint")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn configured_url() -> Option<String> {
@@ -918,10 +1048,37 @@ fn machine_label() -> String {
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
+    use std::sync::Mutex;
     use std::time::Duration;
+
+    /// `STOP` and the in-memory test keychain are process-global.
+    static SESSION_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn host_token_moves_out_of_the_profile_file() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let store = crate::workspace::secrets::InMemoryKeychain::new();
+        fs::write(
+            profile.path().join(IDENTITY_FILE),
+            r#"{"host_id":"host-legacy","host_token":"secret-token","label":"desk"}"#,
+        )
+        .unwrap();
+        let (identity, devices) = load_identity(&store).unwrap();
+        assert_eq!(identity.host_id, "host-legacy");
+        assert_eq!(identity.host_token, "secret-token");
+        assert!(devices.is_empty());
+        let text = fs::read_to_string(profile.path().join(IDENTITY_FILE)).unwrap();
+        assert!(!text.contains("secret-token"));
+        assert!(!text.contains("host_token"));
+        let (again, _) = load_identity(&store).unwrap();
+        assert_eq!(again.host_id, "host-legacy");
+        assert_eq!(again.host_token, "secret-token");
+    }
 
     #[test]
     fn echo_round_trip_correlates_request_and_conversation() {
+        let _session = SESSION_TEST.lock().unwrap();
         let profile = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         STOP.store(false, Ordering::SeqCst);
@@ -1016,6 +1173,188 @@ mod tests {
         let _ = worker.join();
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn reconnect_resumes_the_paired_device_without_a_new_code() {
+        let _session = SESSION_TEST.lock().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        STOP.store(false, Ordering::SeqCst);
+        let port = free_port();
+        let mut child = Command::new("python3")
+            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("services/relay/relay.py"))
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("python3");
+        wait_until(Duration::from_secs(5), || health(port));
+        let url = format!("ws://127.0.0.1:{port}/v1/desktop");
+        let profile_path = profile.path().to_path_buf();
+        let worker = thread::spawn({
+            let url = url.clone();
+            let profile_path = profile_path.clone();
+            move || {
+                let _guard = crate::config::set_test_profile_dir(profile_path);
+                run_session(&url, Dispatch::Echo).expect("session");
+            }
+        });
+        let status = wait_status(profile.path(), "code");
+        let code = status["code"].as_str().unwrap().to_string();
+        let pairing_id = status["pairing_id"].as_str().unwrap().to_string();
+        let (pair_status, _, _) = http(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/pair"),
+            Some(json!({"code": code, "label": "first"})),
+            None,
+        );
+        assert_eq!(pair_status, 202);
+        let _ = wait_status(profile.path(), "fingerprint");
+        assert_eq!(
+            control_roundtrip(json!({"type": "confirm", "pairing_id": pairing_id})),
+            0
+        );
+        let mut cookie = None;
+        for _ in 0..50 {
+            let (status, body, token) = http(
+                "GET",
+                &format!("http://127.0.0.1:{port}/api/pair/{pairing_id}"),
+                None,
+                None,
+            );
+            if status == 200 && body["status"] == "confirmed" {
+                cookie = token;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let cookie = cookie.expect("cookie");
+        let device_id = wait_status(profile.path(), "device_id")["device_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(control_roundtrip(json!({"type": "pair"})), 0);
+        let second = wait_for_phase(profile.path(), "waiting_for_phone");
+        let second_code = second["code"].as_str().unwrap().to_string();
+        let second_pairing = second["pairing_id"].as_str().unwrap().to_string();
+        assert_ne!(second_code, code);
+        let (second_status, _, _) = http(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/pair"),
+            Some(json!({"code": second_code, "label": "second"})),
+            None,
+        );
+        assert_eq!(second_status, 202);
+        let _ = wait_for_phase(profile.path(), "pending_confirm");
+        assert_eq!(
+            control_roundtrip(json!({"type": "confirm", "pairing_id": second_pairing})),
+            0
+        );
+        let mut second_cookie = None;
+        for _ in 0..50 {
+            let (status, body, token) = http(
+                "GET",
+                &format!("http://127.0.0.1:{port}/api/pair/{second_pairing}"),
+                None,
+                None,
+            );
+            if status == 200 && body["status"] == "confirmed" {
+                second_cookie = token;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let second_cookie = second_cookie.expect("second cookie");
+        assert_eq!(control_roundtrip(json!({"type": "stop"})), 0);
+        worker.join().unwrap();
+        STOP.store(false, Ordering::SeqCst);
+        let worker = thread::spawn(move || {
+            let _guard = crate::config::set_test_profile_dir(profile_path);
+            run_session(&url, Dispatch::Echo).expect("resume");
+        });
+        let resumed = wait_for_phase(profile.path(), "paired");
+        let listed = resumed["devices"].as_array().unwrap();
+        let ids: Vec<&str> = listed
+            .iter()
+            .filter_map(|device| device["device_id"].as_str())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&device_id.as_str()));
+        let identity = fs::read_to_string(profile.path().join(IDENTITY_FILE)).unwrap();
+        assert!(!identity.contains("host_token"));
+        let (turn_status, _, _) = http(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/turns"),
+            Some(json!({
+                "schema_version": 1,
+                "request_id": "req-resume",
+                "content": [{"type": "text", "text": "still paired"}],
+            })),
+            Some(&cookie),
+        );
+        assert_eq!(turn_status, 202);
+        let (other_status, _, _) = http(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/turns"),
+            Some(json!({
+                "schema_version": 1,
+                "request_id": "req-other",
+                "content": [{"type": "text", "text": "second phone"}],
+            })),
+            Some(&second_cookie),
+        );
+        assert_eq!(other_status, 202);
+        assert_eq!(
+            control_roundtrip(json!({"type": "revoke", "device_id": device_id})),
+            0
+        );
+        thread::sleep(Duration::from_millis(200));
+        let (revoked_status, _, _) = http(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/turns"),
+            Some(json!({
+                "schema_version": 1,
+                "request_id": "req-revoked",
+                "content": [{"type": "text", "text": "gone"}],
+            })),
+            Some(&cookie),
+        );
+        assert_eq!(revoked_status, 401);
+        let (kept_status, _, _) = http(
+            "POST",
+            &format!("http://127.0.0.1:{port}/api/turns"),
+            Some(json!({
+                "schema_version": 1,
+                "request_id": "req-kept",
+                "content": [{"type": "text", "text": "kept"}],
+            })),
+            Some(&second_cookie),
+        );
+        assert_eq!(kept_status, 202);
+        let _ = control_roundtrip(json!({"type": "stop"}));
+        let _ = worker.join();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    fn wait_for_phase(profile: &Path, phase: &str) -> Value {
+        let path = profile.join(STATUS_FILE);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Ok(text) = fs::read_to_string(&path) {
+                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                    if value.get("phase").and_then(|item| item.as_str()) == Some(phase) {
+                        return value;
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(30));
+        }
+        panic!("status never reached {phase} at {}", path.display());
     }
 
     fn free_port() -> u16 {

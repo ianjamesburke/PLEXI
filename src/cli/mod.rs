@@ -1291,7 +1291,9 @@ pub use pane::{
     pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli,
     pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli, pane_state_cli, pane_status_cli,
 };
-pub use relay::{relay_confirm_cli, relay_connect_cli, relay_revoke_cli, relay_status_cli};
+pub use relay::{
+    relay_confirm_cli, relay_connect_cli, relay_pair_cli, relay_revoke_cli, relay_status_cli,
+};
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;

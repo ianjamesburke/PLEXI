@@ -145,6 +145,7 @@ relay
 relay connect [--url <relay>]
 relay confirm [pairing-id]
 relay revoke <device-id>
+relay pair
 relay status
 assistant send
   --text --request-id --pane-id --context-id --json --conversation --desktop --status-for

@@ -319,6 +319,8 @@ pub enum RelayCmd {
         /// Device id printed when the phone was confirmed.
         device_id: String,
     },
+    /// Start a pairing code for another phone. Phones already paired stay paired.
+    Pair,
     /// Print the desktop's relay status.
     Status,
 }

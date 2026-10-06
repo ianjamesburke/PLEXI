@@ -520,6 +520,20 @@ class Relay:
                 return None
             return device
 
+    def device_summaries(self, host_id: str) -> list[dict]:
+        """Paired phones this desktop already has. A reconnect uses this list
+        instead of minting a new pairing."""
+        with self.lock:
+            return [
+                {
+                    "device_id": device.device_id,
+                    "label": device.label,
+                    "fingerprint": device.fingerprint,
+                }
+                for device in self.devices.values()
+                if device.host_id == host_id and not device.revoked
+            ]
+
     def status_for(self, device: Device) -> dict:
         online = self.desktop_online(device.host_id)
         return {
@@ -1024,7 +1038,16 @@ def serve_desktop_socket(sock: socket.socket, relay: Relay) -> None:
                 if link is None:
                     ws_send(sock, json.dumps({"type": "error", "error": "hello_rejected"}).encode())
                     break
-                ws_send(sock, json.dumps({"type": "hello_ok", "host_id": host_id}).encode())
+                ws_send(
+                    sock,
+                    json.dumps(
+                        {
+                            "type": "hello_ok",
+                            "host_id": host_id,
+                            "devices": relay.device_summaries(host_id),
+                        }
+                    ).encode(),
+                )
                 continue
             relay.note_seen(link)
             reply = handle_desktop_message(relay, host_id, message)

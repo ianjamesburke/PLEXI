@@ -138,6 +138,9 @@ class Desktop:
         hello = self.recv()
         if hello.get("type") != "hello_ok":
             raise AssertionError(hello)
+        if not isinstance(hello.get("devices"), list):
+            raise AssertionError(hello)
+        self.devices = hello["devices"]
 
     def send(self, message: dict) -> None:
         _ws_send(self.sock, json.dumps(message).encode())
@@ -235,6 +238,54 @@ class RelayHttpTest(unittest.TestCase):
         self.assertEqual(status, 401, after)
         self.assertEqual(len(self.relay.devices), 1)
         self.assertTrue(self.relay.devices[confirmed["device_id"]].revoked)
+
+    def test_reconnect_lists_the_same_device_and_keeps_the_cookie(self) -> None:
+        desk = Desktop(self.port)
+        cookie = self._pair(desk)
+        device_id = self.relay.device_summaries("host-1")[0]["device_id"]
+        desk.close()
+        again = Desktop(self.port)
+        self.addCleanup(again.close)
+        self.assertEqual([item["device_id"] for item in again.devices], [device_id])
+        status, queued, _ = _http(
+            "POST",
+            f"{self.base}/api/turns",
+            {"schema_version": 1, "request_id": "req-resume", "content": [{"type": "text", "text": "still paired"}]},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 202, queued)
+
+    def test_two_devices_and_revoking_one_leaves_the_other(self) -> None:
+        desk = Desktop(self.port)
+        self.addCleanup(desk.close)
+        first = self._pair(desk)
+        desk.send({"type": "pair_start"})
+        issued = desk.recv()
+        status, pending, _ = _http("POST", f"{self.base}/api/pair", {"code": issued["code"], "label": "tablet"})
+        self.assertEqual(status, 202, pending)
+        desk.recv()  # pair_pending
+        desk.send({"type": "pair_confirm", "pairing_id": issued["pairing_id"]})
+        confirmed = desk.recv()
+        _, _, second = _http("GET", f"{self.base}/api/pair/{issued['pairing_id']}")
+        self.assertIsNotNone(second)
+        self.assertEqual(len(self.relay.device_summaries("host-1")), 2)
+        desk.send({"type": "revoke", "device_id": confirmed["device_id"]})
+        desk.recv()
+        status, rejected, _ = _http(
+            "POST",
+            f"{self.base}/api/turns",
+            {"schema_version": 1, "request_id": "req-revoked", "content": [{"type": "text", "text": "nope"}]},
+            cookie=second,
+        )
+        self.assertEqual(status, 401, rejected)
+        status, kept, _ = _http(
+            "POST",
+            f"{self.base}/api/turns",
+            {"schema_version": 1, "request_id": "req-kept", "content": [{"type": "text", "text": "still here"}]},
+            cookie=first,
+        )
+        self.assertEqual(status, 202, kept)
+        self.assertEqual(len(self.relay.device_summaries("host-1")), 1)
 
     def test_message_round_trip_and_desktop_offline(self) -> None:
         desk = Desktop(self.port)
