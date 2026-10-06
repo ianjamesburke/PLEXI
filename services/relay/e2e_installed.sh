@@ -79,6 +79,10 @@ unset PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING PLEXI_SOCK
 export PLEXI_CHANNEL="pr-${PR}"
 
 "$BIN" host stop >/dev/null 2>&1 || true
+# A previous run leaves the host owning the socket. It would spend the new
+# backoff while this script is still building the relay, and the pairing code
+# would show up late.
+"$BIN" relay disable >/dev/null 2>&1 || true
 if "$BIN" host start --pane 'cwd=/tmp' --timeout-secs 30 >"$LOG.host" 2>&1; then
   pass "host start"
 else
@@ -140,7 +144,7 @@ CONNECT_PID=$!
 STATUS="$PROFILE/relay-status.json"
 CODE=""
 PAIRING=""
-for _ in $(seq 1 80); do
+for _ in $(seq 1 200); do
   if [[ -f "$STATUS" ]]; then
     CODE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("code") or "")' "$STATUS")"
     PAIRING="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pairing_id") or "")' "$STATUS")"
