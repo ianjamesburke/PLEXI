@@ -117,8 +117,11 @@ waits for the old process to exit before launching the recorded active generatio
 ## Release selection and publication
 
 `release::accepts` is the shared policy: stable accepts stable, beta accepts beta
-and stable, alpha accepts alpha, beta and stable. Selection paginates releases,
-orders valid tags semantically, excludes drafts, and requires both the correct
+and stable, alpha accepts alpha, beta and stable. Alpha automatic selection gives
+alpha prereleases priority, then beta prereleases, before stable fallback releases;
+this prevents a same-series stable tag from demoting an installed alpha prerelease.
+An explicit tag remains exact. Selection paginates releases, orders candidates
+semantically within that policy, excludes drafts, and requires both the correct
 channel/platform archive and checksum. The installation channel stays fixed.
 
 Required platforms are macOS Apple Silicon, Linux x64 and Windows x64. macOS

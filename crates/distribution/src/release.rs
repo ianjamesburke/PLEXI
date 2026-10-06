@@ -36,7 +36,11 @@ pub fn validate_channel(channel: &str) -> Result<()> {
 }
 
 pub fn normalized_channel(channel: &str) -> &str {
-    if channel == "main" { "stable" } else { channel }
+    if channel == "main" {
+        "stable"
+    } else {
+        channel
+    }
 }
 pub fn command_name(channel: &str) -> String {
     let channel = normalized_channel(channel);
@@ -94,6 +98,37 @@ pub fn accepts(channel: &str, tag: &str, prerelease: bool) -> bool {
         _ => false,
     }
 }
+
+/// The alpha installer consumes alpha builds first. A stable package can be
+/// published with alpha assets so it remains an eligible fallback, but it must
+/// not outrank an alpha (or beta) prerelease merely because SemVer orders a
+/// final release above its prerelease.
+fn alpha_preference(tag: &str) -> u8 {
+    let Some(version) = version(tag) else {
+        return 0;
+    };
+    match version.pre.as_str().split_once('.') {
+        Some(("alpha", number)) if number.parse::<u64>().is_ok() => 2,
+        Some(("beta", number)) if number.parse::<u64>().is_ok() => 1,
+        _ => 0,
+    }
+}
+
+fn same_release_series(left: &semver::Version, right: &semver::Version) -> bool {
+    (left.major, left.minor, left.patch) == (right.major, right.minor, right.patch)
+}
+
+fn is_same_series_alpha_demotion(
+    channel: &str,
+    current: &semver::Version,
+    next: &semver::Version,
+) -> bool {
+    normalized_channel(channel) == "alpha"
+        && !current.pre.is_empty()
+        && next.pre.is_empty()
+        && same_release_series(current, next)
+}
+
 pub fn select<'a>(
     releases: &'a [Release],
     channel: &str,
@@ -110,11 +145,20 @@ pub fn select<'a>(
             r.assets.iter().any(|a| a.name == asset) && r.assets.iter().any(|a| a.name == checksum)
         })
         .filter(|r| {
-            current
-                .as_ref()
-                .is_none_or(|v| version(&r.tag_name).is_some_and(|next| &next > v))
+            current.as_ref().is_none_or(|v| {
+                version(&r.tag_name).is_some_and(|next| {
+                    &next > v && !is_same_series_alpha_demotion(channel, v, &next)
+                })
+            })
         })
-        .max_by_key(|r| version(&r.tag_name))
+        .max_by_key(|r| {
+            let preference = if normalized_channel(channel) == "alpha" {
+                alpha_preference(&r.tag_name)
+            } else {
+                0
+            };
+            (preference, version(&r.tag_name))
+        })
 }
 
 pub fn fetch(agent: &ureq::Agent, endpoint: &str) -> Result<Vec<Release>> {
@@ -276,11 +320,75 @@ mod tests {
     }
 
     #[test]
-    fn channels_accept_stable_without_changing_install_identity() {
+    fn channel_acceptance_preserves_explicit_stable_alpha_installs() {
         assert!(accepts("alpha", "v1.0.0", false));
         assert!(accepts("beta", "v1.0.0", false));
         assert!(!accepts("stable", "v1.0.0", true));
         assert!(!accepts("beta", "v1.0.0-alpha.1", true));
         assert!(!accepts("alpha", "v1.0.0-windows.1", true));
+    }
+
+    #[test]
+    fn alpha_selection_prefers_newest_alpha_prerelease_over_stable() {
+        let releases = vec![
+            release("v0.3.5", true),
+            release("v0.3.5-alpha.1", true),
+            release("v0.3.5-alpha.2", true),
+        ];
+        assert_eq!(
+            select(&releases, "alpha", "macos-arm64", None)
+                .unwrap()
+                .tag_name,
+            "v0.3.5-alpha.2"
+        );
+    }
+
+    #[test]
+    fn alpha_update_never_demotes_same_release_series_to_stable() {
+        let releases = vec![release("v0.3.5", true), release("v0.3.5-alpha.2", true)];
+        assert_eq!(
+            select(&releases, "alpha", "macos-arm64", Some("v0.3.5-alpha.1"),)
+                .unwrap()
+                .tag_name,
+            "v0.3.5-alpha.2"
+        );
+
+        let stable_only = vec![release("v0.3.5", true)];
+        assert!(select(&stable_only, "alpha", "macos-arm64", Some("v0.3.5-alpha.1"),).is_none());
+    }
+
+    #[test]
+    fn alpha_selection_falls_back_to_stable_when_no_prerelease_exists() {
+        let releases = vec![release("v0.3.5", true)];
+        assert_eq!(
+            select(&releases, "alpha", "macos-arm64", None)
+                .unwrap()
+                .tag_name,
+            "v0.3.5"
+        );
+    }
+
+    #[test]
+    fn stable_selection_rejects_prereleases() {
+        let mut prerelease = release("v0.3.5-alpha.2", true);
+        let mut stable = release("v0.3.4", true);
+        let asset = archive_name("macos-arm64", "stable");
+        for release in [&mut prerelease, &mut stable] {
+            release.assets = vec![
+                Asset {
+                    name: asset.clone(),
+                },
+                Asset {
+                    name: format!("{asset}.sha256"),
+                },
+            ];
+        }
+        let releases = vec![prerelease, stable];
+        assert_eq!(
+            select(&releases, "stable", "macos-arm64", None)
+                .unwrap()
+                .tag_name,
+            "v0.3.4"
+        );
     }
 }
