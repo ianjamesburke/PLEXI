@@ -10,6 +10,7 @@
 //! carries the name and the folder, never the value.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
