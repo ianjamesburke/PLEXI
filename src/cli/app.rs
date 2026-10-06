@@ -1296,6 +1296,30 @@ fn persist_wasm_install_review(
         &selected,
     );
     store.save();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(config_dir);
+    for capability_id in &report.wasm_required_capabilities {
+        monitor.grant_capability_id(
+            &report.id,
+            workspace_root,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
+    for capability_id in &report.wasm_optional_capabilities {
+        let decision = if selected.contains(capability_id) {
+            crate::broker::Decision::Allow
+        } else {
+            crate::broker::Decision::Ask
+        };
+        monitor.grant_capability_id(
+            &report.id,
+            workspace_root,
+            capability_id,
+            decision,
+            crate::broker::GrantSource::User,
+        );
+    }
     Some(summary)
 }
 
@@ -2164,7 +2188,6 @@ mod install_confirm_tests {
         trust_sheet_lines, InstallConfirm,
     };
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
-    use crate::app::permissions::{PermissionState, PermissionStore};
     use std::io::Cursor;
 
     fn report() -> PackageReport {
@@ -2385,28 +2408,33 @@ mod install_confirm_tests {
         assert_eq!(summary.optional_granted, 1);
         assert_eq!(summary.optional_deferred, 1);
 
-        let store = PermissionStore::load_or_default(config.path());
+        let stored = |capability: &str, root: &std::path::Path| {
+            let monitor = crate::broker::gate::PermissionMonitor::open_profile(config.path());
+            let workspace_root = crate::platform::path::canonical_or_self(root);
+            let store = monitor.store();
+            store.records().iter().find_map(|record| {
+                (record.actor_id == "wasm-install-review"
+                    && record.target_id == capability
+                    && record.workspace_root.as_deref() == Some(workspace_root.as_path()))
+                .then_some(record.decision)
+            })
+        };
         assert_eq!(
-            store.get_wasm("wasm-install-review", workspace.path(), "state:read-write"),
-            Some(PermissionState::Green)
+            stored("state:read-write", workspace.path()),
+            Some(crate::broker::Decision::Allow)
         );
         assert_eq!(
-            store.get_wasm("wasm-install-review", workspace.path(), "ai.query"),
-            Some(PermissionState::Yellow)
+            stored("ai.query", workspace.path()),
+            Some(crate::broker::Decision::Ask)
         );
         assert_eq!(
-            store.get_wasm(
-                "wasm-install-review",
-                workspace.path(),
-                "net:fetch:api.example.com"
-            ),
-            Some(PermissionState::Green)
+            stored("net:fetch:api.example.com", workspace.path()),
+            Some(crate::broker::Decision::Allow)
         );
         assert_eq!(
-            store.get_wasm(
-                "wasm-install-review",
-                tempfile::tempdir().unwrap().path(),
-                "net:fetch:api.example.com"
+            stored(
+                "net:fetch:api.example.com",
+                tempfile::tempdir().unwrap().path()
             ),
             None,
             "raw WASM install grants must remain workspace-scoped"

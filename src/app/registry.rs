@@ -418,16 +418,6 @@ pub const VALID_PLACEMENTS: &[&str] = &[
     "new_window",
 ];
 
-impl AppCapabilities {
-    /// Convert manifest-declared capabilities to runtime permissions.
-    pub fn to_permissions(&self) -> crate::app::permissions::AppPermissions {
-        let mut perms =
-            crate::app::permissions::AppPermissions::from_capability_strings(&self.capabilities);
-        perms.allowed_hosts = self.allowed_hosts.clone();
-        perms
-    }
-}
-
 /// Where a discovered registry entry came from. Used for shadow-logging at
 /// `info` level so users can trace which copy of an id won discovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

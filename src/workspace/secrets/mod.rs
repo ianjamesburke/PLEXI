@@ -83,6 +83,28 @@ pub fn keychain_user_name(friendly: &str) -> String {
     format!("plexi:user:{friendly}")
 }
 
+/// `host` and `user` are not workspace ids. `plexi:host:*` is the seal-key
+/// namespace and is not readable through workspace secret resolution.
+pub fn workspace_id_is_reserved(id: &str) -> bool {
+    let id = id.trim();
+    id.is_empty()
+        || id == "host"
+        || id == "user"
+        || id.contains(':')
+        || id.chars().any(char::is_whitespace)
+}
+
+/// True when an account names the host seal store.
+pub fn secret_account_is_reserved(account: &str) -> bool {
+    account.starts_with("plexi:host:")
+}
+
+pub fn reserved_secret_error(workspace_id: &str) -> String {
+    format!(
+        "workspace id '{workspace_id}' is reserved. The host seal key is not a workspace secret and cannot be read with plexi secret get."
+    )
+}
+
 // ── Backend selector ─────────────────────────────────────────────────────────
 
 /// The process-wide secret store handle — the ONLY way to reach a store
@@ -133,6 +155,18 @@ fn accounts(names: &[&str]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_ids_cover_the_host_namespace() {
+        assert!(workspace_id_is_reserved("host"));
+        assert!(workspace_id_is_reserved("user"));
+        assert!(workspace_id_is_reserved(""));
+        assert!(workspace_id_is_reserved("a:b"));
+        assert!(workspace_id_is_reserved("has space"));
+        assert!(!workspace_id_is_reserved("ws-1"));
+        assert!(secret_account_is_reserved("plexi:host:permission-mac"));
+        assert!(!secret_account_is_reserved("plexi:ws-1:permission-mac"));
+    }
 
     #[test]
     fn keychain_naming_uses_workspace_and_user_namespaces() {

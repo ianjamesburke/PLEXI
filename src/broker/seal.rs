@@ -1,9 +1,10 @@
 //! Integrity for permission files.
 //!
-//! `grants.toml` and `permissions.toml` are HMAC-SHA256 sealed. The audit log
-//! is an append-only hash chain whose tip lives in the secret store. The MAC
-//! key is `plexi:host:permission-mac` in that same store (`system_store()`).
-//! Agent panes never receive the key. A bad or missing MAC is not a grant.
+//! `grants.toml` is HMAC-SHA256 sealed. The audit log is an append-only hash
+//! chain. The MAC key and the audit tip live in the host seal store
+//! (`host_key`), never in `secrets.json` and never under a workspace id an
+//! agent can pass to `plexi secret get`. Agent panes never receive the key.
+//! A bad or missing MAC is not a grant.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -12,8 +13,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use zeroize::Zeroizing;
-
-use crate::workspace::secrets::system_store;
 
 /// Line prefix on a sealed TOML file. The HMAC covers every byte before it.
 const MAC_PREFIX: &str = "# plexi-mac:";
@@ -409,20 +408,22 @@ fn tip_account(path: &Path) -> String {
 }
 
 fn read_tip(path: &Path) -> Option<String> {
-    system_store()
-        .get(&tip_account(path))
-        .map(|value| value.to_string())
+    match super::host_key::get(&tip_account(path)) {
+        Ok(value) => value.map(|tip| tip.to_string()),
+        Err(error) => {
+            log::error!("permission_seal: could not read audit tip: {error}");
+            None
+        }
+    }
 }
 
 fn store_tip(path: &Path, tip: &str) -> Result<(), String> {
-    system_store()
-        .set(&tip_account(path), tip)
-        .map_err(|error| error.to_string())
+    super::host_key::set(&tip_account(path), tip)
 }
 
 fn clear_audit_tip(path: &Path) {
     let account = tip_account(path);
-    if let Err(error) = system_store().delete(&account) {
+    if let Err(error) = super::host_key::delete(&account) {
         log::error!(
             "permission_seal: could not clear audit tip for {}: {error}",
             path.display()
@@ -481,24 +482,24 @@ fn backup_corrupt(path: &Path, error: &str) {
 }
 
 fn key_hex() -> Result<Zeroizing<String>, String> {
-    let store = system_store();
-    if let Some(existing) = store.get(KEY_ACCOUNT) {
+    super::host_key::scrub_user_secret_host_namespace();
+    if let Some(existing) = super::host_key::get(super::host_key::MAC_ITEM)? {
         decode_hex(existing.trim())?;
         return Ok(Zeroizing::new(existing.trim().to_string()));
     }
     let hex = fresh_key_hex();
-    match store.add_new(KEY_ACCOUNT, &hex) {
+    match super::host_key::add_new(super::host_key::MAC_ITEM, &hex) {
         Ok(()) => {
             log::info!("permission_seal: created host permission mac key");
             Ok(Zeroizing::new(hex))
         }
-        Err(error) => match store.get(KEY_ACCOUNT) {
+        Err(error) => match super::host_key::get(super::host_key::MAC_ITEM)? {
             Some(existing) => {
                 let trimmed = existing.trim().to_string();
                 decode_hex(&trimmed)?;
                 Ok(Zeroizing::new(trimmed))
             }
-            None => Err(format!("permission mac key: {error}")),
+            None => Err(error),
         },
     }
 }
