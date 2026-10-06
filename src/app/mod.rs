@@ -838,32 +838,103 @@ pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> Vec<u32> {
     ancestry
 }
 
+/// `LOCAL_PEERPID` is a `SOL_LOCAL` option. On macOS that level is 0, and the
+/// call is only valid for an `AF_UNIX` (`1`) `SOCK_STREAM` (`1`). Any other
+/// fd returns `ENOTSOCK` / `EINVAL` and must not be queried.
+pub(crate) fn local_peerpid_level(domain: i32, sock_type: i32) -> Option<i32> {
+    const AF_UNIX: i32 = 1;
+    const SOCK_STREAM: i32 = 1;
+    if domain == AF_UNIX && sock_type == SOCK_STREAM {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+/// First failure is a warning. Later failures on other connections are debug,
+/// so a kernel that rejects the option cannot fill `plexi.log`.
+pub(crate) fn take_peer_pid_warning(already: &std::sync::atomic::AtomicBool) -> bool {
+    !already.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(target_os = "macos")]
+static PEER_PID_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+fn warn_peer_pid_once(reason: &str) {
+    if take_peer_pid_warning(&PEER_PID_WARNED) {
+        log::warn!("pane_ipc: LOCAL_PEERPID lookup failed ({reason})");
+    } else {
+        log::debug!("pane_ipc: LOCAL_PEERPID lookup failed ({reason})");
+    }
+}
+
 /// Resolve the pid of the process on the other end of a connected IPC stream.
 ///
 /// Every platform needs its own call: macOS has no stable-std API
-/// (`getsockopt(SOL_LOCAL, LOCAL_PEERPID)`, verified against `libc` 0.2's
-/// apple bindings); Linux exposes it via `UnixStream::peer_cred`; Windows
-/// answers it for the named-pipe transport with
-/// `GetNamedPipeClientProcessId`.
+/// (`getsockopt(SOL_LOCAL, LOCAL_PEERPID)` — level 0, and only on an
+/// `AF_UNIX` stream); Linux exposes it via `SO_PEERCRED`; Windows answers
+/// it for the named-pipe transport with `GetNamedPipeClientProcessId`.
 #[cfg(target_os = "macos")]
 fn resolve_socket_peer_pid(stream: &crate::platform::ipc::IpcStream) -> Option<u32> {
     use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let Some((domain, sock_type)) = unix_socket_domain_and_type(fd) else {
+        warn_peer_pid_once("fd is not a connected socket");
+        return None;
+    };
+    let Some(level) = local_peerpid_level(domain, sock_type) else {
+        warn_peer_pid_once("fd is not an AF_UNIX stream");
+        return None;
+    };
     let mut pid: libc::pid_t = 0;
     let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
     let rc = unsafe {
         libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_LOCAL,
+            fd,
+            level,
             libc::LOCAL_PEERPID,
             &mut pid as *mut _ as *mut libc::c_void,
             &mut len,
         )
     };
     if rc != 0 || pid <= 0 {
-        log::warn!("pane_ipc: LOCAL_PEERPID getsockopt failed (rc={rc})");
+        let err = std::io::Error::last_os_error();
+        warn_peer_pid_once(&format!("getsockopt rc={rc} {err}"));
         return None;
     }
     Some(pid as u32)
+}
+
+#[cfg(target_os = "macos")]
+fn unix_socket_domain_and_type(fd: std::os::unix::io::RawFd) -> Option<(i32, i32)> {
+    let mut sock_type: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let type_rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            &mut sock_type as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if type_rc != 0 {
+        return None;
+    }
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    let name_rc = unsafe {
+        libc::getpeername(
+            fd,
+            &mut addr as *mut _ as *mut libc::sockaddr,
+            &mut addr_len,
+        )
+    };
+    if name_rc != 0 {
+        return None;
+    }
+    Some((addr.sun_family as i32, sock_type))
 }
 
 #[cfg(target_os = "linux")]
@@ -916,6 +987,34 @@ fn resolve_socket_peer_pid(stream: &crate::platform::ipc::IpcStream) -> Option<u
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn resolve_socket_peer_pid(_stream: &crate::platform::ipc::IpcStream) -> Option<u32> {
     None
+}
+
+#[cfg(test)]
+mod peer_pid_tests {
+    use std::sync::atomic::AtomicBool;
+
+    use super::take_peer_pid_warning;
+
+    #[test]
+    fn local_peerpid_uses_sol_local_only_on_a_unix_stream() {
+        assert_eq!(super::local_peerpid_level(1, 1), Some(0));
+        assert_eq!(super::local_peerpid_level(2, 1), None);
+        assert_eq!(super::local_peerpid_level(1, 2), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apple_unix_stream_constants_match_the_peerpid_gate() {
+        assert_eq!(libc::AF_UNIX, 1);
+        assert_eq!(libc::SOCK_STREAM, 1);
+    }
+
+    #[test]
+    fn peer_pid_failure_warns_once() {
+        let flag = AtomicBool::new(false);
+        assert!(take_peer_pid_warning(&flag));
+        assert!(!take_peer_pid_warning(&flag));
+    }
 }
 
 /// Answer `events_list`: write the declared `(context_id, app_id, stream)`
