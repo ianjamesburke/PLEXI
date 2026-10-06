@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "5.0.7"
+skill_version: "5.0.8"
 plexi_version: "0.3.5"
-last_verified: "2026-10-05"
+last_verified: "2026-10-06"
 ---
 
 # Plexi CLI
@@ -65,6 +65,17 @@ CLI or app SDK; do not inspect Plexi profile files directly.
   `user`. Identity fields in `--input` are ignored. `--json` prints the
   structured reply (`error_code`, `pending_request_id`). `--pane <id>` addresses
   one live instance when several panes of that app are open. A rejection exits 1.
+- **Command view** — one list of leads, runs, queues, and needs-you items:
+  `plexi command-view --json`. Open the pane with `plexi app open command`.
+  Steer with `plexi command-view send --lead lead-a --text "status"`,
+  `plexi command-view enqueue --lead lead-a --text "ship the notes"`,
+  `plexi command-view pause --run run-1`, and
+  `plexi command-view cancel --run run-1`. Those four admit through the
+  permission gate. `plexi command-view allow --tool command.send --lead lead-a --text "status"`
+  records the exact grant. `plexi command-view block --lead lead-a --run run-1 --summary "which notes"`
+  files a needs-you row. `plexi command-view resolve ny_1 --approve` or `--deny`
+  settles it and unblocks the run. `plexi command-view --follow` streams host
+  events until interrupted.
 - **Assistant permission** — list, show, or resolve a pending grant:
   `plexi assistant permission list`, `plexi assistant permission show <id>`,
   `plexi assistant permission resolve <id> --choice once`. `once`, `session`,
@@ -116,12 +127,32 @@ events
 agent
 config
 ai
+command-view
 doctor
 update
 account
 registry
 note
 notes
+```
+
+### Steer a lead from the command view
+
+List the projection, grant one exact send, then send it. `--follow` streams
+`command.view` events until you interrupt it. `plexi app open command` paints
+the same projection.
+
+```bash
+plexi app open command
+plexi command-view --json
+plexi command-view allow --tool command.send --lead lead-a --text "status"
+plexi command-view send --lead lead-a --text "status"
+plexi command-view enqueue --lead lead-a --text "ship the notes"
+plexi command-view pause --run run-1
+plexi command-view cancel --run run-1
+plexi command-view block --lead lead-a --run run-1 --summary "which notes"
+plexi command-view resolve ny_1 --approve
+plexi command-view --follow
 ```
 
 ## Worked examples

@@ -714,6 +714,30 @@ pub enum AppRequest {
         response_file: String,
     },
 
+    /// List or steer the command view. Steer ops are admitted by the gate
+    /// before the board changes. The host writes the projection JSON to
+    /// `response_file`.
+    CommandView {
+        op: String,
+        #[serde(default)]
+        lead: String,
+        #[serde(default)]
+        run: String,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        tool: String,
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        approve: bool,
+        #[serde(default)]
+        workspace: String,
+        response_file: String,
+    },
+
     /// Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.
     /// Host delivers `PlexiEvent::Action { action, args }` to the target app pane.
     /// Writes `{"ok":true}` or `{"error":"..."}` to `response_file`.

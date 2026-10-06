@@ -212,6 +212,7 @@ pub mod ai;
 pub mod app;
 pub mod app_check;
 pub mod app_state;
+pub mod command_view;
 pub mod completions;
 pub mod config_cli;
 pub mod context_cli;
@@ -1261,6 +1262,7 @@ pub use app::{
     app_prune_cli, app_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
+pub use command_view::{command_view_cli, command_view_follow_cli};
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,

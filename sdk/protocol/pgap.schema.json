@@ -1966,6 +1966,60 @@
         },
         {
           "additionalProperties": false,
+          "description": "List or steer the command view. Steer ops are admitted by the gate\nbefore the board changes. The host writes the projection JSON to\n`response_file`.",
+          "properties": {
+            "approve": {
+              "default": false,
+              "type": "boolean"
+            },
+            "id": {
+              "default": "",
+              "type": "string"
+            },
+            "lead": {
+              "default": "",
+              "type": "string"
+            },
+            "op": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "run": {
+              "default": "",
+              "type": "string"
+            },
+            "summary": {
+              "default": "",
+              "type": "string"
+            },
+            "text": {
+              "default": "",
+              "type": "string"
+            },
+            "tool": {
+              "default": "",
+              "type": "string"
+            },
+            "type": {
+              "const": "command_view",
+              "type": "string"
+            },
+            "workspace": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "op",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.\nHost delivers `PlexiEvent::Action { action, args }` to the target app pane.\nWrites `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
           "properties": {
             "action": {

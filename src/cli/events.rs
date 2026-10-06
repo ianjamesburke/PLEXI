@@ -65,7 +65,7 @@ fn connect_and_send(payload: &serde_json::Value) -> Result<IpcStream, i32> {
 
 /// Send one control line and stream every NDJSON line the host returns to
 /// stdout until the connection closes. Returns the process exit code.
-fn stream_control_line(payload: serde_json::Value) -> i32 {
+pub(crate) fn stream_control_line(payload: serde_json::Value) -> i32 {
     let stream = match connect_and_send(&payload) {
         Ok(s) => s,
         Err(code) => return code,
