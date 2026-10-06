@@ -10,6 +10,58 @@ Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, 
 
 Each channel has its own binary and profile (`plexi`, `plexi-alpha`, `plexi-beta`). A channel-named binary always targets its own profile; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` when run inside a Plexi pane.
 
+## `plexi assistant`
+
+Submit a text turn to the running host Assistant
+
+| Subcommand | Description |
+|---|---|
+| `send` | Submit through the same composer, model, and permission path as the desktop Assistant |
+| `permission` | Observe and resolve pending permission requests. This is not `plexi agent request` |
+
+### `plexi assistant send`
+
+Submit through the same composer, model, and permission path as the desktop Assistant
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--text` | string | yes |  |
+| `--request-id` | string | no |  |
+| `--pane-id` | string | no |  |
+| `--context-id` | string | no |  |
+| `--json` | flag | no |  |
+
+### `plexi assistant permission`
+
+Observe and resolve pending permission requests. This is not `plexi agent request`
+
+| Subcommand | Description |
+|---|---|
+| `list` | List pending permission requests as JSON |
+| `show` | Show one pending permission request as JSON |
+| `resolve` | Resolve one pending request: once, session, always, or deny |
+
+#### `plexi assistant permission list`
+
+List pending permission requests as JSON
+
+#### `plexi assistant permission show`
+
+Show one pending permission request as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+
+#### `plexi assistant permission resolve`
+
+Resolve one pending request: once, session, always, or deny
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes |  |
+| `--choice` | string | yes |  |
+
 ## `plexi run`
 
 Run a named command from your project's .plexi/commands.toml file.
@@ -474,6 +526,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `search` | Search the public marketplace catalog |
 | `update` | Pull git-backed installed apps to their latest source revision |
 | `action` | Send a semantic action to a running app pane |
+| `call` | Call a tool an app exposes and print its JSON result |
 
 ### `plexi app open`
 
@@ -728,6 +781,22 @@ Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /s
 | `<pane_id>` | string | yes | Pane id of the target app pane (from `plexi pane list`) |
 | `<action>` | string | yes | Action name to invoke (e.g. "refresh", "navigate-to", "add-item") |
 | `<args>` | string (repeatable) | no | Optional arguments forwarded to the action handler |
+
+### `plexi app call`
+
+Call a tool an app exposes and print its JSON result.
+
+Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity from the pane credential or peer ancestry (`pane:<id>`). A missing pane is never the human `user`. The app sees that identity, never one taken from the input. Exits 1 with `error: <message>` when the tool or the app rejects the call.
+
+Example: plexi app call chess chess.state Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<app_id>` | string | yes | App id that exposes the tool (from `plexi app info`) |
+| `<tool>` | string | yes | Tool name as the app declares it (e.g. `chess.state`) |
+| `--input` | string | no | Tool input as a JSON object Default: `{}`. |
+| `--json` | flag | no | Print the host reply, including structured permission errors |
+| `--pane` | string | no | Pane that owns the tool when more than one instance of the app is open |
 
 ## `plexi account`
 
