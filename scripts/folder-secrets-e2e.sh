@@ -25,6 +25,23 @@ FAIL_N=0
 unset PLEXI_SOCKET PLEXI_CHANNEL PLEXI_CONTEXT_ROOT PLEXI_CONTEXT_ID \
   PLEXI_CONTEXT_NAME PLEXI_RUNNING PLEXI_PANE_ID PLEXI_CALL_CREDENTIAL \
   PLEXI_HOST_MCP_PORT PLEXI_HOST_MCP_TOKEN
+# The pane check opens a real window. Keep the caller's X cookie; a private
+# HOME would otherwise hide ~/.Xauthority and the host could not connect.
+if [[ -z "${XAUTHORITY:-}" ]]; then
+  if [[ -n "${HOME:-}" && -f "$HOME/.Xauthority" ]]; then
+    export XAUTHORITY="$HOME/.Xauthority"
+  else
+    login_home="$(getent passwd "$(id -un)" | cut -d: -f6 || true)"
+    if [[ -n "$login_home" && -f "$login_home/.Xauthority" ]]; then
+      export XAUTHORITY="$login_home/.Xauthority"
+    fi
+  fi
+fi
+if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -d "${XDG_RUNTIME_DIR:-}" ]]; then
+  export XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
+  mkdir -p "$XDG_RUNTIME_DIR"
+  chmod 700 "$XDG_RUNTIME_DIR"
+fi
 export HOME="$HOME_DIR"
 export XDG_DATA_HOME="$HOME_DIR/.local/share"
 export XDG_CONFIG_HOME="$HOME_DIR/.config"
@@ -141,6 +158,7 @@ pane_marker() {
 
 if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
   start_out="$("$PLEXI" host start --ephemeral --timeout-secs 90 2>&1)" || true
+  printf '%s\n' "$start_out" >"$WORK/host-start.txt"
   status_out="$("$PLEXI" host status --json 2>&1 || true)"
   if [[ "$status_out" == *'"ready":true'* || "$status_out" == *'"ready": true'* ]]; then
     HOST_STARTED=1
