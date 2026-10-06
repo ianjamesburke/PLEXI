@@ -7,11 +7,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use sha2::{Digest, Sha256};
 
-use super::signoff::{self, PersonalSigner, SignoffParts, SignoffTier};
 use super::{
     ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
     GrantStore, PermissionRequest, ResourceScope, TargetType,
@@ -44,9 +43,6 @@ pub struct PendingView {
     pub resource_id: Option<String>,
     pub args_fingerprint: String,
     pub input_summary: String,
-    /// Set when the tool requires personal sign-off. A click cannot clear it.
-    pub signoff_tier: Option<String>,
-    pub signoff_label: Option<String>,
 }
 
 #[derive(Clone)]
@@ -55,7 +51,6 @@ struct Pending {
     binding: ExactBinding,
     tool: String,
     input_summary: String,
-    signoff: Option<SignoffParts>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,15 +79,6 @@ pub struct PermissionMonitor {
     audit_path: Option<PathBuf>,
     audit_mem: Mutex<Vec<AuditFact>>,
     fail_audit: AtomicBool,
-    /// Tool → required personal-signoff tier. Entries are only raised, never lowered.
-    requirements: Mutex<BTreeMap<String, SignoffTier>>,
-    signer: Mutex<Arc<dyn PersonalSigner>>,
-    /// call_id → grant_id for a signature that has been verified and not yet admitted.
-    fresh: Mutex<BTreeMap<String, String>>,
-    used_nonces: Mutex<BTreeMap<String, ()>>,
-    time_boxed_ttl: AtomicI64,
-    #[cfg(test)]
-    now_override: AtomicI64,
 }
 
 #[derive(Clone)]
@@ -165,40 +151,25 @@ impl PermissionMonitor {
 
     /// Private store. Used by tests that must not share a profile monitor.
     pub fn ephemeral() -> Arc<Self> {
-        Arc::new(Self::from_arc(
-            Arc::new(Mutex::new(GrantStore::default())),
-            None,
-            Arc::new(signoff::RefuseSigner),
-        ))
+        Arc::new(Self::new(GrantStore::default(), None))
     }
 
     fn open(dir: &Path) -> Self {
         let store = GrantStore::load_or_default(dir);
         let audit = dir.join("permission-audit.jsonl");
-        let settings = signoff::SignoffSettings::load(dir);
         log::info!(
-            "permission_monitor: opened profile {} audit {} personal_signoff_fallback={}",
+            "permission_monitor: opened profile {} audit {}",
             dir.display(),
-            audit.display(),
-            settings.fallback.as_str()
+            audit.display()
         );
-        let monitor = Self::from_arc(
-            Arc::new(Mutex::new(store)),
-            Some(audit),
-            Arc::new(signoff::RefuseSigner),
-        );
-        monitor.install_signer(signoff::production_signer(dir, settings));
-        monitor
-            .time_boxed_ttl
-            .store(settings.time_boxed_ttl_secs, Ordering::SeqCst);
-        monitor
+        Self::new(store, Some(audit))
     }
 
-    fn from_arc(
-        store: Arc<Mutex<GrantStore>>,
-        audit_path: Option<PathBuf>,
-        signer: Arc<dyn PersonalSigner>,
-    ) -> Self {
+    fn new(store: GrantStore, audit_path: Option<PathBuf>) -> Self {
+        Self::from_arc(Arc::new(Mutex::new(store)), audit_path)
+    }
+
+    fn from_arc(store: Arc<Mutex<GrantStore>>, audit_path: Option<PathBuf>) -> Self {
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         log::info!("permission_monitor: session {session_id} started");
         Self {
@@ -212,13 +183,6 @@ impl PermissionMonitor {
             audit_path,
             audit_mem: Mutex::new(Vec::new()),
             fail_audit: AtomicBool::new(false),
-            requirements: Mutex::new(BTreeMap::new()),
-            signer: Mutex::new(signer),
-            fresh: Mutex::new(BTreeMap::new()),
-            used_nonces: Mutex::new(BTreeMap::new()),
-            time_boxed_ttl: AtomicI64::new(signoff::TIME_BOXED_TTL_SECS),
-            #[cfg(test)]
-            now_override: AtomicI64::new(0),
         }
     }
 
@@ -281,38 +245,15 @@ impl PermissionMonitor {
             operation_id: operation_id_of(req.input_json),
         };
         let request = PermissionRequest::exact(&binding);
-        self.absorb_grant_markers(req.tool);
-        let tier = self
-            .requirements
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(req.tool)
-            .copied();
         let decision = self.store().evaluate(&request, None);
         log::info!(
-            "permission_monitor: admit actor={} tool={} resource={:?} call_id={} -> {} signoff={}",
+            "permission_monitor: admit actor={} tool={} resource={:?} call_id={} -> {}",
             binding.actor_id,
             binding.target_id,
             binding.resource_id,
             binding.call_id,
-            decision.as_str(),
-            tier.map(SignoffTier::as_str).unwrap_or("click")
+            decision.as_str()
         );
-        if let Some(tier) = tier {
-            if decision == Decision::Deny {
-                self.note_denial(
-                    &binding.actor_id,
-                    &binding.call_id,
-                    binding.resource_id.as_deref().unwrap_or(""),
-                    &binding.operation_id,
-                    "deny",
-                );
-                return Admission::Denied {
-                    code: "permission_denied",
-                };
-            }
-            return self.admit_signoff(req, &binding, tier);
-        }
         match decision {
             Decision::Deny => {
                 self.note_denial(
@@ -385,465 +326,8 @@ impl PermissionMonitor {
             binding: binding.clone(),
             tool: tool.to_string(),
             input_summary: summarize(input_json),
-            signoff: None,
         });
         id
-    }
-
-    /// Record a manifest or grant requirement. A later call cannot lower the tier.
-    pub fn note_manifest(&self, tool: &str, tier: SignoffTier) {
-        self.raise_requirement(tool, tier, "manifest");
-    }
-
-    pub fn install_signer(&self, signer: Arc<dyn PersonalSigner>) {
-        let label = signer.label();
-        log::info!("personal_signoff: installed signer {label}");
-        *self.signer.lock().unwrap_or_else(|e| e.into_inner()) = signer;
-    }
-
-    #[cfg(test)]
-    pub fn set_now_for_test(&self, unix_secs: i64) {
-        self.now_override.store(unix_secs, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    pub fn set_time_boxed_ttl_for_test(&self, secs: i64) {
-        self.time_boxed_ttl.store(secs, Ordering::SeqCst);
-    }
-
-    pub fn challenge_message(&self, pending_id: &str) -> Option<String> {
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .find(|row| row.id == pending_id)
-            .and_then(|row| row.signoff.as_ref().map(signoff::canonical_message))
-    }
-
-    pub fn pending_requires_signoff(&self, pending_id: &str) -> bool {
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|row| row.id == pending_id && row.signoff.is_some())
-    }
-
-    /// Prompt the installed signer and admit the signature. A missing or
-    /// invalid signature is refused and audited.
-    pub fn sign_pending(&self, pending_id: &str) -> Result<String, String> {
-        let (reason, label) = {
-            let rows = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(row) = rows.iter().find(|row| row.id == pending_id) else {
-                return Err(format!("unknown pending request {pending_id}"));
-            };
-            let Some(parts) = row.signoff.as_ref() else {
-                return Err(format!("pending {pending_id} is not a personal sign-off"));
-            };
-            let label = self
-                .signer
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .label();
-            (
-                format!(
-                    "Personal sign-off ({label}) for {} on {}",
-                    parts.action,
-                    parts.resource_id.as_deref().unwrap_or("the workspace")
-                ),
-                label,
-            )
-        };
-        let message = self.challenge_message(pending_id).ok_or_else(|| {
-            format!("pending {pending_id} lost its personal sign-off challenge")
-        })?;
-        log::info!("personal_signoff: prompting {label} for pending {pending_id}");
-        let signature = {
-            let signer = self.signer.lock().unwrap_or_else(|e| e.into_inner());
-            match signer.sign(message.as_bytes(), &reason) {
-                Ok(signature) => signature,
-                Err(error) => {
-                    drop(signer);
-                    self.audit_signoff_refusal(pending_id, "personal_signoff_refused", &error);
-                    return Err(error);
-                }
-            }
-        };
-        self.submit_signoff(pending_id, &signature)
-    }
-
-    /// Verify a signature for a pending personal sign-off. Click approval
-    /// cannot be used instead.
-    pub fn submit_signoff(&self, pending_id: &str, signature: &[u8]) -> Result<String, String> {
-        let pending = {
-            let rows = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            rows.iter().find(|row| row.id == pending_id).cloned()
-        };
-        let Some(pending) = pending else {
-            return Err(format!("unknown pending request {pending_id}"));
-        };
-        let Some(parts) = pending.signoff.clone() else {
-            return Err(format!(
-                "pending {pending_id} is a click approval, not a personal sign-off"
-            ));
-        };
-        let now = self.now_secs();
-        if now >= parts.deadline || now >= parts.expiry {
-            self.audit_signoff_refusal(pending_id, "personal_signoff_expired", "challenge expired");
-            return Err("personal sign-off challenge expired".to_string());
-        }
-        if self
-            .used_nonces
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&parts.nonce)
-        {
-            self.audit_signoff_refusal(pending_id, "personal_signoff_replay", "nonce reused");
-            return Err("personal sign-off nonce was already used".to_string());
-        }
-        let (verified, mechanism) = {
-            let signer = self.signer.lock().unwrap_or_else(|e| e.into_inner());
-            let mechanism = signer.mechanism_name().to_string();
-            let verified = signer.verify(signoff::canonical_message(&parts).as_bytes(), signature);
-            (verified, mechanism)
-        };
-        if !verified {
-            self.audit_signoff_refusal(
-                pending_id,
-                "personal_signoff_invalid",
-                "signature did not verify",
-            );
-            return Err("personal sign-off signature did not verify".to_string());
-        }
-        let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
-        let (duration, source) = match parts.tier {
-            SignoffTier::EachTime => (GrantDuration::Once, GrantSource::Session),
-            SignoffTier::TimeBoxed => (GrantDuration::Always, GrantSource::User),
-        };
-        let mut record = GrantRecord::from_binding(
-            &pending.binding,
-            Decision::Allow,
-            duration,
-            source,
-            &grant_id,
-        );
-        record.expires_at = Some(parts.expiry);
-        record.signoff_tier = parts.tier.as_str().to_string();
-        record.signoff_signature = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            signature,
-        );
-        record.signoff_mechanism = mechanism.clone();
-        record.signoff_nonce = parts.nonce.clone();
-        record.signoff_deadline = Some(parts.deadline);
-        if parts.tier == SignoffTier::EachTime {
-            record.consumed = true;
-            record.bound_operation_id = Some(pending.binding.operation_id.clone());
-        }
-        let rebuilt = signoff::canonical_message(&signoff_parts_of(&record));
-        if rebuilt != signoff::canonical_message(&parts) {
-            self.audit_signoff_refusal(
-                pending_id,
-                "personal_signoff_invalid",
-                "rebuilt message diverged",
-            );
-            return Err("personal sign-off message did not round-trip".to_string());
-        }
-        if parts.tier == SignoffTier::EachTime {
-            self.fresh
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(pending.binding.call_id.clone(), grant_id.clone());
-        }
-        self.used_nonces
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(parts.nonce.clone(), ());
-        self.store().record(record);
-        if parts.tier == SignoffTier::TimeBoxed {
-            self.store().save();
-        }
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|row| row.id != pending_id);
-        let _ = self.audit(&AuditFact {
-            kind: "grant".to_string(),
-            actor: pending.binding.actor_id.clone(),
-            call_id: pending.binding.call_id.clone(),
-            grant_id: grant_id.clone(),
-            resource_id: pending.binding.resource_id.clone().unwrap_or_default(),
-            args_fingerprint: pending.binding.args_fingerprint.clone(),
-            operation_id: pending.binding.operation_id.clone(),
-            decision: format!("personal_signoff:{}:{mechanism}", parts.tier.as_str()),
-            revision_before: String::new(),
-            revision_after: String::new(),
-        });
-        log::info!(
-            "personal_signoff: verified {} for {} as {grant_id} via {mechanism}",
-            parts.tier.as_str(),
-            pending.binding.target_id
-        );
-        Ok(grant_id)
-    }
-
-    fn now_secs(&self) -> i64 {
-        #[cfg(test)]
-        {
-            let over = self.now_override.load(Ordering::SeqCst);
-            if over > 0 {
-                return over;
-            }
-        }
-        crate::platform::clock::now_secs() as i64
-    }
-
-    fn raise_requirement(&self, tool: &str, tier: SignoffTier, source: &str) {
-        let mut map = self.requirements.lock().unwrap_or_else(|e| e.into_inner());
-        let next = map
-            .get(tool)
-            .copied()
-            .map(|existing| existing.stricter(tier))
-            .unwrap_or(tier);
-        if map.get(tool).copied() == Some(next) {
-            return;
-        }
-        map.insert(tool.to_string(), next);
-        log::info!(
-            "personal_signoff: {tool} requires {} ({source})",
-            next.as_str()
-        );
-    }
-
-    fn absorb_grant_markers(&self, tool: &str) {
-        let tiers: Vec<SignoffTier> = self
-            .store()
-            .records()
-            .iter()
-            .filter(|record| record.requires_personal_signoff && record.target_id == tool)
-            .map(|record| SignoffTier::parse(&record.signoff_tier))
-            .collect();
-        for tier in tiers {
-            self.raise_requirement(tool, tier, "grant");
-        }
-    }
-
-    fn signature_ok(&self, record: &GrantRecord) -> bool {
-        let Ok(signature) = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            record.signoff_signature.as_bytes(),
-        ) else {
-            return false;
-        };
-        let message = signoff::canonical_message(&signoff_parts_of(record));
-        self.signer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .verify_mechanism(&record.signoff_mechanism, message.as_bytes(), &signature)
-    }
-
-    fn find_time_boxed(&self, binding: &ExactBinding) -> Option<GrantRecord> {
-        let now = self.now_secs();
-        let workspace = crate::platform::path::canonical_or_self(&binding.workspace_root);
-        self.store()
-            .records()
-            .iter()
-            .find(|record| {
-                record.signoff_tier == SignoffTier::TimeBoxed.as_str()
-                    && record.decision == Decision::Allow
-                    && !record.signoff_signature.is_empty()
-                    && record.actor_type == binding.actor_type
-                    && record.actor_id == binding.actor_id
-                    && record.actor_scope == binding.actor_scope
-                    && record.trust_origin == binding.trust_origin
-                    && record.target_type == binding.target_type
-                    && record.target_id == binding.target_id
-                    && record.resource_scope == binding.resource_scope
-                    && record.resource_id == binding.resource_id
-                    && record.package_id == binding.package_id
-                    && record.workspace_root.as_ref() == Some(&workspace)
-                    && record.expires_at.is_some_and(|expiry| now < expiry)
-            })
-            .cloned()
-    }
-
-    fn admit_signoff(
-        &self,
-        req: AdmitRequest<'_>,
-        binding: &ExactBinding,
-        tier: SignoffTier,
-    ) -> Admission {
-        if tier == SignoffTier::TimeBoxed {
-            if let Some(grant) = self.find_time_boxed(binding) {
-                if self.signature_ok(&grant) {
-                    log::info!(
-                        "personal_signoff: time-boxed grant {} covers actor={} tool={}",
-                        grant.grant_id,
-                        binding.actor_id,
-                        binding.target_id
-                    );
-                    return Admission::Proceed {
-                        grant_id: grant.grant_id,
-                        fingerprint: binding.args_fingerprint.clone(),
-                        resource_scope: binding.resource_scope,
-                        resource_id: binding.resource_id.clone(),
-                    };
-                }
-                self.note_denial(
-                    &binding.actor_id,
-                    &binding.call_id,
-                    binding.resource_id.as_deref().unwrap_or(""),
-                    &binding.operation_id,
-                    "personal_signoff_invalid",
-                );
-                return Admission::Denied {
-                    code: "permission_denied",
-                };
-            }
-        }
-        let fresh_id = self
-            .fresh
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&binding.call_id);
-        if let Some(grant_id) = fresh_id {
-            let ok = self
-                .store()
-                .records()
-                .iter()
-                .find(|record| record.grant_id == grant_id)
-                .is_some_and(|record| self.signature_ok(record));
-            if ok {
-                log::info!(
-                    "personal_signoff: fresh signature grant {grant_id} admits call {}",
-                    binding.call_id
-                );
-                return Admission::Proceed {
-                    grant_id,
-                    fingerprint: binding.args_fingerprint.clone(),
-                    resource_scope: binding.resource_scope,
-                    resource_id: binding.resource_id.clone(),
-                };
-            }
-            self.note_denial(
-                &binding.actor_id,
-                &binding.call_id,
-                binding.resource_id.as_deref().unwrap_or(""),
-                &binding.operation_id,
-                "personal_signoff_invalid",
-            );
-            return Admission::Denied {
-                code: "permission_denied",
-            };
-        }
-        let id = self.persist_signoff_pending(binding, req.tool, req.input_json, tier);
-        let label = self
-            .signer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .label()
-            .to_string();
-        let _ = self.audit(&AuditFact {
-            kind: "ask".to_string(),
-            actor: binding.actor_id.clone(),
-            call_id: binding.call_id.clone(),
-            grant_id: String::new(),
-            resource_id: binding.resource_id.clone().unwrap_or_default(),
-            args_fingerprint: binding.args_fingerprint.clone(),
-            operation_id: binding.operation_id.clone(),
-            decision: format!("personal_signoff:{}:{label}", tier.as_str()),
-            revision_before: String::new(),
-            revision_after: String::new(),
-        });
-        Admission::Required {
-            pending_request_id: id,
-        }
-    }
-
-    fn persist_signoff_pending(
-        &self,
-        binding: &ExactBinding,
-        tool: &str,
-        input_json: &str,
-        tier: SignoffTier,
-    ) -> String {
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = pending.iter().find(|row| {
-            same_pending(row, binding)
-                && row
-                    .signoff
-                    .as_ref()
-                    .is_some_and(|parts| parts.tier.stricter(tier) == parts.tier)
-        }) {
-            return existing.id.clone();
-        }
-        pending.retain(|row| !(same_pending(row, binding) && row.signoff.is_some()));
-        let now = self.now_secs();
-        let deadline = now + signoff::challenge_ttl_secs();
-        let expiry = match tier {
-            SignoffTier::EachTime => deadline,
-            SignoffTier::TimeBoxed => now + self.time_boxed_ttl.load(Ordering::SeqCst),
-        };
-        let parts = SignoffParts {
-            actor_type: binding.actor_type,
-            actor_scope: binding.actor_scope,
-            trust_origin: binding.trust_origin.clone(),
-            actor_id: binding.actor_id.clone(),
-            resource_scope: binding.resource_scope,
-            resource_id: binding.resource_id.clone(),
-            action: binding.target_id.clone(),
-            args_fingerprint: binding.args_fingerprint.clone(),
-            nonce: format!("nonce-{}", uuid::Uuid::new_v4()),
-            expiry,
-            deadline,
-            package: binding.package_id.clone(),
-            tier,
-        };
-        let id = format!("req_{}", uuid::Uuid::new_v4());
-        log::info!(
-            "personal_signoff: challenge {id} tier={} tool={tool} actor={}",
-            tier.as_str(),
-            binding.actor_id
-        );
-        pending.push(Pending {
-            id: id.clone(),
-            binding: binding.clone(),
-            tool: tool.to_string(),
-            input_summary: summarize(input_json),
-            signoff: Some(parts),
-        });
-        id
-    }
-
-    fn audit_signoff_refusal(&self, pending_id: &str, decision: &str, detail: &str) {
-        let (actor, call_id, resource, fingerprint, operation) = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .find(|row| row.id == pending_id)
-            .map(|row| {
-                (
-                    row.binding.actor_id.clone(),
-                    row.binding.call_id.clone(),
-                    row.binding.resource_id.clone().unwrap_or_default(),
-                    row.binding.args_fingerprint.clone(),
-                    row.binding.operation_id.clone(),
-                )
-            })
-            .unwrap_or_default();
-        log::info!("personal_signoff: {decision} pending={pending_id} {detail}");
-        let _ = self.audit(&AuditFact {
-            kind: "deny".to_string(),
-            actor,
-            call_id,
-            grant_id: String::new(),
-            resource_id: resource,
-            args_fingerprint: fingerprint,
-            operation_id: operation,
-            decision: decision.to_string(),
-            revision_before: String::new(),
-            revision_after: String::new(),
-        });
     }
 
     pub fn approve_pending(&self, pending_id: &str, choice: ApprovalChoice) -> Result<(), String> {
@@ -867,16 +351,6 @@ impl PermissionMonitor {
         let Some(pending) = pending else {
             return Err(format!("unknown pending request {pending_id}"));
         };
-        if pending.signoff.is_some() && choice != ApprovalChoice::Deny {
-            self.audit_signoff_refusal(
-                pending_id,
-                "personal_signoff_click_refused",
-                "a click cannot satisfy personal sign-off",
-            );
-            return Err(
-                "personal sign-off cannot be satisfied by a click".to_string(),
-            );
-        }
         if choice == ApprovalChoice::Deny {
             self.pending
                 .lock()
@@ -971,32 +445,6 @@ impl PermissionMonitor {
         let epoch = self.epoch.load(Ordering::SeqCst);
         if epoch == 0 {
             return Err("permission monitor epoch is unset".to_string());
-        }
-        let signed = self
-            .store()
-            .records()
-            .iter()
-            .find(|record| record.grant_id == grant_id && !record.signoff_signature.is_empty())
-            .cloned();
-        if let Some(record) = signed {
-            if !self.signature_ok(&record) {
-                let _ = self.audit_locked(&AuditFact {
-                    kind: "deny".to_string(),
-                    actor: actor.to_string(),
-                    call_id: call_id.to_string(),
-                    grant_id: grant_id.to_string(),
-                    resource_id: resource.to_string(),
-                    args_fingerprint: fingerprint.to_string(),
-                    operation_id: operation_id.to_string(),
-                    decision: "personal_signoff_invalid".to_string(),
-                    revision_before: String::new(),
-                    revision_after: String::new(),
-                });
-                log::info!(
-                    "personal_signoff: refused use of {grant_id}; signature did not verify"
-                );
-                return Err("personal sign-off signature did not verify".to_string());
-            }
         }
         let alive = self.store().records().iter().any(|record| {
             record.grant_id == grant_id && record.decision == Decision::Allow
@@ -1357,26 +805,6 @@ fn pending_view(row: &Pending) -> PendingView {
         resource_id: row.binding.resource_id.clone(),
         args_fingerprint: row.binding.args_fingerprint.clone(),
         input_summary: row.input_summary.clone(),
-        signoff_tier: row.signoff.as_ref().map(|parts| parts.tier.as_str().to_string()),
-        signoff_label: row.signoff.as_ref().map(|_| "personal_signoff".to_string()),
-    }
-}
-
-fn signoff_parts_of(record: &GrantRecord) -> SignoffParts {
-    SignoffParts {
-        actor_type: record.actor_type,
-        actor_scope: record.actor_scope,
-        trust_origin: record.trust_origin.clone(),
-        actor_id: record.actor_id.clone(),
-        resource_scope: record.resource_scope,
-        resource_id: record.resource_id.clone(),
-        action: record.target_id.clone(),
-        args_fingerprint: record.args_fingerprint.clone(),
-        nonce: record.signoff_nonce.clone(),
-        expiry: record.expires_at.unwrap_or(0),
-        deadline: record.signoff_deadline.unwrap_or(0),
-        package: record.package_id.clone(),
-        tier: SignoffTier::parse(&record.signoff_tier),
     }
 }
 
@@ -1915,197 +1343,6 @@ mod tests {
         monitor.fail_audit(false);
         let _ = monitor.list_pending();
         let _ = monitor.audit_records();
-    }
-
-    fn signed_monitor() -> Arc<PermissionMonitor> {
-        let monitor = PermissionMonitor::ephemeral();
-        monitor.install_signer(Arc::new(signoff::MockSigner::new()));
-        monitor.set_now_for_test(1_700_000_000);
-        monitor
-    }
-
-    fn vault_binding(monitor: &PermissionMonitor, args: &str) -> ExactBinding {
-        let mut row = binding(&fingerprint_args(args).unwrap());
-        row.target_id = "vault.export".into();
-        row.resource_scope = ResourceScope::Workspace;
-        row.resource_id = None;
-        row.package_id = "vault".into();
-        row.session_id = Some(monitor.session_id().to_string());
-        row
-    }
-
-    fn pending_id(admission: Admission) -> String {
-        match admission {
-            Admission::Required { pending_request_id } => pending_request_id,
-            Admission::Proceed { .. } => panic!("expected a personal sign-off challenge"),
-            Admission::Denied { code } => panic!("expected a challenge, got {code}"),
-        }
-    }
-
-    fn has_decision(monitor: &PermissionMonitor, decision: &str) -> bool {
-        monitor
-            .audit_records()
-            .iter()
-            .any(|fact| fact.decision == decision)
-    }
-
-    #[test]
-    fn click_cannot_satisfy_personal_signoff() {
-        let monitor = signed_monitor();
-        monitor.note_manifest("vault.export", SignoffTier::EachTime);
-        let args = r#"{"amount":1}"#;
-        let base = vault_binding(&monitor, args);
-        let mut allow = GrantRecord::from_binding(
-            &base,
-            Decision::Allow,
-            GrantDuration::Always,
-            GrantSource::User,
-            "click-grant",
-        );
-        allow.expires_at = Some(1_700_000_000 + 3600);
-        monitor.store().record(allow);
-        let id = pending_id(admit_of(&monitor, &base, args));
-        assert!(monitor.pending_requires_signoff(&id));
-        let err = monitor
-            .approve_pending(&id, ApprovalChoice::Once)
-            .unwrap_err();
-        assert!(err.contains("cannot be satisfied by a click"));
-        assert!(monitor.pending_requires_signoff(&id));
-        assert!(has_decision(&monitor, "personal_signoff_click_refused"));
-        let view = monitor
-            .list_pending()
-            .into_iter()
-            .find(|row| row.pending_request_id == id)
-            .unwrap();
-        assert_eq!(view.signoff_tier.as_deref(), Some("each_time"));
-        assert_ne!(view.signoff_label.as_deref(), Some("Touch ID"));
-    }
-
-    #[test]
-    fn each_time_signature_admits_once_and_rejects_replay() {
-        let monitor = signed_monitor();
-        monitor.note_manifest("vault.export", SignoffTier::EachTime);
-        let args = r#"{"amount":1}"#;
-        let base = vault_binding(&monitor, args);
-        let id = pending_id(admit_of(&monitor, &base, args));
-        let message = monitor.challenge_message(&id).expect("challenge");
-        assert!(message.contains("tier=each_time"));
-        assert!(message.contains("actor=agent:user:host:agent:chess"));
-        assert!(message.contains("nonce="));
-        monitor.sign_pending(&id).expect("mock signature");
-        let Admission::Proceed { grant_id, .. } = admit_of(&monitor, &base, args) else {
-            panic!("a fresh signature admits the call once");
-        };
-        monitor
-            .note_use(
-                &base.actor_id,
-                &base.call_id,
-                &grant_id,
-                &base.args_fingerprint,
-                "",
-                &base.operation_id,
-            )
-            .expect("verified signature may be used");
-        let again = pending_id(admit_of(&monitor, &base, args));
-        let stale = signoff::MockSigner::new()
-            .sign(message.as_bytes(), "replay")
-            .unwrap();
-        let err = monitor.submit_signoff(&again, &stale).unwrap_err();
-        assert!(err.contains("did not verify"));
-        assert!(has_decision(&monitor, "personal_signoff_invalid"));
-    }
-
-    #[test]
-    fn time_boxed_grant_covers_new_args_until_revoke_or_tamper() {
-        let monitor = signed_monitor();
-        monitor.set_time_boxed_ttl_for_test(7 * 24 * 60 * 60);
-        monitor.note_manifest("vault.export", SignoffTier::TimeBoxed);
-        let first = r#"{"amount":1}"#;
-        let second = r#"{"amount":2}"#;
-        let base = vault_binding(&monitor, first);
-        let id = pending_id(admit_of(&monitor, &base, first));
-        let grant_id = monitor.sign_pending(&id).unwrap();
-        let mut other = base.clone();
-        other.call_id = "call-b".into();
-        match admit_of(&monitor, &other, second) {
-            Admission::Proceed { grant_id: covered, .. } => assert_eq!(covered, grant_id),
-            Admission::Required { .. } => panic!("time-boxed grant must cover different arguments"),
-            Admission::Denied { code } => panic!("time-boxed grant was denied: {code}"),
-        }
-        assert!(monitor.revoke_grant_id(&grant_id));
-        let id = pending_id(admit_of(&monitor, &base, first));
-        let grant_id = monitor.sign_pending(&id).unwrap();
-        {
-            let mut store = monitor.store();
-            let record = store
-                .records_mut()
-                .iter_mut()
-                .find(|record| record.grant_id == grant_id)
-                .unwrap();
-            record.expires_at = Some(record.expires_at.unwrap() - 1);
-        }
-        match admit_of(&monitor, &other, second) {
-            Admission::Denied { code } => assert_eq!(code, "permission_denied"),
-            Admission::Proceed { .. } => panic!("a tampered expiry must not authorize"),
-            Admission::Required { .. } => panic!("a tampered covering grant is a denial, not a new challenge"),
-        }
-        assert!(has_decision(&monitor, "personal_signoff_invalid"));
-    }
-
-    #[test]
-    fn grant_marker_forces_signoff_and_cannot_lower_each_time() {
-        let monitor = signed_monitor();
-        monitor.store().record(GrantRecord {
-            target_id: "vault.export".into(),
-            requires_personal_signoff: true,
-            signoff_tier: "time_boxed".into(),
-            ..GrantRecord::unbound()
-        });
-        let args = r#"{"amount":1}"#;
-        let base = vault_binding(&monitor, args);
-        let id = pending_id(admit_of(&monitor, &base, args));
-        let message = monitor.challenge_message(&id).unwrap();
-        assert!(message.contains("tier=time_boxed"), "{message}");
-        monitor.note_manifest("vault.export", SignoffTier::EachTime);
-        let raised = pending_id(admit_of(&monitor, &base, args));
-        let raised_message = monitor.challenge_message(&raised).unwrap();
-        assert!(raised_message.contains("tier=each_time"), "{raised_message}");
-        assert_ne!(id, raised);
-    }
-
-    #[test]
-    fn matching_deny_wins_over_personal_signoff() {
-        let monitor = signed_monitor();
-        monitor.note_manifest("vault.export", SignoffTier::EachTime);
-        let args = r#"{"amount":1}"#;
-        let base = vault_binding(&monitor, args);
-        monitor.store().record(GrantRecord::from_binding(
-            &base,
-            Decision::Deny,
-            GrantDuration::Always,
-            GrantSource::User,
-            "deny-vault",
-        ));
-        match admit_of(&monitor, &base, args) {
-            Admission::Denied { code } => assert_eq!(code, "permission_denied"),
-            Admission::Required { .. } => panic!("a matching deny must not open a sign-off challenge"),
-            Admission::Proceed { .. } => panic!("a matching deny must not proceed"),
-        }
-    }
-
-    #[test]
-    fn refuse_signer_blocks_the_call_and_is_not_touch_id() {
-        let monitor = PermissionMonitor::ephemeral();
-        monitor.set_now_for_test(1_700_000_000);
-        monitor.note_manifest("vault.export", SignoffTier::EachTime);
-        let args = r#"{"amount":1}"#;
-        let base = vault_binding(&monitor, args);
-        let id = pending_id(admit_of(&monitor, &base, args));
-        let err = monitor.sign_pending(&id).unwrap_err();
-        assert!(err.contains("not Touch ID"), "{err}");
-        assert!(!err.contains("touch_id"), "{err}");
-        assert!(has_decision(&monitor, "personal_signoff_refused"));
-        assert!(monitor.pending_requires_signoff(&id));
     }
 }
 

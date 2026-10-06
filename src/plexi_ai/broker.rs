@@ -2004,8 +2004,6 @@ mod tests {
             output_schema: serde_json::json!({"type":"object"}),
             timeout_ms: None,
             read_only: false,
-            requires: None,
-            signoff: None,
         };
         // No dispatcher: the broker appends an error tool result and continues to
         // the next iteration, where the backend returns the final text.
@@ -2122,8 +2120,6 @@ mod tests {
             output_schema: serde_json::json!({"type":"object"}),
             timeout_ms: None,
             read_only: false,
-            requires: None,
-            signoff: None,
         };
         let request = AiBrokerRequest {
             app_id: "test".to_string(),

@@ -267,9 +267,6 @@ Proposed `dispatch_call` execution sequence:
    can produce an executable dispatcher without its monitor handle.
 4. On Ask, persist an exact pending request and return `permission_required`.
    A host decision resolves that request; clients cannot substitute arguments.
-   A tool or grant marker may require personal sign-off instead of a click.
-   That tier, the signature checked before execution, and the manual Touch ID
-   check are specified in `docs/personal-signoff.md`.
 5. On approval/resume, recheck identity, expiry, revocation and resource binding;
    then send an opaque `AuthorizedCall` to the selected adapter. No fresh ambient
    lookup may redirect the operation after authorization.

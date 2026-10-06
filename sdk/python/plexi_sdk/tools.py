@@ -96,8 +96,6 @@ def tool(
     returns: "dict[str, type] | None" = None,
     *,
     read_only: bool = False,
-    requires: str | None = None,
-    signoff: str | None = None,
     caller: bool = False,
     authorization: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -115,10 +113,6 @@ def tool(
 
     ``authorization=True`` passes the host authorization envelope. Model
     arguments cannot supply it.
-
-    ``requires="personal_signoff"`` asks the host for a personal sign-off
-    (Touch ID, or the configured fallback). ``signoff`` is ``"each_time"``
-    or ``"time_boxed"``. A click cannot lower that requirement.
     """
     if not name:
         raise ValueError("tool name must be non-empty")
@@ -131,8 +125,6 @@ def tool(
         input_schema=_schema(params, who=f"tool '{name}'"),
         output_schema=_schema(returns, who=f"tool '{name}' returns"),
         read_only=read_only,
-        requires=requires,
-        signoff=signoff,
     )
 
     def register(fn: Callable[..., Any]) -> Callable[..., Any]:

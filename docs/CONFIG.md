@@ -119,16 +119,6 @@ Known actions: quit, close_pane, toggle_command_palette, split_horizontal, split
 
 Unknown keys or conflicting overrides log a warning at startup and keep the default binding.
 
-## Personal sign-off
-
-```toml
-[permissions.personal_signoff]
-# fallback = "refuse"          # or "password"
-# time_boxed_ttl_secs = 604800 # 7 days
-```
-
-`fallback` applies when the Secure Enclave is unavailable (non-macOS, or an unsigned dev build). `refuse` is the default. `password` is an OS password prompt labeled as not Touch ID. A click cannot satisfy a tool marked `requires = "personal_signoff"`. Tiers and the manual Touch ID check: [`personal-signoff.md`](personal-signoff.md).
-
 ## Notifications
 
 ```toml
@@ -275,16 +265,6 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 
 [cli]
 tips = true
-
-# Personal sign-off for tools marked requires = "personal_signoff".
-# A click cannot satisfy that tier. On macOS the host signs with Touch ID.
-# Elsewhere, and on an unsigned build where the Secure Enclave is unavailable:
-#   fallback = "refuse"    # default: the call is refused and audited
-#   fallback = "password"  # OS password dialog, labeled as not Touch ID
-# time_boxed_ttl_secs = 604800   # 7 days; clamped to 60 seconds .. 30 days
-# [permissions.personal_signoff]
-# fallback = "refuse"
-# time_boxed_ttl_secs = 604800
 
 [marketplace]
 # Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,

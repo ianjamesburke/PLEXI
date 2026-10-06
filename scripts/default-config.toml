@@ -72,16 +72,6 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 [cli]
 tips = true
 
-# Personal sign-off for tools marked requires = "personal_signoff".
-# A click cannot satisfy that tier. On macOS the host signs with Touch ID.
-# Elsewhere, and on an unsigned build where the Secure Enclave is unavailable:
-#   fallback = "refuse"    # default: the call is refused and audited
-#   fallback = "password"  # OS password dialog, labeled as not Touch ID
-# time_boxed_ttl_secs = 604800   # 7 days; clamped to 60 seconds .. 30 days
-# [permissions.personal_signoff]
-# fallback = "refuse"
-# time_boxed_ttl_secs = 604800
-
 # [file_handlers]
 # Choose which app opens each file type from the File Explorer (Enter / double-
 # click). Keys are bare, lowercase extensions; values are `kind:value` specs:

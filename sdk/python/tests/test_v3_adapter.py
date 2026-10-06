@@ -77,8 +77,6 @@ def test_tool_effects_encode_rust_wire_shape() -> None:
             "output_schema": {"type": "object", "properties": {"rows": {"type": "integer"}}},
             "timeout_ms": 1_500,
             "read_only": True,
-            "requires": None,
-            "signoff": None,
         }],
     }
 

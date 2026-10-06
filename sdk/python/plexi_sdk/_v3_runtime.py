@@ -49,24 +49,6 @@ def _dump_line(obj: dict) -> str:
     return json.dumps(obj, separators=_JSON_SEPARATORS) + "\n"
 
 
-def _tool_wire(tool: effects.AiTool) -> dict:
-    """Host tool declaration. Omit unset sign-off fields so an ordinary
-    tool keeps the existing wire shape."""
-    payload = {
-        "name": tool.name,
-        "description": tool.description,
-        "input_schema": tool.input_schema,
-        "output_schema": tool.output_schema,
-        "timeout_ms": tool.timeout_ms,
-        "read_only": tool.read_only,
-    }
-    if tool.requires:
-        payload["requires"] = tool.requires
-    if tool.signoff:
-        payload["signoff"] = tool.signoff
-    return payload
-
-
 def _emit(obj: dict) -> None:
     _emit_line(_dump_line(obj))
 
@@ -729,7 +711,14 @@ class V3AppRuntime:
                 _emit({
                     "type": "expose_tools",
                     "tools": [
-                        _tool_wire(tool)
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.input_schema,
+                            "output_schema": tool.output_schema,
+                            "timeout_ms": tool.timeout_ms,
+                            "read_only": tool.read_only,
+                        }
                         for tool in effect.tools
                     ],
                 })

@@ -177,10 +177,6 @@ class AiTool:
     output_schema: dict[str, Any]
     timeout_ms: Optional[int] = None
     read_only: bool = False
-    # "personal_signoff" raises the tool above a click. The host will not
-    # lower it. signoff is "each_time" or "time_boxed".
-    requires: Optional[str] = None
-    signoff: Optional[str] = None
 
 
 @dataclass

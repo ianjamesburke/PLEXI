@@ -85,10 +85,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_gap",
     "pane_title_font_size",
     "osc_pane_title",
-    "permissions",
 ];
-const KNOWN_PERMISSIONS: &[&str] = &["personal_signoff"];
-const KNOWN_PERSONAL_SIGNOFF: &[&str] = &["fallback", "time_boxed_ttl_secs"];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
@@ -287,18 +284,6 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("marketplace") {
                 check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("permissions") {
-                check_unknown_keys(t, "permissions", KNOWN_PERMISSIONS, &path_str, &mut diags);
-                if let Some(toml::Value::Table(signoff)) = t.get("personal_signoff") {
-                    check_unknown_keys(
-                        signoff,
-                        "permissions.personal_signoff",
-                        KNOWN_PERSONAL_SIGNOFF,
-                        &path_str,
-                        &mut diags,
-                    );
-                }
             }
             if table.contains_key("quick_note") {
                 diags.push(ConfigDiagnostic::DeprecatedSection {
@@ -514,24 +499,6 @@ pub struct PlexiConfig {
     /// Unmapped extensions fall through to manifest associations, then builtin
     /// media players, then the OS default.
     pub file_handlers: Option<std::collections::HashMap<String, String>>,
-    /// Personal sign-off fallback when the Secure Enclave is unavailable.
-    pub permissions: Option<PermissionsConfig>,
-}
-
-/// `[permissions]` in the channel config. Agent `settings.toml` is a
-/// different file and is not this table.
-#[derive(Deserialize, Default, Clone)]
-pub struct PermissionsConfig {
-    pub personal_signoff: Option<PersonalSignoffConfig>,
-}
-
-/// `[permissions.personal_signoff]`. `fallback` is `refuse` or `password`.
-/// An unknown value refuses. Password prompts are labeled as not Touch ID.
-#[derive(Deserialize, Default, Clone)]
-pub struct PersonalSignoffConfig {
-    pub fallback: Option<String>,
-    /// Seconds a time-boxed signature stays valid. Clamped when loaded.
-    pub time_boxed_ttl_secs: Option<i64>,
 }
 
 /// CLI behavior configuration.

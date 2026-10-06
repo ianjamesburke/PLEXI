@@ -1508,8 +1508,6 @@ impl WasmPane {
                     output_schema,
                     timeout_ms: tool.timeout_ms,
                     read_only: tool.read_only,
-                    requires: None,
-                    signoff: None,
                 })
             })
             .collect::<Result<Vec<_>, String>>();

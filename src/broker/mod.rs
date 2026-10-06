@@ -10,7 +10,6 @@
 //! `/permissions` UI surface come later; their target types exist as data only.
 
 pub mod gate;
-pub mod signoff;
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
@@ -181,25 +180,6 @@ pub struct GrantRecord {
     /// Operation id that consumed a one-shot, for receipt recovery only.
     #[serde(default)]
     pub bound_operation_id: Option<String>,
-    /// Host marker: this tool cannot be approved by a click. A marker is not
-    /// an authorization. Satisfying grants leave this false and carry a signature.
-    #[serde(default)]
-    pub requires_personal_signoff: bool,
-    /// `each_time` or `time_boxed` on a personal-signoff grant or marker.
-    #[serde(default)]
-    pub signoff_tier: String,
-    /// Base64 signature over the canonical sign-off message. Empty never authorizes.
-    #[serde(default)]
-    pub signoff_signature: String,
-    /// `touch_id`, `os_password`, or `mock`. A label, not a second authority.
-    #[serde(default)]
-    pub signoff_mechanism: String,
-    /// Nonce bound into the signed message. Reuse is refused.
-    #[serde(default)]
-    pub signoff_nonce: String,
-    /// Unix seconds. The signature covers this deadline.
-    #[serde(default)]
-    pub signoff_deadline: Option<i64>,
 }
 
 impl GrantRecord {
@@ -257,12 +237,6 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
-            requires_personal_signoff: false,
-            signoff_tier: String::new(),
-            signoff_signature: String::new(),
-            signoff_mechanism: String::new(),
-            signoff_nonce: String::new(),
-            signoff_deadline: None,
         }
     }
 
@@ -301,12 +275,6 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
-            requires_personal_signoff: false,
-            signoff_tier: String::new(),
-            signoff_signature: String::new(),
-            signoff_mechanism: String::new(),
-            signoff_nonce: String::new(),
-            signoff_deadline: None,
         }
     }
 
