@@ -91,6 +91,16 @@ Read or steer the command view. `op` is `list` or `open` here; later steer ops s
 | `payload` | `any` | no |
 | `response_file` | `string` | yes |
 
+### `agent_queue`
+
+Assign, cancel, or list headless queue tasks for a lead.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `op` | `string` | yes |
+| `payload` | `any` | no |
+| `response_file` | `string` | yes |
+
 ### `capability_request`
 
 Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
